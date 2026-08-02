@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -92,6 +93,18 @@ class TestWorkflowContracts(unittest.TestCase):
             for field in fields:
                 with self.subTest(name=name, field=field):
                     self.assertIn(f"      {field}:\n", source, name)
+
+    def test_new_implementation_claims_route_through_agent_dispatch_global(self):
+        controller = self.read("agent-controller.yml")
+        intake = self.read("agent-intake.yml")
+        merge = self.read("agent-merge.yml")
+        self.assertIn("group: agent-dispatch-global", controller)
+        self.assertIn("gh workflow run agent-controller.yml", intake)
+        self.assertIn("-f command=dispatch-ready", intake)
+        self.assertNotIn("dispatcher.py dispatch-ready", intake)
+        self.assertIn("gh workflow run agent-controller.yml", merge)
+        self.assertIn("-f command=dispatch-next", merge)
+        self.assertNotIn("dispatcher.py dispatch-next", merge)
 
     def test_canonical_workflow_has_one_top_level_environment_mapping(self):
         source = self.read("tests.yml")
@@ -989,6 +1002,376 @@ class TestDispatcher(unittest.TestCase):
     def trusted_comment(self, state):
         return {"author": {"login": "github-actions[bot]"}, "body": json.dumps(state)}
 
+    def test_read_dispatch_state_fails_closed_on_malformed_marker_comment(self):
+        malformed = {
+            "author": {"login": "github-actions[bot]"},
+            "body": '{"kind": "agent-orchestrator-dispatch-state", "status": "dispatched",',
+        }
+        older = self.worker_claim()
+        comments = [malformed, self.trusted_comment(older)]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            with self.assertRaises(state_manager.StateUnavailableError):
+                state_manager.read_dispatch_state(41, "worker:41", "acme/repo")
+
+    def test_read_dispatch_state_fails_closed_on_marker_quoting_prose(self):
+        prose = {
+            "author": {"login": "github-actions[bot]"},
+            "body": "plain text mentioning agent-orchestrator-dispatch-state",
+        }
+        older = self.worker_claim()
+        comments = [prose, self.trusted_comment(older)]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            with self.assertRaises(state_manager.StateUnavailableError):
+                state_manager.read_dispatch_state(41, "worker:41", "acme/repo")
+
+    def test_read_dispatch_state_fails_closed_on_wrong_version(self):
+        newer = self.worker_claim(version=2)
+        older = self.worker_claim()
+        comments = [self.trusted_comment(newer), self.trusted_comment(older)]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            with self.assertRaises(state_manager.StateUnavailableError):
+                state_manager.read_dispatch_state(41, "worker:41", "acme/repo")
+
+    def test_read_dispatch_state_skips_unrelated_and_wrong_issue_documents(self):
+        wrong_issue = self.worker_claim(issue_number=42, dispatch_id="worker:42")
+        review = {
+            "kind": "agent-orchestrator-dispatch-state", "version": 1, "issue_number": 41,
+            "dispatch_id": "review:207:" + "a" * 40, "action": "review", "status": "dispatched",
+            "details": {"pr_number": 207, "issue_number": 41, "head_sha": "a" * 40},
+        }
+        repair = {
+            "kind": "agent-orchestrator-dispatch-state", "version": 1, "issue_number": 41,
+            "dispatch_id": "repair:207:" + "a" * 40 + ":9001:0", "action": "repair",
+            "status": "dispatched",
+            "details": {"pr_number": 207, "issue_number": 41, "head_sha": "a" * 40},
+        }
+        quoting = {
+            "kind": "agent-orchestrator-review-state", "version": 2, "issue_number": 41,
+            "pr_number": 207, "head_sha": "a" * 40, "verdict": "BLOCKED",
+            "summary": 'quotes "agent-orchestrator-dispatch-state" in prose',
+            "blockers": [], "major_notes": [], "minor_notes": [], "artifact_sha256": "",
+        }
+        claim = self.worker_claim()
+        comments = [
+            self.trusted_comment(wrong_issue),
+            self.trusted_comment(review),
+            self.trusted_comment(repair),
+            self.trusted_comment(quoting),
+            self.trusted_comment(claim),
+        ]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            observed = state_manager.read_dispatch_state(41, "worker:41", "acme/repo")
+        self.assertEqual(observed, claim)
+
+    def test_newer_wrong_version_review_repair_and_merge_do_not_block_exact_worker_state(self):
+        review = {
+            "kind": "agent-orchestrator-dispatch-state", "version": 2, "issue_number": 41,
+            "dispatch_id": "review:207:" + "a" * 40, "action": "review", "status": "dispatched",
+            "details": {"pr_number": 207, "issue_number": 41, "head_sha": "a" * 40},
+        }
+        repair = {
+            "kind": "agent-orchestrator-dispatch-state", "version": 2, "issue_number": 41,
+            "dispatch_id": "repair:207:" + "a" * 40 + ":9001:0", "action": "repair",
+            "status": "dispatched",
+            "details": {"pr_number": 207, "issue_number": 41, "head_sha": "a" * 40},
+        }
+        merge = {
+            "kind": "agent-orchestrator-dispatch-state", "version": 2, "issue_number": 41,
+            "dispatch_id": "merge:207:" + "a" * 40, "action": "merge", "status": "dispatched",
+            "details": {"pr_number": 207, "issue_number": 41, "head_sha": "a" * 40},
+        }
+        claim = self.worker_claim()
+        comments = [
+            self.trusted_comment(review),
+            self.trusted_comment(repair),
+            self.trusted_comment(merge),
+            self.trusted_comment(claim),
+        ]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            observed = state_manager.read_dispatch_state(41, "worker:41", "acme/repo")
+        self.assertEqual(observed, claim)
+
+    def test_capacity_recheck_compensates_when_authoritative_active_exceeds_k(self):
+        labels = {state_manager.LABEL_READY}
+        persisted = {}
+
+        def read_dispatch(_issue, dispatch_id, _repo):
+            return persisted.get(dispatch_id)
+
+        def set_labels(_issue, *new_labels, repo=""):
+            labels.clear()
+            labels.update(new_labels)
+            return True
+
+        def record(_issue, dispatch_id, action, status, details=None, repo=""):
+            persisted[dispatch_id] = {
+                "kind": "agent-orchestrator-dispatch-state",
+                "version": 1,
+                "issue_number": _issue,
+                "dispatch_id": dispatch_id,
+                "action": action,
+                "status": status,
+                "details": dict(details or {}),
+            }
+            return True
+
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
+             mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
+                 "allowed_paths": ["src/"], "task_body_sha256": "a" * 64,
+             })), \
+             mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
+             mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", side_effect=[set(), {41, 42, 77}]), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_scopes", return_value={}, create=True), \
+             mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
+             mock.patch.object(dispatcher, "_run_workflow") as workflow:
+            result = dispatcher.dispatch_ready(77, "worker:77")
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["reason"], "capacity_recheck_exceeded")
+        workflow.assert_not_called()
+        rollback = persisted["worker:77"]
+        self.assertEqual(rollback["status"], "failed")
+        self.assertEqual(rollback["action"], "rollback")
+        self.assertEqual(rollback["details"]["reason"], "capacity_recheck_exceeded")
+        self.assertEqual(rollback["details"]["allowed_paths"], ["src/"])
+        self.assertEqual(rollback["details"]["task_body_sha256"], "a" * 64)
+        self.assertRegex(rollback["details"]["claim_nonce"], r"^[0-9a-f]{32}$")
+        self.assertEqual(labels, {state_manager.LABEL_READY})
+
+    def test_capacity_recheck_unavailable_fails_closed_and_compensates(self):
+        labels = {state_manager.LABEL_READY}
+        persisted = {}
+
+        def read_dispatch(_issue, dispatch_id, _repo):
+            return persisted.get(dispatch_id)
+
+        def set_labels(_issue, *new_labels, repo=""):
+            labels.clear()
+            labels.update(new_labels)
+            return True
+
+        def record(_issue, dispatch_id, action, status, details=None, repo=""):
+            persisted[dispatch_id] = {
+                "kind": "agent-orchestrator-dispatch-state",
+                "version": 1,
+                "issue_number": _issue,
+                "dispatch_id": dispatch_id,
+                "action": action,
+                "status": status,
+                "details": dict(details or {}),
+            }
+            return True
+
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
+             mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
+                 "allowed_paths": ["src/"], "task_body_sha256": "a" * 64,
+             })), \
+             mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
+             mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", side_effect=[set(), None]), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_scopes", return_value={}, create=True), \
+             mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
+             mock.patch.object(dispatcher, "_run_workflow") as workflow:
+            result = dispatcher.dispatch_ready(77, "worker:77")
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["reason"], "capacity_recheck_unavailable")
+        workflow.assert_not_called()
+        rollback = persisted["worker:77"]
+        self.assertEqual(rollback["status"], "failed")
+        self.assertEqual(rollback["action"], "rollback")
+        self.assertEqual(rollback["details"]["reason"], "capacity_recheck_unavailable")
+        self.assertRegex(rollback["details"]["claim_nonce"], r"^[0-9a-f]{32}$")
+        self.assertEqual(labels, {state_manager.LABEL_READY})
+
+    def test_overlapping_claims_never_exceed_capacity_and_leave_no_claim_effects(self):
+        preset = 41
+        first = 77
+        second = 88
+        labels = {
+            preset: {state_manager.LABEL_RUNNING},
+            first: {state_manager.LABEL_READY},
+            second: {state_manager.LABEL_READY},
+        }
+        bodies = {
+            preset: '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["docs/"]} -->',
+            first: '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["src/"]} -->',
+            second: '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["scripts/"]} -->',
+        }
+        comments = {}
+        state_lock = threading.Lock()
+        precheck_barrier = threading.Barrier(2)
+        active_read_count = 0
+        precheck_snapshots = []
+        recheck_snapshots = []
+        recheck_snapshot = None
+        workflow_calls = []
+        results = {}
+        failures = []
+
+        preset_claim = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": preset,
+            "dispatch_id": f"worker:{preset}",
+            "action": "worker",
+            "status": "dispatched",
+            "details": {"allowed_paths": ["docs/"], "task_body_sha256": "a" * 64},
+        }
+        comments[preset] = [self.trusted_comment(preset_claim)]
+
+        def issue_comments(issue, repo=""):
+            with state_lock:
+                return list(reversed(comments.get(issue, [])))
+
+        def post_comment(issue, body, repo=""):
+            with state_lock:
+                comments.setdefault(issue, []).append(
+                    {"author": {"login": "github-actions[bot]"}, "body": body}
+                )
+            return True
+
+        def get_body(issue, repo=""):
+            return bodies[issue]
+
+        def get_labels(issue, repo=""):
+            with state_lock:
+                return set(labels.get(issue, set()))
+
+        def capture_recheck_snapshot():
+            # Runs once inside the running-label barrier, at the release
+            # moment: both running labels are durably written and neither
+            # thread has rolled back yet, so both rechecks observe the same
+            # consistent breach snapshot.
+            nonlocal recheck_snapshot
+            with state_lock:
+                recheck_snapshot = frozenset(
+                    issue for issue, issue_labels in labels.items()
+                    if issue_labels & state_manager.ACTIVE_LABELS
+                )
+
+        running_barrier = threading.Barrier(2, action=capture_recheck_snapshot)
+
+        def set_labels(issue, *new_labels, repo=""):
+            is_running = state_manager.LABEL_RUNNING in new_labels
+            with state_lock:
+                labels[issue] = set(new_labels)
+            if is_running:
+                # Both running labels must be durably written before either
+                # thread may continue into the post-label capacity recheck.
+                running_barrier.wait(timeout=60)
+            return True
+
+        def active_numbers(repo=""):
+            nonlocal active_read_count
+            with state_lock:
+                active_read_count += 1
+                call = active_read_count
+            if call <= 2:
+                # Both threads' first authoritative precheck reads the same
+                # K-1 snapshot: neither thread can write its running label
+                # before both prechecks have returned.
+                with state_lock:
+                    snapshot = frozenset(
+                        issue for issue, issue_labels in labels.items()
+                        if issue_labels & state_manager.ACTIVE_LABELS
+                    )
+                precheck_barrier.wait(timeout=60)
+                with state_lock:
+                    precheck_snapshots.append(snapshot)
+                return set(snapshot)
+            with state_lock:
+                snapshot = recheck_snapshot if recheck_snapshot is not None else frozenset(
+                    issue for issue, issue_labels in labels.items()
+                    if issue_labels & state_manager.ACTIVE_LABELS
+                )
+            with state_lock:
+                recheck_snapshots.append(snapshot)
+            return set(snapshot)
+
+        def run_dispatch(issue):
+            try:
+                results[issue] = dispatcher.dispatch_ready(issue, f"worker:{issue}")
+            except Exception as exc:  # noqa: BLE001 - surface thread failures
+                failures.append(exc)
+
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.sm, "get_issue_comments", side_effect=issue_comments), \
+             mock.patch.object(dispatcher.sm, "comment_on_issue", side_effect=post_comment), \
+             mock.patch.object(dispatcher.sm, "get_issue_body", side_effect=get_body), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", side_effect=get_labels), \
+             mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", side_effect=active_numbers), \
+             mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
+             mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
+            threads = [
+                threading.Thread(target=run_dispatch, args=(first,)),
+                threading.Thread(target=run_dispatch, args=(second,)),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=90)
+        self.assertFalse(failures)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+
+        self.assertEqual(results[first]["dispatched"], False)
+        self.assertEqual(results[second]["dispatched"], False)
+        self.assertEqual(results[first]["reason"], "capacity_recheck_exceeded")
+        self.assertEqual(results[second]["reason"], "capacity_recheck_exceeded")
+        self.assertEqual(workflow_calls, [])
+        self.assertEqual(precheck_snapshots, [frozenset({preset}), frozenset({preset})])
+        self.assertTrue(
+            all(len(snapshot) <= state_manager.MAX_ACTIVE for snapshot in precheck_snapshots)
+        )
+        self.assertEqual(
+            recheck_snapshots,
+            [frozenset({preset, first, second}), frozenset({preset, first, second})],
+        )
+        self.assertTrue(
+            any(len(snapshot) > state_manager.MAX_ACTIVE for snapshot in recheck_snapshots)
+        )
+        with state_lock:
+            final_active = {
+                issue for issue, issue_labels in labels.items()
+                if issue_labels & state_manager.ACTIVE_LABELS
+            }
+        self.assertEqual(final_active, {preset})
+        self.assertLessEqual(len(final_active), state_manager.MAX_ACTIVE)
+        for issue in (first, second):
+            with state_lock:
+                persisted = [json.loads(item["body"]) for item in comments[issue]]
+            self.assertEqual(len(persisted), 2)
+            claimed, rollback = persisted
+            self.assertEqual(claimed["status"], "claimed")
+            self.assertEqual(claimed["action"], "worker")
+            self.assertEqual(rollback["status"], "failed")
+            self.assertEqual(rollback["action"], "rollback")
+            self.assertEqual(rollback["details"]["reason"], "capacity_recheck_exceeded")
+            self.assertEqual(
+                rollback["details"]["allowed_paths"],
+                artifact_contract.parse_issue_scope(bodies[issue]),
+            )
+            self.assertEqual(
+                rollback["details"]["task_body_sha256"],
+                hashlib.sha256(bodies[issue].encode("utf-8")).hexdigest(),
+            )
+            self.assertRegex(rollback["details"]["claim_nonce"], r"^[0-9a-f]{32}$")
+            self.assertEqual(rollback["details"]["target_label"], state_manager.LABEL_RUNNING)
+            self.assertEqual(rollback["details"]["previous_labels"], [state_manager.LABEL_READY])
+            self.assertEqual(
+                [state["status"] for state in persisted],
+                ["claimed", "failed"],
+            )
+
     def test_verify_task_scope_binding_accepts_unchanged_body(self):
         body = '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["src/"]} -->'
         claim = self.worker_claim(details=artifact_contract.build_issue_scope_binding(body))
@@ -1214,6 +1597,28 @@ class TestDispatcher(unittest.TestCase):
         self.assertTrue(result)
         details = record.call_args[0][4]
         self.assertEqual(details, {"reason": "workflow_dispatch_failed"})
+
+    def test_rollback_label_restore_failure_returns_false_without_terminal_record(self):
+        with mock.patch.object(dispatcher.sm, "set_labels", return_value=False), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=self.worker_claim(status="claimed")), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", return_value=True) as record:
+            result = dispatcher._rollback(41, "worker:41", [state_manager.LABEL_READY], "workflow_dispatch_failed")
+        self.assertFalse(result)
+        record.assert_not_called()
+
+    def test_rollback_restore_failure_keeps_claim_for_reconcile_and_never_redispatch(self):
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher, "_claim", return_value=(True, [state_manager.LABEL_READY], "claimed")), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
+             mock.patch.object(dispatcher.sm, "set_labels", return_value=False), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", return_value=True) as record, \
+             mock.patch.object(dispatcher, "_run_workflow", return_value=False) as workflow:
+            result = dispatcher.dispatch_ready(77, "worker:77")
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["reason"], "workflow_dispatch_failed_rollback_failed")
+        record.assert_not_called()
+        workflow.assert_called_once()
 
     def test_record_dispatched_fails_closed_on_malformed_previous_details(self):
         malformed = self.worker_claim(status="claimed", details=["not", "a", "dict"])

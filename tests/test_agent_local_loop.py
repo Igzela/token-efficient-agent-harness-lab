@@ -8,11 +8,13 @@ import sys
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
+from unittest import mock
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control"))
 import local_loop
 import loopctl
+import state_manager
 
 
 MAIN_SHA = "a" * 40
@@ -84,6 +86,8 @@ class FakeGitHub:
         return self.active
 
     def active_issue_scopes(self):
+        if self.active_scopes is None:
+            return None
         return self.active_scopes or {
             issue_number: [f"active/{issue_number}/"]
             for issue_number in self.active
@@ -101,7 +105,7 @@ class FakeGit:
 
 
 class TestLoopControllerPoll(unittest.TestCase):
-    def controller(self, github=None, git=None, *, max_active=2):
+    def controller(self, github=None, git=None, *, max_active=state_manager.MAX_ACTIVE):
         return local_loop.LoopController(
             github or FakeGitHub(),
             git or FakeGit(),
@@ -118,13 +122,14 @@ class TestLoopControllerPoll(unittest.TestCase):
             github.issue(12, body=f"{scope('tests/')}\n{TASK}"),
         ]
 
-        decision = self.controller(github, max_active=3).poll()
+        decision = self.controller(github).poll()
 
         self.assertEqual(decision["action"], "run_many")
         self.assertEqual(
             [candidate["issue_number"] for candidate in decision["selected"]],
-            [7, 12, 20],
+            [7, 12],
         )
+        self.assertEqual(decision["deferred_issue_numbers"], [20])
 
     def test_rejects_candidate_scope_that_conflicts_with_selected_candidate(self):
         github = FakeGitHub()
@@ -134,7 +139,7 @@ class TestLoopControllerPoll(unittest.TestCase):
             github.issue(9, body=f"{scope('docs/')}\n{TASK}"),
         ]
 
-        decision = self.controller(github, max_active=3).poll()
+        decision = self.controller(github).poll()
 
         self.assertEqual(
             [candidate["issue_number"] for candidate in decision["selected"]],
@@ -154,7 +159,7 @@ class TestLoopControllerPoll(unittest.TestCase):
             github.issue(9, body=f"{scope('docs/')}\n{TASK}"),
         ]
 
-        decision = self.controller(github, max_active=3).poll()
+        decision = self.controller(github).poll()
 
         self.assertEqual(
             [candidate["issue_number"] for candidate in decision["selected"]],
@@ -165,6 +170,28 @@ class TestLoopControllerPoll(unittest.TestCase):
             decision["rejected"],
         )
 
+    def test_active_scope_conflict_does_not_consume_a_slot(self):
+        github = FakeGitHub()
+        github.active = {3}
+        github.active_scopes = {3: ["src/"]}
+        github.issues = [
+            github.issue(7, body=f"{scope('src/worker.py')}\n{TASK}"),
+            github.issue(8, body=f"{scope('docs/')}\n{TASK}"),
+            github.issue(9, body=f"{scope('tools/')}\n{TASK}"),
+        ]
+
+        decision = self.controller(github).poll()
+
+        self.assertEqual(
+            [candidate["issue_number"] for candidate in decision["selected"]],
+            [8],
+        )
+        self.assertIn(
+            {"issue_number": 7, "reason": "scope_conflict", "conflicts_with": 3},
+            decision["rejected"],
+        )
+        self.assertEqual(decision["deferred_issue_numbers"], [9])
+
     def test_active_scope_unavailability_fails_closed(self):
         github = FakeGitHub()
         github.active = {3}
@@ -174,7 +201,17 @@ class TestLoopControllerPoll(unittest.TestCase):
 
         github.active_issue_scopes = fail
 
-        decision = self.controller(github, max_active=3).poll()
+        decision = self.controller(github).poll()
+
+        self.assertEqual(decision["status"], "unavailable")
+        self.assertEqual(decision["action"], "none")
+
+    def test_missing_active_claim_scope_fails_closed(self):
+        github = FakeGitHub()
+        github.active = {3}
+        github.active_scopes = None
+
+        decision = self.controller(github).poll()
 
         self.assertEqual(decision["status"], "unavailable")
         self.assertEqual(decision["action"], "none")
@@ -280,14 +317,75 @@ class TestLoopControllerPoll(unittest.TestCase):
         self.assertEqual(decision["action"], "none")
         self.assertIn("GitHub unavailable", decision["reason"])
 
+    def test_loop_controller_rejects_max_active_outside_one_to_k(self):
+        for value in (0, -1, state_manager.MAX_ACTIVE + 1, 99):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "max_active"):
+                    self.controller(max_active=value)
+        self.assertEqual(self.controller(max_active=1).max_active, 1)
+        self.assertEqual(
+            self.controller(max_active=state_manager.MAX_ACTIVE).max_active,
+            state_manager.MAX_ACTIVE,
+        )
+
+    def test_loop_controller_rejects_max_active_expansion_beyond_canonical_k(self):
+        github = FakeGitHub()
+        github.issues = [
+            github.issue(7, body=f"{scope('docs/')}\n{TASK}"),
+            github.issue(8, body=f"{scope('src/')}\n{TASK}"),
+            github.issue(9, body=f"{scope('tests/')}\n{TASK}"),
+        ]
+        decision = self.controller(github, max_active=1).poll()
+        self.assertEqual(
+            [candidate["issue_number"] for candidate in decision["selected"]],
+            [7],
+        )
+        self.assertEqual(decision["deferred_issue_numbers"], [8, 9])
+
+
+class TestGitHubAdapterActiveScopes(unittest.TestCase):
+    def adapter(self):
+        return local_loop.GitHubAdapter("Igzela/example")
+
+    def test_active_scopes_come_from_trusted_claims_never_mutable_bodies(self):
+        with mock.patch.object(state_manager, "get_active_issue_numbers", return_value={3, 4}), \
+             mock.patch.object(
+                 state_manager, "get_active_issue_scopes",
+                 return_value={3: ["src/"], 4: ["docs/"]},
+             ), \
+             mock.patch.object(
+                 state_manager, "get_issue_body",
+                 side_effect=AssertionError("active Issue bodies must not be re-read"),
+             ):
+            scopes = self.adapter().active_issue_scopes()
+        self.assertEqual(scopes, {3: ["src/"], 4: ["docs/"]})
+
+    def test_active_scope_uses_claim_bound_scope_after_active_body_change(self):
+        with mock.patch.object(state_manager, "get_active_issue_numbers", return_value={3}), \
+             mock.patch.object(
+                 state_manager, "get_active_issue_scopes",
+                 return_value={3: ["src/"]},
+             ):
+            scopes = self.adapter().active_issue_scopes()
+        self.assertEqual(scopes, {3: ["src/"]})
+
+    def test_active_scope_unavailable_fails_closed(self):
+        with mock.patch.object(state_manager, "get_active_issue_numbers", return_value={3}), \
+             mock.patch.object(state_manager, "get_active_issue_scopes", return_value=None):
+            with self.assertRaises(local_loop.LoopUnavailable):
+                self.adapter().active_issue_scopes()
+        with mock.patch.object(state_manager, "get_active_issue_numbers", return_value=None):
+            with self.assertRaises(local_loop.LoopUnavailable):
+                self.adapter().active_issue_scopes()
+
 
 class TestLoopctl(unittest.TestCase):
-    def run_cli(self, decision, *extra):
+    def run_cli(self, decision, *extra, factory=None):
         class Controller:
             def poll(self):
                 return decision
 
-        def factory(*args, **kwargs):
+        def default_factory(*args, **kwargs):
             return Controller()
 
         output = StringIO()
@@ -301,7 +399,7 @@ class TestLoopctl(unittest.TestCase):
                     "/workspace/example",
                     *extra,
                 ],
-                controller_factory=factory,
+                controller_factory=factory or default_factory,
             )
         return code, output.getvalue()
 
@@ -336,6 +434,46 @@ class TestLoopctl(unittest.TestCase):
         }
         self.assertEqual(self.run_cli(idle)[0], 0)
         self.assertEqual(self.run_cli(idle, "--require-ready")[0], 3)
+
+    def test_cli_rejects_max_active_outside_one_to_k(self):
+        for value in ("0", "-1", str(state_manager.MAX_ACTIVE + 1), "99", "abc"):
+            with self.subTest(value=value):
+                with self.assertRaises(SystemExit) as ctx:
+                    self.run_cli(
+                        {"kind": local_loop.POLL_KIND, "status": "ready"},
+                        "--max-active", value,
+                    )
+                self.assertEqual(ctx.exception.code, 2)
+
+    def test_cli_defaults_max_active_to_canonical_k_and_accepts_one(self):
+        captured = {}
+
+        def factory(*args, **kwargs):
+            captured.update(kwargs)
+            class Controller:
+                def poll(self):
+                    return {
+                        "kind": local_loop.POLL_KIND,
+                        "status": "no_eligible_task",
+                        "action": "none",
+                        "selected": [],
+                        "rejected": [],
+                    }
+            return Controller()
+
+        code, _ = self.run_cli(
+            {"kind": local_loop.POLL_KIND, "status": "ready"},
+            factory=factory,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["max_active"], state_manager.MAX_ACTIVE)
+        code, _ = self.run_cli(
+            {"kind": local_loop.POLL_KIND, "status": "ready"},
+            "--max-active", "1",
+            factory=factory,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["max_active"], 1)
 
 
 if __name__ == "__main__":

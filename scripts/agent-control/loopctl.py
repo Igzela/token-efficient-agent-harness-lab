@@ -10,10 +10,23 @@ import sys
 from typing import Callable, Sequence
 
 import local_loop
+import state_manager
 
 
 NORMAL_IDLE = {"control_stopped", "capacity_full", "no_eligible_task"}
 FAIL_CLOSED = {"identity_rejected", "stale_checkout", "unavailable"}
+
+
+def _bounded_max_active(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be an integer")
+    if parsed < 1 or parsed > state_manager.MAX_ACTIVE:
+        raise argparse.ArgumentTypeError(
+            f"must be between 1 and {state_manager.MAX_ACTIVE}"
+        )
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     poll = subparsers.add_parser("poll", help="perform one read-only GitHub control-plane poll")
     poll.add_argument("--repo", required=True, help="GitHub repository as owner/name")
     poll.add_argument("--repo-path", required=True, type=Path, help="exact local Git worktree root")
-    poll.add_argument("--max-active", type=int, default=2)
+    poll.add_argument("--max-active", type=_bounded_max_active, default=state_manager.MAX_ACTIVE)
     poll.add_argument(
         "--require-ready",
         action="store_true",

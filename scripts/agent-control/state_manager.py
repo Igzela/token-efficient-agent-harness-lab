@@ -34,6 +34,10 @@ ALL_LABELS = ACTIVE_LABELS | TERMINAL_LABELS | {
     LABEL_DRAFT, LABEL_READY, LABEL_REVIEW_PASSED, LABEL_MERGE_READY,
 }
 
+# Repository authority: the single canonical active-capacity owner.
+# dispatcher, local_loop, and loopctl must reuse this constant, never
+# redefine a literal capacity ceiling.
+MAX_ACTIVE = 2
 MAX_REPAIR_ATTEMPTS = 2
 MAX_REVIEW_EVIDENCE_BYTES = 64 * 1024
 MAX_REVIEW_API_PAGES = 20
@@ -1163,21 +1167,42 @@ def record_dispatch_state(issue_number, dispatch_id, action, status, details=Non
 
 
 def read_dispatch_state(issue_number, dispatch_id=None, repo=""):
+    """Read the newest relevant dispatch state for an Issue, failing closed.
+
+    ``get_issue_comments`` returns comments newest first.  A trusted comment
+    that carries the dispatch-state marker but is unparseable JSON is
+    unverifiable: it may be the current claim's newest generation, so the
+    read fails closed instead of falling back to an older claim.  Documents
+    that parse but are not dispatch-state objects or are bound to a different
+    Issue are unrelated and skipped.  When the caller requires an exact
+    ``dispatch_id``, states belonging to a different claim (review, repair,
+    merge) are skipped before version validation, so unrelated content can
+    never block or shadow the caller's exact state; the exact state itself is
+    still version-checked and fails closed on an unsupported version.
+    """
+
     comments = get_issue_comments(issue_number, repo)
     for comment in comments:
         if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
             continue
         body = comment.get("body", "")
-        if "agent-orchestrator-dispatch-state" not in body:
+        if not isinstance(body, str) or "agent-orchestrator-dispatch-state" not in body:
             continue
         try:
             state = json.loads(body)
-        except json.JSONDecodeError:
-            continue
+        except (json.JSONDecodeError, TypeError):
+            raise StateUnavailableError("dispatch state is malformed")
+        if not isinstance(state, dict):
+            raise StateUnavailableError("dispatch state is malformed")
         if state.get("kind") != "agent-orchestrator-dispatch-state":
             continue
-        if dispatch_id is None or state.get("dispatch_id") == dispatch_id:
-            return state
+        if state.get("issue_number") != int(issue_number):
+            continue
+        if dispatch_id is not None and state.get("dispatch_id") != dispatch_id:
+            continue
+        if state.get("version") != 1:
+            raise StateUnavailableError("dispatch state version is unsupported")
+        return state
     return None
 
 

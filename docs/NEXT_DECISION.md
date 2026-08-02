@@ -495,7 +495,7 @@ Until that merge, branch-local `COMPLETE` prose is proposed state only. Completi
 - a stateless supervisor may run admitted `run-once` processes concurrently; GitHub owns queue/lease state and overlapping scopes serialize;
 - after parity is proved, public-repository self-hosted jobs are retired rather than left as a second execution path.
 
-**Current tracer bullet:** `repo-agent-loop-poll.v1` and `loopctl poll` implement deterministic, provider-free, non-overlapping batch admission. They do not yet claim, invoke a provider, create a worktree, push, or open a PR and therefore do not authorize self-hosted cutover.
+**Current tracer bullet:** `repo-agent-loop-poll.v1` and `loopctl poll` implement deterministic, provider-free, non-overlapping batch admission bounded by the single canonical active-capacity owner `state_manager.MAX_ACTIVE` (K=2); `poll --max-active` throttles locally to 1..K only. They do not yet claim, invoke a provider, create a worktree, push, or open a PR and therefore do not authorize self-hosted cutover.
 
 **Forbidden:** a local authoritative state database, arbitrary Issue shell, provider calls in CI, credential inheritance into the child, fork-authored tasks, unbounded polling/retry/concurrency, direct default-branch writes, non-Draft output, self-review, auto-merge, release, deployment, or parallel state/artifact/PR/CI/review/merge owners.
 

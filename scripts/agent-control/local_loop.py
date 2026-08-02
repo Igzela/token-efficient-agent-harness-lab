@@ -113,12 +113,14 @@ class LoopController:
         *,
         repository: str,
         repo_path: Path,
-        max_active: int = 2,
+        max_active: int = state_manager.MAX_ACTIVE,
     ) -> None:
         if not REPOSITORY.fullmatch(repository):
             raise ValueError("repository must be owner/name")
-        if max_active < 1 or max_active > 32:
-            raise ValueError("max_active must be between 1 and 32")
+        if max_active < 1 or max_active > state_manager.MAX_ACTIVE:
+            raise ValueError(
+                f"max_active must be between 1 and {state_manager.MAX_ACTIVE}"
+            )
         self.github = github
         self.git = git
         self.repository = repository
@@ -398,19 +400,15 @@ class GitHubAdapter:
         return value
 
     def active_issue_scopes(self) -> dict[int, list[str]]:
-        value = state_manager.get_active_issue_numbers(self.repository)
-        if value is None:
+        active = state_manager.get_active_issue_numbers(self.repository)
+        if active is None:
             raise LoopUnavailable("active capacity state is unavailable")
-        result: dict[int, list[str]] = {}
-        for issue_number in sorted(value):
-            body = state_manager.get_issue_body(issue_number, self.repository)
-            if not isinstance(body, str):
-                raise LoopUnavailable("active Issue scope is unavailable")
-            try:
-                result[issue_number] = artifact_contract.parse_issue_scope(body)
-            except (artifact_contract.ArtifactContractError, TypeError, ValueError) as exc:
-                raise LoopUnavailable("active Issue scope is invalid") from exc
-        return result
+        # Only trusted claim-bound scopes count as active scope.  The mutable
+        # active Issue bodies are never re-read here.
+        scopes = state_manager.get_active_issue_scopes(active, self.repository)
+        if scopes is None:
+            raise LoopUnavailable("active Issue scope state is unavailable or invalid")
+        return scopes
 
 
 class GitAdapter:

@@ -12,9 +12,6 @@ import control_state
 import state_manager as sm
 
 
-MAX_ACTIVE = 2
-
-
 def _repo() -> str:
     return os.environ.get("AGENT_REPO", os.environ.get("GITHUB_REPOSITORY", ""))
 
@@ -97,7 +94,7 @@ def _claim(
     active = sm.get_active_issue_numbers(repo)
     if active is None:
         return False, [], "capacity_state_unavailable"
-    if issue not in active and len(active) >= MAX_ACTIVE:
+    if issue not in active and len(active) >= sm.MAX_ACTIVE:
         return False, [], "capacity_full"
     if target_label == sm.LABEL_RUNNING and issue not in active:
         active_scopes = sm.get_active_issue_scopes(active, repo)
@@ -148,17 +145,22 @@ def _claim(
 
 def _rollback(issue: int, dispatch_id: str, previous_labels: list[str], reason: str) -> bool:
     repo = _repo()
-    labels_restored = sm.set_labels(issue, *(previous_labels or [sm.LABEL_READY]), repo=repo)
+    if not sm.set_labels(issue, *(previous_labels or [sm.LABEL_READY]), repo=repo):
+        # The active label could not be restored, so the Issue still appears
+        # active.  Do not write a terminal rollback here: it would orphan the
+        # still-active label from any claimed state and make capacity release
+        # impossible.  Leave the original claimed state untouched so the
+        # reconcile path can still compensate it.
+        return False
     try:
         previous = sm.read_dispatch_state(issue, dispatch_id, repo)
     except sm.StateUnavailableError:
         previous = None
     details = _claim_details_copy(previous) or {}
     details["reason"] = reason
-    rollback_recorded = sm.record_dispatch_state(
+    return sm.record_dispatch_state(
         issue, dispatch_id, "rollback", "failed", details, repo
     )
-    return labels_restored and rollback_recorded
 
 
 def _claim_details_copy(state: dict[str, object] | None) -> dict[str, object] | None:
@@ -239,6 +241,22 @@ def dispatch_ready(issue: int, dispatch_id: str | None = None) -> dict[str, obje
                 {"reason": "invalid_scope", "detail": reason.removeprefix("invalid_scope:")}, _repo(),
             )
         return {"dispatched": reason == "already_dispatched", "issue": issue, "reason": reason}
+    # Defensive post-label capacity recheck.  New implementation claims are
+    # normally serialized by the agent-dispatch-global workflow group, so a
+    # breach here means a bypass or stale read.  Re-read the authoritative
+    # active union after the label write and before any external dispatch:
+    # if it is unreadable or exceeds the canonical K, compensate by
+    # restoring the previous labels and terminalizing the claim (preserving
+    # its binding and nonce) without ever starting a workflow run.
+    recheck = sm.get_active_issue_numbers(_repo())
+    if recheck is None:
+        rolled_back = _rollback(issue, dispatch_id, previous, "capacity_recheck_unavailable")
+        reason = "capacity_recheck_unavailable" if rolled_back else "capacity_recheck_unavailable_rollback_failed"
+        return {"dispatched": False, "issue": issue, "reason": reason}
+    if len(recheck) > sm.MAX_ACTIVE:
+        rolled_back = _rollback(issue, dispatch_id, previous, "capacity_recheck_exceeded")
+        reason = "capacity_recheck_exceeded" if rolled_back else "capacity_recheck_exceeded_rollback_failed"
+        return {"dispatched": False, "issue": issue, "reason": reason}
     if not _run_workflow(
         "agent-worker.yml",
         {
@@ -365,7 +383,7 @@ def retry_review(issue: int) -> dict[str, object]:
     active = sm.get_active_issue_numbers(repo)
     if active is None:
         return {"dispatched": False, "reason": "capacity_state_unavailable"}
-    if issue not in active and len(active) >= MAX_ACTIVE:
+    if issue not in active and len(active) >= sm.MAX_ACTIVE:
         return {"dispatched": False, "reason": "capacity_full"}
     previous_labels = [sm.LABEL_REVIEW_BLOCKED]
     if not sm.record_dispatch_state(
@@ -458,7 +476,7 @@ def dispatch_next(source_issue: str | None = None) -> dict[str, object]:
     active = sm.get_active_issue_numbers(repo)
     if active is None:
         return {"dispatched": False, "reason": "capacity-state-unavailable"}
-    if len(active) >= MAX_ACTIVE:
+    if len(active) >= sm.MAX_ACTIVE:
         return {"dispatched": False, "reason": "capacity-full"}
     args = ["issue", "list", "--label", sm.LABEL_READY, "--state", "open", "--limit", "100", "--json", "number"]
     if repo:
