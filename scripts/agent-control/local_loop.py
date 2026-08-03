@@ -1007,6 +1007,7 @@ class LocalSupervisor:
                 "results": [],
             }
         children: list[dict[str, Any]] = []
+        spawn_failures: list[dict[str, Any]] = []
         script = Path(__file__).resolve().with_name("loopctl.py")
         for candidate in selected:
             issue = candidate.get("issue_number") if isinstance(candidate, dict) else None
@@ -1040,17 +1041,15 @@ class LocalSupervisor:
                     start_new_session=True,
                 )
             except (OSError, ValueError):
-                for child in children:
-                    self._terminate(child["process"])
-                return {
-                    "kind": "repo-agent-supervisor.v1",
-                    "status": "unavailable",
-                    "reason": "run_once_spawn_failed",
-                    "results": [],
-                }
+                spawn_failures.append({
+                    "issue_number": issue,
+                    "attempt_id": attempt,
+                    "status": "spawn_failed",
+                })
+                continue
             children.append({"process": process, "issue_number": issue, "attempt_id": attempt, "started": time.monotonic()})
 
-        results: list[dict[str, Any]] = []
+        results: list[dict[str, Any]] = list(spawn_failures)
         while children:
             remaining: list[dict[str, Any]] = []
             for child in children:
