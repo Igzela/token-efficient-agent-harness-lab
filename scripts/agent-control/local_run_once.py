@@ -171,6 +171,24 @@ _CHILD_ENV_ALLOWLIST = frozenset(
         "SYSTEMROOT",
         "WINDIR",
         "COMSPEC",
+        # Operator-local network egress (e.g. clash/socks on loopback).  Not
+        # credentials: without these, ChatGPT-backed Codex cannot reach the
+        # provider from a fail-closed env -i child on proxy-only hosts.
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
     }
 )
 

@@ -532,9 +532,13 @@ class TestLocalRunOnce(unittest.TestCase):
                 "OPENAI_API_KEY": "sk-test",
                 "DEEPSEEK_API_KEY": "secret",
                 "LANG": "C",
+                "HTTPS_PROXY": "http://127.0.0.1:7897",
+                "NO_PROXY": "localhost,127.0.0.1",
             }
         )
         self.assertEqual(env["HOME"], "/home/u")
+        self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:7897")
+        self.assertEqual(env["NO_PROXY"], "localhost,127.0.0.1")
         self.assertNotIn("GH_TOKEN", env)
         self.assertNotIn("GITHUB_TOKEN", env)
         self.assertNotIn("OPENAI_API_KEY", env)
