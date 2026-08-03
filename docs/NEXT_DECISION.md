@@ -42,13 +42,12 @@ Clean reseal attempt-1 has been consumed, terminalized, and independently accept
 
 ## Active Routing
 
-1. `TOOL-LOCAL-LOOP-CONTROL-PLANE-1` — `IN_PROGRESS`: Draft PR #351 implements the outbound local `poll`/`run-once` adapter on the review-transport prerequisite now `COMPLETE`; it must not merge or claim acceptance first.
-2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the accepted review-transport repair (now `COMPLETE`), the accepted local-loop control-plane, frozen real corpus/protocol, and separately persisted one-use RWE spend envelope.
-3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
-The delegated autonomous Golden Path packet remains complete through merged PR #323 and is no longer routed. The live-seal packet becomes accepted `COMPLETE` only when this canonical closeout diff passes exact-head review, canonical CI, and merge.
+1. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on a frozen real corpus/protocol and a separately persisted one-use RWE spend envelope; the review-transport repair and the local-loop control-plane prerequisites are now `COMPLETE`.
+2. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+3. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+The delegated autonomous Golden Path packet remains complete through merged PR #323 and is no longer routed. The live-seal packet is accepted `COMPLETE`. The outbound local-loop packet becomes accepted `COMPLETE` through this canonical closeout diff after exact-head review, canonical CI, and merge, and is then no longer routed. This closeout does not start RWE: RWE remains gated by the frozen corpus/protocol and one-use spend envelope prerequisites above.
 
 ## Packet States
 
@@ -76,7 +75,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - External evidence PR `Igzela/alters-lab#5` remains OPEN, Draft, and unmerged at exact head `967c902487edf3959090e76c442092f75b0ba10a` over target-main base `6240768506320a324d68787b9eaa86971c8c930c`. Exact-head independent terminal-evidence receipt comment `5158092741` is PASS and explicitly grants no merge authority.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, delegated autonomous authority through PR #323, Packet A through PRs #339/#340, and Packet B through PRs #342 and #346. The clean live reseal has accepted terminal evidence; the canonical closeout and then `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1` are the active route. Do not begin RWE or later stages before their updated prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, delegated autonomous authority through PR #323, Packet A through PRs #339/#340, and Packet B through PRs #342 and #346. The clean live reseal has accepted terminal evidence, the independent-review transport packet is `COMPLETE` (PR #350), and the outbound local-loop control-plane packet is accepted `COMPLETE` through this closeout. Do not begin RWE or later stages before their updated prerequisites: a frozen real corpus/protocol and a separately persisted one-use RWE spend envelope.
 
 ## Evidence Required for Every Engineering Board
 
@@ -473,9 +472,11 @@ Until that merge, branch-local `COMPLETE` prose is proposed state only. Completi
 
 ## Packet TOOL-LOCAL-LOOP-CONTROL-PLANE-1 — outbound local worker and durable engineering loop
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-**Prerequisite:** `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1` accepted `COMPLETE`. Work may proceed on a separate Draft PR, but it must not merge or claim acceptance first.
+**Owned PRs:** #351 merged at `f37ad7f72c7d49257b8cf28df4ca4388ad2249f4`; repair #353 merged at `4e6ceca804c329c7356dc4254302bf7f83b78cb2`.
+
+**Prerequisite:** `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1` accepted `COMPLETE`.
 
 **Goal:** replace host-pushed public-repository agent execution with a thin outbound local adapter while preserving GitHub as the durable task/evidence exchange layer and reusing all existing controller owners.
 
@@ -516,7 +517,7 @@ post-claim revalidation are implemented and independently reviewed.
 
 **Current tracer bullet:** `repo-agent-loop-poll.v1` and `loopctl poll` implement deterministic, provider-free, non-overlapping Issue batch admission bounded by the single canonical active-capacity owner `state_manager.MAX_ACTIVE` (K=2); the local Issue run-once path claims through the existing controller, creates an isolated worktree, invokes the bounded Codex adapter, runs repository-owned focused checks, verifies an artifact, pushes an Issue branch, and hands off one exact Draft PR to the existing worker/CI/monitor owners. Process-tree cancellation preserves the receipt owner; claimed-but-not-dispatched crashes are resume/release reconciled. `poll --max-active` throttles locally to 1..K only; this does not authorize self-hosted cutover, merge authority, or Plan-lane execution.
 
-A real outbound smoke was executed and passed after the proxy-environment repair: on accepted main `f37ad7f72c7d` (PR #353 merged as `4e6ceca80…`), `loopctl poll → claim-local → run-once` against Issue #355 reached `handed_off` and produced Draft PR #356 at exact head `d61bf3fe65406ba7e8fa24784f223e19f2303f01` (docs-only smoke note, closed without merge; facts in `CURRENT_STATUS`). The legacy public self-hosted execution path is not simultaneously active: workflow `agent-intake` is `disabled_manually`, Control Issue #208 carries `agent-emergency-stop` without `agent-orchestrator-enabled` since 2026-08-03T09:57:43Z (enabled only for the bounded smoke window 09:11–09:57Z), and no controller or intake run is queued, in progress, or later than that window. This is operator evidence toward this packet's acceptance (bounded owner-operated smoke, exact-head Draft PR, legacy-path evidence); it is not RWE, managed acceptance, or a claim of packet completion.
+A real outbound smoke was executed and passed after the proxy-environment repair: on accepted main `f37ad7f72c7d` (PR #353 merged as `4e6ceca80…`), `loopctl poll → claim-local → run-once` against Issue #355 reached `handed_off` and produced Draft PR #356 at exact head `d61bf3fe65406ba7e8fa24784f223e19f2303f01` (docs-only smoke note, closed without merge; facts in `CURRENT_STATUS`). The legacy public self-hosted execution path is not simultaneously active: workflow `agent-intake` is `disabled_manually`, Control Issue #208 carries `agent-emergency-stop` without `agent-orchestrator-enabled` since 2026-08-03T09:57:43Z (enabled only for the bounded smoke window 09:11–09:57Z), and no controller or intake run is queued, in progress, or later than that window. This canonical closeout accepts the smoke as packet acceptance evidence (bounded owner-operated smoke, exact-head Draft PR, legacy-path evidence). Independent DeepSeek reviews with no unresolved objections are recorded in the durable threads: PR #351 receipt (reviewer `deepseek-reasoner`, DeepSeek official API) and PR #353 receipt `5165189771` supplemented by `5165824505` (reviewer session model `opencode/deepseek-v4-flash-free`, DeepSeek). Rollback remains by disabling the local adapter and reverting the packet. This acceptance is not RWE, managed acceptance, or a live-seal sample, and it does not by itself start RWE.
 
 **Forbidden:** a local authoritative state database, arbitrary Issue shell, provider calls in CI, credential inheritance into the child, fork-authored tasks, unbounded polling/retry/concurrency, direct default-branch writes, non-Draft output, self-review, auto-merge, release, deployment, or parallel state/artifact/PR/CI/review/merge owners.
 
