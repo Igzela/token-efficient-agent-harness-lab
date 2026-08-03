@@ -25,6 +25,7 @@ provider-free RWE authority reconciliation (#300)
 → delegated autonomous Golden Path authority and provider-free proof (#323 accepted)
 → exactly one owner-authorized bounded DeepSeek Golden Path live seal
 → non-authoritative independent-review transport idempotency/recovery repair
+→ outbound local loop control-plane and run-once worker cutover
 → freeze one operator-supplied real RWE corpus under the accepted protocol
 → first frozen Real Workload Evidence baseline
 → Architecture Convergence AC1–AC7
@@ -41,11 +42,12 @@ Clean reseal attempt-1 has been consumed, terminalized, and independently accept
 
 ## Active Routing
 
-1. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the accepted review-transport repair (now `COMPLETE`), frozen real corpus/protocol, and separately persisted one-use RWE spend envelope.
-2. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-3. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `TOOL-LOCAL-LOOP-CONTROL-PLANE-1` — `IN_PROGRESS`: Draft PR #351 implements the outbound local `poll`/`run-once` adapter on the review-transport prerequisite now `COMPLETE`; it must not merge or claim acceptance first.
+2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the accepted review-transport repair (now `COMPLETE`), the accepted local-loop control-plane, frozen real corpus/protocol, and separately persisted one-use RWE spend envelope.
+3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 The delegated autonomous Golden Path packet remains complete through merged PR #323 and is no longer routed. The live-seal packet becomes accepted `COMPLETE` only when this canonical closeout diff passes exact-head review, canonical CI, and merge.
 
 ## Packet States
@@ -469,11 +471,60 @@ Until that merge, branch-local `COMPLETE` prose is proposed state only. Completi
 
 **Acceptance:** focused deterministic tests, full canonical source matrix, one bounded operator smoke outside CI, exact-head independent review, successful terminal context-capsule, rollback by revert/removing the local launcher, and a separate canonical closeout before `COMPLETE`.
 
+## Packet TOOL-LOCAL-LOOP-CONTROL-PLANE-1 — outbound local worker and durable engineering loop
+
+**State:** `IN_PROGRESS`
+
+**Prerequisite:** `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1` accepted `COMPLETE`. Work may proceed on a separate Draft PR, but it must not merge or claim acceptance first.
+
+**Goal:** replace host-pushed public-repository agent execution with a thin outbound local adapter while preserving GitHub as the durable task/evidence exchange layer and reusing all existing controller owners.
+
+**Owned paths:**
+
+- `scripts/agent-control/local_loop.py`, `scripts/agent-control/local_run_once.py`, `scripts/agent-control/local_supervisor.py`, `scripts/agent-control/local_verification.py`, and `scripts/agent-control/loopctl.py`;
+- `scripts/agent-control/plan_lane.py` only as a non-admitted accepted-main packet parser (no Plan execution admission in this packet);
+- the smallest required extensions to existing `state_manager`, dispatcher, worktree, artifact, PR-binding, and workflow adapters;
+- `tests/test_agent_local_loop.py` and the smallest required canonical documentation.
+
+**Required behavior:**
+
+- `poll` is one read-only bounded step, not an internal `while true`; it validates identity, control state, exact main/task binding, scope, dependencies, PR association and active capacity, then admits only a deterministic batch of mutually non-overlapping **Issue** tasks (Plan candidates are deferred; see below);
+- `run-once` obtains one GitHub-serialized lease/attempt before local mutation, then creates one verified isolated worktree and one fresh model session;
+- Issue/PR text and model output remain untrusted data; only repository-owned reviewed commands execute, and GitHub/API/cloud credentials never enter the model child;
+- model changes become a bounded patch artifact only after repository-owned focused checks pass (path-classified allowlist in `local_verification.py`: prose/agent-python/rust/dashboard/automation/wire/handoff-docs; unmapped source/config/dependency/secret-shaped paths fail closed before artifact/commit/push), are independently revalidated against exact base/scope/preimage, and may produce only one Issue-bound Draft PR;
+- every externally visible transition is restart-reconciled, including claimed-but-not-dispatched crashes; timeout, cancellation, process death, unknown delivery/output, stale main/head, lost lease, duplicate claim, invalid artifact, failed checks, or exhausted repair fails closed to a truthful non-success state without killing the receipt owner or leaking stubborn descendants;
+- CI, review, repair, merge eligibility, and terminal evidence remain owned by the existing GitHub workflows/state contracts. Implementation and review sessions are always distinct;
+- a stateless supervisor may run admitted `run-once` processes concurrently; GitHub owns queue/lease state and overlapping scopes serialize;
+- after parity is proved, public-repository self-hosted jobs are retired rather than left as a second execution path.
+
+### Plan-Derived Candidate Lane — deferred (not in this packet's acceptance)
+
+Independent review established that Plan Draft PRs cannot complete the existing
+Issue-bound CI/monitor/terminal owners (`issue_number` markers, `agent/issue-N`
+branches, closing links). Expanding this packet with a parallel Plan lifecycle
+is also not proven from the accepted-main baseline. Therefore:
+
+- `poll` rejects plan candidates with `plan_lane_deferred_until_terminal_owners`
+  and never admits them into `selected`;
+- `run-once --plan-id` fails closed with the same reason and never claims capacity;
+- `scripts/agent-control/plan_lane.py` may retain the strict accepted-main packet
+  parser and provider-free tests as non-admitted infrastructure only.
+
+A later planning-authorized packet may re-enable Plan admission only after
+plan-aware CI/review/terminal binding, exact-spec prompt blob binding, and
+post-claim revalidation are implemented and independently reviewed.
+
+**Current tracer bullet:** `repo-agent-loop-poll.v1` and `loopctl poll` implement deterministic, provider-free, non-overlapping Issue batch admission bounded by the single canonical active-capacity owner `state_manager.MAX_ACTIVE` (K=2); the local Issue run-once path claims through the existing controller, creates an isolated worktree, invokes the bounded Codex adapter, runs repository-owned focused checks, verifies an artifact, pushes an Issue branch, and hands off one exact Draft PR to the existing worker/CI/monitor owners. Process-tree cancellation preserves the receipt owner; claimed-but-not-dispatched crashes are resume/release reconciled. `poll --max-active` throttles locally to 1..K only; this does not authorize self-hosted cutover, merge authority, or Plan-lane execution.
+
+**Forbidden:** a local authoritative state database, arbitrary Issue shell, provider calls in CI, credential inheritance into the child, fork-authored tasks, unbounded polling/retry/concurrency, direct default-branch writes, non-Draft output, self-review, auto-merge, release, deployment, or parallel state/artifact/PR/CI/review/merge owners.
+
+**Acceptance:** provider-free unit/integration tests for every transition and crash point; bounded owner-operated `poll` and separately authorized `run-once` smoke; exact-head Draft PR, canonical CI including terminal context capsule, independent DeepSeek review with no unresolved objections, rollback by disabling the local adapter and reverting the packet, and evidence that the legacy public self-hosted execution path is no longer simultaneously active.
+
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` and `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1`
+**Prerequisite:** `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1`, `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1`, and `TOOL-LOCAL-LOOP-CONTROL-PLANE-1`
 
 PR #300 may prepare provider-free corpus, authorization, runner, and evidence contracts, but live RWE requires the accepted Golden Path terminal evidence, accepted review-transport repair, a frozen operator-supplied real corpus/protocol, and a separately persisted one-use RWE spend envelope.
 

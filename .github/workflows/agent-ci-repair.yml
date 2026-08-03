@@ -56,6 +56,7 @@ jobs:
           set -euo pipefail
           python3 scripts/agent-control/control_state.py require-live >/dev/null
           python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
+          python3 scripts/agent-control/state_manager.py verify-task-scope-binding "${{ inputs.issue_number }}"
           PR_BRANCH=$(gh pr view "${{ inputs.pr_number }}" --json headRefName --jq .headRefName)
           test -n "$PR_BRANCH"
           python3 scripts/agent-control/ci_verifier.py verify-failed-run \
@@ -133,7 +134,9 @@ jobs:
         env:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+        run: |
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py verify-task-scope-binding "${{ inputs.issue_number }}"
       - name: Run Codex repair with no GitHub credentials
         run: |
           bash scripts/agent-control/codex_wrapper.sh ci-repair "$RUNNER_TEMP/repair-prompt.txt" \
@@ -211,8 +214,9 @@ jobs:
           test "$(git rev-parse "origin/$BRANCH")" = "$INPUT_HEAD_SHA"
           python3 scripts/agent-control/artifact_contract.py validate ci-repair "${{ inputs.issue_number }}" \
             "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA" "$INPUT_HEAD_SHA" "$BRANCH" "$RUNNER_TEMP/agent-artifact"
-          gh issue view "${{ inputs.issue_number }}" --json body --jq .body > "$RUNNER_TEMP/task-issue-body.md"
-          python3 scripts/agent-control/artifact_contract.py validate-scope "$RUNNER_TEMP/task-issue-body.md" \
+          python3 scripts/agent-control/state_manager.py verify-task-scope-binding "${{ inputs.issue_number }}" \
+            > "$RUNNER_TEMP/task-scope-binding.json"
+          python3 scripts/agent-control/artifact_contract.py validate-scope-binding "$RUNNER_TEMP/task-scope-binding.json" \
             "$RUNNER_TEMP/agent-artifact/agent-result.json"
       - name: Recheck control immediately before applying repair patch
         env:

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,63 @@ class ArtifactContractError(RuntimeError):
     """Raised when an untrusted artifact fails deterministic validation."""
 
 
+def _artifact_path_safe(path: Path, *, directory: bool = False) -> None:
+    """Reject symlinked artifact paths before reading or replacing them."""
+
+    if path.is_symlink():
+        raise ArtifactContractError("artifact path is a symlink")
+    if directory and path.exists() and not path.is_dir():
+        raise ArtifactContractError("artifact directory is not a directory")
+    for parent in (path.parent, *path.parent.parents):
+        if parent == parent.parent:
+            break
+        if parent.is_symlink():
+            raise ArtifactContractError("artifact parent is a symlink")
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write bounded artifact data atomically with restricted permissions."""
+
+    _artifact_path_safe(path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path.parent, 0o700)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            os.chmod(handle.name, 0o600)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        raise ArtifactContractError("artifact write failed") from exc
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink(missing_ok=True)
+
+
+def ensure_private_directory(directory: Path) -> None:
+    """Create an artifact-owned directory without accepting symlink paths."""
+
+    _artifact_path_safe(directory, directory=True)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _artifact_path_safe(directory, directory=True)
+    os.chmod(directory, 0o700)
+
+
+def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
+    """Persist a small ownership record atomically and owner-readably only."""
+
+    if not isinstance(value, dict):
+        raise ArtifactContractError("artifact JSON value is not an object")
+    ensure_private_directory(path.parent)
+    _atomic_write(path, (json.dumps(value, sort_keys=True) + "\n").encode("utf-8"))
+
+
 @dataclass(frozen=True)
 class ArtifactManifest:
     """Versioned wire schema emitted by an untrusted patch worker."""
@@ -50,12 +109,17 @@ class ArtifactManifest:
     local_checks: list[dict[str, Any]]
     failed_run_id: int | None = None
     repair_attempt: int | None = None
+    subject_kind: str = "issue"
+    subject_id: str | None = None
 
     def to_wire(self) -> dict[str, Any]:
         wire = {"schema_version": SCHEMA_VERSION, **asdict(self)}
         if self.worker_type != "ci-repair":
             wire.pop("failed_run_id")
             wire.pop("repair_attempt")
+        if self.subject_kind == "issue":
+            wire.pop("subject_kind")
+            wire.pop("subject_id")
         return wire
 
 
@@ -145,13 +209,21 @@ def create_artifact(
     local_checks: list[dict[str, Any]],
     failed_run_id: int | None = None,
     repair_attempt: int | None = None,
+    subject_kind: str = "issue",
+    subject_id: str | None = None,
 ) -> dict[str, Any]:
     if worker_type not in WORKER_TYPES:
         raise ArtifactContractError("unknown worker type")
     if _git(repo, "rev-parse", "HEAD").decode().strip() != base_sha:
         raise ArtifactContractError("worktree HEAD moved after the trusted base was recorded")
-    if branch != f"agent/issue-{issue_number}":
-        raise ArtifactContractError("artifact branch is not canonical for its Issue")
+    if subject_kind == "issue":
+        if branch != f"agent/issue-{issue_number}":
+            raise ArtifactContractError("artifact branch is not canonical for its Issue")
+    elif subject_kind == "plan-packet":
+        if not isinstance(subject_id, str) or branch != f"agent/packet-{subject_id.lower()}":
+            raise ArtifactContractError("artifact branch is not canonical for its plan packet")
+    else:
+        raise ArtifactContractError("artifact subject kind is invalid")
     _validate_local_checks(local_checks)
     _git(repo, "add", "-A")
     patch = _git(repo, "diff", "--cached", "--binary", "--full-index")
@@ -160,8 +232,8 @@ def create_artifact(
         raise ArtifactContractError("Codex produced no staged changes")
     if changed_files != _patch_paths(patch):
         raise ArtifactContractError("staged file list does not match binary patch")
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    (artifact_dir / PATCH_NAME).write_bytes(patch)
+    ensure_private_directory(artifact_dir)
+    _atomic_write(artifact_dir / PATCH_NAME, patch)
     if worker_type == "ci-repair":
         if failed_run_id is None or repair_attempt is None:
             raise ArtifactContractError("CI repair artifact lacks failed-run binding")
@@ -180,8 +252,13 @@ def create_artifact(
         local_checks=local_checks,
         failed_run_id=failed_run_id,
         repair_attempt=repair_attempt,
+        subject_kind=subject_kind,
+        subject_id=subject_id,
     ).to_wire()
-    (artifact_dir / MANIFEST_NAME).write_text(json.dumps(manifest, sort_keys=True) + "\n")
+    _atomic_write(
+        artifact_dir / MANIFEST_NAME,
+        (json.dumps(manifest, sort_keys=True) + "\n").encode("utf-8"),
+    )
     return manifest
 
 
@@ -194,7 +271,7 @@ def _validate_manifest(manifest: Any) -> dict[str, Any]:
     }
     if not required <= set(manifest):
         raise ArtifactContractError("artifact manifest misses required fields")
-    allowed = required | {"failed_run_id", "repair_attempt"}
+    allowed = required | {"failed_run_id", "repair_attempt", "subject_kind", "subject_id"}
     if set(manifest) - allowed:
         raise ArtifactContractError("artifact manifest has unsupported fields")
     if manifest["schema_version"] != SCHEMA_VERSION or manifest["worker_type"] not in WORKER_TYPES:
@@ -211,7 +288,14 @@ def _validate_manifest(manifest: Any) -> dict[str, Any]:
     if not isinstance(manifest["branch"], str) or not isinstance(manifest["changed_files"], list):
         raise ArtifactContractError("artifact branch or changed files are invalid")
     if manifest["branch"] != f"agent/issue-{manifest['issue_number']}":
-        raise ArtifactContractError("artifact branch is not canonical for its Issue")
+        if manifest.get("subject_kind") != "plan-packet":
+            raise ArtifactContractError("artifact branch is not canonical for its Issue")
+    if manifest.get("subject_kind", "issue") == "plan-packet":
+        subject_id = manifest.get("subject_id")
+        if not isinstance(subject_id, str) or manifest["branch"] != f"agent/packet-{subject_id.lower()}":
+            raise ArtifactContractError("artifact plan subject binding is invalid")
+    elif manifest.get("subject_kind", "issue") != "issue" or "subject_id" in manifest:
+        raise ArtifactContractError("artifact subject binding is invalid")
     paths = manifest["changed_files"]
     if (
         len(paths) > MAX_CHANGED_FILES
@@ -249,8 +333,13 @@ def validate_artifact(
     base_sha: str,
     expected_remote_sha: str | None,
     branch: str,
+    subject_kind: str = "issue",
+    subject_id: str | None = None,
 ) -> dict[str, Any]:
     patch_path, manifest_path = artifact_dir / PATCH_NAME, artifact_dir / MANIFEST_NAME
+    _artifact_path_safe(artifact_dir, directory=True)
+    _artifact_path_safe(patch_path)
+    _artifact_path_safe(manifest_path)
     if not patch_path.is_file() or not manifest_path.is_file():
         raise ArtifactContractError("agent.patch and agent-result.json are both required")
     if manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
@@ -268,8 +357,13 @@ def validate_artifact(
         "base_sha": base_sha,
         "expected_remote_sha": expected_remote_sha,
         "branch": branch,
+        "subject_kind": subject_kind,
+        "subject_id": subject_id,
     }
-    if any(manifest[key] != value for key, value in expected.items()):
+    if any(
+        (manifest.get(key, "issue") if key == "subject_kind" else manifest.get(key)) != value
+        for key, value in expected.items()
+    ):
         raise ArtifactContractError("artifact binding does not match workflow inputs")
     patch = patch_path.read_bytes()
     if manifest["patch_sha256"] != _sha256(patch) or manifest["patch_size_bytes"] != len(patch):
@@ -287,10 +381,14 @@ def validate_index(repo: Path, manifest: dict[str, Any]) -> None:
 def validate_issue_scope(issue_body: str, manifest: dict[str, Any]) -> None:
     """Require every changed path to be declared by the task Issue itself."""
 
-    allowed = parse_issue_scope(issue_body)
-    for changed in manifest["changed_files"]:
-        if not any(changed == path or (path.endswith("/") and changed.startswith(path)) for path in allowed):
-            raise ArtifactContractError(f"artifact path is outside the task Issue scope: {changed}")
+    _validate_paths_within(parse_issue_scope(issue_body), manifest["changed_files"])
+
+
+def validate_scope_binding(binding: Any, manifest: dict[str, Any]) -> None:
+    """Require every changed path to be declared by the claim-bound task scope."""
+
+    normalized = validate_issue_scope_binding(binding)
+    _validate_paths_within(normalized["allowed_paths"], manifest["changed_files"])
 
 
 def _scope_path_safe(path: str) -> bool:
@@ -299,6 +397,18 @@ def _scope_path_safe(path: str) -> bool:
     if path.endswith("/") and path[:-1] in {"", "."}:
         return False
     return True
+
+
+def validate_allowed_paths(value: Any) -> list[str]:
+    """Validate and return a non-empty, non-duplicated bounded path list."""
+
+    if not isinstance(value, list) or not value or len(value) > MAX_ALLOWED_PATHS or not all(
+        isinstance(path, str) and _scope_path_safe(path) for path in value
+    ):
+        raise ArtifactContractError("task Issue scope has no valid allowed_paths")
+    if len(value) != len(set(value)):
+        raise ArtifactContractError("task Issue scope has duplicate allowed paths")
+    return value
 
 
 def parse_issue_scope(issue_body: str) -> list[str]:
@@ -311,14 +421,59 @@ def parse_issue_scope(issue_body: str) -> list[str]:
         scope = json.loads(matches[0])
     except json.JSONDecodeError as exc:
         raise ArtifactContractError("task Issue scope marker is invalid JSON") from exc
-    allowed = scope.get("allowed_paths") if isinstance(scope, dict) else None
-    if not isinstance(allowed, list) or not allowed or len(allowed) > MAX_ALLOWED_PATHS or not all(
-        isinstance(path, str) and _scope_path_safe(path) for path in allowed
-    ):
+    if not isinstance(scope, dict):
         raise ArtifactContractError("task Issue scope has no valid allowed_paths")
-    if len(allowed) != len(set(allowed)):
-        raise ArtifactContractError("task Issue scope has duplicate allowed paths")
-    return allowed
+    return validate_allowed_paths(scope.get("allowed_paths"))
+
+
+def build_issue_scope_binding(issue_body: str) -> dict[str, str]:
+    """Bind the parsed Issue scope to a digest of the complete untrusted body."""
+
+    if not isinstance(issue_body, str):
+        raise ArtifactContractError("task Issue body is unavailable")
+    return {
+        "allowed_paths": parse_issue_scope(issue_body),
+        "task_body_sha256": _sha256(issue_body.encode("utf-8")),
+    }
+
+
+def validate_issue_scope_binding(value: Any) -> dict[str, str]:
+    """Validate a claim-bound scope binding extracted from untrusted JSON.
+
+    The input may carry extra dispatch-state fields; only the two canonical
+    binding fields are required and returned.
+    """
+
+    if not isinstance(value, dict):
+        raise ArtifactContractError("task scope binding is not an object")
+    allowed = validate_allowed_paths(value.get("allowed_paths"))
+    digest = value.get("task_body_sha256")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ArtifactContractError("task scope binding digest is invalid")
+    return {"allowed_paths": allowed, "task_body_sha256": digest}
+
+
+def _validate_paths_within(allowed_paths: list[str], changed_files: list[str]) -> None:
+    for changed in changed_files:
+        if not any(
+            changed == path or (path.endswith("/") and changed.startswith(path))
+            for path in allowed_paths
+        ):
+            raise ArtifactContractError(f"artifact path is outside the task Issue scope: {changed}")
+
+
+def scopes_overlap(left: list[str], right: list[str]) -> bool:
+    """Return whether two validated Issue scopes can name the same path."""
+
+    for first in left:
+        for second in right:
+            if first == second:
+                return True
+            if first.endswith("/") and second.startswith(first):
+                return True
+            if second.endswith("/") and first.startswith(second):
+                return True
+    return False
 
 
 def _optional_sha(value: str) -> str | None:
@@ -327,7 +482,7 @@ def _optional_sha(value: str) -> str | None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        raise SystemExit("Usage: artifact_contract.py <create|validate|validate-index|validate-scope-definition> ...")
+        raise SystemExit("Usage: artifact_contract.py <create|validate|validate-index|validate-scope|validate-scope-binding|validate-scope-definition> ...")
     command = sys.argv[1]
     try:
         if command == "create":
@@ -366,6 +521,12 @@ def main() -> None:
                 raise ArtifactContractError("invalid validate-scope arguments")
             manifest = _validate_manifest(json.loads(Path(sys.argv[3]).read_text()))
             validate_issue_scope(Path(sys.argv[2]).read_text(), manifest)
+        elif command == "validate-scope-binding":
+            if len(sys.argv) != 4:
+                raise ArtifactContractError("invalid validate-scope-binding arguments")
+            binding = json.loads(Path(sys.argv[2]).read_text())
+            manifest = _validate_manifest(json.loads(Path(sys.argv[3]).read_text()))
+            validate_scope_binding(binding, manifest)
         elif command == "validate-scope-definition":
             if len(sys.argv) != 3:
                 raise ArtifactContractError("invalid validate-scope-definition arguments")

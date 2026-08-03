@@ -469,9 +469,26 @@ class TestCapacityRelease(unittest.TestCase):
         self.assertNotIn("log", evidence)
 
     def test_rejected_worker_records_fixed_repository_preflight_reason(self):
+        claim = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": 42,
+            "dispatch_id": "worker:42",
+            "action": "worker",
+            "status": "dispatched",
+            "details": {
+                "previous_labels": [sm.LABEL_READY],
+                "target_label": sm.LABEL_RUNNING,
+                "issue_number": 42,
+                "allowed_paths": ["src/"],
+                "task_body_sha256": "a" * 64,
+                "claim_nonce": "a" * 32,
+            },
+        }
+        comments = [{"author": {"login": "github-actions[bot]"}, "body": json.dumps(claim)}]
         with mock.patch.object(
             sm, "release_failed_capacity", return_value=(True, "released")
-        ), mock.patch.object(sm, "get_issue_comments", return_value=[]), mock.patch.object(
+        ), mock.patch.object(sm, "get_issue_comments", return_value=comments), mock.patch.object(
             sm, "comment_on_issue", return_value=True
         ) as comment:
             ok, reason = sm.release_rejected_worker(
@@ -482,10 +499,26 @@ class TestCapacityRelease(unittest.TestCase):
                 "acme/repo",
                 123,
                 "github_actions_pr_creation_disabled",
+                "worker:42",
+                "a" * 32,
             )
         self.assertTrue(ok, reason)
-        evidence = json.loads(comment.call_args.args[1])
+        evidence = next(
+            json.loads(call.args[1])
+            for call in comment.call_args_list
+            if json.loads(call.args[1])["kind"] == "agent-orchestrator-worker-failure"
+        )
         self.assertEqual(evidence["reason_code"], "github_actions_pr_creation_disabled")
+        terminal = next(
+            json.loads(call.args[1])
+            for call in comment.call_args_list
+            if json.loads(call.args[1])["kind"] == "agent-orchestrator-dispatch-state"
+        )
+        self.assertEqual(terminal["dispatch_id"], "worker:42")
+        self.assertEqual(terminal["status"], "failed")
+        self.assertEqual(terminal["details"]["allowed_paths"], ["src/"])
+        self.assertEqual(terminal["details"]["task_body_sha256"], "a" * 64)
+        self.assertEqual(terminal["details"]["claim_nonce"], "a" * 32)
 
     def test_changed_capacity_outcome_appends_correction_for_same_run(self):
         prior = sm.WorkflowFailureState(
@@ -673,6 +706,23 @@ class TestCapacityRelease(unittest.TestCase):
         transition.assert_not_called()
 
     def test_post_claim_emergency_or_scope_rejection_releases_worker(self):
+        claim = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": 42,
+            "dispatch_id": "worker:42",
+            "action": "worker",
+            "status": "dispatched",
+            "details": {
+                "previous_labels": [sm.LABEL_READY],
+                "target_label": sm.LABEL_RUNNING,
+                "issue_number": 42,
+                "allowed_paths": ["src/"],
+                "task_body_sha256": "a" * 64,
+                "claim_nonce": "a" * 32,
+            },
+        }
+        comments = [{"author": {"login": "github-actions[bot]"}, "body": json.dumps(claim)}]
         for gate_enabled, validate_result, can_start in (
             ("false", "skipped", ""),
             ("true", "success", "false"),
@@ -680,9 +730,12 @@ class TestCapacityRelease(unittest.TestCase):
             with self.subTest(gate_enabled=gate_enabled, can_start=can_start), \
                  mock.patch.object(
                      sm, "release_failed_capacity", return_value=(True, "released")
-                 ) as release:
+                 ) as release, \
+                 mock.patch.object(sm, "get_issue_comments", return_value=comments), \
+                 mock.patch.object(sm, "record_dispatch_state", return_value=True):
                 ok, reason = sm.release_rejected_worker(
-                    42, gate_enabled, validate_result, can_start, "acme/repo"
+                    42, gate_enabled, validate_result, can_start, "acme/repo",
+                    dispatch_id="worker:42", claim_nonce="a" * 32,
                 )
             self.assertTrue(ok, reason)
             release.assert_called_once_with(

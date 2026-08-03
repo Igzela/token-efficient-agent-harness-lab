@@ -85,8 +85,7 @@ def test_dependency_parsing():
 def test_concurrency_locking():
     """Inspect concurrency identifiers without acquiring persistent locks."""
     print("\n--- Concurrency Locking ---")
-    from dispatcher import MAX_ACTIVE
-    log_test("repository capacity is GitHub-dispatched", MAX_ACTIVE == 2)
+    log_test("repository capacity is GitHub-dispatched", sm.MAX_ACTIVE == 2)
     g = f"agent-worker-issue-1-pr-100-sha-abc123"
     log_test("concurrency group includes issue", "issue-1" in g)
     log_test("concurrency group includes pr", "pr-100" in g)

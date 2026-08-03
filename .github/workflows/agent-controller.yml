@@ -21,6 +21,14 @@ on:
           - dispatch-merge
           - dispatch-next
           - retry-review
+          - claim-local
+          - handoff-local
+          - release-local
+          - block-local
+          - claim-plan
+          - handoff-plan
+          - release-plan
+          - block-plan
       issue:
         required: false
         type: number
@@ -40,6 +48,24 @@ on:
         required: false
         type: number
       dispatch_id:
+        required: false
+        type: string
+      attempt_id:
+        required: false
+        type: string
+      client_token:
+        required: false
+        type: string
+      claim_nonce:
+        required: false
+        type: string
+      reason_code:
+        required: false
+        type: string
+      packet_id:
+        required: false
+        type: string
+      source_main_sha:
         required: false
         type: string
 
@@ -62,6 +88,12 @@ jobs:
       INPUT_COMMAND: ${{ inputs.command }}
       INPUT_DISPATCH_ID: ${{ inputs.dispatch_id }}
       INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+      INPUT_ATTEMPT_ID: ${{ inputs.attempt_id }}
+      INPUT_CLIENT_TOKEN: ${{ inputs.client_token }}
+      INPUT_CLAIM_NONCE: ${{ inputs.claim_nonce }}
+      INPUT_REASON_CODE: ${{ inputs.reason_code }}
+      INPUT_PACKET_ID: ${{ inputs.packet_id }}
+      INPUT_SOURCE_MAIN_SHA: ${{ inputs.source_main_sha }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -104,6 +136,47 @@ jobs:
             dispatch-next)
               python3 scripts/agent-control/control_state.py require-live >/dev/null
               python3 scripts/agent-control/dispatcher.py dispatch-next "${{ inputs.source_issue }}"
+              ;;
+            claim-local)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py claim-local "${{ inputs.issue }}" \
+                "$INPUT_ATTEMPT_ID" "$INPUT_CLIENT_TOKEN"
+              ;;
+            handoff-local)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py handoff-local "${{ inputs.issue }}" \
+                "$INPUT_ATTEMPT_ID" "$INPUT_CLIENT_TOKEN" "$INPUT_HEAD_SHA" "$INPUT_CLAIM_NONCE"
+              ;;
+            release-local)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py release-local "${{ inputs.issue }}" \
+                "$INPUT_ATTEMPT_ID" "$INPUT_CLIENT_TOKEN" "$INPUT_REASON_CODE" "$INPUT_CLAIM_NONCE"
+              ;;
+            block-local)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py block-local "${{ inputs.issue }}" \
+                "$INPUT_ATTEMPT_ID" "$INPUT_CLIENT_TOKEN" "$INPUT_REASON_CODE" "$INPUT_CLAIM_NONCE"
+              ;;
+            claim-plan)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py claim-plan \
+                "$INPUT_PACKET_ID" "$INPUT_ATTEMPT_ID"
+              ;;
+            handoff-plan)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py handoff-plan \
+                "$INPUT_PACKET_ID" "$INPUT_ATTEMPT_ID" "$INPUT_HEAD_SHA" "$INPUT_CLAIM_NONCE"
+              ;;
+            release-plan)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py release-plan \
+                "$INPUT_PACKET_ID" "$INPUT_ATTEMPT_ID" "$INPUT_SOURCE_MAIN_SHA" \
+                "$INPUT_REASON_CODE" "$INPUT_CLAIM_NONCE"
+              ;;
+            block-plan)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py block-plan \
+                "$INPUT_PACKET_ID" "$INPUT_ATTEMPT_ID" "$INPUT_SOURCE_MAIN_SHA" "$INPUT_CLAIM_NONCE"
               ;;
             *) echo "unknown command" >&2; exit 2 ;;
           esac

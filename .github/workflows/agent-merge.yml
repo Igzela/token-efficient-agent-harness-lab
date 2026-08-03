@@ -84,7 +84,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/dispatcher.py dispatch-next "${{ inputs.issue_number }}"
+          gh workflow run agent-controller.yml --ref main \
+            -f command=dispatch-next \
+            -f source_issue="${{ inputs.issue_number }}"
 
   failure-handler:
     needs: merge

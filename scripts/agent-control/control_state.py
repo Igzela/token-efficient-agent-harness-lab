@@ -12,6 +12,9 @@ from typing import Any, Iterable
 CONTROL_ISSUE_TITLE = "[agent-control] Orchestrator controls"
 CONTROL_MARKER = "<!-- agent-orchestrator-control:v1 -->"
 CONTROL_LABEL = "agent-control"
+PLAN_LEDGER_ISSUE_TITLE = "[agent-control] Plan execution ledger"
+PLAN_LEDGER_MARKER = "<!-- agent-orchestrator-plan-ledger:v1 -->"
+PLAN_LEDGER_LABEL = "agent-plan-ledger"
 ORCHESTRATOR_ENABLED_LABEL = "agent-orchestrator-enabled"
 AUTO_MERGE_ENABLED_LABEL = "agent-auto-merge-enabled"
 EMERGENCY_STOP_LABEL = "agent-emergency-stop"
@@ -138,6 +141,69 @@ def read_control_state(repo: str | None = None) -> dict[str, Any]:
     )
     issues = _decode_pages(raw, "agent-control Issue response was invalid")
     return resolve_control_issue(issues)
+
+
+def resolve_plan_ledger_issue(issues: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Return the one open plan ledger Issue, or fail closed."""
+
+    candidates = list(issues)
+    if not candidates:
+        raise ControlStateError("plan_execution_ledger_absent")
+    if len(candidates) != 1 or candidates[0].get("state") != "open":
+        raise ControlStateError("plan_execution_ledger_ambiguous")
+    issue = candidates[0]
+    labels = _issue_labels(issue)
+    if (
+        issue.get("title") != PLAN_LEDGER_ISSUE_TITLE
+        or PLAN_LEDGER_MARKER not in str(issue.get("body") or "")
+        or PLAN_LEDGER_LABEL not in labels
+        or not isinstance(issue.get("number"), int)
+    ):
+        raise ControlStateError("plan execution ledger Issue is malformed")
+    return {
+        "number": issue["number"],
+        "title": PLAN_LEDGER_ISSUE_TITLE,
+        "labels": sorted(labels),
+    }
+
+
+def read_plan_ledger(repo: str | None = None) -> dict[str, Any]:
+    """Read the unique long-lived plan execution ledger Issue."""
+
+    target = repo or _repo()
+    raw = _run_gh(
+        "api",
+        "--paginate",
+        "--slurp",
+        f"repos/{target}/issues?state=all&labels={PLAN_LEDGER_LABEL}&per_page=100",
+    )
+    issues = _decode_pages(raw, "plan execution ledger response was invalid")
+    return resolve_plan_ledger_issue(issues)
+
+
+def setup_plan_ledger(repo: str | None = None) -> dict[str, Any]:
+    """Idempotently provision the separate plan execution ledger Issue."""
+
+    target = repo or _repo()
+    existing_labels = _list_labels(target)
+    if PLAN_LEDGER_LABEL not in existing_labels:
+        _run_gh(
+            "label", "create", PLAN_LEDGER_LABEL, "--repo", target,
+            "--color", "5319e7", "--description", "Identity for the plan execution ledger Issue",
+        )
+    raw = _run_gh(
+        "api", "--paginate", "--slurp",
+        f"repos/{target}/issues?state=all&labels={PLAN_LEDGER_LABEL}&per_page=100",
+    )
+    issues = _decode_pages(raw, "plan execution ledger response was invalid")
+    if not issues:
+        _run_gh(
+            "issue", "create", "--repo", target,
+            "--title", PLAN_LEDGER_ISSUE_TITLE,
+            "--body", f"{PLAN_LEDGER_MARKER}\n\nDurable plan packet execution state only.",
+            "--label", PLAN_LEDGER_LABEL,
+        )
+    return read_plan_ledger(target)
 
 
 def require_live(repo: str | None = None) -> dict[str, Any]:
@@ -345,7 +411,7 @@ def main() -> None:
         print(
             "Usage: control_state.py <setup|setup-controls|status|read|require-live|require-auto-merge|"
             "enable-orchestrator|disable-orchestrator|enable-auto-merge|disable-auto-merge|"
-            "emergency-stop|emergency-resume> [--repo OWNER/REPO]",
+            "emergency-stop|emergency-resume|setup-plan-ledger> [--repo OWNER/REPO]",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -362,6 +428,8 @@ def main() -> None:
     try:
         if command in {"setup", "setup-controls"}:
             state = setup(repo)
+        elif command == "setup-plan-ledger":
+            state = setup_plan_ledger(repo)
         elif command in {"status", "read"}:
             state = read_control_state(repo)
         elif command == "require-live":
