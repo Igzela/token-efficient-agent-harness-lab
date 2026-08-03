@@ -661,6 +661,70 @@ class LocalRunOnce:
             # cannot be submitted; never retry or mutate labels locally.
             return
 
+    def _recover_existing_claim(
+        self,
+        issue: int,
+        attempt: str,
+        token: str,
+        details: dict[str, Any],
+    ) -> LocalRunOnceResult | None:
+        """Repair only a provable exact-head handoff; never recreate output."""
+
+        valid, reason = state_manager.local_claim_binding_valid(issue, details, attempt, token)
+        if not valid:
+            return self._result("claim_rejected", issue, attempt, reason=reason)
+        branch = details.get("canonical_branch")
+        if branch != f"agent/issue-{issue}":
+            return self._result("claim_rejected", issue, attempt, reason="claim_branch_binding_invalid")
+        head_sha: str | None = None
+        try:
+            worker = state_manager.read_worker_state(issue, self.repository)
+        except state_manager.StateUnavailableError:
+            worker = None
+        if isinstance(worker, dict) and worker.get("worker_type") == "local-run":
+            extra = worker.get("extra")
+            if isinstance(extra, dict) and (
+                extra.get("attempt_id") == attempt
+                and extra.get("dispatch_id") == self._dispatch_id(issue, attempt)
+                and extra.get("claim_nonce") == details.get("claim_nonce")
+                and extra.get("branch") == branch
+            ):
+                candidate = worker.get("head_sha")
+                if isinstance(candidate, str) and HEX40.fullmatch(candidate):
+                    head_sha = candidate
+        if head_sha is None:
+            try:
+                remote = self._git_checked(
+                    self.repo_path, "ls-remote", "origin", f"refs/heads/{branch}"
+                )
+                candidate = remote.split()[0] if remote else ""
+            except LoopUnavailable:
+                candidate = ""
+            if HEX40.fullmatch(candidate) and candidate != details.get("accepted_main_sha"):
+                head_sha = candidate
+        if head_sha is None:
+            return None
+        try:
+            pr = pr_binding.find_issue_pr(issue, branch, head_sha, self.repository)
+        except pr_binding.PRBindingError:
+            # A missing/ambiguous PR is outcome-unknown; never create one from
+            # a retry because the original request may have succeeded remotely.
+            return None
+        pr_number = pr.get("number")
+        if type(pr_number) is not int:
+            return None
+        try:
+            self.github.dispatch_controller(
+                "handoff-local",
+                {"issue": issue, "attempt_id": attempt, "client_token": token, "head_sha": head_sha},
+            )
+        except LoopUnavailable:
+            return self._result("outcome_unknown", issue, attempt, reason="handoff_outcome_unknown")
+        return self._result(
+            "recovery_dispatched", issue, attempt,
+            pr_number=pr_number, head_sha=head_sha, branch=branch,
+        )
+
     def _git_checked(self, worktree: Path, *args: str) -> str:
         try:
             result = subprocess.run(
@@ -713,7 +777,22 @@ class LocalRunOnce:
                 return self._result("claim_unavailable", issue_number, attempt)
             if isinstance(existing_claim, dict):
                 existing_status = existing_claim.get("status")
-                if existing_status in {"claimed", "dispatched"}:
+                if existing_status == "dispatched":
+                    recovered = self._recover_existing_claim(
+                        issue_number,
+                        attempt,
+                        token,
+                        existing_claim.get("details")
+                        if isinstance(existing_claim.get("details"), dict)
+                        else {},
+                    )
+                    if recovered is not None:
+                        return recovered
+                    return self._result(
+                        "in_flight", issue_number, attempt,
+                        dispatch_id=dispatch_id,
+                    )
+                if existing_status == "claimed":
                     return self._result(
                         "in_flight", issue_number, attempt,
                         dispatch_id=dispatch_id,
