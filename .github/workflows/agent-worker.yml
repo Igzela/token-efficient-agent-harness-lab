@@ -21,6 +21,10 @@ on:
         required: true
         type: string
 
+env:
+  INPUT_DISPATCH_ID: ${{ inputs.dispatch_id }}
+  INPUT_CLAIM_NONCE: ${{ inputs.claim_nonce }}
+
 permissions:
   actions: write
   contents: read
@@ -144,6 +148,12 @@ jobs:
             echo "Issue scope no longer matches the persisted claim; no Vader worker will start"
             exit 0
           fi
+          if ! python3 scripts/agent-control/state_manager.py verify-local-claim \
+            "${{ inputs.issue }}" "$INPUT_DISPATCH_ID" "$INPUT_CLAIM_NONCE" >/dev/null; then
+            echo "can_start=false" >> "$GITHUB_OUTPUT"
+            echo "rejection_reason=dispatcher_claim_invalid" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "${{ inputs.issue }}")
           if echo "$LABELS" | grep -qw agent-running && ! echo "$LABELS" | grep -Eq '(ci-repairing|review-running|agent-complete|agent-blocked)'; then
             echo "can_start=true" >> "$GITHUB_OUTPUT"
@@ -206,6 +216,8 @@ jobs:
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
           python3 scripts/agent-control/state_manager.py verify-task-scope-binding "${{ inputs.issue }}"
+          python3 scripts/agent-control/state_manager.py verify-local-claim \
+            "${{ inputs.issue }}" "$INPUT_DISPATCH_ID" "$INPUT_CLAIM_NONCE"
       - name: Run Codex in worktree with no GitHub credentials
         run: |
           bash scripts/agent-control/codex_wrapper.sh implement "$RUNNER_TEMP/implementation-prompt.txt" \
@@ -224,6 +236,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py verify-local-claim \
+            "${{ inputs.issue }}" "$INPUT_DISPATCH_ID" "$INPUT_CLAIM_NONCE"
           cd "${{ steps.worktree.outputs.worktree_path }}"
           git diff --check
           python3 "$GITHUB_WORKSPACE/scripts/agent-control/artifact_contract.py" create implementation \
@@ -474,8 +488,6 @@ jobs:
           VALIDATE_RESULT: ${{ needs.validate.result }}
           CAN_START: ${{ needs.validate.outputs.can_start }}
           REJECTION_REASON: ${{ needs.validate.outputs.rejection_reason }}
-          INPUT_DISPATCH_ID: ${{ inputs.dispatch_id }}
-          INPUT_CLAIM_NONCE: ${{ inputs.claim_nonce }}
         run: |
           python3 scripts/agent-control/state_manager.py release-rejected-worker \
             "${{ inputs.issue }}" "$GATE_ENABLED" "$VALIDATE_RESULT" "$CAN_START" \

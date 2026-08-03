@@ -567,9 +567,9 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("needs: [gate, validate, vader-implementation, finalize]", source)
         step = source.split("Release a successfully rejected dispatcher claim", 1)[1]
         step = step.split("\n  - name:", 1)[0]
-        self.assertIn("INPUT_DISPATCH_ID: ${{ inputs.dispatch_id }}", step)
+        self.assertIn("INPUT_DISPATCH_ID: ${{ inputs.dispatch_id }}", source)
         self.assertIn('"$INPUT_DISPATCH_ID"', step)
-        self.assertIn("INPUT_CLAIM_NONCE: ${{ inputs.claim_nonce }}", step)
+        self.assertIn("INPUT_CLAIM_NONCE: ${{ inputs.claim_nonce }}", source)
         self.assertIn('"$INPUT_CLAIM_NONCE"', step)
         self.assertEqual(source.count("${{ inputs.dispatch_id }}"), 1)
         self.assertEqual(source.count("${{ inputs.claim_nonce }}"), 1)
@@ -1162,7 +1162,10 @@ class TestDispatcher(unittest.TestCase):
              })), \
              mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
              mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", side_effect=[set(), {41, 42, 77}]), \
+             mock.patch.object(dispatcher.sm, "get_active_capacity", side_effect=[
+                 {"issues": set(), "plans": []},
+                 {"issues": {41, 42, 77}, "plans": []},
+             ]), \
              mock.patch.object(dispatcher.sm, "get_active_issue_scopes", return_value={}, create=True), \
              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
@@ -1213,7 +1216,9 @@ class TestDispatcher(unittest.TestCase):
              })), \
              mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
              mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", side_effect=[set(), None]), \
+             mock.patch.object(dispatcher.sm, "get_active_capacity", side_effect=[
+                 {"issues": set(), "plans": []}, None,
+             ]), \
              mock.patch.object(dispatcher.sm, "get_active_issue_scopes", return_value={}, create=True), \
              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
@@ -1347,7 +1352,11 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher.sm, "get_issue_body", side_effect=get_body), \
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", side_effect=get_labels), \
              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", side_effect=active_numbers), \
+             mock.patch.object(
+                 dispatcher.sm,
+                 "get_active_capacity",
+                 side_effect=lambda repo="": {"issues": active_numbers(repo), "plans": []},
+             ), \
              mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
              mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
             threads = [
@@ -1597,7 +1606,7 @@ class TestDispatcher(unittest.TestCase):
              })), \
              mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
              mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value={41}), \
+             mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": {41}, "plans": []}), \
              mock.patch.object(dispatcher.sm, "get_issue_comments", return_value=comments), \
              mock.patch.object(dispatcher.sm, "get_issue_body", side_effect=AssertionError("mutable body read")), \
              mock.patch.object(dispatcher, "_run_workflow") as workflow:
@@ -1648,8 +1657,8 @@ class TestDispatcher(unittest.TestCase):
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
              mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
              mock.patch.object(dispatcher, "_claim", return_value=(True, [state_manager.LABEL_READY], "claimed")), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
-             mock.patch.object(dispatcher.sm, "set_labels", return_value=False), \
+              mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": set(), "plans": []}), \
+              mock.patch.object(dispatcher.sm, "set_labels", return_value=False), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", return_value=True) as record, \
              mock.patch.object(dispatcher, "_run_workflow", return_value=False) as workflow:
             result = dispatcher.dispatch_ready(77, "worker:77")
@@ -1712,8 +1721,8 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
                  "allowed_paths": ["src/"], "task_body_sha256": "a" * 64,
              })), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
-             mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
+              mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": set(), "plans": []}), \
+              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
              mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
             first = dispatcher.dispatch_ready(12, "worker:12")
@@ -1860,7 +1869,7 @@ class TestDispatcher(unittest.TestCase):
     def test_capacity_full_is_nonterminal(self):
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
              mock.patch.object(dispatcher, "_repo", return_value="repo"), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value={1, 2}):
+             mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": {1, 2}, "plans": []}):
             result = dispatcher.dispatch_next("1")
         self.assertFalse(result["dispatched"])
         self.assertEqual(result["reason"], "capacity-full")
@@ -1926,8 +1935,8 @@ class TestDispatcher(unittest.TestCase):
              })), \
              mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
              mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value={41}), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_scopes", return_value={41: ["scripts/agent-control/"]}, create=True), \
+              mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": {41}, "plans": []}), \
+              mock.patch.object(dispatcher.sm, "get_active_issue_scopes", return_value={41: ["scripts/agent-control/"]}, create=True), \
              mock.patch.object(dispatcher, "_run_workflow") as workflow:
             result = dispatcher.dispatch_ready(77, "worker:77")
 
@@ -1938,6 +1947,7 @@ class TestDispatcher(unittest.TestCase):
     def test_failed_dispatch_reports_failed_rollback(self):
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
              mock.patch.object(dispatcher, "_claim", return_value=(True, [state_manager.LABEL_READY], "claimed")), \
+             mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": {77}, "plans": []}), \
              mock.patch.object(dispatcher, "_run_workflow", return_value=False), \
              mock.patch.object(dispatcher, "_rollback", return_value=False):
             result = dispatcher.dispatch_ready(77, "worker:77")
@@ -1967,8 +1977,8 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
                  "allowed_paths": ["src/"], "task_body_sha256": "a" * 64,
              }), create=True), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
-             mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
+              mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": set(), "plans": []}), \
+              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels):
             claimed = dispatcher._claim(12, state_manager.LABEL_RUNNING, "worker:12", "worker", {"issue_number": 12})
         self.assertTrue(claimed[0])
@@ -2019,8 +2029,8 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher, "_repo", return_value="repo"), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value={42}), \
-             mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
+              mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": {42}, "plans": []}), \
+              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record_dispatch), \
              mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
             first = dispatcher.dispatch_review(207, 42, "a" * 40)
@@ -2060,8 +2070,8 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher, "_repo", return_value="repo"), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value={42}), \
-             mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
+              mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": {42}, "plans": []}), \
+              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record_dispatch), \
              mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
             first = dispatcher.dispatch_repair(207, 42, "a" * 40, "9001", "1")
@@ -2130,8 +2140,8 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher.sm, "read_worker_state", return_value=worker), \
              mock.patch.object(dispatcher.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
-             mock.patch.object(dispatcher.sm, "set_labels", return_value=True) as set_labels, \
+              mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": set(), "plans": []}), \
+              mock.patch.object(dispatcher.sm, "set_labels", return_value=True) as set_labels, \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", return_value=True), \
              mock.patch.object(dispatcher, "_run_workflow", return_value=True) as workflow:
             result = dispatcher.retry_review(42)
@@ -2172,8 +2182,8 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher.sm, "read_worker_state", return_value=worker), \
              mock.patch.object(dispatcher.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
-             mock.patch.object(dispatcher.sm, "set_labels", return_value=True), \
+              mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": set(), "plans": []}), \
+              mock.patch.object(dispatcher.sm, "set_labels", return_value=True), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record_dispatch), \
              mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
             first = dispatcher.retry_review(42)
@@ -2217,8 +2227,8 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
                  "allowed_paths": ["src/"], "task_body_sha256": "a" * 64,
              })), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
-             mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
+              mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": set(), "plans": []}), \
+              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record_dispatch), \
              mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
             first = dispatcher.dispatch_ready(42, "worker:42")
@@ -2706,8 +2716,8 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
                  "allowed_paths": ["src/"], "task_body_sha256": "a" * 64,
              })), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
-             mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
+              mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": set(), "plans": []}), \
+              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
              mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
             first = dispatcher.dispatch_ready(12, "worker:12")
@@ -2741,8 +2751,8 @@ class TestDispatcher(unittest.TestCase):
              })), \
              mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
              mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
-             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
-             mock.patch.object(dispatcher.sm, "set_labels", return_value=True), \
+              mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": set(), "plans": []}), \
+              mock.patch.object(dispatcher.sm, "set_labels", return_value=True), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record_dispatch), \
              mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
             result = dispatcher.dispatch_ready(12, "next:5:12")

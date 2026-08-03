@@ -9,24 +9,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
-import signal
 import subprocess
-import sys
-import tempfile
-import time
-import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 import artifact_contract
 import control_state
-import pr_binding
-import prompt_builder
+import plan_lane
 import state_manager
-import worktree_manager
 
 
 POLL_KIND = "repo-agent-loop-poll.v1"
@@ -49,6 +41,8 @@ class GitHubReader(Protocol):
     def labels_for_issue(self, issue_number: int) -> set[str]: ...
     def has_open_issue_pr(self, issue_number: int) -> bool: ...
     def active_issue_scopes(self) -> dict[int, list[str]]: ...
+    def accepted_plan_document(self, source_main_sha: str) -> str: ...
+    def plan_ledger_issue(self) -> int: ...
 
     def issue_snapshot(self, issue_number: int) -> dict[str, str]: ...
 
@@ -197,29 +191,72 @@ class LoopController:
                     reason="fetch_required",
                 )
 
-            active_scopes = self.github.active_issue_scopes()
+            active_plan_claims: list[dict[str, Any]] = []
+            if hasattr(self.github, "active_execution_scopes"):
+                execution = self.github.active_execution_scopes()
+                if not isinstance(execution, dict):
+                    raise LoopUnavailable("active execution capacity is unavailable or invalid")
+                active_scopes = execution.get("scopes")
+                active = execution.get("issue_numbers")
+                active_plan_claims = execution.get("plans", [])
+            else:
+                active_scopes = self.github.active_issue_scopes()
+                active = set(active_scopes) if isinstance(active_scopes, dict) else None
             if (
                 not isinstance(active_scopes, dict)
                 or not all(
-                    isinstance(issue, int)
-                    and issue > 0
+                    (
+                        (isinstance(issue, int) and issue > 0)
+                        or (isinstance(issue, str) and issue.startswith("plan:"))
+                    )
                     and isinstance(paths, list)
-                    and paths
+                    and bool(paths)
                     and all(isinstance(path, str) and path for path in paths)
                     for issue, paths in active_scopes.items()
                 )
             ):
                 raise LoopUnavailable("active Issue scope state is unavailable or invalid")
-            active = set(active_scopes)
-            if len(active) >= self.max_active:
+            if not isinstance(active, set) or not all(isinstance(issue, int) and issue > 0 for issue in active):
+                raise LoopUnavailable("active Issue capacity state is unavailable or invalid")
+            if not isinstance(active_plan_claims, list) or not all(isinstance(item, dict) for item in active_plan_claims):
+                raise LoopUnavailable("active plan capacity state is unavailable or invalid")
+            if len(active) + len(active_plan_claims) >= self.max_active:
                 return _decision(
                     "capacity_full",
                     accepted_main_sha=accepted_main,
                     active_issue_numbers=sorted(active),
+                    active_plan_subject_ids=sorted(
+                        item.get("subject_id") for item in active_plan_claims
+                        if isinstance(item.get("subject_id"), str)
+                    ),
                 )
 
             rejected: list[dict[str, Any]] = []
             eligible: list[dict[str, Any]] = []
+            # Plan-derived candidates are not admitted on this packet.  Plan
+            # Draft PRs cannot complete the existing Issue-bound CI/review
+            # terminal owners, and accepted main does not authorize a parallel
+            # Plan lifecycle.  Active plan capacity still counts toward K so a
+            # leftover ledger claim cannot be ignored when sizing Issue work.
+            try:
+                plan_document = self.github.accepted_plan_document(accepted_main)
+            except AttributeError:
+                plan_document = None
+            except LoopUnavailable:
+                raise
+            if plan_document is not None:
+                try:
+                    plan = plan_lane.parse_optional(plan_document, accepted_main)
+                except plan_lane.PlanLaneError as exc:
+                    raise LoopUnavailable(exc.reason) from exc
+                if plan is not None:
+                    rejected.append(
+                        {
+                            "candidate_kind": "plan",
+                            "subject_id": plan.packet_id,
+                            "reason": "plan_lane_deferred_until_terminal_owners",
+                        }
+                    )
             for issue in sorted(
                 (_normalized_issue(item) for item in self.github.list_ready_issues()),
                 key=lambda item: item["number"],
@@ -231,6 +268,7 @@ class LoopController:
                 allowed_paths = artifact_contract.parse_issue_scope(issue["body"])
                 eligible.append(
                     {
+                        "candidate_kind": "issue",
                         "issue_number": issue["number"],
                         "title": issue["title"],
                         "url": issue["url"],
@@ -245,7 +283,13 @@ class LoopController:
             selected: list[dict[str, Any]] = []
             deferred: list[int] = []
             occupied = [(issue, active_scopes[issue]) for issue in sorted(active)]
-            available_slots = self.max_active - len(active)
+            occupied.extend(
+                (f"plan:{item.get('subject_id')}", item.get("allowed_paths"))
+                for item in active_plan_claims
+                if isinstance(item.get("subject_id"), str)
+                and isinstance(item.get("allowed_paths"), list)
+            )
+            available_slots = self.max_active - len(active) - len(active_plan_claims)
             for candidate in eligible:
                 conflict = next(
                     (
@@ -260,17 +304,29 @@ class LoopController:
                 if conflict is not None:
                     rejected.append(
                         {
-                            "issue_number": candidate["issue_number"],
+                            **(
+                                {"issue_number": candidate["issue_number"]}
+                                if candidate.get("candidate_kind") == "issue"
+                                else {"candidate_kind": "plan", "subject_id": candidate["subject_id"]}
+                            ),
                             "reason": "scope_conflict",
                             "conflicts_with": conflict,
                         }
                     )
                     continue
                 if len(selected) >= available_slots:
-                    deferred.append(candidate["issue_number"])
+                    if candidate.get("candidate_kind") == "issue":
+                        deferred.append(candidate["issue_number"])
                     continue
                 selected.append(candidate)
-                occupied.append((candidate["issue_number"], candidate["allowed_paths"]))
+                occupied.append(
+                    (
+                        candidate["issue_number"]
+                        if candidate.get("candidate_kind") == "issue"
+                        else f"plan:{candidate['subject_id']}",
+                        candidate["allowed_paths"],
+                    )
+                )
 
             if not selected:
                 return _decision(
@@ -451,6 +507,64 @@ class GitHubAdapter:
             raise LoopUnavailable("active Issue scope state is unavailable or invalid")
         return scopes
 
+    def accepted_plan_document(self, source_main_sha: str) -> str:
+        """Read the canonical plan document at the already-verified SHA."""
+
+        import base64
+
+        if not HEX40.fullmatch(source_main_sha):
+            raise LoopUnavailable("accepted plan SHA is invalid")
+        value = self._gh_json(
+            "api", f"repos/{self.repository}/contents/docs/NEXT_DECISION.md?ref={source_main_sha}"
+        )
+        if not isinstance(value, dict) or value.get("encoding") != "base64":
+            raise LoopUnavailable("canonical plan document is unavailable")
+        content = value.get("content")
+        if not isinstance(content, str):
+            raise LoopUnavailable("canonical plan document is malformed")
+        try:
+            decoded = base64.b64decode(content, validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise LoopUnavailable("canonical plan document is not valid UTF-8") from exc
+        if len(decoded.encode("utf-8")) > plan_lane.MAX_DOCUMENT_BYTES:
+            raise LoopUnavailable("canonical plan document exceeds the bounded contract")
+        return decoded
+
+    def plan_ledger_issue(self) -> int:
+        try:
+            ledger = control_state.read_plan_ledger(self.repository)
+        except control_state.ControlStateError as exc:
+            raise LoopUnavailable("plan execution ledger is unavailable") from exc
+        number = ledger.get("number") if isinstance(ledger, dict) else None
+        if type(number) is not int or number <= 0:
+            raise LoopUnavailable("plan execution ledger is malformed")
+        return number
+
+    def active_execution_scopes(self) -> dict[str, Any]:
+        """Return one capacity snapshot for Issue and plan-run subjects."""
+
+        active = state_manager.get_active_issue_numbers(self.repository)
+        if active is None:
+            raise LoopUnavailable("active capacity state is unavailable")
+        plans = state_manager.get_active_plan_claims(self.repository)
+        if plans is None:
+            raise LoopUnavailable("active plan capacity state is unavailable")
+        for plan in plans:
+            ledger_issue = plan.get("ledger_issue_number")
+            if type(ledger_issue) is int:
+                active.discard(ledger_issue)
+        scopes = state_manager.get_active_issue_scopes(active, self.repository)
+        if scopes is None:
+            raise LoopUnavailable("active Issue scope state is unavailable or invalid")
+        scopes = {**scopes}
+        for item in plans:
+            subject = item.get("subject_id") if isinstance(item, dict) else None
+            paths = item.get("allowed_paths") if isinstance(item, dict) else None
+            if not isinstance(subject, str) or not isinstance(paths, list):
+                raise LoopUnavailable("active plan scope state is malformed")
+            scopes[f"plan:{subject}"] = paths
+        return {"issue_numbers": active, "plans": plans, "scopes": scopes}
+
     def issue_snapshot(self, issue_number: int) -> dict[str, str]:
         value = self._gh_json(
             "issue", "view", str(issue_number), "--repo", self.repository,
@@ -471,12 +585,30 @@ class GitHubAdapter:
         shell, and the method deliberately returns no provider output.
         """
 
-        if command not in {"claim-local", "handoff-local", "release-local"}:
+        if command not in {
+            "claim-local", "handoff-local", "release-local", "block-local", "claim-plan",
+            "handoff-plan", "release-plan", "block-plan",
+        }:
             raise LoopUnavailable("controller command is not allowed")
         allowed = {
             "claim-local": {"issue", "attempt_id", "client_token"},
-            "handoff-local": {"issue", "attempt_id", "client_token", "head_sha"},
-            "release-local": {"issue", "attempt_id", "client_token", "reason_code"},
+            "handoff-local": {
+                "issue", "attempt_id", "client_token", "head_sha", "claim_nonce",
+            },
+            "release-local": {
+                "issue", "attempt_id", "client_token", "reason_code", "claim_nonce",
+            },
+            "block-local": {
+                "issue", "attempt_id", "client_token", "reason_code", "claim_nonce",
+            },
+            "claim-plan": {"packet_id", "attempt_id"},
+            "handoff-plan": {"packet_id", "attempt_id", "head_sha", "claim_nonce"},
+            "release-plan": {
+                "packet_id", "attempt_id", "source_main_sha", "reason_code", "claim_nonce",
+            },
+            "block-plan": {
+                "packet_id", "attempt_id", "source_main_sha", "claim_nonce",
+            },
         }[command]
         if set(fields) != allowed:
             raise LoopUnavailable("controller fields are invalid")
@@ -522,573 +654,17 @@ class GitAdapter:
         return sha
 
 
-def _canonical_attempt_id(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = uuid.UUID(value)
-    except ValueError:
-        return None
-    return value if value == str(parsed) else None
+def local_client_token(repository: str, issue: int, attempt: str) -> str:
+    """Derive the bounded retry-safe token shared with the controller."""
+
+    return hashlib.sha256(
+        f"local-run:{repository}:{issue}:{attempt}".encode("utf-8")
+    ).hexdigest()[:32]
 
 
-def _bounded_process(
-    command: list[str], *, cwd: Path | None = None, timeout_seconds: int = 1800
-) -> tuple[int, str, str]:
-    """Run one local child in its own process group with bounded cleanup."""
+def plan_execution_token(repository: str, packet_id: str, source_main_sha: str, attempt: str) -> str:
+    """Derive the bounded owner token for one exact plan generation."""
 
-    try:
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-    except (OSError, ValueError) as exc:
-        raise LoopUnavailable("local command could not start") from exc
-    try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
-        return process.returncode, stdout[-4000:], stderr[-4000:]
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            stdout, stderr = process.communicate(timeout=min(10, max(1, timeout_seconds // 10)))
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                stdout, stderr = process.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                # A descendant may have inherited the pipes after the process
-                # group was killed.  Close our read ends and return the
-                # bounded timeout result instead of hanging indefinitely.
-                if process.stdout is not None:
-                    process.stdout.close()
-                if process.stderr is not None:
-                    process.stderr.close()
-                return 124, "", ""
-        return 124, stdout[-4000:], stderr[-4000:]
-
-
-class LocalRunOnce:
-    """Execute one claimed local implementation through existing owners.
-
-    This is intentionally a thin orchestration layer.  GitHub comments and
-    labels remain the durable claim/worker/CI authority; the local process only
-    owns its temporary worktree and bounded child process.
-    """
-
-    def __init__(
-        self,
-        github: GitHubReader | None = None,
-        git: GitReader | None = None,
-        *,
-        repository: str,
-        repo_path: Path,
-        claim_timeout_seconds: int = 120,
-        command_timeout_seconds: int = 1800,
-        poll_interval_seconds: float = 1.0,
-        sleeper: Callable[[float], None] = time.sleep,
-    ) -> None:
-        if not REPOSITORY.fullmatch(repository):
-            raise ValueError("repository must be owner/name")
-        if claim_timeout_seconds < 0 or claim_timeout_seconds > 900:
-            raise ValueError("claim_timeout_seconds is outside the bounded range")
-        if command_timeout_seconds < 1 or command_timeout_seconds > 3600:
-            raise ValueError("command_timeout_seconds is outside the bounded range")
-        if poll_interval_seconds < 0 or poll_interval_seconds > 30:
-            raise ValueError("poll_interval_seconds is outside the bounded range")
-        self.github = github or GitHubAdapter(repository)
-        self.git = git or GitAdapter()
-        self.repository = repository
-        self.repo_path = Path(repo_path).expanduser().resolve()
-        self.claim_timeout_seconds = claim_timeout_seconds
-        self.command_timeout_seconds = command_timeout_seconds
-        self.poll_interval_seconds = poll_interval_seconds
-        self.sleeper = sleeper
-
-    def _result(self, status: str, issue: int, attempt: str, **details: Any) -> LocalRunOnceResult:
-        return LocalRunOnceResult(status, issue, attempt, details)
-
-    def _client_token(self, issue: int, attempt: str) -> str:
-        return hashlib.sha256(
-            f"local-run:{self.repository}:{issue}:{attempt}".encode("utf-8")
-        ).hexdigest()[:32]
-
-    def _dispatch_id(self, issue: int, attempt: str) -> str:
-        return f"local-run:{issue}:{attempt}"
-
-    def _wait_for_claim(self, issue: int, dispatch_id: str) -> dict[str, Any] | None:
-        deadline = time.monotonic() + self.claim_timeout_seconds
-        while True:
-            try:
-                state = state_manager.read_dispatch_state(
-                    issue, dispatch_id, self.repository
-                )
-            except state_manager.StateUnavailableError:
-                state = None
-            if isinstance(state, dict):
-                status = state.get("status")
-                if status == "dispatched":
-                    details = state.get("details")
-                    return details if isinstance(details, dict) else None
-                if status in {"failed", "rejected", "outcome_unknown"}:
-                    return None
-            if time.monotonic() >= deadline:
-                return None
-            self.sleeper(self.poll_interval_seconds)
-
-    def _release(self, issue: int, attempt: str, token: str, reason: str) -> None:
-        try:
-            self.github.dispatch_controller(
-                "release-local",
-                {
-                    "issue": issue,
-                    "attempt_id": attempt,
-                    "client_token": token,
-                    "reason_code": reason,
-                },
-            )
-        except LoopUnavailable:
-            # The original claim remains the durable owner when compensation
-            # cannot be submitted; never retry or mutate labels locally.
-            return
-
-    def _recover_existing_claim(
-        self,
-        issue: int,
-        attempt: str,
-        token: str,
-        details: dict[str, Any],
-    ) -> LocalRunOnceResult | None:
-        """Repair only a provable exact-head handoff; never recreate output."""
-
-        valid, reason = state_manager.local_claim_binding_valid(issue, details, attempt, token)
-        if not valid:
-            return self._result("claim_rejected", issue, attempt, reason=reason)
-        branch = details.get("canonical_branch")
-        if branch != f"agent/issue-{issue}":
-            return self._result("claim_rejected", issue, attempt, reason="claim_branch_binding_invalid")
-        head_sha: str | None = None
-        try:
-            worker = state_manager.read_worker_state(issue, self.repository)
-        except state_manager.StateUnavailableError:
-            worker = None
-        if isinstance(worker, dict) and worker.get("worker_type") == "local-run":
-            extra = worker.get("extra")
-            if isinstance(extra, dict) and (
-                extra.get("attempt_id") == attempt
-                and extra.get("dispatch_id") == self._dispatch_id(issue, attempt)
-                and extra.get("claim_nonce") == details.get("claim_nonce")
-                and extra.get("branch") == branch
-            ):
-                candidate = worker.get("head_sha")
-                if isinstance(candidate, str) and HEX40.fullmatch(candidate):
-                    head_sha = candidate
-        if head_sha is None:
-            try:
-                remote = self._git_checked(
-                    self.repo_path, "ls-remote", "origin", f"refs/heads/{branch}"
-                )
-                candidate = remote.split()[0] if remote else ""
-            except LoopUnavailable:
-                candidate = ""
-            if HEX40.fullmatch(candidate) and candidate != details.get("accepted_main_sha"):
-                head_sha = candidate
-        if head_sha is None:
-            return None
-        try:
-            pr = pr_binding.find_issue_pr(issue, branch, head_sha, self.repository)
-        except pr_binding.PRBindingError:
-            # A missing/ambiguous PR is outcome-unknown; never create one from
-            # a retry because the original request may have succeeded remotely.
-            return None
-        pr_number = pr.get("number")
-        if type(pr_number) is not int:
-            return None
-        try:
-            self.github.dispatch_controller(
-                "handoff-local",
-                {"issue": issue, "attempt_id": attempt, "client_token": token, "head_sha": head_sha},
-            )
-        except LoopUnavailable:
-            return self._result("outcome_unknown", issue, attempt, reason="handoff_outcome_unknown")
-        return self._result(
-            "recovery_dispatched", issue, attempt,
-            pr_number=pr_number, head_sha=head_sha, branch=branch,
-        )
-
-    def _git_checked(self, worktree: Path, *args: str) -> str:
-        try:
-            result = subprocess.run(
-                ["git", *args], cwd=worktree, capture_output=True, text=True, timeout=120
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise LoopUnavailable("local Git command is unavailable") from exc
-        if result.returncode != 0:
-            raise LoopUnavailable("local Git command failed")
-        return result.stdout.strip()
-
-    def run_once(self, issue_number: int, attempt_id: str) -> LocalRunOnceResult:
-        """Run one exact Issue attempt; callers cannot provide derived inputs."""
-
-        attempt = _canonical_attempt_id(attempt_id)
-        if type(issue_number) is not int or issue_number <= 0:
-            return self._result("rejected", issue_number, str(attempt_id), reason="invalid_issue")
-        if attempt is None:
-            return self._result("rejected", issue_number, str(attempt_id), reason="invalid_attempt_id")
-        token = self._client_token(issue_number, attempt)
-        dispatch_id = self._dispatch_id(issue_number, attempt)
-        worktree_path: Path | None = None
-        branch = f"agent/issue-{issue_number}"
-        claimed = False
-        pushed = False
-        try:
-            control = self.github.read_control_state()
-            if control.get("emergency_stop") or not control.get("orchestrator_enabled"):
-                return self._result("control_stopped", issue_number, attempt)
-            metadata = self.github.repository_metadata()
-            if str(metadata.get("name_with_owner", "")).casefold() != self.repository.casefold():
-                return self._result("identity_rejected", issue_number, attempt, reason="repository_identity_mismatch")
-            default_branch = metadata.get("default_branch")
-            if not isinstance(default_branch, str) or not BRANCH.fullmatch(default_branch):
-                return self._result("unavailable", issue_number, attempt, reason="default_branch_unavailable")
-            accepted_main = self.github.accepted_main_sha(default_branch)
-            local_main = self.git.origin_main_sha(self.repo_path, default_branch)
-            if not HEX40.fullmatch(accepted_main) or accepted_main != local_main:
-                return self._result("stale_checkout", issue_number, attempt, accepted_main_sha=accepted_main, local_origin_main_sha=local_main)
-
-            # A retry must not treat an already durable claim as a fresh
-            # execution.  Recovery of an existing exact branch/PR is handled
-            # by the controller handoff; an in-flight claim remains owned
-            # until its lease/terminal state is resolved by GitHub.
-            try:
-                existing_claim = state_manager.read_dispatch_state(
-                    issue_number, dispatch_id, self.repository
-                )
-            except state_manager.StateUnavailableError:
-                return self._result("claim_unavailable", issue_number, attempt)
-            if isinstance(existing_claim, dict):
-                existing_status = existing_claim.get("status")
-                if existing_status == "dispatched":
-                    recovered = self._recover_existing_claim(
-                        issue_number,
-                        attempt,
-                        token,
-                        existing_claim.get("details")
-                        if isinstance(existing_claim.get("details"), dict)
-                        else {},
-                    )
-                    if recovered is not None:
-                        return recovered
-                    return self._result(
-                        "in_flight", issue_number, attempt,
-                        dispatch_id=dispatch_id,
-                    )
-                if existing_status == "claimed":
-                    return self._result(
-                        "in_flight", issue_number, attempt,
-                        dispatch_id=dispatch_id,
-                    )
-                if existing_status in {"failed", "rejected", "outcome_unknown"}:
-                    return self._result(
-                        "terminal", issue_number, attempt,
-                        dispatch_id=dispatch_id,
-                        claim_status=existing_status,
-                    )
-            self.github.dispatch_controller(
-                "claim-local",
-                {"issue": issue_number, "attempt_id": attempt, "client_token": token},
-            )
-            details = self._wait_for_claim(issue_number, dispatch_id)
-            if details is None:
-                return self._result("claim_unavailable", issue_number, attempt)
-            claimed = True
-            valid, reason = state_manager.local_claim_binding_valid(
-                issue_number, details, attempt, token
-            )
-            if not valid:
-                return self._result("claim_rejected", issue_number, attempt, reason=reason)
-            claim_main = details["accepted_main_sha"]
-            canonical_branch = details["canonical_branch"]
-            if claim_main != accepted_main or canonical_branch != branch:
-                return self._result("claim_rejected", issue_number, attempt, reason="claim_identity_mismatch")
-            if self.github.accepted_main_sha(default_branch) != claim_main:
-                return self._result("claim_rejected", issue_number, attempt, reason="accepted_main_moved")
-            if self.git.origin_main_sha(self.repo_path, default_branch) != claim_main:
-                return self._result("stale_checkout", issue_number, attempt, accepted_main_sha=claim_main)
-            live_control = self.github.read_control_state()
-            if live_control.get("emergency_stop") or not live_control.get("orchestrator_enabled"):
-                return self._result("control_stopped", issue_number, attempt)
-            labels = self.github.labels_for_issue(issue_number)
-            if state_manager.LABEL_RUNNING not in labels:
-                return self._result("claim_rejected", issue_number, attempt, reason="issue_not_running")
-            snapshot = self.github.issue_snapshot(issue_number)
-            binding = artifact_contract.build_issue_scope_binding(snapshot["body"])
-            if binding != {
-                "allowed_paths": details["allowed_paths"],
-                "task_body_sha256": details["task_body_sha256"],
-            }:
-                return self._result("claim_rejected", issue_number, attempt, reason="task_body_changed")
-
-            created = worktree_manager.create_worktree(
-                issue_number, branch, str(self.repo_path), claim_main
-            )
-            if not created:
-                return self._result("failed", issue_number, attempt, reason="worktree_failed")
-            worktree_path = Path(created[0])
-            base_sha, expected_remote_sha = created[2], created[3]
-            if base_sha != claim_main:
-                return self._result("failed", issue_number, attempt, reason="worktree_base_mismatch")
-            with tempfile.TemporaryDirectory(prefix=f"agent-run-{issue_number}-") as temp:
-                temp_dir = Path(temp)
-                prompt_file = temp_dir / "implementation-prompt.txt"
-                prompt_file.write_text(
-                    prompt_builder.build_claim_bound_implementation_prompt(
-                        issue_number,
-                        snapshot["title"],
-                        snapshot["body"],
-                        details["allowed_paths"],
-                        claim_main,
-                        branch,
-                        repo_root=self.repo_path,
-                    ),
-                    encoding="utf-8",
-                )
-                output_dir = temp_dir / "codex-output"
-                wrapper = Path(__file__).resolve().parent / "codex_wrapper.sh"
-                exit_code, _stdout, _stderr = _bounded_process(
-                    ["bash", str(wrapper), "implement", str(prompt_file), str(output_dir), str(worktree_path)],
-                    timeout_seconds=self.command_timeout_seconds,
-                )
-                if exit_code != 0:
-                    return self._result("failed", issue_number, attempt, reason="codex_failed")
-                exit_file = output_dir / "codex-exit-code.txt"
-                if not exit_file.is_file() or exit_file.read_text().strip() != "0":
-                    return self._result("failed", issue_number, attempt, reason="codex_result_invalid")
-                artifact_dir = temp_dir / "artifact"
-                manifest = artifact_contract.create_artifact(
-                    repo=worktree_path,
-                    artifact_dir=artifact_dir,
-                    worker_type="implementation",
-                    issue_number=issue_number,
-                    pr_number=0,
-                    base_sha=base_sha,
-                    expected_remote_sha=expected_remote_sha,
-                    branch=branch,
-                    codex_exit_code=0,
-                    local_checks=[{"command": "git diff --check", "exit_code": 0}],
-                )
-                artifact_contract.validate_artifact(
-                    artifact_dir=artifact_dir,
-                    expected_worker_type="implementation",
-                    issue_number=issue_number,
-                    pr_number=0,
-                    base_sha=base_sha,
-                    expected_remote_sha=expected_remote_sha,
-                    branch=branch,
-                )
-                artifact_contract.validate_scope_binding(details, manifest)
-                self._git_checked(worktree_path, "reset", "--hard", base_sha)
-                self._git_checked(worktree_path, "clean", "-fd")
-                self._git_checked(worktree_path, "apply", "--index", "--binary", str(artifact_dir / artifact_contract.PATCH_NAME))
-                artifact_contract.validate_index(worktree_path, manifest)
-                self._git_checked(worktree_path, "diff", "--check")
-                self._git_checked(worktree_path, "commit", "-m", f"feat: implement issue #{issue_number}")
-                head_sha = self._git_checked(worktree_path, "rev-parse", "HEAD")
-                if not HEX40.fullmatch(head_sha):
-                    return self._result("failed", issue_number, attempt, reason="commit_sha_invalid")
-                push_args = ["push"]
-                if expected_remote_sha:
-                    push_args.append(f"--force-with-lease=refs/heads/{branch}:{expected_remote_sha}")
-                push_args.extend(["origin", f"HEAD:refs/heads/{branch}"])
-                push_code, _push_stdout, _push_stderr = _bounded_process(
-                    ["git", *push_args], cwd=worktree_path, timeout_seconds=120
-                )
-                if push_code != 0:
-                    return self._result("outcome_unknown", issue_number, attempt, reason="push_outcome_unknown")
-                remote = self._git_checked(self.repo_path, "ls-remote", "origin", f"refs/heads/{branch}")
-                if remote.split()[0] != head_sha:
-                    return self._result("outcome_unknown", issue_number, attempt, reason="remote_head_unverified")
-                pushed = True
-                pr_body = (
-                    f"<!-- agent-orchestrator-binding: {{\"issue_number\":{issue_number},\"branch\":\"{branch}\"}} -->\n\n"
-                    f"Closes #{issue_number}\n\nLocal run attempt `{attempt}`."
-                )
-                pr = pr_binding.create_or_update_pr(
-                    issue_number, branch, head_sha, snapshot["title"], pr_body, self.repository
-                )
-                pr_number = pr.get("number")
-                if type(pr_number) is not int:
-                    return self._result("outcome_unknown", issue_number, attempt, reason="pr_number_unavailable")
-                pr_binding.verify_post_push_binding(
-                    issue_number, pr_number, branch, head_sha, self.repository
-                )
-                self.github.dispatch_controller(
-                    "handoff-local",
-                    {"issue": issue_number, "attempt_id": attempt, "client_token": token, "head_sha": head_sha},
-                )
-                return self._result(
-                    "handed_off", issue_number, attempt,
-                    pr_number=pr_number, head_sha=head_sha, branch=branch,
-                    accepted_main_sha=claim_main, ci_monitor="controller-handoff",
-                )
-        except (LoopUnavailable, artifact_contract.ArtifactContractError, pr_binding.PRBindingError, OSError, ValueError) as exc:
-            if pushed:
-                return self._result("outcome_unknown", issue_number, attempt, reason="external_outcome_unknown")
-            return self._result("failed", issue_number, attempt, reason=str(exc)[:200])
-        finally:
-            if worktree_path is not None:
-                worktree_manager.remove_worktree(issue_number, str(self.repo_path), branch)
-            if claimed and not pushed:
-                self._release(issue_number, attempt, token, "local_environment_failure")
-
-
-class LocalSupervisor:
-    """Stateless K=2 launcher built on the same run-once entrypoint."""
-
-    def __init__(
-        self,
-        controller: LoopController,
-        *,
-        repository: str,
-        repo_path: Path,
-        max_active: int = state_manager.MAX_ACTIVE,
-        task_timeout_seconds: int = 3600,
-        sleeper: Callable[[float], None] = time.sleep,
-    ) -> None:
-        if max_active < 1 or max_active > state_manager.MAX_ACTIVE:
-            raise ValueError(f"max_active must be between 1 and {state_manager.MAX_ACTIVE}")
-        if task_timeout_seconds < 1 or task_timeout_seconds > 7200:
-            raise ValueError("task_timeout_seconds is outside the bounded range")
-        if not REPOSITORY.fullmatch(repository):
-            raise ValueError("repository must be owner/name")
-        self.controller = controller
-        self.repository = repository
-        self.repo_path = Path(repo_path).expanduser().resolve()
-        self.max_active = max_active
-        self.task_timeout_seconds = task_timeout_seconds
-        self.sleeper = sleeper
-
-    def _terminate(self, process: subprocess.Popen[str]) -> None:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                return
-
-    def run_batch(self) -> dict[str, Any]:
-        decision = self.controller.poll()
-        if decision.get("status") != "ready":
-            return {"kind": "repo-agent-supervisor.v1", "decision": decision, "results": []}
-        selected = decision.get("selected")
-        if not isinstance(selected, list) or not selected or len(selected) > self.max_active:
-            return {
-                "kind": "repo-agent-supervisor.v1",
-                "status": "unavailable",
-                "reason": "poll_capacity_contract_violation",
-                "results": [],
-            }
-        children: list[dict[str, Any]] = []
-        spawn_failures: list[dict[str, Any]] = []
-        script = Path(__file__).resolve().with_name("loopctl.py")
-        for candidate in selected:
-            issue = candidate.get("issue_number") if isinstance(candidate, dict) else None
-            if type(issue) is not int or issue <= 0:
-                return {
-                    "kind": "repo-agent-supervisor.v1",
-                    "status": "unavailable",
-                    "reason": "poll_candidate_invalid",
-                    "results": [],
-                }
-            attempt = str(uuid.uuid4())
-            try:
-                process = subprocess.Popen(
-                    [
-                        sys.executable,
-                        str(script),
-                        "run-once",
-                        "--repo",
-                        self.repository,
-                        "--repo-path",
-                        str(self.repo_path),
-                        "--issue",
-                        str(issue),
-                        "--attempt-id",
-                        attempt,
-                    ],
-                    cwd=self.repo_path,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    start_new_session=True,
-                )
-            except (OSError, ValueError):
-                spawn_failures.append({
-                    "issue_number": issue,
-                    "attempt_id": attempt,
-                    "status": "spawn_failed",
-                })
-                continue
-            children.append({"process": process, "issue_number": issue, "attempt_id": attempt, "started": time.monotonic()})
-
-        results: list[dict[str, Any]] = list(spawn_failures)
-        while children:
-            remaining: list[dict[str, Any]] = []
-            for child in children:
-                process = child["process"]
-                elapsed = time.monotonic() - child["started"]
-                if process.poll() is None and elapsed > self.task_timeout_seconds:
-                    self._terminate(process)
-                    results.append({
-                        "issue_number": child["issue_number"],
-                        "attempt_id": child["attempt_id"],
-                        "status": "timeout",
-                    })
-                    continue
-                if process.poll() is None:
-                    remaining.append(child)
-                    continue
-                stdout, _stderr = process.communicate()
-                parsed: dict[str, Any] | None = None
-                for line in reversed(stdout.splitlines()):
-                    try:
-                        value = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(value, dict):
-                        parsed = value
-                        break
-                results.append(parsed or {
-                    "kind": "repo-agent-local-run-once.v1",
-                    "status": "outcome_unknown",
-                    "issue_number": child["issue_number"],
-                    "attempt_id": child["attempt_id"],
-                    "details": {"reason": "run_once_result_unreadable"},
-                })
-            children = remaining
-            if children:
-                self.sleeper(0.05)
-        return {
-            "kind": "repo-agent-supervisor.v1",
-            "status": "completed",
-            "selected_issue_numbers": [item["issue_number"] for item in selected],
-            "results": results,
-        }
+    return hashlib.sha256(
+        f"plan-run:{repository}:{packet_id}:{source_main_sha}:{attempt}".encode("utf-8")
+    ).hexdigest()[:32]

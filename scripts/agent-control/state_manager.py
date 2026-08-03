@@ -357,7 +357,8 @@ def set_labels(issue_number, *labels, repo=""):
     args = ["issue", "edit", str(issue_number)]
     if repo:
         args.extend(["--repo", repo])
-    args.extend(["--add-label", ",".join(labels)])
+    if labels:
+        args.extend(["--add-label", ",".join(labels)])
     for label in ALL_LABELS:
         if label not in labels:
             args.extend(["--remove-label", label])
@@ -764,11 +765,20 @@ def read_exact_ci_state(issue_number, pr_number, head_sha, ci_run_id, repo=""):
     return "absent", None
 
 
-WORKER_SCOPE_ACTIONS = frozenset({"worker", "local-run"})
+WORKER_SCOPE_ACTIONS = frozenset({"worker", "local-run", "plan-run"})
 WORKER_SCOPE_STATUSES = frozenset({"claimed", "dispatched"})
-WORKER_SCOPE_TERMINAL_STATUSES = frozenset({"failed"})
+WORKER_SCOPE_TERMINAL_STATUSES = frozenset({"failed", "failed_unknown_output"})
 CLAIM_NONCE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 HEX40_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+PLAN_DISPATCH_ID_PATTERN = re.compile(
+    r"^plan-run:(?P<subject>[A-Za-z0-9-]+):(?P<sha>[0-9a-f]{40}):(?P<attempt>[0-9a-f]{8}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
+WORKER_DISPATCH_ID_PATTERN = re.compile(r"^worker:(?P<issue>[1-9][0-9]*)$")
+LOCAL_DISPATCH_ID_PATTERN = re.compile(
+    r"^local-run:(?P<issue>[1-9][0-9]*):(?P<attempt>[0-9a-f]{8}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
 
 
 def _parse_lease_deadline(value: object):
@@ -838,6 +848,212 @@ def local_claim_binding_valid(
     if require_lease_live and (now or datetime.now(timezone.utc)) > lease:
         return False, "claim_lease_expired"
     return True, lease
+
+
+def plan_claim_binding_valid(
+    ledger_issue,
+    details,
+    expected_subject_id,
+    expected_attempt,
+    expected_token,
+    expected_source_main_sha,
+    expected_task_spec_sha256,
+    *,
+    now=None,
+    require_lease_live=True,
+):
+    """Validate the immutable pointer carried by a plan-run ledger claim."""
+
+    if not isinstance(details, dict):
+        return False, "plan_claim_details_invalid"
+    if details.get("ledger_issue_number") != int(ledger_issue):
+        return False, "plan_ledger_issue_mismatch"
+    if details.get("subject_kind") != "plan-packet":
+        return False, "plan_subject_kind_invalid"
+    if details.get("subject_id") != expected_subject_id:
+        return False, "plan_subject_id_mismatch"
+    if details.get("attempt_id") != expected_attempt:
+        return False, "plan_attempt_mismatch"
+    if details.get("execution_token") != expected_token:
+        return False, "plan_execution_token_mismatch"
+    for field, expected in (
+        ("source_main_sha", expected_source_main_sha),
+        ("task_spec_sha256", expected_task_spec_sha256),
+    ):
+        value = details.get(field)
+        pattern = HEX40_PATTERN if field == "source_main_sha" else re.compile(r"^[0-9a-f]{64}$")
+        if not isinstance(value, str) or pattern.fullmatch(value) is None or value != expected:
+            return False, f"plan_{field}_invalid"
+    if details.get("canonical_branch") != f"agent/packet-{str(expected_subject_id).lower()}":
+        return False, "plan_branch_invalid"
+    if details.get("target_label") != LABEL_RUNNING:
+        return False, "plan_claim_target_invalid"
+    try:
+        import artifact_contract
+        artifact_contract.validate_allowed_paths(details.get("allowed_paths"))
+    except (artifact_contract.ArtifactContractError, ValueError, TypeError):
+        return False, "plan_scope_invalid"
+    if not _claim_nonce_valid(details.get("claim_nonce")):
+        return False, "claim_nonce_invalid"
+    lease = _parse_lease_deadline(details.get("lease_deadline"))
+    if lease is None:
+        return False, "claim_lease_invalid"
+    if require_lease_live and (now or datetime.now(timezone.utc)) > lease:
+        return False, "claim_lease_expired"
+    return True, lease
+
+
+def _trusted_worker_claim_details(issue_number, dispatch_id, claim_nonce, repo=""):
+    """Return the exact trusted worker claim, deriving its action from state.
+
+    ``dispatch_id`` and ``claim_nonce`` are transport values only.  The
+    persisted trusted comment decides whether this is the legacy Actions
+    worker or the local-run path; callers cannot select a more permissive
+    action by supplying an input string.
+    """
+
+    if type(issue_number) is not int or issue_number <= 0:
+        return False, "claim_issue_invalid"
+    if not isinstance(dispatch_id, str) or not dispatch_id:
+        return False, "dispatch_id_invalid"
+    if not _claim_nonce_valid(claim_nonce):
+        return False, "claim_nonce_invalid"
+    worker_match = WORKER_DISPATCH_ID_PATTERN.fullmatch(dispatch_id)
+    local_match = LOCAL_DISPATCH_ID_PATTERN.fullmatch(dispatch_id)
+    plan_match = PLAN_DISPATCH_ID_PATTERN.fullmatch(dispatch_id)
+    if worker_match is not None:
+        if int(worker_match.group("issue")) != issue_number:
+            return False, "claim_identity_mismatch"
+        expected_action = "worker"
+    elif local_match is not None:
+        if int(local_match.group("issue")) != issue_number:
+            return False, "claim_identity_mismatch"
+        expected_action = "local-run"
+    elif plan_match is not None:
+        expected_action = "plan-run"
+    else:
+        return False, "dispatch_id_invalid"
+    try:
+        state = read_dispatch_state(issue_number, dispatch_id, repo)
+    except StateUnavailableError:
+        return False, "dispatch_state_unavailable"
+    if not isinstance(state, dict):
+        return False, "claim_not_found"
+    if (
+        state.get("kind") != "agent-orchestrator-dispatch-state"
+        or state.get("version") != 1
+        or state.get("issue_number") != issue_number
+        or state.get("dispatch_id") != dispatch_id
+        or state.get("action") != expected_action
+        or state.get("status") != "dispatched"
+    ):
+        return False, "claim_state_invalid"
+    details = state.get("details")
+    if not isinstance(details, dict):
+        return False, "claim_details_invalid"
+    if details.get("claim_nonce") != claim_nonce:
+        return False, "claim_nonce_mismatch"
+    if expected_action == "plan-run":
+        subject = plan_match.group("subject") if plan_match is not None else ""
+        if details.get("ledger_issue_number") != issue_number:
+            return False, "plan_ledger_issue_mismatch"
+        if details.get("subject_kind") != "plan-packet" or details.get("subject_id") != subject:
+            return False, "plan_subject_invalid"
+        if details.get("source_main_sha") != plan_match.group("sha"):
+            return False, "plan_main_binding_invalid"
+        valid, reason = plan_claim_binding_valid(
+            issue_number,
+            details,
+            subject,
+            details.get("attempt_id"),
+            details.get("execution_token"),
+            plan_match.group("sha"),
+            details.get("task_spec_sha256"),
+        )
+        if not valid:
+            return False, reason
+        return True, {"action": expected_action, "details": details, "state": state}
+    if details.get("issue_number") != issue_number:
+        return False, "claim_issue_mismatch"
+    if details.get("target_label") != LABEL_RUNNING:
+        return False, "claim_target_invalid"
+    if not _claim_binding_valid(details):
+        return False, "claim_scope_binding_invalid"
+    lease = _parse_lease_deadline(details.get("lease_deadline"))
+    if lease is None:
+        return False, "claim_lease_invalid"
+    if datetime.now(timezone.utc) > lease:
+        return False, "claim_lease_expired"
+    if expected_action == "local-run":
+        attempt = details.get("attempt_id")
+        token = details.get("client_token")
+        if not isinstance(attempt, str) or dispatch_id != f"local-run:{issue_number}:{attempt}":
+            return False, "claim_attempt_mismatch"
+        valid, reason = local_claim_binding_valid(
+            issue_number, details, attempt, token, require_lease_live=True
+        )
+        if not valid:
+            return False, reason
+    return True, {
+        "action": expected_action,
+        "details": details,
+        "state": state,
+    }
+
+
+def verify_trusted_worker_claim(issue_number, dispatch_id, claim_nonce, repo=""):
+    """Verify either exact worker generation before any mutable worker step."""
+
+    return _trusted_worker_claim_details(issue_number, dispatch_id, claim_nonce, repo)
+
+
+def verify_local_worker_claim(issue_number, dispatch_id, claim_nonce, repo=""):
+    """Compatibility facade for the unified trusted worker verifier."""
+
+    ok, value = verify_trusted_worker_claim(issue_number, dispatch_id, claim_nonce, repo)
+    return (True, "ok") if ok else (False, value)
+
+
+def verify_trusted_plan_claim(
+    ledger_issue,
+    dispatch_id,
+    claim_nonce,
+    subject_id,
+    source_main_sha,
+    task_spec_sha256,
+    allowed_paths,
+    repo="",
+):
+    """Verify an exact dispatched plan generation before local mutation."""
+
+    if type(ledger_issue) is not int or ledger_issue <= 0:
+        return False, "plan_ledger_issue_invalid"
+    match = PLAN_DISPATCH_ID_PATTERN.fullmatch(dispatch_id or "")
+    if match is None or match.group("subject") != subject_id or match.group("sha") != source_main_sha:
+        return False, "plan_dispatch_id_invalid"
+    if not _claim_nonce_valid(claim_nonce):
+        return False, "claim_nonce_invalid"
+    try:
+        state = read_dispatch_state(ledger_issue, dispatch_id, repo)
+    except StateUnavailableError:
+        return False, "dispatch_state_unavailable"
+    if not isinstance(state, dict) or state.get("action") != "plan-run" or state.get("status") != "dispatched":
+        return False, "plan_claim_state_invalid"
+    details = state.get("details")
+    if not isinstance(details, dict) or details.get("claim_nonce") != claim_nonce:
+        return False, "claim_nonce_mismatch"
+    if details.get("allowed_paths") != allowed_paths:
+        return False, "plan_scope_mismatch"
+    valid, reason = plan_claim_binding_valid(
+        ledger_issue,
+        details,
+        subject_id,
+        details.get("attempt_id"),
+        details.get("execution_token"),
+        source_main_sha,
+        task_spec_sha256,
+    )
+    return (True, details) if valid else (False, reason)
 
 
 def record_local_worker_state(
@@ -1335,6 +1551,117 @@ def get_active_issue_scopes(issue_numbers, repo=""):
             return None
         result[issue] = claim["allowed_paths"]
     return result
+
+
+def get_active_plan_claims(repo=""):
+    """Return active plan-run scopes from the separate execution ledger.
+
+    A missing ledger means the plan lane is not provisioned and therefore has
+    no active candidate.  Once provisioned, unreadable or malformed ledger
+    comments return ``None`` so the shared capacity check fails closed.
+    """
+
+    try:
+        import control_state
+        ledger = control_state.read_plan_ledger(repo or None)
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        # A repository without the optional plan lane must not break the
+        # existing Issue lane.  A provisioned ledger's comment read below is
+        # still strict and returns None on transport failure.
+        if str(exc) == "plan_execution_ledger_absent":
+            return []
+        return None
+    ledger_number = ledger.get("number") if isinstance(ledger, dict) else None
+    if type(ledger_number) is not int or ledger_number <= 0:
+        return None
+    try:
+        comments = get_issue_comments(ledger_number, repo)
+    except StateUnavailableError:
+        return None
+    result = []
+    seen_dispatch_ids = set()
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        body = comment.get("body", "")
+        if not isinstance(body, str) or "agent-orchestrator-dispatch-state" not in body:
+            continue
+        try:
+            state = json.loads(body)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(state, dict) or state.get("kind") != "agent-orchestrator-dispatch-state":
+            continue
+        if state.get("version") != 1 or state.get("issue_number") != ledger_number:
+            return None
+        if state.get("action") != "plan-run":
+            continue
+        dispatch_id = state.get("dispatch_id")
+        dispatch_match = PLAN_DISPATCH_ID_PATTERN.fullmatch(str(dispatch_id or ""))
+        if dispatch_match is None:
+            return None
+        # Comments are newest first.  A dispatched state is a later update to
+        # the same claim, not a second active plan; terminal states likewise
+        # shadow older claimed/dispatched comments for that dispatch id.
+        if dispatch_id in seen_dispatch_ids:
+            continue
+        seen_dispatch_ids.add(dispatch_id)
+        if state.get("status") not in WORKER_SCOPE_STATUSES | WORKER_SCOPE_TERMINAL_STATUSES:
+            return None
+        details = state.get("details")
+        if not isinstance(details, dict) or details.get("ledger_issue_number") != ledger_number:
+            return None
+        if not _claim_nonce_valid(details.get("claim_nonce")):
+            return None
+        try:
+            import plan_lane
+            subject_id = details.get("subject_id")
+            if not isinstance(subject_id, str) or not plan_lane.PACKET_ID.fullmatch(subject_id):
+                return None
+        except (ImportError, AttributeError):
+            return None
+        if (
+            details.get("subject_kind") != "plan-packet"
+            or dispatch_match.group("subject") != subject_id
+            or details.get("source_main_sha") != dispatch_match.group("sha")
+            or details.get("attempt_id") != dispatch_match.group("attempt")
+            or details.get("canonical_branch") != f"agent/packet-{subject_id.lower()}"
+            or not CLAIM_NONCE_PATTERN.fullmatch(str(details.get("execution_token", "")))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(details.get("task_spec_sha256", "")))
+            or details.get("target_label") != LABEL_RUNNING
+        ):
+            return None
+        try:
+            import artifact_contract
+            artifact_contract.validate_allowed_paths(details.get("allowed_paths"))
+        except (artifact_contract.ArtifactContractError, ValueError, TypeError):
+            return None
+        if state.get("status") in WORKER_SCOPE_STATUSES:
+            result.append({
+                "ledger_issue_number": ledger_number,
+                "subject_id": details.get("subject_id"),
+                "allowed_paths": list(details["allowed_paths"]),
+                "dispatch_id": dispatch_id,
+            })
+    return result
+
+
+def get_active_capacity(repo=""):
+    """Return the shared Issue plus plan execution capacity snapshot."""
+
+    issues = get_active_issue_numbers(repo)
+    if issues is None:
+        return None
+    plans = get_active_plan_claims(repo)
+    if plans is None:
+        return None
+    for plan in plans:
+        ledger_issue = plan.get("ledger_issue_number")
+        if type(ledger_issue) is int:
+            issues.discard(ledger_issue)
+    return {"issues": issues, "plans": plans}
 
 
 def has_open_issue_pr(issue_number, repo=""):
@@ -2639,6 +2966,21 @@ def main():
             print(json.dumps(state))
         else:
             print("null")
+
+    elif command in {"verify-local-claim", "verify-worker-claim"}:
+        if len(sys.argv) != 5:
+            print(
+                "Usage: state_manager.py verify-worker-claim <issue> <dispatch-id> <claim-nonce>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        ok, value = verify_trusted_worker_claim(
+            int(sys.argv[2]), sys.argv[3], sys.argv[4], repo
+        )
+        if not ok:
+            print(f"FATAL: trusted worker claim rejected: {value}", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps({"verified": True, "action": value["action"]}, sort_keys=True))
 
     elif command == "record-ci":
         issue_number = int(sys.argv[2])

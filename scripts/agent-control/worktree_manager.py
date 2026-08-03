@@ -20,6 +20,8 @@ from typing import Any
 WORKTREE_BASE = pathlib.Path(os.environ.get("AGENT_WORKTREE_BASE", "/tmp/agent-worktrees"))
 ORCHESTRATOR_PREFIXES = ("issue-",)
 ORCHESTRATOR_BRANCH_PREFIX = "agent/issue-"
+PLAN_WORKTREE_PREFIX = "plan-"
+PLAN_BRANCH_PREFIX = "agent/packet-"
 ACTIVE_LABELS = {"agent-running", "ci-repairing", "review-running"}
 TERMINAL_LABELS = {"agent-complete", "agent-blocked", "agent-review-blocked"}
 LAST_CLEANUP_REPORT: list[dict[str, str]] = []
@@ -74,6 +76,20 @@ def _is_orchestrator_path(path: str | os.PathLike[str]) -> bool:
         return False
 
 
+def _is_plan_path(path: str | os.PathLike[str]) -> bool:
+    """Require a direct bounded plan worktree name."""
+    try:
+        resolved = pathlib.Path(path).resolve()
+        base = WORKTREE_BASE.resolve()
+        relative = resolved.relative_to(base)
+        return (
+            len(relative.parts) == 1
+            and re.fullmatch(r"plan-[a-z0-9-]{1,120}", resolved.name) is not None
+        )
+    except (OSError, ValueError):
+        return False
+
+
 def _worktree_records(repo_path: str | os.PathLike[str]) -> list[dict[str, str]] | None:
     output = _git("worktree", "list", "--porcelain", cwd=repo_path)
     if output is None:
@@ -113,7 +129,7 @@ def verify_worktree(
 ) -> bool:
     """Verify path, repository registration, branch, and optionally HEAD."""
     candidate = pathlib.Path(path)
-    if not _is_orchestrator_path(candidate) or not candidate.is_dir():
+    if not (_is_orchestrator_path(candidate) or _is_plan_path(candidate)) or not candidate.is_dir():
         return False
     repo_root = _git("rev-parse", "--show-toplevel", cwd=repo_path)
     if repo_root is None:
@@ -191,6 +207,47 @@ def create_worktree(
     return str(worktree_path), branch, base_sha, previous_remote_sha
 
 
+def create_plan_worktree(
+    packet_id: str,
+    branch_name: str,
+    repo_path: str,
+    expected_sha: str,
+) -> tuple[str, str, str, str | None] | None:
+    """Create one registered worktree for an exact plan packet generation."""
+
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,120}", packet_id):
+        return None
+    if not re.fullmatch(r"agent/packet-[a-z0-9-]{1,120}", branch_name):
+        return None
+    worktree_path = WORKTREE_BASE / f"plan-{packet_id.lower()}"
+    if not _is_plan_path(worktree_path):
+        return None
+    if _git("fetch", "origin", cwd=repo_path) is None:
+        return None
+    previous_remote_sha = _remote_sha(branch_name, repo_path)
+    local_branch = _git("rev-parse", "--verify", f"refs/heads/{branch_name}", cwd=repo_path)
+    if local_branch is None:
+        if _git("branch", branch_name, expected_sha, cwd=repo_path) is None:
+            return None
+    elif local_branch != expected_sha:
+        if _git("branch", "-f", branch_name, expected_sha, cwd=repo_path) is None:
+            return None
+    base_sha = _git("rev-parse", branch_name, cwd=repo_path)
+    if base_sha != expected_sha:
+        return None
+    WORKTREE_BASE.mkdir(parents=True, exist_ok=True)
+    if worktree_path.exists() or worktree_path.is_symlink():
+        if verify_worktree(worktree_path, branch_name, repo_path, expected_sha):
+            return str(worktree_path), branch_name, base_sha, previous_remote_sha
+        return None
+    if _git("worktree", "add", str(worktree_path), branch_name, cwd=repo_path) is None:
+        return None
+    if not verify_worktree(worktree_path, branch_name, repo_path, expected_sha):
+        _git("worktree", "remove", "--force", str(worktree_path), cwd=repo_path)
+        return None
+    return str(worktree_path), branch_name, base_sha, previous_remote_sha
+
+
 def remove_worktree(issue_number: int, repo_path: str, branch: str | None = None) -> bool:
     worktree_path = WORKTREE_BASE / f"issue-{issue_number}"
     expected_branch = branch or f"{ORCHESTRATOR_BRANCH_PREFIX}{issue_number}"
@@ -213,6 +270,23 @@ def remove_worktree(issue_number: int, repo_path: str, branch: str | None = None
         )
         return False
     return True
+
+
+def remove_plan_worktree(packet_id: str, repo_path: str, branch: str) -> bool:
+    """Remove only the registered worktree for one plan packet."""
+
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,120}", packet_id):
+        return False
+    worktree_path = WORKTREE_BASE / f"plan-{packet_id.lower()}"
+    if not worktree_path.exists():
+        _git("worktree", "prune", cwd=repo_path)
+        return True
+    if not verify_worktree(worktree_path, branch, repo_path):
+        return False
+    if _git("worktree", "remove", "--force", str(worktree_path), cwd=repo_path) is None:
+        return False
+    _git("worktree", "prune", cwd=repo_path)
+    return not worktree_path.exists()
 
 
 def _active_issue_or_workflow(issue: int, branch: str) -> bool | None:

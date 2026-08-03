@@ -391,6 +391,62 @@ def build_claim_bound_implementation_prompt(
     return prompt
 
 
+def build_claim_bound_plan_implementation_prompt(
+    packet_id,
+    goal,
+    allowed_paths,
+    source_main_sha,
+    branch,
+    *,
+    repo_root=None,
+):
+    """Build a prompt from an already validated plan candidate capsule."""
+
+    if not isinstance(packet_id, str) or not packet_id:
+        raise ValueError("plan packet id is invalid")
+    if not isinstance(goal, str) or not goal or len(goal) > 8192:
+        raise ValueError("plan goal is invalid")
+    if not isinstance(allowed_paths, list) or not allowed_paths:
+        raise ValueError("plan allowed_paths are invalid")
+    if not isinstance(source_main_sha, str) or len(source_main_sha) != 40:
+        raise ValueError("plan source main SHA is invalid")
+    if not isinstance(branch, str) or not branch:
+        raise ValueError("plan branch is invalid")
+    template_text = load_prompt_template("implementation.md")
+    if not template_text:
+        raise ValueError("implementation prompt template is unavailable")
+    root = pathlib.Path(repo_root).resolve() if repo_root is not None else None
+    read_local = lambda name: _cat(root / name) if root is not None else _cat(name)
+    task_body = (
+        "<!-- agent-orchestrator-plan-execution:v1 -->\n"
+        f"Packet: {packet_id}\n\n{goal}"
+    )
+    task_context = _build_task_context(
+        task_body,
+        read_local("AGENTS.md") or "",
+        read_local("docs/CURRENT_STATUS.md") or "",
+        read_local("docs/NEXT_DECISION.md") or "",
+        read_local("docs/MODULE_MAP.md") or "",
+    )
+    prompt = template_text
+    prompt = prompt.replace("{{ISSUE_NUMBER}}", f"plan packet {packet_id}")
+    prompt = prompt.replace("{{ISSUE_TITLE}}", f"Plan packet {packet_id}")
+    prompt = prompt.replace("{{ISSUE_BODY}}", task_body)
+    prompt = prompt.replace("{{TASK_CONTEXT}}", task_context)
+    prompt = prompt.replace("{{REPO_NAME}}", f"{REPO_OWNER}/{REPO_NAME}")
+    prompt = prompt.replace("{{GIT_BRANCH}}", branch)
+    prompt += (
+        "\n\n## Plan claim-bound execution context\n"
+        f"- source_main_sha: `{source_main_sha}`\n"
+        f"- packet_id: `{packet_id}`\n"
+        f"- canonical branch: `{branch}`\n"
+        f"- allowed_paths: `{json.dumps(allowed_paths, separators=(',', ':'))}`\n"
+        "The canonical plan document and trusted ledger claim are authority; the "
+        "transport capsule is not. Do not expand scope or perform GitHub mutations.\n"
+    )
+    return prompt
+
+
 def build_ci_repair_prompt(pr_number, head_sha, failed_jobs_json, logs, repair_count, template="ci_repair.md"):
     ctx = build_context(0)
     ctx["pr_number"] = pr_number

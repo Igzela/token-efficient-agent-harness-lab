@@ -204,6 +204,150 @@ def verify_post_push_binding(
     raise last_error or PRBindingError("post-push PR binding was not observable")
 
 
+def _candidate_plan_prs(prs: list[dict[str, Any]], subject_id: str, branch: str) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for pr in prs:
+        marker = state_manager.parse_binding_marker(pr.get("body", ""))
+        if pr.get("headRefName") == branch or (
+            marker
+            and marker.get("subject_kind") == "plan-packet"
+            and marker.get("subject_id") == subject_id
+        ):
+            candidates.append(pr)
+    return candidates
+
+
+def _verify_plan_pr(
+    pr: dict[str, Any], subject_id: str, branch: str, expected_sha: str,
+    source_main_sha: str, task_spec_sha256: str, prs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    number = pr.get("number")
+    if not isinstance(number, int):
+        raise PRBindingError("plan PR number is missing")
+    if str(pr.get("state", "")).upper() not in {"OPEN", ""}:
+        raise PRBindingError("plan PR is not open")
+    if pr.get("isDraft") is not True or pr.get("baseRefName") != "main":
+        raise PRBindingError("plan PR is not a Draft targeting main")
+    if pr.get("headRefName") != branch or pr.get("headRefOid") != expected_sha:
+        raise PRBindingError("plan PR branch or head does not match")
+    marker = state_manager.parse_binding_marker(pr.get("body", ""))
+    if not marker or any(
+        marker.get(key) != value
+        for key, value in {
+            "subject_kind": "plan-packet",
+            "subject_id": subject_id,
+            "source_main_sha": source_main_sha,
+            "task_spec_sha256": task_spec_sha256,
+            "branch": branch,
+        }.items()
+    ):
+        raise PRBindingError("plan PR binding marker is invalid")
+    competitors = [
+        item for item in _candidate_plan_prs(prs, subject_id, branch)
+        if item.get("number") != number
+    ]
+    if competitors:
+        raise PRBindingError("multiple open PRs are bound to the plan packet")
+    return {"number": number, "head_sha": expected_sha, "url": pr.get("url", "")}
+
+
+def find_plan_pr(
+    subject_id: str,
+    branch: str,
+    expected_sha: str,
+    source_main_sha: str,
+    task_spec_sha256: str,
+    repo: str | None = None,
+) -> dict[str, Any]:
+    """Return the authoritative final view of one exact plan Draft PR."""
+
+    target = _repo(repo)
+    open_prs = _open_prs(target)
+    candidates = _candidate_plan_prs(open_prs, subject_id, branch)
+    if len(candidates) != 1:
+        raise PRBindingError("zero or multiple open PRs bound to the plan packet")
+    number = candidates[0].get("number")
+    if not isinstance(number, int):
+        raise PRBindingError("plan PR number is invalid")
+    verified = _view_pr(target, number)
+    if verified.get("number") != number:
+        raise PRBindingError("plan PR final view is inconsistent")
+    _verify_plan_pr(
+        verified, subject_id, branch, expected_sha, source_main_sha, task_spec_sha256, open_prs
+    )
+    head_repo = verified.get("headRepository")
+    if not isinstance(head_repo, dict) or head_repo.get("nameWithOwner") != target:
+        raise PRBindingError("plan PR head repository is not the target repository")
+    return verified
+
+
+def create_or_update_plan_pr(
+    subject_id: str,
+    branch: str,
+    expected_sha: str,
+    source_main_sha: str,
+    task_spec_sha256: str,
+    title: str,
+    body: str,
+    repo: str | None = None,
+) -> dict[str, Any]:
+    """Create or update exactly one Draft PR bound to an immutable plan pointer."""
+
+    target = _repo(repo)
+    open_prs = _open_prs(target)
+    candidates = _candidate_plan_prs(open_prs, subject_id, branch)
+    if len(candidates) > 1:
+        raise PRBindingError("multiple open PRs are already bound to the plan packet")
+    if candidates:
+        number = candidates[0].get("number")
+        if not isinstance(number, int) or candidates[0].get("isDraft") is not True:
+            raise PRBindingError("existing plan PR is not a Draft")
+        _gh("api", "--method", "PATCH", f"repos/{target}/pulls/{number}", "--field", f"body={body}")
+    else:
+        created = _gh_json(
+            "api", "--method", "POST", f"repos/{target}/pulls",
+            "--field", f"title={title}", "--field", f"head={branch}",
+            "--field", "base=main", "--field", f"body={body}", "--field", "draft=true",
+        )
+        if not isinstance(created, dict) or not isinstance(created.get("number"), int):
+            raise PRBindingError("plan PR creation returned no number")
+        number = int(created["number"])
+    verified = _view_pr(target, number)
+    return _verify_plan_pr(
+        verified, subject_id, branch, expected_sha, source_main_sha, task_spec_sha256,
+        _open_prs(target),
+    ) | verified
+
+
+def verify_post_push_plan_binding(
+    subject_id: str,
+    pr_number: int,
+    branch: str,
+    expected_sha: str,
+    source_main_sha: str,
+    task_spec_sha256: str,
+    repo: str | None = None,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
+    target = _repo(repo)
+    deadline = time.monotonic() + timeout_seconds
+    last_error: PRBindingError | None = None
+    while time.monotonic() < deadline:
+        try:
+            open_prs = _open_prs(target)
+            matching = [pr for pr in open_prs if pr.get("number") == pr_number]
+            if len(matching) != 1:
+                raise PRBindingError("post-push plan PR is absent or ambiguous")
+            return _verify_plan_pr(
+                matching[0], subject_id, branch, expected_sha, source_main_sha,
+                task_spec_sha256, open_prs,
+            )
+        except PRBindingError as exc:
+            last_error = exc
+            time.sleep(2)
+    raise last_error or PRBindingError("post-push plan PR binding was not observable")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)

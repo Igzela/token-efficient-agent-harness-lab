@@ -481,22 +481,40 @@ Until that merge, branch-local `COMPLETE` prose is proposed state only. Completi
 
 **Owned paths:**
 
-- `scripts/agent-control/local_loop.py` and `scripts/agent-control/loopctl.py`;
+- `scripts/agent-control/local_loop.py`, `scripts/agent-control/local_run_once.py`, `scripts/agent-control/local_supervisor.py`, `scripts/agent-control/local_verification.py`, and `scripts/agent-control/loopctl.py`;
+- `scripts/agent-control/plan_lane.py` only as a non-admitted accepted-main packet parser (no Plan execution admission in this packet);
 - the smallest required extensions to existing `state_manager`, dispatcher, worktree, artifact, PR-binding, and workflow adapters;
 - `tests/test_agent_local_loop.py` and the smallest required canonical documentation.
 
 **Required behavior:**
 
-- `poll` is one read-only bounded step, not an internal `while true`; it validates identity, control state, exact main/task binding, scope, dependencies, PR association and active capacity, then admits only a deterministic batch of mutually non-overlapping tasks;
+- `poll` is one read-only bounded step, not an internal `while true`; it validates identity, control state, exact main/task binding, scope, dependencies, PR association and active capacity, then admits only a deterministic batch of mutually non-overlapping **Issue** tasks (Plan candidates are deferred; see below);
 - `run-once` obtains one GitHub-serialized lease/attempt before local mutation, then creates one verified isolated worktree and one fresh model session;
 - Issue/PR text and model output remain untrusted data; only repository-owned reviewed commands execute, and GitHub/API/cloud credentials never enter the model child;
-- model changes become a bounded patch artifact, are independently revalidated against exact base/scope/preimage, and may produce only one Issue-bound Draft PR;
-- every externally visible transition is restart-reconciled; timeout, cancellation, process death, unknown delivery/output, stale main/head, lost lease, duplicate claim, invalid artifact, failed checks, or exhausted repair fails closed to a truthful non-success state;
+- model changes become a bounded patch artifact only after repository-owned focused checks pass (path-classified allowlist in `local_verification.py`: prose/agent-python/rust/dashboard/automation/wire/handoff-docs; unmapped source/config/dependency/secret-shaped paths fail closed before artifact/commit/push), are independently revalidated against exact base/scope/preimage, and may produce only one Issue-bound Draft PR;
+- every externally visible transition is restart-reconciled, including claimed-but-not-dispatched crashes; timeout, cancellation, process death, unknown delivery/output, stale main/head, lost lease, duplicate claim, invalid artifact, failed checks, or exhausted repair fails closed to a truthful non-success state without killing the receipt owner or leaking stubborn descendants;
 - CI, review, repair, merge eligibility, and terminal evidence remain owned by the existing GitHub workflows/state contracts. Implementation and review sessions are always distinct;
 - a stateless supervisor may run admitted `run-once` processes concurrently; GitHub owns queue/lease state and overlapping scopes serialize;
 - after parity is proved, public-repository self-hosted jobs are retired rather than left as a second execution path.
 
-**Current tracer bullet:** `repo-agent-loop-poll.v1` and `loopctl poll` implement deterministic, provider-free, non-overlapping batch admission bounded by the single canonical active-capacity owner `state_manager.MAX_ACTIVE` (K=2); `poll --max-active` throttles locally to 1..K only. They do not yet claim, invoke a provider, create a worktree, push, or open a PR and therefore do not authorize self-hosted cutover.
+### Plan-Derived Candidate Lane — deferred (not in this packet's acceptance)
+
+Independent review established that Plan Draft PRs cannot complete the existing
+Issue-bound CI/monitor/terminal owners (`issue_number` markers, `agent/issue-N`
+branches, closing links). Expanding this packet with a parallel Plan lifecycle
+is also not proven from the accepted-main baseline. Therefore:
+
+- `poll` rejects plan candidates with `plan_lane_deferred_until_terminal_owners`
+  and never admits them into `selected`;
+- `run-once --plan-id` fails closed with the same reason and never claims capacity;
+- `scripts/agent-control/plan_lane.py` may retain the strict accepted-main packet
+  parser and provider-free tests as non-admitted infrastructure only.
+
+A later planning-authorized packet may re-enable Plan admission only after
+plan-aware CI/review/terminal binding, exact-spec prompt blob binding, and
+post-claim revalidation are implemented and independently reviewed.
+
+**Current tracer bullet:** `repo-agent-loop-poll.v1` and `loopctl poll` implement deterministic, provider-free, non-overlapping Issue batch admission bounded by the single canonical active-capacity owner `state_manager.MAX_ACTIVE` (K=2); the local Issue run-once path claims through the existing controller, creates an isolated worktree, invokes the bounded Codex adapter, runs repository-owned focused checks, verifies an artifact, pushes an Issue branch, and hands off one exact Draft PR to the existing worker/CI/monitor owners. Process-tree cancellation preserves the receipt owner; claimed-but-not-dispatched crashes are resume/release reconciled. `poll --max-active` throttles locally to 1..K only; this does not authorize self-hosted cutover, merge authority, or Plan-lane execution.
 
 **Forbidden:** a local authoritative state database, arbitrary Issue shell, provider calls in CI, credential inheritance into the child, fork-authored tasks, unbounded polling/retry/concurrency, direct default-branch writes, non-Draft output, self-review, auto-merge, release, deployment, or parallel state/artifact/PR/CI/review/merge owners.
 

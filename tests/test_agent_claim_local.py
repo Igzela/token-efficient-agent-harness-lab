@@ -156,8 +156,16 @@ class ClaimLocalBase(unittest.TestCase):
                     dispatcher.sm, "check_dependencies_complete", return_value=dependencies,
                 ))
             stack.enter_context(mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=has_pr))
+            active_values = iter(active)
             active_mock = stack.enter_context(mock.patch.object(
                 dispatcher.sm, "get_active_issue_numbers", side_effect=list(active),
+            ))
+            def active_capacity(_repo=""):
+                snapshot = next(active_values)
+                return None if snapshot is None else {"issues": snapshot, "plans": []}
+
+            stack.enter_context(mock.patch.object(
+                dispatcher.sm, "get_active_capacity", side_effect=active_capacity,
             ))
             stack.enter_context(mock.patch.object(dispatcher.sm, "get_active_issue_scopes", return_value=active_scopes))
             record_mock = stack.enter_context(mock.patch.object(dispatcher.sm, "record_dispatch_state"))
@@ -299,7 +307,13 @@ class TestClaimLocalTrustedReadback(ClaimLocalBase):
         comments = [{"author": {"login": "mallory"}, "body": json.dumps(self.claimed_state(status="dispatched"), sort_keys=True)},
                     {"author": {"login": "github-actions[bot]"}, "body": json.dumps(trusted, sort_keys=True)}]
         with self.claim_context(read_patch=False, comments=comments):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "dispatch_in_flight")
+            # Exact matching attempt resumes claimed→dispatched; human-forged
+            # dispatched comments never shadow the trusted claimed generation.
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
+        self.assertEqual(
+            result,
+            {"dispatched": True, "issue": ISSUE, "dispatch_id": DISPATCH_ID},
+        )
 
     def test_malformed_trusted_comment_fails_closed(self):
         comments = [{"author": {"login": "github-actions[bot]"}, "body": "agent-orchestrator-dispatch-state {not json"}]
@@ -393,8 +407,27 @@ class TestClaimLocalSuccessContract(ClaimLocalBase):
         self.assertEqual(result["reason"], "dispatch_state_failed_capacity_retained")
         self.assertEqual(self.label_calls, [[sm.LABEL_RUNNING]])
         self.assertEqual(self.records[0]["status"], "claimed")
+        # A later exact-attempt re-entry resumes and finishes the dispatch write.
         with self.claim_context():
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "dispatch_in_flight")
+            resumed = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
+        self.assertEqual(
+            resumed,
+            {"dispatched": True, "issue": ISSUE, "dispatch_id": DISPATCH_ID},
+        )
+        self.assertEqual(self.persisted[DISPATCH_ID]["status"], "dispatched")
+
+    def test_worker_must_revalidate_exact_dispatch_and_nonce(self):
+        with self.claim_context():
+            self.assertTrue(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["dispatched"])
+            nonce = self.records[0]["details"]["claim_nonce"]
+            self.assertEqual(
+                sm.verify_local_worker_claim(ISSUE, DISPATCH_ID, nonce, REPO),
+                (True, "ok"),
+            )
+            self.assertEqual(
+                sm.verify_local_worker_claim(ISSUE, DISPATCH_ID, "e" * 32, REPO),
+                (False, "claim_nonce_mismatch"),
+            )
 
     def test_capacity_recheck_exceeded_or_unavailable_compensates(self):
         with self.claim_context(active=(set(), {ISSUE, 55, 66})):
@@ -415,7 +448,7 @@ class TestClaimLocalSuccessContract(ClaimLocalBase):
 
 
 class TestClaimLocalRetrySemantics(ClaimLocalBase):
-    def test_exact_retry_after_dispatched_is_idempotent_and_in_flight_otherwise(self):
+    def test_exact_retry_after_dispatched_is_idempotent_and_claimed_resumes(self):
         self.persisted[DISPATCH_ID] = self.claimed_state(status="dispatched")
         with self.claim_context() as mocks:
             result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
@@ -426,10 +459,13 @@ class TestClaimLocalRetrySemantics(ClaimLocalBase):
         self.persisted[DISPATCH_ID] = self.claimed_state()
         with self.claim_context() as mocks:
             result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
-        self.assertEqual(result["dispatched"], False)
-        self.assertEqual(result["reason"], "dispatch_in_flight")
-        self.assertEqual(mocks["record"].call_count, 0)
-        self.assertEqual(self.label_calls, [])
+        # Matching claimed state is resume-reconciled to dispatched so a crash
+        # between claim persistence and dispatch promotion cannot stick K.
+        self.assertEqual(
+            result,
+            {"dispatched": True, "issue": ISSUE, "dispatch_id": DISPATCH_ID},
+        )
+        self.assertEqual(self.persisted[DISPATCH_ID]["status"], "dispatched")
 
     def test_binding_field_order_is_irrelevant_to_retry_verification(self):
         prior = self.claimed_state()
@@ -437,9 +473,11 @@ class TestClaimLocalRetrySemantics(ClaimLocalBase):
         self.persisted[prior["dispatch_id"]] = prior
         with self.claim_context() as mocks:
             result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
-        self.assertEqual(result["reason"], "dispatch_in_flight")
-        self.assertEqual(mocks["record"].call_count, 0)
-        self.assertEqual(self.label_calls, [])
+        self.assertEqual(
+            result,
+            {"dispatched": True, "issue": ISSUE, "dispatch_id": DISPATCH_ID},
+        )
+        self.assertEqual(self.persisted[DISPATCH_ID]["status"], "dispatched")
 
     def test_same_attempt_different_client_token_or_main_fails_closed(self):
         for status in ("claimed", "dispatched"):
@@ -448,7 +486,12 @@ class TestClaimLocalRetrySemantics(ClaimLocalBase):
                 self.persisted[DISPATCH_ID] = self.claimed_state(status=status, client_token="e" * 32)
                 with self.claim_context() as mocks:
                     result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
-                self.assertEqual(result["reason"], "dispatch_state_binding_unverified")
+                expected = (
+                    "claim_token_mismatch"
+                    if status == "claimed"
+                    else "dispatch_state_binding_unverified"
+                )
+                self.assertEqual(result["reason"], expected)
                 self.assertEqual(mocks["record"].call_count, 0)
                 self.assertEqual(self.label_calls, [])
         self.persisted.clear()
@@ -543,6 +586,12 @@ class TestClaimLocalCliAndWiring(ClaimLocalBase):
         self.assertIn('subparsers.add_parser(\n        "run-once"', loopctl_source)
         for forbidden in ("accepted_sha", "branch", "scope", "prompt", "shell", "artifact"):
             self.assertNotIn(f'"--{forbidden}"', loopctl_source)
+
+    def test_worker_rechecks_exact_claim_before_codex_and_artifact(self):
+        source = (WORKFLOWS / "agent-worker.yml").read_text()
+        self.assertEqual(source.count("state_manager.py verify-local-claim"), 3)
+        self.assertIn("INPUT_DISPATCH_ID: ${{ inputs.dispatch_id }}", source)
+        self.assertIn("INPUT_CLAIM_NONCE: ${{ inputs.claim_nonce }}", source)
 
 
 if __name__ == "__main__":

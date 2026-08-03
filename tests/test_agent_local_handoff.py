@@ -942,6 +942,30 @@ class TestReleaseLocal(LocalHandoffBase):
         self.assertEqual(self.label_calls, [])
         mocks["gh"].assert_not_called()
 
+    def test_release_local_refuses_unknown_output_terminal(self):
+        self.seed_claim(
+            claimed_state(status="failed_unknown_output", **{"reason": "local_unknown_output"})
+        )
+        with self.command_context(labels=frozenset({sm.LABEL_BLOCKED})):
+            result = dispatcher.release_local(ISSUE, ATTEMPT, CLIENT_TOKEN, REASON)
+        self.assertEqual(result["reason"], "claim_state_unexpected")
+        self.assertEqual(self.label_calls, [])
+
+    def test_block_local_persists_unknown_output_before_agent_blocked(self):
+        self.seed_claim(claimed_state(status="dispatched"))
+        with self.command_context() as mocks:
+            result = dispatcher.block_local(
+                ISSUE, ATTEMPT, CLIENT_TOKEN, dispatcher.LOCAL_UNKNOWN_OUTPUT_REASON
+            )
+        self.assertEqual(result["blocked"], True)
+        terminal = self.persisted[DISPATCH_ID]
+        self.assertEqual(terminal["status"], "failed_unknown_output")
+        self.assertEqual(terminal["details"]["reason"], dispatcher.LOCAL_UNKNOWN_OUTPUT_REASON)
+        self.assertEqual(self.label_calls, [[sm.LABEL_BLOCKED]])
+        order = [entry[0] for entry in self.mutation_order]
+        self.assertLess(order.index("record-dispatch"), order.index("set-labels"))
+        mocks["gh"].assert_not_called()
+
     def test_release_exact_terminal_retry_succeeds_after_lease_expiry(self):
         self.seed_claim(claimed_state(status="failed", lease_deadline="2020-01-01T00:00:00Z",
                                       **{"reason": REASON}))
@@ -1274,7 +1298,7 @@ class TestCliAndWorkflowContract(LocalHandoffBase):
         self.seed_claim()
         out = StringIO()
         with self.command_context(), \
-             mock.patch.object(sys, "argv", ["dispatcher.py", "handoff-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN, HEAD]), \
+             mock.patch.object(sys, "argv", ["dispatcher.py", "handoff-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN, HEAD, NONCE]), \
              redirect_stdout(out):
             dispatcher.main()
         payload = json.loads(out.getvalue())
@@ -1287,14 +1311,14 @@ class TestCliAndWorkflowContract(LocalHandoffBase):
         self.seed_claim()
         out = StringIO()
         with self.command_context(), \
-             mock.patch.object(sys, "argv", ["dispatcher.py", "release-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN, REASON]), \
+             mock.patch.object(sys, "argv", ["dispatcher.py", "release-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN, REASON, NONCE]), \
              redirect_stdout(out):
             dispatcher.main()
         self.assertEqual(json.loads(out.getvalue())["released"], True)
         self.assertNotIn(CLIENT_TOKEN, out.getvalue())
         out = StringIO()
         with mock.patch.object(dispatcher, "_repo", return_value=REPO), \
-             mock.patch.object(sys, "argv", ["dispatcher.py", "release-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN, "free text"]), \
+             mock.patch.object(sys, "argv", ["dispatcher.py", "release-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN, "free text", NONCE]), \
              redirect_stdout(out):
             with self.assertRaises(SystemExit) as ctx:
                 dispatcher.main()
@@ -1307,7 +1331,10 @@ class TestCliAndWorkflowContract(LocalHandoffBase):
             ["dispatcher.py", "handoff-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN],
             ["dispatcher.py", "handoff-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN, HEAD, "extra"],
             ["dispatcher.py", "release-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN],
+            ["dispatcher.py", "release-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN, REASON],
             ["dispatcher.py", "release-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN, REASON, "extra"],
+            ["dispatcher.py", "block-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN, dispatcher.LOCAL_UNKNOWN_OUTPUT_REASON],
+            ["dispatcher.py", "block-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN, dispatcher.LOCAL_UNKNOWN_OUTPUT_REASON, "extra"],
         ):
             with self.subTest(args=args):
                 with mock.patch.object(sys, "argv", args):
@@ -1316,7 +1343,7 @@ class TestCliAndWorkflowContract(LocalHandoffBase):
 
     def test_workflow_declares_bounded_commands_and_inputs_in_global_lane(self):
         source = (WORKFLOWS / "agent-controller.yml").read_text()
-        for command in ("handoff-local", "release-local"):
+        for command in ("handoff-local", "release-local", "block-local"):
             self.assertIn(f"          - {command}\n", source)
         self.assertIn("      reason_code:\n", source)
         self.assertIn("INPUT_REASON_CODE: ${{ inputs.reason_code }}", source)
@@ -1326,14 +1353,14 @@ class TestCliAndWorkflowContract(LocalHandoffBase):
         self.assertIn("control_state.py require-live", handoff_branch)
         self.assertIn("dispatcher.py handoff-local", handoff_branch)
         self.assertEqual(handoff_branch.count("${{ inputs."), 1)
-        self.assertIn('"$INPUT_ATTEMPT_ID" "$INPUT_CLIENT_TOKEN" "$INPUT_HEAD_SHA"', handoff_branch)
+        self.assertIn('"$INPUT_ATTEMPT_ID" "$INPUT_CLIENT_TOKEN" "$INPUT_HEAD_SHA" "$INPUT_CLAIM_NONCE"', handoff_branch)
         self.assertNotIn("${{ inputs.attempt_id }}", handoff_branch)
         self.assertNotIn("${{ inputs.client_token }}", handoff_branch)
         self.assertNotIn("${{ inputs.head_sha }}", handoff_branch)
         release_branch = source.split("release-local)", 1)[1].split(";;", 1)[0]
         self.assertIn("dispatcher.py release-local", release_branch)
         self.assertEqual(release_branch.count("${{ inputs."), 1)
-        self.assertIn('"$INPUT_ATTEMPT_ID" "$INPUT_CLIENT_TOKEN" "$INPUT_REASON_CODE"', release_branch)
+        self.assertIn('"$INPUT_ATTEMPT_ID" "$INPUT_CLIENT_TOKEN" "$INPUT_REASON_CODE" "$INPUT_CLAIM_NONCE"', release_branch)
         self.assertNotIn("${{ inputs.reason_code }}", release_branch)
         # Bounded strings reach the script only through env mappings.
         self.assertEqual(source.count("${{ inputs.attempt_id }}"), 1)

@@ -10,6 +10,8 @@ import sys
 from typing import Callable, Sequence
 
 import local_loop
+import local_run_once
+import local_supervisor
 import state_manager
 
 
@@ -46,7 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_once.add_argument("--repo", required=True, help="GitHub repository as owner/name")
     run_once.add_argument("--repo-path", required=True, type=Path, help="exact local Git worktree root")
-    run_once.add_argument("--issue", required=True, type=int)
+    run_subject = run_once.add_mutually_exclusive_group(required=True)
+    run_subject.add_argument("--issue", type=int)
+    run_subject.add_argument("--plan-id")
     run_once.add_argument("--attempt-id", required=True)
     batch = subparsers.add_parser(
         "run-batch", help="poll and launch up to the repository K local workers"
@@ -62,8 +66,8 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     controller_factory: Callable[..., local_loop.LoopController] | None = None,
-    run_once_factory: Callable[..., local_loop.LocalRunOnce] | None = None,
-    supervisor_factory: Callable[..., local_loop.LocalSupervisor] | None = None,
+    run_once_factory: Callable[..., local_run_once.LocalRunOnce] | None = None,
+    supervisor_factory: Callable[..., local_supervisor.LocalSupervisor] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "run-batch":
@@ -75,7 +79,7 @@ def main(
                 repo_path=args.repo_path,
                 max_active=args.max_active,
             )
-            factory = supervisor_factory or local_loop.LocalSupervisor
+            factory = supervisor_factory or local_supervisor.LocalSupervisor
             result = factory(
                 poller,
                 repository=args.repo,
@@ -94,10 +98,12 @@ def main(
         return 0 if result.get("status") in {"completed", "ready"} else 2
     if args.command == "run-once":
         try:
-            factory = run_once_factory or local_loop.LocalRunOnce
-            result = factory(repository=args.repo, repo_path=args.repo_path).run_once(
-                args.issue, args.attempt_id
-            )
+            factory = run_once_factory or local_run_once.LocalRunOnce
+            runner = factory(repository=args.repo, repo_path=args.repo_path)
+            if args.plan_id is not None:
+                result = runner.run_plan_once(args.plan_id, args.attempt_id)
+            else:
+                result = runner.run_once(args.issue, args.attempt_id)
             wire = result.to_wire() if hasattr(result, "to_wire") else result
         except (OSError, ValueError, local_loop.LoopUnavailable) as exc:
             wire = {
@@ -138,4 +144,6 @@ def main(
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "run-once":
+        local_run_once.ensure_task_process_group()
     sys.exit(main())

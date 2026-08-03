@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
+import signal
 import sys
 import time
 import unittest
@@ -14,11 +16,16 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control"))
 import local_loop
+import local_run_once
+import local_supervisor
 import loopctl
 import state_manager
 
 
 MAIN_SHA = "a" * 40
+PLAN_ID = "TOOL-LOCAL-PLAN-1"
+ATTEMPT = "123e4567-e89b-12d3-a456-426614174000"
+NONCE = "d" * 32
 SCOPE = '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["src/"]} -->'
 TASK = f'<!-- repo-agent-task:v1 {{"accepted_main_sha":"{MAIN_SHA}"}} -->'
 
@@ -487,6 +494,254 @@ class TestLoopctl(unittest.TestCase):
                     ])
 
 
+class TestLocalRunOnce(unittest.TestCase):
+    def test_run_once_child_uses_isolated_session_not_caller_group(self):
+        process = mock.Mock(pid=1234, returncode=0)
+        process.communicate.return_value = ("stdout", "stderr")
+        with mock.patch.object(local_run_once.subprocess, "Popen", return_value=process) as popen:
+            result = local_run_once._bounded_process(["command"])
+        self.assertEqual(result, (0, "stdout", "stderr"))
+        self.assertTrue(popen.call_args.kwargs.get("start_new_session"))
+
+    def test_bounded_process_timeout_does_not_signal_caller_process_group(self):
+        """Inner timeout must kill only the child tree so the receipt owner lives."""
+
+        process = mock.Mock(pid=4242)
+        process.communicate.side_effect = [
+            local_run_once.subprocess.TimeoutExpired(cmd=["sleep"], timeout=1),
+            ("partial", "err"),
+        ]
+        process.returncode = -15
+        killed: list[tuple[int, int]] = []
+
+        def fake_kill(pid, sig):
+            killed.append((pid, sig))
+            if pid == os.getpid():
+                raise AssertionError("timeout must never signal the receipt owner")
+
+        with mock.patch.object(local_run_once.subprocess, "Popen", return_value=process), \
+             mock.patch.object(local_run_once.os, "kill", side_effect=fake_kill), \
+             mock.patch.object(local_run_once, "_process_descendants", return_value=[]), \
+             mock.patch.object(local_run_once, "_pid_exists", side_effect=lambda pid: pid == 4242):
+            code, _out, _err = local_run_once._bounded_process(["sleep", "30"], timeout_seconds=1)
+        self.assertEqual(code, 124)
+        self.assertTrue(killed)
+        self.assertNotIn(os.getpid(), [pid for pid, _sig in killed])
+        self.assertIn((4242, signal.SIGTERM), killed)
+
+    def test_terminate_task_process_group_kills_stubborn_descendants(self):
+        leader = mock.Mock(pid=5000)
+        leader.wait.side_effect = [local_run_once.subprocess.TimeoutExpired(cmd="x", timeout=0.2)]
+        seen: list[tuple[int, int]] = []
+
+        def fake_kill(pid, sig):
+            seen.append((pid, sig))
+
+        with mock.patch.object(
+            local_run_once, "_process_descendants", side_effect=[[6001, 6002], [6001, 6002]]
+        ), mock.patch.object(
+            local_run_once, "_pid_exists", side_effect=lambda pid: pid in {5000, 6001, 6002}
+        ), mock.patch.object(local_run_once.os, "kill", side_effect=fake_kill), \
+             mock.patch.object(local_run_once.time, "sleep", return_value=None), \
+             mock.patch.object(
+                 local_run_once.time, "monotonic", side_effect=[0, 0.1, 10, 10.1, 20, 20.1]
+             ):
+            local_run_once.terminate_task_process_group(
+                leader, term_timeout=0.01, kill_timeout=0.01
+            )
+        self.assertIn((6001, signal.SIGTERM), seen)
+        self.assertIn((6002, signal.SIGTERM), seen)
+        self.assertIn((5000, signal.SIGTERM), seen)
+        self.assertTrue(any(sig == signal.SIGKILL for _pid, sig in seen))
+
+    def test_claimed_not_dispatched_is_resumed_then_released_if_still_stuck(self):
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN_SHA
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN_SHA
+        attempt = ATTEMPT
+        token = local_loop.local_client_token("Igzela/example", 7, attempt)
+        claim_details = {
+            "issue_number": 7,
+            "attempt_id": attempt,
+            "client_token": token,
+            "accepted_main_sha": MAIN_SHA,
+            "canonical_branch": "agent/issue-7",
+            "allowed_paths": ["scripts/agent-control/"],
+            "task_body_sha256": "a" * 64,
+            "claim_nonce": NONCE,
+            "lease_deadline": "2099-01-01T00:00:00Z",
+            "target_label": "agent-running",
+        }
+        claimed_state = {
+            "status": "claimed",
+            "details": claim_details,
+        }
+        with mock.patch.object(
+            state_manager, "read_dispatch_state", return_value=claimed_state
+        ), mock.patch.object(
+            state_manager, "local_claim_binding_valid", return_value=(True, "ok")
+        ):
+            result = local_run_once.LocalRunOnce(
+                github,
+                git,
+                repository="Igzela/example",
+                repo_path=Path("/tmp"),
+                claim_timeout_seconds=0,
+                sleeper=lambda _: None,
+            ).run_once(7, attempt)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.details.get("reason"), "claimed_not_dispatched_reconciled")
+        github.dispatch_controller.assert_any_call(
+            "claim-local",
+            {"issue": 7, "attempt_id": attempt, "client_token": token},
+        )
+        release_calls = [
+            call for call in github.dispatch_controller.call_args_list
+            if call.args and call.args[0] == "release-local"
+        ]
+        self.assertEqual(len(release_calls), 1)
+
+    def test_plan_run_once_is_deferred_closed(self):
+        result = local_run_once.LocalRunOnce(
+            repository="Igzela/example",
+            repo_path=Path("/tmp"),
+        ).run_plan_once(PLAN_ID, ATTEMPT)
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(
+            result.details.get("reason"),
+            "plan_lane_deferred_until_terminal_owners",
+        )
+        # Deferred path must never dispatch claim-plan or touch GitHub.
+        # (No github adapter was provided; construction uses real adapters only
+        # if methods are invoked — rejection is pre-claim.)
+
+    def test_stale_token_on_claimed_state_does_not_release_capacity(self):
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN_SHA
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN_SHA
+        token = local_loop.local_client_token("Igzela/example", 7, ATTEMPT)
+        foreign = {
+            "issue_number": 7,
+            "attempt_id": ATTEMPT,
+            "client_token": "e" * 32,
+            "accepted_main_sha": MAIN_SHA,
+            "canonical_branch": "agent/issue-7",
+            "allowed_paths": ["scripts/agent-control/"],
+            "task_body_sha256": "a" * 64,
+            "claim_nonce": NONCE,
+            "lease_deadline": "2099-01-01T00:00:00Z",
+        }
+        with mock.patch.object(
+            state_manager,
+            "read_dispatch_state",
+            return_value={"status": "claimed", "details": foreign},
+        ):
+            result = local_run_once.LocalRunOnce(
+                github,
+                git,
+                repository="Igzela/example",
+                repo_path=Path("/tmp"),
+                claim_timeout_seconds=0,
+                sleeper=lambda _: None,
+            ).run_once(7, ATTEMPT)
+        self.assertEqual(result.status, "claim_rejected")
+        self.assertEqual(result.details.get("reason"), "claim_token_mismatch")
+        github.dispatch_controller.assert_not_called()
+
+    def test_late_fork_descendant_is_included_in_kill_wave(self):
+        leader = mock.Mock(pid=7000)
+        leader.wait.side_effect = [None]
+        killed: list[int] = []
+
+        def fake_kill(pid, sig):
+            del sig
+            killed.append(pid)
+
+        # First scan misses 7002; TERM wait rescans and finds late fork 7002.
+        descendant_scans = [[7001], [7001, 7002]]
+
+        def descendants(root):
+            del root
+            return descendant_scans.pop(0) if descendant_scans else [7001, 7002]
+
+        exists = {7000, 7001, 7002}
+
+        def pid_exists(pid):
+            return pid in exists and pid not in {p for p in killed if p == pid}
+
+        # Simpler: keep all alive until SIGKILL phase.
+        with mock.patch.object(local_run_once, "_process_descendants", side_effect=descendants), \
+             mock.patch.object(local_run_once, "_pid_exists", return_value=True), \
+             mock.patch.object(local_run_once.os, "kill", side_effect=fake_kill), \
+             mock.patch.object(local_run_once.time, "sleep", return_value=None), \
+             mock.patch.object(
+                 local_run_once.time, "monotonic", side_effect=[0, 1, 2, 3, 4, 5]
+             ):
+            local_run_once.terminate_task_process_group(
+                leader, term_timeout=0.01, kill_timeout=0.01
+            )
+        self.assertIn(7001, killed)
+        self.assertIn(7002, killed)
+        self.assertIn(7000, killed)
+
+    def test_unknown_plan_output_requires_durable_ledger_terminal_readback(self):
+        github = mock.Mock()
+        github.plan_ledger_issue.return_value = 99
+        terminal = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": 99,
+            "dispatch_id": f"plan-run:{PLAN_ID}:{MAIN_SHA}:{ATTEMPT}",
+            "action": "plan-run",
+            "status": "failed_unknown_output",
+            "details": {
+                "subject_kind": "plan-packet",
+                "subject_id": PLAN_ID,
+                "source_main_sha": MAIN_SHA,
+                "claim_nonce": NONCE,
+                "reason": "local_unknown_output",
+            },
+        }
+        with mock.patch.object(
+            state_manager, "read_dispatch_state", return_value=terminal
+        ):
+            result = local_run_once.LocalRunOnce(
+                github,
+                repository="Igzela/example",
+                repo_path=Path("/tmp"),
+                sleeper=lambda _: None,
+            )._unknown_plan_output(PLAN_ID, ATTEMPT, MAIN_SHA, NONCE, "push_outcome_unknown")
+        self.assertEqual(result.status, "failed_unknown_output")
+        self.assertEqual(result.details["subject_id"], PLAN_ID)
+        github.dispatch_controller.assert_called_once_with(
+            "block-plan",
+            {
+                "packet_id": PLAN_ID,
+                "attempt_id": ATTEMPT,
+                "source_main_sha": MAIN_SHA,
+                "claim_nonce": NONCE,
+            },
+        )
+
+
 class TestLocalSupervisor(unittest.TestCase):
     def test_two_selected_workers_start_with_real_overlap(self):
         class Poller:
@@ -498,14 +753,20 @@ class TestLocalSupervisor(unittest.TestCase):
 
         def fake_popen(command, **kwargs):
             issue = command[command.index("--issue") + 1]
+            attempt = command[command.index("--attempt-id") + 1]
             starts.append((issue, time.monotonic()))
             return real_popen([
                 sys.executable, "-c",
-                "import json,time; time.sleep(.2); print(json.dumps({'status':'handed_off'}))",
+                "import json,time,sys; time.sleep(.2); print(json.dumps({" \
+                "'kind':'repo-agent-local-run-once.v1'," \
+                "'status':'handed_off'," \
+                "'issue_number':int(sys.argv[1])," \
+                "'attempt_id':sys.argv[2]}))",
+                "worker", issue, attempt,
             ], **kwargs)
 
         with mock.patch.object(local_loop.subprocess, "Popen", side_effect=fake_popen):
-            result = local_loop.LocalSupervisor(
+            result = local_supervisor.LocalSupervisor(
                 Poller(), repository="Igzela/example", repo_path=Path("/tmp"),
                 task_timeout_seconds=10, sleeper=lambda _: None,
             ).run_batch()
@@ -513,6 +774,124 @@ class TestLocalSupervisor(unittest.TestCase):
         self.assertEqual(len(result["results"]), 2)
         self.assertEqual(len(starts), 2)
         self.assertLess(abs(starts[0][1] - starts[1][1]), .15)
+
+    def test_malformed_later_candidate_does_not_leave_first_child(self):
+        class Poller:
+            def poll(self):
+                return {"status": "ready", "selected": [{"issue_number": 7}, {"bad": True}]}
+
+        with mock.patch.object(local_loop.subprocess, "Popen") as popen:
+            result = local_supervisor.LocalSupervisor(
+                Poller(), repository="Igzela/example", repo_path=Path("/tmp")
+            ).run_batch()
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["reason"], "poll_candidate_invalid")
+        popen.assert_not_called()
+
+    def test_child_receipt_rejects_duplicate_json_and_exit_status_mismatch(self):
+        supervisor = local_supervisor.LocalSupervisor(
+            mock.Mock(), repository="Igzela/example", repo_path=Path("/tmp")
+        )
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = (
+            '{"kind":"repo-agent-local-run-once.v1","status":"handed_off",'
+            '"issue_number":7,"attempt_id":"a"}\n'
+            '{"kind":"repo-agent-local-run-once.v1","status":"handed_off",'
+            '"issue_number":7,"attempt_id":"a"}\n',
+            "",
+        )
+        duplicate = supervisor._child_receipt(process, 7, "a")
+        self.assertEqual(duplicate["status"], "outcome_unknown")
+        self.assertEqual(duplicate["details"]["reason"], "child_receipt_count_invalid")
+
+        process.communicate.return_value = (
+            '{"kind":"repo-agent-local-run-once.v1","status":"handed_off",'
+            '"issue_number":7,"attempt_id":"a"}\n',
+            "",
+        )
+        process.returncode = 2
+        mismatch = supervisor._child_receipt(process, 7, "a")
+        self.assertEqual(mismatch["status"], "outcome_unknown")
+        self.assertEqual(mismatch["details"]["reason"], "child_receipt_binding_invalid")
+
+    def test_timeout_reconciles_the_exact_attempt_without_releasing_it(self):
+        controller = mock.Mock()
+        controller.poll.return_value = {"status": "ready", "selected": [{"issue_number": 7}]}
+        process = mock.Mock(pid=1234)
+        process.poll.return_value = None
+        controller.github.dispatch_controller.return_value = None
+        with mock.patch.object(local_supervisor.subprocess, "Popen", return_value=process), \
+             mock.patch.object(local_supervisor.os, "killpg"), \
+             mock.patch.object(local_supervisor.time, "monotonic", side_effect=[0, 2, 3]), \
+             mock.patch.object(
+                 local_supervisor.state_manager,
+                 "read_dispatch_state",
+                  return_value={
+                      "status": "failed_unknown_output",
+                      "details": {"claim_nonce": "d" * 32},
+                  },
+             ):
+            result = local_supervisor.LocalSupervisor(
+                controller,
+                repository="Igzela/example",
+                repo_path=Path("/tmp"),
+                task_timeout_seconds=1,
+                sleeper=lambda _: None,
+            ).run_batch()
+        self.assertEqual(result["results"][0]["status"], "failed_unknown_output")
+        controller.github.dispatch_controller.assert_called_once()
+        fields = controller.github.dispatch_controller.call_args.args[1]
+        self.assertEqual(fields["reason_code"], "local_unknown_output")
+
+    def test_plan_timeout_reconciles_the_exact_ledger_claim(self):
+        controller = mock.Mock()
+        controller.github.plan_ledger_issue.return_value = 99
+        dispatch_id = f"plan-run:{PLAN_ID}:{MAIN_SHA}:{ATTEMPT}"
+        claim = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": 99,
+            "dispatch_id": dispatch_id,
+            "action": "plan-run",
+            "status": "dispatched",
+            "details": {
+                "ledger_issue_number": 99,
+                "subject_kind": "plan-packet",
+                "subject_id": PLAN_ID,
+                "attempt_id": ATTEMPT,
+                "source_main_sha": MAIN_SHA,
+                "claim_nonce": NONCE,
+                "allowed_paths": ["src/"],
+                "canonical_branch": f"agent/packet-{PLAN_ID.lower()}",
+            },
+        }
+        terminal = {**claim, "status": "failed_unknown_output"}
+        comments = [{
+            "author": {"login": "github-actions[bot]"},
+            "body": json.dumps(claim),
+        }, {
+            "author": {"login": "github-actions[bot]"},
+            "body": json.dumps({**claim, "status": "claimed"}),
+        }]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "read_dispatch_state", return_value=terminal):
+            result = local_supervisor.LocalSupervisor(
+                controller,
+                repository="Igzela/example",
+                repo_path=Path("/tmp"),
+                sleeper=lambda _: None,
+            )._reconcile_unknown(None, ATTEMPT, PLAN_ID)
+        self.assertEqual(result["status"], "failed_unknown_output")
+        self.assertEqual(result["subject_id"], PLAN_ID)
+        controller.github.dispatch_controller.assert_called_once_with(
+            "block-plan",
+            {
+                "packet_id": PLAN_ID,
+                "attempt_id": ATTEMPT,
+                "source_main_sha": MAIN_SHA,
+                "claim_nonce": NONCE,
+            },
+        )
 
 
 if __name__ == "__main__":
