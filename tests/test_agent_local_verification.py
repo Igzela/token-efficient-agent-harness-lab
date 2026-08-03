@@ -85,17 +85,17 @@ class TestLocalVerification(unittest.TestCase):
     def test_run_focused_checks_records_exit_codes_and_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             worktree = Path(tmp)
-            completed = mock.Mock(returncode=1)
-            with mock.patch.object(
-                local_verification.subprocess, "run", return_value=completed
-            ) as run:
-                with self.assertRaises(local_verification.LocalVerificationError) as ctx:
-                    local_verification.run_focused_checks(
-                        worktree, ["git diff --check"]
-                    )
+
+            def runner(argv, *, cwd, timeout_seconds):
+                del cwd, timeout_seconds
+                self.assertEqual(argv[:3], ["git", "diff", "--check"])
+                return 1, "", "failed"
+
+            with self.assertRaises(local_verification.LocalVerificationError) as ctx:
+                local_verification.run_focused_checks(
+                    worktree, ["git diff --check"], runner=runner
+                )
             self.assertIn("focused_check_failed", ctx.exception.reason)
-            run.assert_called_once()
-            self.assertEqual(run.call_args.args[0][:3], ["git", "diff", "--check"])
 
     def test_failed_check_returns_no_partial_success_list_to_caller(self):
         """Callers must not treat a raised error as having passed checks."""
@@ -104,11 +104,11 @@ class TestLocalVerification(unittest.TestCase):
             worktree = Path(tmp)
             results = []
 
-            def runner(argv, **kwargs):
-                del kwargs
+            def runner(argv, *, cwd, timeout_seconds):
+                del cwd, timeout_seconds
                 if argv[:3] == ["git", "diff", "--check"]:
-                    return mock.Mock(returncode=0)
-                return mock.Mock(returncode=7)
+                    return 0, "", ""
+                return 7, "", "fail"
 
             with self.assertRaises(local_verification.LocalVerificationError):
                 results = local_verification.run_focused_checks(
@@ -120,6 +120,20 @@ class TestLocalVerification(unittest.TestCase):
                     runner=runner,
                 )
             self.assertEqual(results, [])
+
+    def test_default_runner_uses_sanitized_bounded_process(self):
+        import local_run_once as lro
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp)
+            with mock.patch.object(
+                lro, "_bounded_process", return_value=(0, "", "")
+            ) as bounded:
+                results = local_verification.run_focused_checks(
+                    worktree, ["git diff --check"]
+                )
+            self.assertEqual(results, [{"command": "git diff --check", "exit_code": 0}])
+            bounded.assert_called_once()
 
 
 if __name__ == "__main__":

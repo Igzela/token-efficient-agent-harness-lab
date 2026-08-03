@@ -288,36 +288,48 @@ def run_focused_checks(
     displays: list[str],
     *,
     timeout_seconds: int = 1800,
-    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    runner: Callable[..., tuple[int, str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Execute allowlisted checks and return the artifact ``local_checks`` list."""
+    """Execute allowlisted checks and return the artifact ``local_checks`` list.
+
+    Checks run through the same sanitized-env, isolated-session, tree-kill
+    adapter as the model child so a hung cargo/bun descendant cannot leak
+    after timeout and cannot inherit GitHub/provider credentials.
+    """
 
     if not displays:
         raise LocalVerificationError("focused_checks_empty")
-    run = runner or subprocess.run
+    # Lazy import avoids a circular dependency with local_run_once.
+    import local_loop
+    import local_run_once
+
+    run = runner or (
+        lambda argv, cwd, timeout_seconds: local_run_once._bounded_process(
+            argv, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+    )
     results: list[dict[str, Any]] = []
     for display in displays:
         argv = allowlisted_command(display)
         if argv is None:
             raise LocalVerificationError(f"focused_check_not_allowlisted:{display[:80]}")
         try:
-            completed = run(
-                argv,
-                cwd=worktree,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
+            exit_code, _stdout, _stderr = run(
+                argv, cwd=worktree, timeout_seconds=timeout_seconds
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except (OSError, subprocess.TimeoutExpired, local_loop.LoopUnavailable) as exc:
             raise LocalVerificationError(
                 f"focused_check_unavailable:{display[:80]}"
             ) from exc
         # Record the exact display (stable) which is 1:1 with allowlisted argv.
-        results.append({"command": display, "exit_code": int(completed.returncode)})
-        if completed.returncode != 0:
+        results.append({"command": display, "exit_code": int(exit_code)})
+        if exit_code == 124:
             raise LocalVerificationError(
-                f"focused_check_failed:{display}:{completed.returncode}"
+                f"focused_check_timeout:{display}"
+            )
+        if exit_code != 0:
+            raise LocalVerificationError(
+                f"focused_check_failed:{display}:{exit_code}"
             )
     return results
 

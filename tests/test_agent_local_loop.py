@@ -502,6 +502,81 @@ class TestLocalRunOnce(unittest.TestCase):
             result = local_run_once._bounded_process(["command"])
         self.assertEqual(result, (0, "stdout", "stderr"))
         self.assertTrue(popen.call_args.kwargs.get("start_new_session"))
+        env = popen.call_args.kwargs.get("env") or {}
+        self.assertNotIn("GH_TOKEN", env)
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertNotIn("OPENAI_API_KEY", env)
+
+    def test_child_env_strips_credential_shaped_variables(self):
+        env = local_run_once.child_env(
+            {
+                "HOME": "/home/u",
+                "PATH": "/usr/bin",
+                "GH_TOKEN": "secret",
+                "GITHUB_TOKEN": "secret",
+                "OPENAI_API_KEY": "sk-test",
+                "DEEPSEEK_API_KEY": "secret",
+                "LANG": "C",
+            }
+        )
+        self.assertEqual(env["HOME"], "/home/u")
+        self.assertNotIn("GH_TOKEN", env)
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertNotIn("OPENAI_API_KEY", env)
+        self.assertNotIn("DEEPSEEK_API_KEY", env)
+
+    def test_claim_wait_timeout_releases_same_attempt_capacity(self):
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN_SHA
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN_SHA
+        token = local_loop.local_client_token("Igzela/example", 7, ATTEMPT)
+        claimed_details = {
+            "issue_number": 7,
+            "attempt_id": ATTEMPT,
+            "client_token": token,
+            "accepted_main_sha": MAIN_SHA,
+            "canonical_branch": "agent/issue-7",
+            "allowed_paths": ["scripts/agent-control/"],
+            "task_body_sha256": "a" * 64,
+            "claim_nonce": NONCE,
+            "lease_deadline": "2099-01-01T00:00:00Z",
+        }
+
+        def read_state(issue, dispatch_id, repo=""):
+            del issue, dispatch_id, repo
+            # First call (existing) → none; later reconcile reads claimed.
+            if not hasattr(read_state, "n"):
+                read_state.n = 0
+            read_state.n += 1
+            if read_state.n == 1:
+                return None
+            return {"status": "claimed", "details": claimed_details}
+
+        with mock.patch.object(state_manager, "read_dispatch_state", side_effect=read_state):
+            result = local_run_once.LocalRunOnce(
+                github,
+                git,
+                repository="Igzela/example",
+                repo_path=Path("/tmp"),
+                claim_timeout_seconds=0,
+                sleeper=lambda _: None,
+            ).run_once(7, ATTEMPT)
+        self.assertEqual(result.status, "claim_unavailable")
+        self.assertEqual(result.details.get("reason"), "claim_wait_unproven_reconciled")
+        release = [
+            c for c in github.dispatch_controller.call_args_list
+            if c.args and c.args[0] == "release-local"
+        ]
+        self.assertEqual(len(release), 1)
 
     def test_bounded_process_timeout_does_not_signal_caller_process_group(self):
         """Inner timeout must kill only the child tree so the receipt owner lives."""

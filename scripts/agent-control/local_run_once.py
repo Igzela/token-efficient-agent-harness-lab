@@ -147,16 +147,88 @@ def _terminate_process_tree(
         time.sleep(0.05)
 
 
+# Environment keys permitted into repository-owned worker children (Codex
+# wrapper and focused checks).  Everything else — including GH_TOKEN,
+# GITHUB_TOKEN, provider API keys, and cloud credentials — is dropped at
+# process start so credentials never enter the model or check child.
+_CHILD_ENV_ALLOWLIST = frozenset(
+    {
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "TERM",
+        "SHELL",
+        "CODEX_HOME",
+        "AGENT_CODEX_TIMEOUT_SECONDS",
+        "PWD",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+    }
+)
+
+
+def child_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Return a fail-closed environment for untrusted or semi-trusted children."""
+
+    source = base if base is not None else os.environ
+    env: dict[str, str] = {}
+    for key in _CHILD_ENV_ALLOWLIST:
+        value = source.get(key)
+        if isinstance(value, str) and value:
+            env[key] = value
+    # Never forward credential-shaped names even if allowlisted later by mistake.
+    for key in list(env):
+        upper = key.upper()
+        if any(
+            token in upper
+            for token in (
+                "TOKEN",
+                "SECRET",
+                "PASSWORD",
+                "API_KEY",
+                "APIKEY",
+                "CREDENTIAL",
+                "AUTH",
+            )
+        ):
+            env.pop(key, None)
+    if "PATH" not in env:
+        env["PATH"] = "/usr/bin:/bin"
+    if "HOME" not in env:
+        env["HOME"] = str(Path.home())
+    if "LANG" not in env:
+        env["LANG"] = "C"
+    if "LC_ALL" not in env:
+        env["LC_ALL"] = "C"
+    if "TERM" not in env:
+        env["TERM"] = "dumb"
+    return env
+
+
 def _bounded_process(
-    command: list[str], *, cwd: Path | None = None, timeout_seconds: int = 1800
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout_seconds: int = 1800,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run one child in an isolated session with tree-scoped cancellation.
 
     The child is started with ``start_new_session=True`` so its process group
     is never the run-once/receipt owner.  Timeouts terminate only the child
     PID tree; the caller survives to emit a truthful non-success receipt.
+    Credentials are never inherited: ``env`` defaults to ``child_env()``.
     """
 
+    child_environment = child_env(env) if env is not None else child_env()
     try:
         process = subprocess.Popen(
             command,
@@ -165,6 +237,7 @@ def _bounded_process(
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
+            env=child_environment,
         )
     except (OSError, ValueError) as exc:
         raise local_loop.LoopUnavailable("local command could not start") from exc
@@ -419,6 +492,36 @@ class LocalRunOnce:
         if not isinstance(nonce, str) or state_manager.CLAIM_NONCE_PATTERN.fullmatch(nonce) is None:
             raise local_loop.LoopUnavailable("claim nonce is unavailable")
         return nonce
+
+    def _reconcile_unproven_claim(
+        self, issue: int, attempt: str, token: str, dispatch_id: str
+    ) -> None:
+        """Release a same-attempt claim left without a proven dispatch handoff.
+
+        Called when claim wait fails.  Only the exact attempt/token may release;
+        mismatched or absent state is ignored so capacity owned by another
+        generation is never demoted.
+        """
+
+        try:
+            state = state_manager.read_dispatch_state(issue, dispatch_id, self.repository)
+        except state_manager.StateUnavailableError:
+            return
+        if not isinstance(state, dict):
+            return
+        status = state.get("status")
+        details = state.get("details") if isinstance(state.get("details"), dict) else None
+        if status not in {"claimed", "dispatched"} or not isinstance(details, dict):
+            return
+        valid, _reason = state_manager.local_claim_binding_valid(
+            issue, details, attempt, token, require_lease_live=False
+        )
+        if not valid:
+            return
+        nonce = details.get("claim_nonce")
+        if not isinstance(nonce, str) or state_manager.CLAIM_NONCE_PATTERN.fullmatch(nonce) is None:
+            return
+        self._release(issue, attempt, token, nonce, "local_environment_failure")
 
     def _live_plan(self, packet_id: str) -> tuple[plan_lane.PlanCandidate, int]:
         if not plan_lane.PACKET_ID.fullmatch(packet_id):
@@ -985,9 +1088,24 @@ class LocalRunOnce:
                 )
                 details = self._wait_for_claim(issue_number, dispatch_id)
                 if details is None:
-                    return self._result("claim_unavailable", issue_number, attempt)
+                    # Claim may have been durable-written without dispatch
+                    # promotion.  Supervisor attempts use fresh UUIDs, so this
+                    # generation must release itself rather than waiting for a
+                    # same-attempt resume that will never arrive.
+                    self._reconcile_unproven_claim(
+                        issue_number, attempt, token, dispatch_id
+                    )
+                    return self._result(
+                        "claim_unavailable",
+                        issue_number,
+                        attempt,
+                        reason="claim_wait_unproven_reconciled",
+                    )
                 claimed = True
             if not isinstance(details, dict):
+                self._reconcile_unproven_claim(
+                    issue_number, attempt, token, dispatch_id
+                )
                 return self._result("claim_unavailable", issue_number, attempt)
             valid, reason = state_manager.local_claim_binding_valid(
                 issue_number, details, attempt, token
