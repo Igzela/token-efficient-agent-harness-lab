@@ -84,7 +84,13 @@ SANITIZED_ENV=(
   "TEMP=$TEMP"
   "TERM=$TERM"
 )
-for optional_name in CODEX_HOME USER LOGNAME SHELL; do
+for optional_name in \
+  CODEX_HOME USER LOGNAME SHELL \
+  HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
+  http_proxy https_proxy all_proxy no_proxy \
+  SSL_CERT_FILE SSL_CERT_DIR REQUESTS_CA_BUNDLE CURL_CA_BUNDLE \
+  XDG_CONFIG_HOME XDG_CACHE_HOME XDG_RUNTIME_DIR
+do
   if [[ -v "$optional_name" && -n "${!optional_name}" ]]; then
     SANITIZED_ENV+=("$optional_name=${!optional_name}")
   fi

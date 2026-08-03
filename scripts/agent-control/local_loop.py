@@ -243,12 +243,23 @@ class LoopController:
             except AttributeError:
                 plan_document = None
             except LoopUnavailable:
-                raise
+                # Plan lane is deferred; an unreadable plan document must not
+                # prevent Issue admission.  Issues still fail closed on their
+                # own markers and capacity checks.
+                plan_document = None
             if plan_document is not None:
                 try:
                     plan = plan_lane.parse_optional(plan_document, accepted_main)
                 except plan_lane.PlanLaneError as exc:
-                    raise LoopUnavailable(exc.reason) from exc
+                    # Deferred Plan lane: structural plan parse failures are
+                    # non-admission signals, not Issue-path blockers.
+                    plan = None
+                    rejected.append(
+                        {
+                            "candidate_kind": "plan",
+                            "reason": f"plan_lane_deferred:{exc.reason}",
+                        }
+                    )
                 if plan is not None:
                     rejected.append(
                         {
@@ -523,7 +534,11 @@ class GitHubAdapter:
         if not isinstance(content, str):
             raise LoopUnavailable("canonical plan document is malformed")
         try:
-            decoded = base64.b64decode(content, validate=True).decode("utf-8")
+            # GitHub content API returns base64 with newlines; strip whitespace
+            # before decode so a valid UTF-8 document is not fail-closed as
+            # binary garbage.
+            cleaned = "".join(content.split())
+            decoded = base64.b64decode(cleaned, validate=True).decode("utf-8")
         except (ValueError, UnicodeDecodeError) as exc:
             raise LoopUnavailable("canonical plan document is not valid UTF-8") from exc
         if len(decoded.encode("utf-8")) > plan_lane.MAX_DOCUMENT_BYTES:

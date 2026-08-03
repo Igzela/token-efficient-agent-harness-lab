@@ -494,6 +494,21 @@ class TestLoopctl(unittest.TestCase):
                     ])
 
 
+
+class TestPlanDocumentDecode(unittest.TestCase):
+    def test_github_base64_newlines_are_accepted(self):
+        import base64
+        body = "# Next Decision\n\nhello"
+        encoded = base64.b64encode(body.encode()).decode()
+        # GitHub inserts newlines every 60 chars
+        wrapped = "\n".join(encoded[i:i+60] for i in range(0, len(encoded), 60))
+        adapter = local_loop.GitHubAdapter.__new__(local_loop.GitHubAdapter)
+        adapter.repository = "Igzela/example"
+        adapter.timeout_seconds = 30
+        adapter._gh_json = lambda *a, **k: {"encoding": "base64", "content": wrapped}
+        self.assertEqual(adapter.accepted_plan_document("a" * 40), body)
+
+
 class TestLocalRunOnce(unittest.TestCase):
     def test_run_once_child_uses_isolated_session_not_caller_group(self):
         process = mock.Mock(pid=1234, returncode=0)
@@ -517,9 +532,13 @@ class TestLocalRunOnce(unittest.TestCase):
                 "OPENAI_API_KEY": "sk-test",
                 "DEEPSEEK_API_KEY": "secret",
                 "LANG": "C",
+                "HTTPS_PROXY": "http://127.0.0.1:7897",
+                "NO_PROXY": "localhost,127.0.0.1",
             }
         )
         self.assertEqual(env["HOME"], "/home/u")
+        self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:7897")
+        self.assertEqual(env["NO_PROXY"], "localhost,127.0.0.1")
         self.assertNotIn("GH_TOKEN", env)
         self.assertNotIn("GITHUB_TOKEN", env)
         self.assertNotIn("OPENAI_API_KEY", env)
