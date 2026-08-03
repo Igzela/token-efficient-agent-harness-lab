@@ -537,10 +537,12 @@ class TestClaimLocalCliAndWiring(ClaimLocalBase):
         self.assertNotIn('"${{ inputs.client_token }}"', source)
         self.assertNotIn('"${{ inputs.attempt_id }}"', source)
 
-    def test_loopctl_has_no_local_claim_or_mutation_surface(self):
+    def test_loopctl_run_once_exposes_only_derived_input_surface(self):
         loopctl_source = (CONTROL / "loopctl.py").read_text()
         self.assertIn('subparsers.add_parser("poll"', loopctl_source)
-        self.assertNotIn("claim", loopctl_source)
+        self.assertIn('subparsers.add_parser(\n        "run-once"', loopctl_source)
+        for forbidden in ("accepted_sha", "branch", "scope", "prompt", "shell", "artifact"):
+            self.assertNotIn(f'"--{forbidden}"', loopctl_source)
 
 
 if __name__ == "__main__":

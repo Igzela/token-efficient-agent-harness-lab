@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+import time
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -474,6 +475,44 @@ class TestLoopctl(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         self.assertEqual(captured["max_active"], 1)
+
+    def test_run_once_cli_does_not_accept_derived_inputs(self):
+        for forbidden in ("--accepted-sha", "--branch", "--scope", "--prompt", "--shell", "--artifact"):
+            with self.subTest(forbidden=forbidden):
+                with self.assertRaises(SystemExit):
+                    loopctl.main([
+                        "run-once", "--repo", "Igzela/example", "--repo-path", "/tmp",
+                        "--issue", "7", "--attempt-id", "123e4567-e89b-12d3-a456-426614174000",
+                        forbidden, "value",
+                    ])
+
+
+class TestLocalSupervisor(unittest.TestCase):
+    def test_two_selected_workers_start_with_real_overlap(self):
+        class Poller:
+            def poll(self):
+                return {"status": "ready", "selected": [{"issue_number": 7}, {"issue_number": 8}]}
+
+        real_popen = local_loop.subprocess.Popen
+        starts = []
+
+        def fake_popen(command, **kwargs):
+            issue = command[command.index("--issue") + 1]
+            starts.append((issue, time.monotonic()))
+            return real_popen([
+                sys.executable, "-c",
+                "import json,time; time.sleep(.2); print(json.dumps({'status':'handed_off'}))",
+            ], **kwargs)
+
+        with mock.patch.object(local_loop.subprocess, "Popen", side_effect=fake_popen):
+            result = local_loop.LocalSupervisor(
+                Poller(), repository="Igzela/example", repo_path=Path("/tmp"),
+                task_timeout_seconds=10, sleeper=lambda _: None,
+            ).run_batch()
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(len(starts), 2)
+        self.assertLess(abs(starts[0][1] - starts[1][1]), .15)
 
 
 if __name__ == "__main__":

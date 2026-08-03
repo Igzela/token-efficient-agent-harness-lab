@@ -41,6 +41,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="return exit 3 when the poll is healthy but no task is ready",
     )
+    run_once = subparsers.add_parser(
+        "run-once", help="claim and execute one Issue through the local control plane"
+    )
+    run_once.add_argument("--repo", required=True, help="GitHub repository as owner/name")
+    run_once.add_argument("--repo-path", required=True, type=Path, help="exact local Git worktree root")
+    run_once.add_argument("--issue", required=True, type=int)
+    run_once.add_argument("--attempt-id", required=True)
+    batch = subparsers.add_parser(
+        "run-batch", help="poll and launch up to the repository K local workers"
+    )
+    batch.add_argument("--repo", required=True, help="GitHub repository as owner/name")
+    batch.add_argument("--repo-path", required=True, type=Path, help="exact local Git worktree root")
+    batch.add_argument("--max-active", type=_bounded_max_active, default=state_manager.MAX_ACTIVE)
+    batch.add_argument("--task-timeout", type=int, default=3600)
     return parser
 
 
@@ -48,8 +62,53 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     controller_factory: Callable[..., local_loop.LoopController] | None = None,
+    run_once_factory: Callable[..., local_loop.LocalRunOnce] | None = None,
+    supervisor_factory: Callable[..., local_loop.LocalSupervisor] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "run-batch":
+        try:
+            poller = (controller_factory or local_loop.LoopController)(
+                local_loop.GitHubAdapter(args.repo),
+                local_loop.GitAdapter(),
+                repository=args.repo,
+                repo_path=args.repo_path,
+                max_active=args.max_active,
+            )
+            factory = supervisor_factory or local_loop.LocalSupervisor
+            result = factory(
+                poller,
+                repository=args.repo,
+                repo_path=args.repo_path,
+                max_active=args.max_active,
+                task_timeout_seconds=args.task_timeout,
+            ).run_batch()
+        except (OSError, ValueError, local_loop.LoopUnavailable) as exc:
+            result = {
+                "kind": "repo-agent-supervisor.v1",
+                "status": "unavailable",
+                "reason": str(exc)[:300],
+                "results": [],
+            }
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0 if result.get("status") in {"completed", "ready"} else 2
+    if args.command == "run-once":
+        try:
+            factory = run_once_factory or local_loop.LocalRunOnce
+            result = factory(repository=args.repo, repo_path=args.repo_path).run_once(
+                args.issue, args.attempt_id
+            )
+            wire = result.to_wire() if hasattr(result, "to_wire") else result
+        except (OSError, ValueError, local_loop.LoopUnavailable) as exc:
+            wire = {
+                "kind": "repo-agent-local-run-once.v1",
+                "status": "unavailable",
+                "issue_number": args.issue,
+                "attempt_id": args.attempt_id,
+                "details": {"reason": str(exc)[:300]},
+            }
+        print(json.dumps(wire, ensure_ascii=False, sort_keys=True))
+        return 0 if wire.get("status") == "handed_off" else 2
     factory = controller_factory or local_loop.LoopController
     try:
         controller = factory(
