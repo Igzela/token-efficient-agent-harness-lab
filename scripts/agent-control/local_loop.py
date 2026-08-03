@@ -251,7 +251,15 @@ class LoopController:
                 try:
                     plan = plan_lane.parse_optional(plan_document, accepted_main)
                 except plan_lane.PlanLaneError as exc:
-                    raise LoopUnavailable(exc.reason) from exc
+                    # Deferred Plan lane: structural plan parse failures are
+                    # non-admission signals, not Issue-path blockers.
+                    plan = None
+                    rejected.append(
+                        {
+                            "candidate_kind": "plan",
+                            "reason": f"plan_lane_deferred:{exc.reason}",
+                        }
+                    )
                 if plan is not None:
                     rejected.append(
                         {
