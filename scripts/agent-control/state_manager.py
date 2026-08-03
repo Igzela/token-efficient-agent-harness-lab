@@ -9,7 +9,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -43,6 +43,16 @@ MAX_ACTIVE = 2
 # in the claimed dispatch state before any label mutation.  Local processes
 # never supply a lease; compensation of an expired lease is out of scope.
 LOCAL_CLAIM_LEASE_HOURS = 4
+# Bounded reason-code vocabulary for the trusted local-run release gateway.
+# The release-local controller command accepts only this allowlisted set, so
+# free text, secrets, and unbounded strings can never reach durable state.
+LOCAL_RELEASE_REASONS = frozenset({
+    "local_checkout_failure",
+    "local_environment_failure",
+    "local_preflight_failure",
+    "local_worktree_failure",
+    "local_aborted",
+})
 MAX_REPAIR_ATTEMPTS = 2
 MAX_REVIEW_EVIDENCE_BYTES = 64 * 1024
 MAX_REVIEW_API_PAGES = 20
@@ -709,10 +719,171 @@ def read_ci_state(issue_number, repo=""):
     return state if isinstance(state, dict) and state.get("kind") == "agent-orchestrator-ci-state" else None
 
 
+def read_exact_ci_state(issue_number, pr_number, head_sha, ci_run_id, repo=""):
+    """Read the newest trusted CI state and classify it against an exact binding.
+
+    The trusted local-run handoff must know whether exact-head CI state for a
+    reused acquisition already exists before it may dispatch the monitor.  The
+    newest trusted ``agent-orchestrator-ci-state`` comment is classified
+    against the exact ``(pr_number, head_sha, ci_run_id)`` binding, failing
+    closed on any unreadable or malformed state instead of treating it as
+    absent.
+
+    Returns ``("matched", state)`` when the newest trusted CI state is for the
+    exact binding, ``("absent", None)`` when no trusted CI-state comment
+    exists, ``("conflict", state)`` when the newest trusted CI state exists
+    but is bound to different PR/head/run, and ``("unverifiable", reason)``
+    when the comment state cannot be read or parsed at all.
+    """
+
+    try:
+        comments = get_issue_comments(issue_number, repo)
+    except StateUnavailableError:
+        return "unverifiable", "ci_state_unavailable"
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        body = comment.get("body", "")
+        if not isinstance(body, str) or "agent-orchestrator-ci-state" not in body:
+            continue
+        try:
+            state = json.loads(body)
+        except (json.JSONDecodeError, TypeError):
+            return "unverifiable", "ci_state_malformed"
+        if not isinstance(state, dict) or state.get("kind") != "agent-orchestrator-ci-state":
+            return "unverifiable", "ci_state_malformed"
+        if state.get("version") != 2:
+            return "unverifiable", "ci_state_version_unsupported"
+        if (
+            state.get("pr_number") == int(pr_number)
+            and state.get("head_sha") == head_sha
+            and str(state.get("workflow_run_id")) == str(ci_run_id)
+        ):
+            return "matched", state
+        return "conflict", state
+    return "absent", None
+
+
 WORKER_SCOPE_ACTIONS = frozenset({"worker", "local-run"})
 WORKER_SCOPE_STATUSES = frozenset({"claimed", "dispatched"})
 WORKER_SCOPE_TERMINAL_STATUSES = frozenset({"failed"})
 CLAIM_NONCE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+HEX40_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _parse_lease_deadline(value: object):
+    """Parse a persisted UTC lease deadline, failing closed to None."""
+
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        return None
+    return parsed
+
+
+def local_claim_binding_valid(
+    issue_number,
+    details,
+    expected_attempt,
+    expected_token,
+    *,
+    now=None,
+    require_lease_live=True,
+):
+    """Validate the complete trusted local-run claim binding.
+
+    The trusted handoff and release gateways accept a local process's claim
+    only when every server-side bound field is present and well-formed and
+    the caller's exact attempt id and client token match: canonical branch
+    ``agent/issue-N``, 40-hex accepted-main SHA, the Issue scope binding
+    (``allowed_paths`` and 64-hex ``task_body_sha256``), a 32-hex claim
+    nonce, and a parseable UTC lease deadline.
+
+    ``require_lease_live`` defaults to ``True``: an expired lease is rejected
+    fail closed because this slice performs no lease recovery.  An exact
+    terminal retry of an already-persisted ``failed`` release sets it to
+    ``False``: the immutable binding syntax (including a well-formed lease
+    string) must still validate, but the lease no longer needs to be live.
+
+    Returns ``(True, lease_deadline)`` or ``(False, reason)``.
+    """
+
+    if not isinstance(details, dict):
+        return False, "claim_details_invalid"
+    if details.get("issue_number") != int(issue_number):
+        return False, "claim_issue_mismatch"
+    if details.get("attempt_id") != expected_attempt:
+        return False, "claim_attempt_mismatch"
+    if details.get("client_token") != expected_token:
+        return False, "claim_token_mismatch"
+    accepted_main = details.get("accepted_main_sha")
+    if not isinstance(accepted_main, str) or HEX40_PATTERN.fullmatch(accepted_main) is None:
+        return False, "claim_main_binding_invalid"
+    if details.get("canonical_branch") != f"agent/issue-{int(issue_number)}":
+        return False, "claim_branch_binding_invalid"
+    try:
+        import artifact_contract
+        artifact_contract.validate_issue_scope_binding(details)
+    except (artifact_contract.ArtifactContractError, ValueError, TypeError):
+        return False, "claim_scope_binding_invalid"
+    if not _claim_nonce_valid(details.get("claim_nonce")):
+        return False, "claim_nonce_invalid"
+    lease = _parse_lease_deadline(details.get("lease_deadline"))
+    if lease is None:
+        return False, "claim_lease_invalid"
+    if require_lease_live and (now or datetime.now(timezone.utc)) > lease:
+        return False, "claim_lease_expired"
+    return True, lease
+
+
+def record_local_worker_state(
+    issue_number,
+    pr_number,
+    head_sha,
+    *,
+    branch,
+    attempt_id,
+    dispatch_id,
+    claim_nonce,
+    repo="",
+):
+    """Idempotently persist the trusted local-run worker binding.
+
+    A retry that already persisted the exact binding writes nothing; any
+    different existing worker state fails closed so a stale or conflicting
+    handoff can never overwrite another worker generation.
+
+    Returns ``(True, "recorded" | "already_recorded")`` or ``(False, reason)``.
+    """
+
+    try:
+        worker = read_worker_state(issue_number, repo)
+    except StateUnavailableError:
+        return False, "worker_state_unavailable"
+    extra = {
+        "branch": branch,
+        "attempt_id": attempt_id,
+        "dispatch_id": dispatch_id,
+        "claim_nonce": claim_nonce,
+    }
+    if worker:
+        if (
+            worker.get("worker_type") == "local-run"
+            and worker.get("pr_number") == int(pr_number)
+            and worker.get("head_sha") == head_sha
+            and worker.get("extra") == extra
+        ):
+            return True, "already_recorded"
+        return False, "conflicting_worker_state"
+    if not record_worker_state(
+        issue_number, pr_number, head_sha, "local-run", extra=extra, repo=repo
+    ):
+        return False, "worker_state_write_failed"
+    return True, "recorded"
 
 
 def read_task_scope_binding(issue_number, repo=""):
@@ -1809,6 +1980,29 @@ def _newest_worker_claim_outcome(issue_number, dispatch_id, claim_nonce, repo=""
             return "own-terminal", state
         return "superseded", state
     return "absent", None
+
+
+def release_local_claim_outcome(issue_number, dispatch_id, claim_nonce, repo=""):
+    """Release-gate classification of the newest trusted local-run claim.
+
+    ``dispatcher.release_local`` reads its own exact ``dispatch_id`` to
+    validate the binding, but a stale terminal retry for attempt A must never
+    release the active capacity of a newer local claim generation B.  The
+    canonical newest-relevant worker/local-run classifier is
+    ``_newest_worker_claim_outcome``: comments newest first, caller's exact
+    ``(dispatch_id, claim_nonce)`` is the generation discriminator, and every
+    unverifiable newest state fails closed to no mutation.  This public entry
+    point keeps that generation-guard contract versioned here in
+    state_manager, the sole dispatch-state owner, so the dispatcher never
+    re-implements newest-relevant ordering.
+
+    Returns the same ``(outcome, payload)`` contract as
+    ``_newest_worker_claim_outcome``: ``own-active`` and ``own-terminal``
+    authorize the caller's release; ``superseded``, ``unverifiable``, and
+    ``absent`` authorize no mutation.
+    """
+
+    return _newest_worker_claim_outcome(issue_number, dispatch_id, claim_nonce, repo)
 
 
 def release_rejected_worker(

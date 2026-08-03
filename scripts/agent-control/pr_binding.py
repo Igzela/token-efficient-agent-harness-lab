@@ -91,11 +91,52 @@ def _verify_pr(
 def _view_pr(repo: str, number: int) -> dict[str, Any]:
     data = _gh_json(
         "pr", "view", str(number), "--repo", repo,
-        "--json", "number,state,baseRefName,headRefName,headRefOid,body,url,isDraft",
+        "--json", "number,state,baseRefName,headRefName,headRefOid,body,url,isDraft,headRepository",
     )
     if not isinstance(data, dict):
         raise PRBindingError("PR view response was not an object")
     return data
+
+
+def find_issue_pr(
+    issue_number: int, branch: str, expected_sha: str, repo: str | None = None
+) -> dict[str, Any]:
+    """Return the authoritative final view of the single open Issue-bound PR.
+
+    The trusted handoff gateway must know the exact PR before it can verify
+    anything else.  The ``pr list`` snapshot is discovery only: it identifies
+    the single open candidate (matching the canonical branch or the Issue
+    binding marker) and its number.  Zero and multiple candidates both fail
+    closed so a handoff can never guess which PR to bind.
+
+    The authoritative PR number, base/head refs, Draft state, head
+    repository, binding marker, and closing link are read from the final
+    ``pr view`` and checked through the canonical ``_verify_pr`` owner;
+    incomplete list data is never trusted for base/head.  A view whose
+    number disagrees with the discovered candidate, a non-open or non-Draft
+    view, a view whose head branch or exact head sha differs from the
+    expected canonical branch/head, a view without the Issue binding marker
+    or closing link, and a fork head repository all fail closed.
+    """
+
+    target = _repo(repo)
+    open_prs = _open_prs(target)
+    candidates = _candidate_prs(open_prs, issue_number, branch)
+    if len(candidates) != 1:
+        raise PRBindingError("zero or multiple open PRs bound to the Issue branch")
+    candidate = candidates[0]
+    if not isinstance(candidate.get("number"), int):
+        raise PRBindingError("bound PR number is invalid")
+    if str(candidate.get("state", "")).upper() != "OPEN":
+        raise PRBindingError("bound PR is not open")
+    verified = _view_pr(target, int(candidate["number"]))
+    if verified.get("number") != int(candidate["number"]):
+        raise PRBindingError("bound PR final view is inconsistent")
+    _verify_pr(verified, issue_number, branch, expected_sha, open_prs)
+    head_repo = verified.get("headRepository")
+    if not isinstance(head_repo, dict) or head_repo.get("nameWithOwner") != target:
+        raise PRBindingError("PR head repository is not the target repository")
+    return verified
 
 
 def create_or_update_pr(

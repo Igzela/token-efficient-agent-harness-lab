@@ -36,7 +36,7 @@ MAIN_SHA = "a" * 40
 OWNER = "acme"
 REPO = f"{OWNER}/repo"
 ATTEMPT = "123e4567-e89b-12d3-a456-426614174000"
-TOKEN = "c" * 32
+CLIENT_TOKEN = "c" * 32
 SCOPE = '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["src/"]} -->'
 TASK = f'<!-- repo-agent-task:v1 {{"accepted_main_sha":"{MAIN_SHA}"}} -->'
 BODY = f"{SCOPE}\n{TASK}"
@@ -176,7 +176,7 @@ class ClaimLocalBase(unittest.TestCase):
         details = {
             "issue_number": ISSUE,
             "attempt_id": ATTEMPT,
-            "client_token": TOKEN,
+            "client_token": CLIENT_TOKEN,
             "accepted_main_sha": MAIN_SHA,
             "canonical_branch": CANONICAL_BRANCH,
             "lease_deadline": (datetime.now(timezone.utc) + timedelta(hours=4)).isoformat().replace("+00:00", "Z"),
@@ -195,7 +195,7 @@ class TestClaimLocalInputValidation(ClaimLocalBase):
         for bad in ("not-a-uuid", "z" * 32, "0123456789abcdef", "", "urn:uuid:" + ATTEMPT,
                     "{" + ATTEMPT + "}", ATTEMPT.upper(), ATTEMPT.replace("-", "")):
             with self.subTest(attempt=bad):
-                self.assertEqual(dispatcher.claim_local(ISSUE, bad, TOKEN),
+                self.assertEqual(dispatcher.claim_local(ISSUE, bad, CLIENT_TOKEN),
                                  {"dispatched": False, "issue": ISSUE, "reason": "invalid_attempt_id"})
 
     def test_invalid_client_token_fails_closed(self):
@@ -208,43 +208,43 @@ class TestClaimLocalInputValidation(ClaimLocalBase):
 class TestClaimLocalServerDerivation(ClaimLocalBase):
     def test_control_and_repository_negatives_fail_closed(self):
         with self.claim_context(live=False):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "disabled_or_emergency_stopped")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "disabled_or_emergency_stopped")
         with self.claim_context(repo_value=""):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "repository_unavailable")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "repository_unavailable")
         with self.claim_context(adapter_error=ValueError("repository must be owner/name")):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "repository_malformed")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "repository_malformed")
         with self.claim_context(metadata_error=local_loop.LoopUnavailable("boom")):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "repository_state_unavailable")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "repository_state_unavailable")
         with self.claim_context(metadata={"name_with_owner": REPO, "default_branch": "main"}):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "repository_state_unavailable")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "repository_state_unavailable")
         for branch in ("bad branch!", "x" * 201, ""):
             with self.subTest(branch=branch):
                 with self.claim_context(metadata={"name_with_owner": REPO, "owner": OWNER, "default_branch": branch}):
-                    self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "default_branch_unavailable")
+                    self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "default_branch_unavailable")
         with self.claim_context(sha_error=local_loop.LoopUnavailable("boom")):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "accepted_main_unavailable")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "accepted_main_unavailable")
         with self.claim_context(main_sha="not-a-sha"):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "accepted_main_unavailable")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "accepted_main_unavailable")
 
     def test_author_and_task_binding_negatives_fail_closed(self):
         with self.claim_context(author=None):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "issue_state_unavailable")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "issue_state_unavailable")
         with self.claim_context(author="mallory"):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "untrusted_author")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "untrusted_author")
         with self.claim_context(body=None):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "task_body_unavailable")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "task_body_unavailable")
         for bad_body in ("no marker", TASK + TASK, '<!-- repo-agent-task:v1 {not json} -->',
                          f'<!-- repo-agent-task:v1 {{"accepted_main_sha":"{"B" * 40}"}} -->',
                          '<!-- repo-agent-task:v1 {"accepted_main_sha":"' + MAIN_SHA + '","extra":1} -->'):
             with self.subTest(body=bad_body):
                 with self.claim_context(body=bad_body):
-                    self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "invalid_task_binding")
+                    self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "invalid_task_binding")
         with self.claim_context(body=f"{SCOPE}\n<!-- repo-agent-task:v1 {{\"accepted_main_sha\":\"{'b' * 40}\"}} -->"):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "accepted_main_mismatch")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "accepted_main_mismatch")
 
     def test_invalid_scope_writes_no_state_label_or_workflow(self):
         with self.claim_context(body=TASK) as mocks:
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertTrue(result["reason"].startswith("invalid_scope:"))
         self.assertEqual(mocks["record"].call_count, 0)
         self.assertEqual(self.label_calls, [])
@@ -253,34 +253,34 @@ class TestClaimLocalServerDerivation(ClaimLocalBase):
 
     def test_dependencies_pr_labels_capacity_and_conflict_fail_closed(self):
         with self.claim_context(dependencies=(False, 42)):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "dependencies_not_ready:42")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "dependencies_not_ready:42")
         with self.claim_context(dependencies=(False, "dependency_state_unavailable")):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"],
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"],
                              "dependencies_not_ready:dependency_state_unavailable")
         with self.claim_context(has_pr=True):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "issue_already_associated")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "issue_already_associated")
         with self.claim_context(has_pr=None):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "association_state_unavailable")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "association_state_unavailable")
         with self.claim_context(labels=None):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "label_state_unavailable")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "label_state_unavailable")
         for labels in (frozenset(), frozenset({sm.LABEL_RUNNING}), frozenset({sm.LABEL_COMPLETE})):
             with self.subTest(labels=labels):
                 with self.claim_context(labels=labels):
-                    self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "issue_not_ready")
+                    self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "issue_not_ready")
         with self.claim_context(active=({55, 66},)):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "capacity_full")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "capacity_full")
         with self.claim_context(active=(None,)):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "capacity_state_unavailable")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "capacity_state_unavailable")
         with self.claim_context(active=({55},), active_scopes={55: ["src/"]}):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "scope_conflict:55")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "scope_conflict:55")
         with self.claim_context(active=({55},), active_scopes=None):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "active_scope_state_unavailable")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "active_scope_state_unavailable")
 
 
 class TestClaimLocalTrustedReadback(ClaimLocalBase):
     def test_trusted_readback_happens_before_label_and_before_dispatched(self):
         with self.claim_context():
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertTrue(result["dispatched"])
         self.assertEqual([r["status"] for r in self.records], ["claimed", "dispatched"])
         self.assertEqual(self.label_calls, [[sm.LABEL_RUNNING]])
@@ -289,7 +289,7 @@ class TestClaimLocalTrustedReadback(ClaimLocalBase):
         forged = self.claimed_state(status="dispatched")
         with self.claim_context(read_patch=False,
                                 comments=[{"author": {"login": "mallory"}, "body": json.dumps(forged, sort_keys=True)}]) as mocks:
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertEqual(result["reason"], "claim_readback_unverified")
         self.assertEqual(self.label_calls, [])
         mocks["workflow"].assert_not_called()
@@ -299,18 +299,18 @@ class TestClaimLocalTrustedReadback(ClaimLocalBase):
         comments = [{"author": {"login": "mallory"}, "body": json.dumps(self.claimed_state(status="dispatched"), sort_keys=True)},
                     {"author": {"login": "github-actions[bot]"}, "body": json.dumps(trusted, sort_keys=True)}]
         with self.claim_context(read_patch=False, comments=comments):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "dispatch_in_flight")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "dispatch_in_flight")
 
     def test_malformed_trusted_comment_fails_closed(self):
         comments = [{"author": {"login": "github-actions[bot]"}, "body": "agent-orchestrator-dispatch-state {not json"}]
         with self.claim_context(read_patch=False, comments=comments):
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "dispatch_state_unavailable")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "dispatch_state_unavailable")
 
 
 class TestClaimLocalSuccessContract(ClaimLocalBase):
     def test_success_persists_complete_claim_binding_and_dispatched_without_workflow(self):
         with self.claim_context() as mocks:
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertEqual(result, {"dispatched": True, "issue": ISSUE, "dispatch_id": DISPATCH_ID})
         claimed = self.records[0]
         self.assertEqual(claimed["action"], "local-run")
@@ -323,7 +323,7 @@ class TestClaimLocalSuccessContract(ClaimLocalBase):
         })
         self.assertEqual(details["issue_number"], ISSUE)
         self.assertEqual(details["attempt_id"], ATTEMPT)
-        self.assertEqual(details["client_token"], TOKEN)
+        self.assertEqual(details["client_token"], CLIENT_TOKEN)
         self.assertEqual(details["accepted_main_sha"], MAIN_SHA)
         self.assertEqual(details["canonical_branch"], CANONICAL_BRANCH)
         self.assertEqual(details["allowed_paths"], ["src/"])
@@ -342,14 +342,14 @@ class TestClaimLocalSuccessContract(ClaimLocalBase):
 
     def test_absent_remote_branch_is_never_required_and_body_is_read_once(self):
         with self.claim_context():
-            self.assertTrue(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["dispatched"])
+            self.assertTrue(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["dispatched"])
         self.assertEqual(self.body_reads, 1)
         self.assertEqual(self.records[0]["details"]["task_body_sha256"], DIGEST)
 
     def test_lease_deadline_is_bounded_utc_zulu_in_the_claim(self):
         before = datetime.now(timezone.utc)
         with self.claim_context():
-            dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         raw = self.records[0]["details"]["lease_deadline"]
         self.assertTrue(raw.endswith("Z"))
         deadline = datetime.fromisoformat(raw)
@@ -360,14 +360,14 @@ class TestClaimLocalSuccessContract(ClaimLocalBase):
 
     def test_claim_state_write_failure_fails_closed_before_label(self):
         with self.claim_context(record_ok=False) as mocks:
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertEqual(result["reason"], "claim_state_failed")
         self.assertEqual(self.label_calls, [])
         mocks["workflow"].assert_not_called()
 
     def test_label_mutation_failure_records_failed_claim_with_binding(self):
         with self.claim_context(set_labels_ok=False) as mocks:
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertEqual(result["reason"], "claim_label_failed")
         mocks["workflow"].assert_not_called()
         failed = self.records[-1]
@@ -389,26 +389,26 @@ class TestClaimLocalSuccessContract(ClaimLocalBase):
 
         with self.claim_context() as mocks:
             mocks["record"].side_effect = record_state
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertEqual(result["reason"], "dispatch_state_failed_capacity_retained")
         self.assertEqual(self.label_calls, [[sm.LABEL_RUNNING]])
         self.assertEqual(self.records[0]["status"], "claimed")
         with self.claim_context():
-            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["reason"], "dispatch_in_flight")
+            self.assertEqual(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["reason"], "dispatch_in_flight")
 
     def test_capacity_recheck_exceeded_or_unavailable_compensates(self):
         with self.claim_context(active=(set(), {ISSUE, 55, 66})):
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertEqual(result["reason"], "capacity_recheck_exceeded")
         rollback = next(r for r in self.records if r["action"] == "rollback")
         self.assertEqual(rollback["status"], "failed")
         self.assertEqual(rollback["details"]["reason"], "capacity_recheck_exceeded")
         self.assertRegex(rollback["details"]["claim_nonce"], r"^[0-9a-f]{32}$")
-        self.assertEqual(rollback["details"]["client_token"], TOKEN)
+        self.assertEqual(rollback["details"]["client_token"], CLIENT_TOKEN)
         self.assertEqual(self.label_calls[-1], [sm.LABEL_READY])
         self.records.clear()
         with self.claim_context(active=(set(), None)):
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertEqual(result["reason"], "capacity_recheck_unavailable")
         self.assertEqual(next(r for r in self.records if r["action"] == "rollback")["details"]["reason"],
                          "capacity_recheck_unavailable")
@@ -418,14 +418,14 @@ class TestClaimLocalRetrySemantics(ClaimLocalBase):
     def test_exact_retry_after_dispatched_is_idempotent_and_in_flight_otherwise(self):
         self.persisted[DISPATCH_ID] = self.claimed_state(status="dispatched")
         with self.claim_context() as mocks:
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertEqual(result, {"dispatched": True, "issue": ISSUE, "reason": "already_dispatched"})
         self.assertEqual(mocks["record"].call_count, 0)
         self.assertEqual(self.label_calls, [])
         self.persisted.clear()
         self.persisted[DISPATCH_ID] = self.claimed_state()
         with self.claim_context() as mocks:
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertEqual(result["dispatched"], False)
         self.assertEqual(result["reason"], "dispatch_in_flight")
         self.assertEqual(mocks["record"].call_count, 0)
@@ -436,7 +436,7 @@ class TestClaimLocalRetrySemantics(ClaimLocalBase):
         prior["details"] = dict(reversed(list(prior["details"].items())))
         self.persisted[prior["dispatch_id"]] = prior
         with self.claim_context() as mocks:
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertEqual(result["reason"], "dispatch_in_flight")
         self.assertEqual(mocks["record"].call_count, 0)
         self.assertEqual(self.label_calls, [])
@@ -447,24 +447,24 @@ class TestClaimLocalRetrySemantics(ClaimLocalBase):
                 self.persisted.clear()
                 self.persisted[DISPATCH_ID] = self.claimed_state(status=status, client_token="e" * 32)
                 with self.claim_context() as mocks:
-                    result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+                    result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
                 self.assertEqual(result["reason"], "dispatch_state_binding_unverified")
                 self.assertEqual(mocks["record"].call_count, 0)
                 self.assertEqual(self.label_calls, [])
         self.persisted.clear()
         self.persisted[DISPATCH_ID] = self.claimed_state(accepted_main_sha="f" * 40)
         with self.claim_context() as mocks:
-            result = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            result = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertEqual(result["reason"], "dispatch_state_binding_unverified")
         self.assertEqual(mocks["record"].call_count, 0)
 
     def test_retry_preserves_original_lease_scope_digest_and_nonce(self):
         with self.claim_context():
-            self.assertTrue(dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)["dispatched"])
+            self.assertTrue(dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)["dispatched"])
         original = dict(self.records[0]["details"])
         label_snapshot = list(self.label_calls)
         with self.claim_context():
-            second = dispatcher.claim_local(ISSUE, ATTEMPT, TOKEN)
+            second = dispatcher.claim_local(ISSUE, ATTEMPT, CLIENT_TOKEN)
         self.assertEqual(second["reason"], "already_dispatched")
         self.assertEqual(self.records[0]["details"], original)
         self.assertEqual(self.label_calls, label_snapshot)
@@ -488,24 +488,24 @@ class TestClaimLocalCliAndWiring(ClaimLocalBase):
     def test_cli_prints_bounded_token_free_json_on_success(self):
         out = StringIO()
         with self.claim_context(), \
-             mock.patch.object(sys, "argv", ["dispatcher.py", "claim-local", str(ISSUE), ATTEMPT, TOKEN]), \
+             mock.patch.object(sys, "argv", ["dispatcher.py", "claim-local", str(ISSUE), ATTEMPT, CLIENT_TOKEN]), \
              redirect_stdout(out):
             dispatcher.main()
         self.assertEqual(json.loads(out.getvalue()),
                          {"dispatched": True, "issue": ISSUE, "dispatch_id": DISPATCH_ID})
-        for secret in (TOKEN, "client_token", "claim_nonce", "lease_deadline"):
+        for secret in (CLIENT_TOKEN, "client_token", "claim_nonce", "lease_deadline"):
             self.assertNotIn(secret, out.getvalue())
 
     def test_cli_failure_exits_nonzero_with_bounded_json(self):
         out = StringIO()
         with mock.patch.object(dispatcher, "_repo", return_value=REPO), \
-             mock.patch.object(sys, "argv", ["dispatcher.py", "claim-local", str(ISSUE), "not-a-uuid", TOKEN]), \
+             mock.patch.object(sys, "argv", ["dispatcher.py", "claim-local", str(ISSUE), "not-a-uuid", CLIENT_TOKEN]), \
              redirect_stdout(out):
             with self.assertRaises(SystemExit) as ctx:
                 dispatcher.main()
         self.assertEqual(ctx.exception.code, 1)
         self.assertEqual(json.loads(out.getvalue())["reason"], "invalid_attempt_id")
-        self.assertNotIn(TOKEN, out.getvalue())
+        self.assertNotIn(CLIENT_TOKEN, out.getvalue())
 
     def test_cli_rejects_invalid_arity(self):
         with mock.patch.object(sys, "argv", ["dispatcher.py", "claim-local", str(ISSUE), ATTEMPT]):

@@ -22,6 +22,8 @@ on:
           - dispatch-next
           - retry-review
           - claim-local
+          - handoff-local
+          - release-local
       issue:
         required: false
         type: number
@@ -49,6 +51,9 @@ on:
       client_token:
         required: false
         type: string
+      reason_code:
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -71,6 +76,7 @@ jobs:
       INPUT_HEAD_SHA: ${{ inputs.head_sha }}
       INPUT_ATTEMPT_ID: ${{ inputs.attempt_id }}
       INPUT_CLIENT_TOKEN: ${{ inputs.client_token }}
+      INPUT_REASON_CODE: ${{ inputs.reason_code }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -118,6 +124,16 @@ jobs:
               python3 scripts/agent-control/control_state.py require-live >/dev/null
               python3 scripts/agent-control/dispatcher.py claim-local "${{ inputs.issue }}" \
                 "$INPUT_ATTEMPT_ID" "$INPUT_CLIENT_TOKEN"
+              ;;
+            handoff-local)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py handoff-local "${{ inputs.issue }}" \
+                "$INPUT_ATTEMPT_ID" "$INPUT_CLIENT_TOKEN" "$INPUT_HEAD_SHA"
+              ;;
+            release-local)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py release-local "${{ inputs.issue }}" \
+                "$INPUT_ATTEMPT_ID" "$INPUT_CLIENT_TOKEN" "$INPUT_REASON_CODE"
               ;;
             *) echo "unknown command" >&2; exit 2 ;;
           esac
