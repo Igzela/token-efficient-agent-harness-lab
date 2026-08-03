@@ -701,6 +701,29 @@ class LocalRunOnce:
             if not HEX40.fullmatch(accepted_main) or accepted_main != local_main:
                 return self._result("stale_checkout", issue_number, attempt, accepted_main_sha=accepted_main, local_origin_main_sha=local_main)
 
+            # A retry must not treat an already durable claim as a fresh
+            # execution.  Recovery of an existing exact branch/PR is handled
+            # by the controller handoff; an in-flight claim remains owned
+            # until its lease/terminal state is resolved by GitHub.
+            try:
+                existing_claim = state_manager.read_dispatch_state(
+                    issue_number, dispatch_id, self.repository
+                )
+            except state_manager.StateUnavailableError:
+                return self._result("claim_unavailable", issue_number, attempt)
+            if isinstance(existing_claim, dict):
+                existing_status = existing_claim.get("status")
+                if existing_status in {"claimed", "dispatched"}:
+                    return self._result(
+                        "in_flight", issue_number, attempt,
+                        dispatch_id=dispatch_id,
+                    )
+                if existing_status in {"failed", "rejected", "outcome_unknown"}:
+                    return self._result(
+                        "terminal", issue_number, attempt,
+                        dispatch_id=dispatch_id,
+                        claim_status=existing_status,
+                    )
             self.github.dispatch_controller(
                 "claim-local",
                 {"issue": issue_number, "attempt_id": attempt, "client_token": token},
@@ -722,6 +745,9 @@ class LocalRunOnce:
                 return self._result("claim_rejected", issue_number, attempt, reason="accepted_main_moved")
             if self.git.origin_main_sha(self.repo_path, default_branch) != claim_main:
                 return self._result("stale_checkout", issue_number, attempt, accepted_main_sha=claim_main)
+            live_control = self.github.read_control_state()
+            if live_control.get("emergency_stop") or not live_control.get("orchestrator_enabled"):
+                return self._result("control_stopped", issue_number, attempt)
             labels = self.github.labels_for_issue(issue_number)
             if state_manager.LABEL_RUNNING not in labels:
                 return self._result("claim_rejected", issue_number, attempt, reason="issue_not_running")
