@@ -592,6 +592,11 @@ class TestCodexWrapperEnvironment(unittest.TestCase):
                 "HOME", "CODEX_HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE",
                 "TMPDIR", "TMP", "TEMP", "TERM", "USER", "LOGNAME", "SHELL",
                 "PWD",
+                # Operator network/CA/XDG allowlist for proxy-only hosts.
+                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+                "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+                "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
             }
             for item in records:
                 self.assertTrue(set(item["env"]).issubset(allowed), set(item["env"]) - allowed)
