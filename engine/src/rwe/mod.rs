@@ -17,7 +17,10 @@ pub use economic_protocol::{
     VERIFIED_DELIVERY_OBSERVATION_SCHEMA,
 };
 pub use execution_schedule::{freeze_operator_execution_schedule, FrozenExecutionSchedule};
-pub use operator_corpus::{freeze_operator_rwe_corpus, operator_corpus_root};
+pub use operator_corpus::{
+    freeze_operator_contract_set, freeze_operator_rwe_corpus, operator_corpus_root,
+    OperatorFrozenContractSet,
+};
 pub use runner::{
     evaluate_rwe_live_gate_from_store, persist_rwe_run_authorization,
     provider_free_rwe_readiness_dossier, run_provider_free_rwe, RweLiveGateResult,
