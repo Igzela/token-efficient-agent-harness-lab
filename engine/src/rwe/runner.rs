@@ -390,7 +390,9 @@ pub fn provider_free_rwe_readiness_dossier() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::local_product_store::ALL_MANAGED_ACCEPTANCE_SCOPES;
+    use crate::storage::local_product_store::{
+        ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_ATTEMPT_ADMIT, SCOPE_RISK_ACKNOWLEDGE,
+    };
     use tempfile::tempdir;
     use uuid::Uuid;
 
@@ -610,7 +612,11 @@ mod tests {
     }
 
     #[test]
-    fn live_allow_fixture_false_rejects_before_admit_and_consumption() {
+    fn fixture_authorization_rejected_in_live_mode_without_consumption() {
+        // Defense test: the runner rejects allow_fixture=false before admit and before
+        // authorization consumption for ANY authorization, including fixture rows.
+        // (The operator live-eligible regression is
+        // live_eligible_authorization_fail_closed_before_admit_and_consumption.)
         let dir = tempdir().unwrap();
         let store = LocalProductStore::new_with_clock(dir.path().join("rwe-b0.db"), || {
             "2026-07-25T12:00:00Z".into()
@@ -624,25 +630,171 @@ mod tests {
         let body = fixture_auth_body(&auth_id, &principal, &corpus, "2026-08-01T00:00:00Z");
         persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
 
-        // B0: allow_fixture=false is rejected before admit and before consumption.
+        // allow_fixture=false is rejected before admit and before consumption.
         let err =
             run_provider_free_rwe(&store, &principal, "rwe-run-live", &auth_id, false).unwrap_err();
         assert!(err.contains("fail closed"), "{err}");
         assert!(store.get_rwe_run("rwe-run-live").unwrap().is_none());
         let auth = store.get_rwe_run_authorization(&auth_id).unwrap().unwrap();
         assert_eq!(auth["status"], "active");
-        // Repeated live attempts stay fail-closed and never consume the authority.
+        // Repeated live-mode attempts stay fail-closed and never consume the authority.
         assert!(
             run_provider_free_rwe(&store, &principal, "rwe-run-live", &auth_id, false).is_err()
         );
         let auth = store.get_rwe_run_authorization(&auth_id).unwrap().unwrap();
         assert_eq!(auth["status"], "active");
+        // No task-attempt row can exist: without an admitted run row the store attempt
+        // owner rejects any attempt write (run + lease invariant), so a missing run row
+        // provably implies zero attempts.
+        assert!(store
+            .persist_rwe_task_attempt(
+                "rwe-run-live",
+                "stale-lease",
+                "rwe-run-live:no-attempt",
+                &corpus.tasks[0].task_id,
+                &corpus.tasks[0].definition_sha256,
+                "fixture_success",
+                &json!({"b0": true}),
+            )
+            .is_err());
         // Fixture path unchanged: the same authorization still admits and completes.
         let run =
             run_provider_free_rwe(&store, &principal, "rwe-run-fixture", &auth_id, true).unwrap();
         assert_eq!(run["status"], "fixture_complete");
         let auth = store.get_rwe_run_authorization(&auth_id).unwrap().unwrap();
         assert_eq!(auth["status"], "consumed");
+    }
+
+    #[test]
+    fn live_eligible_authorization_fail_closed_before_admit_and_consumption() {
+        // Real operator authentication through the store-owned API-key metadata owner,
+        // not a fabricated principal. On current main no real terminal evidence can
+        // satisfy the issue-time binding (frozen corpus identity can never equal a
+        // graph-compiled managed_executor_identity; see
+        // rwe_authority::authority_regression_tests::live_issue_rejects_compiler_shaped_terminal_evidence),
+        // so a gate-eligible live row can only be constructed through the store
+        // authorization owner insert (test-only wrapper) exactly as issue would persist it.
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("rwe-b0-live.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let operator_key_id = "operator-rwe-b0";
+        let operator_scopes = vec![
+            SCOPE_RISK_ACKNOWLEDGE.to_string(),
+            SCOPE_SPEND_AUTHORIZE.to_string(),
+            SCOPE_ATTEMPT_ADMIT.to_string(),
+        ];
+        store
+            .record_api_key_metadata_for_tenant(
+                "tenant-rwe-live",
+                operator_key_id,
+                "operator-user",
+                "operator",
+                &operator_scopes,
+                "test-operator",
+            )
+            .unwrap();
+        let principal = store
+            .authenticate_managed_acceptance_principal("tenant-rwe-live", operator_key_id, None)
+            .unwrap();
+        assert_eq!(principal.principal_kind().as_str(), "operator_api_key");
+        assert!(principal.may_authorize_production_live_start());
+
+        let corpus = freeze_first_rwe_corpus().unwrap();
+        let task_ids: Vec<String> = corpus.tasks.iter().map(|t| t.task_id.clone()).collect();
+        let per_task_budgets = corpus
+            .tasks
+            .iter()
+            .map(|t| RwePerTaskBudget::from_task_definition(t, None))
+            .collect::<Vec<_>>();
+        // The frozen corpus envelope bindings the issue path currently allows.
+        let body = json!({
+            "schema_version": RWE_RUN_AUTH_SCHEMA,
+            "authorization_id": "b0-live-auth",
+            "tenant_id": "tenant-rwe-live",
+            "corpus_sha256": corpus.corpus_sha256,
+            "golden_path_product_task_id": "gp-terminal-live",
+            "principal_id": operator_key_id,
+            "principal_kind": "operator_api_key",
+            "task_ids": task_ids,
+            "max_total_provider_requests": corpus.tasks.iter().map(|t| t.per_task_max_provider_requests).sum::<u64>(),
+            "max_total_tokens": corpus.tasks.iter().map(|t| t.per_task_max_total_tokens).sum::<u64>(),
+            "max_wall_time_ms": corpus.tasks.iter().map(|t| t.timeout_ms).sum::<u64>(),
+            "cost_authority": CostAuthority::CostUnavailable.to_json(),
+            "per_task_budgets": per_task_budgets.iter().map(RwePerTaskBudget::to_json).collect::<Vec<_>>(),
+            "binary_path": "/usr/bin/codex",
+            "binary_version": corpus.admitted_codex_version,
+            "binary_sha256": "ab".repeat(32),
+            "provider_kind": "openai_compatible",
+            "provider_host": "api.openai.com",
+            "provider_base_url": "https://api.openai.com/v1",
+            "target_repo": "org/disposable",
+            "target_main_sha": "a".repeat(40),
+            "executor_identity": corpus.tasks[0].executor_identity,
+            "model_identity": corpus.tasks[0].model_identity,
+            "draft_pr_only": true,
+            "admitted_executor": corpus.admitted_executor,
+            "auto_merge_disabled": corpus.auto_merge_disabled,
+            "one_use": true,
+        });
+        store
+            .insert_rwe_run_authorization_for_tests(
+                "tenant-rwe-live",
+                "b0-live-auth",
+                operator_key_id,
+                "operator_api_key",
+                &body,
+                "2099-01-01T00:00:00Z",
+                false,
+            )
+            .unwrap();
+
+        // Precondition: this row is live-eligible (would pass the gate on base main).
+        let auth = store
+            .get_rwe_run_authorization("b0-live-auth")
+            .unwrap()
+            .unwrap();
+        assert_eq!(auth["status"], "active");
+        assert_eq!(auth["principal_kind"], "operator_api_key");
+        assert_eq!(
+            evaluate_rwe_live_gate_from_store(&corpus, Some(&auth), "2026-07-25T12:00:00Z"),
+            RweLiveGateResult::ReadyAuthorized
+        );
+
+        // B0: allow_fixture=false is rejected before admit and before consumption.
+        let err = run_provider_free_rwe(&store, &principal, "b0-run-live", "b0-live-auth", false)
+            .unwrap_err();
+        assert!(err.contains("fail closed"), "{err}");
+        assert!(store.get_rwe_run("b0-run-live").unwrap().is_none());
+        let auth = store
+            .get_rwe_run_authorization("b0-live-auth")
+            .unwrap()
+            .unwrap();
+        assert_eq!(auth["status"], "active");
+        // No task-attempt row can exist: the store attempt owner rejects any write
+        // without an admitted run row and lease (run + lease invariant).
+        assert!(store
+            .persist_rwe_task_attempt(
+                "b0-run-live",
+                "stale-lease",
+                "b0-run-live:no-attempt",
+                &corpus.tasks[0].task_id,
+                &corpus.tasks[0].definition_sha256,
+                "fixture_success",
+                &json!({"b0": true}),
+            )
+            .is_err());
+        // Repeated live attempts never consume the one-use authority.
+        assert!(
+            run_provider_free_rwe(&store, &principal, "b0-run-live", "b0-live-auth", false)
+                .is_err()
+        );
+        let auth = store
+            .get_rwe_run_authorization("b0-live-auth")
+            .unwrap()
+            .unwrap();
+        assert_eq!(auth["status"], "active");
     }
 
     #[test]
