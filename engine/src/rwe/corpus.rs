@@ -138,6 +138,35 @@ pub fn freeze_first_rwe_corpus() -> Result<FirstRweCorpus, String> {
 }
 
 pub fn freeze_first_rwe_corpus_from_root(root: &Path) -> Result<FirstRweCorpus, String> {
+    freeze_rwe_corpus_from_root(
+        root,
+        "rwe-first-corpus-v1",
+        "operator-supplied-disposable-only",
+        "codex-cli-api-key-mediated",
+        "0.145.0",
+        vec![
+            "Corpus binds real task-definition files under engine/fixtures/rwe/first_corpus/v1."
+                .into(),
+            "Objective text is hash-bound only in operational evidence.".into(),
+            "Live RWE requires separate store-owned RweRunAuthorization.".into(),
+            "Not a live baseline until authorized live evidence is sealed.".into(),
+        ],
+    )
+}
+
+/// Generic versioned-task corpus freeze shared by the fixture corpus and the
+/// operator-approved real corpus (see `rwe::operator_corpus`). The canonical
+/// authority body and its hash are a pure function of the root's task files and
+/// the identity constants, so replay after Architecture Convergence re-derives
+/// identical hashes from the same accepted-main artifacts.
+pub(crate) fn freeze_rwe_corpus_from_root(
+    root: &Path,
+    corpus_id: &str,
+    disposable_target_repo: &str,
+    admitted_executor: &str,
+    admitted_codex_version: &str,
+    notes: Vec<String>,
+) -> Result<FirstRweCorpus, String> {
     let tasks_dir = root.join("tasks");
     if !tasks_dir.is_dir() {
         return Err(format!(
@@ -268,15 +297,14 @@ pub fn freeze_first_rwe_corpus_from_root(root: &Path) -> Result<FirstRweCorpus, 
             cleanup_rules: string_array(&v, "cleanup_rules")?,
         });
     }
-    let corpus_id = "rwe-first-corpus-v1".to_string();
     let mut authority_body = json!({
         "schema_version": RWE_CORPUS_SCHEMA,
         "corpus_id": corpus_id,
         "tasks": tasks.iter().map(|t| t.to_json()).collect::<Vec<_>>(),
-        "disposable_target_repo": "operator-supplied-disposable-only",
+        "disposable_target_repo": disposable_target_repo,
         "target_main_sha_required": true,
-        "admitted_executor": "codex-cli-api-key-mediated",
-        "admitted_codex_version": "0.145.0",
+        "admitted_executor": admitted_executor,
+        "admitted_codex_version": admitted_codex_version,
         "draft_pr_only": true,
         "auto_merge_disabled": true,
     });
@@ -284,23 +312,17 @@ pub fn freeze_first_rwe_corpus_from_root(root: &Path) -> Result<FirstRweCorpus, 
     let corpus_sha256 = sha256_hex(authority_body.to_string().as_bytes());
     Ok(FirstRweCorpus {
         schema_version: RWE_CORPUS_SCHEMA.into(),
-        corpus_id,
+        corpus_id: corpus_id.into(),
         corpus_sha256,
         fixture_root: root.display().to_string(),
-        disposable_target_repo: "operator-supplied-disposable-only".into(),
+        disposable_target_repo: disposable_target_repo.into(),
         target_main_sha_required: true,
-        admitted_executor: "codex-cli-api-key-mediated".into(),
-        admitted_codex_version: "0.145.0".into(),
+        admitted_executor: admitted_executor.into(),
+        admitted_codex_version: admitted_codex_version.into(),
         draft_pr_only: true,
         auto_merge_disabled: true,
         tasks,
-        notes: vec![
-            "Corpus binds real task-definition files under engine/fixtures/rwe/first_corpus/v1."
-                .into(),
-            "Objective text is hash-bound only in operational evidence.".into(),
-            "Live RWE requires separate store-owned RweRunAuthorization.".into(),
-            "Not a live baseline until authorized live evidence is sealed.".into(),
-        ],
+        notes,
     })
 }
 
