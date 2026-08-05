@@ -686,6 +686,45 @@ impl LocalProductStore {
         )
     }
 
+    /// Test-only wrapper: persist a gate-eligible RWE authorization row exactly as
+    /// `issue_rwe_run_authorization` would, bypassing the issue-time terminal-evidence
+    /// binding. On current main no real terminal evidence can satisfy that binding
+    /// (the frozen corpus identity can never equal a graph-compiled
+    /// `managed_executor_identity`), so a live-eligible row can only be constructed
+    /// through this owner insert for runner fail-closed regression coverage.
+    /// Never compiled into production builds.
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub fn insert_rwe_run_authorization_for_tests(
+        &self,
+        tenant_id: &str,
+        authorization_id: &str,
+        principal_id: &str,
+        principal_kind: &str,
+        body_json: &Value,
+        expires_at: &str,
+        fixture_only: bool,
+    ) -> Result<Value, String> {
+        let body_json = sort_value(body_json);
+        let body_sha256 = sha256_hex(canonical_json(&body_json)?.as_bytes());
+        let corpus_sha256 = body_json
+            .get("corpus_sha256")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        self.insert_rwe_run_authorization_owned(
+            tenant_id,
+            authorization_id,
+            principal_id,
+            principal_kind,
+            &corpus_sha256,
+            &body_sha256,
+            &body_json,
+            expires_at,
+            fixture_only,
+        )
+    }
+
     /// Private owner insert/exact-replay. Not a public caller-supplied body/hash bypass.
     fn insert_rwe_run_authorization_owned(
         &self,
@@ -1959,6 +1998,51 @@ mod authority_regression_tests {
         let mut ev = evidence();
         ev["output"]["draft_pr"]["repository"] = json!("org/other");
         assert!(validate_golden_path_terminal_evidence(&ev, &request()).is_err());
+    }
+
+    #[test]
+    fn live_issue_rejects_compiler_shaped_terminal_evidence() {
+        // A terminal evidence carrying the managed_executor_identity shape that
+        // compile_product_executable_graph actually emits for codex_cli
+        // (engine/src/product_golden_path.rs) can never satisfy the live issue-time
+        // binding: the compiled identity has no provider_kind/provider_host/
+        // provider_base_url fields and its executor_type ("codex_cli") can never equal
+        // the frozen corpus identity ("codex-0.145.0") required by
+        // validate_rwe_corpus_envelope. This is why on current main
+        // issue_rwe_run_authorization(fixture_only=false) always fails closed, and why
+        // the B0 runner regression constructs its gate-eligible row through the store
+        // authorization owner insert instead of issue.
+        let mut ev = evidence();
+        ev["node"]["managed_executor_identity"] = json!({
+            "schema_version": "managed_executor_identity.v1",
+            "executor_type": "codex_cli",
+            "executor_class": "managed_coding",
+            "runtime_profile_schema_version": "codex_runtime_profile.v1",
+            "runtime_profile_id": "codex-evidence-fixture.v1",
+            "capability_probe_sha256": "c".repeat(64),
+            "binary_path": "/usr/bin/codex",
+            "binary_version": "0.145.0",
+            "binary_sha256": "b".repeat(64),
+            "executor_kind": "codex-cli-api-key-mediated",
+            "protocol_kind": "openai_compatible",
+            "requested_model": "gpt-test-model",
+            "resolved_model": "gpt-test-model",
+            "model": "gpt-test-model",
+            "provider_identity": "provider-identity",
+            "credential_reference": "credential-reference",
+            "endpoint_allowlist": ["api.openai.com"],
+        });
+        let err = validate_golden_path_terminal_evidence(&ev, &request()).unwrap_err();
+        assert!(
+            err.contains("identity mismatch") || err.contains("managed_executor_identity"),
+            "{err}"
+        );
+        // Even the corpus-required identity variant fails: no provider_* fields exist
+        // in any compiled shape, so request provider fields can never be matched.
+        let mut corpus_matching = ev.clone();
+        corpus_matching["node"]["managed_executor_identity"]["executor_type"] =
+            json!("codex-0.145.0");
+        assert!(validate_golden_path_terminal_evidence(&corpus_matching, &request()).is_err());
     }
 
     #[test]
