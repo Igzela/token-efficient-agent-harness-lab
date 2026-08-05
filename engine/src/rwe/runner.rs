@@ -219,7 +219,6 @@ pub fn run_provider_free_rwe(
     allow_fixture: bool,
 ) -> Result<Value, String> {
     let corpus = freeze_first_rwe_corpus()?;
-    let now = store.now();
     let auth = store
         .get_rwe_run_authorization(authorization_id)?
         .ok_or_else(|| "RWE authorization not found".to_string())?;
@@ -261,10 +260,15 @@ pub fn run_provider_free_rwe(
             return Err("corpus mismatch".into());
         }
     } else {
-        match evaluate_rwe_live_gate_from_store(&corpus, Some(&auth), &now) {
-            RweLiveGateResult::ReadyAuthorized => {}
-            other => return Err(format!("live gate blocked: {}", other.as_str())),
-        }
+        // Fail-closed until the production corpus/protocol/schedule binding
+        // (rwe_run_authorization.v2) is accepted: a live-eligible authorization must
+        // never be admitted, never consume spend authority, and never be served
+        // fixture evidence. The one-use authorization stays active; no run row and
+        // no task attempts are created.
+        return Err(
+            "fail closed: live RWE execution is not yet bound to an accepted production corpus/protocol/schedule"
+                .into(),
+        );
     }
 
     let admitted = store.admit_rwe_run(
@@ -603,6 +607,42 @@ mod tests {
             .unwrap()
             .get("lease_token")
             .is_none());
+    }
+
+    #[test]
+    fn live_allow_fixture_false_rejects_before_admit_and_consumption() {
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("rwe-b0.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-rwe-b0", "fixture-principal-b0")
+                .unwrap();
+        let corpus = freeze_first_rwe_corpus().unwrap();
+        let auth_id = format!("rwe-auth-{}", Uuid::new_v4());
+        let body = fixture_auth_body(&auth_id, &principal, &corpus, "2026-08-01T00:00:00Z");
+        persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
+
+        // B0: allow_fixture=false is rejected before admit and before consumption.
+        let err =
+            run_provider_free_rwe(&store, &principal, "rwe-run-live", &auth_id, false).unwrap_err();
+        assert!(err.contains("fail closed"), "{err}");
+        assert!(store.get_rwe_run("rwe-run-live").unwrap().is_none());
+        let auth = store.get_rwe_run_authorization(&auth_id).unwrap().unwrap();
+        assert_eq!(auth["status"], "active");
+        // Repeated live attempts stay fail-closed and never consume the authority.
+        assert!(
+            run_provider_free_rwe(&store, &principal, "rwe-run-live", &auth_id, false).is_err()
+        );
+        let auth = store.get_rwe_run_authorization(&auth_id).unwrap().unwrap();
+        assert_eq!(auth["status"], "active");
+        // Fixture path unchanged: the same authorization still admits and completes.
+        let run =
+            run_provider_free_rwe(&store, &principal, "rwe-run-fixture", &auth_id, true).unwrap();
+        assert_eq!(run["status"], "fixture_complete");
+        let auth = store.get_rwe_run_authorization(&auth_id).unwrap().unwrap();
+        assert_eq!(auth["status"], "consumed");
     }
 
     #[test]
