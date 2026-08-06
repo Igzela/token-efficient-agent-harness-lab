@@ -36,6 +36,8 @@ Current code, merged history, exact-head CI, and authoritative documents outrank
 
 Independent review is a **convergence process**, not an unbounded nit loop. Exact `PASS` is the only merge-authorizing control verdict and may carry deferred non-blocking notes; open blocking disposition, not zero suggestions, gates merge eligibility. Capsule generators project review state only—they do not decide severity, disposition, or repair rounds. Full rules live in the playbook section above; do not restate them elsewhere.
 
+Review Convergence Protocol has **no `COMPLETE` review verdict**. Exact `PASS` binds only the reviewed exact head and satisfies only the independent-review gate. Packet lifecycle state `COMPLETE` is owned by `docs/NEXT_DECISION.md` and accepted facts by `docs/CURRENT_STATUS.md`; it may be claimed only after the packet is merged, verified, independently reviewed, and documented. Never infer packet `COMPLETE` from a review receipt, CI result, capsule projection, PR merge alone, or a handoff headline.
+
 ## Establish the Leading Valid Frontier
 
 Never interpret “latest” as “the newest branch wins.” Establish these three layers first:
@@ -127,12 +129,13 @@ Every implementation or review board should leave a compact report containing:
 ```yaml
 accepted_main_sha:
 packet:
+packet_state:                # from CURRENT_STATUS/NEXT_DECISION; never inferred from review PASS
 working_pr:
 exact_head:
 what_changed:
 what_was_verified:
 ci:
-independent_review:
+independent_review:          # PASS/BLOCKED/FAIL/DECISION_REQUIRED; never COMPLETE
 remaining_blockers:
 next_permitted_action:
 forbidden_next_actions:
