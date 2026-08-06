@@ -53,6 +53,8 @@ audit → focused branch/PR → focused checks → exact-head CI → complete-di
 
 Use one branch/PR per coherent packet. Auto-merge stays disabled. A new head invalidates prior CI and review. Rebase only for conflict, overlapping assumptions, explicit freshness, or proven integration risk.
 
+Review Convergence Protocol has no `COMPLETE` review verdict. An independent-review artifact may end in exact `PASS`, `PASS_WITH_NOTES`, `BLOCKED`, `FAIL`, or `DECISION_REQUIRED`; only exact `PASS` can satisfy the review gate, and it binds only the reviewed exact head. Never report `COMPLETE` in the review field or infer packet completion from PASS, CI, a capsule, or PR merge alone.
+
 Normal reversible repository work and already-configured local/GitHub services are pre-authorized. Confirmation is still required for irreversible destruction, production release/deploy, new paid-provider POST, credential creation/rotation/disclosure, protected force-push, or unbounded external effects.
 
 ## CI Lane Discipline
@@ -71,7 +73,7 @@ A missing canonical `tests` run is not success. A fast-check success, a Draft he
 
 ## Execution-Ready Task Packets
 
-Packet states: `READY_FOR_EXECUTION`, `BLOCKED_PREREQUISITE`, `DECISION_REQUIRED`, `IN_PROGRESS`, `COMPLETE`. Each packet records goal, owner paths, prerequisites, allowed changes, forbidden changes, versioned authority/budget/failure contracts, focused/full verification, compatibility, rollback, evidence, and stop triggers. Prefer the earliest eligible packet; do not begin later behavior before its predecessor is accepted.
+Packet states: `READY_FOR_EXECUTION`, `BLOCKED_PREREQUISITE`, `DECISION_REQUIRED`, `IN_PROGRESS`, `COMPLETE`. These are packet lifecycle states owned by `docs/NEXT_DECISION.md`, not review verdicts. A packet may be reported `COMPLETE` only when accepted `main` and the canonical status/forward-plan owners establish that it is merged, verified, independently reviewed, and documented. Each packet records goal, owner paths, prerequisites, allowed changes, forbidden changes, versioned authority/budget/failure contracts, focused/full verification, compatibility, rollback, evidence, and stop triggers. Prefer the earliest eligible packet; do not begin later behavior before its predecessor is accepted.
 
 ## Full Agent Autonomy Mode
 
