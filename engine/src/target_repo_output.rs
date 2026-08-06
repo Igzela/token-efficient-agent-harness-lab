@@ -1413,6 +1413,24 @@ fn run_git_inner(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Preserve only the proxy environment across the credential-free env clear:
+    // deployments behind a local proxy cannot reach the target host directly,
+    // and a direct connection hangs until the bounded git timeout. Proxy vars
+    // carry no credentials, so the clear remains safe for everything else.
+    for proxy_var in [
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "no_proxy",
+        "NO_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+    ] {
+        if let Ok(value) = std::env::var(proxy_var) {
+            command.env(proxy_var, value);
+        }
+    }
     if let Some(index_path) = index_path {
         command.env("GIT_INDEX_FILE", index_path);
     }

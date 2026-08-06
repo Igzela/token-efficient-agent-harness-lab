@@ -275,14 +275,33 @@ impl DelegationContract {
                 .unwrap_or_default();
             let (max_files, max_lines) =
                 crate::rwe::frozen_rwe_bindings::frozen_rwe_max_patch_limits().unwrap_or((0, 0));
+            // One-execution RWE cell: monetary ceilings equal frozen schedule cell max_cost.
+            let cell_cost = crate::rwe::operator_corpus::freeze_current_operator_contract_set()
+                .ok()
+                .and_then(|frozen| {
+                    frozen
+                        .schedule
+                        .body
+                        .get("cells")
+                        .and_then(Value::as_array)
+                        .and_then(|cells| cells.first())
+                        .and_then(|cell| {
+                            crate::rwe::frozen_rwe_bindings::frozen_schedule_cell_max_cost(cell)
+                                .ok()
+                                .flatten()
+                        })
+                });
+            let cost_ok = cell_cost.is_some_and(|c| {
+                (self.max_cost_usd_per_run - c).abs() <= f64::EPSILON
+                    && (self.max_total_cost_usd - c).abs() <= f64::EPSILON
+            });
             self.repositories == ["Igzela/alters-lab"]
                 && self.task_classes == ["rwe"]
                 && !union.is_empty()
                 && self.allowed_paths == union
                 && self.max_changed_files == max_files
                 && self.max_changed_lines == max_lines
-                && (self.max_cost_usd_per_run - 0.80).abs() <= f64::EPSILON
-                && (self.max_total_cost_usd - 0.80).abs() <= f64::EPSILON
+                && cost_ok
         };
         if !docs_scope && !rwe_scope {
             return Err(
@@ -493,10 +512,29 @@ pub fn derive_final_execution_manifest(
             "max_total_cost_usd": delegation.max_total_cost_usd,
             "max_provider_requests": 3,
             "max_retries": 0,
-            "max_input_tokens": 8000,
-            "max_output_tokens": 4000,
-            "max_cumulative_tokens": 24000,
-            "timeout_ms": 30000
+            // Docs GP classic envelope vs exact frozen RWE schedule cell ceilings.
+            "max_input_tokens": if execution.get("verifier").and_then(Value::as_str)
+                == Some(crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY)
+            {
+                12_000
+            } else {
+                8_000
+            },
+            "max_output_tokens": 4_000,
+            "max_cumulative_tokens": if execution.get("verifier").and_then(Value::as_str)
+                == Some(crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY)
+            {
+                16_000
+            } else {
+                24_000
+            },
+            "timeout_ms": if execution.get("verifier").and_then(Value::as_str)
+                == Some(crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY)
+            {
+                900_000
+            } else {
+                30_000
+            }
         },
         "output": delegation.output,
         "recovery": {
@@ -614,7 +652,15 @@ pub fn confirm_delegated_artifact_output(
         && provider_execution
             .get("cumulative_tokens")
             .and_then(Value::as_u64)
-            .is_some_and(|tokens| tokens <= 24_000)
+            .is_some_and(|tokens| {
+                // Docs envelope 24k; frozen RWE cell envelope uses schedule max_total_tokens.
+                let ceiling = if delegation.task_classes == ["rwe"] {
+                    16_000
+                } else {
+                    24_000
+                };
+                tokens <= ceiling
+            })
         && provider_execution
             .get("realized_cost_usd")
             .and_then(Value::as_f64)
@@ -761,6 +807,21 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
         && max_lines == Some(100)
         && max_cost == Some(0.50)
         && max_total_cost == Some(0.50);
+    let rwe_cell_cost = crate::rwe::operator_corpus::freeze_current_operator_contract_set()
+        .ok()
+        .and_then(|frozen| {
+            frozen
+                .schedule
+                .body
+                .get("cells")
+                .and_then(Value::as_array)
+                .and_then(|cells| cells.first())
+                .and_then(|cell| {
+                    crate::rwe::frozen_rwe_bindings::frozen_schedule_cell_max_cost(cell)
+                        .ok()
+                        .flatten()
+                })
+        });
     let rwe_policy = {
         let (f, l) =
             crate::rwe::frozen_rwe_bindings::frozen_rwe_max_patch_limits().unwrap_or((0, 0));
@@ -768,8 +829,9 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
             && verifier == Some(crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY)
             && max_files == Some(f)
             && max_lines == Some(l)
-            && max_cost == Some(0.80)
-            && max_total_cost == Some(0.80)
+            && rwe_cell_cost.is_some()
+            && max_cost == rwe_cell_cost
+            && max_total_cost == rwe_cell_cost
     };
     let policy_matches = manifest
         .pointer("/target/repository")
@@ -779,30 +841,41 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
         && manifest.get("protocol").and_then(Value::as_str) == Some("openai_compatible")
         && manifest.get("models") == Some(&expected_models)
         && manifest.get("provider") == Some(&expected_provider)
-        && manifest
-            .pointer("/limits/max_provider_requests")
-            .and_then(Value::as_u64)
-            == Some(3)
-        && manifest
-            .pointer("/limits/max_retries")
-            .and_then(Value::as_u64)
-            == Some(0)
-        && manifest
-            .pointer("/limits/max_input_tokens")
-            .and_then(Value::as_u64)
-            == Some(8_000)
-        && manifest
-            .pointer("/limits/max_output_tokens")
-            .and_then(Value::as_u64)
-            == Some(4_000)
-        && manifest
-            .pointer("/limits/max_cumulative_tokens")
-            .and_then(Value::as_u64)
-            == Some(24_000)
-        && manifest
-            .pointer("/limits/timeout_ms")
-            .and_then(Value::as_u64)
-            == Some(30_000)
+        && {
+            // Docs GP uses the classic 3/8k/4k/24k/30s envelope. Frozen RWE cells use
+            // the exact schedule cell ceilings (3 requests, 12k/4k/16k tokens, 900s).
+            let req = manifest
+                .pointer("/limits/max_provider_requests")
+                .and_then(Value::as_u64);
+            let retries = manifest
+                .pointer("/limits/max_retries")
+                .and_then(Value::as_u64);
+            let input = manifest
+                .pointer("/limits/max_input_tokens")
+                .and_then(Value::as_u64);
+            let output = manifest
+                .pointer("/limits/max_output_tokens")
+                .and_then(Value::as_u64);
+            let cum = manifest
+                .pointer("/limits/max_cumulative_tokens")
+                .and_then(Value::as_u64);
+            let timeout = manifest
+                .pointer("/limits/timeout_ms")
+                .and_then(Value::as_u64);
+            let docs_limits = req == Some(3)
+                && retries == Some(0)
+                && input == Some(8_000)
+                && output == Some(4_000)
+                && cum == Some(24_000)
+                && timeout == Some(30_000);
+            let rwe_limits = req == Some(3)
+                && retries == Some(0)
+                && input == Some(12_000)
+                && output == Some(4_000)
+                && cum == Some(16_000)
+                && timeout == Some(900_000);
+            (docs_policy && docs_limits) || (rwe_policy && rwe_limits)
+        }
         && manifest.get("output") == Some(&expected_output);
     if !policy_matches {
         return Err("final manifest is outside the persisted delegation policy".into());
@@ -883,14 +956,37 @@ fn delegated_execution_contract(
                 .ok_or("delegated manifest usage parser is missing")?
                 .into(),
             requested_model: requested_model.into(),
+            // The exact frozen cell envelope from the validated manifest (docs GP
+            // 8k/4k/24k/30s/0.50; frozen RWE cells 12k/4k/16k/900s/0.20). Never
+            // invent or relax the provider ceiling outside the persisted manifest.
             limits: crate::provider::managed_deepseek::ManagedCallLimits {
-                max_requests: 3,
-                max_retries: 0,
-                max_input_tokens: 8_000,
-                max_output_tokens: 4_000,
-                max_cumulative_tokens: 24_000,
-                timeout_ms: 30_000,
-                max_cost_usd: Some(0.50),
+                max_requests: manifest
+                    .pointer("/limits/max_provider_requests")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3),
+                max_retries: manifest
+                    .pointer("/limits/max_retries")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                max_input_tokens: manifest
+                    .pointer("/limits/max_input_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(8_000),
+                max_output_tokens: manifest
+                    .pointer("/limits/max_output_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(4_000),
+                max_cumulative_tokens: manifest
+                    .pointer("/limits/max_cumulative_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(24_000),
+                timeout_ms: manifest
+                    .pointer("/limits/timeout_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(30_000),
+                max_cost_usd: manifest
+                    .pointer("/limits/max_cost_usd")
+                    .and_then(Value::as_f64),
             },
             price_profile,
         },
@@ -9007,7 +9103,7 @@ fn validate_delegated_workspace_authority(
 /// rows on every check; the provider layer never accepts caller assertions as
 /// authority and never persists a second lease or budget.
 impl LocalProductStore {
-    fn apply_managed_workspace_action(
+    pub(crate) fn apply_managed_workspace_action(
         &self,
         binding: &crate::provider::managed_deepseek::ManagedCallBinding,
         node_metadata: &Value,
@@ -9226,7 +9322,12 @@ impl LocalProductStore {
                 return Err("workspace action contains a sensitive literal".to_string());
             }
         }
-        if changed_line_budget > 100 || after_text.len() > 1_048_576 {
+        // Docs GP: 100 lines. Frozen RWE: schedule patch_max_lines (max of frozen tasks).
+        let line_ceiling = crate::rwe::frozen_rwe_bindings::frozen_rwe_max_patch_limits()
+            .map(|(_, lines)| lines)
+            .unwrap_or(100)
+            .max(100);
+        if changed_line_budget as u64 > line_ceiling || after_text.len() > 1_048_576 {
             return Err("workspace action exceeds the delegated change bounds".to_string());
         }
         file.rewind().map_err(|error| error.to_string())?;
@@ -9780,7 +9881,6 @@ impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductS
     ) -> Result<(), String> {
         self.claim_delegated_provider_request(request)
     }
-
     fn reconcile_provider_request(
         &self,
         request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,
@@ -9789,8 +9889,37 @@ impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductS
     ) -> Result<(), String> {
         self.reconcile_delegated_provider_request(request, response, effect)
     }
-
     fn stage_context(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+        node_metadata: &Value,
+    ) -> Result<Option<Value>, String> {
+        self.store_managed_stage_context(binding, node_metadata)
+    }
+    fn current_authority(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    ) -> Result<crate::provider::managed_deepseek::PersistedAuthoritySnapshot, String> {
+        self.store_current_managed_authority(binding)
+    }
+
+    fn apply_workspace_action(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+        node_metadata: &Value,
+        model_output: &str,
+    ) -> Result<Value, String> {
+        if self
+            .current_delegated_provider_authority(binding)?
+            .is_none()
+        {
+            return Err("managed workspace action requires a current delegated authority".into());
+        }
+        self.apply_managed_workspace_action(binding, node_metadata, model_output)
+    }
+}
+impl LocalProductStore {
+    pub(crate) fn store_managed_stage_context(
         &self,
         binding: &crate::provider::managed_deepseek::ManagedCallBinding,
         node_metadata: &Value,
@@ -9928,23 +10057,7 @@ impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductS
             "allowed_paths": allowed_paths
         }))))
     }
-
-    fn apply_workspace_action(
-        &self,
-        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
-        node_metadata: &Value,
-        model_output: &str,
-    ) -> Result<Value, String> {
-        if self
-            .current_delegated_provider_authority(binding)?
-            .is_none()
-        {
-            return Err("managed workspace action requires a current delegated authority".into());
-        }
-        self.apply_managed_workspace_action(binding, node_metadata, model_output)
-    }
-
-    fn current_authority(
+    pub(crate) fn store_current_managed_authority(
         &self,
         binding: &crate::provider::managed_deepseek::ManagedCallBinding,
     ) -> Result<crate::provider::managed_deepseek::PersistedAuthoritySnapshot, String> {

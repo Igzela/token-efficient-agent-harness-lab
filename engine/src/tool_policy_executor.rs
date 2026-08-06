@@ -163,10 +163,27 @@ impl<'a> ToolPolicyNodeExecutor<'a> {
                     .get("command")
                     .and_then(Value::as_str)
                     .ok_or_else(|| "command metadata must contain a string command".to_string())?;
-                let first = command
-                    .split_whitespace()
-                    .next()
-                    .ok_or_else(|| "empty command".to_string())?;
+                // A leading `KEY=value` environment assignment (exactly the shape the
+                // strict product verifier parser admits, e.g. frozen RWE pytest
+                // `PYTHONPATH=apps/api/src python3 -m pytest ...`) does not name the
+                // tool; skip it like the shared parser does before the allowlist.
+                // The value is a repository-relative path and may legitimately
+                // contain `/`; absolute/escaping values fail the shared strict
+                // parser when the inner command executor re-validates argv.
+                let mut tokens = command.split_whitespace();
+                let mut first = tokens.next().ok_or_else(|| "empty command".to_string())?;
+                while let Some((key, value)) = first.split_once('=') {
+                    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    {
+                        break;
+                    }
+                    if value.is_empty() {
+                        return Err(
+                            "command executable must be a bare allowlisted tool name".to_string()
+                        );
+                    }
+                    first = tokens.next().ok_or_else(|| "empty command".to_string())?;
+                }
                 if first.contains('/') {
                     return Err(
                         "command executable must be a bare allowlisted tool name".to_string()
@@ -1340,6 +1357,70 @@ mod tests {
         assert_eq!(result.status, "failed");
         assert_eq!(result.error_domain.as_deref(), Some("tool_not_allowed"));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn env_prefixed_frozen_pytest_command_resolves_tool_name() {
+        let store = Arc::new(LocalProductStore::new(":memory:").expect("store"));
+        let executor = ToolPolicyNodeExecutor::command(
+            Arc::new(CountingExecutor {
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+            store,
+        );
+        let input = NodeExecutionInput {
+            node_id: "node-tool".to_string(),
+            task_type: "command".to_string(),
+            run_id: "run-tool".to_string(),
+            workflow_id: "workflow-tool".to_string(),
+            node_metadata: json!({
+                "profile_id": "locked",
+                "command": "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q"
+            }),
+        };
+        let tool_name = executor.tool_name(&input).expect("tool name resolves");
+        assert_eq!(tool_name, "python3");
+
+        let env_only = NodeExecutionInput {
+            node_metadata: json!({
+                "command": "FOO=bar python3 -m pytest apps/api/tests/ -q"
+            }),
+            ..input.clone()
+        };
+        assert_eq!(executor.tool_name(&env_only).expect("tool name"), "python3");
+
+        let absolute_env = NodeExecutionInput {
+            node_metadata: json!({
+                "command": "PYTHONPATH=/abs python3 -m pytest apps/api/tests/ -q"
+            }),
+            ..input.clone()
+        };
+        assert_eq!(
+            executor.tool_name(&absolute_env).expect("tool name"),
+            "python3"
+        );
+
+        let empty_value = NodeExecutionInput {
+            node_metadata: json!({
+                "command": "PYTHONPATH= python3 -m pytest apps/api/tests/ -q"
+            }),
+            ..input.clone()
+        };
+        let error = executor
+            .tool_name(&empty_value)
+            .expect_err("empty env assignment must not name the tool");
+        assert!(error.contains("bare allowlisted tool name"));
+
+        let bare_path = NodeExecutionInput {
+            node_metadata: json!({
+                "command": "/usr/bin/python3 -m pytest apps/api/tests/ -q"
+            }),
+            ..input.clone()
+        };
+        let error = executor
+            .tool_name(&bare_path)
+            .expect_err("absolute binary path must fail closed");
+        assert!(error.contains("bare allowlisted tool name"));
     }
 
     #[test]

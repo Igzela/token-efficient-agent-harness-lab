@@ -57,14 +57,14 @@ The frozen corpus, protocol, schedule, and Board B production wiring are accepte
 
 The next permitted work is a separately authorized one-use live run of the frozen Board A schedule against the accepted exact head, after current live-run authority is issued. The 4-cell live coordinator, provider-backed execution, target writes, and evidence closeout remain outside Board B and require that separate authority.
 
-The first live RWE run remains blocked until a separate current live-run authorization is issued against the accepted exact head. Branch-local Draft heads never authorize live baseline, provider calls, or target effects.
+The first live RWE run remains blocked until a separate current live-run authorization is issued against the accepted exact head. Branch-local Draft heads never authorize live baseline, provider calls, or target effects. Draft #363's armed integration test performs a genuine delegated lifecycle (store owners + real Draft PR creation on the exact frozen target) only when the operator live-run gate `ACP_RWE_ARMED_LIVE_RUN=1` is set with populated token references; without it the test SKIPs, so CI never creates external effects, and the test itself still does not authorize an accepted baseline.
 
 ## Open Review Surfaces
 
 | PR | Purpose | Status |
 |---|---|---|
 | #225 | Presentation-only Dashboard theme | OPEN; independent and last; cannot substitute for runtime or evidence work |
-| #363 | Provider-free first live RWE baseline composition (Draft) | OPEN, Draft; not accepted; does not authorize live provider/target effects or mark PE7 complete |
+| #363 | Provider-free composition + operator-gated armed live Draft PR integration test (Draft) | OPEN, Draft; not accepted; armed live-run test runs only under `ACP_RWE_ARMED_LIVE_RUN=1`; does not authorize an accepted live baseline, provider calls outside the injected transport, or target default-branch effects |
 | `Igzela/alters-lab#5` | Draft-PR output from the accepted bounded live Golden Path observation | OPEN, Draft, unmerged; no merge authority |
 
 Merged or closed PRs are not open review surfaces and should not be retained in this table.

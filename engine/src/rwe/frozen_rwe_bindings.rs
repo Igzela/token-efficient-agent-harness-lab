@@ -12,7 +12,7 @@ use serde_json::Value;
 pub const FROZEN_RWE_TARGET_MAIN_SHA: &str = "6240768506320a324d68787b9eaa86971c8c930c";
 /// Exact source tree hash bound to the frozen target main.
 pub const FROZEN_RWE_TARGET_TREE_HASH: &str =
-    "124ac34861424186f4ddddf96e41deb79cab2ac61179b35b76eb5fb32c40feab";
+    "137e912f416a3a8d5be307e91bb2580154fc8fc34c6de52c2441ef3e3f93a064";
 /// Exact pytest verifier shared by both frozen Minimum First tasks.
 pub const FROZEN_RWE_PYTEST_VERIFIER: &str =
     "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q";
@@ -38,7 +38,6 @@ pub struct FrozenRweTaskBinding {
     pub timeout_ms: u64,
     pub patch_max_files: u64,
     pub patch_max_lines: u64,
-    pub per_task_max_cost: f64,
 }
 
 /// Full next-cell budget envelope reserved before any cell effect.
@@ -173,8 +172,46 @@ fn binding_from_task(task: &RweTaskDefinition) -> Result<FrozenRweTaskBinding, S
         timeout_ms: task.timeout_ms,
         patch_max_files: task.patch_max_files,
         patch_max_lines: task.patch_max_lines,
-        per_task_max_cost: 0.2,
     })
+}
+
+/// Exact per-cell monetary ceiling from the frozen schedule (not invented constants).
+pub fn frozen_schedule_cell_max_cost(cell: &Value) -> Result<Option<f64>, String> {
+    match cell.get("max_cost") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let c = v
+                .as_f64()
+                .filter(|x| x.is_finite() && *x > 0.0)
+                .ok_or("frozen schedule cell max_cost must be a positive finite number")?;
+            Ok(Some(c))
+        }
+    }
+}
+
+/// Exact run-level monetary ceiling from the frozen schedule, when present.
+pub fn frozen_schedule_run_max_total_cost(
+    frozen: &OperatorFrozenContractSet,
+) -> Result<Option<f64>, String> {
+    match frozen
+        .schedule
+        .body
+        .pointer("/run_level_budget/max_total_cost")
+        .or_else(|| {
+            frozen
+                .schedule
+                .body
+                .pointer("/run_level_budget/cost_authority/max_cost")
+        }) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let c = v
+                .as_f64()
+                .filter(|x| x.is_finite() && *x > 0.0)
+                .ok_or("frozen schedule run max_total_cost must be positive finite")?;
+            Ok(Some(c))
+        }
+    }
 }
 
 /// True when a product intake is exactly one of the frozen RWE tasks.

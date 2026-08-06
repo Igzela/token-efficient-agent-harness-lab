@@ -56,13 +56,16 @@ use engine::provider::embedding::{
 use engine::provider::transport::{HttpError, HttpRequest, HttpResponse, HttpTransport};
 #[cfg(feature = "pg-tests")]
 use engine::rwe::corpus::freeze_first_rwe_corpus;
+#[cfg(feature = "pg-tests")]
 use engine::rwe::live_baseline_coordinator::cell_identities_for;
 #[cfg(feature = "pg-tests")]
 use engine::rwe::live_baseline_coordinator::{
     issue_and_admit_v2, run_frozen_schedule, CellOutcome, InjectedCellDriver,
     RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA,
 };
+#[cfg(feature = "pg-tests")]
 use engine::rwe::operator_corpus::freeze_current_operator_contract_set;
+#[cfg(feature = "pg-tests")]
 use engine::rwe::runner::{
     persist_rwe_run_authorization, persist_rwe_run_authorization_v2, RweRunAuthorizationBody,
 };
@@ -9115,6 +9118,7 @@ fn pg_rwe_live_baseline_coordinator_four_cell_injected_parity() {
         })
         .collect();
     let driver = InjectedCellDriver { outcomes };
+    let store = Arc::new(store);
     let result =
         run_frozen_schedule(&store, &principal, &run_id, &auth_id, &lease, &driver).unwrap();
     assert_eq!(result["cell_count"], 4);
@@ -9124,6 +9128,7 @@ fn pg_rwe_live_baseline_coordinator_four_cell_injected_parity() {
     assert_eq!(attempts.len(), 4);
 }
 
+#[cfg(feature = "pg-tests")]
 #[test]
 fn pg_rwe_concurrent_cell_dispatch_fence_is_single_effect() {
     let Some(store) = test_store() else {

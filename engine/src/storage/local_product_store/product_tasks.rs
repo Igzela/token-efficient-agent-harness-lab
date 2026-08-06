@@ -5089,8 +5089,16 @@ impl LocalProductStore {
                 || usage.request_id != request_id
                 || input_tokens != usage.input_tokens
                 || output_tokens != usage.output_tokens
-                || input_tokens > 8_000
-                || output_tokens > 4_000
+                || input_tokens
+                    > manifest
+                        .pointer("/limits/max_input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(8_000)
+                || output_tokens
+                    > manifest
+                        .pointer("/limits/max_output_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(4_000)
                 || !request_ids.insert(request_id.to_string())
                 || (observed_cost - receipt_cost).abs() > 1e-12
                 || (observed_cost - recomputed_cost).abs() > 1e-12
@@ -5163,7 +5171,15 @@ impl LocalProductStore {
                 "output_sha256": output.get("output_sha256"),
             }));
         }
-        if cumulative_tokens > 24_000 || realized_cost_usd > 0.50 {
+        let max_cumulative_tokens = manifest
+            .pointer("/limits/max_cumulative_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(24_000);
+        let max_realized_cost = manifest
+            .pointer("/limits/max_cost_usd")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.50);
+        if cumulative_tokens > max_cumulative_tokens || realized_cost_usd > max_realized_cost {
             return Err("delegated provider cumulative budget exceeded".into());
         }
         let provider_execution = json!({
@@ -6606,6 +6622,148 @@ impl LocalProductStore {
             .map_err(|error| format!("product task terminal evidence is invalid JSON: {error}"))?;
         validate_product_terminal_evidence_content_hash(&evidence)?;
         Ok(evidence)
+    }
+
+    /// Pure read of the store-owned delegated artifact confirmation for an attempt.
+    /// Contains `provider_execution` (`managed_deepseek_execution_evidence.v1`) with
+    /// `provider_request_count` and `requests` — not product_task_terminal_evidence.v2.
+    pub fn get_delegated_artifact_confirmation_for_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<Value>, String> {
+        let encoded = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT artifact_confirmation_json FROM managed_acceptance_delegations
+                     WHERE attempt_id=?1",
+                    params![attempt_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_opt(
+                        "SELECT artifact_confirmation_json FROM managed_acceptance_delegations
+                         WHERE attempt_id=$1",
+                        &[&attempt_id],
+                    )
+                    .map(|row| row.map(|row| row.get::<_, Option<String>>(0)))
+                    .map_err(|e| e.to_string())
+            })?,
+        };
+        match encoded {
+            Some(Some(json_s)) if !json_s.is_empty() && json_s != "null" => {
+                let v: Value = serde_json::from_str(&json_s)
+                    .map_err(|e| format!("artifact confirmation JSON invalid: {e}"))?;
+                Ok(Some(v))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Canonical RWE cell evidence projection: joins ProductTask terminal evidence.v2
+    /// with delegated artifact confirmation's managed provider_execution (when present).
+    /// Does not invent alternate field names.
+    pub fn project_rwe_cell_store_evidence(
+        &self,
+        product_task_id: &str,
+        delegated_attempt_id: &str,
+    ) -> Result<Value, String> {
+        let task = self
+            .get_product_task(product_task_id)?
+            .ok_or("RWE cell ProductTask missing")?;
+        let terminal = self
+            .get_product_task_terminal_evidence(product_task_id)
+            .ok();
+        let confirmation = self
+            .get_delegated_artifact_confirmation_for_attempt(delegated_attempt_id)?
+            .unwrap_or(Value::Null);
+        let provider_execution = confirmation
+            .get("provider_execution")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let journal = self
+            .delegated_provider_request_journal_optional(delegated_attempt_id)
+            .unwrap_or_default();
+        Ok(Self::sort_projection_value(&json!({
+            "schema_version": "rwe_cell_store_evidence_projection.v1",
+            "product_task_id": product_task_id,
+            "delegated_attempt_id": delegated_attempt_id,
+            "product_task": {
+                "task_id": task.get("task_id"),
+                "status": task.get("status"),
+                "run_id": task.get("run_id"),
+                "plan_id": task.get("plan_id"),
+                "workspace_record_id": task.get("workspace_record_id"),
+                "workspace_id": task.get("workspace_id"),
+                "idempotency_key": task.get("idempotency_key"),
+                "source_revision": task.get("source_revision"),
+                "risk_class": task.get("risk_class"),
+            },
+            "terminal_evidence": terminal,
+            "artifact_confirmation": confirmation,
+            "provider_execution": provider_execution,
+            "provider_request_journal": journal,
+        })))
+    }
+
+    /// Deterministic key-sorted JSON for the RWE cell evidence projection.
+    fn sort_projection_value(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut keys: Vec<_> = map.keys().cloned().collect();
+                keys.sort();
+                let mut out = serde_json::Map::new();
+                for k in keys {
+                    if let Some(v) = map.get(&k) {
+                        out.insert(k, Self::sort_projection_value(v));
+                    }
+                }
+                Value::Object(out)
+            }
+            Value::Array(items) => {
+                Value::Array(items.iter().map(Self::sort_projection_value).collect())
+            }
+            other => other.clone(),
+        }
+    }
+
+    fn delegated_provider_request_journal_optional(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Vec<Value>, String> {
+        let encoded = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations WHERE attempt_id=?1",
+                        params![attempt_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_opt(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations WHERE attempt_id=$1",
+                        &[&attempt_id],
+                    )
+                    .map(|row| row.map(|row| row.get::<_, String>(0)))
+                    .map_err(|error| error.to_string())
+            })?,
+        };
+        match encoded {
+            Some(s) => serde_json::from_str(&s)
+                .map_err(|_| "delegated provider request journal is malformed".into()),
+            None => Ok(Vec::new()),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

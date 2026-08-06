@@ -2557,7 +2557,7 @@ fn product_verification_rejects_writable_or_absolute_path_commands_at_intake() {
             ),
             (
                 "test -f ../outside".to_string(),
-                "relative to the bound workspace",
+                "forbidden shell metacharacters",
             ),
         ]
         .into_iter()

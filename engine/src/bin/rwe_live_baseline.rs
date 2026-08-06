@@ -69,15 +69,24 @@ enum Commands {
         /// When true, still fails closed until the composition seam exists.
         #[arg(long, default_value_t = false)]
         allow_live_provider_effects: bool,
+        /// Provisioned operator key id for the role-separated delegated attempt
+        /// activator (required when allow_live_provider_effects is true).
+        #[arg(long)]
+        cell_executor_key_id: Option<String>,
+        /// Provisioned reviewer key id for the role-separated delegated artifact
+        /// confirmer, distinct from the approver and activator keys (required
+        /// when allow_live_provider_effects is true).
+        #[arg(long)]
+        cell_confirmer_key_id: Option<String>,
     },
 }
 
 fn main() {
     let cli = Cli::parse();
-    let store = LocalProductStore::new(&cli.db_path).unwrap_or_else(|e| {
+    let store = std::sync::Arc::new(LocalProductStore::new(&cli.db_path).unwrap_or_else(|e| {
         eprintln!("store open failed: {e}");
         std::process::exit(2);
-    });
+    }));
     let principal = store
         .authenticate_managed_acceptance_principal(&cli.tenant_id, &cli.operator_key_id, None)
         .unwrap_or_else(|e| {
@@ -122,11 +131,15 @@ fn main() {
             lease_token,
             target_repo_path,
             allow_live_provider_effects,
+            cell_executor_key_id,
+            cell_confirmer_key_id,
         } => {
             let driver = ProductGoldenPathCellDriver {
                 allow_live_provider_effects,
                 target_repo_path: target_repo_path.map(std::path::PathBuf::from),
                 fake_transport: None,
+                cell_executor_key_id,
+                cell_confirmer_key_id,
             };
             run_frozen_schedule(
                 &store,
