@@ -177,6 +177,8 @@ Implement the smallest provider-free production wiring that:
 
 Board B completion is provider-free. A live baseline still requires a new separately authorized run against the accepted exact head.
 
+**Out of Board B scope:** 4-cell live coordinator, delegated Golden Path generalization, live baseline, VDE closeout, Architecture Convergence AC1, and later packets.
+
 ### First Live Baseline Exit Gate
 
 The first baseline must execute the frozen schedule without changing the corpus, protocol, reviewer policy, budgets, seeds, verifier, or thresholds. It records layered success, failure class, provider/request/token/latency/cost evidence, approval/output/terminal bindings, recovery and cleanup, full failed-attempt cost, and evidence sufficiency.
