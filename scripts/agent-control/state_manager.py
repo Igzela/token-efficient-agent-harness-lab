@@ -1515,11 +1515,20 @@ def record_validated_review(issue_number, pr_number, head_sha, sidecar_path, rep
         or attempt.get("prior_reviewed_head")
         or "",
         "findings": evidence.get("findings"),
-        "reviewed_base": evidence.get("reviewed_base")
+        "reviewed_base": _pr_base_sha(pr_number, repo)
         or ((previous or {}).get("base_sha") if previous else "")
-        or _pr_base_sha(pr_number, repo),
+        or evidence.get("reviewed_base")
+        or "",
     }
     # When findings not in sidecar, legacy lists are used by decision_from_legacy_artifact.
+    trusted_base = _pr_base_sha(pr_number, repo) or ((previous or {}).get("base_sha") if previous else "")
+    artifact_base = evidence.get("reviewed_base")
+    if (
+        artifact_base
+        and trusted_base
+        and artifact_base != trusted_base
+    ):
+        return False, "reviewed_base_mismatch"
     try:
         decision = rc.decision_from_legacy_artifact(
             artifact,
@@ -1538,7 +1547,6 @@ def record_validated_review(issue_number, pr_number, head_sha, sidecar_path, rep
                 previous.get("verdict") == "INVALIDATED"
                 and previous_round >= 2
             )
-            or previous_round >= 2
             or decision.review_mode == "repair_verification"
         ):
             # Build a lightweight prior RoundState from previous durable fields.
@@ -1816,9 +1824,11 @@ def invalidate_evidence(issue_number, pr_number, new_head_sha, old_head_sha, rep
                 previous_review.get("verdict") == "DECISION_REQUIRED"
                 or int(previous_review.get("autonomous_repairs_remaining") or 0) == 0
                 or int(previous_review.get("review_round") or 1) >= 2
+                or bool(previous_review.get("open_blocker_ids"))
             )
         ):
-            # Budget exhausted or terminal: a new head must not reset the
+            # Budget exhausted, terminal, or open blockers that could not be
+            # consumed through the batch path: a new head must not reset the
             # autonomous budget; only explicit human authority can reopen.
             return record_review_state(
                 issue_number,
@@ -1833,6 +1843,11 @@ def invalidate_evidence(issue_number, pr_number, new_head_sha, old_head_sha, rep
                 review_round=2,
                 autonomous_repairs_remaining=0,
                 stop_reason="decision_required",
+                findings=list(previous_review.get("findings") or []),
+                finding_ledger_digest=previous_review.get("finding_ledger_digest") or "",
+                open_blocker_ids=list(previous_review.get("open_blocker_ids") or []),
+                deferred_note_ids=list(previous_review.get("deferred_note_ids") or []),
+                decision_required_ids=list(previous_review.get("decision_required_ids") or []),
             )
     return record_review_state(
         issue_number,
