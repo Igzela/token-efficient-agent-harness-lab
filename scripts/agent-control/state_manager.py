@@ -54,12 +54,18 @@ LOCAL_RELEASE_REASONS = frozenset({
     "local_aborted",
 })
 MAX_REPAIR_ATTEMPTS = 2
+# Review Convergence: autonomous independent-review repair budget matches the
+# controller repair budget (R1 + one repair batch + R2). No autonomous R3.
+MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS = MAX_REPAIR_ATTEMPTS
 MAX_REVIEW_EVIDENCE_BYTES = 64 * 1024
 MAX_REVIEW_API_PAGES = 20
 MAX_REVIEW_API_NODES = 1000
 MAX_REVIEW_THREAD_PAGES = 20
 MAX_REVIEW_THREADS = 2000
 REVIEW_VERDICTS = frozenset({"PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL"})
+# Only exact PASS authorizes merge-ready labels. PASS_WITH_NOTES is schema-valid
+# for recording deferred-note-style history but is not a control PASS.
+MERGE_AUTHORIZING_REVIEW_VERDICTS = frozenset({"PASS"})
 WORKFLOW_FAILURE_KINDS = frozenset({"implementation", "review", "ci-repair"})
 PREFLIGHT_FAILURE_REASONS = frozenset({
     "control_not_live",
@@ -223,11 +229,15 @@ class DispatchState:
 
 
 def labels_for_review_verdict(verdict):
-    """Return the non-active state labels for a finalized review verdict."""
+    """Return the non-active state labels for a finalized review verdict.
+
+    Review Convergence Protocol: only exact PASS is merge-authorizing.
+    PASS_WITH_NOTES / BLOCKED / FAIL release capacity into review-blocked.
+    """
 
     if verdict not in REVIEW_VERDICTS:
         raise ValueError("unsupported review verdict")
-    if verdict == "PASS":
+    if verdict in MERGE_AUTHORIZING_REVIEW_VERDICTS:
         return {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}
     return {LABEL_REVIEW_BLOCKED}
 

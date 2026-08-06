@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AgentOrchestratorReviewVerdict",
-  "description": "Structured review output from the Codex review worker",
+  "description": "Structured review output from the review worker under Review Convergence Protocol. Exact PASS is the only merge-authorizing control verdict and may carry deferred non-blocking notes. PASS_WITH_NOTES remains schema-valid for recording only and does not authorize merge.",
   "type": "object",
   "required": [
     "verdict",
@@ -15,7 +15,7 @@
     "verdict": {
       "type": "string",
       "enum": ["PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL"],
-      "description": "PASS: ready to merge with no blocking issues. PASS_WITH_NOTES: non-blocking suggestions only; does NOT authorize merge unless governance explicitly permits it. BLOCKED: one or more blocking issues. FAIL: critical defects or does not satisfy the task."
+      "description": "PASS: no open blockers; only authorizing control verdict (deferred notes allowed). PASS_WITH_NOTES: schema-valid non-authorizing record only. BLOCKED: one or more open blockers. FAIL: critical defects or task non-satisfaction."
     },
     "summary": {
       "type": "string",
@@ -32,19 +32,19 @@
       "type": "array",
       "maxItems": 50,
       "items": { "type": "string", "maxLength": 2000 },
-      "description": "Issues that must be resolved before merge (verdict BLOCKED or FAIL only)"
+      "description": "Open hard-contract issues that block the current head (correctness, safety, authority, evidence, rollback, scope). Must be empty for PASS. Must be non-empty for BLOCKED."
     },
     "major_notes": {
       "type": "array",
       "maxItems": 50,
       "items": { "type": "string", "maxLength": 2000 },
-      "description": "Significant observations that should be addressed"
+      "description": "Deferred non-blocking major notes; allowed on PASS; must not force a new head"
     },
     "minor_notes": {
       "type": "array",
       "maxItems": 50,
       "items": { "type": "string", "maxLength": 2000 },
-      "description": "Minor suggestions"
+      "description": "Deferred non-blocking minor notes; allowed on PASS; must not force a new head"
     },
     "ci_green": {
       "type": "boolean",

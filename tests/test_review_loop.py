@@ -404,6 +404,21 @@ class TestReceiptParser(unittest.TestCase):
         self.assertIsNone(parsed)
         self.assertTrue(any("not an exact PASS" in e for e in errors))
 
+    def test_accepts_pass_with_deferred_notes(self):
+        receipt = models.ReviewReceipt(
+            **{**make_receipt().__dict__, "deferred_notes": ("optional rename", "doc polish")}
+        )
+        markdown = "```json\n" + receipt.to_json() + "\n```\n"
+        parsed, errors = receipt_parser.parse_receipt(markdown)
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.deferred_notes, ("optional rename", "doc polish"))
+        self.assertEqual(parsed.verdict, "PASS")
+
+    def test_autonomous_review_repair_budget_aligned(self):
+        self.assertEqual(models.MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS, 2)
+        self.assertEqual(models.MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS, 2)
+
     def test_rejects_multiple_receipts(self):
         first = make_receipt()
         second = make_receipt(reviewer="other")

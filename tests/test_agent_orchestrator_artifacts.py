@@ -465,6 +465,40 @@ class TestReviewArtifactContract(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(sidecar["classification"], "invalid_artifact")
 
+    def test_pass_with_deferred_notes_is_schema_valid(self):
+        result, outputs, sidecar = self.run_validator(
+            {
+                "verdict": "PASS",
+                "summary": "pass with deferred residual notes",
+                "reviewed_head_sha": "a" * 40,
+                "blockers": [],
+                "major_notes": ["optional module rename deferred"],
+                "minor_notes": ["comment wording"],
+                "ci_green": True,
+                "security_ok": True,
+                "rollback_ok": True,
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(outputs["verdict"], "PASS")
+        self.assertEqual(sidecar["classification"], "valid_verdict")
+        self.assertEqual(sidecar["major_notes"], ["optional module rename deferred"])
+
+    def test_blocked_without_blockers_is_invalid(self):
+        result, _, sidecar = self.run_validator(
+            {
+                "verdict": "BLOCKED",
+                "summary": "blocked but empty list",
+                "reviewed_head_sha": "a" * 40,
+                "blockers": [],
+                "ci_green": True,
+                "security_ok": True,
+                "rollback_ok": True,
+            }
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(sidecar["failure_code"], "blocked_without_blockers")
+
     def test_pass_requires_empty_blockers_and_all_authorizing_gates(self):
         result, outputs, sidecar = self.run_validator(
             {

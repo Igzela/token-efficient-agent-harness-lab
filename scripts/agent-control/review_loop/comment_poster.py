@@ -40,7 +40,12 @@ def build_comment_body(
             f"Reviewed head: `{receipt.head_sha}`",
             f"Base: `{receipt.base_sha}`",
             f"PR: {receipt.pr_number}",
-            f"Verdict: **{receipt.verdict}**",
+            f"Verdict: **{receipt.verdict}**"
+            + (
+                f" (deferred notes: {len(receipt.deferred_notes)})"
+                if getattr(receipt, "deferred_notes", ())
+                else ""
+            ),
             "",
             "```json",
             receipt.to_json(),

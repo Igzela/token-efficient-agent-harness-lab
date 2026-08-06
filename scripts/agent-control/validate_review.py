@@ -20,6 +20,8 @@ import uuid
 SCHEMA_PATH = pathlib.Path(__file__).resolve().parent / "review_schema.json"
 MAX_REVIEW_ARTIFACT_BYTES = 64 * 1024
 VALID_VERDICTS = frozenset({"PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL"})
+# Align with state_manager.MAX_REPAIR_ATTEMPTS: R1 + at most one autonomous repair head / R2.
+MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS = 2
 
 
 def load_schema():
@@ -224,7 +226,8 @@ def main():
         return invalid_result(validation_path, pr_number, expected_sha, "artifact_schema_invalid", artifact_sha256)
 
     # The schema has established these types.  Keep semantic authorization
-    # checks separate: only exact PASS is allowed to carry all PASS proofs.
+    # checks separate: only exact PASS is merge-authorizing. PASS may carry
+    # deferred major_notes/minor_notes; PASS_WITH_NOTES remains non-authorizing.
     if result["reviewed_head_sha"] != expected_sha:
         return invalid_result(validation_path, pr_number, expected_sha, "reviewed_head_mismatch", artifact_sha256)
     if result["verdict"] == "PASS":
@@ -232,6 +235,18 @@ def main():
             return invalid_result(validation_path, pr_number, expected_sha, "pass_has_blockers", artifact_sha256)
         if any(result[field] is not True for field in ("ci_green", "security_ok", "rollback_ok")):
             return invalid_result(validation_path, pr_number, expected_sha, "pass_proof_missing", artifact_sha256)
+    elif result["verdict"] == "PASS_WITH_NOTES":
+        # Schema-valid recording only. Blockers would make the record contradictory.
+        if result.get("blockers"):
+            return invalid_result(
+                validation_path, pr_number, expected_sha, "pass_with_notes_has_blockers", artifact_sha256
+            )
+    elif result["verdict"] == "BLOCKED":
+        blockers = result.get("blockers") or []
+        if not blockers:
+            return invalid_result(
+                validation_path, pr_number, expected_sha, "blocked_without_blockers", artifact_sha256
+            )
     if result["verdict"] not in VALID_VERDICTS:
         return invalid_result(validation_path, pr_number, expected_sha, "unsupported_verdict", artifact_sha256)
 

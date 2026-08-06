@@ -44,6 +44,9 @@ class DeliveryOutcome(str, enum.Enum):
 
 
 VALID_RECEIPT_VERDICTS = frozenset({"PASS"})
+# Align with state_manager.MAX_REPAIR_ATTEMPTS / Review Convergence Protocol.
+MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS = 2
+MAX_DEFERRED_NOTES = 50
 
 
 @dataclasses.dataclass(frozen=True)
@@ -95,7 +98,11 @@ class ReviewRequestEnvelope:
 
 @dataclasses.dataclass(frozen=True)
 class ReviewReceipt:
-    """Structured independent-review verdict; only exact PASS is acceptable."""
+    """Structured independent-review verdict; only exact PASS is acceptable.
+
+    Review Convergence Protocol: PASS may carry deferred_notes (non-blocking).
+    Open blockers or unresolved objections still reject the receipt.
+    """
 
     schema_version: str
     verdict: str
@@ -109,6 +116,7 @@ class ReviewReceipt:
     reviewer_session_id: str
     implementation_session_id: str
     transport: str
+    deferred_notes: tuple[str, ...] = ()
 
     def validate(self) -> list[str]:
         errors = []
@@ -126,6 +134,10 @@ class ReviewReceipt:
             errors.append(f"receipt has blockers: {self.blockers}")
         if self.unresolved_objections:
             errors.append(f"receipt has unresolved objections: {self.unresolved_objections}")
+        if len(self.deferred_notes) > MAX_DEFERRED_NOTES:
+            errors.append(f"deferred_notes exceeds cap of {MAX_DEFERRED_NOTES}")
+        if any(not isinstance(note, str) or not note.strip() for note in self.deferred_notes):
+            errors.append("deferred_notes must be non-empty strings")
         if self.diff_scope != "complete_base_head":
             errors.append(f"diff_scope {self.diff_scope!r} is not complete_base_head")
         if not self.reviewer_session_id:
@@ -168,6 +180,7 @@ class ReviewReceipt:
                 "diff_scope": self.diff_scope,
                 "blockers": list(self.blockers),
                 "unresolved_objections": list(self.unresolved_objections),
+                "deferred_notes": list(self.deferred_notes),
                 "reviewer_session_id": self.reviewer_session_id,
                 "implementation_session_id": self.implementation_session_id,
                 "transport": self.transport,
@@ -189,6 +202,7 @@ class ReviewReceipt:
             diff_scope=data["diff_scope"],
             blockers=tuple(data.get("blockers", [])),
             unresolved_objections=tuple(data.get("unresolved_objections", [])),
+            deferred_notes=tuple(data.get("deferred_notes", [])),
             reviewer_session_id=data["reviewer_session_id"],
             implementation_session_id=data["implementation_session_id"],
             transport=data["transport"],

@@ -412,11 +412,27 @@ class TestMaxRepairPersistence(unittest.TestCase):
 
     def test_max_repair_attempts_value(self):
         self.assertEqual(sm.MAX_REPAIR_ATTEMPTS, 2)
+        self.assertEqual(sm.MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS, sm.MAX_REPAIR_ATTEMPTS)
+        self.assertEqual(sm.MERGE_AUTHORIZING_REVIEW_VERDICTS, {"PASS"})
 
     def test_ci_handler_uses_max_repair(self):
         import inspect
         source = inspect.getsource(ch.process_ci_completion)
         self.assertIn("MAX_REPAIR_ATTEMPTS", source)
+
+    def test_pass_with_notes_is_not_merge_authorizing(self):
+        self.assertEqual(
+            sm.labels_for_review_verdict("PASS"),
+            {sm.LABEL_REVIEW_PASSED, sm.LABEL_MERGE_READY},
+        )
+        self.assertEqual(
+            sm.labels_for_review_verdict("PASS_WITH_NOTES"),
+            {sm.LABEL_REVIEW_BLOCKED},
+        )
+        self.assertNotIn(
+            sm.LABEL_MERGE_READY,
+            sm.labels_for_review_verdict("PASS_WITH_NOTES"),
+        )
 
 
 if __name__ == "__main__":

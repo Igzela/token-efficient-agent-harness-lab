@@ -95,7 +95,13 @@ class TestReviewValidatorBehavior(unittest.TestCase):
     def test_every_schema_valid_business_verdict_succeeds_and_preserves_evidence(self):
         for verdict in ("PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL"):
             with self.subTest(verdict=verdict):
-                harness = ValidatorHarness(review_payload(verdict, blockers=["blocked"] if verdict != "PASS" else []))
+                # Review Convergence: PASS/PASS_WITH_NOTES must not carry blockers;
+                # BLOCKED requires at least one blocker. FAIL may record defects.
+                if verdict in {"PASS", "PASS_WITH_NOTES"}:
+                    blockers = []
+                else:
+                    blockers = ["blocked"]
+                harness = ValidatorHarness(review_payload(verdict, blockers=blockers))
                 try:
                     result, sidecar, outputs = harness.run()
                 finally:
@@ -108,10 +114,33 @@ class TestReviewValidatorBehavior(unittest.TestCase):
                 self.assertEqual(outputs["classification"], "valid_verdict")
                 self.assertNotIn("summary", outputs)
 
+    def test_pass_may_carry_deferred_notes_without_blockers(self):
+        harness = ValidatorHarness(review_payload(
+            "PASS",
+            blockers=[],
+            major_notes=["optional rename residual"],
+            minor_notes=["comment polish deferred"],
+        ))
+        try:
+            result, sidecar, outputs = harness.run()
+        finally:
+            harness.close()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sidecar["verdict"], "PASS")
+        self.assertEqual(sidecar["major_notes"], ["optional rename residual"])
+        self.assertEqual(sidecar["minor_notes"], ["comment polish deferred"])
+        self.assertEqual(outputs["verdict"], "PASS")
+
     def test_invalid_results_fail_and_leave_only_bounded_failure_metadata(self):
         cases = {
             "pass_blockers": (review_payload("PASS", blockers=["no"]), None, True, "pass_has_blockers"),
             "pass_missing_proof": (review_payload("PASS", security_ok=False), None, True, "pass_proof_missing"),
+            "pass_with_notes_has_blockers": (
+                review_payload("PASS_WITH_NOTES", blockers=["no"]), None, True, "pass_with_notes_has_blockers"
+            ),
+            "blocked_without_blockers": (
+                review_payload("BLOCKED", blockers=[]), None, True, "blocked_without_blockers"
+            ),
             "malformed_json": (None, b"{not json", True, "artifact_invalid_json"),
             "missing": (None, None, False, "artifact_missing"),
             "oversized": (None, b"x" * (65 * 1024), True, "artifact_too_large"),

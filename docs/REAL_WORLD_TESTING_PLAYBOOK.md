@@ -112,6 +112,78 @@ A review conclusion only binds the exact head it was produced against. Every mer
 
 A replacement head invalidates the prior receipt: the new exact head requires a new complete-diff review before Ready/merge eligibility. A receipt written against an older head is never valid evidence for a newer head. Strictly documentation-only PRs may use a simplified receipt (exact head, complete diff, outcome, rollback by revert) but still need exact-head binding. Review receipts live in the PR review thread; an aggregate approval label alone is not an exact-head independent acceptance unless its commit binding is verified.
 
+## Review Convergence Protocol
+
+Independent review is a **convergence process**, not an unbounded preference loop. This section is the repository owner for severity, disposition, autonomous repair budget, and R1/R2 rules. Capsule generators project review state only; they do not decide severity or invent rounds.
+
+### Control verdict vs notes
+
+| Control outcome | Meaning | Merge eligibility |
+|---|---|---|
+| exact `PASS` | no open blocking disposition on the reviewed head | eligible only when CI, handoff, rollback, and other gates also pass |
+| `BLOCKED` / `FAIL` / transport `NEEDS_CHANGES` | open blocking disposition remains | not eligible |
+| `PASS_WITH_NOTES` | schema-valid historical/non-authorizing record only | **not** merge-authorizing |
+| `DECISION_REQUIRED` | human adjudication required | stop; do not auto-PASS |
+
+**Exact `PASS` may carry deferred non-blocking notes** (`major_notes` / `minor_notes` / structured deferred findings). Merge eligibility is determined by **open blocking disposition count == 0**, not by “zero suggestions.” Do not introduce a second authorizing control verdict.
+
+### Severity vs disposition
+
+Findings separate **impact** from **whether the current head is blocked**:
+
+| Field | Values | Role |
+|---|---|---|
+| `severity` | `blocker`, `major`, `minor`, `note` | impact / urgency language |
+| `disposition` | `block_current_head`, `defer`, `decision_required` | effect on the current exact head |
+| `status` | `open`, `resolved`, `deferred` | lifecycle |
+
+Severity does **not** automatically equal disposition. Style, naming taste, optional refactors, documentation polish, and out-of-packet “more elegant” designs must use `defer` and must not open a new repair head.
+
+`disposition=block_current_head` is allowed only for hard-contract violations:
+
+1. correctness defect, missing required focused tests for a behavior change, or regression;
+2. security (secrets, sensitive paths, boundary weakening);
+3. authority / fail-closed weakening / parallel owners;
+4. forged, hidden, or outcome-unknown-as-success evidence;
+5. rollback removed without a tested replacement;
+6. scope outside the packet without authoritative authorization.
+
+### Autonomous repair budget (aligned with controller)
+
+Repository controller `MAX_REPAIR_ATTEMPTS = 2` is the autonomous repair budget. Local operator loops must not invent a conflicting counter.
+
+```text
+stable Draft + self-review / local checks
+        ↓
+R1: new independent session, review_mode=full, complete base...head
+     ├─ no open block_current_head → exact PASS (deferred notes allowed)
+     └─ open blockers → one repair batch (blockers only; defer never forces a head)
+                ↓
+R2: new independent session, review_mode=repair_verification
+     complete new base...head attestation + delta-first focus
+     ├─ no open block_current_head → exact PASS + deferred notes
+     └─ still blocked / disputed → DECISION_REQUIRED (no autonomous R3)
+```
+
+### R2 rules (must not weaken exact-head review)
+
+- R2 must still **attest the complete new `base...head` range** (not delta-only evidence).
+- Review order: prior blockers closed? → repair regressions? → hard-stop scan of the full new head.
+- New non-blocking nits → `defer` only; they must not create another repair head.
+- New `block_current_head` is allowed only when the repair introduced a regression, R1 evidence was unavailable, or a hard safety/correctness miss was found.
+- After R2, remaining open blockers or authority disputes stop at `DECISION_REQUIRED`; they never auto-PASS.
+
+### Reviewer vs implementer duties
+
+- Reviewer outputs: evidence, violated contract, and acceptance condition.
+- Reviewer does **not** own a detailed patch plan; implementation owns repair design.
+- Implementer repairs only open `block_current_head` items in one batch per autonomous round.
+- Deferred notes are recorded residual risk, not a license to reopen the loop.
+
+### Independent-session transport
+
+Planning, R1, and R2 sessions are isolated. Continuity is a structured finding ledger (ids, disposition, origin head, acceptance condition), not an ever-growing chat history. A new PR head always invalidates prior receipts regardless of ledger state.
+
 ## Documentation-Only Canonical Mode
 
 A Ready PR may use the targeted canonical mode only when its final exact diff is strictly documentation-only.
