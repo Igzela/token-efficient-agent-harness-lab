@@ -1415,8 +1415,9 @@ fn run_git_inner(
         .stderr(Stdio::piped());
     // Preserve only the proxy environment across the credential-free env clear:
     // deployments behind a local proxy cannot reach the target host directly,
-    // and a direct connection hangs until the bounded git timeout. Proxy vars
-    // carry no credentials, so the clear remains safe for everything else.
+    // and a direct connection hangs until the bounded git timeout. Proxy URLs
+    // may embed user:pass@ credentials; they are passed only to the operator's
+    // own git subprocess, never to any other tool or network endpoint.
     for proxy_var in [
         "http_proxy",
         "https_proxy",

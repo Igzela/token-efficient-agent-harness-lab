@@ -2071,13 +2071,9 @@ impl LocalProductStore {
                         "pre-effect cell budget reservation refused: tokens {next_tok} > run ceiling {run_max_tok}"
                     ));
                 }
-                // Per-cell input/output ceilings must fit within reserved total.
-                if envelope
-                    .max_input_tokens
-                    .saturating_add(envelope.max_output_tokens)
-                    < envelope.max_total_tokens
-                    && envelope.max_input_tokens > envelope.max_total_tokens
-                {
+                // Per-cell input/output ceilings must fit within reserved total
+                // (same fail-closed check on SQLite and PostgreSQL).
+                if envelope.max_input_tokens > envelope.max_total_tokens {
                     return Err(
                         "pre-effect cell budget reservation refused: input tokens exceed total"
                             .into(),
@@ -2195,6 +2191,12 @@ impl LocalProductStore {
                     return Err(format!(
                         "pre-effect cell budget reservation refused: tokens {next_tok} > run ceiling {run_max_tok}"
                     ));
+                }
+                if envelope.max_input_tokens > envelope.max_total_tokens {
+                    return Err(
+                        "pre-effect cell budget reservation refused: input tokens exceed total"
+                            .into(),
+                    );
                 }
                 if envelope.max_output_tokens > envelope.max_total_tokens {
                     return Err(

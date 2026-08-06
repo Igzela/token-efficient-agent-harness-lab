@@ -1709,9 +1709,19 @@ pub fn compile_product_executable_graph(
                     .and_then(|a| a.first())
                     .and_then(Value::as_str)
                     .unwrap_or("docs/USER_GUIDE.md");
+                // The docs Golden Path planner gate admits only the legacy
+                // clarify intent for docs/USER_GUIDE.md; frozen RWE cells admit
+                // bounded_product_task inside the frozen union. Emit the intent
+                // that matches the scope so a real model obeying the prompt is
+                // accepted by the executor validator.
+                let planning_intent = if prompt_path == "docs/USER_GUIDE.md" {
+                    "clarify_doctor_read_only_health_check"
+                } else {
+                    "bounded_product_task"
+                };
                 let prompt = match *stage {
                     "planning" => format!(
-                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_deepseek_plan.v1\",\"status\":\"planned\",\"path\":\"{prompt_path}\",\"intent\":\"bounded_product_task\"}}. Stay within allowed_paths.",
+                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_deepseek_plan.v1\",\"status\":\"planned\",\"path\":\"{prompt_path}\",\"intent\":\"{planning_intent}\"}}. Stay within allowed_paths.",
                         objective_preview
                     ),
                     "implementation" => format!(
@@ -1880,6 +1890,43 @@ mod tests {
         assert_eq!(
             node["managed_executor_identity"]["planner_model"],
             "deepseek-v4-pro"
+        );
+        // Regression: the docs Golden Path planning prompt must keep the legacy
+        // clarify intent so a real model obeying the prompt passes the executor
+        // planner gate (bounded_product_task is only valid inside the frozen
+        // RWE union; docs/USER_GUIDE.md is not in it).
+        let planning_prompt = graph["nodes"][0]["managed_deepseek"]["prompt"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            planning_prompt.contains("clarify_doctor_read_only_health_check"),
+            "docs GP planning prompt lost the legacy intent: {planning_prompt}"
+        );
+        assert!(
+            !planning_prompt.contains("bounded_product_task"),
+            "docs GP planning prompt must not request the RWE intent: {planning_prompt}"
+        );
+        // And a non-docs allowed path requests the bounded RWE intent while
+        // keeping the admitted docs verifier shape.
+        let mut rwe_task = managed_deepseek_graph_task(json!([{
+            "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+            "timeout_ms": 5_000
+        }]));
+        rwe_task["workspace_binding"]["allowed_paths"] =
+            json!(["apps/api/tests/test_alters_persist.py"]);
+        let rwe_graph = compile_product_executable_graph(
+            &rwe_task,
+            "2026-07-30T00:00:00Z",
+            &crate::read_only_planner::WorkflowPlanIds::for_sequence(1),
+            "managed_deepseek",
+        )
+        .unwrap();
+        let rwe_prompt = rwe_graph["nodes"][0]["managed_deepseek"]["prompt"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            rwe_prompt.contains("bounded_product_task"),
+            "non-docs planning prompt must request the bounded RWE intent: {rwe_prompt}"
         );
     }
 

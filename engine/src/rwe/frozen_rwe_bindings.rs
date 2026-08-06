@@ -261,6 +261,12 @@ pub fn is_exact_frozen_rwe_verifier_command(command: &str) -> bool {
 /// admitted, and a file entry (basename contains a `.`) admits no pseudo
 /// children. Absolute paths, empty paths, empty components, `.`, `..`, and
 /// any path escaping the allowed root fail closed.
+///
+/// Entry-shape convention: an allowed entry whose basename contains a `.` is
+/// treated as a file and admits no children; an entry without a `.` is treated
+/// as a directory. Dotless file names (e.g. `Dockerfile`) must therefore be
+/// spelled as exact entries and never relied on to admit children; the frozen
+/// corpus currently uses dotted file entries only.
 pub fn path_under_allowed_paths(path: &str, allowed_paths: &[String]) -> bool {
     let Some(path_components) = clean_relative_path_components(path) else {
         return false;

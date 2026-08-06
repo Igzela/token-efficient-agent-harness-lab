@@ -48,6 +48,11 @@ pub const RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA: &str = "rwe_cell_attempt_evidence.v1
 pub const RWE_LIVE_CELL_COMPOSITION_SEAM: &str =
     "rwe_cell_composition:product_golden_path+local_product_store:frozen_rwe_bindings.v1";
 
+/// Operator live-run token: live provider POSTs and target writes require the
+/// explicit `=1` symbol in the parent process (parity with the armed fixture's
+/// `ACP_RWE_ARMED_LIVE_RUN` gate; CI never sets either).
+pub const RWE_OPERATOR_LIVE_RUN_TOKEN: &str = "ACP_RWE_OPERATOR_LIVE_RUN";
+
 fn sort_value(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
@@ -399,6 +404,14 @@ impl CellDriver for ProductGoldenPathCellDriver {
         }
         rwe_composition_seam_ready()?;
         if self.allow_live_provider_effects {
+            // Operator live-run token: parity with the armed integration
+            // fixture's ACP_RWE_ARMED_LIVE_RUN=1 gate. Live provider POSTs and
+            // target writes require the explicit operator authorization symbol.
+            if std::env::var(RWE_OPERATOR_LIVE_RUN_TOKEN).ok().as_deref() != Some("1") {
+                return Err(format!(
+                    "live RWE cell requires the operator live-run token {RWE_OPERATOR_LIVE_RUN_TOKEN}=1"
+                ));
+            }
             let cred = std::env::var(DEEPSEEK_CREDENTIAL_REFERENCE)
                 .ok()
                 .filter(|v| !v.trim().is_empty());
@@ -1291,15 +1304,20 @@ fn evaluate_store_owned_live_baseline_seal(
             return false;
         }
         // Cleanup: workspace must be cleaned (store status) for seal honesty.
-        if let Some(ws_id) = product_task
+        // A missing or errored workspace record fails the seal closed.
+        match product_task
             .get("workspace_record_id")
             .and_then(Value::as_str)
         {
-            if let Ok(Some(ws)) = store.get_supervised_patch_workspace(ws_id) {
-                if ws.get("status").and_then(Value::as_str) != Some("cleaned") {
-                    return false;
+            Some(ws_id) => match store.get_supervised_patch_workspace(ws_id) {
+                Ok(Some(ws)) => {
+                    if ws.get("status").and_then(Value::as_str) != Some("cleaned") {
+                        return false;
+                    }
                 }
-            }
+                Ok(None) | Err(_) => return false,
+            },
+            None => return false,
         }
     }
     if executed == 0 {
@@ -2102,6 +2120,46 @@ fn execute_armed_delegated_rwe_cell(
 
     // 6. Managed executor through the injected fake transport (provider-free) or
     // the production credential boundary when no fake transport is supplied.
+    // Executor envelope must equal the persisted manifest envelope so the
+    // store-owned authority contract matches the request exactly on BOTH
+    // branches; the live path must never fall back to the from_env default
+    // envelope (docs limits), which would break the frozen cell budget.
+    let manifest_limits = ManagedCallLimits {
+        max_requests: manifest
+            .pointer("/limits/max_provider_requests")
+            .and_then(Value::as_u64)
+            .unwrap_or(3),
+        max_retries: manifest
+            .pointer("/limits/max_retries")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        max_input_tokens: manifest
+            .pointer("/limits/max_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(12_000),
+        max_output_tokens: manifest
+            .pointer("/limits/max_output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(4_000),
+        max_cumulative_tokens: manifest
+            .pointer("/limits/max_cumulative_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(16_000),
+        timeout_ms: manifest
+            .pointer("/limits/timeout_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(900_000),
+        max_cost_usd: manifest
+            .pointer("/limits/max_cost_usd")
+            .and_then(Value::as_f64),
+    };
+    let manifest_price_profile = serde_json::from_value(
+        manifest
+            .pointer("/provider/price_profile")
+            .cloned()
+            .ok_or("delegated manifest price profile missing")?,
+    )
+    .map_err(|_| "delegated manifest price profile malformed")?;
     let source: std::sync::Arc<dyn crate::provider::managed_deepseek::ManagedAuthoritySource> =
         store.clone();
     let executor = match transport {
@@ -2130,44 +2188,6 @@ fn execute_armed_delegated_rwe_cell(
                     std::sync::Arc::clone(tx),
                 )))
             };
-            // Executor envelope must equal the persisted manifest envelope so
-            // the store-owned authority contract matches the request exactly.
-            let manifest_limits = ManagedCallLimits {
-                max_requests: manifest
-                    .pointer("/limits/max_provider_requests")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(3),
-                max_retries: manifest
-                    .pointer("/limits/max_retries")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                max_input_tokens: manifest
-                    .pointer("/limits/max_input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(12_000),
-                max_output_tokens: manifest
-                    .pointer("/limits/max_output_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(4_000),
-                max_cumulative_tokens: manifest
-                    .pointer("/limits/max_cumulative_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(16_000),
-                timeout_ms: manifest
-                    .pointer("/limits/timeout_ms")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(900_000),
-                max_cost_usd: manifest
-                    .pointer("/limits/max_cost_usd")
-                    .and_then(Value::as_f64),
-            };
-            let manifest_price_profile = serde_json::from_value(
-                manifest
-                    .pointer("/provider/price_profile")
-                    .cloned()
-                    .ok_or("delegated manifest price profile missing")?,
-            )
-            .map_err(|_| "delegated manifest price profile malformed")?;
             ManagedDeepSeekNodeExecutor::new(
                 mk(OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL)?,
                 mk(OPERATOR_ADMITTED_MODEL)?,
@@ -2180,7 +2200,43 @@ fn execute_armed_delegated_rwe_cell(
                 },
             )?
         }
-        None => ManagedDeepSeekNodeExecutor::from_env(source)?,
+        None => {
+            let mk = |model: &str| -> Result<std::sync::Arc<ManagedDeepSeekProvider>, String> {
+                let config = ProviderConfig::new(
+                    "deepseek-managed-rwe",
+                    "openai_compatible",
+                    DEEPSEEK_OPENAI_BASE_URL,
+                    model,
+                    DEEPSEEK_CREDENTIAL_REFERENCE,
+                    "2026-07-30T00:00:00Z",
+                );
+                let credential = CredentialRef::new(
+                    DEEPSEEK_CREDENTIAL_REFERENCE,
+                    "env",
+                    "***",
+                    "provider:deepseek",
+                    "2026-07-30T00:00:00Z",
+                );
+                Ok(std::sync::Arc::new(ManagedDeepSeekProvider::new_openai(
+                    config,
+                    CredentialBoundary::new("env")
+                        .map_err(|e| format!("managed credential boundary failed: {e}"))?,
+                    credential,
+                    std::sync::Arc::new(crate::provider::transport::ReqwestTransport::new()),
+                )))
+            };
+            ManagedDeepSeekNodeExecutor::new(
+                mk(OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL)?,
+                mk(OPERATOR_ADMITTED_MODEL)?,
+                mk(OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL)?,
+                source,
+                ManagedDeepSeekExecutorConfig {
+                    protocol: DeepSeekProtocol::OpenAiCompatible,
+                    limits: manifest_limits,
+                    price_profile: manifest_price_profile,
+                },
+            )?
+        }
     };
     let mut terminal_reached = false;
     let mut last_tick = Value::Null;
@@ -3815,6 +3871,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let had_cred = std::env::var_os(DEEPSEEK_CREDENTIAL_REFERENCE);
         let had_ci = std::env::var_os("CI");
+        let had_live_token = std::env::var_os(RWE_OPERATOR_LIVE_RUN_TOKEN);
         let had_env = [
             crate::product_golden_path::PRODUCT_TASK_GATE,
             "ACP_ENABLE_TARGET_REPO_OUTPUT",
@@ -3833,6 +3890,7 @@ mod tests {
         std::env::set_var("ACP_ENABLE_GITHUB_PR_OUTPUT", "1");
         std::env::set_var("ACP_GITHUB_REPOSITORY_ALLOWLIST", "Igzela/alters-lab");
         std::env::set_var(DEEPSEEK_CREDENTIAL_REFERENCE, "test-operator-credential");
+        std::env::set_var(RWE_OPERATOR_LIVE_RUN_TOKEN, "1");
         std::env::remove_var("CI");
 
         // 4 cells × 3 managed requests: planning / implementation / review.
@@ -3902,6 +3960,10 @@ mod tests {
         match had_ci {
             Some(v) => std::env::set_var("CI", v),
             None => std::env::remove_var("CI"),
+        }
+        match had_live_token {
+            Some(v) => std::env::set_var(RWE_OPERATOR_LIVE_RUN_TOKEN, v),
+            None => std::env::remove_var(RWE_OPERATOR_LIVE_RUN_TOKEN),
         }
         for name in [
             crate::product_golden_path::PRODUCT_TASK_GATE,

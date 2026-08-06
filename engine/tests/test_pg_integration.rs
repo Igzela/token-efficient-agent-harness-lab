@@ -9080,6 +9080,21 @@ fn pg_rwe_live_baseline_coordinator_four_cell_injected_parity() {
 
     let auth_id = format!("auth-coord-{tag}");
     let run_id = format!("run-coord-{tag}");
+    // The one-use authority may only be consumed when the complete runnable
+    // seam is ready (credential symbol present, non-CI); simulate the operator
+    // environment around the admit call under the shared env lock, exactly like
+    // the SQLite four-cell orchestration test.
+    let _lock = engine::cli::config::cli_env_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let had_cred =
+        std::env::var_os(engine::provider::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE);
+    let had_ci = std::env::var_os("CI");
+    std::env::set_var(
+        engine::provider::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE,
+        "test-operator-credential",
+    );
+    std::env::remove_var("CI");
     let admitted = issue_and_admit_v2(
         &store,
         &principal,
@@ -9087,13 +9102,26 @@ fn pg_rwe_live_baseline_coordinator_four_cell_injected_parity() {
         &run_id,
         &prereq,
         &(chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
-    )
-    .unwrap();
+    );
+    match had_cred {
+        Some(v) => std::env::set_var(
+            engine::provider::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE,
+            v,
+        ),
+        None => {
+            std::env::remove_var(engine::provider::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE)
+        }
+    }
+    match had_ci {
+        Some(v) => std::env::set_var("CI", v),
+        None => std::env::remove_var("CI"),
+    }
+    let admitted = admitted.unwrap();
     let lease = admitted["lease_token"].as_str().unwrap().to_string();
     let outcomes = (0..4)
         .map(|i| CellOutcome {
             classification: "injected_success".into(),
-            provider_requests: 0,
+            provider_requests: 3,
             input_tokens: 0,
             output_tokens: 0,
             total_tokens: 0,
@@ -9198,6 +9226,17 @@ fn pg_rwe_concurrent_cell_dispatch_fence_is_single_effect() {
         .unwrap();
     let auth_id = format!("auth-fence-{tag}");
     let run_id = format!("run-fence-{tag}");
+    let _lock = engine::cli::config::cli_env_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let had_cred =
+        std::env::var_os(engine::provider::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE);
+    let had_ci = std::env::var_os("CI");
+    std::env::set_var(
+        engine::provider::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE,
+        "test-operator-credential",
+    );
+    std::env::remove_var("CI");
     let admitted = issue_and_admit_v2(
         &store,
         &principal,
@@ -9205,8 +9244,21 @@ fn pg_rwe_concurrent_cell_dispatch_fence_is_single_effect() {
         &run_id,
         &prereq,
         &(chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
-    )
-    .unwrap();
+    );
+    match had_cred {
+        Some(v) => std::env::set_var(
+            engine::provider::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE,
+            v,
+        ),
+        None => {
+            std::env::remove_var(engine::provider::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE)
+        }
+    }
+    match had_ci {
+        Some(v) => std::env::set_var("CI", v),
+        None => std::env::remove_var("CI"),
+    }
+    let admitted = admitted.unwrap();
     let lease = admitted["lease_token"].as_str().unwrap().to_string();
     let frozen = freeze_current_operator_contract_set().unwrap();
     let cell0 = &frozen.schedule.body["cells"][0];
@@ -9242,8 +9294,8 @@ fn pg_rwe_concurrent_cell_dispatch_fence_is_single_effect() {
             let run_id = run_id.clone();
             let auth_id = std::sync::Arc::clone(&auth_id);
             let envelope = envelope.clone();
-            let principal_key = format!("op-fence-{tag}");
-            let tenant = format!("tenant-fence-{tag}");
+            let principal_key = format!("operator-rwe-fence-{tag}");
+            let tenant = format!("tenant-rwe-fence-{tag}");
             scope.spawn(move || {
                 let principal = store
                     .authenticate_managed_acceptance_principal(&tenant, &principal_key, None)
