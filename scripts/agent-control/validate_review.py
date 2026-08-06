@@ -336,8 +336,16 @@ def main():
 
     result.setdefault("review_mode", decision.review_mode)
     result["review_round"] = decision.review_round
-    result["reviewed_base"] = decision.reviewed_base
-    result["reviewed_range"] = decision.reviewed_range
+    if isinstance(result.get("reviewed_base"), str) and re.fullmatch(
+        r"[0-9a-f]{40}", result["reviewed_base"]
+    ):
+        # The artifact supplied a real base; keep the derived exact range.
+        result["reviewed_range"] = decision.reviewed_range
+    else:
+        # No trusted base in the artifact: leave binding to the record path,
+        # which consults the trusted GitHub PR base (never a zero default).
+        result.pop("reviewed_base", None)
+        result.pop("reviewed_range", None)
     result["prior_reviewed_head"] = decision.prior_reviewed_head
     result["findings"] = [f.to_dict() for f in decision.findings]
     result["open_blocker_ids"] = list(decision.open_blocker_ids)

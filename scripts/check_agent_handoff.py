@@ -115,6 +115,8 @@ REQUIRED_TEXT = {
         "REVIEW_PROTOCOL_VERSION",
         "MAX_SUBSTANTIVE_REVIEW_ROUNDS = 2",
         "MAX_AUTONOMOUS_REPAIR_BATCHES = 1",
+        "MAX_DEFERRED_NOTES",
+        "MAX_NOTE_LEN",
         "class ReviewDecision",
         "class ReviewFinding",
         "def apply_r2_decision",

@@ -638,6 +638,9 @@ def derive_next_review_attempt(state: dict[str, Any] | None, head_sha: str) -> d
         state.get("autonomous_repairs_remaining", INITIAL_AUTONOMOUS_REPAIRS_REMAINING)
     )
     prior_head = str(state.get("head_sha") or state.get("reviewed_head") or "")
+    prior_open = list(state.get("open_blocker_ids") or [])
+    prior_digest = str(state.get("finding_ledger_digest") or "")
+    head_changed = bool(prior_head and prior_head != head_sha)
     if verdict == "INVALIDATED" and round_n <= 1 and remaining > 0:
         # Fresh invalidation (prior non-blocked review, new head): restart R1.
         return {
@@ -650,16 +653,16 @@ def derive_next_review_attempt(state: dict[str, Any] | None, head_sha: str) -> d
             "allowed": True,
             "deny_reason": "",
         }
-    # New head after repair → R2
-    if verdict == "INVALIDATED" or (prior_head and prior_head != head_sha and remaining == 0):
+    if verdict == "INVALIDATED" or (head_changed and remaining == 0 and verdict != "PASS"):
+        # Post-repair / budget-spent marker: R2 repair verification.
         if round_n > MAX_SUBSTANTIVE_REVIEW_ROUNDS:
             return {
                 "review_mode": "repair_verification",
                 "review_round": round_n,
                 "prior_reviewed_head": state.get("prior_reviewed_head") or prior_head,
                 "autonomous_repairs_remaining": 0,
-                "open_blocker_ids": list(state.get("open_blocker_ids") or []),
-                "finding_ledger_digest": state.get("finding_ledger_digest") or "",
+                "open_blocker_ids": prior_open,
+                "finding_ledger_digest": prior_digest,
                 "allowed": False,
                 "deny_reason": "substantive_review_budget_exhausted",
             }
@@ -668,8 +671,34 @@ def derive_next_review_attempt(state: dict[str, Any] | None, head_sha: str) -> d
             "review_round": min(MAX_SUBSTANTIVE_REVIEW_ROUNDS, max(2, round_n)),
             "prior_reviewed_head": state.get("prior_reviewed_head") or prior_head,
             "autonomous_repairs_remaining": 0,
-            "open_blocker_ids": list(state.get("open_blocker_ids") or []),
-            "finding_ledger_digest": state.get("finding_ledger_digest") or "",
+            "open_blocker_ids": prior_open,
+            "finding_ledger_digest": prior_digest,
+            "allowed": True,
+            "deny_reason": "",
+        }
+    if head_changed and prior_open and round_n < MAX_SUBSTANTIVE_REVIEW_ROUNDS and remaining > 0:
+        # Review-repair head (no explicit invalidation ran): the changed head
+        # with open prior blockers consumes the single autonomous repair batch
+        # and routes the next review to R2 repair verification.
+        return {
+            "review_mode": "repair_verification",
+            "review_round": MAX_SUBSTANTIVE_REVIEW_ROUNDS,
+            "prior_reviewed_head": prior_head,
+            "autonomous_repairs_remaining": 0,
+            "open_blocker_ids": prior_open,
+            "finding_ledger_digest": prior_digest,
+            "allowed": True,
+            "deny_reason": "",
+        }
+    if head_changed and verdict == "PASS":
+        # New head after a terminal PASS starts a fresh review surface.
+        return {
+            "review_mode": "full",
+            "review_round": 1,
+            "prior_reviewed_head": prior_head or "",
+            "autonomous_repairs_remaining": INITIAL_AUTONOMOUS_REPAIRS_REMAINING,
+            "open_blocker_ids": [],
+            "finding_ledger_digest": "",
             "allowed": True,
             "deny_reason": "",
         }
@@ -681,18 +710,31 @@ def derive_next_review_attempt(state: dict[str, Any] | None, head_sha: str) -> d
             "review_round": round_n,
             "prior_reviewed_head": state.get("prior_reviewed_head") or "",
             "autonomous_repairs_remaining": 0,
-            "open_blocker_ids": list(state.get("open_blocker_ids") or []),
-            "finding_ledger_digest": state.get("finding_ledger_digest") or "",
+            "open_blocker_ids": prior_open,
+            "finding_ledger_digest": prior_digest,
             "allowed": False,
             "deny_reason": "r2_complete_requires_human_authority_for_retry",
+        }
+    if not head_changed and verdict == "PASS":
+        # A PASSed head cannot be automatically re-reviewed; operator action
+        # and explicit authority are required to reopen it.
+        return {
+            "review_mode": state.get("review_mode") or "full",
+            "review_round": round_n,
+            "prior_reviewed_head": state.get("prior_reviewed_head") or "",
+            "autonomous_repairs_remaining": remaining,
+            "open_blocker_ids": prior_open,
+            "finding_ledger_digest": prior_digest,
+            "allowed": False,
+            "deny_reason": "pass_terminal_requires_human_authority",
         }
     return {
         "review_mode": state.get("review_mode") or "full",
         "review_round": round_n,
         "prior_reviewed_head": state.get("prior_reviewed_head") or "",
         "autonomous_repairs_remaining": remaining,
-        "open_blocker_ids": list(state.get("open_blocker_ids") or []),
-        "finding_ledger_digest": state.get("finding_ledger_digest") or "",
+        "open_blocker_ids": prior_open,
+        "finding_ledger_digest": prior_digest,
         "allowed": True,
         "deny_reason": "",
     }

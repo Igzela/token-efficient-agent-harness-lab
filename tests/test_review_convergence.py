@@ -393,6 +393,38 @@ class TestDeriveNextReviewAttempt(unittest.TestCase):
         self.assertEqual(attempt["prior_reviewed_head"], HEAD1)
         self.assertEqual(attempt["open_blocker_ids"], ["F-1"])
 
+    def test_review_repair_head_without_invalidation_consumes_batch_and_derives_r2(self):
+        # F-1: a changed head after an R1 BLOCKED record (no explicit
+        # invalidate_evidence call) must consume the single repair batch and
+        # route the next review to R2 repair verification.
+        prior = rc.initial_r1_state(
+            decision("BLOCKED", findings=(finding(),))
+        ).to_persistence_fields()
+        attempt = rc.derive_next_review_attempt(prior, HEAD2)
+        self.assertTrue(attempt["allowed"])
+        self.assertEqual(attempt["review_mode"], "repair_verification")
+        self.assertEqual(attempt["review_round"], 2)
+        self.assertEqual(attempt["autonomous_repairs_remaining"], 0)
+        self.assertEqual(attempt["prior_reviewed_head"], HEAD1)
+        self.assertEqual(attempt["open_blocker_ids"], ["F-1"])
+
+    def test_new_head_after_terminal_pass_starts_fresh_r1(self):
+        prior = rc.initial_r1_state(decision("PASS")).to_persistence_fields()
+        attempt = rc.derive_next_review_attempt(prior, HEAD2)
+        self.assertTrue(attempt["allowed"])
+        self.assertEqual(attempt["review_mode"], "full")
+        self.assertEqual(attempt["review_round"], 1)
+        self.assertEqual(
+            attempt["autonomous_repairs_remaining"],
+            rc.INITIAL_AUTONOMOUS_REPAIRS_REMAINING,
+        )
+
+    def test_same_head_pass_cannot_be_reopened_automatically(self):
+        prior = rc.initial_r1_state(decision("PASS")).to_persistence_fields()
+        attempt = rc.derive_next_review_attempt(prior, HEAD1)
+        self.assertFalse(attempt["allowed"])
+        self.assertIn("human_authority", attempt["deny_reason"])
+
     def test_r2_decision_required_denies_retry_without_human_authority(self):
         prior = rc.after_repair_batch_consumed(
             rc.initial_r1_state(decision("BLOCKED", findings=(finding(),))),

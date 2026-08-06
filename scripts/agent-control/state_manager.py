@@ -1491,6 +1491,14 @@ def record_validated_review(issue_number, pr_number, head_sha, sidecar_path, rep
         # silently reopened by an arriving artifact; only explicit human
         # authority may resume.
         return False, f"review_budget_denied:{attempt.get('deny_reason') or 'not_allowed'}"
+    derived_mode = str(attempt["review_mode"])
+    derived_round = int(attempt["review_round"])
+    artifact_mode = evidence.get("review_mode")
+    if artifact_mode is not None and artifact_mode != derived_mode:
+        return False, f"review_mode_mismatch:{artifact_mode}!= {derived_mode}"
+    artifact_round = evidence.get("review_round")
+    if artifact_round is not None and int(artifact_round) != derived_round:
+        return False, f"review_round_mismatch:{artifact_round}!={derived_round}"
     # Build normalized decision from legacy/extended sidecar fields.
     artifact = {
         "verdict": evidence["verdict"],
@@ -1501,8 +1509,8 @@ def record_validated_review(issue_number, pr_number, head_sha, sidecar_path, rep
         "minor_notes": evidence["minor_notes"],
         "security_ok": True,
         "rollback_ok": True,
-        "review_mode": evidence.get("review_mode") or attempt["review_mode"],
-        "review_round": evidence.get("review_round") or attempt["review_round"],
+        "review_mode": derived_mode,
+        "review_round": derived_round,
         "prior_reviewed_head": evidence.get("prior_reviewed_head")
         or attempt.get("prior_reviewed_head")
         or "",
@@ -1515,8 +1523,8 @@ def record_validated_review(issue_number, pr_number, head_sha, sidecar_path, rep
     try:
         decision = rc.decision_from_legacy_artifact(
             artifact,
-            review_mode=artifact["review_mode"],
-            review_round=int(artifact["review_round"]),
+            review_mode=derived_mode,
+            review_round=derived_round,
             base_sha=str(artifact.get("reviewed_base") or ""),
             prior_reviewed_head=str(artifact.get("prior_reviewed_head") or ""),
         )

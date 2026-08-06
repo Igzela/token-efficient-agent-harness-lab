@@ -48,11 +48,9 @@ VALID_RECEIPT_VERDICTS = frozenset({"PASS"})
 # Canonical convergence bounds come from the single pure owner
 # (review_convergence.py): deferred-note count, per-note length, total size,
 # and control-character limits are enforced here on the transport receipt.
-try:
-    from review_convergence import MAX_DEFERRED_NOTES, MAX_NOTE_LEN  # type: ignore
-except ImportError:  # pragma: no cover - only when parent dir is not importable
-    MAX_DEFERRED_NOTES = 50
-    MAX_NOTE_LEN = 2000
+# review_loop_cli.py and every test entry point put scripts/agent-control on
+# sys.path, so the canonical owner is always importable.
+from review_convergence import MAX_DEFERRED_NOTES, MAX_NOTE_LEN  # type: ignore
 MAX_DEFERRED_NOTES_TOTAL_BYTES = 64 * 1024
 
 
