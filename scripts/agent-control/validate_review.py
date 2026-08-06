@@ -6,6 +6,13 @@ receives a small, trusted validation sidecar for durable recording; malformed
 or unavailable artifacts instead produce a bounded failure sidecar and a
 non-zero exit status.  Raw model output is never copied to GitHub workflow
 outputs.
+
+Review Convergence Protocol: cross-field verdict rules are enforced by the
+single canonical pure owner `review_convergence.py` (severity vs disposition,
+exact PASS as the only merge-authorizing verdict, R1/R2 rounds, no autonomous
+R3).  `ci_green` is a reviewer observation only and never authorizes PASS;
+authoritative CI is read independently from trusted GitHub state by the merge
+owner.
 """
 
 import hashlib
@@ -16,12 +23,11 @@ import re
 import sys
 import uuid
 
+import review_convergence as rc
+
 
 SCHEMA_PATH = pathlib.Path(__file__).resolve().parent / "review_schema.json"
 MAX_REVIEW_ARTIFACT_BYTES = 64 * 1024
-VALID_VERDICTS = frozenset({"PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL"})
-# Align with state_manager.MAX_REPAIR_ATTEMPTS: R1 + at most one autonomous repair head / R2.
-MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS = 2
 
 
 def load_schema():
@@ -63,6 +69,13 @@ def validate(data, schema):
         elif expected_type == "boolean":
             if type(value) is not bool:
                 errors.append(f"{key} must be a boolean")
+        elif expected_type == "integer":
+            if type(value) is not int:
+                errors.append(f"{key} must be an integer")
+            elif value < int(rule.get("minimum", value)) or value > int(
+                rule.get("maximum", value)
+            ):
+                errors.append(f"{key} is outside the allowed range")
         elif expected_type == "array":
             if not isinstance(value, list):
                 errors.append(f"{key} must be an array")
@@ -70,16 +83,65 @@ def validate(data, schema):
             if len(value) > int(rule.get("maxItems", len(value))):
                 errors.append(f"{key} has too many items")
             item_rule = rule.get("items", {})
-            for item in value:
-                if item_rule.get("type") == "string" and not isinstance(item, str):
-                    errors.append(f"{key} items must be strings")
-                    continue
-                if isinstance(item, str) and len(item) > int(
-                    item_rule.get("maxLength", len(item))
-                ):
-                    errors.append(f"{key} item is too long")
+            if isinstance(item_rule, dict) and item_rule.get("type") == "object":
+                for item in value:
+                    if not isinstance(item, dict):
+                        errors.append(f"{key} items must be objects")
+                        continue
+                    errors.extend(_validate_finding(item, key))
+            elif isinstance(item_rule, dict) and item_rule.get("type") == "string":
+                for item in value:
+                    if not isinstance(item, str):
+                        errors.append(f"{key} items must be strings")
+                        continue
+                    if len(item) > int(item_rule.get("maxLength", len(item))):
+                        errors.append(f"{key} item is too long")
         else:
             errors.append(f"unsupported schema type for {key}")
+    return errors
+
+
+def _validate_finding(item, field):
+    """Structural finding validation against the schema's finding object rule."""
+    errors = []
+    required = {
+        "id",
+        "axis",
+        "evidence",
+        "severity",
+        "disposition",
+        "scope_relation",
+        "origin_head",
+        "acceptance_condition",
+        "status",
+    }
+    for key in sorted(required - set(item)):
+        errors.append(f"{field} finding missing {key}")
+    allowed = required | {"admission_reason"}
+    for key in sorted(set(item) - allowed):
+        errors.append(f"{field} finding has unsupported key {key}")
+    enums = {
+        "severity": {"blocker", "major", "minor", "note"},
+        "disposition": {"block_current_head", "defer", "decision_required"},
+        "scope_relation": {"in_packet", "out_of_packet"},
+        "status": {"open", "resolved", "deferred"},
+    }
+    for key, values in enums.items():
+        if key in item and item[key] not in values:
+            errors.append(f"{field} finding has invalid {key}")
+    if "admission_reason" in item and item["admission_reason"] not in rc.ADMISSION_REASONS:
+        errors.append(f"{field} finding has invalid admission_reason")
+    for key, max_len in (
+        ("id", 160),
+        ("axis", 200),
+        ("evidence", 12000),
+        ("acceptance_condition", 4000),
+    ):
+        value = item.get(key)
+        if isinstance(value, str) and len(value) > max_len:
+            errors.append(f"{field} finding {key} is too long")
+    if "origin_head" in item and re.fullmatch(r"[0-9a-f]{40}", str(item["origin_head"])) is None:
+        errors.append(f"{field} finding origin_head must be 40-hex")
     return errors
 
 
@@ -88,6 +150,10 @@ def _contains_unsupported_control_characters(value):
         return "\0" in value or "\r" in value
     if isinstance(value, list):
         return any(_contains_unsupported_control_characters(item) for item in value)
+    if isinstance(value, dict):
+        return any(
+            _contains_unsupported_control_characters(item) for item in value.values()
+        )
     return False
 
 
@@ -141,7 +207,7 @@ def _workflow_run_id():
 def _invalid_sidecar(pr_number, expected_sha, failure_code, artifact_sha256=None):
     return {
         "kind": "agent-orchestrator-review-validation",
-        "version": 1,
+        "version": 2,
         "classification": "invalid_artifact",
         "pr_number": pr_number,
         "reviewed_head_sha": expected_sha,
@@ -152,9 +218,10 @@ def _invalid_sidecar(pr_number, expected_sha, failure_code, artifact_sha256=None
 
 
 def _valid_sidecar(pr_number, result, artifact_sha256):
-    return {
+    """Trusted bounded sidecar; includes convergence fields when present."""
+    sidecar = {
         "kind": "agent-orchestrator-review-validation",
-        "version": 1,
+        "version": 2,
         "classification": "valid_verdict",
         "pr_number": pr_number,
         "reviewed_head_sha": result["reviewed_head_sha"],
@@ -166,6 +233,22 @@ def _valid_sidecar(pr_number, result, artifact_sha256):
         "artifact_sha256": artifact_sha256,
         "review_workflow_run_id": _workflow_run_id(),
     }
+    for key in (
+        "review_mode",
+        "review_round",
+        "reviewed_base",
+        "reviewed_range",
+        "prior_reviewed_head",
+        "findings",
+        "finding_ledger_digest",
+        "open_blocker_ids",
+        "deferred_note_ids",
+        "decision_required_ids",
+        "observed_ci_status",
+    ):
+        if result.get(key) not in (None, []):
+            sidecar[key] = result[key]
+    return sidecar
 
 
 def invalid_result(validation_path, pr_number, expected_sha, failure_code, artifact_sha256=None):
@@ -219,36 +302,48 @@ def main():
 
     errors = validate(result, load_schema())
     if isinstance(result, dict):
-        for key in ("summary", "blockers", "major_notes", "minor_notes"):
+        for key in ("summary", "blockers", "major_notes", "minor_notes", "findings"):
             if _contains_unsupported_control_characters(result.get(key)):
                 errors.append(f"{key} contains an unsupported control character")
     if errors:
         return invalid_result(validation_path, pr_number, expected_sha, "artifact_schema_invalid", artifact_sha256)
 
-    # The schema has established these types.  Keep semantic authorization
-    # checks separate: only exact PASS is merge-authorizing. PASS may carry
-    # deferred major_notes/minor_notes; PASS_WITH_NOTES remains non-authorizing.
+    # The schema has established types.  Semantic authorization checks are
+    # delegated to the canonical pure owner so validator, prompt, and durable
+    # state share one cross-field contract.
     if result["reviewed_head_sha"] != expected_sha:
         return invalid_result(validation_path, pr_number, expected_sha, "reviewed_head_mismatch", artifact_sha256)
-    if result["verdict"] == "PASS":
-        if result.get("blockers"):
-            return invalid_result(validation_path, pr_number, expected_sha, "pass_has_blockers", artifact_sha256)
-        if any(result[field] is not True for field in ("ci_green", "security_ok", "rollback_ok")):
-            return invalid_result(validation_path, pr_number, expected_sha, "pass_proof_missing", artifact_sha256)
-    elif result["verdict"] == "PASS_WITH_NOTES":
-        # Schema-valid recording only. Blockers would make the record contradictory.
-        if result.get("blockers"):
+    try:
+        decision = rc.decision_from_legacy_artifact(
+            result,
+            base_sha=str(result.get("reviewed_base") or ""),
+        )
+    except rc.ConvergenceError as exc:
+        return invalid_result(
+            validation_path, pr_number, expected_sha, "convergence_cross_field_invalid", artifact_sha256
+        )
+
+    if "findings" in result and result["findings"] is not None:
+        expected_digest = rc.ledger_digest(
+            tuple(decision.findings)
+        )
+        provided_digest = result.get("finding_ledger_digest")
+        if provided_digest and provided_digest != expected_digest:
             return invalid_result(
-                validation_path, pr_number, expected_sha, "pass_with_notes_has_blockers", artifact_sha256
+                validation_path, pr_number, expected_sha, "finding_ledger_digest_mismatch", artifact_sha256
             )
-    elif result["verdict"] == "BLOCKED":
-        blockers = result.get("blockers") or []
-        if not blockers:
-            return invalid_result(
-                validation_path, pr_number, expected_sha, "blocked_without_blockers", artifact_sha256
-            )
-    if result["verdict"] not in VALID_VERDICTS:
-        return invalid_result(validation_path, pr_number, expected_sha, "unsupported_verdict", artifact_sha256)
+        result["finding_ledger_digest"] = expected_digest
+
+    result.setdefault("review_mode", decision.review_mode)
+    result["review_round"] = decision.review_round
+    result["reviewed_base"] = decision.reviewed_base
+    result["reviewed_range"] = decision.reviewed_range
+    result["prior_reviewed_head"] = decision.prior_reviewed_head
+    result["findings"] = [f.to_dict() for f in decision.findings]
+    result["open_blocker_ids"] = list(decision.open_blocker_ids)
+    result["deferred_note_ids"] = list(decision.deferred_note_ids)
+    result["decision_required_ids"] = list(decision.decision_required_ids)
+    result["observed_ci_status"] = decision.observed_ci_status
 
     write_validation_sidecar(validation_path, _valid_sidecar(pr_number, result, artifact_sha256))
     write_workflow_outputs("valid_verdict", result["verdict"], expected_sha, artifact_sha256)

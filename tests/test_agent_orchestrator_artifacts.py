@@ -497,9 +497,9 @@ class TestReviewArtifactContract(unittest.TestCase):
             }
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(sidecar["failure_code"], "blocked_without_blockers")
+        self.assertEqual(sidecar["failure_code"], "convergence_cross_field_invalid")
 
-    def test_pass_requires_empty_blockers_and_all_authorizing_gates(self):
+    def test_pass_requires_empty_blockers_and_security_and_rollback(self):
         result, outputs, sidecar = self.run_validator(
             {
                 "verdict": "PASS",
@@ -513,7 +513,99 @@ class TestReviewArtifactContract(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(outputs["verdict"], "INVALID")
-        self.assertEqual(sidecar["failure_code"], "pass_has_blockers")
+        self.assertEqual(sidecar["failure_code"], "convergence_cross_field_invalid")
+
+    def test_pass_does_not_require_model_authored_ci_green(self):
+        # ci_green is a reviewer observation only; authoritative CI comes from
+        # the trusted exact-head CI owner. A PASS without ci_green (or with
+        # ci_green False) is schema-valid.
+        for ci_green in (False, None):
+            payload = {
+                "verdict": "PASS",
+                "summary": "authoritative CI is external",
+                "reviewed_head_sha": "a" * 40,
+                "blockers": [],
+                "security_ok": True,
+                "rollback_ok": True,
+            }
+            if ci_green is not None:
+                payload["ci_green"] = ci_green
+            result, outputs, sidecar = self.run_validator(payload)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(outputs["verdict"], "PASS")
+            self.assertEqual(sidecar["classification"], "valid_verdict")
+            self.assertEqual(sidecar["observed_ci_status"], "model_reported_not_green" if ci_green is False else "unknown")
+
+    def test_decision_required_verdict_is_schema_valid_with_cross_field_ids(self):
+        result, outputs, sidecar = self.run_validator(
+            {
+                "verdict": "DECISION_REQUIRED",
+                "summary": "authority boundary needs a human decision",
+                "reviewed_head_sha": "a" * 40,
+                "review_mode": "full",
+                "review_round": 1,
+                "findings": [
+                    {
+                        "id": "DR-1",
+                        "axis": "authority",
+                        "evidence": "packet boundary crossed",
+                        "severity": "blocker",
+                        "disposition": "decision_required",
+                        "scope_relation": "out_of_packet",
+                        "origin_head": "a" * 40,
+                        "acceptance_condition": "planning decision recorded",
+                        "status": "open",
+                    }
+                ],
+                "decision_required_ids": ["DR-1"],
+                "security_ok": True,
+                "rollback_ok": True,
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(outputs["verdict"], "DECISION_REQUIRED")
+        self.assertEqual(sidecar["classification"], "valid_verdict")
+        self.assertEqual(sidecar["decision_required_ids"], ["DR-1"])
+
+    def test_decision_required_without_decision_finding_is_invalid(self):
+        result, _, sidecar = self.run_validator(
+            {
+                "verdict": "DECISION_REQUIRED",
+                "summary": "no decision finding",
+                "reviewed_head_sha": "a" * 40,
+                "security_ok": True,
+                "rollback_ok": True,
+            }
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(sidecar["failure_code"], "convergence_cross_field_invalid")
+
+    def test_structured_finding_digest_mismatch_is_invalid(self):
+        finding = {
+            "id": "B-1",
+            "axis": "correctness",
+            "evidence": "broken",
+            "severity": "blocker",
+            "disposition": "block_current_head",
+            "scope_relation": "in_packet",
+            "origin_head": "a" * 40,
+            "acceptance_condition": "fixed",
+            "status": "open",
+        }
+        result, _, sidecar = self.run_validator(
+            {
+                "verdict": "BLOCKED",
+                "summary": "blocked",
+                "reviewed_head_sha": "a" * 40,
+                "findings": [finding],
+                "open_blocker_ids": ["B-1"],
+                "finding_ledger_digest": "0" * 64,
+                "security_ok": True,
+                "rollback_ok": True,
+            }
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(sidecar["failure_code"], "finding_ledger_digest_mismatch")
 
 
 class TestWorkflowTrustBoundaries(unittest.TestCase):

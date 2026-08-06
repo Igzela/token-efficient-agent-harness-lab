@@ -412,8 +412,19 @@ class TestMaxRepairPersistence(unittest.TestCase):
 
     def test_max_repair_attempts_value(self):
         self.assertEqual(sm.MAX_REPAIR_ATTEMPTS, 2)
-        self.assertEqual(sm.MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS, sm.MAX_REPAIR_ATTEMPTS)
         self.assertEqual(sm.MERGE_AUTHORIZING_REVIEW_VERDICTS, {"PASS"})
+        import review_convergence as rc
+        self.assertEqual(rc.MAX_SUBSTANTIVE_REVIEW_ROUNDS, 2)
+        self.assertEqual(rc.MAX_AUTONOMOUS_REPAIR_BATCHES, 1)
+        self.assertEqual(rc.INITIAL_AUTONOMOUS_REPAIRS_REMAINING, 1)
+        self.assertEqual(
+            sm.INITIAL_AUTONOMOUS_REPAIRS_REMAINING,
+            rc.INITIAL_AUTONOMOUS_REPAIRS_REMAINING,
+        )
+        self.assertEqual(sm.MAX_SUBSTANTIVE_REVIEW_ROUNDS, rc.MAX_SUBSTANTIVE_REVIEW_ROUNDS)
+        self.assertEqual(sm.MAX_AUTONOMOUS_REPAIR_BATCHES, rc.MAX_AUTONOMOUS_REPAIR_BATCHES)
+        self.assertNotIn("MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS", dir(sm))
+        self.assertNotIn("MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS", dir(rc))
 
     def test_ci_handler_uses_max_repair(self):
         import inspect

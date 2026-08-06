@@ -44,9 +44,16 @@ class DeliveryOutcome(str, enum.Enum):
 
 
 VALID_RECEIPT_VERDICTS = frozenset({"PASS"})
-# Align with state_manager.MAX_REPAIR_ATTEMPTS / Review Convergence Protocol.
-MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS = 2
-MAX_DEFERRED_NOTES = 50
+
+# Canonical convergence bounds come from the single pure owner
+# (review_convergence.py): deferred-note count, per-note length, total size,
+# and control-character limits are enforced here on the transport receipt.
+try:
+    from review_convergence import MAX_DEFERRED_NOTES, MAX_NOTE_LEN  # type: ignore
+except ImportError:  # pragma: no cover - only when parent dir is not importable
+    MAX_DEFERRED_NOTES = 50
+    MAX_NOTE_LEN = 2000
+MAX_DEFERRED_NOTES_TOTAL_BYTES = 64 * 1024
 
 
 @dataclasses.dataclass(frozen=True)
@@ -138,6 +145,18 @@ class ReviewReceipt:
             errors.append(f"deferred_notes exceeds cap of {MAX_DEFERRED_NOTES}")
         if any(not isinstance(note, str) or not note.strip() for note in self.deferred_notes):
             errors.append("deferred_notes must be non-empty strings")
+        if any(len(note) > MAX_NOTE_LEN for note in self.deferred_notes):
+            errors.append(f"deferred note exceeds length cap of {MAX_NOTE_LEN}")
+        if any(
+            "\0" in note or "\r" in note
+            for note in self.deferred_notes
+        ):
+            errors.append("deferred_notes must not contain unsupported control characters")
+        total_bytes = sum(len(note.encode("utf-8")) for note in self.deferred_notes)
+        if total_bytes > MAX_DEFERRED_NOTES_TOTAL_BYTES:
+            errors.append(
+                f"deferred_notes total size exceeds cap of {MAX_DEFERRED_NOTES_TOTAL_BYTES} bytes"
+            )
         if self.diff_scope != "complete_base_head":
             errors.append(f"diff_scope {self.diff_scope!r} is not complete_base_head")
         if not self.reviewer_session_id:

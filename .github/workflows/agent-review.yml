@@ -60,7 +60,10 @@ jobs:
         env:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/agent-control/prompt_builder.py review "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA" > "$RUNNER_TEMP/review-prompt.txt"
+        run: >-
+          python3 scripts/agent-control/prompt_builder.py review
+          "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA" "${{ inputs.issue_number }}"
+          > "$RUNNER_TEMP/review-prompt.txt"
       - name: Upload trusted review input
         env:
           AGENT_REPO: ${{ github.repository }}

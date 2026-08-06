@@ -2134,11 +2134,41 @@ class TestDispatcher(unittest.TestCase):
             "head_sha": "a" * 40,
             "extra": {"branch": "agent/issue-42"},
         }
+        prior_review = {
+            "kind": "agent-orchestrator-review-state",
+            "version": 3,
+            "issue_number": 42,
+            "pr_number": 207,
+            "head_sha": "a" * 40,
+            "verdict": "BLOCKED",
+            "summary": "blocked",
+            "base_sha": "c" * 40,
+            "reviewed_range": f"{'c' * 40}...{'a' * 40}",
+            "review_mode": "full",
+            "review_round": 1,
+            "findings": [{
+                "id": "B-1",
+                "axis": "correctness",
+                "evidence": "x",
+                "severity": "blocker",
+                "disposition": "block_current_head",
+                "scope_relation": "in_packet",
+                "origin_head": "a" * 40,
+                "acceptance_condition": "fixed",
+                "status": "open",
+            }],
+            "open_blocker_ids": ["B-1"],
+            "deferred_note_ids": [],
+            "decision_required_ids": [],
+            "autonomous_repairs_remaining": 1,
+            "stop_reason": "",
+        }
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
              mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_REVIEW_BLOCKED}), \
              mock.patch.object(dispatcher.sm, "read_worker_state", return_value=worker), \
              mock.patch.object(dispatcher.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(dispatcher.sm, "read_review_state", return_value=prior_review), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
               mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": set(), "plans": []}), \
               mock.patch.object(dispatcher.sm, "set_labels", return_value=True) as set_labels, \
@@ -2157,6 +2187,25 @@ class TestDispatcher(unittest.TestCase):
             "pr_number": 207,
             "head_sha": "a" * 40,
             "extra": {"branch": "agent/issue-42"},
+        }
+        prior_review = {
+            "kind": "agent-orchestrator-review-state",
+            "version": 3,
+            "issue_number": 42,
+            "pr_number": 207,
+            "head_sha": "a" * 40,
+            "verdict": "BLOCKED",
+            "summary": "blocked",
+            "base_sha": "c" * 40,
+            "reviewed_range": f"{'c' * 40}...{'a' * 40}",
+            "review_mode": "full",
+            "review_round": 1,
+            "findings": [],
+            "open_blocker_ids": [],
+            "deferred_note_ids": [],
+            "decision_required_ids": [],
+            "autonomous_repairs_remaining": 1,
+            "stop_reason": "",
         }
         dispatch_state = {}
         workflow_calls = []
@@ -2181,6 +2230,7 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_REVIEW_BLOCKED}), \
              mock.patch.object(dispatcher.sm, "read_worker_state", return_value=worker), \
              mock.patch.object(dispatcher.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(dispatcher.sm, "read_review_state", return_value=prior_review), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
               mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": set(), "plans": []}), \
               mock.patch.object(dispatcher.sm, "set_labels", return_value=True), \

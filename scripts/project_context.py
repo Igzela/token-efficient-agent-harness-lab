@@ -282,6 +282,117 @@ def _canonical_check_name(name: str) -> str | None:
     return None
 
 
+def _review_state_projection_unavailable(reason: str) -> dict[str, Any]:
+    return {
+        "availability": "unavailable",
+        "unavailable_reason": reason,
+        "review_protocol_version": None,
+        "review_mode": None,
+        "review_round": None,
+        "prior_reviewed_head": None,
+        "reviewed_head": None,
+        "finding_ledger_digest": None,
+        "open_blocker_ids": [],
+        "deferred_note_ids": [],
+        "autonomous_repairs_remaining": None,
+        "stop_reason": None,
+        "review_state": "unavailable",
+    }
+
+
+def _linked_issue_numbers(pr_body: str) -> list[int]:
+    """Linked packet issue numbers from the PR body binding convention."""
+    if not pr_body:
+        return []
+    numbers: list[int] = []
+    for match in re.finditer(
+        r"(?:Closes|Fixes|Resolves|Implements)\s+#?(\d+)\b",
+        pr_body,
+        re.IGNORECASE,
+    ):
+        number = int(match.group(1))
+        if number not in numbers:
+            numbers.append(number)
+    return numbers
+
+
+def _load_review_state_projection(
+    repository: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Project only trusted bounded fields from the durable review state.
+
+    The durable ReviewState lives in the linked packet Issue comments
+    (written by the trusted orchestrator finalize step).  This projection is
+    non-authoritative and never decides severity, disposition, repair, Ready,
+    or merge.  Full finding text never enters the capsule; only bounded ids,
+    counts, and the ledger digest are projected.
+    """
+    head_sha = payload.get("headRefOid")
+    if not head_sha:
+        return _review_state_projection_unavailable("pr_head_unavailable")
+    candidates = _linked_issue_numbers(str(payload.get("body") or ""))
+    if not candidates:
+        return _review_state_projection_unavailable("linked_issue_not_found")
+
+    sys.path.insert(0, str(ROOT / "scripts" / "agent-control"))
+    try:
+        import review_convergence as rc
+    except ImportError:
+        return _review_state_projection_unavailable("convergence_owner_unavailable")
+
+    found: dict[int, dict[str, Any]] = {}
+    for issue_number in candidates:
+        result = run_command(
+            [
+                "gh",
+                "api",
+                f"repos/{repository}/issues/{issue_number}/comments",
+                "--jq",
+                ".[] | select(.body | contains(\"agent-orchestrator-review-state\")) | .body",
+            ],
+            timeout=20,
+        )
+        if not result.ok:
+            continue
+        state: dict[str, Any] | None = None
+        for line in result.stdout.strip().splitlines():
+            try:
+                candidate = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("kind") == "agent-orchestrator-review-state"
+                and state is None
+            ):
+                state = candidate
+        if state is None:
+            continue
+        try:
+            projection = rc.project_capsule_fields(state, expected_head=head_sha)
+        except (rc.ConvergenceError, TypeError, ValueError):
+            continue
+        found[issue_number] = projection
+
+    if not found:
+        return _review_state_projection_unavailable("durable_review_state_not_found")
+    projections = list(found.values())
+    first = projections[0]
+    for projection in projections[1:]:
+        if projection != first:
+            return {
+                "availability": "conflict",
+                "unavailable_reason": "multiple_linked_issues_with_conflicting_review_state",
+                **{key: first.get(key) for key in (
+                    "review_protocol_version", "review_mode", "review_round",
+                    "prior_reviewed_head", "reviewed_head", "finding_ledger_digest",
+                    "open_blocker_ids", "deferred_note_ids",
+                    "autonomous_repairs_remaining", "stop_reason", "review_state",
+                )},
+            }
+    return first
+
+
 def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]:
     unavailable = {
         "number": pr_number,
@@ -306,6 +417,9 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
             "unresolved_objections_state": "unavailable",
             "unavailable_reason": "remote_review_state_unavailable",
         },
+        "review_state_projection": _review_state_projection_unavailable(
+            "remote_review_state_unavailable"
+        ),
         "ci": {
             "state": "unavailable",
             "successful": [],
@@ -366,6 +480,7 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
         else review_observation.get("unavailable_reason")
         or "exact_head_review_receipt_not_confirmed",
     }
+    review_state_projection = _load_review_state_projection(repository, payload)
     return {
         "number": payload.get("number", pr_number),
         "availability": "confirmed",
@@ -379,6 +494,7 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
         "review_decision": aggregate_review,
         "exact_head_review": exact_head_review,
         "review_observation": review_observation,
+        "review_state_projection": review_state_projection,
         "ci": summarize_checks(payload.get("statusCheckRollup") or []),
     }
 
@@ -911,6 +1027,9 @@ def load_exact_head_proof(
             "unresolved_objections_state": "unavailable",
             "unavailable_reason": "trusted_exact_head_proof_has_no_review_observation",
         },
+        "review_state_projection": _review_state_projection_unavailable(
+            "trusted_exact_head_proof_has_no_review_state"
+        ),
     }
 
 
@@ -1191,6 +1310,12 @@ def build_capsule(
         "unresolved_objection_observation": review_observation[
             "unresolved_objections_state"
         ],
+        "review_state_projection": (
+            active_pr.get("review_state_projection")
+            if isinstance(active_pr, dict)
+            and isinstance(active_pr.get("review_state_projection"), dict)
+            else _review_state_projection_unavailable("no_active_pr_review_state")
+        ),
     }
 
     if documents.get("availability") == "unavailable":
@@ -1297,6 +1422,13 @@ def markdown(capsule: dict[str, Any]) -> str:
     pr_exact = binding.get("pr_exact_head", {})
     run_identity = binding.get("workflow_run_identity", {})
     review_obs = binding.get("review_observation", {})
+    review_projection = binding.get("review_state_projection", {})
+    projection_line = (
+        f"- Review convergence state: `{review_projection.get('review_state') or 'unavailable'}`; "
+        f"mode=`{review_projection.get('review_mode') or 'unavailable'}` "
+        f"round=`{review_projection.get('review_round') or 'unavailable'}` "
+        f"availability=`{review_projection.get('availability') or 'unavailable'}`"
+    )
     lines.extend(
         [
             f"- Fingerprint: `{capsule.get('fingerprint') or 'unavailable'}`",
@@ -1307,6 +1439,7 @@ def markdown(capsule: dict[str, Any]) -> str:
                 f"- Unresolved objections: "
                 f"`{review_obs.get('unresolved_objections_state') or 'unavailable'}`"
             ),
+            projection_line,
             f"- Next permitted action: {capsule['next_permitted_action']}",
             "",
             "## Required reading",

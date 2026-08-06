@@ -415,9 +415,65 @@ class TestReceiptParser(unittest.TestCase):
         self.assertEqual(parsed.deferred_notes, ("optional rename", "doc polish"))
         self.assertEqual(parsed.verdict, "PASS")
 
-    def test_autonomous_review_repair_budget_aligned(self):
-        self.assertEqual(models.MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS, 2)
-        self.assertEqual(models.MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS, 2)
+    def test_autonomous_review_repair_budget_imports_canonical_owner(self):
+        # The transport must not redefine the convergence budget; the single
+        # canonical owner is scripts/agent-control/review_convergence.py.
+        from review_convergence import (  # type: ignore[import-not-found]
+            MAX_AUTONOMOUS_REPAIR_BATCHES,
+            MAX_SUBSTANTIVE_REVIEW_ROUNDS,
+        )
+        self.assertEqual(MAX_SUBSTANTIVE_REVIEW_ROUNDS, 2)
+        self.assertEqual(MAX_AUTONOMOUS_REPAIR_BATCHES, 1)
+        self.assertNotIn("MAX_AUTONOMOUS_REVIEW_REPAIR_ROUNDS", dir(models))
+        self.assertEqual(models.MAX_DEFERRED_NOTES, 50)
+
+    def test_deferred_notes_length_total_and_control_char_limits(self):
+        receipt = make_receipt()
+        over_length = "x" * (models.MAX_NOTE_LEN + 1)
+        parsed, errors = receipt_parser.parse_receipt(
+            "```json\n"
+            + models.ReviewReceipt(
+                **{**receipt.__dict__, "deferred_notes": (over_length,)}
+            ).to_json()
+            + "\n```"
+        )
+        self.assertIsNone(parsed)
+        self.assertTrue(any("length cap" in e for e in errors))
+
+        control = models.ReviewReceipt(
+            **{**receipt.__dict__, "deferred_notes": ("note\x00with nul",)}
+        )
+        parsed, errors = receipt_parser.parse_receipt(
+            "```json\n" + control.to_json() + "\n```"
+        )
+        self.assertIsNone(parsed)
+        self.assertTrue(any("control characters" in e for e in errors))
+
+        oversized = models.ReviewReceipt(
+            **{
+                **receipt.__dict__,
+                "deferred_notes": ("z" * 40000,) * 2,
+            }
+        )
+        parsed, errors = receipt_parser.parse_receipt(
+            "```json\n" + oversized.to_json() + "\n```"
+        )
+        self.assertIsNone(parsed)
+        self.assertTrue(any("total size exceeds cap" in e for e in errors))
+
+    def test_legacy_receipt_without_deferred_notes_still_readable(self):
+        receipt = make_receipt()
+        legacy = {
+            k: v
+            for k, v in json.loads(receipt.to_json()).items()
+            if k != "deferred_notes"
+        }
+        parsed, errors = receipt_parser.parse_receipt(
+            "```json\n" + json.dumps(legacy) + "\n```"
+        )
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.deferred_notes, ())
 
     def test_rejects_multiple_receipts(self):
         first = make_receipt()

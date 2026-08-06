@@ -148,9 +148,12 @@ Severity does **not** automatically equal disposition. Style, naming taste, opti
 5. rollback removed without a tested replacement;
 6. scope outside the packet without authoritative authorization.
 
-### Autonomous repair budget (aligned with controller)
+### Autonomous repair budget (rounds vs repair batches)
 
-Repository controller `MAX_REPAIR_ATTEMPTS = 2` is the autonomous repair budget. Local operator loops must not invent a conflicting counter.
+Two distinct budgets exist; do not conflate them:
+
+- `MAX_REPAIR_ATTEMPTS = 2` (controller): failed **CI** → autonomous repair heads. Unchanged CI-repair semantics.
+- `MAX_SUBSTANTIVE_REVIEW_ROUNDS = 2` (R1 + R2) and `MAX_AUTONOMOUS_REPAIR_BATCHES = 1` (one repair batch between R1 and R2): the **independent-review** convergence budget. Canonical constants are defined once in `scripts/agent-control/review_convergence.py`; other modules import them and never duplicate bare `2`/`1` literals. `autonomous_repairs_remaining` starts at 1; an R1 blocker consumes the single batch; after R2 there is no autonomous R3.
 
 ```text
 stable Draft + self-review / local checks

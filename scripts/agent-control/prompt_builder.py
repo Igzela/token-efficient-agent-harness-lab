@@ -498,7 +498,15 @@ def build_ci_repair_prompt_from_evidence(pr_number, head_sha, evidence_path, rep
     return build_ci_repair_prompt(pr_number, head_sha, evidence["failed_jobs"], logs[:50000], repair_count)
 
 
-def build_review_prompt(pr_number, head_sha, template="review.md"):
+def build_review_prompt(pr_number, head_sha, issue_number=None, template="review.md"):
+    """Build the exact-head independent-review prompt.
+
+    When ``issue_number`` is known, the durable review state (Review
+    Convergence Protocol) is read to derive review_mode / review_round / prior
+    ledger, so R1 is `full` and R2 is `repair_verification` with delta-first
+    focus.  A retry that exceeds the substantive-round budget or follows
+    DECISION_REQUIRED fails closed instead of silently dispatching.
+    """
     ctx = build_context(0)
     ctx["pr_number"] = pr_number
     ctx["head_sha"] = head_sha
@@ -532,9 +540,70 @@ def build_review_prompt(pr_number, head_sha, template="review.md"):
     if not template_text:
         return None
 
+    review_mode = "full"
+    review_round = 1
+    prior_blockers_text = ""
+    mode_context = (
+        "This is an **R1 first full review**: `review_mode=full`, complete "
+        "`base...head` attestation."
+    )
+    if issue_number:
+        sm = None
+        try:
+            import review_convergence as rc
+            import state_manager as sm
+
+            previous = sm.read_review_state(int(issue_number))
+        except Exception as exc:
+            if sm is not None and isinstance(exc, sm.StateUnavailableError):
+                raise ValueError(
+                    f"durable review state is unavailable for retry derivation: {exc}"
+                ) from exc
+            raise
+        attempt = rc.derive_next_review_attempt(previous, head_sha)
+        if not attempt.get("allowed"):
+            raise ValueError(
+                f"review dispatch refused: {attempt.get('deny_reason') or 'not_allowed'}"
+            )
+        review_mode = str(attempt["review_mode"])
+        review_round = int(attempt["review_round"])
+        prior_ledger_digest = str(attempt.get("finding_ledger_digest") or "")
+        prior_head = str(attempt.get("prior_reviewed_head") or "")
+        if review_mode == "repair_verification":
+            mode_context = (
+                "This is the **R2 repair verification** review: `review_mode=repair_verification`. "
+                f"Round {review_round}, prior reviewed head {prior_head[:12]}..."
+            )
+            if prior_ledger_digest:
+                mode_context += (
+                    f", finding ledger digest `{prior_ledger_digest}`. "
+                )
+            mode_context += (
+                "Attest the COMPLETE new `base...head` range first, then verify "
+                "prior blockers are resolved (or still open with evidence), then "
+                "check repair regressions, then a hard-stop scan of the full new "
+                "head. New non-blocking nits must be deferred; a new "
+                "block_current_head requires admission_reason in "
+                "{repair_regression, prior_evidence_unavailable, hard_stop_miss}."
+            )
+            prior_ids = attempt.get("open_blocker_ids") or []
+            if prior_ids:
+                prior_blockers_text = (
+                    "### Prior open blockers to verify at R2\n\n"
+                    + "".join(f"- `{fid}`\n" for fid in prior_ids)
+                )
+        else:
+            mode_context += (
+                f" Round {review_round}. There is no prior review ledger to continue."
+            )
+
     prompt = template_text
     prompt = prompt.replace("{{PR_NUMBER}}", str(pr_number))
     prompt = prompt.replace("{{HEAD_SHA}}", head_sha)
+    prompt = prompt.replace("{{REVIEW_MODE}}", review_mode)
+    prompt = prompt.replace("{{REVIEW_ROUND}}", str(review_round))
+    prompt = prompt.replace("{{REVIEW_MODE_CONTEXT}}", mode_context)
+    prompt = prompt.replace("{{PRIOR_BLOCKERS_DETAIL}}", prior_blockers_text)
     prompt = prompt.replace("{{DIFF}}", ctx["diff"])
     prompt = prompt.replace("{{REPO_NAME}}", f"{REPO_OWNER}/{REPO_NAME}")
     prompt = prompt.replace("{{AGENTS_MD}}", ctx.get("AGENTS_md", ""))
@@ -587,7 +656,8 @@ def main():
 
     elif command == "review":
         sha = sys.argv[3] if len(sys.argv) > 3 else ""
-        prompt = build_review_prompt(number, sha)
+        issue_number = sys.argv[4] if len(sys.argv) > 4 else None
+        prompt = build_review_prompt(number, sha, issue_number=issue_number)
         if prompt:
             print(prompt)
         else:

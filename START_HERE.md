@@ -142,7 +142,9 @@ documents_updated:
 When independent review or repair rounds ran, also report the bounded convergence fields that were observed (omit or mark unavailable when not run):
 
 ```yaml
+review_protocol_version:
 review_mode:                 # full | repair_verification
+review_round:                # 1 | 2; never more without explicit human authority
 prior_reviewed_head:
 finding_ledger_digest:
 open_blocker_ids:
