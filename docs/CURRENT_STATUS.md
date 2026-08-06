@@ -55,15 +55,16 @@ The frozen corpus, protocol, schedule, and Board B production wiring are accepte
 
 `PE7-REAL-WORKLOAD-EVIDENCE-1` is `READY_FOR_EXECUTION` at the first live frozen RWE baseline.
 
-The provider-free live-baseline **coordinator/CLI** is in Draft PR #363 (not merged acceptance): it reuses Board B `rwe_run_authorization.v2` issue/admit, frozen 4-cell schedule identity/mapping, store-backed atomic cell dispatch fence with full next-cell budget reservation (`claim_rwe_cell_dispatch` / `finalize_rwe_cell_dispatch`), pre-effect v2 binding revalidation, and injectable orchestration drivers for provider-free proofs. Synthetic source trees, trivial pytest, no-op claim/reconcile, and planning-only “live” paths were removed. `ProductGoldenPathCellDriver` fails closed with `CHECKPOINT_DECISION_REQUIRED` because store-backed managed authority remains hardcoded to the docs/USER_GUIDE delegated Golden Path shape and does not yet compose multi-path frozen RWE cells (worktree + managed executor + spend journal + verifier + Draft PR + terminal + cleanup). `live_baseline_sealed` is derived only from store-owned receipts (injected claims cannot seal). **No live baseline has been executed or sealed.** Coordinator merge does not authorize live provider/target effects.
+The next permitted work is a separately authorized one-use live run of the frozen Board A schedule against the accepted exact head, after current live-run authority is issued. The 4-cell live coordinator, provider-backed execution, target writes, and evidence closeout remain outside Board B and require that separate authority.
 
-Next work after an accepted coordinator requires: an authorized multi-path RWE cell composition seam under existing owners, a same-tenant real Golden Path prerequisite, one-use v2 auth on accepted exact head, and live execution/closeout. PE7 and AC1 remain blocked until that baseline is accepted.
+The first live RWE run remains blocked until a separate current live-run authorization is issued against the accepted exact head. Branch-local Draft heads never authorize live baseline, provider calls, or target effects.
 
 ## Open Review Surfaces
 
 | PR | Purpose | Status |
 |---|---|---|
 | #225 | Presentation-only Dashboard theme | OPEN; independent and last; cannot substitute for runtime or evidence work |
+| #363 | Provider-free first live RWE baseline composition (Draft) | OPEN, Draft; not accepted; does not authorize live provider/target effects or mark PE7 complete |
 | `Igzela/alters-lab#5` | Draft-PR output from the accepted bounded live Golden Path observation | OPEN, Draft, unmerged; no merge authority |
 
 Merged or closed PRs are not open review surfaces and should not be retained in this table.
@@ -74,8 +75,7 @@ Merged or closed PRs are not open review surfaces and should not be retained in 
 |---|---|---|
 | Minimum First RWE Board A: frozen corpus/protocol/schedule and authorization v2 contract | `COMPLETE` | PR #361 accepted |
 | Minimum First RWE Board B: production issue/admit/spend wiring | `COMPLETE` | Provider-free production `rwe_run_authorization.v2` issue/admit and one-use spend wiring accepted |
-| First live frozen RWE baseline coordinator (provider-free) | `IN_PROGRESS` | Draft PR #363: schedule orchestration + store cell fence/budget reservation; live multi-path GP composition seam still DECISION_REQUIRED; not COMPLETE until reviewed and merged |
-| First live frozen RWE baseline execution + closeout | `BLOCKED_PREREQUISITE` | Real same-tenant GP prerequisite + one-use v2 auth + live provider run on accepted exact head |
+| First live frozen RWE baseline | `BLOCKED_PREREQUISITE` | Separate one-use live-run authority against accepted exact head |
 | Architecture Convergence AC1–AC7 | `BLOCKED_PREREQUISITE` | Accepted pre-convergence RWE baseline |
 | Identical-corpus/protocol replay | `BLOCKED_PREREQUISITE` | Architecture Convergence complete |
 | Harness-Evolution experiment-control hardening | `BLOCKED_PREREQUISITE` | Comparable replay evidence and accepted design packet |
@@ -113,7 +113,7 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 
 ## Confirmed Integration Gaps
 
-1. No live frozen RWE baseline has been executed or sealed; real GP prerequisite, one-use live-run authorization, and provider-backed 4-cell execution on accepted exact head remain outstanding.
+1. No repeated live frozen RWE baseline exists; a separate one-use live-run authorization against the accepted exact head is still required.
 2. Architecture Convergence has not started because its baseline prerequisite is absent.
 3. No diversity, contamination, evaluator-gaming, or mutation-family control packet has been implemented for generational Harness experiments.
 4. No accepted memory/skill projection experiment exists; raw evidence remains authoritative and summaries remain non-authoritative projections.
@@ -121,14 +121,13 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 
 ## Open Work Coordination
 
-The next permitted action is the first **live** frozen RWE baseline execution of `PE7-REAL-WORKLOAD-EVIDENCE-1` (coordinator already accepted):
+The next permitted action is the first live frozen RWE baseline of `PE7-REAL-WORKLOAD-EVIDENCE-1`, only after a separate current one-use live-run authorization is issued against the accepted exact head:
 
-- create a real same-tenant Golden Path prerequisite terminal receipt for the frozen target SHA via the Product Golden Path owner (no test helpers or forged rows);
-- issue and admit one current one-use `rwe_run_authorization.v2` under Board B;
-- execute the frozen Board A 4-cell schedule without changing corpus, protocol, reviewer policy, budgets, seeds, verifier, or thresholds;
-- reuse the accepted coordinator, Board B spend path, and existing ProductTask, managed-provider, scheduler, store, audit, approval, output, cleanup, and terminal-evidence owners;
+- execute the frozen Board A schedule without changing corpus, protocol, reviewer policy, budgets, seeds, verifier, or thresholds;
+- reuse the accepted Board B production issue/admit/spend path and existing ProductTask, managed-provider, scheduler, store, audit, approval, output, cleanup, and terminal-evidence owners;
 - record layered success, failure class, provider/request/token/latency/cost evidence, approval/output/terminal bindings, recovery and cleanup, full failed-attempt cost, and evidence sufficiency;
-- claim no result stronger than the observed evidence-sufficiency state; PE7 stays incomplete and AC1 stays blocked until that closeout is accepted.
+- make every missing, stale, conflicting, expired, duplicate, outcome-unknown, or over-budget state fail closed before an external effect;
+- claim no result stronger than the observed evidence-sufficiency state.
 
 ## Safety Boundary
 

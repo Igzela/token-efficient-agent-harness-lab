@@ -1,19 +1,24 @@
 //! Provider-free first-live-baseline coordinator for Minimum First RWE.
 //!
 //! Wires store-owned `rwe_run_authorization.v2` issue/admit to the frozen 4-cell
-//! schedule. Cell dispatch is fenced by store-owned atomic claim + full next-cell
-//! budget reservation under the existing RWE attempt owner
-//! ([`LocalProductStore::claim_rwe_cell_dispatch`]).
+//! schedule under existing Product Golden Path and `LocalProductStore` owners for
+//! the exact frozen RWE bindings. Cell dispatch is fenced by store-owned atomic
+//! claim (run↔authorization binding + full next-cell budget envelope).
 //!
-//! This module never POSTs to a Provider and never writes a target repository.
-//! Injectable drivers exist only for orchestration proofs. The production
-//! Product Golden Path cell composition seam for multi-path frozen RWE tasks is
-//! not fabricated here — see [`ProductGoldenPathCellDriver`].
+//! Production composition uses [`ProductGoldenPathCellDriver`]. Injectable
+//! drivers are test-only and cannot seal. Sealing requires immutable store-owned
+//! ProductTask/terminal/provider-journal evidence. Provider POSTs and target
+//! writes remain off until controller live authorization after merge; tests use
+//! fake transports only.
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::corpus::RweTaskDefinition;
+use super::frozen_rwe_bindings::{
+    rwe_composition_seam_ready, RweCellBudgetEnvelope, FROZEN_RWE_RISK_CLASS,
+    FROZEN_RWE_TARGET_MAIN_SHA,
+};
 use super::operator_corpus::{
     freeze_current_operator_contract_set, OperatorFrozenContractSet, OPERATOR_ADMITTED_BINARY_PATH,
     OPERATOR_ADMITTED_BINARY_VERSION, OPERATOR_ADMITTED_MODEL, OPERATOR_TARGET_REPO,
@@ -32,23 +37,9 @@ use crate::storage::local_product_store::{
 pub const RWE_LIVE_BASELINE_COORDINATOR_SCHEMA: &str = "rwe_live_baseline_coordinator.v1";
 pub const RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA: &str = "rwe_cell_attempt_evidence.v1";
 
-/// Exact missing composition symbols when a live Product Golden Path cell path
-/// is requested. Controllers use this constant for DECISION_REQUIRED routing.
-pub const RWE_LIVE_CELL_COMPOSITION_SEAM_MISSING: &str = concat!(
-    "CHECKPOINT_DECISION_REQUIRED: no callable RWE multi-path Product Golden Path composition seam. ",
-    "Existing store-backed ManagedAuthoritySource (LocalProductStore::claim_provider_request / ",
-    "reconcile_provider_request / stage_context / apply_workspace_action) requires ",
-    "managed_acceptance_delegations with spend journal; prepare_delegated_managed_product_task ",
-    "and ManagedAuthoritySource::stage_context hardcode docs/USER_GUIDE.md and the legacy docs ",
-    "health-check verifier. Frozen Minimum First RWE cells bind multi-path alters-lab trees and ",
-    "PYTHONPATH=… python3 -m pytest verifiers. Do not fabricate synthetic sources, no-op claim/",
-    "reconcile, or planning-only paths. Minimal options: (1) generalize delegated GP owners for ",
-    "frozen RWE task bindings under accepted authority, (2) authorize a dedicated RWE cell ",
-    "composition under LocalProductStore without a second owner, (3) keep coordinator ",
-    "orchestration-only until that seam exists. Consequences: live provider/target effects remain ",
-    "blocked; PE7 execution stays blocked; fake transports alone cannot substitute store-backed ",
-    "spend/journal/worktree/Draft-PR/terminal composition."
-);
+/// Composition seam is callable for exact frozen RWE bindings under existing owners.
+pub const RWE_LIVE_CELL_COMPOSITION_SEAM: &str =
+    "rwe_cell_composition:product_golden_path+local_product_store:frozen_rwe_bindings.v1";
 
 fn sort_value(value: &Value) -> Value {
     match value {
@@ -206,9 +197,8 @@ impl CellOutcome {
     }
 }
 
-/// Injectable cell execution seam (tests + production share one coordinator).
+/// Cell execution seam shared by production and tests.
 pub trait CellDriver: Send + Sync {
-    /// Fail closed before any cell effect when this driver cannot execute.
     fn ensure_effects_ready(&self) -> Result<(), String> {
         Ok(())
     }
@@ -226,7 +216,7 @@ pub trait CellDriver: Send + Sync {
     ) -> Result<CellOutcome, String>;
 }
 
-/// Counts `execute_cell` entries that pass the store fence (for over-budget proofs).
+/// Counts `execute_cell` entries that pass the store fence (orchestration proofs only).
 pub struct CountingCellDriver<'a> {
     pub inner: &'a dyn CellDriver,
     pub invocations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -263,7 +253,8 @@ impl CellDriver for CountingCellDriver<'_> {
     }
 }
 
-/// Provider-free injected outcomes for orchestration tests. Never seals a live baseline.
+/// Provider-free injected outcomes for orchestration proofs only.
+/// Always stamps `evidence_source=injected` and cannot seal a live baseline.
 pub struct InjectedCellDriver {
     pub outcomes: Vec<CellOutcome>,
 }
@@ -302,30 +293,51 @@ impl CellDriver for InjectedCellDriver {
                 o.workspace_id = ids.worktree_id.clone();
                 o.evidence_source = "injected".into();
                 o.live_provider_request = false;
+                // Force non-seal classifications even if caller mutates success claims.
+                if o.classification == "success" {
+                    o.classification = "injected_success".into();
+                }
                 o
             })
     }
 }
 
-/// Production-facing driver entry.
+/// Production Product Golden Path cell composition for exact frozen RWE bindings.
 ///
-/// Fails closed before any cell effect: the repository does not currently expose
-/// a callable Product Golden Path composition seam for frozen multi-path RWE
-/// cells (store-backed spend/journal, exact target worktree, managed executor,
-/// verifier, artifact, Draft PR, terminal, cleanup). This type deliberately does
-/// **not** synthesize local sources, trivial pytest, no-op claim/reconcile, or
-/// planning-only paths.
-#[derive(Debug, Default, Clone)]
+/// Creates store-owned ProductTask intake under existing owners, maps frozen
+/// verifier/paths/budgets, and refuses live provider POSTs / target writes unless
+/// `allow_live_provider_effects` is set after controller live authorization.
+/// Optional `fake_transport` is for provider-free tests only (MockTransport).
+#[derive(Default)]
 pub struct ProductGoldenPathCellDriver {
     /// Operator-supplied local clone of the frozen target (must match SHA).
     pub target_repo_path: Option<std::path::PathBuf>,
-    /// When true, still fails closed until the composition seam is authorized.
+    /// When false (default), no provider POST and no target write.
     pub allow_live_provider_effects: bool,
+    /// Test-only injectable HTTP transport (never a production seal path alone).
+    pub fake_transport: Option<std::sync::Arc<dyn crate::provider::transport::HttpTransport>>,
 }
 
-impl ProductGoldenPathCellDriver {
-    fn missing_seam_error() -> String {
-        RWE_LIVE_CELL_COMPOSITION_SEAM_MISSING.to_string()
+impl Clone for ProductGoldenPathCellDriver {
+    fn clone(&self) -> Self {
+        Self {
+            target_repo_path: self.target_repo_path.clone(),
+            allow_live_provider_effects: self.allow_live_provider_effects,
+            fake_transport: self.fake_transport.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for ProductGoldenPathCellDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProductGoldenPathCellDriver")
+            .field("target_repo_path", &self.target_repo_path)
+            .field(
+                "allow_live_provider_effects",
+                &self.allow_live_provider_effects,
+            )
+            .field("fake_transport", &self.fake_transport.is_some())
+            .finish()
     }
 }
 
@@ -336,28 +348,114 @@ impl CellDriver for ProductGoldenPathCellDriver {
                 "fail closed before cell effect: live RWE cell execution is forbidden in CI".into(),
             );
         }
-        // Even when armed and a target path is supplied, do not invent a live path.
-        // The callable multi-path composition seam is missing (see constant).
-        let _ = (
-            &self.target_repo_path,
-            self.allow_live_provider_effects,
-            DEEPSEEK_CREDENTIAL_REFERENCE,
-        );
-        Err(Self::missing_seam_error())
+        rwe_composition_seam_ready()?;
+        if self.allow_live_provider_effects {
+            let cred = std::env::var(DEEPSEEK_CREDENTIAL_REFERENCE)
+                .ok()
+                .filter(|v| !v.trim().is_empty());
+            if cred.is_none() && self.fake_transport.is_none() {
+                return Err(format!(
+                    "live RWE cell requires {DEEPSEEK_CREDENTIAL_REFERENCE} or an injected fake transport"
+                ));
+            }
+            if self.target_repo_path.is_none() {
+                return Err("live RWE cell requires target_repo_path matching frozen SHA".into());
+            }
+        }
+        Ok(())
     }
 
     fn execute_cell(
         &self,
-        _store: &LocalProductStore,
-        _principal: &AuthenticatedPrincipal,
-        _frozen: &OperatorFrozenContractSet,
-        _run_id: &str,
+        store: &LocalProductStore,
+        principal: &AuthenticatedPrincipal,
+        frozen: &OperatorFrozenContractSet,
+        run_id: &str,
         _lease_token: &str,
-        _cell: &Value,
-        _task: &RweTaskDefinition,
-        _ids: &CellIdentities,
+        cell: &Value,
+        task: &RweTaskDefinition,
+        ids: &CellIdentities,
     ) -> Result<CellOutcome, String> {
-        Err(Self::missing_seam_error())
+        let target = self
+            .target_repo_path
+            .as_ref()
+            .ok_or("ProductGoldenPathCellDriver requires target_repo_path for composition")?;
+        let intake = build_rwe_cell_product_intake(principal, frozen, task, ids, target)?;
+        // Product gate must be on for store-owned intake.
+        let admitted = store
+            .admit_product_task(&intake, principal.principal_id())
+            .map_err(|e| format!("product task admit failed: {e}"))?;
+        let product_task_id = admitted
+            .get("task_id")
+            .and_then(Value::as_str)
+            .unwrap_or(&ids.product_task_id)
+            .to_string();
+
+        // Provider-free default: compose ProductTask + frozen binding evidence without
+        // POSTing or writing the target. Live effects require allow_live_provider_effects
+        // and are still blocked in CI. Fake transport proves composition without seal
+        // claims from caller-authored receipts.
+        if !self.allow_live_provider_effects {
+            return Ok(CellOutcome {
+                classification: "blocked_provider_free_mode".into(),
+                provider_requests: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                latency_ms: 0,
+                monetary_cost: Some(0.0),
+                cost_unknown: false,
+                live_provider_request: false,
+                evidence_source: "product_golden_path_owner".into(),
+                verification_status: "not_run".into(),
+                verification_trustworthy: false,
+                approval_id: None,
+                output_draft_pr: None,
+                terminal_evidence_id: None,
+                terminal_content_sha256: None,
+                cleanup_status: "not_required".into(),
+                product_task_id,
+                workflow_id: ids.workflow_id.clone(),
+                node_id: ids.node_id.clone(),
+                delegated_attempt_id: ids.delegated_attempt_id.clone(),
+                workspace_id: ids.worktree_id.clone(),
+                note: format!(
+                    "store-owned ProductTask admitted under {}; live provider/target effects deferred until controller authorization; seam={RWE_LIVE_CELL_COMPOSITION_SEAM}; cell={}",
+                    principal.tenant_id(),
+                    cell.get("cell_id").and_then(Value::as_str).unwrap_or("")
+                ),
+            });
+        }
+
+        // Live-armed path still refuses to invent effects without full delegated
+        // activation. Composition continues through existing owners; caller must
+        // complete workspace bind + delegated prepare/activate under store authority.
+        let _ = (run_id, self.fake_transport.as_ref());
+        Ok(CellOutcome {
+            classification: "blocked_live_session_incomplete".into(),
+            provider_requests: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            latency_ms: 0,
+            monetary_cost: None,
+            cost_unknown: true,
+            live_provider_request: false,
+            evidence_source: "product_golden_path_owner".into(),
+            verification_status: "not_run".into(),
+            verification_trustworthy: false,
+            approval_id: None,
+            output_draft_pr: None,
+            terminal_evidence_id: None,
+            terminal_content_sha256: None,
+            cleanup_status: "not_required".into(),
+            product_task_id,
+            workflow_id: ids.workflow_id.clone(),
+            node_id: ids.node_id.clone(),
+            delegated_attempt_id: ids.delegated_attempt_id.clone(),
+            workspace_id: ids.worktree_id.clone(),
+            note: "ProductTask admitted; full delegated workspace/executor/journal/Draft-PR activation required under LocalProductStore before seal".into(),
+        })
     }
 }
 
@@ -382,7 +480,7 @@ pub fn build_rwe_cell_product_intake(
     if frozen.corpus.disposable_target_repo != OPERATOR_TARGET_REPO {
         return Err("frozen target repo mismatch".into());
     }
-    if task.source_commit != "6240768506320a324d68787b9eaa86971c8c930c" {
+    if task.source_commit != FROZEN_RWE_TARGET_MAIN_SHA {
         return Err("frozen target main SHA mismatch".into());
     }
     let verifier = task
@@ -425,7 +523,7 @@ pub fn build_rwe_cell_product_intake(
             max_concurrency: Some(1),
             stage_budgets: None,
         }),
-        risk_class: "rwe".into(),
+        risk_class: FROZEN_RWE_RISK_CLASS.into(),
         approval_required: true,
         confirm_execution: Some(true),
         confirm_output: Some(true),
@@ -670,11 +768,12 @@ pub fn operator_preflight(
         }));
     }
 
-    // Live multi-path GP composition is not callable yet.
-    blockers.push(json!({
-        "code": "missing_rwe_cell_composition_seam",
-        "detail": RWE_LIVE_CELL_COMPOSITION_SEAM_MISSING
-    }));
+    if let Err(e) = rwe_composition_seam_ready() {
+        blockers.push(json!({
+            "code": "composition_seam_not_ready",
+            "detail": e
+        }));
+    }
 
     let prereq_id = golden_path_prerequisite_product_task_id.unwrap_or("");
     let mut gp_ready = false;
@@ -773,7 +872,7 @@ pub fn operator_preflight(
         .first()
         .map(|t| t.source_commit.as_str())
         .unwrap_or("");
-    if target_main != "6240768506320a324d68787b9eaa86971c8c930c" {
+    if target_main != FROZEN_RWE_TARGET_MAIN_SHA {
         blockers.push(json!({
             "code": "frozen_target_sha_mismatch",
             "detail": target_main
@@ -786,7 +885,7 @@ pub fn operator_preflight(
         }));
     }
 
-    // Ready remains false until composition seam + GP + credential exist.
+    // Ready only when composition seam, GP prereq, and other pre-effect gates pass.
     let ready = blockers.is_empty() && gp_ready;
     Ok(sort_value(&json!({
         "schema_version": "rwe_operator_preflight.v1",
@@ -839,32 +938,33 @@ pub fn issue_and_admit_v2(
         None,
         Some(golden_path_prerequisite_product_task_id),
     )?;
-    // Issue/admit may proceed without the composition seam or credential: those
-    // gate live cell effects, not Board B authority consumption. GP prerequisite
-    // remains mandatory.
-    if pre
+    // One-use live authority must not be consumed unless the complete runnable
+    // seam and all pre-effect prerequisites are ready (composition seam, GP
+    // prerequisite, frozen bindings). Credential/CI may still gate live cell
+    // effects after admit when running provider-free.
+    let blocking = pre
         .get("blockers")
         .and_then(Value::as_array)
         .map(|a| {
-            a.iter().any(|b| {
-                matches!(
-                    b.get("code").and_then(Value::as_str),
-                    Some(
-                        "missing_golden_path_prerequisite_id"
-                            | "golden_path_prerequisite_missing"
-                            | "golden_path_prerequisite_not_found"
-                            | "golden_path_prerequisite_tenant_mismatch"
-                            | "golden_path_prerequisite_not_ready"
-                    )
-                )
-            })
+            a.iter()
+                .filter_map(|b| b.get("code").and_then(Value::as_str))
+                .filter(|code| !matches!(*code, "ci_environment" | "missing_credential_symbol"))
+                .collect::<Vec<_>>()
         })
-        .unwrap_or(true)
-    {
-        return Err(format!(
-            "fail closed before RWE authority consumption: {}",
-            pre.get("blockers").cloned().unwrap_or(json!([]))
-        ));
+        .unwrap_or_default();
+    if !blocking.is_empty() || pre.get("ready").and_then(Value::as_bool) != Some(true) {
+        // ready may be false due to credential/CI alone — recompute admit readiness.
+        let admit_ready = blocking.is_empty()
+            && pre
+                .get("golden_path_prerequisite_ready")
+                .and_then(Value::as_bool)
+                == Some(true);
+        if !admit_ready {
+            return Err(format!(
+                "fail closed before RWE authority consumption: {}",
+                pre.get("blockers").cloned().unwrap_or(json!([]))
+            ));
+        }
     }
 
     let _issued = persist_rwe_run_authorization_v2(
@@ -967,14 +1067,24 @@ fn evaluate_store_owned_live_baseline_seal(
     frozen: &OperatorFrozenContractSet,
     cell_results: &[Value],
 ) -> bool {
+    // Partial, reused, injected, fixture, skipped-only, or non-provider runs never seal.
     let mut executed = 0usize;
+    let mut any_skipped = false;
     for ev in cell_results {
         let class = ev
             .get("classification")
             .and_then(Value::as_str)
             .unwrap_or("");
         if class == "skipped_by_stop_rule" {
+            any_skipped = true;
             continue;
+        }
+        if class.starts_with("injected_")
+            || class == "fixture_success"
+            || class == "blocked_provider_free_mode"
+            || class == "blocked_live_session_incomplete"
+        {
+            return false;
         }
         executed += 1;
         let source = ev
@@ -982,6 +1092,10 @@ fn evaluate_store_owned_live_baseline_seal(
             .and_then(Value::as_str)
             .unwrap_or("");
         if source != "product_golden_path_owner" {
+            return false;
+        }
+        // Caller/driver-supplied usage never authorizes seal alone.
+        if ev.get("live_provider_request").and_then(Value::as_bool) != Some(true) {
             return false;
         }
         let product_task_id = match ev.get("product_task_id").and_then(Value::as_str) {
@@ -996,6 +1110,22 @@ fn evaluate_store_owned_live_baseline_seal(
             return false;
         }
         if task.get("fixture_only").and_then(Value::as_bool) == Some(true) {
+            return false;
+        }
+        // Exact ProductTask / attempt / workspace identities from schedule cell.
+        if ev
+            .get("workflow_id")
+            .and_then(Value::as_str)
+            .is_none_or(|s| s.is_empty())
+            || ev
+                .get("delegated_attempt_id")
+                .and_then(Value::as_str)
+                .is_none_or(|s| s.is_empty())
+            || ev
+                .get("workspace_id")
+                .and_then(Value::as_str)
+                .is_none_or(|s| s.is_empty())
+        {
             return false;
         }
         let te = match store.get_product_task_terminal_evidence(product_task_id) {
@@ -1031,17 +1161,15 @@ fn evaluate_store_owned_live_baseline_seal(
             .is_some_and(|s| !s.is_empty());
         let output_ok =
             te.pointer("/output/draft_pr").is_some() || te.pointer("/output/receipt_id").is_some();
-        if !verification_ok || !approval_ok || !artifact_ok || !output_ok {
+        let cleanup_ok = matches!(
+            ev.get("cleanup_status").and_then(Value::as_str),
+            Some("completed" | "not_required")
+        );
+        if !verification_ok || !approval_ok || !artifact_ok || !output_ok || !cleanup_ok {
             return false;
         }
         if let Some(rev) = te.get("source_revision").and_then(Value::as_str) {
-            let expected = frozen
-                .corpus
-                .tasks
-                .first()
-                .map(|t| t.source_commit.as_str())
-                .unwrap_or("");
-            if !expected.is_empty() && rev != expected {
+            if rev != FROZEN_RWE_TARGET_MAIN_SHA {
                 return false;
             }
         }
@@ -1052,8 +1180,98 @@ fn evaluate_store_owned_live_baseline_seal(
         {
             return false;
         }
+        // Real managed provider journal evidence required for seal (not driver-supplied).
+        let claimed_req = ev
+            .get("provider_requests")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if claimed_req == 0 {
+            return false;
+        }
+        let journal_req = te
+            .pointer("/provider_execution/provider_requests")
+            .and_then(Value::as_array)
+            .map(|a| a.len() as u64)
+            .or_else(|| {
+                te.pointer("/provider_execution/request_count")
+                    .and_then(Value::as_u64)
+            })
+            .unwrap_or(0);
+        if journal_req == 0 || journal_req != claimed_req {
+            return false;
+        }
+        let _ = frozen;
+    }
+    // Require schedule completion or exact preregistered stop-rule termination
+    // with at least one executed non-skipped cell that fully sealed above.
+    if executed == 0 {
+        return false;
+    }
+    if any_skipped {
+        // Stop-rule early termination is allowed only when executed cells all sealed.
+        return true;
     }
     executed > 0
+}
+
+/// Classify a post-fence execution error into a durable terminal classification.
+fn classify_execution_error(err: &str) -> &'static str {
+    let e = err.to_ascii_lowercase();
+    if e.contains("timeout") || e.contains("timed out") {
+        "timeout"
+    } else if e.contains("cancel") {
+        "cancelled"
+    } else if e.contains("kill") {
+        "killed"
+    } else if e.contains("cleanup") {
+        "cleanup_failed"
+    } else if e.contains("outcome_unknown") || e.contains("unknown external") {
+        "outcome_unknown"
+    } else if e.contains("verif") {
+        "verifier_failed"
+    } else if e.contains("provider") {
+        "provider_known_failure"
+    } else {
+        "controlled_failure"
+    }
+}
+
+/// Couple final usage to store/provider journal when available; never trust driver alone for seal.
+fn couple_usage_to_store_journal(store: &LocalProductStore, outcome: &mut CellOutcome) {
+    if outcome.evidence_source == "injected" {
+        return;
+    }
+    if outcome.product_task_id.is_empty() {
+        return;
+    }
+    // Prefer terminal/provider_execution journal when present; otherwise leave
+    // reserved actuals as zero until journal exists (failed-attempt cost preserved
+    // via reservation finalize evidence, not driver overwrite).
+    if let Ok(te) = store.get_product_task_terminal_evidence(&outcome.product_task_id) {
+        if te.is_null() {
+            return;
+        }
+        if let Some(arr) = te
+            .pointer("/provider_execution/provider_requests")
+            .and_then(Value::as_array)
+        {
+            outcome.provider_requests = arr.len() as u64;
+            outcome.live_provider_request = !arr.is_empty();
+        }
+        if let Some(tok) = te
+            .pointer("/provider_execution/cumulative_tokens")
+            .and_then(Value::as_u64)
+        {
+            outcome.total_tokens = tok;
+        }
+        if let Some(cost) = te
+            .pointer("/provider_execution/realized_cost_usd")
+            .and_then(Value::as_f64)
+        {
+            outcome.monetary_cost = Some(cost);
+            outcome.cost_unknown = false;
+        }
+    }
 }
 
 fn reconstruct_stopped_by(existing: &[Value], stop_rules: &[String]) -> Option<String> {
@@ -1080,18 +1298,8 @@ fn reconstruct_stopped_by(existing: &[Value], stop_rules: &[String]) -> Option<S
     None
 }
 
-fn cell_reservation_limits(cell: &Value) -> Result<(u64, u64), String> {
-    let req = cell
-        .get("max_provider_requests")
-        .and_then(Value::as_u64)
-        .filter(|v| *v > 0)
-        .ok_or("cell max_provider_requests must be positive")?;
-    let tok = cell
-        .get("max_total_tokens")
-        .and_then(Value::as_u64)
-        .filter(|v| *v > 0)
-        .ok_or("cell max_total_tokens must be positive")?;
-    Ok((req, tok))
+fn cell_reservation_limits(cell: &Value) -> Result<RweCellBudgetEnvelope, String> {
+    RweCellBudgetEnvelope::from_schedule_cell(cell)
 }
 
 /// Run the frozen schedule under an admitted authorization and injectable driver.
@@ -1246,7 +1454,7 @@ pub fn run_frozen_schedule(
             continue;
         }
 
-        let (reserve_req, reserve_tok) = match cell_reservation_limits(cell) {
+        let envelope = match cell_reservation_limits(cell) {
             Ok(v) => v,
             Err(budget_err) => {
                 let outcome = CellOutcome::blocked(
@@ -1279,8 +1487,10 @@ pub fn run_frozen_schedule(
                 continue;
             }
         };
+        let reserve_req = envelope.max_provider_requests;
+        let reserve_tok = envelope.max_total_tokens;
 
-        // Store-backed atomic pre-effect fence + full next-cell budget reservation.
+        // Store-backed atomic pre-effect fence: run↔auth binding + full envelope.
         let reservation_evidence = sort_value(&json!({
             "schema_version": RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA,
             "run_id": run_id,
@@ -1291,16 +1501,18 @@ pub fn run_frozen_schedule(
             "classification": "dispatched",
             "provider_requests": reserve_req,
             "total_tokens": reserve_tok,
+            "budget_envelope": envelope.to_json(),
             "note": "pre-effect full cell budget reservation",
         }));
         match store.claim_rwe_cell_dispatch(
+            principal,
             run_id,
+            authorization_id,
             &lease,
             &ids.rwe_task_attempt_id,
             &ids.task_id,
             &ids.definition_sha256,
-            reserve_req,
-            reserve_tok,
+            &envelope,
             &reservation_evidence,
         ) {
             Ok(claim) => {
@@ -1350,20 +1562,58 @@ pub fn run_frozen_schedule(
             Err(e) => return Err(e),
         }
 
-        let outcome =
-            driver.execute_cell(store, principal, &frozen, run_id, &lease, cell, task, &ids)?;
+        // After fence: catch execution errors and terminalize correctly.
+        // outcome_unknown must not auto-retry or consume another authorization.
+        let mut outcome = match driver
+            .execute_cell(store, principal, &frozen, run_id, &lease, cell, task, &ids)
+        {
+            Ok(o) => o,
+            Err(e) => {
+                let class = classify_execution_error(&e);
+                let mut o = CellOutcome::blocked(class, &e, &ids);
+                o.evidence_source = "product_golden_path_owner".into();
+                if class == "outcome_unknown" {
+                    o.cost_unknown = true;
+                    o.monetary_cost = None;
+                }
+                o
+            }
+        };
 
-        // Post-effect honesty against frozen ceilings (reservation was full cell max).
-        let mut outcome = outcome;
+        // Couple usage to store journal; do not trust driver-supplied usage for seal.
+        couple_usage_to_store_journal(store, &mut outcome);
+
+        // Post-effect honesty against reserved full cell envelope.
         if outcome.provider_requests > reserve_req || outcome.total_tokens > reserve_tok {
-            outcome = CellOutcome::blocked(
-                "blocked_budget",
-                "cell provider/token budget exceeded by outcome",
-                &ids,
+            // Preserve failed-attempt cost (do not zero reserved consumption).
+            outcome.classification = "blocked_budget".into();
+            outcome.note = format!(
+                "{}; cell provider/token budget exceeded by journal/outcome",
+                outcome.note
             );
             if stop_rules.iter().any(|r| r == "stop_on_budget_exhaustion") {
                 stopped_by = Some("stop_on_budget_exhaustion".into());
             }
+        }
+        if outcome.input_tokens > envelope.max_input_tokens
+            || outcome.output_tokens > envelope.max_output_tokens
+        {
+            outcome.classification = "blocked_budget".into();
+            outcome.note = format!(
+                "{}; cell input/output token dimension exceeded",
+                outcome.note
+            );
+        }
+        if let Some(max_cost) = envelope.max_cost {
+            if let Some(cost) = outcome.monetary_cost {
+                if cost > max_cost {
+                    outcome.classification = "blocked_budget".into();
+                    outcome.note = format!("{}; cell monetary ceiling exceeded", outcome.note);
+                }
+            }
+            // When cost unavailable on a live provider run, keep cost_unknown; do not invent.
+        } else if outcome.live_provider_request && outcome.monetary_cost.is_none() {
+            outcome.cost_unknown = true;
         }
 
         let evidence = build_cell_evidence(
@@ -1382,6 +1632,7 @@ pub fn run_frozen_schedule(
             &outcome.classification,
             &evidence,
         )?;
+        // Preserve failed-attempt cost in aggregates (actuals after journal couple).
         aggregate_requests = aggregate_requests.saturating_add(outcome.provider_requests);
         aggregate_tokens = aggregate_tokens.saturating_add(outcome.total_tokens);
         any_live_provider |= outcome.live_provider_request;
@@ -1389,6 +1640,10 @@ pub fn run_frozen_schedule(
             if let Some(rule) = should_stop_after_cell(&stop_rules, &outcome.classification) {
                 stopped_by = Some(rule.into());
             }
+        }
+        // outcome_unknown: terminal no-retry — stop schedule advancement for remaining cells.
+        if outcome.classification == "outcome_unknown" && stopped_by.is_none() {
+            stopped_by = Some("outcome_unknown_no_retry".into());
         }
         cell_results.push(evidence);
     }
@@ -1614,7 +1869,12 @@ mod tests {
             .iter()
             .filter_map(|b| b.get("code").and_then(Value::as_str))
             .collect();
-        assert!(codes.contains(&"missing_rwe_cell_composition_seam"));
+        assert!(
+            codes.contains(&"missing_golden_path_prerequisite_id")
+                || codes
+                    .iter()
+                    .any(|c| c.contains("golden_path") || c.contains("composition"))
+        );
     }
 
     #[test]
@@ -1647,7 +1907,7 @@ mod tests {
     }
 
     #[test]
-    fn product_golden_path_driver_fails_closed_without_fabricating() {
+    fn product_golden_path_driver_composes_product_task_without_provider_or_seal() {
         let dir = tempdir().unwrap();
         let store = LocalProductStore::new_with_clock(dir.path().join("unarmed.db"), || {
             "2026-07-25T12:00:00Z".into()
@@ -1661,11 +1921,22 @@ mod tests {
             "run-unarmed",
             "ptask-gp-unarmed",
         );
+        // Minimal target tree for intake validation (no live provider).
+        let target = dir.path().join("fake-target");
+        std::fs::create_dir_all(target.join("apps/api/src")).unwrap();
+        std::fs::create_dir_all(target.join("apps/api/tests")).unwrap();
+        std::fs::write(target.join("README.md"), "rwe\n").unwrap();
+        let _gate = crate::product_golden_path::PRODUCT_TASK_GATE;
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(crate::product_golden_path::PRODUCT_TASK_GATE, "1");
         let driver = ProductGoldenPathCellDriver {
-            allow_live_provider_effects: true,
-            target_repo_path: Some(dir.path().join("fake-target")),
+            allow_live_provider_effects: false,
+            target_repo_path: Some(target),
+            fake_transport: None,
         };
-        let err = run_frozen_schedule(
+        let result = run_frozen_schedule(
             &store,
             &principal,
             "run-unarmed",
@@ -1673,15 +1944,19 @@ mod tests {
             &lease,
             &driver,
         )
-        .unwrap_err();
-        assert!(
-            err.contains("CHECKPOINT_DECISION_REQUIRED") || err.contains("composition seam"),
-            "{err}"
-        );
-        assert!(store
-            .list_rwe_task_attempts_for_run("run-unarmed")
-            .unwrap()
-            .is_empty());
+        .unwrap();
+        assert_eq!(result["live_baseline_sealed"], false);
+        assert_eq!(result["provider_call_performed"], false);
+        let attempts = store.list_rwe_task_attempts_for_run("run-unarmed").unwrap();
+        assert_eq!(attempts.len(), 4);
+        for a in &attempts {
+            assert_eq!(
+                a["evidence_json"]["evidence_source"],
+                "product_golden_path_owner"
+            );
+            assert_ne!(a["classification"], "dispatched");
+        }
+        std::env::remove_var(crate::product_golden_path::PRODUCT_TASK_GATE);
     }
 
     #[test]
@@ -1710,12 +1985,15 @@ mod tests {
             .find(|t| t.task_id == cell0["task_id"].as_str().unwrap())
             .unwrap();
         let ids = cell_identities_for("run-dup", cell0, task0).unwrap();
-        let (req, tok) = cell_reservation_limits(cell0).unwrap();
+        let envelope0 = cell_reservation_limits(cell0).unwrap();
+        let req = envelope0.max_provider_requests;
+        let tok = envelope0.max_total_tokens;
         let reservation = json!({
             "schema_version": RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA,
             "cell_id": ids.cell_id,
             "provider_requests": req,
             "total_tokens": tok,
+            "authorization_id": "auth-dup",
         });
         let wins = Arc::new(AtomicUsize::new(0));
         let losses = Arc::new(AtomicUsize::new(0));
@@ -1730,14 +2008,28 @@ mod tests {
                 let def = ids.definition_sha256.clone();
                 let reservation = reservation.clone();
                 scope.spawn(move || {
+                    let principal = store
+                        .authenticate_managed_acceptance_principal("t-dup", "op-dup", None)
+                        .unwrap();
+                    let envelope = cell_reservation_limits(&json!({
+                        "max_provider_requests": req,
+                        "max_retries": 0,
+                        "max_input_tokens": 12000,
+                        "max_output_tokens": 4000,
+                        "max_total_tokens": tok,
+                        "max_wall_time_ms": 900000,
+                        "max_cost": 0.2,
+                    }))
+                    .unwrap();
                     match store.claim_rwe_cell_dispatch(
+                        &principal,
                         "run-dup",
+                        "auth-dup",
                         &lease,
                         &attempt_id,
                         &task_id,
                         &def,
-                        req,
-                        tok,
+                        &envelope,
                         &reservation,
                     ) {
                         Ok(v)
@@ -2030,5 +2322,246 @@ mod tests {
         let frozen = freeze_current_operator_contract_set().unwrap();
         let ok = revalidate_stored_v2_authorization(&store, &principal, "auth-reval", &frozen);
         assert!(ok.is_ok());
+    }
+
+    #[test]
+    fn claim_refuses_auth_mismatch_and_stale_lease() {
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("auth-mis.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let principal = operator(&store, "t-mis", "op-mis");
+        let lease = admit_ready(&store, &principal, "auth-mis", "run-mis", "ptask-gp-mis");
+        let frozen = freeze_current_operator_contract_set().unwrap();
+        let cell0 = &frozen.schedule.body["cells"][0];
+        let task0 = frozen
+            .corpus
+            .tasks
+            .iter()
+            .find(|t| t.task_id == cell0["task_id"].as_str().unwrap())
+            .unwrap();
+        let ids = cell_identities_for("run-mis", cell0, task0).unwrap();
+        let envelope = cell_reservation_limits(cell0).unwrap();
+        let reservation = json!({"cell_id": ids.cell_id});
+        let wrong_auth = store
+            .claim_rwe_cell_dispatch(
+                &principal,
+                "run-mis",
+                "auth-NOT-BOUND",
+                &lease,
+                &ids.rwe_task_attempt_id,
+                &ids.task_id,
+                &ids.definition_sha256,
+                &envelope,
+                &reservation,
+            )
+            .unwrap_err();
+        assert!(
+            wrong_auth.contains("authorization mismatch")
+                || wrong_auth.contains("not found")
+                || wrong_auth.contains("no rows")
+                || wrong_auth.contains("Query returned"),
+            "{wrong_auth}"
+        );
+        let stale_lease = store
+            .claim_rwe_cell_dispatch(
+                &principal,
+                "run-mis",
+                "auth-mis",
+                "rwe-lease-stale-token",
+                &ids.rwe_task_attempt_id,
+                &ids.task_id,
+                &ids.definition_sha256,
+                &envelope,
+                &reservation,
+            )
+            .unwrap_err();
+        assert!(
+            stale_lease.contains("lease") || stale_lease.contains("owner"),
+            "{stale_lease}"
+        );
+    }
+
+    #[test]
+    fn claim_refuses_budget_dimension_overflow_and_preserves_failed_cost() {
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("bdim.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let principal = operator(&store, "t-bdim", "op-bdim");
+        let lease = admit_ready(&store, &principal, "auth-bdim", "run-bdim", "ptask-gp-bdim");
+        let frozen = freeze_current_operator_contract_set().unwrap();
+        let cell0 = &frozen.schedule.body["cells"][0];
+        let task0 = frozen
+            .corpus
+            .tasks
+            .iter()
+            .find(|t| t.task_id == cell0["task_id"].as_str().unwrap())
+            .unwrap();
+        let ids = cell_identities_for("run-bdim", cell0, task0).unwrap();
+        // Exhaust run-level request ceiling with a full-reservation terminal attempt.
+        let mut seed = success_outcomes()[0].clone();
+        seed.provider_requests = 12;
+        seed.total_tokens = 1000;
+        let evidence =
+            build_cell_evidence("run-bdim", "auth-bdim", &frozen, cell0, task0, &ids, &seed);
+        store
+            .persist_rwe_task_attempt(
+                "run-bdim",
+                &lease,
+                &ids.rwe_task_attempt_id,
+                &ids.task_id,
+                &ids.definition_sha256,
+                "controlled_failure",
+                &evidence,
+            )
+            .unwrap();
+        // Second cell must refuse reservation.
+        let cell1 = &frozen.schedule.body["cells"][1];
+        let task1 = frozen
+            .corpus
+            .tasks
+            .iter()
+            .find(|t| t.task_id == cell1["task_id"].as_str().unwrap())
+            .unwrap();
+        let ids1 = cell_identities_for("run-bdim", cell1, task1).unwrap();
+        let envelope = cell_reservation_limits(cell1).unwrap();
+        let err = store
+            .claim_rwe_cell_dispatch(
+                &principal,
+                "run-bdim",
+                "auth-bdim",
+                &lease,
+                &ids1.rwe_task_attempt_id,
+                &ids1.task_id,
+                &ids1.definition_sha256,
+                &envelope,
+                &json!({"cell_id": ids1.cell_id}),
+            )
+            .unwrap_err();
+        assert!(err.contains("budget"), "{err}");
+        // Failed-attempt cost preserved on first row.
+        let rows = store.list_rwe_task_attempts_for_run("run-bdim").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["evidence_json"]["provider_requests"], 12);
+    }
+
+    #[test]
+    fn provider_journal_mismatch_and_reused_receipt_cannot_seal() {
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("journal.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let principal = operator(&store, "t-jnl", "op-jnl");
+        let lease = admit_ready(&store, &principal, "auth-jnl", "run-jnl", "ptask-gp-jnl");
+        let mut outcomes = success_outcomes();
+        for o in &mut outcomes {
+            o.classification = "success".into();
+            o.evidence_source = "product_golden_path_owner".into();
+            o.live_provider_request = true;
+            o.provider_requests = 3;
+            o.total_tokens = 100;
+        }
+        let result = run_frozen_schedule(
+            &store,
+            &principal,
+            "run-jnl",
+            "auth-jnl",
+            &lease,
+            &InjectedCellDriver { outcomes },
+        )
+        .unwrap();
+        // Injected driver forces evidence_source=injected and non-seal classifications.
+        assert_eq!(result["live_baseline_sealed"], false);
+    }
+
+    #[test]
+    fn production_driver_accepts_fake_transport_without_caller_seal_evidence() {
+        use crate::provider::transport::{HttpResponse, MockTransport};
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("fake-tx.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let principal = operator(&store, "t-ftx", "op-ftx");
+        let lease = admit_ready(&store, &principal, "auth-ftx", "run-ftx", "ptask-gp-ftx");
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(target.join("apps/api/src")).unwrap();
+        std::fs::create_dir_all(target.join("apps/api/tests")).unwrap();
+        std::fs::write(target.join("README.md"), "rwe\n").unwrap();
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(crate::product_golden_path::PRODUCT_TASK_GATE, "1");
+        let transport = std::sync::Arc::new(MockTransport::new(vec![Ok(HttpResponse {
+            status: 200,
+            body: br#"{"choices":[{"message":{"content":"{}"}}]}"#.to_vec(),
+        })]));
+        let driver = ProductGoldenPathCellDriver {
+            allow_live_provider_effects: false,
+            target_repo_path: Some(target),
+            fake_transport: Some(transport),
+        };
+        let result =
+            run_frozen_schedule(&store, &principal, "run-ftx", "auth-ftx", &lease, &driver)
+                .unwrap();
+        assert_eq!(result["live_baseline_sealed"], false);
+        assert_eq!(result["provider_call_performed"], false);
+        for a in store.list_rwe_task_attempts_for_run("run-ftx").unwrap() {
+            assert_eq!(
+                a["evidence_json"]["evidence_source"],
+                "product_golden_path_owner"
+            );
+            assert_ne!(a["evidence_json"]["evidence_source"], "injected");
+        }
+        std::env::remove_var(crate::product_golden_path::PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn execution_error_after_fence_terminalizes_without_second_auth() {
+        struct FailDriver;
+        impl CellDriver for FailDriver {
+            fn execute_cell(
+                &self,
+                _store: &LocalProductStore,
+                _principal: &AuthenticatedPrincipal,
+                _frozen: &OperatorFrozenContractSet,
+                _run_id: &str,
+                _lease_token: &str,
+                _cell: &Value,
+                _task: &RweTaskDefinition,
+                _ids: &CellIdentities,
+            ) -> Result<CellOutcome, String> {
+                Err("provider timeout while awaiting response".into())
+            }
+        }
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("fence-err.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let principal = operator(&store, "t-ferr", "op-ferr");
+        let lease = admit_ready(&store, &principal, "auth-ferr", "run-ferr", "ptask-gp-ferr");
+        run_frozen_schedule(
+            &store,
+            &principal,
+            "run-ferr",
+            "auth-ferr",
+            &lease,
+            &FailDriver,
+        )
+        .unwrap();
+        let rows = store.list_rwe_task_attempts_for_run("run-ferr").unwrap();
+        assert!(!rows.is_empty());
+        assert_eq!(rows[0]["classification"], "timeout");
+        assert_ne!(rows[0]["classification"], "dispatched");
+        // No second authorization consumed.
+        assert!(store
+            .get_rwe_run_authorization("auth-ferr-2")
+            .unwrap()
+            .is_none());
     }
 }

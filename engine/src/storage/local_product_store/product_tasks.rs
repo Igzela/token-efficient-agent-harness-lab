@@ -3245,18 +3245,48 @@ impl LocalProductStore {
             .pointer("/intake/verification_commands")
             .and_then(Value::as_array)
             .ok_or("delegated ProductTask verification commands are missing")?;
-        if verification_commands.len() != 1
-            || verification_commands[0]
-                .get("command")
-                .and_then(Value::as_str)
-                != Some("grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md")
-            || verification_commands[0]
-                .get("timeout_ms")
-                .and_then(Value::as_u64)
-                .is_none_or(|timeout| timeout == 0 || timeout > 5_000)
-        {
+        let verifier_cmd = verification_commands
+            .first()
+            .and_then(|c| c.get("command").and_then(Value::as_str))
+            .unwrap_or("");
+        let verifier_timeout = verification_commands
+            .first()
+            .and_then(|c| c.get("timeout_ms").and_then(Value::as_u64))
+            .unwrap_or(0);
+        let is_docs = verification_commands.len() == 1
+            && verifier_cmd
+                == "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md"
+            && (1..=5_000).contains(&verifier_timeout);
+        let is_frozen_rwe = verification_commands.len() == 1
+            && crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_verifier_command(verifier_cmd)
+            && (1..=900_000).contains(&verifier_timeout)
+            && {
+                let allowed = workspace_binding
+                    .get("allowed_paths")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let risk = task.get("risk_class").and_then(Value::as_str).unwrap_or("");
+                let rev = task
+                    .get("source_revision")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_product_intake(
+                    risk,
+                    rev,
+                    &allowed,
+                    verifier_cmd,
+                    verifier_timeout,
+                )
+            };
+        if !is_docs && !is_frozen_rwe {
             return Err(
-                "delegated ProductTask verifier is not the exact bounded docs check".into(),
+                "delegated ProductTask verifier is not the exact bounded docs check or exact frozen RWE pytest"
+                    .into(),
             );
         }
         let workspace_path = workspace_binding
@@ -3357,7 +3387,11 @@ impl LocalProductStore {
             "workflow_id": workflow_id,
             "workflow_node_ids": node_ids,
             "attempt_id": attempt_id,
-            "verifier": "deterministic_docs_health_check_v1",
+            "verifier": if is_frozen_rwe {
+                crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY
+            } else {
+                crate::rwe::frozen_rwe_bindings::DOCS_GP_VERIFIER_IDENTITY
+            },
             "mutable_paths": workspace_binding.get("allowed_paths"),
             "cancellation_identity": format!("product-task:{task_id}:attempt:{attempt_id}:cancel"),
             "rollback_identity": format!("product-task:{task_id}:workspace:{workspace_record_id}:rollback")

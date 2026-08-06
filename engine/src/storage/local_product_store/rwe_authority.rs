@@ -1914,32 +1914,47 @@ impl LocalProductStore {
 
     /// Atomic pre-effect cell fence: exclusive dispatch claim + full next-cell budget reservation.
     ///
-    /// Inserts one `dispatched` row under the current run lease. Concurrent claims for the same
-    /// `task_attempt_id` collide on the primary key (one winner). Concurrent claims for other
-    /// cells on the same run serialize under the run lock and refuse when reserved+consumed
-    /// budgets would exceed the frozen run-level ceilings.
+    /// In one store transaction this method:
+    /// 1. binds `run_id` to its persisted `authorization_id` (lease for run A never uses auth B);
+    /// 2. validates current tenant/principal/lease/status;
+    /// 3. rechecks authorization expiry/revocation/consumption and frozen corpus/protocol/
+    ///    schedule/target/provider/executor/budget bindings;
+    /// 4. reserves the complete frozen next-cell envelope (requests, retries, input/output/total
+    ///    tokens, wall time, monetary ceiling or unavailable);
+    /// 5. inserts one `dispatched` row. Concurrent claims for the same attempt collide (one winner).
     ///
-    /// No schema change: reuses `rwe_task_attempts` with classification `dispatched` until
-    /// [`Self::finalize_rwe_cell_dispatch`] replaces it with a terminal classification.
+    /// No schema change: reuses `rwe_task_attempts` until [`Self::finalize_rwe_cell_dispatch`].
     pub fn claim_rwe_cell_dispatch(
         &self,
+        principal: &AuthenticatedPrincipal,
         run_id: &str,
+        authorization_id: &str,
         lease_token: &str,
         task_attempt_id: &str,
         task_id: &str,
         definition_sha256: &str,
-        reserved_provider_requests: u64,
-        reserved_total_tokens: u64,
+        envelope: &crate::rwe::frozen_rwe_bindings::RweCellBudgetEnvelope,
         reservation_evidence: &Value,
     ) -> Result<Value, String> {
-        if reserved_provider_requests == 0 {
+        if envelope.max_provider_requests == 0 {
             return Err("cell dispatch reservation requires positive max_provider_requests".into());
         }
-        if reserved_total_tokens == 0 {
+        if envelope.max_total_tokens == 0 {
             return Err("cell dispatch reservation requires positive max_total_tokens".into());
+        }
+        if envelope.max_input_tokens == 0 || envelope.max_output_tokens == 0 {
+            return Err(
+                "cell dispatch reservation requires positive input/output token ceilings".into(),
+            );
+        }
+        if envelope.max_wall_time_ms == 0 {
+            return Err("cell dispatch reservation requires positive max_wall_time_ms".into());
         }
         if definition_sha256.len() != 64 {
             return Err("cell dispatch definition_sha256 must be 64 hex chars".into());
+        }
+        if authorization_id.trim().is_empty() {
+            return Err("cell dispatch requires authorization_id".into());
         }
         let now = self.now();
         let mut evidence = sort_value(reservation_evidence);
@@ -1948,23 +1963,48 @@ impl LocalProductStore {
                 "dispatch_reservation".into(),
                 json!({
                     "schema_version": "rwe_cell_dispatch_reservation.v1",
-                    "reserved_provider_requests": reserved_provider_requests,
-                    "reserved_total_tokens": reserved_total_tokens,
+                    "authorization_id": authorization_id,
+                    "reserved_provider_requests": envelope.max_provider_requests,
+                    "reserved_retries": envelope.max_retries,
+                    "reserved_input_tokens": envelope.max_input_tokens,
+                    "reserved_output_tokens": envelope.max_output_tokens,
+                    "reserved_total_tokens": envelope.max_total_tokens,
+                    "reserved_wall_time_ms": envelope.max_wall_time_ms,
+                    "reserved_max_cost": envelope.max_cost,
+                    "monetary_ceiling_available": envelope.max_cost.is_some(),
                     "status": "dispatched",
                 }),
             );
+            m.insert("authorization_id".into(), json!(authorization_id));
             m.insert("classification".into(), json!("dispatched"));
+            // Reservation accounting uses full envelope until finalize couples journal actuals.
+            m.insert(
+                "provider_requests".into(),
+                json!(envelope.max_provider_requests),
+            );
+            m.insert("total_tokens".into(), json!(envelope.max_total_tokens));
         }
         let evidence_s = canonical_json(&evidence)?;
         let evidence_sha = sha256_hex(evidence_s.as_bytes());
         let classification = "dispatched";
+        let reserved_provider_requests = envelope.max_provider_requests;
+        let reserved_total_tokens = envelope.max_total_tokens;
 
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                     .map_err(|e| e.to_string())?;
                 let run = load_rwe_run_sqlite(&tx, run_id)?;
-                validate_current_rwe_run_lease(&run, run_id, lease_token)?;
+                let auth = load_rwe_auth_sqlite(&tx, authorization_id)?;
+                validate_rwe_cell_dispatch_authority(
+                    principal,
+                    &run,
+                    &auth,
+                    run_id,
+                    authorization_id,
+                    lease_token,
+                    &now,
+                )?;
                 // Existing row: exact dispatched replay or conflict.
                 if let Some((
                     existing_run,
@@ -2005,10 +2045,12 @@ impl LocalProductStore {
                     return Ok(json!({
                         "task_attempt_id": task_attempt_id,
                         "run_id": run_id,
+                        "authorization_id": authorization_id,
                         "classification": classification,
                         "idempotent_replay": true,
                         "reserved_provider_requests": reserved_provider_requests,
                         "reserved_total_tokens": reserved_total_tokens,
+                        "budget_envelope": envelope.to_json(),
                     }));
                 }
                 let (used_req, used_tok) = sum_rwe_run_budget_usage_sqlite(&tx, run_id)?;
@@ -2028,6 +2070,24 @@ impl LocalProductStore {
                     return Err(format!(
                         "pre-effect cell budget reservation refused: tokens {next_tok} > run ceiling {run_max_tok}"
                     ));
+                }
+                // Per-cell input/output ceilings must fit within reserved total.
+                if envelope
+                    .max_input_tokens
+                    .saturating_add(envelope.max_output_tokens)
+                    < envelope.max_total_tokens
+                    && envelope.max_input_tokens > envelope.max_total_tokens
+                {
+                    return Err(
+                        "pre-effect cell budget reservation refused: input tokens exceed total"
+                            .into(),
+                    );
+                }
+                if envelope.max_output_tokens > envelope.max_total_tokens {
+                    return Err(
+                        "pre-effect cell budget reservation refused: output tokens exceed total"
+                            .into(),
+                    );
                 }
                 tx.execute(
                     "INSERT INTO rwe_task_attempts (
@@ -2050,10 +2110,12 @@ impl LocalProductStore {
                 Ok(json!({
                     "task_attempt_id": task_attempt_id,
                     "run_id": run_id,
+                    "authorization_id": authorization_id,
                     "classification": classification,
                     "idempotent_replay": false,
                     "reserved_provider_requests": reserved_provider_requests,
                     "reserved_total_tokens": reserved_total_tokens,
+                    "budget_envelope": envelope.to_json(),
                 }))
             }),
             #[cfg(feature = "pg")]
@@ -2070,7 +2132,16 @@ impl LocalProductStore {
                 )
                 .map_err(|e| e.to_string())?;
                 let run = load_rwe_run_pg(&mut tx, run_id)?;
-                validate_current_rwe_run_lease(&run, run_id, lease_token)?;
+                let auth = load_rwe_auth_pg(&mut tx, authorization_id)?;
+                validate_rwe_cell_dispatch_authority(
+                    principal,
+                    &run,
+                    &auth,
+                    run_id,
+                    authorization_id,
+                    lease_token,
+                    &now,
+                )?;
                 if let Some(row) = tx
                     .query_opt(
                         "SELECT run_id, task_id, definition_sha256, classification, evidence_sha256
@@ -2099,10 +2170,12 @@ impl LocalProductStore {
                     return Ok(json!({
                         "task_attempt_id": task_attempt_id,
                         "run_id": run_id,
+                        "authorization_id": authorization_id,
                         "classification": classification,
                         "idempotent_replay": true,
                         "reserved_provider_requests": reserved_provider_requests,
                         "reserved_total_tokens": reserved_total_tokens,
+                        "budget_envelope": envelope.to_json(),
                     }));
                 }
                 let (used_req, used_tok) = sum_rwe_run_budget_usage_pg(&mut tx, run_id)?;
@@ -2122,6 +2195,12 @@ impl LocalProductStore {
                     return Err(format!(
                         "pre-effect cell budget reservation refused: tokens {next_tok} > run ceiling {run_max_tok}"
                     ));
+                }
+                if envelope.max_output_tokens > envelope.max_total_tokens {
+                    return Err(
+                        "pre-effect cell budget reservation refused: output tokens exceed total"
+                            .into(),
+                    );
                 }
                 tx.execute(
                     "INSERT INTO rwe_task_attempts (
@@ -2144,10 +2223,12 @@ impl LocalProductStore {
                 Ok(json!({
                     "task_attempt_id": task_attempt_id,
                     "run_id": run_id,
+                    "authorization_id": authorization_id,
                     "classification": classification,
                     "idempotent_replay": false,
                     "reserved_provider_requests": reserved_provider_requests,
                     "reserved_total_tokens": reserved_total_tokens,
+                    "budget_envelope": envelope.to_json(),
                 }))
             }),
         }
@@ -2733,6 +2814,86 @@ fn validate_current_rwe_run_lease(
         .unwrap_or("");
     if expected_lease.is_empty() || expected_lease != lease_token {
         return Err("RWE task-attempt write requires current run lease/owner".into());
+    }
+    Ok(())
+}
+
+/// Atomic pre-effect authority for cell dispatch: run↔authorization identity, tenant,
+/// principal, lease, status, expiry/revocation/consumption, and frozen v2 bindings.
+fn validate_rwe_cell_dispatch_authority(
+    principal: &AuthenticatedPrincipal,
+    run: &Value,
+    auth: &Value,
+    run_id: &str,
+    authorization_id: &str,
+    lease_token: &str,
+    now: &str,
+) -> Result<(), String> {
+    validate_current_rwe_run_lease(run, run_id, lease_token)?;
+    if run.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id()) {
+        return Err("RWE cell dispatch tenant mismatch".into());
+    }
+    if run.get("principal_id").and_then(Value::as_str) != Some(principal.principal_id()) {
+        return Err("RWE cell dispatch principal mismatch".into());
+    }
+    let run_auth = run
+        .get("authorization_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if run_auth != authorization_id {
+        return Err(format!(
+            "RWE cell dispatch authorization mismatch: run bound to {run_auth}, claim used {authorization_id}"
+        ));
+    }
+    if auth.get("authorization_id").and_then(Value::as_str) != Some(authorization_id) {
+        return Err("RWE cell dispatch authorization row identity mismatch".into());
+    }
+    if auth.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id()) {
+        return Err("RWE authorization tenant mismatch".into());
+    }
+    if auth.get("principal_id").and_then(Value::as_str) != Some(principal.principal_id()) {
+        return Err("RWE authorization principal mismatch".into());
+    }
+    let status = auth.get("status").and_then(Value::as_str).unwrap_or("");
+    // After admit, authorization is consumed by this run; still valid for cells.
+    if status == "consumed" {
+        if auth.get("consumed_by_run_id").and_then(Value::as_str) != Some(run_id) {
+            return Err("RWE authorization consumed by a different run".into());
+        }
+    } else if status != "active" {
+        return Err(format!(
+            "RWE authorization status {status} is not dispatchable"
+        ));
+    }
+    if auth.get("revoked_at").and_then(Value::as_str).is_some() {
+        return Err("RWE authorization revoked".into());
+    }
+    if let Some(exp) = auth.get("expires_at").and_then(Value::as_str) {
+        if is_at_or_before(exp, now)? {
+            return Err("RWE authorization expired between cells".into());
+        }
+    } else {
+        return Err("RWE authorization missing expires_at".into());
+    }
+    if auth.get("fixture_only").and_then(Value::as_bool) == Some(true) {
+        return Err("fixture_only authorization cannot dispatch live RWE cells".into());
+    }
+    let body = auth
+        .get("body_json")
+        .cloned()
+        .ok_or("RWE authorization body_json missing")?;
+    if body.get("schema_version").and_then(Value::as_str) != Some("rwe_run_authorization.v2") {
+        return Err("live RWE cell dispatch requires rwe_run_authorization.v2".into());
+    }
+    // Re-check frozen corpus/protocol/schedule/target/provider/executor/budget bindings.
+    let frozen = crate::rwe::operator_corpus::freeze_current_operator_contract_set()?;
+    validate_rwe_run_authorization_v2(&body, &frozen).map_err(|e| {
+        format!("stored v2 authorization failed frozen revalidation at cell fence: {e}")
+    })?;
+    if body.get("principal_id").and_then(Value::as_str) != Some(principal.principal_id())
+        || body.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id())
+    {
+        return Err("stored v2 authorization principal/tenant binding mismatch".into());
     }
     Ok(())
 }

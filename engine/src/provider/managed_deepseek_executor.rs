@@ -337,14 +337,22 @@ impl ManagedDeepSeekNodeExecutor {
             ManagedModelRole::Planner => {
                 let value: Value = serde_json::from_str(&response.output_text)
                     .map_err(|_| "managed planner output is not the required JSON object")?;
-                if value
-                    != json!({
-                        "schema_version": "managed_deepseek_plan.v1",
-                        "status": "planned",
-                        "path": "docs/USER_GUIDE.md",
-                        "intent": "clarify_doctor_read_only_health_check"
-                    })
-                {
+                let path = value.get("path").and_then(Value::as_str).unwrap_or("");
+                let intent = value.get("intent").and_then(Value::as_str).unwrap_or("");
+                let schema_ok = value.get("schema_version").and_then(Value::as_str)
+                    == Some("managed_deepseek_plan.v1")
+                    && value.get("status").and_then(Value::as_str) == Some("planned")
+                    && !path.is_empty()
+                    && !intent.is_empty();
+                let docs_plan = path == "docs/USER_GUIDE.md"
+                    && intent == "clarify_doctor_read_only_health_check";
+                let rwe_plan = intent == "bounded_product_task"
+                    && crate::rwe::frozen_rwe_bindings::path_under_allowed_paths(
+                        path,
+                        &crate::rwe::frozen_rwe_bindings::frozen_rwe_union_allowed_paths()
+                            .unwrap_or_default(),
+                    );
+                if !schema_ok || (!docs_plan && !rwe_plan) {
                     return Err("managed planner output is outside the bounded plan schema".into());
                 }
                 Some(value)
@@ -413,25 +421,44 @@ impl NodeExecutor for ManagedDeepSeekNodeExecutor {
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
         let started = std::time::Instant::now();
         if input.task_type == "command" {
-            let expected = "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md";
+            let command = input
+                .node_metadata
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let docs_expected =
+                "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md";
+            let is_docs = command == docs_expected;
+            let is_frozen_rwe =
+                crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_verifier_command(command);
             if input
                 .node_metadata
                 .get("executor_class")
                 .and_then(Value::as_str)
                 != Some("deterministic_verifier")
-                || input.node_metadata.get("command").and_then(Value::as_str) != Some(expected)
+                || (!is_docs && !is_frozen_rwe)
                 || input.node_metadata.get(MANAGED_DEEPSEEK_NODE_METADATA) != Some(&Value::Null)
             {
                 return failed(
-                    "managed DeepSeek route verifier is not the exact deterministic docs check"
+                    "managed DeepSeek route verifier is not the exact deterministic docs check or frozen RWE pytest"
                         .to_string(),
                     started.elapsed().as_millis() as i64,
                 );
             }
+            if is_docs {
+                return CommandNodeExecutor {
+                    timeout_ms: 5_000,
+                    allowed_commands: vec!["grep".into()],
+                    allowed_binaries: vec!["grep".into()],
+                    env_vars: Vec::new(),
+                }
+                .execute_node(input);
+            }
+            // Exact frozen RWE pytest: share CommandNodeExecutor env parsing + python3.
             return CommandNodeExecutor {
-                timeout_ms: 5_000,
-                allowed_commands: vec!["grep".into()],
-                allowed_binaries: vec!["grep".into()],
+                timeout_ms: 900_000,
+                allowed_commands: vec!["python3".into()],
+                allowed_binaries: vec!["python3".into()],
                 env_vars: Vec::new(),
             }
             .execute_node(input);

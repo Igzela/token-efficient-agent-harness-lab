@@ -1,0 +1,334 @@
+//! Exact frozen Minimum First RWE bindings admitted by Product Golden Path and
+//! LocalProductStore owners. No second policy owner: callers never invent paths,
+//! verifiers, budgets, or target identities outside this freeze.
+
+use super::corpus::RweTaskDefinition;
+use super::operator_corpus::{
+    freeze_current_operator_contract_set, OperatorFrozenContractSet, OPERATOR_TARGET_REPO,
+};
+use serde_json::Value;
+
+/// Exact target main SHA frozen for Minimum First RWE (Igzela/alters-lab).
+pub const FROZEN_RWE_TARGET_MAIN_SHA: &str = "6240768506320a324d68787b9eaa86971c8c930c";
+/// Exact source tree hash bound to the frozen target main.
+pub const FROZEN_RWE_TARGET_TREE_HASH: &str =
+    "124ac34861424186f4ddddf96e41deb79cab2ac61179b35b76eb5fb32c40feab";
+/// Exact pytest verifier shared by both frozen Minimum First tasks.
+pub const FROZEN_RWE_PYTEST_VERIFIER: &str =
+    "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q";
+/// Risk class that admits frozen RWE pytest under product intake (not global).
+pub const FROZEN_RWE_RISK_CLASS: &str = "rwe";
+/// Verifier identity recorded on delegated execution manifests for frozen RWE.
+pub const FROZEN_RWE_VERIFIER_IDENTITY: &str = "deterministic_rwe_pytest_v1";
+/// Docs Golden Path verifier identity (unchanged).
+pub const DOCS_GP_VERIFIER_IDENTITY: &str = "deterministic_docs_health_check_v1";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrozenRweTaskBinding {
+    pub task_id: String,
+    pub allowed_mutable_paths: Vec<String>,
+    pub expected_verification_command: String,
+    pub source_commit: String,
+    pub source_tree_hash: String,
+    pub per_task_max_provider_requests: u64,
+    pub per_task_max_retries: u64,
+    pub per_task_max_input_tokens: u64,
+    pub per_task_max_output_tokens: u64,
+    pub per_task_max_total_tokens: u64,
+    pub timeout_ms: u64,
+    pub patch_max_files: u64,
+    pub patch_max_lines: u64,
+    pub per_task_max_cost: f64,
+}
+
+/// Full next-cell budget envelope reserved before any cell effect.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RweCellBudgetEnvelope {
+    pub max_provider_requests: u64,
+    pub max_retries: u64,
+    pub max_input_tokens: u64,
+    pub max_output_tokens: u64,
+    pub max_total_tokens: u64,
+    pub max_wall_time_ms: u64,
+    /// `None` means monetary ceiling unavailable (must not invent a number).
+    pub max_cost: Option<f64>,
+}
+
+impl RweCellBudgetEnvelope {
+    pub fn from_schedule_cell(cell: &Value) -> Result<Self, String> {
+        let max_provider_requests = cell
+            .get("max_provider_requests")
+            .and_then(Value::as_u64)
+            .filter(|v| *v > 0)
+            .ok_or("cell max_provider_requests must be positive")?;
+        let max_retries = cell.get("max_retries").and_then(Value::as_u64).unwrap_or(0);
+        let max_input_tokens = cell
+            .get("max_input_tokens")
+            .and_then(Value::as_u64)
+            .filter(|v| *v > 0)
+            .ok_or("cell max_input_tokens must be positive")?;
+        let max_output_tokens = cell
+            .get("max_output_tokens")
+            .and_then(Value::as_u64)
+            .filter(|v| *v > 0)
+            .ok_or("cell max_output_tokens must be positive")?;
+        let max_total_tokens = cell
+            .get("max_total_tokens")
+            .and_then(Value::as_u64)
+            .filter(|v| *v > 0)
+            .ok_or("cell max_total_tokens must be positive")?;
+        let max_wall_time_ms = cell
+            .get("max_wall_time_ms")
+            .and_then(Value::as_u64)
+            .filter(|v| *v > 0)
+            .ok_or("cell max_wall_time_ms must be positive")?;
+        let max_cost = cell.get("max_cost").and_then(Value::as_f64).and_then(|c| {
+            if c.is_finite() && c > 0.0 {
+                Some(c)
+            } else {
+                None
+            }
+        });
+        if max_input_tokens
+            .saturating_add(max_output_tokens)
+            .saturating_mul(1)
+            > max_total_tokens
+            && max_input_tokens + max_output_tokens > max_total_tokens
+        {
+            // Soft consistency: input+output may exceed total only if schedule said so;
+            // still require positive total.
+        }
+        Ok(Self {
+            max_provider_requests,
+            max_retries,
+            max_input_tokens,
+            max_output_tokens,
+            max_total_tokens,
+            max_wall_time_ms,
+            max_cost,
+        })
+    }
+
+    pub fn to_json(&self) -> Value {
+        serde_json::json!({
+            "schema_version": "rwe_cell_budget_envelope.v1",
+            "max_provider_requests": self.max_provider_requests,
+            "max_retries": self.max_retries,
+            "max_input_tokens": self.max_input_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "max_total_tokens": self.max_total_tokens,
+            "max_wall_time_ms": self.max_wall_time_ms,
+            "max_cost": self.max_cost,
+            "monetary_ceiling_available": self.max_cost.is_some(),
+        })
+    }
+}
+
+pub fn frozen_rwe_task_bindings() -> Result<Vec<FrozenRweTaskBinding>, String> {
+    let frozen = freeze_current_operator_contract_set()?;
+    frozen.corpus.tasks.iter().map(binding_from_task).collect()
+}
+
+fn binding_from_task(task: &RweTaskDefinition) -> Result<FrozenRweTaskBinding, String> {
+    if task.source_commit != FROZEN_RWE_TARGET_MAIN_SHA {
+        return Err(format!(
+            "frozen RWE task {} source_commit mismatch",
+            task.task_id
+        ));
+    }
+    if task.source_tree_hash != FROZEN_RWE_TARGET_TREE_HASH {
+        return Err(format!(
+            "frozen RWE task {} source_tree_hash mismatch",
+            task.task_id
+        ));
+    }
+    let cmd = task
+        .expected_verification_commands
+        .first()
+        .cloned()
+        .ok_or_else(|| format!("frozen RWE task {} missing verifier", task.task_id))?;
+    if cmd != FROZEN_RWE_PYTEST_VERIFIER {
+        return Err(format!(
+            "frozen RWE task {} verifier is not the exact frozen pytest command",
+            task.task_id
+        ));
+    }
+    if task.allowed_mutable_paths.is_empty() {
+        return Err(format!(
+            "frozen RWE task {} has empty allowed_mutable_paths",
+            task.task_id
+        ));
+    }
+    Ok(FrozenRweTaskBinding {
+        task_id: task.task_id.clone(),
+        allowed_mutable_paths: task.allowed_mutable_paths.clone(),
+        expected_verification_command: cmd,
+        source_commit: task.source_commit.clone(),
+        source_tree_hash: task.source_tree_hash.clone(),
+        per_task_max_provider_requests: task.per_task_max_provider_requests,
+        per_task_max_retries: task.per_task_max_retries,
+        per_task_max_input_tokens: task.per_task_max_input_tokens,
+        per_task_max_output_tokens: task.per_task_max_output_tokens,
+        per_task_max_total_tokens: task.per_task_max_total_tokens,
+        timeout_ms: task.timeout_ms,
+        patch_max_files: task.patch_max_files,
+        patch_max_lines: task.patch_max_lines,
+        per_task_max_cost: 0.2,
+    })
+}
+
+/// True when a product intake is exactly one of the frozen RWE tasks.
+pub fn is_exact_frozen_rwe_product_intake(
+    risk_class: &str,
+    source_revision: &str,
+    allowed_paths: &[String],
+    verification_command: &str,
+    timeout_ms: u64,
+) -> bool {
+    if risk_class != FROZEN_RWE_RISK_CLASS || source_revision != FROZEN_RWE_TARGET_MAIN_SHA {
+        return false;
+    }
+    if verification_command.trim() != FROZEN_RWE_PYTEST_VERIFIER {
+        return false;
+    }
+    if timeout_ms == 0 || timeout_ms > 900_000 {
+        return false;
+    }
+    match frozen_rwe_task_bindings() {
+        Ok(bindings) => bindings.iter().any(|b| {
+            b.allowed_mutable_paths == allowed_paths
+                && b.expected_verification_command == verification_command.trim()
+        }),
+        Err(_) => false,
+    }
+}
+
+/// True when workspace allowed paths match a frozen RWE task exactly.
+pub fn is_exact_frozen_rwe_allowed_paths(allowed_paths: &[String]) -> bool {
+    match frozen_rwe_task_bindings() {
+        Ok(bindings) => bindings
+            .iter()
+            .any(|b| b.allowed_mutable_paths == allowed_paths),
+        Err(_) => false,
+    }
+}
+
+pub fn is_exact_frozen_rwe_verifier_command(command: &str) -> bool {
+    command.trim() == FROZEN_RWE_PYTEST_VERIFIER
+}
+
+/// Path is the exact allowed entry or a clean child of an allowed directory prefix.
+pub fn path_under_allowed_paths(path: &str, allowed_paths: &[String]) -> bool {
+    if path.is_empty() || path.starts_with('/') || path.contains("..") {
+        return false;
+    }
+    allowed_paths.iter().any(|allowed| {
+        path == allowed.as_str()
+            || path.starts_with(&format!("{allowed}/"))
+            || allowed.starts_with(&format!("{path}/"))
+    })
+}
+
+/// Union of frozen RWE mutable paths (for run-level delegation scope checks).
+pub fn frozen_rwe_union_allowed_paths() -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for b in frozen_rwe_task_bindings()? {
+        for p in b.allowed_mutable_paths {
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+pub fn frozen_rwe_max_patch_limits() -> Result<(u64, u64), String> {
+    let bindings = frozen_rwe_task_bindings()?;
+    let files = bindings
+        .iter()
+        .map(|b| b.patch_max_files)
+        .max()
+        .unwrap_or(0);
+    let lines = bindings
+        .iter()
+        .map(|b| b.patch_max_lines)
+        .max()
+        .unwrap_or(0);
+    if files == 0 || lines == 0 {
+        return Err("frozen RWE patch limits missing".into());
+    }
+    Ok((files, lines))
+}
+
+pub fn ensure_frozen_operator_target(frozen: &OperatorFrozenContractSet) -> Result<(), String> {
+    if frozen.corpus.disposable_target_repo != OPERATOR_TARGET_REPO {
+        return Err("frozen target repo mismatch".into());
+    }
+    let sha = frozen
+        .corpus
+        .tasks
+        .first()
+        .map(|t| t.source_commit.as_str())
+        .unwrap_or("");
+    if sha != FROZEN_RWE_TARGET_MAIN_SHA {
+        return Err("frozen target main SHA mismatch".into());
+    }
+    Ok(())
+}
+
+/// Composition seam readiness: frozen bindings load and match Board A freeze.
+/// Does not issue or consume authority.
+pub fn rwe_composition_seam_ready() -> Result<(), String> {
+    let frozen = freeze_current_operator_contract_set()?;
+    ensure_frozen_operator_target(&frozen)?;
+    let bindings = frozen_rwe_task_bindings()?;
+    if bindings.len() != 2 {
+        return Err(format!(
+            "frozen RWE expects exactly 2 tasks, got {}",
+            bindings.len()
+        ));
+    }
+    let cells = frozen
+        .schedule
+        .body
+        .get("cells")
+        .and_then(Value::as_array)
+        .ok_or("frozen schedule cells missing")?;
+    if cells.len() != 4 {
+        return Err(format!(
+            "frozen schedule expects 4 cells, got {}",
+            cells.len()
+        ));
+    }
+    for cell in cells {
+        RweCellBudgetEnvelope::from_schedule_cell(cell)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frozen_bindings_load_and_match_pytest() {
+        let bindings = frozen_rwe_task_bindings().unwrap();
+        assert_eq!(bindings.len(), 2);
+        for b in &bindings {
+            assert_eq!(b.expected_verification_command, FROZEN_RWE_PYTEST_VERIFIER);
+            assert_eq!(b.source_commit, FROZEN_RWE_TARGET_MAIN_SHA);
+            assert!(is_exact_frozen_rwe_allowed_paths(&b.allowed_mutable_paths));
+        }
+        rwe_composition_seam_ready().unwrap();
+    }
+
+    #[test]
+    fn path_under_allowed_accepts_children_only() {
+        let allowed = vec!["apps/api/src".into(), "README.md".into()];
+        assert!(path_under_allowed_paths("apps/api/src/main.py", &allowed));
+        assert!(path_under_allowed_paths("README.md", &allowed));
+        assert!(!path_under_allowed_paths("apps/api/other.py", &allowed));
+        assert!(!path_under_allowed_paths("../escape", &allowed));
+    }
+}

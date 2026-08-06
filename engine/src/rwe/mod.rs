@@ -6,6 +6,7 @@
 pub mod corpus;
 pub mod economic_protocol;
 pub mod execution_schedule;
+pub mod frozen_rwe_bindings;
 pub mod live_baseline_coordinator;
 pub mod operator_corpus;
 pub mod runner;
@@ -18,12 +19,18 @@ pub use economic_protocol::{
     VERIFIED_DELIVERY_OBSERVATION_SCHEMA,
 };
 pub use execution_schedule::{freeze_operator_execution_schedule, FrozenExecutionSchedule};
+pub use frozen_rwe_bindings::{
+    is_exact_frozen_rwe_allowed_paths, is_exact_frozen_rwe_product_intake,
+    is_exact_frozen_rwe_verifier_command, path_under_allowed_paths, rwe_composition_seam_ready,
+    RweCellBudgetEnvelope, FROZEN_RWE_PYTEST_VERIFIER, FROZEN_RWE_RISK_CLASS,
+    FROZEN_RWE_TARGET_MAIN_SHA, FROZEN_RWE_VERIFIER_IDENTITY,
+};
 pub use live_baseline_coordinator::{
     build_rwe_cell_product_intake, cell_identities_for, issue_and_admit_v2, operator_preflight,
     project_first_baseline_evidence, revalidate_stored_v2_authorization, run_frozen_schedule,
-    CellDriver, CellIdentities, CellOutcome, InjectedCellDriver, ProductGoldenPathCellDriver,
-    RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA, RWE_LIVE_BASELINE_COORDINATOR_SCHEMA,
-    RWE_LIVE_CELL_COMPOSITION_SEAM_MISSING,
+    CellDriver, CellIdentities, CellOutcome, CountingCellDriver, InjectedCellDriver,
+    ProductGoldenPathCellDriver, RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA,
+    RWE_LIVE_BASELINE_COORDINATOR_SCHEMA, RWE_LIVE_CELL_COMPOSITION_SEAM,
 };
 pub use operator_corpus::{
     freeze_current_operator_contract_set, freeze_operator_contract_set, freeze_operator_rwe_corpus,

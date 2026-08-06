@@ -320,20 +320,24 @@ fn exact_managed_deepseek_verifier_command(
             "managed DeepSeek verification timeout_ms must be 1..{MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS}"
         ));
     }
-    // One strict parser for legacy docs smoke and frozen RWE pytest shapes.
+    // One strict parser: legacy docs smoke always; frozen RWE pytest only when
+    // the command is the exact frozen RWE verifier (not arbitrary pytest).
     let (env, argv) = parse_strict_product_verification_command(command_text)?;
-    if command_text != MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND
-        && !(argv.first().map(String::as_str) == Some("python3")
-            && argv.get(1).map(String::as_str) == Some("-m")
-            && argv.get(2).map(String::as_str) == Some("pytest"))
-    {
-        return Err(
-            "managed DeepSeek verifier must be the legacy docs smoke or python3 -m pytest shape"
-                .to_string(),
-        );
-    }
     let _ = env;
-    Ok(command_text.to_string())
+    if command_text == MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND {
+        return Ok(command_text.to_string());
+    }
+    if crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_verifier_command(command_text)
+        && argv.first().map(String::as_str) == Some("python3")
+        && argv.get(1).map(String::as_str) == Some("-m")
+        && argv.get(2).map(String::as_str) == Some("pytest")
+    {
+        return Ok(command_text.to_string());
+    }
+    Err(
+        "managed DeepSeek verifier must be the legacy docs smoke or exact frozen RWE pytest"
+            .to_string(),
+    )
 }
 
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
@@ -833,10 +837,30 @@ pub fn validate_intake(
                 "verification command must be 1..{MAX_VERIFICATION_COMMAND_BYTES} bytes"
             ));
         }
-        // One strict parser for all product verification commands (incl. frozen RWE pytest).
-        let (_env, _argv) = parse_strict_product_verification_command(command)?;
+        // One strict parser for admitted verification shapes. Pytest expansion is
+        // only accepted for exact frozen RWE authorization (checked after risk_class).
+        let (_env, argv) = parse_strict_product_verification_command(command)?;
         if cmd.timeout_ms == 0 || cmd.timeout_ms > 3_600_000 {
             return Err("verification command timeout_ms must be 1..3600000".to_string());
+        }
+        let is_pytest_shape = argv.first().map(String::as_str) == Some("python3")
+            && argv.get(1).map(String::as_str) == Some("-m")
+            && argv.get(2).map(String::as_str) == Some("pytest");
+        if is_pytest_shape {
+            // Scope pytest only to exact frozen RWE — never arbitrary ProductTask policy.
+            let risk = request.risk_class.trim();
+            if !crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_product_intake(
+                risk,
+                request.source_revision.trim(),
+                &request.allowed_paths,
+                command,
+                cmd.timeout_ms,
+            ) {
+                return Err(
+                    "python3 -m pytest verification is admitted only for exact frozen RWE authorization"
+                        .into(),
+                );
+            }
         }
         verification_commands.push(ProductVerificationCommand {
             command: command.to_string(),
@@ -1922,6 +1946,8 @@ mod tests {
             .expect_err(name);
             assert!(
                 error.contains("exact bounded docs check")
+                    || error.contains("exact frozen RWE pytest")
+                    || error.contains("legacy docs smoke")
                     || error.contains("intake-validated verification")
                     || error.contains("verification command")
                     || error.contains("timeout_ms")

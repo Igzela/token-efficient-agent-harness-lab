@@ -9209,17 +9209,18 @@ fn pg_rwe_concurrent_cell_dispatch_fence_is_single_effect() {
         .find(|t| t.task_id == cell0["task_id"].as_str().unwrap())
         .unwrap();
     let ids = cell_identities_for(&run_id, cell0, task0).unwrap();
-    let req = cell0["max_provider_requests"].as_u64().unwrap();
-    let tok = cell0["max_total_tokens"].as_u64().unwrap();
+    let envelope = engine::rwe::RweCellBudgetEnvelope::from_schedule_cell(cell0).unwrap();
     let reservation = json!({
         "schema_version": RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA,
         "cell_id": ids.cell_id,
-        "provider_requests": req,
-        "total_tokens": tok,
+        "provider_requests": envelope.max_provider_requests,
+        "total_tokens": envelope.max_total_tokens,
+        "authorization_id": auth_id,
     });
     let wins = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let losses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let lease = std::sync::Arc::new(lease);
+    let auth_id = std::sync::Arc::new(auth_id);
     std::thread::scope(|scope| {
         for _ in 0..8 {
             let store = std::sync::Arc::clone(&store);
@@ -9231,15 +9232,23 @@ fn pg_rwe_concurrent_cell_dispatch_fence_is_single_effect() {
             let def = ids.definition_sha256.clone();
             let reservation = reservation.clone();
             let run_id = run_id.clone();
+            let auth_id = std::sync::Arc::clone(&auth_id);
+            let envelope = envelope.clone();
+            let principal_key = format!("op-fence-{tag}");
+            let tenant = format!("tenant-fence-{tag}");
             scope.spawn(move || {
+                let principal = store
+                    .authenticate_managed_acceptance_principal(&tenant, &principal_key, None)
+                    .unwrap();
                 match store.claim_rwe_cell_dispatch(
+                    &principal,
                     &run_id,
+                    &auth_id,
                     &lease,
                     &attempt_id,
                     &task_id,
                     &def,
-                    req,
-                    tok,
+                    &envelope,
                     &reservation,
                 ) {
                     Ok(v) if v.get("idempotent_replay").and_then(Value::as_bool) != Some(true) => {

@@ -263,19 +263,34 @@ impl DelegationContract {
         if self.delegation_id.trim().is_empty() || self.executions != 1 {
             return Err("delegation must contain one execution and an id".into());
         }
-        if self.repositories != ["Igzela/alters-lab"]
-            || self.task_classes != ["documentation"]
-            || self.allowed_paths != ["docs/USER_GUIDE.md"]
-        {
-            return Err("delegation scope is outside the bounded documentation policy".into());
+        let docs_scope = self.repositories == ["Igzela/alters-lab"]
+            && self.task_classes == ["documentation"]
+            && self.allowed_paths == ["docs/USER_GUIDE.md"]
+            && self.max_changed_files == 1
+            && self.max_changed_lines == 100
+            && (self.max_cost_usd_per_run - 0.50).abs() <= f64::EPSILON
+            && (self.max_total_cost_usd - 0.50).abs() <= f64::EPSILON;
+        let rwe_scope = {
+            let union = crate::rwe::frozen_rwe_bindings::frozen_rwe_union_allowed_paths()
+                .unwrap_or_default();
+            let (max_files, max_lines) =
+                crate::rwe::frozen_rwe_bindings::frozen_rwe_max_patch_limits().unwrap_or((0, 0));
+            self.repositories == ["Igzela/alters-lab"]
+                && self.task_classes == ["rwe"]
+                && !union.is_empty()
+                && self.allowed_paths == union
+                && self.max_changed_files == max_files
+                && self.max_changed_lines == max_lines
+                && (self.max_cost_usd_per_run - 0.80).abs() <= f64::EPSILON
+                && (self.max_total_cost_usd - 0.80).abs() <= f64::EPSILON
+        };
+        if !docs_scope && !rwe_scope {
+            return Err(
+                "delegation scope is outside the bounded documentation or exact frozen RWE policy"
+                    .into(),
+            );
         }
-        if self.max_changed_files != 1 || self.max_changed_lines != 100 {
-            return Err("delegation change limits are not the bounded policy".into());
-        }
-        if self.protocol != "openai_compatible"
-            || (self.max_cost_usd_per_run - 0.50).abs() > f64::EPSILON
-            || (self.max_total_cost_usd - 0.50).abs() > f64::EPSILON
-        {
+        if self.protocol != "openai_compatible" {
             return Err("delegation spend policy is invalid".into());
         }
         if self.models
@@ -373,11 +388,28 @@ pub fn derive_final_execution_manifest(
             return Err(format!("execution identity {key} is required"));
         }
     }
-    if execution.get("target_repository").and_then(Value::as_str) != Some("Igzela/alters-lab")
-        || execution.get("mutable_paths") != Some(&json!(["docs/USER_GUIDE.md"]))
-        || execution.get("verifier").and_then(Value::as_str)
-            != Some("deterministic_docs_health_check_v1")
-    {
+    let mutable = execution
+        .get("mutable_paths")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let verifier = execution
+        .get("verifier")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let docs_exec = execution.get("target_repository").and_then(Value::as_str)
+        == Some("Igzela/alters-lab")
+        && mutable == ["docs/USER_GUIDE.md"]
+        && verifier == crate::rwe::frozen_rwe_bindings::DOCS_GP_VERIFIER_IDENTITY;
+    let rwe_exec = execution.get("target_repository").and_then(Value::as_str)
+        == Some("Igzela/alters-lab")
+        && crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_allowed_paths(&mutable)
+        && verifier == crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY;
+    if !docs_exec && !rwe_exec {
         return Err("execution identity is outside the delegation".into());
     }
     let (proposal_repository, proposal_main_sha, proposal_paths, proposal_cap, proposal_verifier) =
@@ -439,7 +471,7 @@ pub fn derive_final_execution_manifest(
         "target": {
             "repository": "Igzela/alters-lab",
             "main_sha": execution.get("target_main_sha"),
-            "mutable_paths": ["docs/USER_GUIDE.md"]
+            "mutable_paths": execution.get("mutable_paths")
         },
         "models": delegation.models.clone(),
         "protocol": delegation.protocol.clone(),
@@ -601,9 +633,10 @@ pub fn confirm_delegated_artifact_output(
         .and_then(Value::as_array)
         .ok_or("artifact changed_files is required")?;
     if changed_files.len() as u64 > delegation.max_changed_files
-        || changed_files
-            .iter()
-            .any(|path| path.as_str() != Some("docs/USER_GUIDE.md"))
+        || changed_files.iter().any(|path| {
+            let p = path.as_str().unwrap_or("");
+            !crate::rwe::frozen_rwe_bindings::path_under_allowed_paths(p, &delegation.allowed_paths)
+        })
     {
         return Err("artifact path or file-count policy failed".into());
     }
@@ -700,32 +733,52 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
         "usage_parser_version": crate::provider::managed_deepseek::DEEPSEEK_USAGE_PARSER_VERSION,
         "price_profile": crate::provider::managed_deepseek::DeepSeekPriceProfile::default()
     });
+    let mutable = manifest
+        .pointer("/target/mutable_paths")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let verifier = manifest.pointer("/verifier").and_then(Value::as_str);
+    let max_files = manifest
+        .pointer("/limits/max_changed_files")
+        .and_then(Value::as_u64);
+    let max_lines = manifest
+        .pointer("/limits/max_changed_lines")
+        .and_then(Value::as_u64);
+    let max_cost = manifest
+        .pointer("/limits/max_cost_usd")
+        .and_then(Value::as_f64);
+    let max_total_cost = manifest
+        .pointer("/limits/max_total_cost_usd")
+        .and_then(Value::as_f64);
+    let docs_policy = mutable == ["docs/USER_GUIDE.md"]
+        && verifier == Some(crate::rwe::frozen_rwe_bindings::DOCS_GP_VERIFIER_IDENTITY)
+        && max_files == Some(1)
+        && max_lines == Some(100)
+        && max_cost == Some(0.50)
+        && max_total_cost == Some(0.50);
+    let rwe_policy = {
+        let (f, l) =
+            crate::rwe::frozen_rwe_bindings::frozen_rwe_max_patch_limits().unwrap_or((0, 0));
+        crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_allowed_paths(&mutable)
+            && verifier == Some(crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY)
+            && max_files == Some(f)
+            && max_lines == Some(l)
+            && max_cost == Some(0.80)
+            && max_total_cost == Some(0.80)
+    };
     let policy_matches = manifest
         .pointer("/target/repository")
         .and_then(Value::as_str)
         == Some("Igzela/alters-lab")
-        && manifest.pointer("/target/mutable_paths") == Some(&json!(["docs/USER_GUIDE.md"]))
+        && (docs_policy || rwe_policy)
         && manifest.get("protocol").and_then(Value::as_str) == Some("openai_compatible")
         && manifest.get("models") == Some(&expected_models)
         && manifest.get("provider") == Some(&expected_provider)
-        && manifest.pointer("/verifier").and_then(Value::as_str)
-            == Some("deterministic_docs_health_check_v1")
-        && manifest
-            .pointer("/limits/max_changed_files")
-            .and_then(Value::as_u64)
-            == Some(1)
-        && manifest
-            .pointer("/limits/max_changed_lines")
-            .and_then(Value::as_u64)
-            == Some(100)
-        && manifest
-            .pointer("/limits/max_cost_usd")
-            .and_then(Value::as_f64)
-            == Some(0.50)
-        && manifest
-            .pointer("/limits/max_total_cost_usd")
-            .and_then(Value::as_f64)
-            == Some(0.50)
         && manifest
             .pointer("/limits/max_provider_requests")
             .and_then(Value::as_u64)
@@ -9106,8 +9159,11 @@ impl LocalProductStore {
         }
         let allowed = owner_allowed
             .as_array()
-            .ok_or("workspace action allowed_paths are missing")?;
-        if allowed.len() != 1 || allowed[0].as_str() != Some(path) {
+            .ok_or("workspace action allowed_paths are missing")?
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        if !crate::rwe::frozen_rwe_bindings::path_under_allowed_paths(path, &allowed) {
             return Err("workspace action path is outside the exact allowed path".to_string());
         }
         let workspace = Path::new(owner_workspace);
@@ -9755,29 +9811,63 @@ impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductS
         let task = self
             .get_product_task(&binding.product_task_id)?
             .ok_or("managed stage context ProductTask is missing")?;
-        if task.pointer("/workspace_binding/allowed_paths") != Some(&json!(["docs/USER_GUIDE.md"]))
-        {
+        let allowed_paths = task
+            .pointer("/workspace_binding/allowed_paths")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let docs_paths = allowed_paths == ["docs/USER_GUIDE.md"];
+        let rwe_paths =
+            crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_allowed_paths(&allowed_paths);
+        if !docs_paths && !rwe_paths {
             return Err("managed stage context allowed path binding changed".into());
         }
         let workspace_path = task
             .pointer("/workspace_binding/workspace_path")
             .and_then(Value::as_str)
             .ok_or("managed stage context workspace path is missing")?;
-        let file_path = Path::new(workspace_path).join("docs/USER_GUIDE.md");
-        let mut file = open_absolute_path_without_symlinks(&file_path, libc::O_RDONLY)
-            .map_err(|_| "managed stage context allowed file is unavailable")?;
-        let metadata = file
-            .metadata()
-            .map_err(|_| "managed stage context allowed file metadata is unavailable")?;
-        if !metadata.is_file() || metadata.len() > 64 * 1024 {
-            return Err("managed stage context allowed file exceeds its bounded input".into());
-        }
-        let mut content = String::new();
-        file.read_to_string(&mut content)
-            .map_err(|_| "managed stage context allowed file is not UTF-8")?;
-        if crate::provider::redaction::contains_sensitive_patterns(&content) {
-            return Err("managed stage context secret scan failed before provider request".into());
-        }
+        // Docs GP stages the single USER_GUIDE file; frozen RWE stages a bounded path index
+        // plus first allowed file content when present (never invents secrets).
+        let stage_path = if docs_paths {
+            "docs/USER_GUIDE.md".to_string()
+        } else {
+            allowed_paths
+                .first()
+                .cloned()
+                .ok_or("managed stage context frozen RWE paths empty")?
+        };
+        let file_path = Path::new(workspace_path).join(&stage_path);
+        let (content, staged_path) = if file_path.is_file() {
+            let mut file = open_absolute_path_without_symlinks(&file_path, libc::O_RDONLY)
+                .map_err(|_| "managed stage context allowed file is unavailable")?;
+            let metadata = file
+                .metadata()
+                .map_err(|_| "managed stage context allowed file metadata is unavailable")?;
+            if !metadata.is_file() || metadata.len() > 64 * 1024 {
+                return Err("managed stage context allowed file exceeds its bounded input".into());
+            }
+            let mut content = String::new();
+            file.read_to_string(&mut content)
+                .map_err(|_| "managed stage context allowed file is not UTF-8")?;
+            if crate::provider::redaction::contains_sensitive_patterns(&content) {
+                return Err(
+                    "managed stage context secret scan failed before provider request".into(),
+                );
+            }
+            (content, stage_path)
+        } else if rwe_paths {
+            // Directory prefixes are valid RWE allowed paths; stage a bounded path list only.
+            (
+                format!("frozen_rwe_allowed_paths:{}", allowed_paths.join(",")),
+                stage_path,
+            )
+        } else {
+            return Err("managed stage context allowed file is unavailable".into());
+        };
         let run_id = task
             .get("run_id")
             .and_then(Value::as_str)
@@ -9832,9 +9922,10 @@ impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductS
             "planner_receipt": planner_receipt,
             "deterministic_verification": verification,
             "allowed_file": {
-                "path": "docs/USER_GUIDE.md",
+                "path": staged_path,
                 "content": content
-            }
+            },
+            "allowed_paths": allowed_paths
         }))))
     }
 

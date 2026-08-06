@@ -176,32 +176,18 @@ Accepted provider-free production wiring:
 
 Board B does not authorize a live run. A live baseline still requires a new separately authorized run against the accepted exact head.
 
-### First Live Baseline Coordinator — In review (Draft PR #363; not COMPLETE)
+### First Live Baseline — Next Permitted Work
 
-Provider-free orchestration under `engine/src/rwe/live_baseline_coordinator.rs` and `rwe-live-baseline` CLI:
+**Prerequisite:** Board A and Board B accepted, plus a separate one-use live-run authorization against the accepted exact head.
 
-- store-owned v2 issue/admit before any cell work;
-- revalidation of stored v2 bindings (corpus/protocol/schedule/target/principal/provider/executor/budget/expiry) before each cell effect;
-- frozen 4-cell schedule identity derivation and RWE task-attempt mapping;
-- store-backed atomic pre-effect cell fence + full next-cell budget reservation (`claim_rwe_cell_dispatch` / `finalize_rwe_cell_dispatch` on existing `rwe_task_attempts`; no new schema);
-- concurrent duplicate-dispatch refusal proved on SQLite and PostgreSQL;
-- injectable drivers for provider-free orchestration only; `ProductGoldenPathCellDriver` fails closed with `CHECKPOINT_DECISION_REQUIRED` (missing multi-path RWE composition seam over existing delegated GP owners);
-- intake mapping helper `build_rwe_cell_product_intake` for exact frozen target/SHA/git_worktree/draft_pr/managed_deepseek/verifier — not a fabricated live path;
-- one strict verifier-command parser shared with product intake;
-- stop-rule restart; `skipped_by_stop_rule` terminal; `outcome_unknown` no-retry;
-- `live_baseline_sealed` only from store-owned ProductTask/terminal receipts.
+Draft PR #363 is an open implementation surface for the provider-free composition of that baseline under existing Product Golden Path and `LocalProductStore` owners (exact frozen Igzela/alters-lab bindings). It is not accepted, not COMPLETE, and does not invent a coordinator prerequisite or authorize live provider/target effects until merge and separate live-run authority.
 
-This coordinator does **not** execute or seal a live baseline. Live multi-path cell composition (worktree + managed executor + store spend/journal + verifier + artifact + Draft PR + terminal + cleanup) requires a planning decision to generalize delegated GP hardcoding beyond docs/USER_GUIDE.
-
-### First Live Baseline Execution — Next Permitted Work
-
-**Prerequisite:** Board A, Board B, accepted coordinator, authorized multi-path RWE cell composition seam, real same-tenant Golden Path prerequisite terminal receipt, and a separate one-use live-run authorization against the accepted exact head.
 
 ### First Live Baseline Exit Gate
 
 The first baseline must execute the frozen schedule without changing the corpus, protocol, reviewer policy, budgets, seeds, verifier, or thresholds. It records layered success, failure class, provider/request/token/latency/cost evidence, approval/output/terminal bindings, recovery and cleanup, full failed-attempt cost, and evidence sufficiency.
 
-No claim stronger than the observed evidence-sufficiency state is allowed. PE7 remains incomplete and Architecture Convergence AC1 remains blocked until that baseline and closeout are accepted.
+No claim stronger than the observed evidence-sufficiency state is allowed.
 
 ## Packet PE7-ARCHITECTURE-CONVERGENCE-1
 

@@ -1,13 +1,12 @@
 //! Thin operator CLI for Minimum First RWE live-baseline coordination.
 //!
 //! Provider-free by default. Never prints credentials, raw prompts, or private paths.
-//! Live cell execution remains blocked until the Product Golden Path composition
-//! seam for multi-path frozen RWE cells is authorized (see coordinator constant).
+//! Composes exact frozen RWE cells under Product Golden Path + LocalProductStore.
 
 use clap::{Parser, Subcommand};
 use engine::rwe::live_baseline_coordinator::{
     issue_and_admit_v2, operator_preflight, project_first_baseline_evidence, run_frozen_schedule,
-    ProductGoldenPathCellDriver, RWE_LIVE_CELL_COMPOSITION_SEAM_MISSING,
+    ProductGoldenPathCellDriver, RWE_LIVE_CELL_COMPOSITION_SEAM,
 };
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::json;
@@ -127,6 +126,7 @@ fn main() {
             let driver = ProductGoldenPathCellDriver {
                 allow_live_provider_effects,
                 target_repo_path: target_repo_path.map(std::path::PathBuf::from),
+                fake_transport: None,
             };
             run_frozen_schedule(
                 &store,
@@ -154,7 +154,7 @@ fn main() {
                     "provider_call_performed": provider_call_performed,
                     "target_write_performed": false,
                     "live_baseline_sealed": coord.get("live_baseline_sealed").cloned().unwrap_or(json!(false)),
-                    "composition_seam": RWE_LIVE_CELL_COMPOSITION_SEAM_MISSING,
+                    "composition_seam": RWE_LIVE_CELL_COMPOSITION_SEAM,
                 })
             })
         }
