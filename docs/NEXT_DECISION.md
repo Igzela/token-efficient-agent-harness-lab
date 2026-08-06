@@ -176,17 +176,21 @@ Accepted provider-free production wiring:
 
 Board B does not authorize a live run. A live baseline still requires a new separately authorized run against the accepted exact head.
 
-### First Live Baseline Coordinator — Complete (provider-free)
+### First Live Baseline Coordinator — In review (Draft PR #363; not COMPLETE)
 
-Accepted production wiring under `engine/src/rwe/live_baseline_coordinator.rs` and `rwe-live-baseline` CLI:
+Production-capable provider-free wiring under `engine/src/rwe/live_baseline_coordinator.rs` and `rwe-live-baseline` CLI (reviewable; not yet accepted as COMPLETE):
 
 - store-owned v2 issue/admit before any cell work;
 - frozen 4-cell schedule identity derivation and RWE task-attempt mapping;
+- `ProductGoldenPathCellDriver` binds ProductTask admit/workspace + managed DeepSeek (injectable transport) + CommandNodeExecutor verifier; no second scheduler/store/budget/provider owner;
+- unarmed / CI / missing-credential runs fail closed before cell effect and run terminalization;
+- pre-effect frozen budget refusal (CountingCellDriver proves zero invocations when exhausted);
+- stop-rule restart reconstructs prior stop state; `skipped_by_stop_rule` is terminal; `outcome_unknown` is no-retry;
+- `live_baseline_sealed` only from store-owned ProductTask/terminal receipts (injected/public claims never seal);
 - operator preflight fail-closed without GP prerequisite / credential symbol / active auth;
-- injectable `CellDriver` seam reusing Product Golden Path owners (no second orchestration stack);
-- provider-free tests prove restart, exact lease recovery, fail-closed authority, and SQLite/PG parity paths.
+- CLI `provider_call_performed` derived from authoritative aggregate receipts.
 
-This coordinator does **not** execute or seal a live baseline. `live_baseline_sealed` stays false without real provider cell evidence.
+This coordinator does **not** execute or seal a live baseline. Do not mark the coordinator packet COMPLETE until the corrected production-capable binding is independently reviewed and merged.
 
 ### First Live Baseline Execution — Next Permitted Work
 

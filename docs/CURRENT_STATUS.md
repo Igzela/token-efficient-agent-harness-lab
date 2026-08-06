@@ -55,9 +55,9 @@ The frozen corpus, protocol, schedule, and Board B production wiring are accepte
 
 `PE7-REAL-WORKLOAD-EVIDENCE-1` is `READY_FOR_EXECUTION` at the first live frozen RWE baseline.
 
-The provider-free live-baseline **coordinator/CLI** is accepted production wiring: it reuses Board B `rwe_run_authorization.v2` issue/admit, the frozen 4-cell schedule, and existing ProductTask/managed_deepseek/workspace/verification/approval/output/terminal owners under `engine/src/rwe/live_baseline_coordinator.rs` and the thin `rwe-live-baseline` CLI. Operator preflight fails closed without GP prerequisite, credential symbol, or current one-use auth, and does not consume authority. **No live baseline has been executed or sealed.** `live_baseline_sealed` remains false until a separately authorized real-provider run records complete cell evidence.
+The provider-free live-baseline **coordinator/CLI** is in Draft PR #363 as production-capable binding (not merged acceptance): it reuses Board B `rwe_run_authorization.v2` issue/admit, the frozen 4-cell schedule, and existing ProductTask/managed_deepseek/workspace/verification/approval/output/terminal owners under `engine/src/rwe/live_baseline_coordinator.rs` and the thin `rwe-live-baseline` CLI. `ProductGoldenPathCellDriver` binds those owners with injectable fake transport for tests; unarmed/CI/missing-credential runs fail closed before cell effects; `live_baseline_sealed` is derived only from store-owned receipts (injected claims cannot seal). Operator preflight fails closed without GP prerequisite, credential symbol, or current one-use auth, and does not consume authority. **No live baseline has been executed or sealed.** The coordinator is **not** `COMPLETE` until this production-capable binding is independently reviewed and merged.
 
-The next permitted work is: create a same-tenant real Golden Path prerequisite on accepted exact head, issue one-use v2 authorization, and execute the frozen schedule with live provider effects under that authority. PE7 is not `COMPLETE` until that live run and its closeout evidence are accepted. AC1 remains blocked until the real baseline is accepted.
+The next permitted work after coordinator merge is: create a same-tenant real Golden Path prerequisite on accepted exact head, issue one-use v2 authorization, and execute the frozen schedule with live provider effects under that authority. PE7 is not `COMPLETE` until that live run and its closeout evidence are accepted. AC1 remains blocked until the real baseline is accepted.
 
 ## Open Review Surfaces
 
@@ -74,7 +74,7 @@ Merged or closed PRs are not open review surfaces and should not be retained in 
 |---|---|---|
 | Minimum First RWE Board A: frozen corpus/protocol/schedule and authorization v2 contract | `COMPLETE` | PR #361 accepted |
 | Minimum First RWE Board B: production issue/admit/spend wiring | `COMPLETE` | Provider-free production `rwe_run_authorization.v2` issue/admit and one-use spend wiring accepted |
-| First live frozen RWE baseline coordinator (provider-free) | `COMPLETE` | Coordinator/CLI wires Board B admit to frozen schedule and GP owners without provider/target effects |
+| First live frozen RWE baseline coordinator (provider-free) | `IN_PROGRESS` | Draft PR #363: owner-backed binding + fail-closed preflight/seal/budget/stop-rule; not COMPLETE until reviewed and merged |
 | First live frozen RWE baseline execution + closeout | `BLOCKED_PREREQUISITE` | Real same-tenant GP prerequisite + one-use v2 auth + live provider run on accepted exact head |
 | Architecture Convergence AC1–AC7 | `BLOCKED_PREREQUISITE` | Accepted pre-convergence RWE baseline |
 | Identical-corpus/protocol replay | `BLOCKED_PREREQUISITE` | Architecture Convergence complete |

@@ -117,6 +117,8 @@ fn main() {
         } => {
             let driver = ProductGoldenPathCellDriver {
                 allow_live_provider_effects,
+                fake_transport: None,
+                work_root: None,
             };
             run_frozen_schedule(
                 &store,
@@ -128,12 +130,24 @@ fn main() {
             )
             .map(|coord| {
                 let aggregate = coord.get("aggregate").cloned().unwrap_or(json!({}));
+                // Derive from authoritative aggregate/cell receipts — never hard-code false
+                // for a successful future live run.
+                let provider_call_performed = coord
+                    .get("provider_call_performed")
+                    .and_then(|v| v.as_bool())
+                    .or_else(|| {
+                        aggregate
+                            .get("live_provider_request")
+                            .and_then(|v| v.as_bool())
+                    })
+                    .unwrap_or(false);
                 json!({
                     "schema_version": "rwe_live_baseline_cli_run.v1",
                     "coordinator": coord,
                     "evidence_projection": project_first_baseline_evidence(&aggregate),
-                    "provider_call_performed": false,
+                    "provider_call_performed": provider_call_performed,
                     "target_write_performed": false,
+                    "live_baseline_sealed": coord.get("live_baseline_sealed").cloned().unwrap_or(json!(false)),
                 })
             })
         }

@@ -1187,11 +1187,14 @@ impl CommandNodeExecutor {
     }
 
     fn is_command_allowed(&self, command: &str) -> bool {
-        let first_token = command.split_whitespace().next().unwrap_or("");
-        if first_token.contains('/') {
+        let Ok((_env, argv)) = Self::parse_command_env_and_argv(command) else {
+            return false;
+        };
+        let binary = argv.first().map(String::as_str).unwrap_or("");
+        if binary.contains('/') {
             return false;
         }
-        let binary = first_token.rsplit('/').next().unwrap_or(first_token);
+        let binary = binary.rsplit('/').next().unwrap_or(binary);
         self.allowed_binaries.iter().any(|a| a == binary)
             || self.allowed_commands.iter().any(|a| a == binary)
     }
@@ -1207,8 +1210,79 @@ impl CommandNodeExecutor {
         false
     }
 
-    fn parse_argv(command: &str) -> Vec<String> {
-        command.split_whitespace().map(|s| s.to_string()).collect()
+    /// Parse a verification/command string into optional leading ENV=value pairs and argv.
+    ///
+    /// Only the exact frozen RWE shape is admitted for env prefixes:
+    /// `PYTHONPATH=<relative-path> python3 -m pytest <relative-paths…> [-q]`.
+    /// No shell is used; env is applied via `Command::env`.
+    #[allow(clippy::type_complexity)]
+    fn parse_command_env_and_argv(
+        command: &str,
+    ) -> Result<(Vec<(String, String)>, Vec<String>), String> {
+        let tokens: Vec<&str> = command.split_whitespace().collect();
+        if tokens.is_empty() {
+            return Err("empty command".into());
+        }
+        let mut env = Vec::new();
+        let mut i = 0usize;
+        while i < tokens.len() {
+            let token = tokens[i];
+            if let Some((key, value)) = token.split_once('=') {
+                if key.is_empty()
+                    || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    || key.starts_with('-')
+                {
+                    break;
+                }
+                // Tight env allowlist: only PYTHONPATH for frozen RWE verifiers.
+                if key != "PYTHONPATH" {
+                    return Err(format!(
+                        "command env assignment not admitted for execution: {key}"
+                    ));
+                }
+                if value.is_empty()
+                    || value.contains("..")
+                    || std::path::Path::new(value).is_absolute()
+                {
+                    return Err("PYTHONPATH must be a non-empty repository-relative path".into());
+                }
+                env.push((key.to_string(), value.to_string()));
+                i += 1;
+                continue;
+            }
+            break;
+        }
+        let argv: Vec<String> = tokens[i..].iter().map(|s| (*s).to_string()).collect();
+        if argv.is_empty() {
+            return Err("command has no executable after env assignments".into());
+        }
+        // If PYTHONPATH was set, require exact pytest shape (frozen RWE).
+        if !env.is_empty() {
+            if argv.len() < 4 || argv[0] != "python3" || argv[1] != "-m" || argv[2] != "pytest" {
+                return Err(
+                    "PYTHONPATH prefix only admitted with `python3 -m pytest <relative…>`".into(),
+                );
+            }
+            for arg in argv.iter().skip(3) {
+                if arg.starts_with('-') {
+                    // Only the frozen quiet flag is admitted (no weaken/disable flags).
+                    if arg != "-q" {
+                        return Err(format!(
+                            "pytest flag not admitted for frozen verifier execution: {arg}"
+                        ));
+                    }
+                    continue;
+                }
+                if std::path::Path::new(arg).is_absolute()
+                    || std::path::Path::new(arg)
+                        .components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
+                    return Err("pytest paths must be repository-relative".into());
+                }
+            }
+        }
+        Ok((env, argv))
     }
 
     fn workspace_cwd(input: &NodeExecutionInput) -> Result<PathBuf, String> {
@@ -1344,7 +1418,26 @@ impl NodeExecutor for CommandNodeExecutor {
             };
         }
 
-        let argv = Self::parse_argv(command);
+        let (command_env, argv) = match Self::parse_command_env_and_argv(command) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                return NodeExecutionOutput {
+                    status: "failed".to_string(),
+                    executor_type: "command".to_string(),
+                    output: None,
+                    error_domain: Some("command_not_allowed".to_string()),
+                    error_message: Some(e),
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                    latency_ms: Some(start.elapsed().as_millis() as i64),
+                    process_outcome: Some(ProcessOutcome::unavailable(
+                        "command rejected before process spawn",
+                    )),
+                    resolved_model: None,
+                };
+            }
+        };
         if argv.is_empty() {
             return NodeExecutionOutput {
                 status: "failed".to_string(),
@@ -1394,6 +1487,9 @@ impl NodeExecutor for CommandNodeExecutor {
             "PATH",
             std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string()),
         );
+        for (k, v) in &command_env {
+            cmd.env(k, v);
+        }
         for (k, v) in &self.env_vars {
             cmd.env(k, v);
         }
@@ -7754,5 +7850,80 @@ mod tests {
         let ctx: serde_json::Value =
             serde_json::from_str(p["context_summary"].as_str().unwrap()).unwrap();
         assert_eq!(ctx["current_round"], 0, "context must be unchanged");
+    }
+
+    #[test]
+    fn parse_command_env_admits_frozen_rwe_pytest_shape() {
+        let (env, argv) = CommandNodeExecutor::parse_command_env_and_argv(
+            "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q",
+        )
+        .unwrap();
+        assert_eq!(
+            env,
+            vec![("PYTHONPATH".to_string(), "apps/api/src".to_string())]
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "python3".to_string(),
+                "-m".to_string(),
+                "pytest".to_string(),
+                "apps/api/tests/".to_string(),
+                "-q".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_command_env_rejects_arbitrary_env_and_weaken_flags() {
+        assert!(CommandNodeExecutor::parse_command_env_and_argv(
+            "FOO=bar python3 -m pytest apps/api/tests/ -q"
+        )
+        .is_err());
+        assert!(CommandNodeExecutor::parse_command_env_and_argv(
+            "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ --no-header"
+        )
+        .is_err());
+        assert!(CommandNodeExecutor::parse_command_env_and_argv(
+            "PYTHONPATH=/abs/path python3 -m pytest apps/api/tests/ -q"
+        )
+        .is_err());
+        assert!(CommandNodeExecutor::parse_command_env_and_argv(
+            "PYTHONPATH=apps/api/src python3 -m pytest ../../escape -q"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn command_executor_applies_pythonpath_via_env_not_shell() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("apps/api/src");
+        let tests = root.path().join("apps/api/tests");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&tests).unwrap();
+        std::fs::write(src.join("__init__.py"), b"").unwrap();
+        std::fs::write(
+            tests.join("test_env_exec.py"),
+            b"def test_ok():\n    assert True\n",
+        )
+        .unwrap();
+        let root_canon = std::fs::canonicalize(root.path()).unwrap();
+        let executor = CommandNodeExecutor::default().with_timeout(30_000);
+        let out = executor.execute_node(&NodeExecutionInput {
+            node_id: "ver-1".into(),
+            task_type: "command".into(),
+            run_id: "run-ver".into(),
+            workflow_id: "wf-ver".into(),
+            node_metadata: json!({
+                "command": "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q",
+                "workspace_path": root_canon.to_string_lossy(),
+                "workspace_root": root_canon.to_string_lossy(),
+            }),
+        });
+        assert_eq!(
+            out.status, "completed",
+            "verifier env execution failed: {:?} {:?}",
+            out.error_domain, out.error_message
+        );
     }
 }

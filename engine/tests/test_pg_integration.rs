@@ -9095,6 +9095,7 @@ fn pg_rwe_live_baseline_coordinator_four_cell_injected_parity() {
             monetary_cost: Some(0.0),
             cost_unknown: false,
             live_provider_request: false,
+            evidence_source: "injected".into(),
             verification_status: "passed".into(),
             verification_trustworthy: true,
             approval_id: Some(format!("ap-{i}")),
