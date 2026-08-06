@@ -4787,9 +4787,23 @@ fn validate_product_artifact_allowed_paths(
             .filter(|path| !path.is_empty())
             .ok_or_else(|| "product artifact changed_files are invalid".to_string())?;
         let changed_components = normalized_product_artifact_path(path, "changed_files")?;
-        let admitted = allowed_paths
-            .iter()
-            .any(|allowed| changed_components.starts_with(allowed));
+        let admitted = allowed_paths.iter().any(|allowed| {
+            if *allowed == changed_components {
+                return true;
+            }
+            // Strict one-way containment: children are admitted only under
+            // an allowed DIRECTORY entry; a file-shaped allowed entry
+            // (basename with a dot) admits exact equality only, so
+            // `README.md/child` is never admitted.
+            if allowed.len() < changed_components.len()
+                && changed_components[..allowed.len()] == allowed[..]
+            {
+                return !allowed
+                    .last()
+                    .is_some_and(|basename| basename.contains('.'));
+            }
+            false
+        });
         if !admitted {
             return Err(format!(
                 "product artifact path is outside product task allowed_paths: {path}"

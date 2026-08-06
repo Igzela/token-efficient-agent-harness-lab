@@ -160,11 +160,30 @@ fn main() {
                             .and_then(|v| v.as_bool())
                     })
                     .unwrap_or(false);
+                let provider_transport_provenance = coord
+                    .get("provider_transport_provenance")
+                    .or_else(|| aggregate.get("provider_transport_provenance"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("none");
+                let injected_provider_call_performed = coord
+                    .get("injected_provider_call_performed")
+                    .or_else(|| aggregate.get("injected_provider_call_performed"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let integration_fixture_completed = coord
+                    .get("integration_fixture_completed")
+                    .or_else(|| aggregate.get("integration_fixture_completed"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 json!({
                     "schema_version": "rwe_live_baseline_cli_run.v1",
                     "coordinator": coord,
                     "evidence_projection": project_first_baseline_evidence(&aggregate),
-                    "provider_call_performed": provider_call_performed,
+                    "provider_call_performed": provider_call_performed
+                        && provider_transport_provenance == "external",
+                    "provider_transport_provenance": provider_transport_provenance,
+                    "injected_provider_call_performed": injected_provider_call_performed,
+                    "integration_fixture_completed": integration_fixture_completed,
                     "target_write_performed": false,
                     "live_baseline_sealed": coord.get("live_baseline_sealed").cloned().unwrap_or(json!(false)),
                     "composition_seam": RWE_LIVE_CELL_COMPOSITION_SEAM,

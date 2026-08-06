@@ -41,9 +41,41 @@ impl std::fmt::Display for HttpError {
     }
 }
 
+/// Provenance of the HTTP transport that serves managed provider requests.
+///
+/// It is a property of the transport object actually executing the request, not
+/// a caller-supplied flag: the production `ReqwestTransport` declares
+/// `External`; `MockTransport` and other test-injected transports declare
+/// `Injected`. The durable provider journal records this per request, and a
+/// live baseline seal is impossible while any claim is not `external`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderTransportProvenance {
+    External,
+    Injected,
+}
+
+impl ProviderTransportProvenance {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProviderTransportProvenance::External => "external",
+            ProviderTransportProvenance::Injected => "injected",
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait HttpTransport: Send + Sync {
     async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError>;
+
+    /// Declares whether this transport is the production external boundary or a
+    /// test-injected fixture transport. Fail-closed default is `Injected`;
+    /// only the production `ReqwestTransport` boundary declares `External`.
+    /// Transports that wrap another transport must delegate to the wrapped
+    /// transport's provenance.
+    fn transport_provenance(&self) -> ProviderTransportProvenance {
+        ProviderTransportProvenance::Injected
+    }
 }
 
 pub struct ReqwestTransport {
@@ -148,6 +180,10 @@ impl HttpTransport for ReqwestTransport {
 
         Ok(HttpResponse { status, body })
     }
+
+    fn transport_provenance(&self) -> ProviderTransportProvenance {
+        ProviderTransportProvenance::External
+    }
 }
 
 pub struct MockTransport {
@@ -181,6 +217,10 @@ impl HttpTransport for MockTransport {
         } else {
             responses.remove(0)
         }
+    }
+
+    fn transport_provenance(&self) -> ProviderTransportProvenance {
+        ProviderTransportProvenance::Injected
     }
 }
 

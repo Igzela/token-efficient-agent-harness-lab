@@ -5012,6 +5012,7 @@ impl LocalProductStore {
         let mut provider_requests = Vec::with_capacity(3);
         let mut realized_cost_usd = 0.0;
         let mut cumulative_tokens = 0_u64;
+        let mut seen_transport_provenance: Option<String> = None;
         for (index, (stage, role, model)) in [
             ("planning", "planner", "deepseek-v4-pro"),
             ("implementation", "implementer", "deepseek-v4-flash"),
@@ -5111,6 +5112,22 @@ impl LocalProductStore {
                 .iter()
                 .find(|entry| entry.get("node_id") == node.get("node_id"))
                 .ok_or("delegated provider journal lacks the exact node request")?;
+            let transport_provenance = journal_entry
+                .get("transport_provenance")
+                .and_then(Value::as_str)
+                .ok_or("delegated provider journal claim lacks transport provenance")?;
+            if !matches!(transport_provenance, "external" | "injected") {
+                return Err("delegated provider journal transport provenance is invalid".into());
+            }
+            if seen_transport_provenance
+                .as_deref()
+                .is_some_and(|seen: &str| seen != transport_provenance)
+            {
+                return Err(
+                    "delegated provider transport provenance is mixed across requests".into(),
+                );
+            }
+            seen_transport_provenance = Some(transport_provenance.to_string());
             let request_sha256 = journal_entry
                 .get("request_sha256")
                 .and_then(Value::as_str)
@@ -5166,11 +5183,14 @@ impl LocalProductStore {
                 "resolved_model": model,
                 "request_id": request_id,
                 "request_sha256": request_sha256,
+                "transport_provenance": transport_provenance,
                 "usage": usage,
                 "realized_cost_usd": observed_cost,
                 "output_sha256": output.get("output_sha256"),
             }));
         }
+        let provider_transport_provenance = seen_transport_provenance
+            .ok_or("delegated provider journal claims carry no transport provenance")?;
         let max_cumulative_tokens = manifest
             .pointer("/limits/max_cumulative_tokens")
             .and_then(Value::as_u64)
@@ -5185,6 +5205,7 @@ impl LocalProductStore {
         let provider_execution = json!({
             "schema_version": "managed_deepseek_execution_evidence.v1",
             "provider_request_count": provider_requests.len(),
+            "transport_provenance": provider_transport_provenance,
             "requests": provider_requests,
             "cumulative_tokens": cumulative_tokens,
             "realized_cost_usd": realized_cost_usd,

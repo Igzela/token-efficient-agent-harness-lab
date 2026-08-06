@@ -9101,6 +9101,7 @@ fn pg_rwe_live_baseline_coordinator_four_cell_injected_parity() {
             monetary_cost: Some(0.0),
             cost_unknown: false,
             live_provider_request: false,
+            provider_transport_provenance: "injected".into(),
             evidence_source: "injected".into(),
             verification_status: "passed".into(),
             verification_trustworthy: true,
@@ -9124,6 +9125,8 @@ fn pg_rwe_live_baseline_coordinator_four_cell_injected_parity() {
     assert_eq!(result["cell_count"], 4);
     assert_eq!(result["attempts_recorded"], 4);
     assert_eq!(result["live_baseline_sealed"], false);
+    assert_eq!(result["provider_transport_provenance"], "injected");
+    assert_eq!(result["injected_provider_call_performed"], true);
     let attempts = store.list_rwe_task_attempts_for_run(&run_id).unwrap();
     assert_eq!(attempts.len(), 4);
 }

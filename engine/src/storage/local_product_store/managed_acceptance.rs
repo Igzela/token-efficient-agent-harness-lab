@@ -9779,6 +9779,7 @@ fn claim_provider_journal_entry(
         "role": request.role,
         "protocol": request.protocol,
         "requested_model": request.requested_model,
+        "transport_provenance": request.transport_provenance.as_str(),
         "request_sha256": request_sha256,
         "status": "sending",
         "scheduler_lease": {
@@ -9819,6 +9820,13 @@ fn reconcile_provider_journal_entry(
         .ok_or("durable provider request claim is missing")?;
     if entry.get("status").and_then(Value::as_str) != Some("sending") {
         return Err("durable provider request claim is already reconciled".into());
+    }
+    // Provenance is immutable after claim: a replay with a different transport
+    // cannot upgrade an injected claim into an external one.
+    if entry.get("transport_provenance").and_then(Value::as_str)
+        != Some(request.transport_provenance.as_str())
+    {
+        return Err("durable provider request transport provenance is mismatched".into());
     }
     let object = entry
         .as_object_mut()
@@ -12776,6 +12784,22 @@ mod tests {
             })
             .unwrap();
         store.claim_delegated_provider_request(&request).unwrap();
+        // The durable claim records the request's execution-path transport
+        // provenance (for_role defaults to the fail-closed injected value).
+        let claimed_journal: String = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation.delegation_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(claimed_journal.contains("\"transport_provenance\":\"injected\""));
+        assert!(claimed_journal.contains("\"status\":\"sending\""));
         assert!(store
             .complete_delegated_attempt(
                 &delegation.delegation_id,
@@ -12817,6 +12841,10 @@ mod tests {
             .unwrap();
         assert!(!journal.contains("DO_NOT_PERSIST_PROVIDER_PROMPT_CONTENT"));
         assert!(journal.contains("\"status\":\"outcome_unknown\""));
+        // Provenance survives restart and reconcile unchanged; an injected
+        // claim can never be upgraded to external.
+        assert!(journal.contains("\"transport_provenance\":\"injected\""));
+        assert!(!journal.contains("\"transport_provenance\":\"external\""));
         let replay = restarted
             .admit_delegated_attempt(
                 &delegated_test_principal("delegated-activator"),
@@ -12867,6 +12895,97 @@ mod tests {
             &manifest,
         );
         assert!(retry.is_err(), "outcome_unknown must not permit a retry");
+    }
+
+    #[test]
+    fn provider_journal_claim_records_injected_provenance_and_reconcile_preserves_it() {
+        use crate::provider::managed_deepseek::{
+            DeepSeekProtocol, ManagedCallBinding, ManagedCallLimits, ManagedModelRole,
+            ManagedProviderCallRequest,
+        };
+        use crate::provider::transport::ProviderTransportProvenance;
+        let binding = ManagedCallBinding {
+            product_task_id: "pt-journal".into(),
+            workflow_id: "wf-journal".into(),
+            node_id: "planning".into(),
+            attempt_id: "attempt-journal".into(),
+            spend_authorization_id: "spend-journal".into(),
+            attempt_lease_id: "lease-journal".into(),
+        };
+        let mut request = ManagedProviderCallRequest::for_role(
+            ManagedModelRole::Planner,
+            DeepSeekProtocol::OpenAiCompatible,
+            binding,
+        );
+        request.limits = ManagedCallLimits {
+            max_requests: 3,
+            max_retries: 0,
+            max_input_tokens: 8_000,
+            max_output_tokens: 4_000,
+            max_cumulative_tokens: 24_000,
+            timeout_ms: 30_000,
+            max_cost_usd: None,
+        };
+        // for_role defaults to the fail-closed injected provenance; only the
+        // executor stamping from the actual transport can set external.
+        assert_eq!(request.transport_provenance.as_str(), "injected");
+        let scheduler = ManagedSchedulerLeaseAuthority {
+            run_id: "run-journal".into(),
+            attempt_count: 1,
+            lease_owner_token_sha256: "lease-token-sha".into(),
+            allowed_paths: json!([]),
+            workspace_path: "/redacted/workspace".into(),
+        };
+        let claimed =
+            claim_provider_journal_entry("[]", &request, &scheduler, "2026-07-25T12:00:00Z")
+                .unwrap();
+        let parsed: Value = serde_json::from_str(&claimed).unwrap();
+        assert_eq!(
+            parsed[0]["schema_version"],
+            "managed_provider_request_claim.v1"
+        );
+        assert_eq!(parsed[0]["transport_provenance"], "injected");
+        assert_eq!(parsed[0]["status"], "sending");
+        // Reconcile preserves provenance and never upgrades it.
+        let reconciled = reconcile_provider_journal_entry(
+            &claimed,
+            &request,
+            None,
+            crate::provider::managed_deepseek::ManagedFailureEffect::PreSend,
+            "2026-07-25T12:00:00Z",
+        )
+        .unwrap();
+        let parsed2: Value = serde_json::from_str(&reconciled).unwrap();
+        assert_eq!(parsed2[0]["transport_provenance"], "injected");
+        assert_eq!(parsed2[0]["status"], "failed_before_send");
+        // A request that forges external provenance cannot reconcile or claim
+        // the same node: the claim hash and node identity bind the provenance.
+        let mut forged = request.clone();
+        forged.transport_provenance = ProviderTransportProvenance::External;
+        assert!(reconcile_provider_journal_entry(
+            &reconciled,
+            &forged,
+            None,
+            crate::provider::managed_deepseek::ManagedFailureEffect::PreSend,
+            "2026-07-25T12:00:00Z",
+        )
+        .is_err());
+        assert!(claim_provider_journal_entry(
+            &reconciled,
+            &forged,
+            &scheduler,
+            "2026-07-25T12:00:00Z"
+        )
+        .is_err());
+        // An external-provenance claim on a fresh node records external.
+        let mut external = request.clone();
+        external.binding.node_id = "review".into();
+        external.transport_provenance = ProviderTransportProvenance::External;
+        let external_claimed =
+            claim_provider_journal_entry("[]", &external, &scheduler, "2026-07-25T12:00:00Z")
+                .unwrap();
+        let parsed3: Value = serde_json::from_str(&external_claimed).unwrap();
+        assert_eq!(parsed3[0]["transport_provenance"], "external");
     }
 
     #[test]
@@ -13065,6 +13184,37 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("path"));
+
+        // Strict containment: the parent of the allowed file entry, pseudo
+        // children of it, and prefix-collision names are never admitted.
+        for escaped_path in [
+            "docs",
+            "docs/USER_GUIDE.md/child",
+            "README.md.bak",
+            "README.md/child",
+            "docs/USER_GUIDE.md/../../outside",
+        ] {
+            let escaping = json!({
+                "artifact_sha256": "a".repeat(64),
+                "changed_files": [escaped_path],
+                "changed_lines": 1
+            });
+            let err = confirm_delegated_artifact_output(
+                &delegation,
+                &manifest,
+                &escaping,
+                &verification,
+                &review,
+                &provider_execution,
+                "6".repeat(40).as_str(),
+                0.01,
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("path"),
+                "{escaped_path} must fail closed: {err}"
+            );
+        }
 
         let artifact = json!({
             "artifact_sha256": "a".repeat(64),

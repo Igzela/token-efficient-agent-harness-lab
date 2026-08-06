@@ -26,7 +26,9 @@ use super::anthropic::AnthropicProvider;
 use super::config::{CredentialRef, ProviderConfig};
 use super::credential::CredentialBoundary;
 use super::openai::OpenAiProvider;
-use super::transport::{HttpError, HttpRequest, HttpResponse, HttpTransport};
+use super::transport::{
+    HttpError, HttpRequest, HttpResponse, HttpTransport, ProviderTransportProvenance,
+};
 
 pub const MANAGED_DEEPSEEK_PROFILE_SCHEMA: &str = "managed_deepseek_profile.v1";
 pub const MANAGED_PROVIDER_CALL_SCHEMA: &str = "managed_provider_call.v1";
@@ -430,6 +432,11 @@ pub struct ManagedProviderCallRequest {
     pub limits: ManagedCallLimits,
     pub price_profile: DeepSeekPriceProfile,
     pub binding: ManagedCallBinding,
+    /// Execution-path transport provenance: the executor stamps this from the
+    /// transport object that will actually serve the request. The durable
+    /// provider journal records it and live baseline sealing rejects anything
+    /// but `external`.
+    pub transport_provenance: ProviderTransportProvenance,
 }
 
 impl ManagedProviderCallRequest {
@@ -459,6 +466,9 @@ impl ManagedProviderCallRequest {
             limits: ManagedCallLimits::default(),
             price_profile: DeepSeekPriceProfile::default(),
             binding,
+            // The executor overrides this from the actual transport before any
+            // claim; the default is the fail-closed injected value.
+            transport_provenance: ProviderTransportProvenance::Injected,
         }
     }
 
@@ -1278,6 +1288,7 @@ pub fn response_to_usage_event(
 
 pub struct ManagedDeepSeekProvider {
     inner: ManagedDeepSeekInner,
+    transport_provenance: ProviderTransportProvenance,
 }
 
 enum ManagedDeepSeekInner {
@@ -1292,10 +1303,12 @@ impl ManagedDeepSeekProvider {
         credential: CredentialRef,
         transport: Arc<dyn HttpTransport>,
     ) -> Self {
+        let transport_provenance = transport.transport_provenance();
         Self {
             inner: ManagedDeepSeekInner::OpenAi(Arc::new(OpenAiProvider::new(
                 config, boundary, credential, transport, None,
             ))),
+            transport_provenance,
         }
     }
 
@@ -1305,11 +1318,19 @@ impl ManagedDeepSeekProvider {
         credential: CredentialRef,
         transport: Arc<dyn HttpTransport>,
     ) -> Self {
+        let transport_provenance = transport.transport_provenance();
         Self {
             inner: ManagedDeepSeekInner::Anthropic(Arc::new(AnthropicProvider::new(
                 config, boundary, credential, transport, None,
             ))),
+            transport_provenance,
         }
+    }
+
+    /// Execution-path transport provenance captured at construction from the
+    /// transport object that will serve this provider's requests.
+    pub fn transport_provenance(&self) -> ProviderTransportProvenance {
+        self.transport_provenance
     }
 
     async fn invoke(

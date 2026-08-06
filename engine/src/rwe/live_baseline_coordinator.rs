@@ -145,17 +145,22 @@ pub fn cell_identities_for(
 /// Outcome of one cell execution under an injectable driver.
 ///
 /// Public/injected claims never authorize `live_baseline_sealed`. Sealing is
-/// derived only from store-owned ProductTask/terminal/provider receipts.
+/// derived only from store-owned ProductTask/terminal/provider receipts, and
+/// the durable provider journal additionally records the transport provenance
+/// (`external` vs `injected`) of every request; a seal is impossible while any
+/// journaled claim is not `external`. This is enforced by code in
+/// `evaluate_store_owned_live_baseline_seal`, not by comments or presentation.
 ///
 /// Store-owned receipt fields: after the driver returns, the coordinator
 /// re-couples usage/cost/terminal evidence from the canonical store rows
 /// (`couple_usage_to_store_journal`), and `evidence_source`,
 /// `classification`, `provider_requests`, `live_provider_request`,
-/// `total_tokens`, `monetary_cost`, `cost_unknown`, `verification_status`,
-/// `verification_trustworthy`, `approval_id`, `terminal_evidence_id`,
-/// `terminal_content_sha256` are treated as driver-supplied presentation
-/// claims only — the seal recomputes every decision from store rows and
-/// never trusts these fields (nor `evidence_json` strings) to seal.
+/// `provider_transport_provenance`, `total_tokens`, `monetary_cost`,
+/// `cost_unknown`, `verification_status`, `verification_trustworthy`,
+/// `approval_id`, `terminal_evidence_id`, `terminal_content_sha256` are
+/// treated as driver-supplied presentation claims only — the seal recomputes
+/// every decision from store rows and never trusts these fields (nor
+/// `evidence_json` strings) to seal.
 #[derive(Debug, Clone)]
 pub struct CellOutcome {
     pub classification: String,
@@ -167,6 +172,10 @@ pub struct CellOutcome {
     pub monetary_cost: Option<f64>,
     pub cost_unknown: bool,
     pub live_provider_request: bool,
+    /// `none` | `external` | `injected`. Derived from the store-owned journal
+    /// via `couple_usage_to_store_journal`; never caller-authored. Presentation
+    /// only — the seal reads the durable journal itself.
+    pub provider_transport_provenance: String,
     /// `injected` | `product_golden_path_owner` — sealing rejects `injected`.
     /// Seal decisions are store-owned; this field is presentation only.
     pub evidence_source: String,
@@ -197,6 +206,7 @@ impl CellOutcome {
             monetary_cost: None,
             cost_unknown: false,
             live_provider_request: false,
+            provider_transport_provenance: "none".into(),
             evidence_source: "blocked".into(),
             verification_status: "not_run".into(),
             verification_trustworthy: false,
@@ -311,6 +321,11 @@ impl CellDriver for InjectedCellDriver {
                 o.workspace_id = ids.worktree_id.clone();
                 o.evidence_source = "injected".into();
                 o.live_provider_request = false;
+                o.provider_transport_provenance = if o.provider_requests > 0 {
+                    "injected".into()
+                } else {
+                    "none".into()
+                };
                 // Force non-seal classifications even if caller mutates success claims.
                 if o.classification == "success" {
                     o.classification = "injected_success".into();
@@ -326,6 +341,10 @@ impl CellDriver for InjectedCellDriver {
 /// verifier/paths/budgets, and refuses live provider POSTs / target writes unless
 /// `allow_live_provider_effects` is set after controller live authorization.
 /// Optional `fake_transport` is for provider-free tests only (MockTransport).
+/// A fake/injected transport can never seal a live baseline: the durable
+/// provider journal records `transport_provenance=injected` for every request
+/// it serves, and `evaluate_store_owned_live_baseline_seal` fails closed unless
+/// every journaled claim attests the external production transport.
 #[derive(Default)]
 pub struct ProductGoldenPathCellDriver {
     /// Operator-supplied local clone of the frozen target (must match SHA).
@@ -436,6 +455,7 @@ impl CellDriver for ProductGoldenPathCellDriver {
                 monetary_cost: Some(0.0),
                 cost_unknown: false,
                 live_provider_request: false,
+                provider_transport_provenance: "none".into(),
                 evidence_source: "product_golden_path_owner".into(),
                 verification_status: "not_run".into(),
                 verification_trustworthy: false,
@@ -1066,6 +1086,7 @@ fn build_cell_evidence(
         "monetary_cost": outcome.monetary_cost,
         "cost_unknown": outcome.cost_unknown,
         "live_provider_request": outcome.live_provider_request,
+        "provider_transport_provenance": outcome.provider_transport_provenance,
         "verification": {
             "status": outcome.verification_status,
             "trustworthy": outcome.verification_trustworthy,
@@ -1262,6 +1283,13 @@ fn evaluate_store_owned_live_baseline_seal(
         if journal != 3 {
             return false;
         }
+        // Store-owned transport provenance gate: a live baseline seal requires
+        // every durable journal claim and the aggregated execution evidence to
+        // attest the production external transport. Injected or missing
+        // provenance fails closed regardless of receipts or outcomes.
+        if store_evidence_transport_provenance(&projection) != Ok("external".to_string()) {
+            return false;
+        }
         // Cleanup: workspace must be cleaned (store status) for seal honesty.
         if let Some(ws_id) = product_task
             .get("workspace_record_id")
@@ -1291,6 +1319,22 @@ fn evaluate_store_owned_live_baseline_seal(
     true
 }
 
+/// Sentinel for candidate modification of the evaluator surface: test
+/// collection, verifier config, ignore/baseline, or the frozen suite fixture.
+/// Cells whose artifact touches these files are never classified `success`.
+fn changed_file_is_evaluator_surface(changed: &str) -> bool {
+    const EVALUATOR_SURFACE_BASENAMES: &[&str] = &[
+        "conftest.py",
+        "pytest.ini",
+        "tox.ini",
+        "setup.cfg",
+        ".coveragerc",
+        "pyproject.toml",
+    ];
+    let basename = changed.rsplit('/').next().unwrap_or(changed);
+    EVALUATOR_SURFACE_BASENAMES.contains(&basename)
+}
+
 /// Classify a post-fence execution error into a durable terminal classification.
 fn classify_execution_error(err: &str) -> &'static str {
     let e = err.to_ascii_lowercase();
@@ -1313,6 +1357,42 @@ fn classify_execution_error(err: &str) -> &'static str {
     }
 }
 
+/// Store-owned transport provenance from the RWE cell evidence projection.
+///
+/// Returns `external` only when the aggregated execution evidence and every
+/// durable journal claim attest the production external transport. Missing,
+/// invalid, or mixed provenance fails closed with an error.
+fn store_evidence_transport_provenance(projection: &Value) -> Result<String, String> {
+    let pe = projection
+        .get("provider_execution")
+        .and_then(|value| if value.is_null() { None } else { Some(value) })
+        .ok_or("RWE cell store evidence lacks provider execution")?;
+    let aggregate = pe
+        .get("transport_provenance")
+        .and_then(Value::as_str)
+        .ok_or("RWE cell provider execution lacks transport provenance")?;
+    if !matches!(aggregate, "external" | "injected") {
+        return Err("RWE cell provider execution transport provenance is invalid".into());
+    }
+    let journal = projection
+        .get("provider_request_journal")
+        .and_then(Value::as_array)
+        .ok_or("RWE cell store evidence lacks the provider request journal")?;
+    if journal.is_empty() {
+        return Err("RWE cell provider request journal is empty".into());
+    }
+    for entry in journal {
+        let provenance = entry
+            .get("transport_provenance")
+            .and_then(Value::as_str)
+            .ok_or("RWE cell journal claim lacks transport provenance")?;
+        if provenance != aggregate {
+            return Err("RWE cell provider transport provenance is mixed or conflicting".into());
+        }
+    }
+    Ok(aggregate.to_string())
+}
+
 /// Couple final usage to canonical managed provider_execution / journal on store.
 /// Never trust driver-supplied usage for accounting or seal.
 fn couple_usage_to_store_journal(store: &LocalProductStore, outcome: &mut CellOutcome) {
@@ -1327,16 +1407,34 @@ fn couple_usage_to_store_journal(store: &LocalProductStore, outcome: &mut CellOu
     let Ok(proj) = store.project_rwe_cell_store_evidence(&outcome.product_task_id, attempt) else {
         return;
     };
+    // Store-owned provenance gate: live provider claims require the durable
+    // journal to attest the external transport; anything else stays non-live.
+    match store_evidence_transport_provenance(&proj) {
+        Ok(provenance) if provenance == "external" => {
+            outcome.provider_transport_provenance = "external".into();
+        }
+        Ok(provenance) => {
+            outcome.provider_transport_provenance = provenance;
+            outcome.live_provider_request = false;
+        }
+        Err(_) => {
+            outcome.provider_transport_provenance = "none".into();
+            outcome.live_provider_request = false;
+            return;
+        }
+    }
     let pe = proj.get("provider_execution");
     if let Some(count) = pe
         .and_then(|p| p.get("provider_request_count"))
         .and_then(Value::as_u64)
     {
         outcome.provider_requests = count;
-        outcome.live_provider_request = count > 0;
+        outcome.live_provider_request =
+            count > 0 && outcome.provider_transport_provenance == "external";
     } else if let Some(arr) = pe.and_then(|p| p.get("requests")).and_then(Value::as_array) {
         outcome.provider_requests = arr.len() as u64;
-        outcome.live_provider_request = !arr.is_empty();
+        outcome.live_provider_request =
+            !arr.is_empty() && outcome.provider_transport_provenance == "external";
     }
     if let Some(tok) = pe
         .and_then(|p| p.get("cumulative_tokens"))
@@ -1453,6 +1551,7 @@ pub fn run_frozen_schedule(
     let mut aggregate_requests = 0u64;
     let mut aggregate_tokens = 0u64;
     let mut any_live_provider = false;
+    let mut any_injected_provider = false;
 
     for cell in cells {
         // Revalidate bindings before every cell effect.
@@ -1494,6 +1593,10 @@ pub fn run_frozen_schedule(
                         .get("live_provider_request")
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
+                    any_injected_provider |= ev
+                        .get("provider_transport_provenance")
+                        .and_then(Value::as_str)
+                        == Some("injected");
                 }
                 cell_results.push(evidence);
                 if stopped_by.is_none() {
@@ -1723,6 +1826,7 @@ pub fn run_frozen_schedule(
         aggregate_requests = aggregate_requests.saturating_add(outcome.provider_requests);
         aggregate_tokens = aggregate_tokens.saturating_add(outcome.total_tokens);
         any_live_provider |= outcome.live_provider_request;
+        any_injected_provider |= outcome.provider_transport_provenance == "injected";
         if stopped_by.is_none() {
             if let Some(rule) = should_stop_after_cell(&stop_rules, &outcome.classification) {
                 stopped_by = Some(rule.into());
@@ -1759,6 +1863,31 @@ pub fn run_frozen_schedule(
         &cell_results,
     );
 
+    // Store-owned transport provenance classification for the whole run.
+    // `external` requires every journaled provider request to have been served
+    // by the production transport; `injected` marks the integration-fixture
+    // path; `none` means provider-free execution.
+    let provider_transport_provenance = if any_live_provider && live_baseline_sealed {
+        "external"
+    } else if any_injected_provider {
+        "injected"
+    } else if any_live_provider {
+        "external"
+    } else {
+        "none"
+    };
+    let integration_fixture_completed = any_injected_provider
+        && !any_live_provider
+        && !live_baseline_sealed
+        && cell_results.len() == cells.len()
+        && cell_results.iter().all(|e| {
+            let class = e
+                .get("classification")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            is_terminal_classification(class) && class != "outcome_unknown"
+        });
+
     let aggregate = sort_value(&json!({
         "schema_version": RWE_RUN_EVIDENCE_SCHEMA,
         "coordinator_schema": RWE_LIVE_BASELINE_COORDINATOR_SCHEMA,
@@ -1772,18 +1901,23 @@ pub fn run_frozen_schedule(
         "aggregate_provider_requests": aggregate_requests,
         "aggregate_total_tokens": aggregate_tokens,
         "live_provider_request": any_live_provider,
+        "provider_transport_provenance": provider_transport_provenance,
+        "injected_provider_call_performed": any_injected_provider,
+        "integration_fixture_completed": integration_fixture_completed,
         "live_baseline_sealed": live_baseline_sealed,
         "provider_free_fixture_completion": false,
         "stopped_by": stopped_by,
         "comparison_eligible": false,
         "note": if live_baseline_sealed {
-            "live baseline sealed from store-owned ProductTask/terminal receipts"
+            "live baseline sealed from store-owned ProductTask/terminal receipts with external provider transport provenance"
+        } else if any_injected_provider {
+            "integration fixture completed through the injected transport; not a sealed live baseline"
         } else {
             "provider-free, injected, or incomplete store receipts; not a sealed live baseline"
         },
     }));
     let evidence_sha = sha256_hex(aggregate.to_string().as_bytes());
-    let status = if live_baseline_sealed {
+    let status = if live_baseline_sealed || integration_fixture_completed {
         "succeeded"
     } else if cell_results
         .iter()
@@ -1801,8 +1935,15 @@ pub fn run_frozen_schedule(
         "cell_count": cells.len(),
         "attempts_recorded": final_attempts.len(),
         "live_baseline_sealed": live_baseline_sealed,
-        "provider_call_performed": any_live_provider,
-        "provider_calls": if any_live_provider { "observed_in_cell_evidence" } else { "0" },
+        "provider_call_performed": any_live_provider && provider_transport_provenance == "external",
+        "provider_transport_provenance": provider_transport_provenance,
+        "injected_provider_call_performed": any_injected_provider,
+        "integration_fixture_completed": integration_fixture_completed,
+        "provider_calls": if any_live_provider && provider_transport_provenance == "external" {
+            "observed_in_cell_evidence"
+        } else {
+            "0"
+        },
     })))
 }
 
@@ -2263,10 +2404,62 @@ fn execute_armed_delegated_rwe_cell(
         .pointer("/terminal/terminal_class")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let classification = if terminal_class == "succeeded" {
-        "success"
+    // Evaluator-surface sentinel: modifying test collection, verifier config,
+    // ignore/baseline, or the frozen suite fixture is never real task success.
+    // The injected fixture's own conftest skip patch is recorded here as the
+    // fixture technique; on the external transport it is verifier tampering.
+    let changed_files = confirmation
+        .pointer("/artifact/changed_files")
+        .and_then(Value::as_array)
+        .map(|files| files.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let evaluator_surface_tampered = changed_files
+        .iter()
+        .any(|changed| changed_file_is_evaluator_surface(changed));
+    // Integration fixtures never record `success`: the injected-transport path
+    // is a lifecycle fixture proof, not accepted task delivery.
+    let classification = if terminal_class == "succeeded" && !evaluator_surface_tampered {
+        if transport.is_some() {
+            "fixture_success"
+        } else {
+            "success"
+        }
+    } else if terminal_class == "succeeded" {
+        // Succeeded store terminal but the artifact modified the evaluator
+        // surface: never `success`. Injected fixtures keep their fixture
+        // classification; external runs are verifier tampering.
+        if transport.is_some() {
+            "fixture_success"
+        } else {
+            "verifier_failed"
+        }
     } else {
         "controlled_failure"
+    };
+    let verifier_receipt = terminal_evidence
+        .pointer("/verification/verification_attempts")
+        .and_then(Value::as_array)
+        .and_then(|attempts| attempts.last().cloned())
+        .unwrap_or(Value::Null);
+    let verification_outcome = json!({
+        "status": terminal_evidence.pointer("/verification/status").and_then(Value::as_str).unwrap_or(""),
+        "trustworthy": terminal_evidence.pointer("/verification/trustworthy").and_then(Value::as_bool).unwrap_or(false),
+        "output_sha256": verifier_receipt.pointer("/output_digest/sha256").and_then(Value::as_str).unwrap_or(""),
+        "output_bytes": verifier_receipt.pointer("/output_digest/bytes").and_then(Value::as_u64).unwrap_or(0),
+        "exit_code": verifier_receipt.pointer("/process_outcome/exit_code").and_then(Value::as_i64).unwrap_or(-1),
+    });
+    let fixture_note = if transport.is_some() {
+        if evaluator_surface_tampered {
+            format!(
+                "; integration fixture applied an evaluator-surface skip patch (changed files include {}); fixture evidence only, never accepted delivery",
+                changed_files.join(", ")
+            )
+        } else {
+            "; integration fixture executed through the injected transport; fixture evidence only, never accepted delivery"
+                .to_string()
+        }
+    } else {
+        String::new()
     };
 
     Ok(CellOutcome {
@@ -2278,7 +2471,8 @@ fn execute_armed_delegated_rwe_cell(
         latency_ms: 0,
         monetary_cost: realized_cost,
         cost_unknown: realized_cost.is_none(),
-        live_provider_request: true,
+        live_provider_request: false,
+        provider_transport_provenance: "none".into(),
         evidence_source: "product_golden_path_owner".into(),
         verification_status: "evidence_recorded".into(),
         verification_trustworthy: true,
@@ -2293,8 +2487,12 @@ fn execute_armed_delegated_rwe_cell(
         delegated_attempt_id: attempt_id,
         workspace_id: ids.worktree_id.clone(),
         note: format!(
-            "delegated cell lifecycle executed through store owners; seam={RWE_LIVE_CELL_COMPOSITION_SEAM}; cell={}",
-            cell.get("cell_id").and_then(Value::as_str).unwrap_or("")
+            "delegated cell lifecycle executed through store owners; seam={RWE_LIVE_CELL_COMPOSITION_SEAM}; cell={}; verifier_result={}; verifier_output_sha256={}; verifier_output_bytes={}{}",
+            cell.get("cell_id").and_then(Value::as_str).unwrap_or(""),
+            verification_outcome["status"].as_str().unwrap_or(""),
+            verification_outcome["output_sha256"].as_str().unwrap_or(""),
+            verification_outcome["output_bytes"],
+            fixture_note,
         ),
     })
 }
@@ -2304,6 +2502,9 @@ pub fn project_first_baseline_evidence(run_aggregate: &Value) -> Value {
     sort_value(&json!({
         "schema_version": "rwe_first_baseline_evidence_projection.v1",
         "live_baseline_sealed": run_aggregate.get("live_baseline_sealed"),
+        "provider_transport_provenance": run_aggregate.get("provider_transport_provenance"),
+        "injected_provider_call_performed": run_aggregate.get("injected_provider_call_performed"),
+        "integration_fixture_completed": run_aggregate.get("integration_fixture_completed"),
         "comparison_eligible": false,
         "aggregate_provider_requests": run_aggregate.get("aggregate_provider_requests"),
         "aggregate_total_tokens": run_aggregate.get("aggregate_total_tokens"),
@@ -2451,6 +2652,7 @@ mod tests {
                 monetary_cost: Some(0.0),
                 cost_unknown: false,
                 live_provider_request: false,
+                provider_transport_provenance: "injected".into(),
                 evidence_source: "injected".into(),
                 verification_status: "passed".into(),
                 verification_trustworthy: true,
@@ -3198,6 +3400,7 @@ mod tests {
                 .unwrap();
         assert_eq!(result["live_baseline_sealed"], false);
         assert_eq!(result["provider_call_performed"], false);
+        assert_eq!(result["provider_transport_provenance"], "none");
         for a in store.list_rwe_task_attempts_for_run("run-ftx").unwrap() {
             assert_eq!(
                 a["evidence_json"]["evidence_source"],
@@ -3206,6 +3409,158 @@ mod tests {
             assert_ne!(a["evidence_json"]["evidence_source"], "injected");
         }
         std::env::remove_var(crate::product_golden_path::PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn store_evidence_transport_provenance_gate_is_fail_closed() {
+        let external_entry = |status: &str| {
+            json!({
+                "schema_version": "managed_provider_request_claim.v1",
+                "node_id": "n",
+                "status": status,
+                "transport_provenance": "external",
+                "request_sha256": "a".repeat(64),
+            })
+        };
+        let injected_entry = json!({
+            "schema_version": "managed_provider_request_claim.v1",
+            "node_id": "n",
+            "status": "succeeded",
+            "transport_provenance": "injected",
+            "request_sha256": "b".repeat(64),
+        });
+        let external_projection = json!({
+            "provider_execution": {
+                "schema_version": "managed_deepseek_execution_evidence.v1",
+                "provider_request_count": 1,
+                "transport_provenance": "external",
+                "requests": [json!({"node_id": "n", "transport_provenance": "external"})],
+            },
+            "provider_request_journal": [external_entry("succeeded")],
+        });
+        let injected_projection = json!({
+            "provider_execution": {
+                "schema_version": "managed_deepseek_execution_evidence.v1",
+                "provider_request_count": 1,
+                "transport_provenance": "injected",
+                "requests": [json!({"node_id": "n", "transport_provenance": "injected"})],
+            },
+            "provider_request_journal": [injected_entry.clone()],
+        });
+
+        assert_eq!(
+            store_evidence_transport_provenance(&external_projection).as_deref(),
+            Ok("external")
+        );
+        assert_eq!(
+            store_evidence_transport_provenance(&injected_projection).as_deref(),
+            Ok("injected")
+        );
+
+        // Missing aggregate provenance fails closed.
+        let mut missing_aggregate = external_projection.clone();
+        missing_aggregate["provider_execution"]
+            .as_object_mut()
+            .unwrap()
+            .remove("transport_provenance");
+        assert!(store_evidence_transport_provenance(&missing_aggregate).is_err());
+
+        // Missing journal-entry provenance fails closed.
+        let mut missing_entry = external_projection.clone();
+        missing_entry["provider_request_journal"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("transport_provenance");
+        assert!(store_evidence_transport_provenance(&missing_entry).is_err());
+
+        // Mixed aggregate vs journal provenance fails closed.
+        let mut mixed = external_projection.clone();
+        mixed["provider_request_journal"] = json!([injected_entry.clone()]);
+        assert!(store_evidence_transport_provenance(&mixed).is_err());
+
+        // Empty journal fails closed even with an external aggregate claim.
+        let mut empty_journal = external_projection.clone();
+        empty_journal["provider_request_journal"] = json!([]);
+        assert!(store_evidence_transport_provenance(&empty_journal).is_err());
+
+        // Invalid provenance value fails closed.
+        let mut invalid = external_projection.clone();
+        invalid["provider_execution"]["transport_provenance"] = json!("fixture");
+        assert!(store_evidence_transport_provenance(&invalid).is_err());
+
+        // Null provider execution fails closed (provider-free is never a seal).
+        let no_provider = json!({
+            "provider_execution": Value::Null,
+            "provider_request_journal": [],
+        });
+        assert!(store_evidence_transport_provenance(&no_provider).is_err());
+    }
+
+    #[test]
+    fn injected_transport_cannot_seal_with_forged_receipts_or_outcomes() {
+        // Even if every receipt and outcome were forged as external, the
+        // durable journal's injected provenance blocks sealing.
+        let forged_external_receipt = json!({
+            "provider_execution": {
+                "schema_version": "managed_deepseek_execution_evidence.v1",
+                "provider_request_count": 3,
+                "transport_provenance": "external",
+                "requests": [json!({})],
+            },
+            "provider_request_journal": [injected_claim_entry(), injected_claim_entry(), injected_claim_entry()],
+        });
+        assert_ne!(
+            store_evidence_transport_provenance(&forged_external_receipt).as_deref(),
+            Ok("external"),
+            "injected journal claims must defeat forged external receipts"
+        );
+    }
+
+    #[test]
+    fn provider_free_evidence_is_never_seal_eligible() {
+        let provider_free = json!({
+            "provider_execution": Value::Null,
+            "provider_request_journal": [],
+        });
+        assert!(
+            store_evidence_transport_provenance(&provider_free).is_err(),
+            "provider-free execution has no transport provenance and cannot seal"
+        );
+    }
+
+    fn injected_claim_entry() -> Value {
+        json!({
+            "schema_version": "managed_provider_request_claim.v1",
+            "node_id": "n",
+            "status": "succeeded",
+            "transport_provenance": "injected",
+            "request_sha256": "c".repeat(64),
+        })
+    }
+
+    #[test]
+    fn evaluator_surface_sentinel_rejects_verifier_tampering_paths() {
+        // Test collection and verifier config files are never real delivery.
+        assert!(changed_file_is_evaluator_surface(
+            "apps/api/tests/conftest.py"
+        ));
+        assert!(changed_file_is_evaluator_surface(
+            "apps/api/tests/pytest.ini"
+        ));
+        assert!(changed_file_is_evaluator_surface("apps/api/tests/tox.ini"));
+        assert!(changed_file_is_evaluator_surface(
+            "apps/api/tests/setup.cfg"
+        ));
+        assert!(changed_file_is_evaluator_surface("pyproject.toml"));
+        // Ordinary product files are not evaluator surface.
+        assert!(!changed_file_is_evaluator_surface("apps/api/src/main.py"));
+        assert!(!changed_file_is_evaluator_surface(
+            "apps/api/tests/test_flow.py"
+        ));
+        assert!(!changed_file_is_evaluator_surface("README.md"));
+        assert!(!changed_file_is_evaluator_surface(
+            "apps/api/tests/conftest_notes.md"
+        ));
     }
 
     #[test]
@@ -3356,7 +3711,17 @@ mod tests {
     /// references; without it the test SKIPs (like `frozen_target_repo`), so
     /// normal CI never creates external effects.
     #[test]
-    fn armed_production_driver_executes_genuine_delegated_lifecycle_and_seals() {
+    /// Armed operator-gated live Draft PR lifecycle integration fixture.
+    ///
+    /// With the operator live-run gate set, this test genuinely executes the
+    /// complete delegated lifecycle (store owners, frozen pytest verifier in
+    /// the app-owned worktree, branch push, real GitHub Draft PR on the frozen
+    /// target) through the INJECTED MockTransport. It is an integration-fixture
+    /// proof of the lifecycle and Draft PR output only: the injected transport
+    /// can never yield a live baseline seal, and the cells are recorded as
+    /// `fixture_success`, never `success`. Without the gate the test SKIPs and
+    /// creates no external effect.
+    fn armed_production_driver_executes_genuine_delegated_lifecycle_as_integration_fixture() {
         use crate::provider::transport::MockTransport;
         let dir = tempdir().unwrap();
         if !std::env::var(ARMED_LIVE_RUN_GATE).is_ok_and(|value| value == "1") {
@@ -3500,22 +3865,52 @@ mod tests {
         }
 
         assert_eq!(
-            result["live_baseline_sealed"], true,
-            "armed run must seal from store-owned receipts: {result}"
+            result["live_baseline_sealed"], false,
+            "injected transport must never seal a live baseline: {result}"
         );
-        assert_eq!(result["provider_call_performed"], true);
+        assert_eq!(
+            result["provider_call_performed"], false,
+            "injected requests are not real provider calls: {result}"
+        );
+        assert_eq!(result["provider_transport_provenance"], "injected");
+        assert_eq!(result["injected_provider_call_performed"], true);
+        assert_eq!(
+            result["integration_fixture_completed"], true,
+            "the genuine delegated lifecycle completed as an integration fixture: {result}"
+        );
         assert_eq!(result["cell_count"], 4);
         assert_eq!(result["attempts_recorded"], 4);
         let attempts = store.list_rwe_task_attempts_for_run("run-armed").unwrap();
         for a in &attempts {
-            assert_eq!(a["classification"], "success", "attempt: {a}");
+            assert_eq!(
+                a["classification"], "fixture_success",
+                "injected cells are fixture_success, never success: {a}"
+            );
             let ev = a["evidence_json"].clone();
             assert_eq!(ev["evidence_source"], "product_golden_path_owner");
-            assert_eq!(ev["live_provider_request"], true);
+            assert_eq!(
+                ev["live_provider_request"], false,
+                "injected provider requests are never live provider requests: {ev}"
+            );
+            assert_eq!(ev["provider_transport_provenance"], "injected");
             assert_eq!(ev["provider_requests"], 3);
+            // Fixture honesty: the note records the verifier's real result and
+            // the evaluator-surface skip patch as fixture evidence.
+            let note = ev["note"].as_str().unwrap_or("");
+            assert!(note.contains("verifier_result=evidence_recorded"), "{note}");
+            assert!(note.contains("verifier_output_sha256="), "{note}");
+            assert!(
+                note.contains("evaluator-surface skip patch"),
+                "fixture skip patch must be recorded in evidence: {note}"
+            );
+            assert!(
+                note.contains("fixture evidence only, never accepted delivery"),
+                "{note}"
+            );
         }
         // Store-owned terminal receipts per cell: provider execution journal of
-        // exactly three managed requests, verification recorded, cleanup done.
+        // exactly three managed requests with injected provenance, verification
+        // recorded, cleanup done, and a real Draft PR record on the frozen target.
         let frozen = freeze_current_operator_contract_set().unwrap();
         let cells = frozen.schedule.body["cells"].as_array().unwrap().clone();
         for cell in &cells {
@@ -3542,12 +3937,18 @@ mod tests {
                 3
             );
             assert_eq!(
-                projection["provider_request_journal"]
-                    .as_array()
-                    .unwrap()
-                    .len(),
-                3
+                projection["provider_execution"]["transport_provenance"],
+                "injected"
             );
+            let journal = projection["provider_request_journal"]
+                .as_array()
+                .unwrap()
+                .clone();
+            assert_eq!(journal.len(), 3);
+            for entry in &journal {
+                assert_eq!(entry["transport_provenance"], "injected");
+                assert_eq!(entry["status"], "succeeded");
+            }
             let te = projection["terminal_evidence"].clone();
             assert_eq!(te["task_status"], "completed");
             assert_eq!(te["verification"]["status"], "evidence_recorded");

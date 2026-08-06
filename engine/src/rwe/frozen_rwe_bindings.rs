@@ -254,16 +254,57 @@ pub fn is_exact_frozen_rwe_verifier_command(command: &str) -> bool {
     command.trim() == FROZEN_RWE_PYTEST_VERIFIER
 }
 
-/// Path is the exact allowed entry or a clean child of an allowed directory prefix.
+/// Strict one-way containment: `path` is admitted only when it equals an
+/// allowed entry, or when it is a clean child of an allowed DIRECTORY entry.
+///
+/// Direction is never reversed: a parent of an allowed entry is never
+/// admitted, and a file entry (basename contains a `.`) admits no pseudo
+/// children. Absolute paths, empty paths, empty components, `.`, `..`, and
+/// any path escaping the allowed root fail closed.
 pub fn path_under_allowed_paths(path: &str, allowed_paths: &[String]) -> bool {
-    if path.is_empty() || path.starts_with('/') || path.contains("..") {
+    let Some(path_components) = clean_relative_path_components(path) else {
+        return false;
+    };
+    if path_components.is_empty() {
         return false;
     }
     allowed_paths.iter().any(|allowed| {
-        path == allowed.as_str()
-            || path.starts_with(&format!("{allowed}/"))
-            || allowed.starts_with(&format!("{path}/"))
+        let Some(allowed_components) = clean_relative_path_components(allowed) else {
+            return false;
+        };
+        if allowed_components.is_empty() {
+            return false;
+        }
+        if path_components == allowed_components {
+            return true;
+        }
+        // Children are admitted only under an allowed DIRECTORY entry; a
+        // file-shaped entry (basename with a dot) admits exact equality only.
+        if allowed_components.len() < path_components.len()
+            && path_components[..allowed_components.len()] == allowed_components[..]
+        {
+            return !allowed_components
+                .last()
+                .is_some_and(|basename| basename.contains('.'));
+        }
+        false
     })
+}
+
+/// Normalize a relative path into clean components; reject absolute paths,
+/// empty components, and `.`/`..` traversal components.
+fn clean_relative_path_components(path: &str) -> Option<Vec<&str>> {
+    if path.is_empty() || path.starts_with('/') {
+        return None;
+    }
+    let mut components = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." | ".." => return None,
+            other => components.push(other),
+        }
+    }
+    Some(components)
 }
 
 /// Union of frozen RWE mutable paths (for run-level delegation scope checks).
@@ -363,9 +404,37 @@ mod tests {
     #[test]
     fn path_under_allowed_accepts_children_only() {
         let allowed = vec!["apps/api/src".into(), "README.md".into()];
+        // Directory entry: exact and children admitted; parents never.
+        assert!(path_under_allowed_paths("apps/api/src", &allowed));
         assert!(path_under_allowed_paths("apps/api/src/main.py", &allowed));
-        assert!(path_under_allowed_paths("README.md", &allowed));
+        assert!(path_under_allowed_paths(
+            "apps/api/src/sub/file.py",
+            &allowed
+        ));
+        assert!(!path_under_allowed_paths("apps/api", &allowed));
+        assert!(!path_under_allowed_paths("apps", &allowed));
         assert!(!path_under_allowed_paths("apps/api/other.py", &allowed));
+        // File entry: exact equality only; no pseudo children; no suffix names.
+        assert!(path_under_allowed_paths("README.md", &allowed));
+        assert!(!path_under_allowed_paths("README.md/child", &allowed));
+        assert!(!path_under_allowed_paths("README", &allowed));
+        assert!(!path_under_allowed_paths("README.md.bak", &allowed));
+        // Escape attempts fail closed.
         assert!(!path_under_allowed_paths("../escape", &allowed));
+        assert!(!path_under_allowed_paths("/apps/api/src", &allowed));
+        assert!(!path_under_allowed_paths(
+            "apps/api/src/../../escape",
+            &allowed
+        ));
+        assert!(!path_under_allowed_paths(
+            "apps/api/src/./main.py",
+            &allowed
+        ));
+        assert!(!path_under_allowed_paths("apps//api/src", &allowed));
+        assert!(!path_under_allowed_paths("", &allowed));
+        assert!(!path_under_allowed_paths("apps/api/src/", &allowed));
+        assert!(!path_under_allowed_paths("src2", &["src".into()]));
+        assert!(!path_under_allowed_paths("src2/main.py", &["src".into()]));
+        assert!(path_under_allowed_paths("src/main.py", &["src".into()]));
     }
 }
