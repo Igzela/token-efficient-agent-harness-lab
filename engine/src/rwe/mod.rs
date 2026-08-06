@@ -19,9 +19,11 @@ pub use economic_protocol::{
 };
 pub use execution_schedule::{freeze_operator_execution_schedule, FrozenExecutionSchedule};
 pub use live_baseline_coordinator::{
-    cell_identities_for, issue_and_admit_v2, operator_preflight, project_first_baseline_evidence,
-    run_frozen_schedule, CellDriver, CellIdentities, CellOutcome, InjectedCellDriver,
-    ProductGoldenPathCellDriver, RWE_LIVE_BASELINE_COORDINATOR_SCHEMA,
+    build_rwe_cell_product_intake, cell_identities_for, issue_and_admit_v2, operator_preflight,
+    project_first_baseline_evidence, revalidate_stored_v2_authorization, run_frozen_schedule,
+    CellDriver, CellIdentities, CellOutcome, InjectedCellDriver, ProductGoldenPathCellDriver,
+    RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA, RWE_LIVE_BASELINE_COORDINATOR_SCHEMA,
+    RWE_LIVE_CELL_COMPOSITION_SEAM_MISSING,
 };
 pub use operator_corpus::{
     freeze_current_operator_contract_set, freeze_operator_contract_set, freeze_operator_rwe_corpus,

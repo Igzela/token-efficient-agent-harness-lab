@@ -56,10 +56,13 @@ use engine::provider::embedding::{
 use engine::provider::transport::{HttpError, HttpRequest, HttpResponse, HttpTransport};
 #[cfg(feature = "pg-tests")]
 use engine::rwe::corpus::freeze_first_rwe_corpus;
+use engine::rwe::live_baseline_coordinator::cell_identities_for;
 #[cfg(feature = "pg-tests")]
 use engine::rwe::live_baseline_coordinator::{
     issue_and_admit_v2, run_frozen_schedule, CellOutcome, InjectedCellDriver,
+    RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA,
 };
+use engine::rwe::operator_corpus::freeze_current_operator_contract_set;
 use engine::rwe::runner::{
     persist_rwe_run_authorization, persist_rwe_run_authorization_v2, RweRunAuthorizationBody,
 };
@@ -9119,4 +9122,143 @@ fn pg_rwe_live_baseline_coordinator_four_cell_injected_parity() {
     assert_eq!(result["live_baseline_sealed"], false);
     let attempts = store.list_rwe_task_attempts_for_run(&run_id).unwrap();
     assert_eq!(attempts.len(), 4);
+}
+
+#[test]
+fn pg_rwe_concurrent_cell_dispatch_fence_is_single_effect() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let store = std::sync::Arc::new(store);
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-fence-{tag}");
+    let key_id = format!("operator-rwe-fence-{tag}");
+    store
+        .record_api_key_metadata_for_tenant(
+            &tenant,
+            &key_id,
+            "operator-user",
+            "operator",
+            &[
+                SCOPE_RISK_ACKNOWLEDGE.to_string(),
+                SCOPE_SPEND_AUTHORIZE.to_string(),
+                SCOPE_ATTEMPT_ADMIT.to_string(),
+            ],
+            "test-operator",
+        )
+        .unwrap();
+    let principal = store
+        .authenticate_managed_acceptance_principal(&tenant, &key_id, None)
+        .unwrap();
+    let prereq = format!("ptask-fence-gp-{tag}");
+    let mut evidence = json!({
+        "schema_version": "product_task_terminal_evidence.v2",
+        "evidence_id": format!("ev-fence-{tag}"),
+        "product_task_id": prereq,
+        "tenant_id": tenant,
+        "workspace_scope_id": format!("ws-fence-{tag}"),
+        "task_version": 1,
+        "task_status": "completed",
+        "node": {"executor_class": "managed_coding"},
+        "source_revision": "c".repeat(40),
+        "verification": {"trustworthy": true, "status": "passed"},
+        "approval": {"approval_id": format!("ap-fence-{tag}")},
+        "artifact": {"artifact_id": format!("art-fence-{tag}")},
+        "output": {
+            "intent": "draft_pr",
+            "result_sha256": "d".repeat(64),
+            "operation_id": format!("op-fence-{tag}"),
+            "receipt_id": format!("rcpt-fence-{tag}"),
+            "draft_pr": {
+                "number": 1,
+                "repository": "Igzela/alters-lab",
+                "base_branch": "main",
+                "head_branch": "acp/gp",
+                "head_sha": "e".repeat(40),
+                "draft": true
+            }
+        },
+        "audit_reference": {"audit_id": 910_101i64, "action": "product_task.terminal_evidence_committed"},
+        "created_at": "2026-07-25T12:00:00Z",
+        "created_by": "test",
+        "content_sha256": Value::Null,
+    });
+    let hash = hex::encode(Sha256::digest(serde_json::to_vec(&evidence).unwrap()));
+    evidence["content_sha256"] = json!(hash);
+    store
+        .insert_product_task_terminal_evidence_for_tests(&evidence)
+        .unwrap();
+    let auth_id = format!("auth-fence-{tag}");
+    let run_id = format!("run-fence-{tag}");
+    let admitted = issue_and_admit_v2(
+        &store,
+        &principal,
+        &auth_id,
+        &run_id,
+        &prereq,
+        &(chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
+    )
+    .unwrap();
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+    let frozen = freeze_current_operator_contract_set().unwrap();
+    let cell0 = &frozen.schedule.body["cells"][0];
+    let task0 = frozen
+        .corpus
+        .tasks
+        .iter()
+        .find(|t| t.task_id == cell0["task_id"].as_str().unwrap())
+        .unwrap();
+    let ids = cell_identities_for(&run_id, cell0, task0).unwrap();
+    let req = cell0["max_provider_requests"].as_u64().unwrap();
+    let tok = cell0["max_total_tokens"].as_u64().unwrap();
+    let reservation = json!({
+        "schema_version": RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA,
+        "cell_id": ids.cell_id,
+        "provider_requests": req,
+        "total_tokens": tok,
+    });
+    let wins = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let losses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let lease = std::sync::Arc::new(lease);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            let store = std::sync::Arc::clone(&store);
+            let lease = std::sync::Arc::clone(&lease);
+            let wins = std::sync::Arc::clone(&wins);
+            let losses = std::sync::Arc::clone(&losses);
+            let attempt_id = ids.rwe_task_attempt_id.clone();
+            let task_id = ids.task_id.clone();
+            let def = ids.definition_sha256.clone();
+            let reservation = reservation.clone();
+            let run_id = run_id.clone();
+            scope.spawn(move || {
+                match store.claim_rwe_cell_dispatch(
+                    &run_id,
+                    &lease,
+                    &attempt_id,
+                    &task_id,
+                    &def,
+                    req,
+                    tok,
+                    &reservation,
+                ) {
+                    Ok(v) if v.get("idempotent_replay").and_then(Value::as_bool) != Some(true) => {
+                        wins.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    Ok(_) | Err(_) => {
+                        losses.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+            });
+        }
+    });
+    assert_eq!(
+        wins.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "exactly one concurrent PG claim must win"
+    );
+    assert!(losses.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    let attempts = store.list_rwe_task_attempts_for_run(&run_id).unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0]["classification"], "dispatched");
 }

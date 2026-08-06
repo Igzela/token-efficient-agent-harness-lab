@@ -47,6 +47,125 @@ pub const MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND: &str =
 /// the same owner without a second verification system.
 const MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS: u64 = 900_000;
 
+/// Strict shared parser for product/RWE verification commands.
+///
+/// Admitted shapes:
+/// - legacy docs smoke (exact constant)
+/// - `PYTHONPATH=<relative> python3 -m pytest <relative paths…> [-q]`
+/// - other admitted read-only binaries via existing argv rules (no env prefix)
+///
+/// Returns (optional env pairs, argv). Env is limited to PYTHONPATH.
+#[allow(clippy::type_complexity)]
+pub fn parse_strict_product_verification_command(
+    command: &str,
+) -> Result<(Vec<(String, String)>, Vec<String>), String> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err("verification command is empty".into());
+    }
+    if command.starts_with('/') || command.starts_with('.') {
+        return Err("verification command must not be an absolute or relative binary path".into());
+    }
+    if command.contains("..")
+        || command.contains(';')
+        || command.contains('|')
+        || command.contains('&')
+        || command.contains('`')
+        || command.contains('$')
+        || command.contains('\n')
+    {
+        return Err("verification command contains forbidden shell metacharacters".into());
+    }
+    if command == MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND {
+        return Ok((
+            Vec::new(),
+            command.split_whitespace().map(str::to_string).collect(),
+        ));
+    }
+
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    let mut env = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let token = tokens[i];
+        if let Some((key, value)) = token.split_once('=') {
+            if key.is_empty()
+                || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                || key.starts_with('-')
+            {
+                break;
+            }
+            if key != "PYTHONPATH" {
+                return Err(format!("verification env assignment not admitted: {key}"));
+            }
+            if value.is_empty() || value.contains("..") || Path::new(value).is_absolute() {
+                return Err("PYTHONPATH must be a non-empty repository-relative path".into());
+            }
+            env.push((key.to_string(), value.to_string()));
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    let argv: Vec<String> = tokens[i..].iter().map(|s| (*s).to_string()).collect();
+    if argv.is_empty() {
+        return Err("verification command has no executable".into());
+    }
+    if !PRODUCT_VERIFICATION_READ_ONLY_COMMANDS.contains(&argv[0].as_str()) {
+        return Err(format!(
+            "verification command must use a read-only admitted binary: {}",
+            argv[0]
+        ));
+    }
+    if argv[0] == "python3" || !env.is_empty() {
+        if argv.len() < 4 || argv[0] != "python3" || argv[1] != "-m" || argv[2] != "pytest" {
+            return Err(
+                "python3 verification must be `python3 -m pytest <relative paths…>`".into(),
+            );
+        }
+        for arg in argv.iter().skip(3) {
+            if arg.starts_with('-') {
+                if arg != "-q" {
+                    return Err(format!(
+                        "pytest flag not admitted for frozen verifier execution: {arg}"
+                    ));
+                }
+                continue;
+            }
+            if Path::new(arg).is_absolute()
+                || Path::new(arg)
+                    .components()
+                    .any(|c| matches!(c, Component::ParentDir))
+            {
+                return Err("pytest paths must be repository-relative".into());
+            }
+        }
+    } else {
+        let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        validate_product_verification_command_argv(&argv_refs)?;
+    }
+    for argument in argv.iter().skip(1) {
+        if Path::new(argument).is_absolute()
+            || Path::new(argument)
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+            || Path::new(argument).components().any(|component| {
+                matches!(
+                    component,
+                    Component::Normal(name)
+                        if matches!(name.to_str(), Some(".git" | "target" | "node_modules"))
+                )
+            })
+            || (argument.starts_with('-') && argument.contains('/'))
+        {
+            return Err(
+                "verification command arguments must remain relative to the bound workspace".into(),
+            );
+        }
+    }
+    Ok((env, argv))
+}
+
 fn grep_short_option_recurses(argument: &str) -> bool {
     let mut flags = argument.trim_start_matches('-').chars().peekable();
     while let Some(flag) = flags.next() {
@@ -201,59 +320,19 @@ fn exact_managed_deepseek_verifier_command(
             "managed DeepSeek verification timeout_ms must be 1..{MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS}"
         ));
     }
-    // Legacy docs smoke remains fully admitted for compatibility.
-    if command_text == MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND {
-        return Ok(command_text.to_string());
-    }
-    // Non-legacy managed DeepSeek verifiers: PYTHONPATH=relative python3 -m pytest …
-    let mut argv = Vec::new();
-    for token in command_text.split_whitespace() {
-        if argv.is_empty() && token.contains('=') && !token.starts_with('-') {
-            let (key, value) = token.split_once('=').unwrap();
-            if key.is_empty()
-                || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                || value.contains("..")
-                || Path::new(value).is_absolute()
-            {
-                return Err(
-                    "managed DeepSeek verification env assignments must be relative key=value"
-                        .to_string(),
-                );
-            }
-            continue;
-        }
-        argv.push(token);
-    }
-    if argv.is_empty() {
-        return Err("managed DeepSeek verification command has no executable".to_string());
-    }
-    if argv[0] != "python3" {
+    // One strict parser for legacy docs smoke and frozen RWE pytest shapes.
+    let (env, argv) = parse_strict_product_verification_command(command_text)?;
+    if command_text != MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND
+        && !(argv.first().map(String::as_str) == Some("python3")
+            && argv.get(1).map(String::as_str) == Some("-m")
+            && argv.get(2).map(String::as_str) == Some("pytest"))
+    {
         return Err(
             "managed DeepSeek verifier must be the legacy docs smoke or python3 -m pytest shape"
                 .to_string(),
         );
     }
-    if argv.len() < 4 || argv[1] != "-m" || argv[2] != "pytest" {
-        return Err(
-            "managed DeepSeek python3 verifier must be `python3 -m pytest <relative paths…>`"
-                .to_string(),
-        );
-    }
-    for arg in argv.iter().skip(3) {
-        if arg.starts_with('-') {
-            if arg.chars().any(|c| c == '/' || c == '\\') {
-                return Err("managed DeepSeek pytest flags must not embed paths".to_string());
-            }
-            continue;
-        }
-        if Path::new(arg).is_absolute()
-            || Path::new(arg)
-                .components()
-                .any(|c| matches!(c, Component::ParentDir))
-        {
-            return Err("managed DeepSeek pytest paths must be repository-relative".to_string());
-        }
-    }
+    let _ = env;
     Ok(command_text.to_string())
 }
 
@@ -754,77 +833,8 @@ pub fn validate_intake(
                 "verification command must be 1..{MAX_VERIFICATION_COMMAND_BYTES} bytes"
             ));
         }
-        // Reject absolute executable paths and shell metacharacters that would admit arbitrary binaries.
-        if command.starts_with('/') || command.starts_with('.') {
-            return Err(
-                "verification command must not be an absolute or relative binary path".to_string(),
-            );
-        }
-        // Allow leading ENV=value tokens for admitted shapes like PYTHONPATH=… python3 …
-        let mut argv = Vec::new();
-        for token in command.split_whitespace() {
-            if argv.is_empty() && token.contains('=') && !token.starts_with('-') {
-                let (key, value) = token.split_once('=').unwrap();
-                if key.is_empty()
-                    || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                    || value.contains("..")
-                {
-                    return Err(
-                        "verification env assignments must be simple key=value without path escape"
-                            .to_string(),
-                    );
-                }
-                continue;
-            }
-            argv.push(token);
-        }
-        if argv.is_empty() {
-            return Err("verification command has no executable".to_string());
-        }
-        if !PRODUCT_VERIFICATION_READ_ONLY_COMMANDS.contains(&argv[0]) {
-            return Err(format!(
-                "verification command must use a read-only admitted binary: {}",
-                argv[0]
-            ));
-        }
-        if argv[0] == "python3" {
-            if argv.len() < 4 || argv[1] != "-m" || argv[2] != "pytest" {
-                return Err(
-                    "python3 verification must be `python3 -m pytest <relative paths…>`".into(),
-                );
-            }
-        } else {
-            validate_product_verification_command_argv(&argv)?;
-        }
-        if argv.iter().skip(1).any(|argument| {
-            Path::new(argument).is_absolute()
-                || Path::new(argument)
-                    .components()
-                    .any(|component| matches!(component, Component::ParentDir))
-                || Path::new(argument).components().any(|component| {
-                    matches!(
-                        component,
-                        Component::Normal(name)
-                            if matches!(name.to_str(), Some(".git" | "target" | "node_modules"))
-                    )
-                })
-                || (argument.starts_with('-') && argument.contains('/'))
-        }) {
-            return Err(
-                "verification command arguments must remain relative to the bound workspace"
-                    .to_string(),
-            );
-        }
-        if command.contains("..")
-            || command.contains(';')
-            || command.contains('|')
-            || command.contains('&')
-            || command.contains('`')
-            || command.contains('$')
-            || command.contains('\n')
-        {
-            return Err("verification command contains forbidden shell metacharacters".to_string());
-        }
+        // One strict parser for all product verification commands (incl. frozen RWE pytest).
+        let (_env, _argv) = parse_strict_product_verification_command(command)?;
         if cmd.timeout_ms == 0 || cmd.timeout_ms > 3_600_000 {
             return Err("verification command timeout_ms must be 1..3600000".to_string());
         }

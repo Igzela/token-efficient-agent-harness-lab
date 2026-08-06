@@ -1,11 +1,13 @@
 //! Thin operator CLI for Minimum First RWE live-baseline coordination.
 //!
 //! Provider-free by default. Never prints credentials, raw prompts, or private paths.
+//! Live cell execution remains blocked until the Product Golden Path composition
+//! seam for multi-path frozen RWE cells is authorized (see coordinator constant).
 
 use clap::{Parser, Subcommand};
 use engine::rwe::live_baseline_coordinator::{
     issue_and_admit_v2, operator_preflight, project_first_baseline_evidence, run_frozen_schedule,
-    ProductGoldenPathCellDriver,
+    ProductGoldenPathCellDriver, RWE_LIVE_CELL_COMPOSITION_SEAM_MISSING,
 };
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::json;
@@ -50,7 +52,10 @@ enum Commands {
         #[arg(long)]
         expires_at: String,
     },
-    /// Execute frozen 4-cell schedule under an admitted run (provider-free mode by default).
+    /// Execute frozen 4-cell schedule under an admitted run.
+    ///
+    /// Production ProductGoldenPathCellDriver fails closed until the multi-path
+    /// composition seam is authorized. Injected/test drivers are not exposed here.
     Run {
         #[arg(long)]
         authorization_id: String,
@@ -59,7 +64,10 @@ enum Commands {
         /// Empty string triggers exact admit lease recovery.
         #[arg(long, default_value = "")]
         lease_token: String,
-        /// When true, arms ProductGoldenPathCellDriver for live effects (post-merge only).
+        /// Local clone of the frozen target (recorded only; live path still blocked).
+        #[arg(long)]
+        target_repo_path: Option<String>,
+        /// When true, still fails closed until the composition seam exists.
         #[arg(long, default_value_t = false)]
         allow_live_provider_effects: bool,
     },
@@ -113,12 +121,12 @@ fn main() {
             authorization_id,
             run_id,
             lease_token,
+            target_repo_path,
             allow_live_provider_effects,
         } => {
             let driver = ProductGoldenPathCellDriver {
                 allow_live_provider_effects,
-                fake_transport: None,
-                work_root: None,
+                target_repo_path: target_repo_path.map(std::path::PathBuf::from),
             };
             run_frozen_schedule(
                 &store,
@@ -130,8 +138,6 @@ fn main() {
             )
             .map(|coord| {
                 let aggregate = coord.get("aggregate").cloned().unwrap_or(json!({}));
-                // Derive from authoritative aggregate/cell receipts — never hard-code false
-                // for a successful future live run.
                 let provider_call_performed = coord
                     .get("provider_call_performed")
                     .and_then(|v| v.as_bool())
@@ -148,6 +154,7 @@ fn main() {
                     "provider_call_performed": provider_call_performed,
                     "target_write_performed": false,
                     "live_baseline_sealed": coord.get("live_baseline_sealed").cloned().unwrap_or(json!(false)),
+                    "composition_seam": RWE_LIVE_CELL_COMPOSITION_SEAM_MISSING,
                 })
             })
         }

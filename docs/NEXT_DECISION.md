@@ -178,23 +178,24 @@ Board B does not authorize a live run. A live baseline still requires a new sepa
 
 ### First Live Baseline Coordinator — In review (Draft PR #363; not COMPLETE)
 
-Production-capable provider-free wiring under `engine/src/rwe/live_baseline_coordinator.rs` and `rwe-live-baseline` CLI (reviewable; not yet accepted as COMPLETE):
+Provider-free orchestration under `engine/src/rwe/live_baseline_coordinator.rs` and `rwe-live-baseline` CLI:
 
 - store-owned v2 issue/admit before any cell work;
+- revalidation of stored v2 bindings (corpus/protocol/schedule/target/principal/provider/executor/budget/expiry) before each cell effect;
 - frozen 4-cell schedule identity derivation and RWE task-attempt mapping;
-- `ProductGoldenPathCellDriver` binds ProductTask admit/workspace + managed DeepSeek (injectable transport) + CommandNodeExecutor verifier; no second scheduler/store/budget/provider owner;
-- unarmed / CI / missing-credential runs fail closed before cell effect and run terminalization;
-- pre-effect frozen budget refusal (CountingCellDriver proves zero invocations when exhausted);
-- stop-rule restart reconstructs prior stop state; `skipped_by_stop_rule` is terminal; `outcome_unknown` is no-retry;
-- `live_baseline_sealed` only from store-owned ProductTask/terminal receipts (injected/public claims never seal);
-- operator preflight fail-closed without GP prerequisite / credential symbol / active auth;
-- CLI `provider_call_performed` derived from authoritative aggregate receipts.
+- store-backed atomic pre-effect cell fence + full next-cell budget reservation (`claim_rwe_cell_dispatch` / `finalize_rwe_cell_dispatch` on existing `rwe_task_attempts`; no new schema);
+- concurrent duplicate-dispatch refusal proved on SQLite and PostgreSQL;
+- injectable drivers for provider-free orchestration only; `ProductGoldenPathCellDriver` fails closed with `CHECKPOINT_DECISION_REQUIRED` (missing multi-path RWE composition seam over existing delegated GP owners);
+- intake mapping helper `build_rwe_cell_product_intake` for exact frozen target/SHA/git_worktree/draft_pr/managed_deepseek/verifier — not a fabricated live path;
+- one strict verifier-command parser shared with product intake;
+- stop-rule restart; `skipped_by_stop_rule` terminal; `outcome_unknown` no-retry;
+- `live_baseline_sealed` only from store-owned ProductTask/terminal receipts.
 
-This coordinator does **not** execute or seal a live baseline. Do not mark the coordinator packet COMPLETE until the corrected production-capable binding is independently reviewed and merged.
+This coordinator does **not** execute or seal a live baseline. Live multi-path cell composition (worktree + managed executor + store spend/journal + verifier + artifact + Draft PR + terminal + cleanup) requires a planning decision to generalize delegated GP hardcoding beyond docs/USER_GUIDE.
 
 ### First Live Baseline Execution — Next Permitted Work
 
-**Prerequisite:** Board A, Board B, and the provider-free coordinator accepted; plus a real same-tenant Golden Path prerequisite terminal receipt and a separate one-use live-run authorization against the accepted exact head.
+**Prerequisite:** Board A, Board B, accepted coordinator, authorized multi-path RWE cell composition seam, real same-tenant Golden Path prerequisite terminal receipt, and a separate one-use live-run authorization against the accepted exact head.
 
 ### First Live Baseline Exit Gate
 

@@ -1912,6 +1912,408 @@ impl LocalProductStore {
         }
     }
 
+    /// Atomic pre-effect cell fence: exclusive dispatch claim + full next-cell budget reservation.
+    ///
+    /// Inserts one `dispatched` row under the current run lease. Concurrent claims for the same
+    /// `task_attempt_id` collide on the primary key (one winner). Concurrent claims for other
+    /// cells on the same run serialize under the run lock and refuse when reserved+consumed
+    /// budgets would exceed the frozen run-level ceilings.
+    ///
+    /// No schema change: reuses `rwe_task_attempts` with classification `dispatched` until
+    /// [`Self::finalize_rwe_cell_dispatch`] replaces it with a terminal classification.
+    pub fn claim_rwe_cell_dispatch(
+        &self,
+        run_id: &str,
+        lease_token: &str,
+        task_attempt_id: &str,
+        task_id: &str,
+        definition_sha256: &str,
+        reserved_provider_requests: u64,
+        reserved_total_tokens: u64,
+        reservation_evidence: &Value,
+    ) -> Result<Value, String> {
+        if reserved_provider_requests == 0 {
+            return Err("cell dispatch reservation requires positive max_provider_requests".into());
+        }
+        if reserved_total_tokens == 0 {
+            return Err("cell dispatch reservation requires positive max_total_tokens".into());
+        }
+        if definition_sha256.len() != 64 {
+            return Err("cell dispatch definition_sha256 must be 64 hex chars".into());
+        }
+        let now = self.now();
+        let mut evidence = sort_value(reservation_evidence);
+        if let Value::Object(ref mut m) = evidence {
+            m.insert(
+                "dispatch_reservation".into(),
+                json!({
+                    "schema_version": "rwe_cell_dispatch_reservation.v1",
+                    "reserved_provider_requests": reserved_provider_requests,
+                    "reserved_total_tokens": reserved_total_tokens,
+                    "status": "dispatched",
+                }),
+            );
+            m.insert("classification".into(), json!("dispatched"));
+        }
+        let evidence_s = canonical_json(&evidence)?;
+        let evidence_sha = sha256_hex(evidence_s.as_bytes());
+        let classification = "dispatched";
+
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|e| e.to_string())?;
+                let run = load_rwe_run_sqlite(&tx, run_id)?;
+                validate_current_rwe_run_lease(&run, run_id, lease_token)?;
+                // Existing row: exact dispatched replay or conflict.
+                if let Some((
+                    existing_run,
+                    existing_task,
+                    existing_def,
+                    existing_class,
+                    existing_sha,
+                )) = tx
+                    .query_row(
+                        "SELECT run_id, task_id, definition_sha256, classification, evidence_sha256
+                         FROM rwe_task_attempts WHERE task_attempt_id=?1",
+                        params![task_attempt_id],
+                        |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, String>(1)?,
+                                r.get::<_, String>(2)?,
+                                r.get::<_, String>(3)?,
+                                r.get::<_, String>(4)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?
+                {
+                    if existing_run != run_id
+                        || existing_task != task_id
+                        || existing_def != definition_sha256
+                    {
+                        return Err("conflicting RWE cell dispatch identity".into());
+                    }
+                    if existing_class != classification || existing_sha != evidence_sha {
+                        return Err(
+                            "duplicate RWE cell dispatch refused: task attempt already claimed or terminal"
+                                .into(),
+                        );
+                    }
+                    return Ok(json!({
+                        "task_attempt_id": task_attempt_id,
+                        "run_id": run_id,
+                        "classification": classification,
+                        "idempotent_replay": true,
+                        "reserved_provider_requests": reserved_provider_requests,
+                        "reserved_total_tokens": reserved_total_tokens,
+                    }));
+                }
+                let (used_req, used_tok) = sum_rwe_run_budget_usage_sqlite(&tx, run_id)?;
+                let (run_max_req, run_max_tok) = rwe_run_level_budget_ceilings_from_run(&run)?;
+                let next_req = used_req
+                    .checked_add(reserved_provider_requests)
+                    .ok_or("provider-request budget overflow")?;
+                let next_tok = used_tok
+                    .checked_add(reserved_total_tokens)
+                    .ok_or("token budget overflow")?;
+                if next_req > run_max_req {
+                    return Err(format!(
+                        "pre-effect cell budget reservation refused: provider requests {next_req} > run ceiling {run_max_req}"
+                    ));
+                }
+                if run_max_tok > 0 && next_tok > run_max_tok {
+                    return Err(format!(
+                        "pre-effect cell budget reservation refused: tokens {next_tok} > run ceiling {run_max_tok}"
+                    ));
+                }
+                tx.execute(
+                    "INSERT INTO rwe_task_attempts (
+                        task_attempt_id, run_id, task_id, definition_sha256, classification,
+                        evidence_json, evidence_sha256, created_at
+                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                    params![
+                        task_attempt_id,
+                        run_id,
+                        task_id,
+                        definition_sha256,
+                        classification,
+                        evidence_s,
+                        evidence_sha,
+                        now
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(json!({
+                    "task_attempt_id": task_attempt_id,
+                    "run_id": run_id,
+                    "classification": classification,
+                    "idempotent_replay": false,
+                    "reserved_provider_requests": reserved_provider_requests,
+                    "reserved_total_tokens": reserved_total_tokens,
+                }))
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                tx.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    &[&format!("rwer:{run_id}")],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    &[&format!("rweta:{task_attempt_id}")],
+                )
+                .map_err(|e| e.to_string())?;
+                let run = load_rwe_run_pg(&mut tx, run_id)?;
+                validate_current_rwe_run_lease(&run, run_id, lease_token)?;
+                if let Some(row) = tx
+                    .query_opt(
+                        "SELECT run_id, task_id, definition_sha256, classification, evidence_sha256
+                         FROM rwe_task_attempts WHERE task_attempt_id=$1 FOR UPDATE",
+                        &[&task_attempt_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                {
+                    let existing_run: String = row.get(0);
+                    let existing_task: String = row.get(1);
+                    let existing_def: String = row.get(2);
+                    let existing_class: String = row.get(3);
+                    let existing_sha: String = row.get(4);
+                    if existing_run != run_id
+                        || existing_task != task_id
+                        || existing_def != definition_sha256
+                    {
+                        return Err("conflicting RWE cell dispatch identity".into());
+                    }
+                    if existing_class != classification || existing_sha != evidence_sha {
+                        return Err(
+                            "duplicate RWE cell dispatch refused: task attempt already claimed or terminal"
+                                .into(),
+                        );
+                    }
+                    return Ok(json!({
+                        "task_attempt_id": task_attempt_id,
+                        "run_id": run_id,
+                        "classification": classification,
+                        "idempotent_replay": true,
+                        "reserved_provider_requests": reserved_provider_requests,
+                        "reserved_total_tokens": reserved_total_tokens,
+                    }));
+                }
+                let (used_req, used_tok) = sum_rwe_run_budget_usage_pg(&mut tx, run_id)?;
+                let (run_max_req, run_max_tok) = rwe_run_level_budget_ceilings_from_run(&run)?;
+                let next_req = used_req
+                    .checked_add(reserved_provider_requests)
+                    .ok_or("provider-request budget overflow")?;
+                let next_tok = used_tok
+                    .checked_add(reserved_total_tokens)
+                    .ok_or("token budget overflow")?;
+                if next_req > run_max_req {
+                    return Err(format!(
+                        "pre-effect cell budget reservation refused: provider requests {next_req} > run ceiling {run_max_req}"
+                    ));
+                }
+                if run_max_tok > 0 && next_tok > run_max_tok {
+                    return Err(format!(
+                        "pre-effect cell budget reservation refused: tokens {next_tok} > run ceiling {run_max_tok}"
+                    ));
+                }
+                tx.execute(
+                    "INSERT INTO rwe_task_attempts (
+                        task_attempt_id, run_id, task_id, definition_sha256, classification,
+                        evidence_json, evidence_sha256, created_at
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                    &[
+                        &task_attempt_id,
+                        &run_id,
+                        &task_id,
+                        &definition_sha256,
+                        &classification,
+                        &evidence_s,
+                        &evidence_sha,
+                        &now,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(json!({
+                    "task_attempt_id": task_attempt_id,
+                    "run_id": run_id,
+                    "classification": classification,
+                    "idempotent_replay": false,
+                    "reserved_provider_requests": reserved_provider_requests,
+                    "reserved_total_tokens": reserved_total_tokens,
+                }))
+            }),
+        }
+    }
+
+    /// Finalize a previously claimed (`dispatched`) cell under the current lease.
+    /// Terminal classifications replace the reservation evidence atomically.
+    pub fn finalize_rwe_cell_dispatch(
+        &self,
+        run_id: &str,
+        lease_token: &str,
+        task_attempt_id: &str,
+        classification: &str,
+        evidence: &Value,
+    ) -> Result<Value, String> {
+        if classification == "dispatched" {
+            return Err("finalize_rwe_cell_dispatch requires a terminal classification".into());
+        }
+        if classification.trim().is_empty() {
+            return Err("finalize classification required".into());
+        }
+        let now = self.now();
+        let evidence_sorted = sort_value(evidence);
+        let evidence_s = canonical_json(&evidence_sorted)?;
+        let evidence_sha = sha256_hex(evidence_s.as_bytes());
+
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|e| e.to_string())?;
+                let run = load_rwe_run_sqlite(&tx, run_id)?;
+                validate_current_rwe_run_lease(&run, run_id, lease_token)?;
+                let existing = tx
+                    .query_row(
+                        "SELECT run_id, classification, evidence_sha256
+                         FROM rwe_task_attempts WHERE task_attempt_id=?1",
+                        params![task_attempt_id],
+                        |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, String>(1)?,
+                                r.get::<_, String>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| {
+                        "finalize requires a prior claim_rwe_cell_dispatch for this attempt"
+                            .to_string()
+                    })?;
+                if existing.0 != run_id {
+                    return Err("finalize run_id mismatch".into());
+                }
+                if existing.1 != "dispatched" {
+                    // Exact terminal replay only.
+                    if existing.1 == classification && existing.2 == evidence_sha {
+                        return Ok(json!({
+                            "task_attempt_id": task_attempt_id,
+                            "run_id": run_id,
+                            "classification": classification,
+                            "idempotent_replay": true,
+                        }));
+                    }
+                    return Err("conflicting RWE cell finalize identity/evidence".into());
+                }
+                let changed = tx
+                    .execute(
+                        "UPDATE rwe_task_attempts
+                         SET classification=?1, evidence_json=?2, evidence_sha256=?3
+                         WHERE task_attempt_id=?4 AND run_id=?5 AND classification='dispatched'",
+                        params![
+                            classification,
+                            evidence_s,
+                            evidence_sha,
+                            task_attempt_id,
+                            run_id
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if changed != 1 {
+                    return Err("RWE cell finalize lost dispatch claim".into());
+                }
+                let _ = now;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(json!({
+                    "task_attempt_id": task_attempt_id,
+                    "run_id": run_id,
+                    "classification": classification,
+                    "idempotent_replay": false,
+                    "evidence_sha256": evidence_sha,
+                }))
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                tx.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    &[&format!("rwer:{run_id}")],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    &[&format!("rweta:{task_attempt_id}")],
+                )
+                .map_err(|e| e.to_string())?;
+                let run = load_rwe_run_pg(&mut tx, run_id)?;
+                validate_current_rwe_run_lease(&run, run_id, lease_token)?;
+                let row = tx
+                    .query_opt(
+                        "SELECT run_id, classification, evidence_sha256
+                         FROM rwe_task_attempts WHERE task_attempt_id=$1 FOR UPDATE",
+                        &[&task_attempt_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| {
+                        "finalize requires a prior claim_rwe_cell_dispatch for this attempt"
+                            .to_string()
+                    })?;
+                let existing_run: String = row.get(0);
+                let existing_class: String = row.get(1);
+                let existing_sha: String = row.get(2);
+                if existing_run != run_id {
+                    return Err("finalize run_id mismatch".into());
+                }
+                if existing_class != "dispatched" {
+                    if existing_class == classification && existing_sha == evidence_sha {
+                        return Ok(json!({
+                            "task_attempt_id": task_attempt_id,
+                            "run_id": run_id,
+                            "classification": classification,
+                            "idempotent_replay": true,
+                        }));
+                    }
+                    return Err("conflicting RWE cell finalize identity/evidence".into());
+                }
+                let changed = tx
+                    .execute(
+                        "UPDATE rwe_task_attempts
+                         SET classification=$1, evidence_json=$2, evidence_sha256=$3
+                         WHERE task_attempt_id=$4 AND run_id=$5 AND classification='dispatched'",
+                        &[
+                            &classification,
+                            &evidence_s,
+                            &evidence_sha,
+                            &task_attempt_id,
+                            &run_id,
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if changed != 1 {
+                    return Err("RWE cell finalize lost dispatch claim".into());
+                }
+                let _ = now;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(json!({
+                    "task_attempt_id": task_attempt_id,
+                    "run_id": run_id,
+                    "classification": classification,
+                    "idempotent_replay": false,
+                    "evidence_sha256": evidence_sha,
+                }))
+            }),
+        }
+    }
+
     /// Terminalize under current lease. Stores one canonical terminal receipt body/hash so
     /// direct exact replay succeeds and conflicting replay rejects.
     pub fn complete_rwe_run(
@@ -2197,6 +2599,122 @@ fn validate_existing_rwe_run_replay(
         return Err("RWE existing-run replay body hash mismatch".into());
     }
     Ok(())
+}
+
+fn budget_usage_from_attempt_row(classification: &str, evidence: &Value) -> (u64, u64) {
+    if classification == "dispatched" {
+        let req = evidence
+            .pointer("/dispatch_reservation/reserved_provider_requests")
+            .and_then(Value::as_u64)
+            .or_else(|| evidence.get("provider_requests").and_then(Value::as_u64))
+            .unwrap_or(0);
+        let tok = evidence
+            .pointer("/dispatch_reservation/reserved_total_tokens")
+            .and_then(Value::as_u64)
+            .or_else(|| evidence.get("total_tokens").and_then(Value::as_u64))
+            .unwrap_or(0);
+        return (req, tok);
+    }
+    (
+        evidence
+            .get("provider_requests")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        evidence
+            .get("total_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    )
+}
+
+fn rwe_run_level_budget_ceilings_from_run(run: &Value) -> Result<(u64, u64), String> {
+    // Prefer ceilings embedded at admit time; fall back to current frozen schedule.
+    if let Some(req) = run
+        .pointer("/evidence_json/admit_state/run_body/run_level_budget/max_total_provider_requests")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            run.pointer("/evidence_json/admit_state/run_body/max_total_provider_requests")
+                .and_then(Value::as_u64)
+        })
+    {
+        let tok = run
+            .pointer("/evidence_json/admit_state/run_body/run_level_budget/max_total_tokens")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                run.pointer("/evidence_json/admit_state/run_body/max_total_tokens")
+                    .and_then(Value::as_u64)
+            })
+            .unwrap_or(0);
+        if req > 0 {
+            return Ok((req, tok));
+        }
+    }
+    let frozen = crate::rwe::operator_corpus::freeze_current_operator_contract_set()?;
+    let req = frozen
+        .schedule
+        .body
+        .pointer("/run_level_budget/max_total_provider_requests")
+        .and_then(Value::as_u64)
+        .ok_or("frozen schedule run_level_budget.max_total_provider_requests missing")?;
+    let tok = frozen
+        .schedule
+        .body
+        .pointer("/run_level_budget/max_total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Ok((req, tok))
+}
+
+fn sum_rwe_run_budget_usage_sqlite(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+) -> Result<(u64, u64), String> {
+    let mut stmt = tx
+        .prepare("SELECT classification, evidence_json FROM rwe_task_attempts WHERE run_id=?1")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![run_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut req = 0u64;
+    let mut tok = 0u64;
+    for row in rows {
+        let (class, evidence_s) = row.map_err(|e| e.to_string())?;
+        let evidence: Value = serde_json::from_str(&evidence_s).map_err(|e| e.to_string())?;
+        let (r, t) = budget_usage_from_attempt_row(&class, &evidence);
+        req = req
+            .checked_add(r)
+            .ok_or("provider-request budget sum overflow")?;
+        tok = tok.checked_add(t).ok_or("token budget sum overflow")?;
+    }
+    Ok((req, tok))
+}
+
+#[cfg(feature = "pg")]
+fn sum_rwe_run_budget_usage_pg(
+    tx: &mut postgres::Transaction<'_>,
+    run_id: &str,
+) -> Result<(u64, u64), String> {
+    let rows = tx
+        .query(
+            "SELECT classification, evidence_json FROM rwe_task_attempts WHERE run_id=$1",
+            &[&run_id],
+        )
+        .map_err(|e| e.to_string())?;
+    let mut req = 0u64;
+    let mut tok = 0u64;
+    for row in rows {
+        let class: String = row.get(0);
+        let evidence_s: String = row.get(1);
+        let evidence: Value = serde_json::from_str(&evidence_s).map_err(|e| e.to_string())?;
+        let (r, t) = budget_usage_from_attempt_row(&class, &evidence);
+        req = req
+            .checked_add(r)
+            .ok_or("provider-request budget sum overflow")?;
+        tok = tok.checked_add(t).ok_or("token budget sum overflow")?;
+    }
+    Ok((req, tok))
 }
 
 fn validate_current_rwe_run_lease(

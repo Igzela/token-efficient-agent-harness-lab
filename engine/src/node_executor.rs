@@ -1210,79 +1210,42 @@ impl CommandNodeExecutor {
         false
     }
 
-    /// Parse a verification/command string into optional leading ENV=value pairs and argv.
+    /// Parse a command string into optional leading ENV=value pairs and argv.
     ///
-    /// Only the exact frozen RWE shape is admitted for env prefixes:
-    /// `PYTHONPATH=<relative-path> python3 -m pytest <relative-paths…> [-q]`.
-    /// No shell is used; env is applied via `Command::env`.
+    /// Verification/RWE shapes use the single strict product verifier parser.
+    /// Non-verification commands remain simple whitespace argv (no env prefix).
     #[allow(clippy::type_complexity)]
     fn parse_command_env_and_argv(
         command: &str,
     ) -> Result<(Vec<(String, String)>, Vec<String>), String> {
-        let tokens: Vec<&str> = command.split_whitespace().collect();
-        if tokens.is_empty() {
+        let trimmed = command.trim();
+        if trimmed.is_empty() {
             return Err("empty command".into());
         }
-        let mut env = Vec::new();
-        let mut i = 0usize;
-        while i < tokens.len() {
-            let token = tokens[i];
-            if let Some((key, value)) = token.split_once('=') {
-                if key.is_empty()
-                    || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                    || key.starts_with('-')
-                {
-                    break;
-                }
-                // Tight env allowlist: only PYTHONPATH for frozen RWE verifiers.
-                if key != "PYTHONPATH" {
-                    return Err(format!(
-                        "command env assignment not admitted for execution: {key}"
-                    ));
-                }
-                if value.is_empty()
-                    || value.contains("..")
-                    || std::path::Path::new(value).is_absolute()
-                {
-                    return Err("PYTHONPATH must be a non-empty repository-relative path".into());
-                }
-                env.push((key.to_string(), value.to_string()));
-                i += 1;
-                continue;
-            }
-            break;
+        // Prefer the shared strict verifier parser when the command matches an
+        // admitted verification shape (legacy docs smoke, PYTHONPATH+pytest, etc.).
+        if let Ok(parsed) =
+            crate::product_golden_path::parse_strict_product_verification_command(trimmed)
+        {
+            return Ok(parsed);
         }
-        let argv: Vec<String> = tokens[i..].iter().map(|s| (*s).to_string()).collect();
+        // Non-verification commands: no ENV= prefixes, simple argv only.
+        if trimmed.split_whitespace().any(|t| {
+            t.contains('=')
+                && !t.starts_with('-')
+                && t.split_once('=').is_some_and(|(k, _)| {
+                    !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                })
+        }) {
+            return Err(
+                "command env assignments only admitted for product verification shapes".into(),
+            );
+        }
+        let argv: Vec<String> = trimmed.split_whitespace().map(str::to_string).collect();
         if argv.is_empty() {
-            return Err("command has no executable after env assignments".into());
+            return Err("command has no executable".into());
         }
-        // If PYTHONPATH was set, require exact pytest shape (frozen RWE).
-        if !env.is_empty() {
-            if argv.len() < 4 || argv[0] != "python3" || argv[1] != "-m" || argv[2] != "pytest" {
-                return Err(
-                    "PYTHONPATH prefix only admitted with `python3 -m pytest <relative…>`".into(),
-                );
-            }
-            for arg in argv.iter().skip(3) {
-                if arg.starts_with('-') {
-                    // Only the frozen quiet flag is admitted (no weaken/disable flags).
-                    if arg != "-q" {
-                        return Err(format!(
-                            "pytest flag not admitted for frozen verifier execution: {arg}"
-                        ));
-                    }
-                    continue;
-                }
-                if std::path::Path::new(arg).is_absolute()
-                    || std::path::Path::new(arg)
-                        .components()
-                        .any(|c| matches!(c, std::path::Component::ParentDir))
-                {
-                    return Err("pytest paths must be repository-relative".into());
-                }
-            }
-        }
-        Ok((env, argv))
+        Ok((Vec::new(), argv))
     }
 
     fn workspace_cwd(input: &NodeExecutionInput) -> Result<PathBuf, String> {
