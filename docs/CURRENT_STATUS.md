@@ -7,9 +7,10 @@ This document owns current accepted, open, and blocked repository facts. Histori
 ## Accepted Baseline
 
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
-- Accepted remote `main`: `9aea39b75a7999ae7db22176b77e06bcf7a6890f`.
+- Accepted runtime/code baseline: PR #361 at `9aea39b75a7999ae7db22176b77e06bcf7a6890f`; later strictly documentation-only governance commits do not change runtime behavior.
+- Resolve the current remote `main` identity from Git/GitHub or a fresh context capsule rather than hard-coding the moving documentation head here.
 - PR #361 merged from exact head `aeff4544e2fca6621e716f4514f9246e96826d94` after an exact-head complete-diff review receipt with outcome `APPROVED` and successful canonical exact-head workflows.
-- Post-merge `main` workflow run `31067282847` completed successfully, including all source jobs and the terminal `context-capsule` job.
+- Post-merge runtime-baseline workflow run `31067282847` completed successfully, including all source jobs and the terminal `context-capsule` job.
 - A new head, CI result, review, or canonical-document change invalidates any older context capsule or status summary.
 
 ## Accepted Product and Control-Plane State
