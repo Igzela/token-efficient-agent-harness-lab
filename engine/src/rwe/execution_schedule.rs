@@ -245,6 +245,13 @@ pub fn freeze_operator_execution_schedule_from_root(
                 "cell {cell_id} seed {seed} not in frozen seed list"
             ));
         }
+        // Seeds pair to repetitions in pre-registered order (no multiplier):
+        // repetition r must use protocol.seeds[r-1].
+        if seed != protocol_seeds[(repetition - 1) as usize] {
+            return Err(format!(
+                "cell {cell_id} seed {seed} does not pair to pre-registered seed for repetition {repetition}"
+            ));
+        }
         // Same repetition shares one seed across budget points (paired analysis).
         if let Some(previous) = task_rep_seed.get(&(task_id.clone(), repetition)) {
             if *previous != seed {

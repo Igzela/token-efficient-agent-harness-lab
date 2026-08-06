@@ -2399,12 +2399,12 @@ pub(crate) fn validate_rwe_run_authorization_v2(
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .ok_or("v2 expires_at required")?;
-    if chrono::DateTime::parse_from_rfc3339(expires_at).is_err() {
-        return Err("v2 expires_at must be an RFC3339 instant".into());
-    }
+    require_finite_rwe_expiry(expires_at)?;
     let binary_path = required_string_field(body, "binary_path")?;
     let binary_sha256 = required_string_field(body, "binary_sha256")?;
-    if binary_path.is_empty() || binary_sha256.len() != 64 {
+    if binary_path != crate::rwe::operator_corpus::OPERATOR_ADMITTED_BINARY_PATH
+        || binary_sha256.len() != 64
+    {
         return Err("v2 binary_path/binary_sha256 must bind the admitted executor binary".into());
     }
     let budget_point_ids = body
@@ -2809,9 +2809,17 @@ mod operator_v2_authority_tests {
         wrong_binary_sha["binary_sha256"] = json!("abc");
         assert!(validate_rwe_run_authorization_v2(&wrong_binary_sha, &frozen).is_err());
 
+        let mut wrong_binary_path = valid.clone();
+        wrong_binary_path["binary_path"] = json!("/usr/bin/anything");
+        assert!(validate_rwe_run_authorization_v2(&wrong_binary_path, &frozen).is_err());
+
         let mut bad_expiry = valid.clone();
         bad_expiry["expires_at"] = json!("not-a-time");
         assert!(validate_rwe_run_authorization_v2(&bad_expiry, &frozen).is_err());
+
+        let mut far_expiry = valid.clone();
+        far_expiry["expires_at"] = json!("9999-12-31T23:59:59Z");
+        assert!(validate_rwe_run_authorization_v2(&far_expiry, &frozen).is_err());
 
         let mut no_principal = valid.clone();
         no_principal["principal_id"] = json!("");
