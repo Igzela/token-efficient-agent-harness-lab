@@ -55,7 +55,7 @@ The frozen corpus, protocol, and schedule are accepted prerequisites. They do **
 
 The next eligible work is provider-free production wiring for `rwe_run_authorization.v2` and the separately persisted one-use RWE spend envelope. Board B must reuse the existing RWE, ProductTask, managed-provider, scheduler, store, audit, approval, output, cleanup, and terminal-evidence owners.
 
-A Board B implementation Draft PR may be open; branch-local status is proposed until independent review, exact-head CI, and merge accept it. Do not treat a Draft head as accepted truth.
+Board B production issue/admit/spend wiring is the earliest eligible implementation work. Until a Board B PR is independently reviewed, exact-head CI-green, and merged to accepted `main`, production wiring is **not** accepted truth. Branch-local Draft heads never authorize live baseline, provider calls, or target effects.
 
 The first live RWE run remains blocked until all Board B authority, persistence, issue/admit, exact accepted-main, budget, restart, parity, and fail-closed gates are merged and a separate current live-run authorization is issued.
 
@@ -63,7 +63,6 @@ The first live RWE run remains blocked until all Board B authority, persistence,
 
 | PR | Purpose | Status |
 |---|---|---|
-| Board B Draft (when open) | Provider-free production `rwe_run_authorization.v2` issue/admit + one-use spend wiring | OPEN Draft until exact-head CI + independent review; not accepted |
 | #225 | Presentation-only Dashboard theme | OPEN; independent and last; cannot substitute for runtime or evidence work |
 | `Igzela/alters-lab#5` | Draft-PR output from the accepted bounded live Golden Path observation | OPEN, Draft, unmerged; no merge authority |
 

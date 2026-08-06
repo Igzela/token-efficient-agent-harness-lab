@@ -406,9 +406,12 @@ fn operator_in_process_binary_sha256() -> String {
 /// production RWE v2. Unlike v1 issue binding, this does **not** require the GP
 /// executor/provider/binary identity to match the RWE managed_deepseek route —
 /// GP and RWE remain separate owners; the prerequisite is only the accepted seal.
+/// `expected_tenant_id` must match both the receipt tenant field and the
+/// authenticated principal (caller text is never trusted for tenant authority).
 fn validate_golden_path_prerequisite_for_rwe_v2(
     ev: &Value,
     product_task_id: &str,
+    expected_tenant_id: &str,
 ) -> Result<(), String> {
     if ev.get("schema_version").and_then(Value::as_str) != Some("product_task_terminal_evidence.v2")
     {
@@ -416,6 +419,16 @@ fn validate_golden_path_prerequisite_for_rwe_v2(
     }
     if ev.get("task_status").and_then(Value::as_str) != Some("completed") {
         return Err("golden_path_prerequisite is not successful (task_status!=completed)".into());
+    }
+    let receipt_tenant = ev
+        .get("tenant_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or("golden_path_prerequisite missing tenant_id")?;
+    if receipt_tenant != expected_tenant_id {
+        return Err(
+            "golden_path_prerequisite tenant does not match authenticated principal".into(),
+        );
     }
     let executor_class = ev
         .pointer("/node/executor_class")
@@ -819,10 +832,27 @@ impl LocalProductStore {
         }
         let expires_at = require_finite_rwe_expiry(&request.expires_at)?;
         let frozen = crate::rwe::operator_corpus::freeze_current_operator_contract_set()?;
+        // Tenant-aware ProductTask owner check before any terminal-evidence trust.
+        // A foreign-tenant ProductTask fails closed here; caller-supplied ids never
+        // authorize cross-tenant reuse of an accepted Golden Path seal.
+        match self.get_product_task_for_tenant(prereq_id, principal.tenant_id()) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return Err(
+                    "golden_path_prerequisite_product_task_id not found for authenticated tenant"
+                        .into(),
+                );
+            }
+            Err(e) => return Err(e),
+        }
         let te = self.get_product_task_terminal_evidence(prereq_id);
         match te {
             Ok(ev) if !ev.is_null() => {
-                validate_golden_path_prerequisite_for_rwe_v2(&ev, prereq_id)?;
+                validate_golden_path_prerequisite_for_rwe_v2(
+                    &ev,
+                    prereq_id,
+                    principal.tenant_id(),
+                )?;
             }
             _ => {
                 return Err(
@@ -1306,6 +1336,15 @@ impl LocalProductStore {
                     ],
                 )
                 .map_err(|e| e.to_string())?;
+                // Match SQLite: append the same issue audit inside this transaction.
+                super::workflow_runs::pg_append_audit(
+                    &mut tx,
+                    &now,
+                    principal_id,
+                    "rwe.authorization_issued",
+                    authorization_id,
+                    &json!({"body_sha256": body_sha256, "fixture_only": fixture_only}),
+                )?;
                 let row = load_rwe_auth_pg(&mut tx, authorization_id)?;
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(row)
@@ -1971,6 +2010,14 @@ fn build_canonical_terminal_receipt(
     })))
 }
 
+/// Exact run-body replay after admission.
+///
+/// For an **admitted** run only, preserve the current lease capability so a
+/// crash between commit and result delivery can recover via authenticated
+/// current-owner exact replay. Terminal / fixture_complete / failed runs keep
+/// the lease redacted. `get_rwe_run` remains fully redacted for general reads.
+/// Callers must already have passed `validate_existing_rwe_run_replay` (tenant,
+/// principal, authorization binding).
 fn exact_run_replay_or_conflict(existing: &Value, run_body_sha256: &str) -> Result<Value, String> {
     let existing_sha = existing
         .pointer("/evidence_json/admit_state/run_body_sha256")
@@ -1988,7 +2035,27 @@ fn exact_run_replay_or_conflict(existing: &Value, run_body_sha256: &str) -> Resu
     if existing_sha != Some(run_body_sha256) {
         return Err("conflicting RWE run body reuse or missing body identity".into());
     }
-    let mut row = redact_lease_from_run_view(existing.clone());
+    let status = existing.get("status").and_then(Value::as_str).unwrap_or("");
+    let mut row = if status == "admitted" {
+        // Current-owner crash recovery: return the existing lease capability.
+        let mut admitted = existing.clone();
+        if let Value::Object(ref mut m) = admitted {
+            if m.get("lease_token")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                if let Some(lease) = existing
+                    .pointer("/evidence_json/admit_state/lease_token")
+                    .cloned()
+                {
+                    m.insert("lease_token".into(), lease);
+                }
+            }
+        }
+        admitted
+    } else {
+        redact_lease_from_run_view(existing.clone())
+    };
     if let Value::Object(ref mut m) = row {
         m.insert("idempotent_replay".into(), json!(true));
     }
@@ -2104,7 +2171,12 @@ fn validate_rwe_authorization_body_for_schema(
 
 fn rwe_admit_compare_fields(schema_version: &str) -> &'static [&'static str] {
     match schema_version {
+        // Complete v2 authority envelope. schema_version differs deliberately
+        // between auth body (rwe_run_authorization.v2) and run body (rwe_run_body.v2);
+        // provider_free_fixture is run-only. Neither is compared here.
         "rwe_run_authorization.v2" => &[
+            "authorization_id",
+            "tenant_id",
             "accepted_main_sha",
             "corpus_artifact_path",
             "corpus_sha256",
@@ -2118,9 +2190,14 @@ fn rwe_admit_compare_fields(schema_version: &str) -> &'static [&'static str] {
             "max_total_tokens",
             "max_wall_time_ms",
             "golden_path_prerequisite_product_task_id",
+            "principal_id",
+            "principal_kind",
             "draft_pr_only",
             "admitted_executor",
             "auto_merge_disabled",
+            "one_use",
+            "fixture_only",
+            "expires_at",
             "task_ids",
             "cost_authority",
             "per_task_budgets",
@@ -2133,6 +2210,7 @@ fn rwe_admit_compare_fields(schema_version: &str) -> &'static [&'static str] {
             "provider_path",
             "budget_point_ids",
         ],
+        // v1 fixture envelope unchanged — do not expand and break fixture run bodies.
         _ => &[
             "corpus_sha256",
             "target_repo",
@@ -3477,13 +3555,16 @@ mod operator_v2_authority_tests {
     fn gp_prerequisite_rejects_fixture_and_untrusted_evidence() {
         let mut ev = gp_prerequisite_evidence("ptask-1", "tenant-1");
         ev["node"]["executor_class"] = json!("fixture_deterministic");
-        assert!(validate_golden_path_prerequisite_for_rwe_v2(&ev, "ptask-1").is_err());
+        assert!(validate_golden_path_prerequisite_for_rwe_v2(&ev, "ptask-1", "tenant-1").is_err());
         let mut ev = gp_prerequisite_evidence("ptask-1", "tenant-1");
         ev["verification"]["trustworthy"] = json!(false);
-        assert!(validate_golden_path_prerequisite_for_rwe_v2(&ev, "ptask-1").is_err());
+        assert!(validate_golden_path_prerequisite_for_rwe_v2(&ev, "ptask-1", "tenant-1").is_err());
+        let mut ev = gp_prerequisite_evidence("ptask-1", "tenant-1");
+        ev["tenant_id"] = json!("other-tenant");
+        assert!(validate_golden_path_prerequisite_for_rwe_v2(&ev, "ptask-1", "tenant-1").is_err());
         let ev = gp_prerequisite_evidence("ptask-1", "tenant-1");
         // GP codex identity is intentionally allowed (not bound to RWE deepseek).
-        validate_golden_path_prerequisite_for_rwe_v2(&ev, "ptask-1").unwrap();
+        validate_golden_path_prerequisite_for_rwe_v2(&ev, "ptask-1", "tenant-1").unwrap();
     }
 
     #[test]
@@ -3525,6 +3606,19 @@ mod operator_v2_authority_tests {
         assert_eq!(body["provider_path"], "/chat/completions");
         assert_eq!(body["binary_sha256"], operator_in_process_binary_sha256());
         assert_eq!(body["one_use"], true);
+        // Issue audit is store-owned and present for SQLite.
+        let audit_count: i64 = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM audit_log
+                     WHERE action='rwe.authorization_issued' AND resource=?1",
+                    rusqlite::params![auth_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        assert_eq!(audit_count, 1);
         // Exact replay of issue is idempotent on the same body.
         let replay_issue = store
             .issue_rwe_run_authorization_v2(
@@ -3545,15 +3639,37 @@ mod operator_v2_authority_tests {
             .admit_rwe_run(&principal, "rwe-v2-run-happy", auth_id, &run_body, false)
             .unwrap();
         assert_eq!(admitted["status"], "admitted");
-        assert!(admitted.get("lease_token").is_some());
+        let lease = admitted["lease_token"].as_str().unwrap().to_string();
         let consumed = store.get_rwe_run_authorization(auth_id).unwrap().unwrap();
         assert_eq!(consumed["status"], "consumed");
         assert_eq!(consumed["consumed_by_run_id"], "rwe-v2-run-happy");
-        // Exact admit replay does not re-consume (already consumed) and returns idempotent.
+        // Crash-style exact admit replay recovers the same lease; general get stays redacted.
         let replay = store
             .admit_rwe_run(&principal, "rwe-v2-run-happy", auth_id, &run_body, false)
             .unwrap();
         assert_eq!(replay["idempotent_replay"], true);
+        assert_eq!(
+            replay.get("lease_token").and_then(Value::as_str),
+            Some(lease.as_str())
+        );
+        assert!(store
+            .get_rwe_run("rwe-v2-run-happy")
+            .unwrap()
+            .unwrap()
+            .get("lease_token")
+            .is_none());
+        // Recovered lease can write a task-attempt (Board B does not auto-dispatch).
+        store
+            .persist_rwe_task_attempt(
+                "rwe-v2-run-happy",
+                &lease,
+                "rwe-v2-run-happy:recovery",
+                &frozen.corpus.tasks[0].task_id,
+                &frozen.corpus.tasks[0].definition_sha256,
+                "recovery_probe",
+                &json!({"board_b_recovery": true}),
+            )
+            .unwrap();
         // Second distinct run cannot consume the same one-use authority.
         let err = store
             .admit_rwe_run(&principal, "rwe-v2-run-second", auth_id, &run_body, false)
@@ -3562,7 +3678,7 @@ mod operator_v2_authority_tests {
             err.contains("not active") || err.contains("consumed"),
             "{err}"
         );
-        // No provider / target effects: no task-attempt rows without explicit write.
+        // Stale lease still rejected.
         assert!(store
             .persist_rwe_task_attempt(
                 "rwe-v2-run-happy",
@@ -3741,5 +3857,254 @@ mod operator_v2_authority_tests {
             .unwrap_err();
         assert!(err.contains("not active") || err.contains("revok"), "{err}");
         assert!(store.get_rwe_run("rwe-v2-revoked").unwrap().is_none());
+    }
+
+    #[test]
+    fn production_v2_rejects_foreign_tenant_golden_path_prerequisite() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("rwe-v2-xtenant.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let owner_tenant = "tenant-owner";
+        let attacker_tenant = "tenant-attacker";
+        let prereq = "ptask-foreign-seal";
+        // Accepted GP seal lives only under owner_tenant.
+        seed_gp_prerequisite(&store, prereq, owner_tenant);
+        let attacker = operator_principal(&store, attacker_tenant, "operator-attacker");
+        let err = store
+            .issue_rwe_run_authorization_v2(
+                &attacker,
+                &RweAuthorizationV2IssueRequest {
+                    authorization_id: "auth-xtenant".into(),
+                    golden_path_prerequisite_product_task_id: prereq.into(),
+                    expires_at: "2026-08-07T00:00:00Z".into(),
+                },
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("tenant") || err.contains("not found"),
+            "foreign-tenant prerequisite must fail closed: {err}"
+        );
+        assert!(
+            store
+                .get_rwe_run_authorization("auth-xtenant")
+                .unwrap()
+                .is_none(),
+            "authorization must not persist after foreign-tenant rejection"
+        );
+        // Owner can still issue against their own seal.
+        let owner = operator_principal(&store, owner_tenant, "operator-owner");
+        let issued = store
+            .issue_rwe_run_authorization_v2(
+                &owner,
+                &RweAuthorizationV2IssueRequest {
+                    authorization_id: "auth-owner-ok".into(),
+                    golden_path_prerequisite_product_task_id: prereq.into(),
+                    expires_at: "2026-08-07T00:00:00Z".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(issued["status"], "active");
+        assert_eq!(issued["tenant_id"], owner_tenant);
+    }
+
+    #[test]
+    fn production_v2_admit_rejects_each_new_envelope_field_mutation_without_consumption() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("rwe-v2-env.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let tenant = "tenant-rwe-v2-env";
+        let principal = operator_principal(&store, tenant, "operator-rwe-v2-env");
+        seed_gp_prerequisite(&store, "ptask-env", tenant);
+        let auth_id = "rwe-v2-env-auth";
+        let issued = store
+            .issue_rwe_run_authorization_v2(
+                &principal,
+                &RweAuthorizationV2IssueRequest {
+                    authorization_id: auth_id.into(),
+                    golden_path_prerequisite_product_task_id: "ptask-env".into(),
+                    expires_at: "2026-08-07T00:00:00Z".into(),
+                },
+            )
+            .unwrap();
+        let base = issued["body_json"].clone();
+
+        // Newly covered authority fields (plus a representative prior field).
+        let cases: Vec<(&str, Value)> = vec![
+            ("authorization_id", json!("mutated-auth-id")),
+            ("tenant_id", json!("mutated-tenant")),
+            ("principal_id", json!("mutated-principal")),
+            ("principal_kind", json!("fixture_principal")),
+            ("expires_at", json!("2026-08-08T00:00:00Z")),
+            ("one_use", json!(false)),
+            ("fixture_only", json!(true)),
+            ("accepted_main_sha", json!("a".repeat(40))),
+        ];
+        for (field, bad_value) in cases {
+            let mut run_body = base.clone();
+            run_body["run_id"] = json!(format!("rwe-v2-env-run-{field}"));
+            run_body[field] = bad_value;
+            let err = store
+                .admit_rwe_run(
+                    &principal,
+                    &format!("rwe-v2-env-run-{field}"),
+                    auth_id,
+                    &run_body,
+                    false,
+                )
+                .unwrap_err();
+            assert!(
+                err.contains("mismatch")
+                    || err.contains("missing")
+                    || err.contains("not active")
+                    || err.contains("fixture")
+                    || err.contains("principal")
+                    || err.contains("tenant"),
+                "field {field} mutation must fail closed: {err}"
+            );
+            assert_eq!(
+                store.get_rwe_run_authorization(auth_id).unwrap().unwrap()["status"],
+                "active",
+                "field {field}: authority must remain unconsumed"
+            );
+            assert!(
+                store
+                    .get_rwe_run(&format!("rwe-v2-env-run-{field}"))
+                    .unwrap()
+                    .is_none(),
+                "field {field}: run row must not be created"
+            );
+        }
+
+        // Removing a newly covered field also fails closed.
+        for field in [
+            "authorization_id",
+            "tenant_id",
+            "principal_id",
+            "principal_kind",
+            "expires_at",
+            "one_use",
+            "fixture_only",
+        ] {
+            let mut run_body = base.clone();
+            run_body["run_id"] = json!(format!("rwe-v2-env-rm-{field}"));
+            run_body.as_object_mut().unwrap().remove(field);
+            let err = store
+                .admit_rwe_run(
+                    &principal,
+                    &format!("rwe-v2-env-rm-{field}"),
+                    auth_id,
+                    &run_body,
+                    false,
+                )
+                .unwrap_err();
+            assert!(
+                err.contains("missing") || err.contains("mismatch"),
+                "removed field {field} must fail: {err}"
+            );
+            assert_eq!(
+                store.get_rwe_run_authorization(auth_id).unwrap().unwrap()["status"],
+                "active"
+            );
+            assert!(store
+                .get_rwe_run(&format!("rwe-v2-env-rm-{field}"))
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn production_v2_admitted_replay_recovers_lease_terminal_replay_redacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("rwe-v2-lease.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let tenant = "tenant-rwe-v2-lease";
+        let principal = operator_principal(&store, tenant, "operator-rwe-v2-lease");
+        seed_gp_prerequisite(&store, "ptask-lease", tenant);
+        let auth_id = "rwe-v2-lease-auth";
+        let issued = store
+            .issue_rwe_run_authorization_v2(
+                &principal,
+                &RweAuthorizationV2IssueRequest {
+                    authorization_id: auth_id.into(),
+                    golden_path_prerequisite_product_task_id: "ptask-lease".into(),
+                    expires_at: "2026-08-07T00:00:00Z".into(),
+                },
+            )
+            .unwrap();
+        let mut run_body = issued["body_json"].clone();
+        run_body["run_id"] = json!("rwe-v2-lease-run");
+        let admitted = store
+            .admit_rwe_run(&principal, "rwe-v2-lease-run", auth_id, &run_body, false)
+            .unwrap();
+        let lease = admitted["lease_token"].as_str().unwrap().to_string();
+
+        // Foreign principal exact replay rejected (no lease disclosure).
+        let foreign = operator_principal(&store, "tenant-foreign-lease", "operator-foreign-lease");
+        let err = store
+            .admit_rwe_run(&foreign, "rwe-v2-lease-run", auth_id, &run_body, false)
+            .unwrap_err();
+        assert!(err.contains("tenant") || err.contains("principal"), "{err}");
+
+        // Conflicting body rejected without lease disclosure.
+        let mut conflicting = run_body.clone();
+        conflicting["max_total_tokens"] = json!(1);
+        let err = store
+            .admit_rwe_run(&principal, "rwe-v2-lease-run", auth_id, &conflicting, false)
+            .unwrap_err();
+        assert!(
+            err.contains("conflict") || err.contains("mismatch"),
+            "{err}"
+        );
+
+        // Crash recovery: exact current-owner replay returns the lease.
+        let recovered = store
+            .admit_rwe_run(&principal, "rwe-v2-lease-run", auth_id, &run_body, false)
+            .unwrap();
+        assert_eq!(recovered["idempotent_replay"], true);
+        assert_eq!(
+            recovered.get("lease_token").and_then(Value::as_str),
+            Some(lease.as_str())
+        );
+
+        // Terminalize, then exact terminal replay stays lease-redacted.
+        let aggregate = json!({
+            "schema_version": "rwe_run_evidence.v1",
+            "run_id": "rwe-v2-lease-run",
+            "authorization_id": auth_id,
+            "live_baseline_sealed": false,
+            "provider_free_fixture_completion": false,
+            "live_provider_request": false,
+            "note": "terminal after board-b admit-only",
+        });
+        let evidence_sha = hex::encode(Sha256::digest(aggregate.to_string().as_bytes()));
+        store
+            .complete_rwe_run(
+                "rwe-v2-lease-run",
+                &lease,
+                "failed",
+                &aggregate,
+                &evidence_sha,
+            )
+            .unwrap();
+        let terminal_replay = store
+            .admit_rwe_run(&principal, "rwe-v2-lease-run", auth_id, &run_body, false)
+            .unwrap();
+        assert_eq!(terminal_replay["idempotent_replay"], true);
+        assert!(
+            terminal_replay.get("lease_token").is_none()
+                || terminal_replay["lease_token"].is_null()
+        );
+        assert!(store
+            .get_rwe_run("rwe-v2-lease-run")
+            .unwrap()
+            .unwrap()
+            .get("lease_token")
+            .is_none());
     }
 }

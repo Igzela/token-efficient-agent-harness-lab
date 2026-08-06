@@ -7975,7 +7975,17 @@ fn pg_rwe_authority_rejects_foreign_replay_and_stale_task_attempt_replay() {
         .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
         .unwrap();
     assert_eq!(replay["idempotent_replay"], true);
-    assert!(replay.get("lease_token").is_none());
+    // Admitted exact-owner replay recovers the lease; general get stays redacted.
+    assert_eq!(
+        replay.get("lease_token").and_then(|v| v.as_str()),
+        Some(lease.as_str())
+    );
+    assert!(store
+        .get_rwe_run(&run_id)
+        .unwrap()
+        .unwrap()
+        .get("lease_token")
+        .is_none());
     assert!(store.get_rwe_run(&run_id).unwrap().unwrap()["lease_token"].is_null());
 }
 
@@ -8861,7 +8871,7 @@ fn pg_rwe_v2_production_issue_admit_one_use_parity() {
         &principal,
         &RweAuthorizationV2IssueRequest {
             authorization_id: auth_id.clone(),
-            golden_path_prerequisite_product_task_id: prereq,
+            golden_path_prerequisite_product_task_id: prereq.clone(),
             expires_at: (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
         },
     )
@@ -8873,6 +8883,24 @@ fn pg_rwe_v2_production_issue_admit_one_use_parity() {
     );
     assert_eq!(issued["fixture_only"], false);
 
+    // Issue audit parity with SQLite (same action/resource, same owner).
+    let Some(url) = std::env::var("ACP_TEST_DATABASE_URL").ok() else {
+        return;
+    };
+    let mut audit_client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let audit_count: i64 = audit_client
+        .query_one(
+            "SELECT COUNT(*) FROM audit_log
+             WHERE action='rwe.authorization_issued' AND resource=$1",
+            &[&auth_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        audit_count, 1,
+        "PG issue must append rwe.authorization_issued audit"
+    );
+
     let run_id = format!("rwe-v2-pg-run-{tag}");
     let mut run_body = issued["body_json"].clone();
     run_body["run_id"] = json!(run_id.clone());
@@ -8880,15 +8908,26 @@ fn pg_rwe_v2_production_issue_admit_one_use_parity() {
         .admit_rwe_run(&principal, &run_id, &auth_id, &run_body, false)
         .unwrap();
     assert_eq!(admitted["status"], "admitted");
-    assert!(admitted.get("lease_token").is_some());
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
     let consumed = store.get_rwe_run_authorization(&auth_id).unwrap().unwrap();
     assert_eq!(consumed["status"], "consumed");
     assert_eq!(consumed["consumed_by_run_id"], run_id);
 
+    // Crash-style exact-owner admit replay recovers lease; general get redacts.
     let replay = store
         .admit_rwe_run(&principal, &run_id, &auth_id, &run_body, false)
         .unwrap();
     assert_eq!(replay["idempotent_replay"], true);
+    assert_eq!(
+        replay.get("lease_token").and_then(|v| v.as_str()),
+        Some(lease.as_str())
+    );
+    assert!(store
+        .get_rwe_run(&run_id)
+        .unwrap()
+        .unwrap()
+        .get("lease_token")
+        .is_none());
 
     let foreign_tenant = format!("tenant-rwe-v2-foreign-{tag}");
     let foreign_key = format!("operator-rwe-v2-foreign-{tag}");
@@ -8928,4 +8967,24 @@ fn pg_rwe_v2_production_issue_admit_one_use_parity() {
         err.contains("not active") || err.contains("consumed"),
         "{err}"
     );
+
+    // Foreign tenant cannot reuse the owner tenant's Golden Path prerequisite.
+    let err = store
+        .issue_rwe_run_authorization_v2(
+            &foreign,
+            &RweAuthorizationV2IssueRequest {
+                authorization_id: format!("auth-xtenant-pg-{tag}"),
+                golden_path_prerequisite_product_task_id: prereq,
+                expires_at: (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        err.contains("tenant") || err.contains("not found"),
+        "PG foreign-tenant prerequisite must fail closed: {err}"
+    );
+    assert!(store
+        .get_rwe_run_authorization(&format!("auth-xtenant-pg-{tag}"))
+        .unwrap()
+        .is_none());
 }

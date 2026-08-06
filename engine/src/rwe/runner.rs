@@ -224,91 +224,6 @@ pub fn persist_rwe_run_authorization_v2(
     store.issue_rwe_run_authorization_v2(principal, request)
 }
 
-/// Canonical production real-RWE spend envelope body (`rwe_run_authorization.v2`).
-/// Binds the frozen operator corpus/protocol/schedule artifacts and the
-/// accepted-main SHA they were frozen at. `golden_path_prerequisite_product_task_id`
-/// names the accepted live Golden Path prerequisite (a single accepted live-seal
-/// receipt), never a per-cell terminal receipt.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RweRunAuthorizationV2Body {
-    pub authorization_id: String,
-    pub accepted_main_sha: String,
-    pub corpus_artifact_path: String,
-    pub corpus_sha256: String,
-    pub protocol_sha256: String,
-    pub schedule_sha256: String,
-    pub golden_path_prerequisite_product_task_id: String,
-    pub principal_id: String,
-    pub principal_kind: String,
-    pub task_ids: Vec<String>,
-    pub max_total_provider_requests: u64,
-    pub max_total_tokens: u64,
-    pub max_wall_time_ms: u64,
-    pub cost_authority: CostAuthority,
-    pub per_task_budgets: Vec<RwePerTaskBudget>,
-    pub binary_path: String,
-    pub binary_version: String,
-    pub binary_sha256: String,
-    pub provider_kind: String,
-    pub provider_host: String,
-    pub provider_base_url: String,
-    pub provider_path: String,
-    pub budget_point_ids: Vec<String>,
-    pub target_repo: String,
-    pub target_main_sha: String,
-    pub executor_identity: String,
-    pub model_identity: String,
-    pub draft_pr_only: bool,
-    pub admitted_executor: String,
-    pub auto_merge_disabled: bool,
-    pub expires_at: String,
-}
-
-impl RweRunAuthorizationV2Body {
-    pub fn to_json(&self) -> Value {
-        json!({
-            "schema_version": RWE_RUN_AUTH_V2_SCHEMA,
-            "authorization_id": self.authorization_id,
-            "accepted_main_sha": self.accepted_main_sha,
-            "corpus_artifact_path": self.corpus_artifact_path,
-            "corpus_sha256": self.corpus_sha256,
-            "protocol_sha256": self.protocol_sha256,
-            "schedule_sha256": self.schedule_sha256,
-            "golden_path_prerequisite_product_task_id": self.golden_path_prerequisite_product_task_id,
-            "principal_id": self.principal_id,
-            "principal_kind": self.principal_kind,
-            "task_ids": self.task_ids,
-            "max_total_provider_requests": self.max_total_provider_requests,
-            "max_total_tokens": self.max_total_tokens,
-            "max_wall_time_ms": self.max_wall_time_ms,
-            "cost_authority": self.cost_authority.to_json(),
-            "per_task_budgets": self.per_task_budgets.iter().map(RwePerTaskBudget::to_json).collect::<Vec<_>>(),
-            "binary_path": self.binary_path,
-            "binary_version": self.binary_version,
-            "binary_sha256": self.binary_sha256,
-            "provider_kind": self.provider_kind,
-            "provider_host": self.provider_host,
-            "provider_base_url": self.provider_base_url,
-            "provider_path": self.provider_path,
-            "budget_point_ids": self.budget_point_ids,
-            "target_repo": self.target_repo,
-            "target_main_sha": self.target_main_sha,
-            "executor_identity": self.executor_identity,
-            "model_identity": self.model_identity,
-            "draft_pr_only": self.draft_pr_only,
-            "admitted_executor": self.admitted_executor,
-            "auto_merge_disabled": self.auto_merge_disabled,
-            "one_use": true,
-            "expires_at": self.expires_at,
-        })
-    }
-
-    pub fn body_sha256(&self) -> String {
-        let sorted = sort_value(&self.to_json());
-        hex::encode(Sha256::digest(sorted.to_string().as_bytes()))
-    }
-}
-
 /// Provider-free runner: admit run, dispatch fixture tasks, persist evidence.
 /// Never labels fixture completion as a live RWE baseline.
 ///
@@ -735,7 +650,12 @@ mod tests {
             .admit_rwe_run(&principal, "rwe-authority-run", auth_id, &run_body, true)
             .unwrap();
         assert_eq!(replayed["idempotent_replay"], true);
-        assert!(replayed.get("lease_token").is_none());
+        // Admitted exact-owner replay recovers the lease for crash restart.
+        assert_eq!(
+            replayed.get("lease_token").and_then(Value::as_str),
+            Some(lease.as_str())
+        );
+        // General read remains redacted.
         assert!(store
             .get_rwe_run("rwe-authority-run")
             .unwrap()

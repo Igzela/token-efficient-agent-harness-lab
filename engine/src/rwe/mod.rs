@@ -24,6 +24,5 @@ pub use operator_corpus::{
 pub use runner::{
     evaluate_rwe_live_gate_from_store, persist_rwe_run_authorization,
     persist_rwe_run_authorization_v2, provider_free_rwe_readiness_dossier, run_provider_free_rwe,
-    RweLiveGateResult, RweRunAuthorizationBody, RweRunAuthorizationV2Body, RWE_RUN_AUTH_SCHEMA,
-    RWE_RUN_AUTH_V2_SCHEMA,
+    RweLiveGateResult, RweRunAuthorizationBody, RWE_RUN_AUTH_SCHEMA, RWE_RUN_AUTH_V2_SCHEMA,
 };
