@@ -27,8 +27,7 @@ This decision changes future routing and acceptance gates. It does not activate 
 ## Authoritative Forward Order
 
 ```text
-Minimum First RWE Board B: production authorization/spend wiring
-→ first frozen live RWE baseline
+first frozen live RWE baseline
 → Architecture Convergence AC1–AC7
 → identical-corpus and identical-protocol replay
 → Harness-Evolution experiment-control hardening
@@ -46,7 +45,7 @@ No downstream packet starts automatically. Every packet must satisfy its named p
 
 ## Active Routing
 
-1. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `READY_FOR_EXECUTION` at Board B.
+1. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `READY_FOR_EXECUTION` at the first live frozen RWE baseline (Board A and Board B complete).
 2. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
 3. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
 4. `PE7-HARNESS-EVOLUTION-EXPERIMENT-CONTROL-HARDENING-1` — `BLOCKED_PREREQUISITE`.
@@ -162,20 +161,24 @@ PR #361 froze and accepted:
 
 The frozen artifacts do not authorize a live run.
 
-### Board B — Next Permitted Work
+### Board B — Complete
 
-Implement the smallest provider-free production wiring that:
+Accepted provider-free production wiring:
 
 1. issues and validates `rwe_run_authorization.v2` through the existing authenticated RWE/store owner;
 2. derives accepted-main, corpus, protocol, schedule, target, principal, provider, executor, expiry, and budget bindings from current owners rather than checkout text or caller assertions;
 3. persists one separately authorized, one-use RWE spend envelope under the existing spend/budget authority model;
 4. atomically admits or rejects before any run, task-attempt, provider, workspace, or target effect;
-5. prevents rejected, stale, duplicate, expired, revoked, conflicting, or not-ready requests from consuming authority;
-6. preserves restart, idempotency, concurrency, late-write refusal, cancellation, cleanup, terminal evidence, and SQLite/PostgreSQL parity;
+5. prevents rejected, stale, duplicate, expired, revoked, conflicting, wrong-tenant, or not-ready requests from consuming authority;
+6. preserves restart, idempotency, concurrency, late-write refusal, cancellation, cleanup, terminal evidence, and SQLite/PostgreSQL issue and admit audit parity;
 7. keeps provider calls and target effects absent from CI;
 8. adds no second scheduler, store, budget, evaluator, approval, output, audit, or rollback owner.
 
-Board B completion is provider-free. A live baseline still requires a new separately authorized run against the accepted exact head.
+Board B does not authorize a live run. A live baseline still requires a new separately authorized run against the accepted exact head.
+
+### First Live Baseline — Next Permitted Work
+
+**Prerequisite:** Board A and Board B accepted, plus a separate one-use live-run authorization against the accepted exact head.
 
 ### First Live Baseline Exit Gate
 

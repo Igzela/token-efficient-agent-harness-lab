@@ -20,6 +20,10 @@ pub const OPERATOR_ADMITTED_MODEL: &str = "deepseek-v4-flash";
 /// the binary identity of the admitted executor, not a model name.
 pub const OPERATOR_ADMITTED_BINARY_VERSION: &str = "0.1.0";
 pub const OPERATOR_ADMITTED_BINARY_PATH: &str = "in-process:managed_deepseek";
+/// Exact harness `main` SHA at which Board A froze the operator corpus, protocol,
+/// and schedule. Store-owned production issue/admit derives this binding; callers
+/// never supply or override it.
+pub const OPERATOR_ARTIFACTS_FROZEN_AT_MAIN_SHA: &str = "3c6cd00f68f4db2a9eef99598deebc42f95ab62b";
 
 pub fn operator_corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(OPERATOR_CORPUS_RELATIVE_ROOT)
@@ -38,7 +42,8 @@ pub struct OperatorFrozenContractSet {
 /// Freeze the whole operator contract set from accepted-main artifacts.
 /// `accepted_main_sha` is the exact harness main SHA the artifacts were frozen
 /// at (provided by the freeze tooling from the repository checkout, never
-/// operator-typed).
+/// operator-typed). Production owners must call
+/// [`freeze_current_operator_contract_set`] so the freeze-point SHA is store-owned.
 pub fn freeze_operator_contract_set(
     accepted_main_sha: &str,
 ) -> Result<OperatorFrozenContractSet, String> {
@@ -64,6 +69,13 @@ pub fn freeze_operator_contract_set(
         accepted_main_sha: accepted_main_sha.to_string(),
         corpus_artifact_path: OPERATOR_CORPUS_RELATIVE_ROOT.to_string(),
     })
+}
+
+/// Store-owned freeze of the current Board-A operator contract set. Derives the
+/// accepted-main freeze-point SHA from the repository owner constant rather than
+/// caller-supplied checkout text.
+pub fn freeze_current_operator_contract_set() -> Result<OperatorFrozenContractSet, String> {
+    freeze_operator_contract_set(OPERATOR_ARTIFACTS_FROZEN_AT_MAIN_SHA)
 }
 
 /// Load and freeze the operator-approved corpus from its versioned artifacts on

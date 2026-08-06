@@ -57,7 +57,9 @@ use engine::provider::transport::{HttpError, HttpRequest, HttpResponse, HttpTran
 #[cfg(feature = "pg-tests")]
 use engine::rwe::corpus::freeze_first_rwe_corpus;
 #[cfg(feature = "pg-tests")]
-use engine::rwe::runner::{persist_rwe_run_authorization, RweRunAuthorizationBody};
+use engine::rwe::runner::{
+    persist_rwe_run_authorization, persist_rwe_run_authorization_v2, RweRunAuthorizationBody,
+};
 #[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::BudgetAutoPausePolicy;
 #[cfg(feature = "pg-tests")]
@@ -66,10 +68,11 @@ use engine::storage::local_product_store::{
     CostAuthority, DelegationContract, DurableMemoryCreate, DurableMemoryRevision,
     ExternalRuntimeInvocationClaim, ExternalRuntimeScope, LocalProductStore,
     MemoryRetrievalRequest, MemoryScope, ProviderEmbeddingResolutionAction,
-    ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, RwePerTaskBudget,
-    SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
-    MANAGED_REVIEWER_KEY_SCOPES, SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_MANIFEST_APPROVE,
-    SCOPE_IDENTITY_DELEGATE, SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
+    ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, RweAuthorizationV2IssueRequest,
+    RwePerTaskBudget, SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES,
+    MANAGED_OUTPUT_OPERATOR_KEY_SCOPES, MANAGED_REVIEWER_KEY_SCOPES, SCOPE_ATTEMPT_ADMIT,
+    SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_MANIFEST_APPROVE, SCOPE_IDENTITY_DELEGATE,
+    SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
 };
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
@@ -7972,7 +7975,17 @@ fn pg_rwe_authority_rejects_foreign_replay_and_stale_task_attempt_replay() {
         .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
         .unwrap();
     assert_eq!(replay["idempotent_replay"], true);
-    assert!(replay.get("lease_token").is_none());
+    // Admitted exact-owner replay recovers the lease; general get stays redacted.
+    assert_eq!(
+        replay.get("lease_token").and_then(|v| v.as_str()),
+        Some(lease.as_str())
+    );
+    assert!(store
+        .get_rwe_run(&run_id)
+        .unwrap()
+        .unwrap()
+        .get("lease_token")
+        .is_none());
     assert!(store.get_rwe_run(&run_id).unwrap().unwrap()["lease_token"].is_null());
 }
 
@@ -8783,4 +8796,209 @@ fn pg_rwe_terminal_first_rejects_late_attempt() {
             || late_err.contains("current run"),
         "attempt after terminalization must be rejected: {late_err}"
     );
+}
+
+/// Board B: production v2 issue/admit one-use spend envelope on PostgreSQL.
+/// Provider-free; no cell dispatch or target write.
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_v2_production_issue_admit_one_use_parity() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-v2-{tag}");
+    let key_id = format!("operator-rwe-v2-{tag}");
+    store
+        .record_api_key_metadata_for_tenant(
+            &tenant,
+            &key_id,
+            "operator-user",
+            "operator",
+            &[
+                SCOPE_RISK_ACKNOWLEDGE.to_string(),
+                SCOPE_SPEND_AUTHORIZE.to_string(),
+                SCOPE_ATTEMPT_ADMIT.to_string(),
+            ],
+            "test-operator",
+        )
+        .unwrap();
+    let principal = store
+        .authenticate_managed_acceptance_principal(&tenant, &key_id, None)
+        .unwrap();
+    let prereq = format!("ptask-v2-pg-{tag}");
+    let mut evidence = json!({
+        "schema_version": "product_task_terminal_evidence.v2",
+        "evidence_id": format!("ev-v2-pg-{tag}"),
+        "product_task_id": prereq,
+        "tenant_id": tenant,
+        "workspace_scope_id": format!("ws-v2-pg-{tag}"),
+        "task_version": 1,
+        "task_status": "completed",
+        "node": {"executor_class": "managed_coding"},
+        "source_revision": "c".repeat(40),
+        "verification": {"trustworthy": true, "status": "passed"},
+        "approval": {"approval_id": format!("approval-v2-pg-{tag}")},
+        "artifact": {"artifact_id": format!("artifact-v2-pg-{tag}")},
+        "output": {
+            "intent": "draft_pr",
+            "result_sha256": "d".repeat(64),
+            "operation_id": format!("op-v2-pg-{tag}"),
+            "receipt_id": format!("rcpt-v2-pg-{tag}"),
+            "draft_pr": {
+                "number": 5,
+                "repository": "Igzela/alters-lab",
+                "base_branch": "main",
+                "head_branch": "acp/gp",
+                "head_sha": "e".repeat(40),
+                "draft": true
+            }
+        },
+        "audit_reference": {"audit_id": 900_001i64, "action": "product_task.terminal_evidence_committed"},
+        "created_at": "2026-07-25T12:00:00Z",
+        "created_by": "test",
+        "content_sha256": Value::Null,
+    });
+    let hash = hex::encode(Sha256::digest(serde_json::to_vec(&evidence).unwrap()));
+    evidence["content_sha256"] = json!(hash);
+    store
+        .insert_product_task_terminal_evidence_for_tests(&evidence)
+        .unwrap();
+
+    let auth_id = format!("rwe-v2-pg-auth-{tag}");
+    let issued = persist_rwe_run_authorization_v2(
+        &store,
+        &principal,
+        &RweAuthorizationV2IssueRequest {
+            authorization_id: auth_id.clone(),
+            golden_path_prerequisite_product_task_id: prereq.clone(),
+            expires_at: (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
+        },
+    )
+    .unwrap();
+    assert_eq!(issued["status"], "active");
+    assert_eq!(
+        issued["body_json"]["schema_version"],
+        "rwe_run_authorization.v2"
+    );
+    assert_eq!(issued["fixture_only"], false);
+
+    // Issue audit parity with SQLite (same action/resource, same owner).
+    let Some(url) = std::env::var("ACP_TEST_DATABASE_URL").ok() else {
+        return;
+    };
+    let mut audit_client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let audit_count: i64 = audit_client
+        .query_one(
+            "SELECT COUNT(*) FROM audit_log
+             WHERE action='rwe.authorization_issued' AND resource=$1",
+            &[&auth_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        audit_count, 1,
+        "PG issue must append rwe.authorization_issued audit"
+    );
+
+    let run_id = format!("rwe-v2-pg-run-{tag}");
+    let mut run_body = issued["body_json"].clone();
+    run_body["run_id"] = json!(run_id.clone());
+    let admitted = store
+        .admit_rwe_run(&principal, &run_id, &auth_id, &run_body, false)
+        .unwrap();
+    assert_eq!(admitted["status"], "admitted");
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+    let consumed = store.get_rwe_run_authorization(&auth_id).unwrap().unwrap();
+    assert_eq!(consumed["status"], "consumed");
+    assert_eq!(consumed["consumed_by_run_id"], run_id);
+
+    // Admit audit parity with SQLite (same action/resource, same owner).
+    let admit_audit_count: i64 = audit_client
+        .query_one(
+            "SELECT COUNT(*) FROM audit_log
+             WHERE action='rwe.run_admitted' AND resource=$1",
+            &[&run_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        admit_audit_count, 1,
+        "PG admit must append exactly one rwe.run_admitted audit"
+    );
+
+    // Crash-style exact-owner admit replay recovers lease; general get redacts.
+    let replay = store
+        .admit_rwe_run(&principal, &run_id, &auth_id, &run_body, false)
+        .unwrap();
+    assert_eq!(replay["idempotent_replay"], true);
+    assert_eq!(
+        replay.get("lease_token").and_then(|v| v.as_str()),
+        Some(lease.as_str())
+    );
+    assert!(store
+        .get_rwe_run(&run_id)
+        .unwrap()
+        .unwrap()
+        .get("lease_token")
+        .is_none());
+
+    let foreign_tenant = format!("tenant-rwe-v2-foreign-{tag}");
+    let foreign_key = format!("operator-rwe-v2-foreign-{tag}");
+    store
+        .record_api_key_metadata_for_tenant(
+            &foreign_tenant,
+            &foreign_key,
+            "operator-user",
+            "operator",
+            &[
+                SCOPE_RISK_ACKNOWLEDGE.to_string(),
+                SCOPE_SPEND_AUTHORIZE.to_string(),
+                SCOPE_ATTEMPT_ADMIT.to_string(),
+            ],
+            "test-operator",
+        )
+        .unwrap();
+    let foreign = store
+        .authenticate_managed_acceptance_principal(&foreign_tenant, &foreign_key, None)
+        .unwrap();
+    let err = store
+        .admit_rwe_run(&foreign, &run_id, &auth_id, &run_body, false)
+        .unwrap_err();
+    assert!(err.contains("tenant") || err.contains("principal"), "{err}");
+
+    // Second run cannot re-consume the one-use authority.
+    let err = store
+        .admit_rwe_run(
+            &principal,
+            &format!("rwe-v2-pg-run-2-{tag}"),
+            &auth_id,
+            &run_body,
+            false,
+        )
+        .unwrap_err();
+    assert!(
+        err.contains("not active") || err.contains("consumed"),
+        "{err}"
+    );
+
+    // Foreign tenant cannot reuse the owner tenant's Golden Path prerequisite.
+    let err = store
+        .issue_rwe_run_authorization_v2(
+            &foreign,
+            &RweAuthorizationV2IssueRequest {
+                authorization_id: format!("auth-xtenant-pg-{tag}"),
+                golden_path_prerequisite_product_task_id: prereq,
+                expires_at: (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        err.contains("tenant") || err.contains("not found"),
+        "PG foreign-tenant prerequisite must fail closed: {err}"
+    );
+    assert!(store
+        .get_rwe_run_authorization(&format!("auth-xtenant-pg-{tag}"))
+        .unwrap()
+        .is_none());
 }

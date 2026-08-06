@@ -47,17 +47,17 @@ PR #361 is merged and accepted as `9aea39b75a7999ae7db22176b77e06bcf7a6890f`. It
 - preserved strict v1 fixture versus v2 production-contract separation;
 - added no provider call, target effect, schema migration, or new authority owner.
 
-The frozen corpus, protocol, and schedule are accepted prerequisites. They do **not** authorize live execution by themselves.
+Board B of `PE7-REAL-WORKLOAD-EVIDENCE-1` is accepted as provider-free production issue/admit/one-use spend wiring for `rwe_run_authorization.v2` under the existing authenticated RWE/`LocalProductStore` owner. Bindings derive from freeze owners and the authenticated principal; rejected, stale, expired, revoked, wrong-tenant, and conflicting requests fail closed without consuming authority. SQLite/PostgreSQL issue and admit audit parity is preserved. No second spend, store, scheduler, evaluator, approval, output, audit, or rollback owner was added. Board B authorizes no Provider call and no target effect by itself.
+
+The frozen corpus, protocol, schedule, and Board B production wiring are accepted prerequisites. They do **not** authorize a live RWE baseline by themselves.
 
 ## Active Frontier
 
-`PE7-REAL-WORKLOAD-EVIDENCE-1` is `READY_FOR_EXECUTION` at Board B.
+`PE7-REAL-WORKLOAD-EVIDENCE-1` is `READY_FOR_EXECUTION` at the first live frozen RWE baseline.
 
-The next eligible work is provider-free production wiring for `rwe_run_authorization.v2` and the separately persisted one-use RWE spend envelope. Board B must reuse the existing RWE, ProductTask, managed-provider, scheduler, store, audit, approval, output, cleanup, and terminal-evidence owners.
+The next permitted work is a separately authorized one-use live run of the frozen Board A schedule against the accepted exact head, after current live-run authority is issued. The 4-cell live coordinator, provider-backed execution, target writes, and evidence closeout remain outside Board B and require that separate authority.
 
-No Board B implementation PR was open at the time of this update.
-
-The first live RWE run remains blocked until all Board B authority, persistence, issue/admit, exact accepted-main, budget, restart, parity, and fail-closed gates are merged and a separate current live-run authorization is issued.
+The first live RWE run remains blocked until a separate current live-run authorization is issued against the accepted exact head. Branch-local Draft heads never authorize live baseline, provider calls, or target effects.
 
 ## Open Review Surfaces
 
@@ -73,8 +73,8 @@ Merged or closed PRs are not open review surfaces and should not be retained in 
 | Stage | State | Entry requirement |
 |---|---|---|
 | Minimum First RWE Board A: frozen corpus/protocol/schedule and authorization v2 contract | `COMPLETE` | PR #361 accepted |
-| Minimum First RWE Board B: production issue/admit/spend wiring | `READY_FOR_EXECUTION` | Start from accepted `main`; provider-free implementation and tests first |
-| First live frozen RWE baseline | `BLOCKED_PREREQUISITE` | Board B accepted plus separate one-use live-run authority |
+| Minimum First RWE Board B: production issue/admit/spend wiring | `COMPLETE` | Provider-free production `rwe_run_authorization.v2` issue/admit and one-use spend wiring accepted |
+| First live frozen RWE baseline | `BLOCKED_PREREQUISITE` | Separate one-use live-run authority against accepted exact head |
 | Architecture Convergence AC1–AC7 | `BLOCKED_PREREQUISITE` | Accepted pre-convergence RWE baseline |
 | Identical-corpus/protocol replay | `BLOCKED_PREREQUISITE` | Architecture Convergence complete |
 | Harness-Evolution experiment-control hardening | `BLOCKED_PREREQUISITE` | Comparable replay evidence and accepted design packet |
@@ -112,24 +112,21 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 
 ## Confirmed Integration Gaps
 
-1. Board B production wiring and one-use RWE spend persistence are not yet accepted.
-2. No repeated live frozen RWE baseline exists.
-3. Architecture Convergence has not started because its baseline prerequisite is absent.
-4. No diversity, contamination, evaluator-gaming, or mutation-family control packet has been implemented for generational Harness experiments.
-5. No accepted memory/skill projection experiment exists; raw evidence remains authoritative and summaries remain non-authoritative projections.
-6. No Level-2, sealed transfer, or Meta Improver result exists.
+1. No repeated live frozen RWE baseline exists; a separate one-use live-run authorization against the accepted exact head is still required.
+2. Architecture Convergence has not started because its baseline prerequisite is absent.
+3. No diversity, contamination, evaluator-gaming, or mutation-family control packet has been implemented for generational Harness experiments.
+4. No accepted memory/skill projection experiment exists; raw evidence remains authoritative and summaries remain non-authoritative projections.
+5. No Level-2, sealed transfer, or Meta Improver result exists.
 
 ## Open Work Coordination
 
-The next permitted action is to implement Board B of `PE7-REAL-WORKLOAD-EVIDENCE-1` as one focused provider-free branch/PR:
+The next permitted action is the first live frozen RWE baseline of `PE7-REAL-WORKLOAD-EVIDENCE-1`, only after a separate current one-use live-run authorization is issued against the accepted exact head:
 
-- wire authorization v2 through the existing production issue/admit path;
-- persist and atomically consume the separate one-use RWE spend authority;
-- derive accepted-main and all authority bindings from current owners, never caller assertions;
-- preserve SQLite/PostgreSQL parity, idempotency, restart, concurrency, cancellation, late-write refusal, cleanup, and rollback;
+- execute the frozen Board A schedule without changing corpus, protocol, reviewer policy, budgets, seeds, verifier, or thresholds;
+- reuse the accepted Board B production issue/admit/spend path and existing ProductTask, managed-provider, scheduler, store, audit, approval, output, cleanup, and terminal-evidence owners;
+- record layered success, failure class, provider/request/token/latency/cost evidence, approval/output/terminal bindings, recovery and cleanup, full failed-attempt cost, and evidence sufficiency;
 - make every missing, stale, conflicting, expired, duplicate, outcome-unknown, or over-budget state fail closed before an external effect;
-- add no provider call in CI and no target effect;
-- finish focused checks, canonical exact-head CI, complete-diff independent review, and documentation closeout before any live RWE authorization.
+- claim no result stronger than the observed evidence-sufficiency state.
 
 ## Safety Boundary
 

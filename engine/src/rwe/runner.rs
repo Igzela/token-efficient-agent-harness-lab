@@ -4,10 +4,11 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::corpus::{freeze_first_rwe_corpus, FirstRweCorpus, RWE_CORPUS_SCHEMA};
+use super::operator_corpus::freeze_current_operator_contract_set;
 use crate::storage::local_product_store::validate_rwe_corpus_envelope;
 use crate::storage::local_product_store::{
     AuthenticatedPrincipal, CostAuthority, LocalProductStore, RweAuthorizationIssueRequest,
-    RwePerTaskBudget, SCOPE_SPEND_AUTHORIZE,
+    RweAuthorizationV2IssueRequest, RwePerTaskBudget, SCOPE_SPEND_AUTHORIZE,
 };
 
 pub const RWE_RUN_AUTH_SCHEMA: &str = "rwe_run_authorization.v1";
@@ -210,93 +211,25 @@ pub fn persist_rwe_run_authorization(
     )
 }
 
-/// Canonical production real-RWE spend envelope body (`rwe_run_authorization.v2`).
-/// Binds the frozen operator corpus/protocol/schedule artifacts and the
-/// accepted-main SHA they were frozen at. `golden_path_prerequisite_product_task_id`
-/// names the accepted live Golden Path prerequisite (a single accepted live-seal
-/// receipt), never a per-cell terminal receipt.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RweRunAuthorizationV2Body {
-    pub authorization_id: String,
-    pub accepted_main_sha: String,
-    pub corpus_artifact_path: String,
-    pub corpus_sha256: String,
-    pub protocol_sha256: String,
-    pub schedule_sha256: String,
-    pub golden_path_prerequisite_product_task_id: String,
-    pub principal_id: String,
-    pub principal_kind: String,
-    pub task_ids: Vec<String>,
-    pub max_total_provider_requests: u64,
-    pub max_total_tokens: u64,
-    pub max_wall_time_ms: u64,
-    pub cost_authority: CostAuthority,
-    pub per_task_budgets: Vec<RwePerTaskBudget>,
-    pub binary_path: String,
-    pub binary_version: String,
-    pub binary_sha256: String,
-    pub provider_kind: String,
-    pub provider_host: String,
-    pub provider_base_url: String,
-    pub provider_path: String,
-    pub budget_point_ids: Vec<String>,
-    pub target_repo: String,
-    pub target_main_sha: String,
-    pub executor_identity: String,
-    pub model_identity: String,
-    pub draft_pr_only: bool,
-    pub admitted_executor: String,
-    pub auto_merge_disabled: bool,
-    pub expires_at: String,
-}
-
-impl RweRunAuthorizationV2Body {
-    pub fn to_json(&self) -> Value {
-        json!({
-            "schema_version": RWE_RUN_AUTH_V2_SCHEMA,
-            "authorization_id": self.authorization_id,
-            "accepted_main_sha": self.accepted_main_sha,
-            "corpus_artifact_path": self.corpus_artifact_path,
-            "corpus_sha256": self.corpus_sha256,
-            "protocol_sha256": self.protocol_sha256,
-            "schedule_sha256": self.schedule_sha256,
-            "golden_path_prerequisite_product_task_id": self.golden_path_prerequisite_product_task_id,
-            "principal_id": self.principal_id,
-            "principal_kind": self.principal_kind,
-            "task_ids": self.task_ids,
-            "max_total_provider_requests": self.max_total_provider_requests,
-            "max_total_tokens": self.max_total_tokens,
-            "max_wall_time_ms": self.max_wall_time_ms,
-            "cost_authority": self.cost_authority.to_json(),
-            "per_task_budgets": self.per_task_budgets.iter().map(RwePerTaskBudget::to_json).collect::<Vec<_>>(),
-            "binary_path": self.binary_path,
-            "binary_version": self.binary_version,
-            "binary_sha256": self.binary_sha256,
-            "provider_kind": self.provider_kind,
-            "provider_host": self.provider_host,
-            "provider_base_url": self.provider_base_url,
-            "provider_path": self.provider_path,
-            "budget_point_ids": self.budget_point_ids,
-            "target_repo": self.target_repo,
-            "target_main_sha": self.target_main_sha,
-            "executor_identity": self.executor_identity,
-            "model_identity": self.model_identity,
-            "draft_pr_only": self.draft_pr_only,
-            "admitted_executor": self.admitted_executor,
-            "auto_merge_disabled": self.auto_merge_disabled,
-            "one_use": true,
-            "expires_at": self.expires_at,
-        })
+/// Issue production `rwe_run_authorization.v2` through the authenticated store owner.
+/// Bindings are store-derived; callers supply only identity, GP prerequisite, and expiry.
+pub fn persist_rwe_run_authorization_v2(
+    store: &LocalProductStore,
+    principal: &AuthenticatedPrincipal,
+    request: &RweAuthorizationV2IssueRequest,
+) -> Result<Value, String> {
+    if !principal.has_scope(SCOPE_SPEND_AUTHORIZE) {
+        return Err("principal missing spend authorize scope".into());
     }
-
-    pub fn body_sha256(&self) -> String {
-        let sorted = sort_value(&self.to_json());
-        hex::encode(Sha256::digest(sorted.to_string().as_bytes()))
-    }
+    store.issue_rwe_run_authorization_v2(principal, request)
 }
 
 /// Provider-free runner: admit run, dispatch fixture tasks, persist evidence.
 /// Never labels fixture completion as a live RWE baseline.
+///
+/// Live path (`allow_fixture=false`) admits only store-owned `rwe_run_authorization.v2`
+/// and returns after atomic one-use spend consumption. It does **not** dispatch the
+/// 4-cell schedule, call a Provider, or write the target repository (Board B scope).
 pub fn run_provider_free_rwe(
     store: &LocalProductStore,
     principal: &AuthenticatedPrincipal,
@@ -304,11 +237,54 @@ pub fn run_provider_free_rwe(
     authorization_id: &str,
     allow_fixture: bool,
 ) -> Result<Value, String> {
-    let corpus = freeze_first_rwe_corpus()?;
     let auth = store
         .get_rwe_run_authorization(authorization_id)?
         .ok_or_else(|| "RWE authorization not found".to_string())?;
     let auth_body = auth.get("body_json").cloned().unwrap_or(Value::Null);
+    let schema = auth_body
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    if !allow_fixture {
+        // Production live path: require store-owned v2 spend envelope; admit only.
+        if schema != RWE_RUN_AUTH_V2_SCHEMA {
+            return Err(
+                "fail closed: live RWE requires store-owned rwe_run_authorization.v2".into(),
+            );
+        }
+        let frozen = freeze_current_operator_contract_set()?;
+        if auth.get("corpus_sha256").and_then(Value::as_str)
+            != Some(frozen.corpus.corpus_sha256.as_str())
+        {
+            return Err("corpus mismatch vs store-owned operator freeze".into());
+        }
+        // Run body is projected from the store-owned authorization body (not caller text).
+        let mut run_body = auth_body.clone();
+        if let Value::Object(ref mut m) = run_body {
+            m.insert("run_id".into(), json!(run_id));
+            m.insert("authorization_id".into(), json!(authorization_id));
+            m.insert("provider_free_fixture".into(), json!(false));
+            m.insert("schema_version".into(), json!("rwe_run_body.v2"));
+        }
+        let run_body = sort_value(&run_body);
+        let mut admitted =
+            store.admit_rwe_run(principal, run_id, authorization_id, &run_body, false)?;
+        // Board B stops after admit: no cell dispatch, provider call, workspace, or target write.
+        if let Value::Object(ref mut m) = admitted {
+            m.insert("board_b_admit_only".into(), json!(true));
+            m.insert("live_provider_request".into(), json!(false));
+            m.insert("live_baseline_sealed".into(), json!(false));
+            m.insert(
+                "note".into(),
+                json!("Board B production admit consumes one-use RWE spend; cell coordinator and live baseline are later packets"),
+            );
+        }
+        return Ok(admitted);
+    }
+
+    // Fixture path (v1 only).
+    let corpus = freeze_first_rwe_corpus()?;
     validate_rwe_corpus_envelope(&auth_body)?;
 
     let run_body = sort_value(&json!({
@@ -339,22 +315,8 @@ pub fn run_provider_free_rwe(
         "provider_free_fixture": allow_fixture,
     }));
 
-    // Exact run replay compares complete run body via store admit.
-    if allow_fixture {
-        if auth.get("corpus_sha256").and_then(Value::as_str) != Some(corpus.corpus_sha256.as_str())
-        {
-            return Err("corpus mismatch".into());
-        }
-    } else {
-        // Fail-closed until the production corpus/protocol/schedule binding
-        // (rwe_run_authorization.v2) is accepted: a live-eligible authorization must
-        // never be admitted, never consume spend authority, and never be served
-        // fixture evidence. The one-use authorization stays active; no run row and
-        // no task attempts are created.
-        return Err(
-            "fail closed: live RWE execution is not yet bound to an accepted production corpus/protocol/schedule"
-                .into(),
-        );
+    if auth.get("corpus_sha256").and_then(Value::as_str) != Some(corpus.corpus_sha256.as_str()) {
+        return Err("corpus mismatch".into());
     }
 
     let admitted = store.admit_rwe_run(
@@ -688,7 +650,12 @@ mod tests {
             .admit_rwe_run(&principal, "rwe-authority-run", auth_id, &run_body, true)
             .unwrap();
         assert_eq!(replayed["idempotent_replay"], true);
-        assert!(replayed.get("lease_token").is_none());
+        // Admitted exact-owner replay recovers the lease for crash restart.
+        assert_eq!(
+            replayed.get("lease_token").and_then(Value::as_str),
+            Some(lease.as_str())
+        );
+        // General read remains redacted.
         assert!(store
             .get_rwe_run("rwe-authority-run")
             .unwrap()
@@ -754,12 +721,10 @@ mod tests {
     #[test]
     fn live_eligible_authorization_fail_closed_before_admit_and_consumption() {
         // Real operator authentication through the store-owned API-key metadata owner,
-        // not a fabricated principal. On current main no real terminal evidence can
-        // satisfy the issue-time binding (frozen corpus identity can never equal a
-        // graph-compiled managed_executor_identity; see
-        // rwe_authority::authority_regression_tests::live_issue_rejects_compiler_shaped_terminal_evidence),
-        // so a gate-eligible live row can only be constructed through the store
-        // authorization owner insert (test-only wrapper) exactly as issue would persist it.
+        // not a fabricated principal. A live-eligible *v1* row (pre-Board-B contract)
+        // must still fail closed before admit and consumption: live path requires
+        // store-owned rwe_run_authorization.v2. Constructed via the store authorization
+        // owner insert (test-only wrapper) for gate-eligible regression coverage.
         let dir = tempdir().unwrap();
         let store = LocalProductStore::new_with_clock(dir.path().join("rwe-b0-live.db"), || {
             "2026-07-25T12:00:00Z".into()
@@ -848,10 +813,13 @@ mod tests {
             RweLiveGateResult::ReadyAuthorized
         );
 
-        // B0: allow_fixture=false is rejected before admit and before consumption.
+        // B0: v1 live-eligible authorization is rejected before admit/consumption.
         let err = run_provider_free_rwe(&store, &principal, "b0-run-live", "b0-live-auth", false)
             .unwrap_err();
-        assert!(err.contains("fail closed"), "{err}");
+        assert!(
+            err.contains("fail closed") || err.contains("rwe_run_authorization.v2"),
+            "{err}"
+        );
         assert!(store.get_rwe_run("b0-run-live").unwrap().is_none());
         let auth = store
             .get_rwe_run_authorization("b0-live-auth")
@@ -881,6 +849,120 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(auth["status"], "active");
+    }
+
+    #[test]
+    fn board_b_v2_production_issue_and_runner_admit_without_provider_or_target() {
+        use crate::rwe::operator_corpus::OPERATOR_ARTIFACTS_FROZEN_AT_MAIN_SHA;
+        use crate::storage::local_product_store::RweAuthorizationV2IssueRequest;
+        use sha2::Digest;
+
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("rwe-board-b.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let tenant = "tenant-board-b";
+        let key_id = "operator-board-b";
+        store
+            .record_api_key_metadata_for_tenant(
+                tenant,
+                key_id,
+                "operator-user",
+                "operator",
+                &[
+                    SCOPE_RISK_ACKNOWLEDGE.to_string(),
+                    SCOPE_SPEND_AUTHORIZE.to_string(),
+                    SCOPE_ATTEMPT_ADMIT.to_string(),
+                ],
+                "test-operator",
+            )
+            .unwrap();
+        let principal = store
+            .authenticate_managed_acceptance_principal(tenant, key_id, None)
+            .unwrap();
+        let prereq = "ptask-board-b-gp";
+        let mut evidence = json!({
+            "schema_version": "product_task_terminal_evidence.v2",
+            "evidence_id": "ev-board-b-gp",
+            "product_task_id": prereq,
+            "tenant_id": tenant,
+            "workspace_scope_id": "ws-board-b",
+            "task_version": 1,
+            "task_status": "completed",
+            "node": {"executor_class": "managed_coding"},
+            "source_revision": "c".repeat(40),
+            "verification": {"trustworthy": true, "status": "passed"},
+            "approval": {"approval_id": "approval-board-b"},
+            "artifact": {"artifact_id": "artifact-board-b"},
+            "output": {
+                "intent": "draft_pr",
+                "result_sha256": "d".repeat(64),
+                "operation_id": "op-board-b",
+                "receipt_id": "rcpt-board-b",
+                "draft_pr": {
+                    "number": 5,
+                    "repository": "Igzela/alters-lab",
+                    "base_branch": "main",
+                    "head_branch": "acp/gp",
+                    "head_sha": "e".repeat(40),
+                    "draft": true
+                }
+            },
+            "audit_reference": {"audit_id": 1, "action": "product_task.terminal_evidence_committed"},
+            "created_at": "2026-07-25T12:00:00Z",
+            "created_by": "test",
+            "content_sha256": Value::Null,
+        });
+        let hash = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&evidence).unwrap()));
+        evidence["content_sha256"] = json!(hash);
+        store
+            .insert_product_task_terminal_evidence_for_tests(&evidence)
+            .unwrap();
+
+        let auth_id = "board-b-v2-auth";
+        let issued = persist_rwe_run_authorization_v2(
+            &store,
+            &principal,
+            &RweAuthorizationV2IssueRequest {
+                authorization_id: auth_id.into(),
+                golden_path_prerequisite_product_task_id: prereq.into(),
+                expires_at: "2026-08-07T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(issued["status"], "active");
+        assert_eq!(
+            issued["body_json"]["accepted_main_sha"],
+            OPERATOR_ARTIFACTS_FROZEN_AT_MAIN_SHA
+        );
+
+        let admitted =
+            run_provider_free_rwe(&store, &principal, "board-b-run", auth_id, false).unwrap();
+        assert_eq!(admitted["status"], "admitted");
+        assert_eq!(admitted["board_b_admit_only"], true);
+        assert_eq!(admitted["live_provider_request"], false);
+        assert_eq!(admitted["live_baseline_sealed"], false);
+        assert!(admitted.get("lease_token").is_some());
+        let auth = store.get_rwe_run_authorization(auth_id).unwrap().unwrap();
+        assert_eq!(auth["status"], "consumed");
+        // Exact replay.
+        let replay =
+            run_provider_free_rwe(&store, &principal, "board-b-run", auth_id, false).unwrap();
+        assert_eq!(replay["idempotent_replay"], true);
+        // No cell/task-attempt rows created by Board B admit-only path.
+        let frozen = freeze_current_operator_contract_set().unwrap();
+        assert!(store
+            .persist_rwe_task_attempt(
+                "board-b-run",
+                "stale-lease",
+                "board-b-run:no-cell",
+                &frozen.corpus.tasks[0].task_id,
+                &frozen.corpus.tasks[0].definition_sha256,
+                "should_fail",
+                &json!({"board_b": true}),
+            )
+            .is_err());
     }
 
     #[test]

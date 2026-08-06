@@ -18,11 +18,11 @@ pub use economic_protocol::{
 };
 pub use execution_schedule::{freeze_operator_execution_schedule, FrozenExecutionSchedule};
 pub use operator_corpus::{
-    freeze_operator_contract_set, freeze_operator_rwe_corpus, operator_corpus_root,
-    OperatorFrozenContractSet,
+    freeze_current_operator_contract_set, freeze_operator_contract_set, freeze_operator_rwe_corpus,
+    operator_corpus_root, OperatorFrozenContractSet, OPERATOR_ARTIFACTS_FROZEN_AT_MAIN_SHA,
 };
 pub use runner::{
     evaluate_rwe_live_gate_from_store, persist_rwe_run_authorization,
-    provider_free_rwe_readiness_dossier, run_provider_free_rwe, RweLiveGateResult,
-    RweRunAuthorizationBody, RWE_RUN_AUTH_SCHEMA,
+    persist_rwe_run_authorization_v2, provider_free_rwe_readiness_dossier, run_provider_free_rwe,
+    RweLiveGateResult, RweRunAuthorizationBody, RWE_RUN_AUTH_SCHEMA, RWE_RUN_AUTH_V2_SCHEMA,
 };
