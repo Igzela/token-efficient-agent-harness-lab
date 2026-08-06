@@ -1849,6 +1849,69 @@ impl LocalProductStore {
         }
     }
 
+    /// List task attempts for a run (store owner read). Ordered by created_at.
+    pub fn list_rwe_task_attempts_for_run(&self, run_id: &str) -> Result<Vec<Value>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT task_attempt_id, run_id, task_id, definition_sha256, classification,
+                                evidence_json, evidence_sha256, created_at
+                         FROM rwe_task_attempts WHERE run_id=?1 ORDER BY created_at ASC, task_attempt_id ASC",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![run_id], |r| {
+                        let evidence_s: String = r.get(5)?;
+                        Ok(json!({
+                            "task_attempt_id": r.get::<_, String>(0)?,
+                            "run_id": r.get::<_, String>(1)?,
+                            "task_id": r.get::<_, String>(2)?,
+                            "definition_sha256": r.get::<_, String>(3)?,
+                            "classification": r.get::<_, String>(4)?,
+                            "evidence_json": serde_json::from_str::<Value>(&evidence_s)
+                                .unwrap_or(Value::Null),
+                            "evidence_sha256": r.get::<_, String>(6)?,
+                            "created_at": r.get::<_, String>(7)?,
+                        }))
+                    })
+                    .map_err(|e| e.to_string())?;
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(row.map_err(|e| e.to_string())?);
+                }
+                Ok(out)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT task_attempt_id, run_id, task_id, definition_sha256, classification,
+                                evidence_json, evidence_sha256, created_at
+                         FROM rwe_task_attempts WHERE run_id=$1 ORDER BY created_at ASC, task_attempt_id ASC",
+                        &[&run_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut out = Vec::new();
+                for r in rows {
+                    let evidence_s: String = r.get(5);
+                    out.push(json!({
+                        "task_attempt_id": r.get::<_, String>(0),
+                        "run_id": r.get::<_, String>(1),
+                        "task_id": r.get::<_, String>(2),
+                        "definition_sha256": r.get::<_, String>(3),
+                        "classification": r.get::<_, String>(4),
+                        "evidence_json": serde_json::from_str::<Value>(&evidence_s)
+                            .unwrap_or(Value::Null),
+                        "evidence_sha256": r.get::<_, String>(6),
+                        "created_at": r.get::<_, String>(7),
+                    }));
+                }
+                Ok(out)
+            }),
+        }
+    }
+
     /// Terminalize under current lease. Stores one canonical terminal receipt body/hash so
     /// direct exact replay succeeds and conflicting replay rejects.
     pub fn complete_rwe_run(

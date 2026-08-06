@@ -57,6 +57,9 @@ use engine::provider::transport::{HttpError, HttpRequest, HttpResponse, HttpTran
 #[cfg(feature = "pg-tests")]
 use engine::rwe::corpus::freeze_first_rwe_corpus;
 #[cfg(feature = "pg-tests")]
+use engine::rwe::live_baseline_coordinator::{
+    issue_and_admit_v2, run_frozen_schedule, CellOutcome, InjectedCellDriver,
+};
 use engine::rwe::runner::{
     persist_rwe_run_authorization, persist_rwe_run_authorization_v2, RweRunAuthorizationBody,
 };
@@ -9001,4 +9004,118 @@ fn pg_rwe_v2_production_issue_admit_one_use_parity() {
         .get_rwe_run_authorization(&format!("auth-xtenant-pg-{tag}"))
         .unwrap()
         .is_none());
+}
+
+/// Board B + coordinator: 4-cell injected orchestration on PostgreSQL.
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_live_baseline_coordinator_four_cell_injected_parity() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-coord-{tag}");
+    let key_id = format!("operator-rwe-coord-{tag}");
+    store
+        .record_api_key_metadata_for_tenant(
+            &tenant,
+            &key_id,
+            "operator-user",
+            "operator",
+            &[
+                SCOPE_RISK_ACKNOWLEDGE.to_string(),
+                SCOPE_SPEND_AUTHORIZE.to_string(),
+                SCOPE_ATTEMPT_ADMIT.to_string(),
+            ],
+            "test-operator",
+        )
+        .unwrap();
+    let principal = store
+        .authenticate_managed_acceptance_principal(&tenant, &key_id, None)
+        .unwrap();
+    let prereq = format!("ptask-coord-gp-{tag}");
+    let mut evidence = json!({
+        "schema_version": "product_task_terminal_evidence.v2",
+        "evidence_id": format!("ev-coord-{tag}"),
+        "product_task_id": prereq,
+        "tenant_id": tenant,
+        "workspace_scope_id": format!("ws-coord-{tag}"),
+        "task_version": 1,
+        "task_status": "completed",
+        "node": {"executor_class": "managed_coding"},
+        "source_revision": "c".repeat(40),
+        "verification": {"trustworthy": true, "status": "passed"},
+        "approval": {"approval_id": format!("ap-coord-{tag}")},
+        "artifact": {"artifact_id": format!("art-coord-{tag}")},
+        "output": {
+            "intent": "draft_pr",
+            "result_sha256": "d".repeat(64),
+            "operation_id": format!("op-coord-{tag}"),
+            "receipt_id": format!("rcpt-coord-{tag}"),
+            "draft_pr": {
+                "number": 1,
+                "repository": "Igzela/alters-lab",
+                "base_branch": "main",
+                "head_branch": "acp/gp",
+                "head_sha": "e".repeat(40),
+                "draft": true
+            }
+        },
+        "audit_reference": {"audit_id": 910_001i64, "action": "product_task.terminal_evidence_committed"},
+        "created_at": "2026-07-25T12:00:00Z",
+        "created_by": "test",
+        "content_sha256": Value::Null,
+    });
+    let hash = hex::encode(Sha256::digest(serde_json::to_vec(&evidence).unwrap()));
+    evidence["content_sha256"] = json!(hash);
+    store
+        .insert_product_task_terminal_evidence_for_tests(&evidence)
+        .unwrap();
+
+    let auth_id = format!("auth-coord-{tag}");
+    let run_id = format!("run-coord-{tag}");
+    let admitted = issue_and_admit_v2(
+        &store,
+        &principal,
+        &auth_id,
+        &run_id,
+        &prereq,
+        &(chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
+    )
+    .unwrap();
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+    let outcomes = (0..4)
+        .map(|i| CellOutcome {
+            classification: "injected_success".into(),
+            provider_requests: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            latency_ms: 1,
+            monetary_cost: Some(0.0),
+            cost_unknown: false,
+            live_provider_request: false,
+            verification_status: "passed".into(),
+            verification_trustworthy: true,
+            approval_id: Some(format!("ap-{i}")),
+            output_draft_pr: None,
+            terminal_evidence_id: Some(format!("tev-{i}")),
+            terminal_content_sha256: Some("f".repeat(64)),
+            cleanup_status: "completed".into(),
+            product_task_id: String::new(),
+            workflow_id: String::new(),
+            node_id: String::new(),
+            delegated_attempt_id: String::new(),
+            workspace_id: String::new(),
+            note: "pg-injected".into(),
+        })
+        .collect();
+    let driver = InjectedCellDriver { outcomes };
+    let result =
+        run_frozen_schedule(&store, &principal, &run_id, &auth_id, &lease, &driver).unwrap();
+    assert_eq!(result["cell_count"], 4);
+    assert_eq!(result["attempts_recorded"], 4);
+    assert_eq!(result["live_baseline_sealed"], false);
+    let attempts = store.list_rwe_task_attempts_for_run(&run_id).unwrap();
+    assert_eq!(attempts.len(), 4);
 }

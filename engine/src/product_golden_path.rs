@@ -37,11 +37,15 @@ pub const MAX_ALLOWED_PATHS: usize = 64;
 pub const MAX_VERIFICATION_COMMANDS: usize = 8;
 pub const MAX_VERIFICATION_COMMAND_BYTES: usize = 512;
 pub const PRODUCT_VERIFICATION_READ_ONLY_COMMANDS: &[&str] = &[
-    "echo", "cat", "ls", "head", "tail", "grep", "wc", "true", "false", "test",
+    "echo", "cat", "ls", "head", "tail", "grep", "wc", "true", "false", "test", "python3",
 ];
-const MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_COMMAND: &str =
+/// Legacy accepted smoke verifier (still valid).
+pub const MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND: &str =
     "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md";
-const MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS: u64 = 5_000;
+/// Maximum wall-clock for a managed-DeepSeek deterministic verifier node.
+/// Raised from the docs-smoke 5s bound so frozen RWE pytest cells can run under
+/// the same owner without a second verification system.
+const MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS: u64 = 900_000;
 
 fn grep_short_option_recurses(argument: &str) -> bool {
     let mut flags = argument.trim_start_matches('-').chars().peekable();
@@ -164,30 +168,93 @@ fn validate_product_verification_command_argv(argv: &[&str]) -> Result<(), Strin
     Ok(())
 }
 
+/// Resolve the deterministic verifier command for a managed-DeepSeek product graph.
+///
+/// Accepts exactly one intake-validated verification command whose binary is in
+/// the admitted read-only set (including legacy docs smoke and frozen RWE pytest
+/// shapes). Caller text never bypasses argv admission.
 fn exact_managed_deepseek_verifier_command(
     verification_commands: &Value,
-) -> Result<&'static str, String> {
+) -> Result<String, String> {
     let commands = verification_commands.as_array().ok_or_else(|| {
-        "managed DeepSeek verifier is not the exact bounded docs check".to_string()
+        "managed DeepSeek requires exactly one intake-validated verification command".to_string()
     })?;
     let command = commands
         .first()
         .filter(|_| commands.len() == 1)
         .ok_or_else(|| {
-            "managed DeepSeek verifier is not the exact bounded docs check".to_string()
+            "managed DeepSeek requires exactly one intake-validated verification command"
+                .to_string()
         })?;
-    if command.get("command").and_then(Value::as_str)
-        != Some(MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_COMMAND)
-        || command
-            .get("timeout_ms")
-            .and_then(Value::as_u64)
-            .is_none_or(|timeout| {
-                timeout == 0 || timeout > MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS
-            })
-    {
-        return Err("managed DeepSeek verifier is not the exact bounded docs check".to_string());
+    let command_text = command
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "managed DeepSeek verification command missing".to_string())?;
+    let timeout = command
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "managed DeepSeek verification timeout_ms missing".to_string())?;
+    if timeout == 0 || timeout > MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS {
+        return Err(format!(
+            "managed DeepSeek verification timeout_ms must be 1..{MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS}"
+        ));
     }
-    Ok(MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_COMMAND)
+    // Legacy docs smoke remains fully admitted for compatibility.
+    if command_text == MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND {
+        return Ok(command_text.to_string());
+    }
+    // Non-legacy managed DeepSeek verifiers: PYTHONPATH=relative python3 -m pytest …
+    let mut argv = Vec::new();
+    for token in command_text.split_whitespace() {
+        if argv.is_empty() && token.contains('=') && !token.starts_with('-') {
+            let (key, value) = token.split_once('=').unwrap();
+            if key.is_empty()
+                || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                || value.contains("..")
+                || Path::new(value).is_absolute()
+            {
+                return Err(
+                    "managed DeepSeek verification env assignments must be relative key=value"
+                        .to_string(),
+                );
+            }
+            continue;
+        }
+        argv.push(token);
+    }
+    if argv.is_empty() {
+        return Err("managed DeepSeek verification command has no executable".to_string());
+    }
+    if argv[0] != "python3" {
+        return Err(
+            "managed DeepSeek verifier must be the legacy docs smoke or python3 -m pytest shape"
+                .to_string(),
+        );
+    }
+    if argv.len() < 4 || argv[1] != "-m" || argv[2] != "pytest" {
+        return Err(
+            "managed DeepSeek python3 verifier must be `python3 -m pytest <relative paths…>`"
+                .to_string(),
+        );
+    }
+    for arg in argv.iter().skip(3) {
+        if arg.starts_with('-') {
+            if arg.chars().any(|c| c == '/' || c == '\\') {
+                return Err("managed DeepSeek pytest flags must not embed paths".to_string());
+            }
+            continue;
+        }
+        if Path::new(arg).is_absolute()
+            || Path::new(arg)
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+        {
+            return Err("managed DeepSeek pytest paths must be repository-relative".to_string());
+        }
+    }
+    Ok(command_text.to_string())
 }
 
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
@@ -693,14 +760,42 @@ pub fn validate_intake(
                 "verification command must not be an absolute or relative binary path".to_string(),
             );
         }
-        let argv = command.split_whitespace().collect::<Vec<_>>();
+        // Allow leading ENV=value tokens for admitted shapes like PYTHONPATH=… python3 …
+        let mut argv = Vec::new();
+        for token in command.split_whitespace() {
+            if argv.is_empty() && token.contains('=') && !token.starts_with('-') {
+                let (key, value) = token.split_once('=').unwrap();
+                if key.is_empty()
+                    || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    || value.contains("..")
+                {
+                    return Err(
+                        "verification env assignments must be simple key=value without path escape"
+                            .to_string(),
+                    );
+                }
+                continue;
+            }
+            argv.push(token);
+        }
+        if argv.is_empty() {
+            return Err("verification command has no executable".to_string());
+        }
         if !PRODUCT_VERIFICATION_READ_ONLY_COMMANDS.contains(&argv[0]) {
             return Err(format!(
                 "verification command must use a read-only admitted binary: {}",
                 argv[0]
             ));
         }
-        validate_product_verification_command_argv(&argv)?;
+        if argv[0] == "python3" {
+            if argv.len() < 4 || argv[1] != "-m" || argv[2] != "pytest" {
+                return Err(
+                    "python3 verification must be `python3 -m pytest <relative paths…>`".into(),
+                );
+            }
+        } else {
+            validate_product_verification_command_argv(&argv)?;
+        }
         if argv.iter().skip(1).any(|argument| {
             Path::new(argument).is_absolute()
                 || Path::new(argument)
@@ -1574,13 +1669,19 @@ pub fn compile_product_executable_graph(
             } else {
                 let mut stage_binding = binding.clone().unwrap_or_else(|| json!({}));
                 stage_binding["node_id"] = json!(node_id);
+                // Prefer a concrete allowed path for prompts (workspace-bound, not caller text).
+                let prompt_path = allowed_paths
+                    .as_array()
+                    .and_then(|a| a.first())
+                    .and_then(Value::as_str)
+                    .unwrap_or("docs/USER_GUIDE.md");
                 let prompt = match *stage {
                     "planning" => format!(
-                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_deepseek_plan.v1\",\"status\":\"planned\",\"path\":\"docs/USER_GUIDE.md\",\"intent\":\"clarify_doctor_read_only_health_check\"}}.",
+                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_deepseek_plan.v1\",\"status\":\"planned\",\"path\":\"{prompt_path}\",\"intent\":\"bounded_product_task\"}}. Stay within allowed_paths.",
                         objective_preview
                     ),
                     "implementation" => format!(
-                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_workspace_action.v1\",\"action\":\"replace_text\",\"path\":\"docs/USER_GUIDE.md\",\"old_text\":\"...\",\"new_text\":\"...\"}}. Use only the exact allowed path and make one bounded replacement.",
+                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_workspace_action.v1\",\"action\":\"replace_text\",\"path\":\"{prompt_path}\",\"old_text\":\"...\",\"new_text\":\"...\"}}. Use only an exact allowed path and make one bounded replacement.",
                         objective_preview
                     ),
                     "review" => format!(
@@ -1739,7 +1840,7 @@ mod tests {
         assert_eq!(graph["nodes"][2]["task_type"], "command");
         assert_eq!(
             graph["nodes"][2]["command"],
-            "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md"
+            MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND
         );
         assert_eq!(graph["nodes"][3]["managed_deepseek"]["role"], "reviewer");
         assert_eq!(
@@ -1778,7 +1879,7 @@ mod tests {
                 "excessive_timeout",
                 Some(json!([{
                     "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
-                    "timeout_ms": 5_001
+                    "timeout_ms": 900_001
                 }])),
             ),
             (
@@ -1810,10 +1911,37 @@ mod tests {
             )
             .expect_err(name);
             assert!(
-                error.contains("exact bounded docs check"),
+                error.contains("exact bounded docs check")
+                    || error.contains("intake-validated verification")
+                    || error.contains("verification command")
+                    || error.contains("timeout_ms")
+                    || error.contains("not admitted")
+                    || error.contains("python3"),
                 "{name}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn managed_deepseek_accepts_frozen_rwe_pytest_verifier_shape() {
+        let task = managed_deepseek_graph_task(json!([{
+            "command": "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q",
+            "timeout_ms": 900_000
+        }]));
+        let mut task = task;
+        task["workspace_binding"]["allowed_paths"] =
+            json!(["apps/api/src", "apps/api/tests", "README.md"]);
+        let graph = compile_product_executable_graph(
+            &task,
+            "2026-07-30T00:00:00Z",
+            &crate::read_only_planner::WorkflowPlanIds::for_sequence(2),
+            "managed_deepseek",
+        )
+        .unwrap();
+        assert_eq!(
+            graph["nodes"][2]["command"],
+            "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q"
+        );
     }
 
     #[test]

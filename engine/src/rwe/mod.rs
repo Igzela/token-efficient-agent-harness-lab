@@ -6,6 +6,7 @@
 pub mod corpus;
 pub mod economic_protocol;
 pub mod execution_schedule;
+pub mod live_baseline_coordinator;
 pub mod operator_corpus;
 pub mod runner;
 
@@ -17,6 +18,11 @@ pub use economic_protocol::{
     VERIFIED_DELIVERY_OBSERVATION_SCHEMA,
 };
 pub use execution_schedule::{freeze_operator_execution_schedule, FrozenExecutionSchedule};
+pub use live_baseline_coordinator::{
+    cell_identities_for, issue_and_admit_v2, operator_preflight, project_first_baseline_evidence,
+    run_frozen_schedule, CellDriver, CellIdentities, CellOutcome, InjectedCellDriver,
+    ProductGoldenPathCellDriver, RWE_LIVE_BASELINE_COORDINATOR_SCHEMA,
+};
 pub use operator_corpus::{
     freeze_current_operator_contract_set, freeze_operator_contract_set, freeze_operator_rwe_corpus,
     operator_corpus_root, OperatorFrozenContractSet, OPERATOR_ARTIFACTS_FROZEN_AT_MAIN_SHA,

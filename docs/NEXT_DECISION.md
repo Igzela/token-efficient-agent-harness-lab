@@ -176,15 +176,27 @@ Accepted provider-free production wiring:
 
 Board B does not authorize a live run. A live baseline still requires a new separately authorized run against the accepted exact head.
 
-### First Live Baseline — Next Permitted Work
+### First Live Baseline Coordinator — Complete (provider-free)
 
-**Prerequisite:** Board A and Board B accepted, plus a separate one-use live-run authorization against the accepted exact head.
+Accepted production wiring under `engine/src/rwe/live_baseline_coordinator.rs` and `rwe-live-baseline` CLI:
+
+- store-owned v2 issue/admit before any cell work;
+- frozen 4-cell schedule identity derivation and RWE task-attempt mapping;
+- operator preflight fail-closed without GP prerequisite / credential symbol / active auth;
+- injectable `CellDriver` seam reusing Product Golden Path owners (no second orchestration stack);
+- provider-free tests prove restart, exact lease recovery, fail-closed authority, and SQLite/PG parity paths.
+
+This coordinator does **not** execute or seal a live baseline. `live_baseline_sealed` stays false without real provider cell evidence.
+
+### First Live Baseline Execution — Next Permitted Work
+
+**Prerequisite:** Board A, Board B, and the provider-free coordinator accepted; plus a real same-tenant Golden Path prerequisite terminal receipt and a separate one-use live-run authorization against the accepted exact head.
 
 ### First Live Baseline Exit Gate
 
 The first baseline must execute the frozen schedule without changing the corpus, protocol, reviewer policy, budgets, seeds, verifier, or thresholds. It records layered success, failure class, provider/request/token/latency/cost evidence, approval/output/terminal bindings, recovery and cleanup, full failed-attempt cost, and evidence sufficiency.
 
-No claim stronger than the observed evidence-sufficiency state is allowed.
+No claim stronger than the observed evidence-sufficiency state is allowed. PE7 remains incomplete and Architecture Convergence AC1 remains blocked until that baseline and closeout are accepted.
 
 ## Packet PE7-ARCHITECTURE-CONVERGENCE-1
 
