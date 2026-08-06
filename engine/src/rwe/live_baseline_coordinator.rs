@@ -2408,12 +2408,55 @@ fn execute_armed_delegated_rwe_cell(
     // ignore/baseline, or the frozen suite fixture is never real task success.
     // The injected fixture's own conftest skip patch is recorded here as the
     // fixture technique; on the external transport it is verifier tampering.
-    let changed_files = confirmation
-        .pointer("/artifact/changed_files")
-        .and_then(Value::as_array)
-        .map(|files| files.iter().filter_map(Value::as_str).collect::<Vec<_>>())
-        .unwrap_or_default();
-    let evaluator_surface_tampered = changed_files
+    // The changed files are read from the store-owned artifact record
+    // (canonical change prefixes stripped); the terminal evidence approval
+    // binding only carries the approval identity, not the file list.
+    let artifact_changed_files = match store.get_product_task(&product_task_id) {
+        Ok(Some(product_task)) => {
+            let run_id = product_task
+                .get("run_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let workspace_record_id = product_task
+                .get("workspace_record_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let source_revision = product_task
+                .get("source_revision")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            store
+                .current_product_task_artifact(
+                    &product_task_id,
+                    &run_id,
+                    &workspace_record_id,
+                    &source_revision,
+                )
+                .map(|artifact| {
+                    artifact
+                        .get("changed_files")
+                        .and_then(Value::as_array)
+                        .map(|files| {
+                            files
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(|path| {
+                                    path.strip_prefix(['+', '~', '-'])
+                                        .unwrap_or(path)
+                                        .to_string()
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    };
+    let evaluator_surface_tampered = artifact_changed_files
         .iter()
         .any(|changed| changed_file_is_evaluator_surface(changed));
     // Integration fixtures never record `success`: the injected-transport path
@@ -2437,22 +2480,21 @@ fn execute_armed_delegated_rwe_cell(
         "controlled_failure"
     };
     let verifier_receipt = terminal_evidence
-        .pointer("/verification/verification_attempts")
+        .pointer("/verification/receipts")
         .and_then(Value::as_array)
         .and_then(|attempts| attempts.last().cloned())
         .unwrap_or(Value::Null);
     let verification_outcome = json!({
         "status": terminal_evidence.pointer("/verification/status").and_then(Value::as_str).unwrap_or(""),
         "trustworthy": terminal_evidence.pointer("/verification/trustworthy").and_then(Value::as_bool).unwrap_or(false),
-        "output_sha256": verifier_receipt.pointer("/output_digest/sha256").and_then(Value::as_str).unwrap_or(""),
-        "output_bytes": verifier_receipt.pointer("/output_digest/bytes").and_then(Value::as_u64).unwrap_or(0),
+        "output_sha256": verifier_receipt.get("output_sha256").and_then(Value::as_str).unwrap_or(""),
         "exit_code": verifier_receipt.pointer("/process_outcome/exit_code").and_then(Value::as_i64).unwrap_or(-1),
     });
     let fixture_note = if transport.is_some() {
         if evaluator_surface_tampered {
             format!(
                 "; integration fixture applied an evaluator-surface skip patch (changed files include {}); fixture evidence only, never accepted delivery",
-                changed_files.join(", ")
+                artifact_changed_files.join(", ")
             )
         } else {
             "; integration fixture executed through the injected transport; fixture evidence only, never accepted delivery"
@@ -2487,11 +2529,11 @@ fn execute_armed_delegated_rwe_cell(
         delegated_attempt_id: attempt_id,
         workspace_id: ids.worktree_id.clone(),
         note: format!(
-            "delegated cell lifecycle executed through store owners; seam={RWE_LIVE_CELL_COMPOSITION_SEAM}; cell={}; verifier_result={}; verifier_output_sha256={}; verifier_output_bytes={}{}",
+            "delegated cell lifecycle executed through store owners; seam={RWE_LIVE_CELL_COMPOSITION_SEAM}; cell={}; verifier_result={}; verifier_output_sha256={}; verifier_exit_code={}{}",
             cell.get("cell_id").and_then(Value::as_str).unwrap_or(""),
             verification_outcome["status"].as_str().unwrap_or(""),
             verification_outcome["output_sha256"].as_str().unwrap_or(""),
-            verification_outcome["output_bytes"],
+            verification_outcome["exit_code"],
             fixture_note,
         ),
     })
@@ -3626,17 +3668,29 @@ mod tests {
         let clone_ok = if live_run {
             // Live-run mode requires the credential-free https origin so the
             // approved branch is genuinely pushed to the operator-authorized
-            // remote and the Draft PR is created there.
-            Command::new("git")
-                .args([
-                    "clone",
-                    "--no-checkout",
-                    "https://github.com/Igzela/alters-lab.git",
-                ])
-                .arg(&target)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
+            // remote and the Draft PR is created there. The operator proxy can
+            // drop large pack transfers, so retry the clone a bounded number of
+            // times; a persistent failure skips the fixture honestly.
+            (0..3).any(|_| {
+                Command::new("git")
+                    .args([
+                        "-c",
+                        "http.lowSpeedLimit=1",
+                        "-c",
+                        "http.lowSpeedTime=30",
+                        "clone",
+                        "--no-checkout",
+                        "https://github.com/Igzela/alters-lab.git",
+                    ])
+                    .arg(&target)
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+                    || {
+                        let _ = Command::new("rm").args(["-rf"]).arg(&target).status();
+                        false
+                    }
+            })
         } else if local.is_dir() {
             Command::new("git")
                 .args(["clone", "--no-checkout"])
@@ -3874,39 +3928,74 @@ mod tests {
         );
         assert_eq!(result["provider_transport_provenance"], "injected");
         assert_eq!(result["injected_provider_call_performed"], true);
+        let cell_results = result["aggregate"]["cell_results"].as_array().unwrap();
+        let outcome_unknown_cell = cell_results
+            .iter()
+            .any(|c| c["classification"].as_str() == Some("outcome_unknown"));
         assert_eq!(
-            result["integration_fixture_completed"], true,
-            "the genuine delegated lifecycle completed as an integration fixture: {result}"
+            result["integration_fixture_completed"], !outcome_unknown_cell,
+            "fixture completion requires every cell to reach a terminal class; an outcome_unknown cell fails the fixture closed: {result}"
         );
+        let run_status = result["run"]["status"].as_str().unwrap_or("");
+        if outcome_unknown_cell {
+            assert_eq!(
+                result["aggregate"]["stopped_by"], "outcome_unknown_no_retry",
+                "outcome_unknown must stop the schedule, never retry or advance: {result}"
+            );
+            assert_eq!(run_status, "outcome_unknown");
+        } else {
+            assert!(
+                result["aggregate"]["stopped_by"].is_null(),
+                "a fully completed fixture run has no stop rule: {result}"
+            );
+            assert_eq!(run_status, "succeeded");
+        }
         assert_eq!(result["cell_count"], 4);
         assert_eq!(result["attempts_recorded"], 4);
         let attempts = store.list_rwe_task_attempts_for_run("run-armed").unwrap();
         for a in &attempts {
-            assert_eq!(
-                a["classification"], "fixture_success",
-                "injected cells are fixture_success, never success: {a}"
-            );
+            let class = a["classification"].as_str().unwrap_or("");
             let ev = a["evidence_json"].clone();
-            assert_eq!(ev["evidence_source"], "product_golden_path_owner");
             assert_eq!(
                 ev["live_provider_request"], false,
                 "injected provider requests are never live provider requests: {ev}"
             );
-            assert_eq!(ev["provider_transport_provenance"], "injected");
-            assert_eq!(ev["provider_requests"], 3);
-            // Fixture honesty: the note records the verifier's real result and
-            // the evaluator-surface skip patch as fixture evidence.
-            let note = ev["note"].as_str().unwrap_or("");
-            assert!(note.contains("verifier_result=evidence_recorded"), "{note}");
-            assert!(note.contains("verifier_output_sha256="), "{note}");
-            assert!(
-                note.contains("evaluator-surface skip patch"),
-                "fixture skip patch must be recorded in evidence: {note}"
-            );
-            assert!(
-                note.contains("fixture evidence only, never accepted delivery"),
-                "{note}"
-            );
+            match class {
+                "fixture_success" => {
+                    assert_eq!(ev["evidence_source"], "product_golden_path_owner");
+                    assert_eq!(ev["provider_transport_provenance"], "injected");
+                    assert_eq!(ev["provider_requests"], 3);
+                    // Fixture honesty: the note records the verifier's real result and
+                    // the evaluator-surface skip patch as fixture evidence.
+                    let note = ev["note"].as_str().unwrap_or("");
+                    assert!(note.contains("verifier_result=evidence_recorded"), "{note}");
+                    assert!(note.contains("verifier_output_sha256="), "{note}");
+                    assert!(
+                        note.contains("evaluator-surface skip patch"),
+                        "fixture skip patch must be recorded in evidence: {note}"
+                    );
+                    assert!(
+                        note.contains("fixture evidence only, never accepted delivery"),
+                        "{note}"
+                    );
+                }
+                "outcome_unknown" => {
+                    assert_eq!(ev["evidence_source"], "product_golden_path_owner");
+                    assert_eq!(ev["provider_transport_provenance"], "none");
+                    assert_eq!(ev["provider_requests"], 0);
+                    let note = ev["note"].as_str().unwrap_or("");
+                    assert!(
+                        note.contains("outcome_unknown") && note.contains("git push"),
+                        "outcome_unknown evidence must record the real external failure: {note}"
+                    );
+                }
+                "skipped_by_stop_rule" => {
+                    assert_eq!(ev["provider_transport_provenance"], "none");
+                    assert_eq!(ev["evidence_source"], "blocked");
+                    assert_eq!(ev["note"], "outcome_unknown_no_retry");
+                }
+                other => panic!("unexpected fixture classification {other}"),
+            }
         }
         // Store-owned terminal receipts per cell: provider execution journal of
         // exactly three managed requests with injected provenance, verification
@@ -3921,10 +4010,33 @@ mod tests {
                 .find(|t| t.task_id == cell["task_id"].as_str().unwrap())
                 .unwrap();
             let ids = cell_identities_for("run-armed", cell, task_def).unwrap();
+            let outcome = cell_results
+                .iter()
+                .find(|c| c["cell_id"].as_str() == Some(cell["cell_id"].as_str().unwrap()))
+                .unwrap();
+            let class = outcome["classification"].as_str().unwrap_or("");
+            if class == "skipped_by_stop_rule" {
+                continue;
+            }
             let product_task = store
                 .get_product_task_by_idempotency(tenant, &ids.worktree_id, &ids.product_task_id)
                 .unwrap()
                 .unwrap();
+            if class == "outcome_unknown" {
+                assert_ne!(product_task["status"], "completed");
+                let projection = store
+                    .project_rwe_cell_store_evidence(
+                        product_task["task_id"].as_str().unwrap(),
+                        &ids.delegated_attempt_id,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    projection["provider_execution"]["provider_request_count"],
+                    0
+                );
+                assert!(projection.pointer("/output/draft_pr").is_none());
+                continue;
+            }
             assert_eq!(product_task["status"], "completed");
             let projection = store
                 .project_rwe_cell_store_evidence(

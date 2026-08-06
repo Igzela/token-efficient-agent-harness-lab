@@ -7372,7 +7372,7 @@ impl LocalProductStore {
         }
     }
 
-    fn current_product_task_artifact(
+    pub(crate) fn current_product_task_artifact(
         &self,
         task_id: &str,
         run_id: &str,
