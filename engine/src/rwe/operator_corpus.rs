@@ -19,7 +19,48 @@ pub fn operator_corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(OPERATOR_CORPUS_RELATIVE_ROOT)
 }
 
-/// Freeze the operator-approved corpus from its versioned artifacts on
+/// The operator-approved frozen contract set: corpus + protocol + schedule +
+/// accepted-main SHA. Everything the authorization v2 body must bind.
+pub struct OperatorFrozenContractSet {
+    pub corpus: FirstRweCorpus,
+    pub protocol: crate::rwe::economic_protocol::FrozenEvidenceDocument,
+    pub schedule: crate::rwe::execution_schedule::FrozenExecutionSchedule,
+    pub accepted_main_sha: String,
+    pub corpus_artifact_path: String,
+}
+
+/// Freeze the whole operator contract set from accepted-main artifacts.
+/// `accepted_main_sha` is the exact harness main SHA the artifacts were frozen
+/// at (provided by the freeze tooling from the repository checkout, never
+/// operator-typed).
+pub fn freeze_operator_contract_set(
+    accepted_main_sha: &str,
+) -> Result<OperatorFrozenContractSet, String> {
+    let corpus = freeze_operator_rwe_corpus()?;
+    let raw = std::fs::read(operator_corpus_root().join("protocol/rwe_economic_protocol.v1.json"))
+        .map_err(|e| e.to_string())?;
+    let body: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    let protocol = crate::rwe::economic_protocol::freeze_rwe_economic_protocol(body)?;
+    if protocol
+        .body
+        .get("authority_corpus_sha256")
+        .and_then(serde_json::Value::as_str)
+        != Some(corpus.corpus_sha256.as_str())
+    {
+        return Err("frozen protocol authority_corpus_sha256 mismatch".into());
+    }
+    let schedule =
+        crate::rwe::execution_schedule::freeze_operator_execution_schedule(&corpus, &protocol)?;
+    Ok(OperatorFrozenContractSet {
+        corpus,
+        protocol,
+        schedule,
+        accepted_main_sha: accepted_main_sha.to_string(),
+        corpus_artifact_path: OPERATOR_CORPUS_RELATIVE_ROOT.to_string(),
+    })
+}
+
+/// Load and freeze the operator-approved corpus from its versioned artifacts on
 /// accepted-main. Rejects anything living under the fixture root and any
 /// fixture/placeholder repository identity.
 pub fn freeze_operator_rwe_corpus() -> Result<FirstRweCorpus, String> {
