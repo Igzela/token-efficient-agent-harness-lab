@@ -2,9 +2,15 @@
 
 Last updated: 2026-08-06.
 
-This document owns current accepted, open, and blocked repository facts. Historical packet detail remains in Git history and merged PRs; do not append stale chronology here.
+This document separates three states that must not be conflated:
 
-## Accepted Baseline
+1. **Merged and accepted truth** — code and governing documents on `main` that passed their required checks.
+2. **Open review surfaces** — proposed work that is not authoritative until its final exact head is accepted and merged.
+3. **Blocked or deferred work** — future work that remains ineligible because a named evidence or authority gate is incomplete.
+
+Historical packet detail remains in Git history and merged PRs; do not append stale chronology here.
+
+## Verified Repository State
 
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
 - Accepted runtime/code baseline: PR #361 at `9aea39b75a7999ae7db22176b77e06bcf7a6890f`; later strictly documentation-only governance commits do not change runtime behavior.
@@ -41,7 +47,7 @@ PR #361 is merged and accepted as `9aea39b75a7999ae7db22176b77e06bcf7a6890f`. It
 - preserved strict v1 fixture versus v2 production-contract separation;
 - added no provider call, target effect, schema migration, or new authority owner.
 
-The frozen corpus, protocol, and schedule are now accepted prerequisites. They do **not** authorize live execution by themselves.
+The frozen corpus, protocol, and schedule are accepted prerequisites. They do **not** authorize live execution by themselves.
 
 ## Active Frontier
 
@@ -62,7 +68,7 @@ The first live RWE run remains blocked until all Board B authority, persistence,
 
 Merged or closed PRs are not open review surfaces and should not be retained in this table.
 
-## Forward Capability Status
+## Capability Status
 
 | Stage | State | Entry requirement |
 |---|---|---|
@@ -104,7 +110,7 @@ Harness improvement
 
 A NO-GO, saturation result, diversity collapse, transfer failure, or inability to beat the frozen baseline under equal total lifecycle budget is valid completion and must be preserved as evidence.
 
-## Current Blockers
+## Confirmed Integration Gaps
 
 1. Board B production wiring and one-use RWE spend persistence are not yet accepted.
 2. No repeated live frozen RWE baseline exists.
@@ -113,9 +119,9 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 5. No accepted memory/skill projection experiment exists; raw evidence remains authoritative and summaries remain non-authoritative projections.
 6. No Level-2, sealed transfer, or Meta Improver result exists.
 
-## Next Permitted Action
+## Open Work Coordination
 
-Implement Board B of `PE7-REAL-WORKLOAD-EVIDENCE-1` as one focused provider-free branch/PR:
+The next permitted action is to implement Board B of `PE7-REAL-WORKLOAD-EVIDENCE-1` as one focused provider-free branch/PR:
 
 - wire authorization v2 through the existing production issue/admit path;
 - persist and atomically consume the separate one-use RWE spend authority;

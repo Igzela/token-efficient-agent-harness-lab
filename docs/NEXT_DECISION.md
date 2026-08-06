@@ -4,7 +4,7 @@ Last updated: 2026-08-06.
 
 This document is the single owner of forward routing, packet prerequisites, entry/exit gates, and the immediate next permitted action. Accepted historical facts belong in `docs/CURRENT_STATUS.md`; durable architecture and authority invariants belong in `docs/ARCHITECTURE_BOOK.md`.
 
-## Objective
+## Current Direction
 
 The repository optimizes one outcome:
 
@@ -13,8 +13,6 @@ The repository optimizes one outcome:
 Quality, authority, evidence integrity, compatibility, recovery, and rollback are hard gates. Token use, monetary cost, latency, accepted delivery, engineering effort, maintenance surface, and reuse are optimization evidence only after those gates pass.
 
 Do not substitute feature count, Agent count, candidate count, PR creation, fixture success, novelty prompts, reflection, debate, or one scalar score for product capability, scientific exploration, learning, or recursive self-improvement.
-
-## Accepted Planning Decision — Bounded Recursive Harness Optimization
 
 Charlie accepted the following direction on 2026-08-06:
 
@@ -150,7 +148,7 @@ Stop before any of the following:
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — Minimum First RWE
 
-**State:** `READY_FOR_EXECUTION` at Board B.
+**State:** `READY_FOR_EXECUTION`
 
 ### Board A — Complete
 
@@ -187,9 +185,11 @@ No claim stronger than the observed evidence-sufficiency state is allowed.
 
 ## Packet PE7-ARCHITECTURE-CONVERGENCE-1
 
-**State:** `BLOCKED_PREREQUISITE`.
+**State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** accepted pre-convergence frozen RWE baseline.
+**Prerequisite:** PE7-REAL-WORKLOAD-EVIDENCE-1
+
+An accepted pre-convergence frozen RWE baseline is also required before implementation begins.
 
 Implement incrementally:
 
@@ -205,9 +205,9 @@ Each board changes one coherent ownership boundary, preserves compatibility and 
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1
 
-**State:** `BLOCKED_PREREQUISITE`.
+**State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** Architecture Convergence complete.
+**Prerequisite:** PE7-ARCHITECTURE-CONVERGENCE-1
 
 Replay the identical frozen corpus, source identities, verifier, reviewer policy, value basis, budget grid, seeds, stop rules, and statistical method.
 
@@ -217,11 +217,11 @@ Do not tune the comparison from post-convergence results.
 
 ## Packet PE7-HARNESS-EVOLUTION-EXPERIMENT-CONTROL-HARDENING-1
 
-**State:** `BLOCKED_PREREQUISITE`.
+**State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** accepted identical-corpus/protocol replay and an evidence-backed decision to prepare future Harness experiments.
+**Prerequisite:** PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1
 
-This packet establishes experiment contracts only. It must not start Level-2 or modify the active Harness.
+An evidence-backed planning decision to prepare future Harness experiments is also required. This packet establishes experiment contracts only. It must not start Level-2 or modify the active Harness.
 
 Required contracts:
 
@@ -253,9 +253,9 @@ These fields are evidence and sentinels, not production authority.
 
 ## Packet PE7-MEMORY-SKILL-PROJECTION-EXPERIMENT-1
 
-**State:** `BLOCKED_PREREQUISITE`.
+**State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** experiment-control hardening accepted.
+**Prerequisite:** PE7-HARNESS-EVOLUTION-EXPERIMENT-CONTROL-HARDENING-1
 
 Test memory and skill policies separately from Architecture Convergence and from the active production Harness.
 
@@ -282,9 +282,11 @@ A negative or no-benefit result is valid completion.
 
 ## Packet PE7-HARNESS-EVOLUTION-LEVEL1-CALIBRATION-1
 
-**State:** `BLOCKED_PREREQUISITE`.
+**State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisites:** experiment-control hardening and memory/skill projection boundaries accepted.
+**Prerequisite:** PE7-MEMORY-SKILL-PROJECTION-EXPERIMENT-1
+
+Experiment-control hardening must also remain accepted and unchanged.
 
 Run one strengthened generation only:
 
@@ -303,9 +305,11 @@ This board validates lineage, evaluator immutability, diversity sentinels, conta
 
 ## Packet PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1
 
-**State:** `BLOCKED_PREREQUISITE`.
+**State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** strengthened Level-1 calibration plus an explicit evidence-backed GO.
+**Prerequisite:** PE7-HARNESS-EVOLUTION-LEVEL1-CALIBRATION-1
+
+An explicit evidence-backed GO is also required.
 
 GO requires:
 
@@ -334,9 +338,9 @@ Level-2 may not modify `main`, merge, deploy, rewrite its evaluator, expand its 
 
 ## Packet PE7-HARNESS-EVOLUTION-TRANSFER-EVALUATION-1
 
-**State:** `BLOCKED_PREREQUISITE`.
+**State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** accepted bounded Level-2 result.
+**Prerequisite:** PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1
 
 Evaluate the selected experimental Harness on pre-registered sealed unseen tasks and, where practical, unseen task families, models, or execution environments.
 
@@ -346,9 +350,11 @@ A development-set improvement with transfer regression is not an accepted Harnes
 
 ## Packet PE7-META-IMPROVER-EXPERIMENT-1
 
-**State:** `BLOCKED_PREREQUISITE`.
+**State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisites:** accepted transfer evaluation and separate experiment authority.
+**Prerequisite:** PE7-HARNESS-EVOLUTION-TRANSFER-EVALUATION-1
+
+Separate experiment authority is also required.
 
 The experiment compares a frozen baseline improvement operator `O0` with a candidate operator `O1`. Both receive equal total lifecycle budget and operate on unseen task families under immutable evaluator/labels, contamination controls, baselines, statistical/effect/error thresholds, seeds, stop rules, rollback, and immutable active-Harness identity.
 
