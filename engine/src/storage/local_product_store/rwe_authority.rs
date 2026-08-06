@@ -1658,6 +1658,18 @@ impl LocalProductStore {
                     ],
                 )
                 .map_err(|e| e.to_string())?;
+                // Match SQLite admit audit (also closes the inherited v1 PG admit gap).
+                super::workflow_runs::pg_append_audit(
+                    &mut tx,
+                    &now,
+                    pid,
+                    "rwe.run_admitted",
+                    run_id,
+                    &json!({
+                        "authorization_id": authorization_id,
+                        "run_body_sha256": run_body_sha256,
+                    }),
+                )?;
                 let mut row = load_rwe_run_pg(&mut tx, run_id)?;
                 if let Value::Object(ref mut m) = row {
                     m.insert("lease_token".into(), json!(lease_token));

@@ -8913,6 +8913,20 @@ fn pg_rwe_v2_production_issue_admit_one_use_parity() {
     assert_eq!(consumed["status"], "consumed");
     assert_eq!(consumed["consumed_by_run_id"], run_id);
 
+    // Admit audit parity with SQLite (same action/resource, same owner).
+    let admit_audit_count: i64 = audit_client
+        .query_one(
+            "SELECT COUNT(*) FROM audit_log
+             WHERE action='rwe.run_admitted' AND resource=$1",
+            &[&run_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        admit_audit_count, 1,
+        "PG admit must append exactly one rwe.run_admitted audit"
+    );
+
     // Crash-style exact-owner admit replay recovers lease; general get redacts.
     let replay = store
         .admit_rwe_run(&principal, &run_id, &auth_id, &run_body, false)
