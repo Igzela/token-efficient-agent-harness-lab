@@ -2377,10 +2377,66 @@ pub(crate) fn validate_rwe_run_authorization_v2(
             );
         }
     }
-    // Provider route pinned to the operator corpus's managed deepseek route.
+    if body.get("one_use").and_then(Value::as_bool) != Some(true) {
+        return Err("v2 spend envelope must be one_use".into());
+    }
+    if required_string_field(body, "target_repo")? != corpus.disposable_target_repo {
+        return Err("v2 target_repo does not match the frozen operator target repository".into());
+    }
+    let target_main = required_string_field(body, "target_main_sha")?;
+    for task in &corpus.tasks {
+        if target_main != task.source_commit {
+            return Err("v2 target_main_sha does not match the frozen corpus target main".into());
+        }
+    }
+    let principal_id = required_string_field(body, "principal_id")?;
+    let principal_kind = required_string_field(body, "principal_kind")?;
+    if principal_id.is_empty() || principal_kind.is_empty() {
+        return Err("v2 principal_id and principal_kind are required".into());
+    }
+    let expires_at = body
+        .get("expires_at")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or("v2 expires_at required")?;
+    if chrono::DateTime::parse_from_rfc3339(expires_at).is_err() {
+        return Err("v2 expires_at must be an RFC3339 instant".into());
+    }
+    let binary_path = required_string_field(body, "binary_path")?;
+    let binary_sha256 = required_string_field(body, "binary_sha256")?;
+    if binary_path.is_empty() || binary_sha256.len() != 64 {
+        return Err("v2 binary_path/binary_sha256 must bind the admitted executor binary".into());
+    }
+    let budget_point_ids = body
+        .get("budget_point_ids")
+        .and_then(Value::as_array)
+        .ok_or("v2 budget_point_ids array required")?;
+    let observed_budget_points = budget_point_ids
+        .iter()
+        .map(|id| {
+            id.as_str()
+                .ok_or("v2 budget_point_ids must contain strings")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let canonical_budget_points = protocol
+        .body
+        .get("budget_points")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| p.get("budget_point_id").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+        })
+        .ok_or("frozen protocol budget_points missing")?;
+    if observed_budget_points != canonical_budget_points {
+        return Err("v2 budget_point_ids must exactly match frozen protocol budget points".into());
+    }
+    // Provider route pinned to the frozen managed-deepseek route constants in
+    // the accepted codebase (provider::managed_deepseek).
     if required_string_field(body, "provider_kind")? != "deepseek"
         || required_string_field(body, "provider_host")? != "api.deepseek.com"
-        || required_string_field(body, "provider_base_url")? != "https://api.deepseek.com/v1"
+        || required_string_field(body, "provider_base_url")? != "https://api.deepseek.com"
+        || required_string_field(body, "provider_path")? != "/chat/completions"
     {
         return Err("v2 provider route does not match the frozen operator route".into());
     }
@@ -2596,10 +2652,10 @@ mod operator_v2_authority_tests {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let bp = budget_points
-            .first()
-            .cloned()
-            .unwrap_or_else(|| json!({"budget_point_id": "bp-standard"}));
+        let budget_point_ids: Vec<Value> = budget_points
+            .iter()
+            .map(|p| p.get("budget_point_id").cloned().unwrap_or_default())
+            .collect();
         json!({
             "schema_version": "rwe_run_authorization.v2",
             "authorization_id": "v2-live-auth",
@@ -2617,21 +2673,23 @@ mod operator_v2_authority_tests {
             "max_wall_time_ms": frozen.schedule.body["run_level_budget"]["max_wall_time_ms"].as_u64().unwrap(),
             "cost_authority": CostAuthority::CostUnavailable.to_json(),
             "per_task_budgets": budgets,
-            "binary_path": "managed-deepseek-route",
+            "binary_path": "in-process:managed_deepseek",
             "binary_version": frozen.corpus.admitted_codex_version,
             "binary_sha256": "0".repeat(64),
             "provider_kind": "deepseek",
             "provider_host": "api.deepseek.com",
-            "provider_base_url": "https://api.deepseek.com/v1",
+            "provider_base_url": "https://api.deepseek.com",
+            "provider_path": "/chat/completions",
+            "budget_point_ids": budget_point_ids,
             "target_repo": frozen.corpus.disposable_target_repo,
-            "target_main_sha": "6240768506320a324d68787b9eaa86971c8c930c",
+            "target_main_sha": frozen.corpus.tasks[0].source_commit,
             "executor_identity": frozen.corpus.tasks[0].executor_identity,
             "model_identity": frozen.corpus.tasks[0].model_identity,
             "draft_pr_only": true,
             "admitted_executor": frozen.corpus.admitted_executor,
             "auto_merge_disabled": true,
             "one_use": true,
-            "budget_point_id": bp.get("budget_point_id").cloned().unwrap_or(json!("bp-standard")),
+            "expires_at": "2026-08-07T00:00:00Z",
         })
     }
 
@@ -2639,6 +2697,23 @@ mod operator_v2_authority_tests {
     fn v2_body_passes_all_frozen_bindings() {
         let frozen = frozen();
         validate_rwe_run_authorization_v2(&valid_v2_body(&frozen), &frozen).unwrap();
+    }
+
+    #[test]
+    fn v2_body_passes_with_schedule_cost_ceiling() {
+        let frozen = frozen();
+        let mut body = valid_v2_body(&frozen);
+        let run_level = &frozen.schedule.body["run_level_budget"];
+        body["cost_authority"] = run_level["cost_authority"].clone();
+        let ceiling = run_level["cost_authority"]["max_cost"].as_f64().unwrap();
+        let per_task_ceiling = ceiling / frozen.corpus.tasks.len() as f64;
+        body["per_task_budgets"] = json!(frozen
+            .corpus
+            .tasks
+            .iter()
+            .map(|t| RwePerTaskBudget::from_task_definition(t, Some(per_task_ceiling)).to_json())
+            .collect::<Vec<_>>());
+        validate_rwe_run_authorization_v2(&body, &frozen).unwrap();
     }
 
     #[test]
@@ -2701,6 +2776,46 @@ mod operator_v2_authority_tests {
         let mut auto_merge = valid.clone();
         auto_merge["auto_merge_disabled"] = json!(false);
         assert!(validate_rwe_run_authorization_v2(&auto_merge, &frozen).is_err());
+
+        let mut reuseable = valid.clone();
+        reuseable["one_use"] = json!(false);
+        assert!(validate_rwe_run_authorization_v2(&reuseable, &frozen).is_err());
+
+        let mut wrong_target_repo = valid.clone();
+        wrong_target_repo["target_repo"] = json!("Igzela/some-other-repo");
+        assert!(validate_rwe_run_authorization_v2(&wrong_target_repo, &frozen).is_err());
+
+        let mut wrong_target_main = valid.clone();
+        wrong_target_main["target_main_sha"] = json!("a".repeat(40));
+        assert!(validate_rwe_run_authorization_v2(&wrong_target_main, &frozen).is_err());
+
+        let mut no_budget_points = valid.clone();
+        no_budget_points["budget_point_ids"] = json!([]);
+        assert!(validate_rwe_run_authorization_v2(&no_budget_points, &frozen).is_err());
+
+        let mut extra_budget_point = valid.clone();
+        extra_budget_point["budget_point_ids"] = json!(["bp-standard", "bp-extra"]);
+        assert!(validate_rwe_run_authorization_v2(&extra_budget_point, &frozen).is_err());
+
+        let mut wrong_path = valid.clone();
+        wrong_path["provider_path"] = json!("/v1/chat/completions");
+        assert!(validate_rwe_run_authorization_v2(&wrong_path, &frozen).is_err());
+
+        let mut wrong_base = valid.clone();
+        wrong_base["provider_base_url"] = json!("https://api.deepseek.com/v1");
+        assert!(validate_rwe_run_authorization_v2(&wrong_base, &frozen).is_err());
+
+        let mut wrong_binary_sha = valid.clone();
+        wrong_binary_sha["binary_sha256"] = json!("abc");
+        assert!(validate_rwe_run_authorization_v2(&wrong_binary_sha, &frozen).is_err());
+
+        let mut bad_expiry = valid.clone();
+        bad_expiry["expires_at"] = json!("not-a-time");
+        assert!(validate_rwe_run_authorization_v2(&bad_expiry, &frozen).is_err());
+
+        let mut no_principal = valid.clone();
+        no_principal["principal_id"] = json!("");
+        assert!(validate_rwe_run_authorization_v2(&no_principal, &frozen).is_err());
     }
 
     #[test]

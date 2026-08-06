@@ -14,6 +14,12 @@ pub const OPERATOR_CORPUS_RELATIVE_ROOT: &str = "rwe/corpora/rwe-minimum-first-c
 pub const OPERATOR_TARGET_REPO: &str = "Igzela/alters-lab";
 pub const OPERATOR_ADMITTED_EXECUTOR: &str = "managed_deepseek";
 pub const OPERATOR_ADMITTED_MODEL: &str = "deepseek-v4-flash";
+/// The managed_deepseek executor is an in-process adapter compiled into the
+/// engine binary (no external codex/cli subprocess). The corpus-level
+/// `admitted_codex_version` field therefore binds the engine crate version:
+/// the binary identity of the admitted executor, not a model name.
+pub const OPERATOR_ADMITTED_BINARY_VERSION: &str = "0.1.0";
+pub const OPERATOR_ADMITTED_BINARY_PATH: &str = "in-process:managed_deepseek";
 
 pub fn operator_corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(OPERATOR_CORPUS_RELATIVE_ROOT)
@@ -74,7 +80,7 @@ pub fn freeze_operator_rwe_corpus() -> Result<FirstRweCorpus, String> {
         OPERATOR_CORPUS_ID,
         OPERATOR_TARGET_REPO,
         OPERATOR_ADMITTED_EXECUTOR,
-        OPERATOR_ADMITTED_MODEL,
+        OPERATOR_ADMITTED_BINARY_VERSION,
         vec![
             "Operator-approved Minimum First RWE corpus; real tasks on Igzela/alters-lab.".into(),
             "Objective text is hash-bound only in operational evidence.".into(),
@@ -82,6 +88,7 @@ pub fn freeze_operator_rwe_corpus() -> Result<FirstRweCorpus, String> {
             "Not a live baseline until authorized live evidence is sealed.".into(),
         ],
     )?;
+    let mut shared_source_commit: Option<&str> = None;
     for task in &corpus.tasks {
         if !task.source_repository.starts_with("https://")
             || task.source_repository.starts_with("fixture://")
@@ -96,6 +103,22 @@ pub fn freeze_operator_rwe_corpus() -> Result<FirstRweCorpus, String> {
                 "operator corpus task {} must not live under the fixture root",
                 task.task_id
             ));
+        }
+        if task.source_commit.len() != 40 {
+            return Err(format!(
+                "operator corpus task {} source_commit must be a 40-hex commit",
+                task.task_id
+            ));
+        }
+        match shared_source_commit {
+            Some(commit) if commit != task.source_commit => {
+                return Err(
+                    "operator corpus tasks must share one source_commit (the frozen target main)"
+                        .into(),
+                )
+            }
+            None => shared_source_commit = Some(task.source_commit.as_str()),
+            _ => {}
         }
     }
     Ok(corpus)
@@ -116,11 +139,11 @@ mod tests {
     // (scripts/gen_rwe_corpus.py, canonical form). These lock the accepted-main
     // artifacts to their published hashes.
     const EXPECTED_CORPUS_SHA: &str =
-        "5a948844370acb9e5789909b0fbe6e2ea112c3fb3fa743fe68908287d4ee8012";
+        "71daa3512f00a82b7203c6cfb5381f5db9661c46b778e83286dd52cb37a85abb";
     const EXPECTED_PROTOCOL_SHA: &str =
-        "be11b7c756279baff0100dd22d9d07a29a784685f8cef7ede4aa019359806565";
+        "da29f2b9107022a0626be840448f348585d5155cba63f9cfb96ebbbde81446de";
     const EXPECTED_SCHEDULE_SHA: &str =
-        "b71304df4e93eef933ddd7b0f4d63d46eb49ee39221bd5c2981025ff61d2aecf";
+        "f1b6c6fdbca9daca06cf8eee155b809dc0e7f7de49cf741e680e2cf7757cf75c";
 
     fn frozen_protocol() -> crate::rwe::economic_protocol::FrozenEvidenceDocument {
         let raw =
@@ -138,7 +161,11 @@ mod tests {
         assert_eq!(corpus.tasks.len(), 2);
         assert_eq!(corpus.disposable_target_repo, "Igzela/alters-lab");
         assert_eq!(corpus.admitted_executor, "managed_deepseek");
-        assert_eq!(corpus.admitted_codex_version, "deepseek-v4-flash");
+        assert_eq!(
+            corpus.admitted_codex_version,
+            OPERATOR_ADMITTED_BINARY_VERSION
+        );
+        assert_eq!(corpus.admitted_codex_version, "0.1.0");
         for task in &corpus.tasks {
             assert!(task.source_repository.starts_with("https://"));
             assert_eq!(task.source_commit.len(), 40);
