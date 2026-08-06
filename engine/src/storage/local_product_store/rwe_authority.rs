@@ -75,6 +75,12 @@ fn required_string_array_field(value: &Value, field: &str) -> Result<Vec<String>
 /// at issue and admission so a caller cannot authorize a subset while the runner executes the
 /// complete corpus.
 pub(crate) fn validate_rwe_corpus_envelope(body: &Value) -> Result<(), String> {
+    // Fixture-only authorization contract (v1). Production real-RWE must use
+    // rwe_run_authorization.v2; a v2 body is never accepted by this envelope and
+    // there is no silent v1<->v2 conversion.
+    if body.get("schema_version").and_then(Value::as_str) != Some("rwe_run_authorization.v1") {
+        return Err("RWE authorization must be rwe_run_authorization.v1".into());
+    }
     let corpus = freeze_first_rwe_corpus()?;
     let corpus_sha256 = required_string_field(body, "corpus_sha256")?;
     if corpus_sha256 != corpus.corpus_sha256 {
@@ -1872,7 +1878,7 @@ fn load_rwe_run_pg(
 mod authority_regression_tests {
     use super::*;
 
-    fn valid_corpus_body() -> Value {
+    pub(super) fn valid_corpus_body() -> Value {
         let corpus = freeze_first_rwe_corpus().unwrap();
         let task_ids = corpus
             .tasks
@@ -2288,5 +2294,550 @@ mod authority_regression_tests {
         body["auto_merge_disabled"] = json!(false);
         let err = validate_rwe_corpus_envelope(&body).unwrap_err();
         assert!(err.contains("auto_merge_disabled"), "{err}");
+    }
+}
+
+/// Validate a production real-RWE authorization body (`rwe_run_authorization.v2`)
+/// against the frozen operator corpus, protocol, execution schedule, and the
+/// accepted-main SHA at which the artifacts were frozen. Every binding is exact;
+/// the embedded snapshot never falls back to the mutable checkout. No table is
+/// added: the one-use authorization row remains the sole spend owner.
+/// Production wiring (issue/admit) lands in the Golden Path binding PR (Board B);
+/// until then this contract is exercised by provider-free tests only.
+#[cfg(test)]
+pub(crate) fn validate_rwe_run_authorization_v2(
+    body: &Value,
+    frozen: &crate::rwe::operator_corpus::OperatorFrozenContractSet,
+) -> Result<(), String> {
+    let corpus = &frozen.corpus;
+    let protocol = &frozen.protocol;
+    let schedule = &frozen.schedule;
+    if body.get("schema_version").and_then(Value::as_str) != Some("rwe_run_authorization.v2") {
+        return Err("production RWE authorization must be rwe_run_authorization.v2".into());
+    }
+    let accepted = required_string_field(body, "accepted_main_sha")?;
+    if accepted != frozen.accepted_main_sha {
+        return Err("accepted_main_sha does not match the frozen harness main".into());
+    }
+    let artifact_path = required_string_field(body, "corpus_artifact_path")?;
+    if artifact_path != frozen.corpus_artifact_path {
+        return Err("corpus_artifact_path does not match the frozen artifact root".into());
+    }
+    if required_string_field(body, "corpus_sha256")? != corpus.corpus_sha256 {
+        return Err("RWE authorization v2 corpus_sha256 does not match frozen corpus".into());
+    }
+    if required_string_field(body, "protocol_sha256")? != protocol.body_sha256 {
+        return Err("RWE authorization v2 protocol_sha256 does not match frozen protocol".into());
+    }
+    if required_string_field(body, "schedule_sha256")? != schedule.schedule_sha256 {
+        return Err("RWE authorization v2 schedule_sha256 does not match frozen schedule".into());
+    }
+    if body
+        .get("golden_path_prerequisite_product_task_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
+        return Err("golden_path_prerequisite_product_task_id required".into());
+    }
+    if body.get("draft_pr_only").and_then(Value::as_bool) != Some(true)
+        || body.get("auto_merge_disabled").and_then(Value::as_bool) != Some(true)
+    {
+        return Err("draft_pr_only and auto_merge_disabled must be true".into());
+    }
+    if required_string_field(body, "admitted_executor")? != corpus.admitted_executor {
+        return Err("v2 admitted_executor does not match frozen corpus".into());
+    }
+    if required_string_field(body, "binary_version")? != corpus.admitted_codex_version {
+        return Err("v2 binary_version does not match frozen corpus admitted version".into());
+    }
+    let task_ids = body
+        .get("task_ids")
+        .and_then(Value::as_array)
+        .ok_or("RWE authorization v2 task_ids array required")?;
+    let canonical_task_ids = corpus
+        .tasks
+        .iter()
+        .map(|task| task.task_id.as_str())
+        .collect::<Vec<_>>();
+    let observed_task_ids = task_ids
+        .iter()
+        .map(|id| id.as_str().ok_or("v2 task_ids must contain strings"))
+        .collect::<Result<Vec<_>, _>>()?;
+    if observed_task_ids != canonical_task_ids {
+        return Err("v2 task_ids must exactly match frozen corpus order".into());
+    }
+    let auth_executor = required_string_field(body, "executor_identity")?;
+    let auth_model = required_string_field(body, "model_identity")?;
+    for task in &corpus.tasks {
+        if auth_executor != task.executor_identity || auth_model != task.model_identity {
+            return Err(
+                "v2 executor/model identity does not match frozen corpus task identity".into(),
+            );
+        }
+    }
+    if body.get("one_use").and_then(Value::as_bool) != Some(true) {
+        return Err("v2 spend envelope must be one_use".into());
+    }
+    if required_string_field(body, "target_repo")? != corpus.disposable_target_repo {
+        return Err("v2 target_repo does not match the frozen operator target repository".into());
+    }
+    let target_main = required_string_field(body, "target_main_sha")?;
+    for task in &corpus.tasks {
+        if target_main != task.source_commit {
+            return Err("v2 target_main_sha does not match the frozen corpus target main".into());
+        }
+    }
+    let principal_id = required_string_field(body, "principal_id")?;
+    let principal_kind = required_string_field(body, "principal_kind")?;
+    if principal_id.is_empty() || principal_kind.is_empty() {
+        return Err("v2 principal_id and principal_kind are required".into());
+    }
+    let expires_at = body
+        .get("expires_at")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or("v2 expires_at required")?;
+    require_finite_rwe_expiry(expires_at)?;
+    let binary_path = required_string_field(body, "binary_path")?;
+    let binary_sha256 = required_string_field(body, "binary_sha256")?;
+    if binary_path != crate::rwe::operator_corpus::OPERATOR_ADMITTED_BINARY_PATH
+        || binary_sha256.len() != 64
+    {
+        return Err("v2 binary_path/binary_sha256 must bind the admitted executor binary".into());
+    }
+    let budget_point_ids = body
+        .get("budget_point_ids")
+        .and_then(Value::as_array)
+        .ok_or("v2 budget_point_ids array required")?;
+    let observed_budget_points = budget_point_ids
+        .iter()
+        .map(|id| {
+            id.as_str()
+                .ok_or("v2 budget_point_ids must contain strings")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let canonical_budget_points = protocol
+        .body
+        .get("budget_points")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| p.get("budget_point_id").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+        })
+        .ok_or("frozen protocol budget_points missing")?;
+    if observed_budget_points != canonical_budget_points {
+        return Err("v2 budget_point_ids must exactly match frozen protocol budget points".into());
+    }
+    // Provider route pinned to the frozen managed-deepseek route constants in
+    // the accepted codebase (provider::managed_deepseek).
+    if required_string_field(body, "provider_kind")? != "deepseek"
+        || required_string_field(body, "provider_host")? != "api.deepseek.com"
+        || required_string_field(body, "provider_base_url")? != "https://api.deepseek.com"
+        || required_string_field(body, "provider_path")? != "/chat/completions"
+    {
+        return Err("v2 provider route does not match the frozen operator route".into());
+    }
+    let cost_authority_value = body
+        .get("cost_authority")
+        .ok_or("v2 cost_authority required")?;
+    let cost_authority = super::CostAuthority::from_json(cost_authority_value)?;
+    let cost_ceiling = match &cost_authority {
+        super::CostAuthority::ProviderReported { max_cost, .. }
+        | super::CostAuthority::LocalEstimate { max_cost, .. } => Some(*max_cost),
+        super::CostAuthority::CostUnavailable => None,
+    };
+    let budgets = body
+        .get("per_task_budgets")
+        .and_then(Value::as_array)
+        .ok_or("v2 per_task_budgets array required")?;
+    if budgets.len() != corpus.tasks.len() {
+        return Err("v2 must contain exactly one budget per corpus task".into());
+    }
+    let mut aggregate_requests = 0_u64;
+    let mut aggregate_tokens = 0_u64;
+    let mut aggregate_wall_ms = 0_u64;
+    let mut aggregate_cost = 0.0_f64;
+    for (budget, task) in budgets.iter().zip(&corpus.tasks) {
+        if required_string_field(budget, "task_id")? != task.task_id {
+            return Err("v2 per-task budgets must follow frozen corpus order".into());
+        }
+        let requests = required_u64_field(budget, "max_provider_requests")?;
+        let input_tokens = required_u64_field(budget, "max_input_tokens")?;
+        let output_tokens = required_u64_field(budget, "max_output_tokens")?;
+        let total_tokens = required_u64_field(budget, "max_total_tokens")?;
+        let wall_ms = required_u64_field(budget, "max_wall_time_ms")?;
+        let retries = required_u64_field(budget, "max_retries")?;
+        if requests != task.per_task_max_provider_requests
+            || total_tokens != task.per_task_max_total_tokens
+            || wall_ms != task.timeout_ms
+            || input_tokens != task.per_task_max_input_tokens
+            || output_tokens != task.per_task_max_output_tokens
+            || input_tokens.saturating_add(output_tokens) != total_tokens
+            || retries != task.per_task_max_retries
+        {
+            return Err(format!(
+                "v2 budget does not exactly match frozen corpus task {}",
+                task.task_id
+            ));
+        }
+        if required_string_field(budget, "source_repository")? != task.source_repository
+            || required_string_field(budget, "source_commit")? != task.source_commit
+            || required_string_field(budget, "source_tree_hash")? != task.source_tree_hash
+            || required_string_field(budget, "expected_outcome_class")?
+                != task.expected_outcome_class
+            || required_u64_field(budget, "patch_max_files")? != task.patch_max_files
+            || required_u64_field(budget, "patch_max_lines")? != task.patch_max_lines
+            || required_string_field(budget, "cancel_behavior")? != task.cancel_behavior
+            || required_string_field(budget, "executor_identity")? != task.executor_identity
+            || required_string_field(budget, "model_identity")? != task.model_identity
+            || required_u64_field(budget, "deterministic_seed")? != task.deterministic_seed
+        {
+            return Err(format!(
+                "v2 budget task-definition boundaries do not match frozen corpus task {}",
+                task.task_id
+            ));
+        }
+        if required_string_array_field(budget, "allowed_mutable_paths")?
+            != task.allowed_mutable_paths
+            || required_string_array_field(budget, "expected_verification_commands")?
+                != task.expected_verification_commands
+            || required_string_array_field(budget, "cleanup_rules")? != task.cleanup_rules
+        {
+            return Err(format!(
+                "v2 budget task-definition arrays do not match frozen corpus task {}",
+                task.task_id
+            ));
+        }
+        match budget
+            .get("max_cost")
+            .and_then(|v| if v.is_null() { None } else { v.as_f64() })
+        {
+            Some(max_cost) => {
+                if max_cost <= 0.0 {
+                    return Err(format!(
+                        "v2 budget max_cost must be positive for task {}",
+                        task.task_id
+                    ));
+                }
+                if cost_ceiling.is_none() {
+                    return Err(format!(
+                        "v2 budget max_cost present but cost_authority has no ceiling for task {}",
+                        task.task_id
+                    ));
+                }
+                aggregate_cost += max_cost;
+            }
+            None => {
+                if cost_ceiling.is_some() {
+                    return Err(format!(
+                        "v2 budget missing max_cost for task {} but cost_authority has ceiling",
+                        task.task_id
+                    ));
+                }
+            }
+        }
+        aggregate_requests = aggregate_requests
+            .checked_add(requests)
+            .ok_or("v2 aggregate provider-request budget overflow")?;
+        aggregate_tokens = aggregate_tokens
+            .checked_add(total_tokens)
+            .ok_or("v2 aggregate token budget overflow")?;
+        aggregate_wall_ms = aggregate_wall_ms
+            .checked_add(wall_ms)
+            .ok_or("v2 aggregate wall-time budget overflow")?;
+    }
+    // Aggregate totals are bound by the frozen schedule's run-level budget below;
+    // the per-task sums are not directly comparable because each task executes
+    // once per schedule cell (repetitions x budget points).
+    let _ = (aggregate_requests, aggregate_tokens, aggregate_wall_ms);
+    if let Some(ceiling) = cost_ceiling {
+        if (aggregate_cost - ceiling).abs() > f64::EPSILON {
+            return Err("v2 aggregate max_cost does not match cost_authority ceiling".into());
+        }
+    }
+    // The authorization totals must equal the frozen schedule's cell sums (each
+    // corpus task executes once per schedule cell); the schedule freeze already
+    // proved the cell sums equal the run-level budget.
+    let mut cell_requests = 0_u64;
+    let mut cell_tokens = 0_u64;
+    let mut cell_wall_ms = 0_u64;
+    for cell in schedule
+        .body
+        .get("cells")
+        .and_then(Value::as_array)
+        .ok_or("frozen schedule cells missing")?
+    {
+        cell_requests = cell_requests
+            .checked_add(
+                cell.get("max_provider_requests")
+                    .and_then(Value::as_u64)
+                    .ok_or("cell max_provider_requests missing")?,
+            )
+            .ok_or("cell request sum overflow")?;
+        cell_tokens = cell_tokens
+            .checked_add(
+                cell.get("max_total_tokens")
+                    .and_then(Value::as_u64)
+                    .ok_or("cell max_total_tokens missing")?,
+            )
+            .ok_or("cell token sum overflow")?;
+        cell_wall_ms = cell_wall_ms
+            .checked_add(
+                cell.get("max_wall_time_ms")
+                    .and_then(Value::as_u64)
+                    .ok_or("cell max_wall_time_ms missing")?,
+            )
+            .ok_or("cell wall sum overflow")?;
+    }
+    if required_u64_field(body, "max_total_provider_requests")? != cell_requests
+        || required_u64_field(body, "max_total_tokens")? != cell_tokens
+        || required_u64_field(body, "max_wall_time_ms")? != cell_wall_ms
+    {
+        return Err("v2 totals must equal the frozen schedule cell sums".into());
+    }
+    let run_level = schedule
+        .body
+        .get("run_level_budget")
+        .and_then(Value::as_object)
+        .ok_or("frozen schedule run_level_budget missing")?;
+    if run_level
+        .get("max_total_provider_requests")
+        .and_then(Value::as_u64)
+        != Some(cell_requests)
+        || run_level.get("max_total_tokens").and_then(Value::as_u64) != Some(cell_tokens)
+        || run_level.get("max_wall_time_ms").and_then(Value::as_u64) != Some(cell_wall_ms)
+    {
+        return Err("v2 totals must equal the frozen schedule run-level budget".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod operator_v2_authority_tests {
+    use super::authority_regression_tests;
+    use super::validate_rwe_corpus_envelope;
+    use super::validate_rwe_run_authorization_v2;
+    use crate::rwe::operator_corpus::{freeze_operator_contract_set, OperatorFrozenContractSet};
+    use crate::storage::local_product_store::{CostAuthority, RwePerTaskBudget};
+    use serde_json::json;
+    use serde_json::Value;
+
+    // Accepted-main SHA the Board-A artifacts are frozen at (updated at merge).
+    const ACCEPTED_MAIN_SHA: &str = "3c6cd00f68f4db2a9eef99598deebc42f95ab62b";
+
+    fn frozen() -> OperatorFrozenContractSet {
+        freeze_operator_contract_set(ACCEPTED_MAIN_SHA).unwrap()
+    }
+
+    fn valid_v2_body(frozen: &OperatorFrozenContractSet) -> Value {
+        let task_ids: Vec<Value> = frozen
+            .corpus
+            .tasks
+            .iter()
+            .map(|t| json!(t.task_id))
+            .collect();
+        let budgets: Vec<Value> = frozen
+            .corpus
+            .tasks
+            .iter()
+            .map(|t| RwePerTaskBudget::from_task_definition(t, None).to_json())
+            .collect();
+        let budget_points = frozen
+            .protocol
+            .body
+            .get("budget_points")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let budget_point_ids: Vec<Value> = budget_points
+            .iter()
+            .map(|p| p.get("budget_point_id").cloned().unwrap_or_default())
+            .collect();
+        json!({
+            "schema_version": "rwe_run_authorization.v2",
+            "authorization_id": "v2-live-auth",
+            "accepted_main_sha": frozen.accepted_main_sha,
+            "corpus_artifact_path": frozen.corpus_artifact_path,
+            "corpus_sha256": frozen.corpus.corpus_sha256,
+            "protocol_sha256": frozen.protocol.body_sha256,
+            "schedule_sha256": frozen.schedule.schedule_sha256,
+            "golden_path_prerequisite_product_task_id": "ptask-live-seal-accepted",
+            "principal_id": "operator-rwe",
+            "principal_kind": "operator_api_key",
+            "task_ids": task_ids,
+            "max_total_provider_requests": frozen.schedule.body["run_level_budget"]["max_total_provider_requests"].as_u64().unwrap(),
+            "max_total_tokens": frozen.schedule.body["run_level_budget"]["max_total_tokens"].as_u64().unwrap(),
+            "max_wall_time_ms": frozen.schedule.body["run_level_budget"]["max_wall_time_ms"].as_u64().unwrap(),
+            "cost_authority": CostAuthority::CostUnavailable.to_json(),
+            "per_task_budgets": budgets,
+            "binary_path": "in-process:managed_deepseek",
+            "binary_version": frozen.corpus.admitted_codex_version,
+            "binary_sha256": "0".repeat(64),
+            "provider_kind": "deepseek",
+            "provider_host": "api.deepseek.com",
+            "provider_base_url": "https://api.deepseek.com",
+            "provider_path": "/chat/completions",
+            "budget_point_ids": budget_point_ids,
+            "target_repo": frozen.corpus.disposable_target_repo,
+            "target_main_sha": frozen.corpus.tasks[0].source_commit,
+            "executor_identity": frozen.corpus.tasks[0].executor_identity,
+            "model_identity": frozen.corpus.tasks[0].model_identity,
+            "draft_pr_only": true,
+            "admitted_executor": frozen.corpus.admitted_executor,
+            "auto_merge_disabled": true,
+            "one_use": true,
+            "expires_at": "2026-08-07T00:00:00Z",
+        })
+    }
+
+    #[test]
+    fn v2_body_passes_all_frozen_bindings() {
+        let frozen = frozen();
+        validate_rwe_run_authorization_v2(&valid_v2_body(&frozen), &frozen).unwrap();
+    }
+
+    #[test]
+    fn v2_body_passes_with_schedule_cost_ceiling() {
+        let frozen = frozen();
+        let mut body = valid_v2_body(&frozen);
+        let run_level = &frozen.schedule.body["run_level_budget"];
+        body["cost_authority"] = run_level["cost_authority"].clone();
+        let ceiling = run_level["cost_authority"]["max_cost"].as_f64().unwrap();
+        let per_task_ceiling = ceiling / frozen.corpus.tasks.len() as f64;
+        body["per_task_budgets"] = json!(frozen
+            .corpus
+            .tasks
+            .iter()
+            .map(|t| RwePerTaskBudget::from_task_definition(t, Some(per_task_ceiling)).to_json())
+            .collect::<Vec<_>>());
+        validate_rwe_run_authorization_v2(&body, &frozen).unwrap();
+    }
+
+    #[test]
+    fn v2_rejects_every_binding_mutation() {
+        let frozen = frozen();
+        let valid = valid_v2_body(&frozen);
+
+        let mut wrong_schema = valid.clone();
+        wrong_schema["schema_version"] = json!("rwe_run_authorization.v1");
+        assert!(validate_rwe_run_authorization_v2(&wrong_schema, &frozen).is_err());
+
+        let mut wrong_accepted = valid.clone();
+        wrong_accepted["accepted_main_sha"] = json!("a".repeat(40));
+        assert!(validate_rwe_run_authorization_v2(&wrong_accepted, &frozen).is_err());
+
+        let mut wrong_path = valid.clone();
+        wrong_path["corpus_artifact_path"] = json!("engine/fixtures/rwe/first_corpus/v1");
+        assert!(validate_rwe_run_authorization_v2(&wrong_path, &frozen).is_err());
+
+        let mut wrong_corpus = valid.clone();
+        wrong_corpus["corpus_sha256"] = json!("0".repeat(64));
+        assert!(validate_rwe_run_authorization_v2(&wrong_corpus, &frozen).is_err());
+
+        let mut wrong_protocol = valid.clone();
+        wrong_protocol["protocol_sha256"] = json!("0".repeat(64));
+        assert!(validate_rwe_run_authorization_v2(&wrong_protocol, &frozen).is_err());
+
+        let mut wrong_schedule = valid.clone();
+        wrong_schedule["schedule_sha256"] = json!("0".repeat(64));
+        assert!(validate_rwe_run_authorization_v2(&wrong_schedule, &frozen).is_err());
+
+        let mut no_prereq = valid.clone();
+        no_prereq["golden_path_prerequisite_product_task_id"] = json!("");
+        assert!(validate_rwe_run_authorization_v2(&no_prereq, &frozen).is_err());
+
+        let mut wrong_identity = valid.clone();
+        wrong_identity["executor_identity"] = json!("codex_cli");
+        assert!(validate_rwe_run_authorization_v2(&wrong_identity, &frozen).is_err());
+
+        let mut wrong_provider = valid.clone();
+        wrong_provider["provider_kind"] = json!("openai_compatible");
+        assert!(validate_rwe_run_authorization_v2(&wrong_provider, &frozen).is_err());
+
+        let mut wrong_version = valid.clone();
+        wrong_version["binary_version"] = json!("0.145.0");
+        assert!(validate_rwe_run_authorization_v2(&wrong_version, &frozen).is_err());
+
+        let mut reordered = valid.clone();
+        reordered["task_ids"].as_array_mut().unwrap().swap(0, 1);
+        assert!(validate_rwe_run_authorization_v2(&reordered, &frozen).is_err());
+
+        let mut wrong_budget = valid.clone();
+        wrong_budget["per_task_budgets"][0]["max_retries"] = json!(99);
+        assert!(validate_rwe_run_authorization_v2(&wrong_budget, &frozen).is_err());
+
+        let mut wrong_aggregate = valid.clone();
+        wrong_aggregate["max_total_tokens"] = json!(1);
+        assert!(validate_rwe_run_authorization_v2(&wrong_aggregate, &frozen).is_err());
+
+        let mut auto_merge = valid.clone();
+        auto_merge["auto_merge_disabled"] = json!(false);
+        assert!(validate_rwe_run_authorization_v2(&auto_merge, &frozen).is_err());
+
+        let mut reuseable = valid.clone();
+        reuseable["one_use"] = json!(false);
+        assert!(validate_rwe_run_authorization_v2(&reuseable, &frozen).is_err());
+
+        let mut wrong_target_repo = valid.clone();
+        wrong_target_repo["target_repo"] = json!("Igzela/some-other-repo");
+        assert!(validate_rwe_run_authorization_v2(&wrong_target_repo, &frozen).is_err());
+
+        let mut wrong_target_main = valid.clone();
+        wrong_target_main["target_main_sha"] = json!("a".repeat(40));
+        assert!(validate_rwe_run_authorization_v2(&wrong_target_main, &frozen).is_err());
+
+        let mut no_budget_points = valid.clone();
+        no_budget_points["budget_point_ids"] = json!([]);
+        assert!(validate_rwe_run_authorization_v2(&no_budget_points, &frozen).is_err());
+
+        let mut extra_budget_point = valid.clone();
+        extra_budget_point["budget_point_ids"] = json!(["bp-standard", "bp-extra"]);
+        assert!(validate_rwe_run_authorization_v2(&extra_budget_point, &frozen).is_err());
+
+        let mut wrong_path = valid.clone();
+        wrong_path["provider_path"] = json!("/v1/chat/completions");
+        assert!(validate_rwe_run_authorization_v2(&wrong_path, &frozen).is_err());
+
+        let mut wrong_base = valid.clone();
+        wrong_base["provider_base_url"] = json!("https://api.deepseek.com/v1");
+        assert!(validate_rwe_run_authorization_v2(&wrong_base, &frozen).is_err());
+
+        let mut wrong_binary_sha = valid.clone();
+        wrong_binary_sha["binary_sha256"] = json!("abc");
+        assert!(validate_rwe_run_authorization_v2(&wrong_binary_sha, &frozen).is_err());
+
+        let mut wrong_binary_path = valid.clone();
+        wrong_binary_path["binary_path"] = json!("/usr/bin/anything");
+        assert!(validate_rwe_run_authorization_v2(&wrong_binary_path, &frozen).is_err());
+
+        let mut bad_expiry = valid.clone();
+        bad_expiry["expires_at"] = json!("not-a-time");
+        assert!(validate_rwe_run_authorization_v2(&bad_expiry, &frozen).is_err());
+
+        let mut far_expiry = valid.clone();
+        far_expiry["expires_at"] = json!("9999-12-31T23:59:59Z");
+        assert!(validate_rwe_run_authorization_v2(&far_expiry, &frozen).is_err());
+
+        let mut no_principal = valid.clone();
+        no_principal["principal_id"] = json!("");
+        assert!(validate_rwe_run_authorization_v2(&no_principal, &frozen).is_err());
+    }
+
+    #[test]
+    fn v1_envelope_rejects_v2_schema_and_vice_versa() {
+        let frozen = frozen();
+        // A v2 body can never pass the fixture v1 envelope (strict separation).
+        let v2 = valid_v2_body(&frozen);
+        let err = validate_rwe_corpus_envelope(&v2).unwrap_err();
+        assert!(err.contains("rwe_run_authorization.v1"), "{err}");
+        // A v1 fixture body can never pass the v2 validator.
+        let v1_body = authority_regression_tests::valid_corpus_body();
+        let err2 = validate_rwe_run_authorization_v2(&v1_body, &frozen).unwrap_err();
+        assert!(err2.contains("rwe_run_authorization.v2"), "{err2}");
+        // Fixture v1 envelope still accepts its own schema.
+        validate_rwe_corpus_envelope(&authority_regression_tests::valid_corpus_body()).unwrap();
     }
 }
