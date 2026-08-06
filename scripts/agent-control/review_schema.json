@@ -1,21 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AgentOrchestratorReviewVerdict",
-  "description": "Structured review output from the Codex review worker",
+  "description": "Structured review output from the review worker under Review Convergence Protocol. Exact PASS is the only merge-authorizing control verdict and may carry deferred non-blocking notes. PASS_WITH_NOTES remains schema-valid for recording only and does not authorize merge. ci_green is a reviewer-observed boolean only; authoritative CI comes from the trusted exact-head CI owner, never from a model-authored field.",
   "type": "object",
   "required": [
     "verdict",
     "summary",
     "reviewed_head_sha",
-    "ci_green",
     "security_ok",
     "rollback_ok"
   ],
   "properties": {
     "verdict": {
       "type": "string",
-      "enum": ["PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL"],
-      "description": "PASS: ready to merge with no blocking issues. PASS_WITH_NOTES: non-blocking suggestions only; does NOT authorize merge unless governance explicitly permits it. BLOCKED: one or more blocking issues. FAIL: critical defects or does not satisfy the task."
+      "enum": ["PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL", "DECISION_REQUIRED"],
+      "description": "PASS: no open blockers; only authorizing control verdict (deferred notes allowed). PASS_WITH_NOTES: schema-valid non-authorizing record only. BLOCKED: one or more open blockers. FAIL: critical defects or task non-satisfaction. DECISION_REQUIRED: stop for human adjudication; no autonomous third round."
     },
     "summary": {
       "type": "string",
@@ -28,27 +27,145 @@
       "pattern": "^[0-9a-f]{40}$",
       "description": "The exact PR head SHA that was reviewed"
     },
+    "review_mode": {
+      "type": "string",
+      "enum": ["full", "repair_verification"],
+      "description": "full = R1 complete base...head review; repair_verification = R2 complete attestation with delta-first focus on prior blockers"
+    },
+    "review_round": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2,
+      "description": "Substantive independent-review round (R1 or R2); never exceeds 2 without explicit human authority"
+    },
+    "reviewed_base": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "The exact base SHA of the reviewed range"
+    },
+    "reviewed_range": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}\\.\\.\\.[0-9a-f]{40}$",
+      "description": "The complete reviewed range as base...head"
+    },
+    "prior_reviewed_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "The head reviewed in the prior round (R2 continuity)"
+    },
     "blockers": {
       "type": "array",
       "maxItems": 50,
       "items": { "type": "string", "maxLength": 2000 },
-      "description": "Issues that must be resolved before merge (verdict BLOCKED or FAIL only)"
+      "description": "Legacy open hard-contract blocking strings. Must be empty for PASS/PASS_WITH_NOTES; must be non-empty for BLOCKED. New artifacts should use structured findings with disposition=block_current_head."
     },
     "major_notes": {
       "type": "array",
       "maxItems": 50,
       "items": { "type": "string", "maxLength": 2000 },
-      "description": "Significant observations that should be addressed"
+      "description": "Deferred non-blocking major notes; allowed on PASS; must not force a new head"
     },
     "minor_notes": {
       "type": "array",
       "maxItems": 50,
       "items": { "type": "string", "maxLength": 2000 },
-      "description": "Minor suggestions"
+      "description": "Deferred non-blocking minor notes; allowed on PASS; must not force a new head"
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 200,
+      "description": "Structured findings ledger. Each finding separates severity (impact) from disposition (current-head effect).",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "axis",
+          "evidence",
+          "severity",
+          "disposition",
+          "scope_relation",
+          "origin_head",
+          "acceptance_condition",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9._:/-]+$"
+          },
+          "axis": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["blocker", "major", "minor", "note"]
+          },
+          "disposition": {
+            "type": "string",
+            "enum": ["block_current_head", "defer", "decision_required"]
+          },
+          "scope_relation": {
+            "type": "string",
+            "enum": ["in_packet", "out_of_packet"]
+          },
+          "origin_head": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$",
+            "description": "The exact head that introduced this finding"
+          },
+          "acceptance_condition": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "status": {
+            "type": "string",
+            "enum": ["open", "resolved", "deferred"]
+          },
+          "admission_reason": {
+            "type": "string",
+            "enum": ["repair_regression", "prior_evidence_unavailable", "hard_stop_miss"],
+            "description": "Required on R2 (repair_verification) for NEW open block_current_head findings"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "open_blocker_ids": {
+      "type": "array",
+      "maxItems": 200,
+      "items": { "type": "string", "maxLength": 160 },
+      "description": "Finding ids with disposition=block_current_head and status=open; must exactly match the findings array"
+    },
+    "deferred_note_ids": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "type": "string", "maxLength": 160 },
+      "description": "Finding ids deferred as non-blocking notes; must exactly match the findings array"
+    },
+    "decision_required_ids": {
+      "type": "array",
+      "maxItems": 200,
+      "items": { "type": "string", "maxLength": 160 },
+      "description": "Finding ids with disposition=decision_required and status=open; must exactly match the findings array"
+    },
+    "finding_ledger_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 digest of the id-ordered finding ledger; recomputed and verified by the validator"
     },
     "ci_green": {
       "type": "boolean",
-      "description": "Whether all required CI jobs were green at time of review"
+      "description": "OBSERVATION ONLY: whether required CI looked green to the reviewer at review time. Never authorizes; authoritative CI is read independently from trusted GitHub state by the merge owner."
     },
     "security_ok": {
       "type": "boolean",
@@ -57,6 +174,12 @@
     "rollback_ok": {
       "type": "boolean",
       "description": "Whether the change has a clear rollback path"
+    },
+    "unavailable_reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "Required when verdict=DECISION_REQUIRED originates from unreviewable state: explicit, bounded, non-sensitive reason"
     }
   },
   "additionalProperties": false

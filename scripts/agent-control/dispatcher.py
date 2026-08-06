@@ -1565,6 +1565,22 @@ def retry_review(issue: int) -> dict[str, object]:
     binding_ok, binding_reason = sm.verify_issue_pr_binding(issue, pr, sha, repo)
     if not binding_ok:
         return {"dispatched": False, "reason": f"binding_rejected:{binding_reason}"}
+    try:
+        import review_convergence as rc
+
+        previous_review = sm.read_review_state(issue, repo)
+        attempt = rc.derive_next_review_attempt(previous_review, sha)
+    except sm.StateUnavailableError:
+        return {"dispatched": False, "reason": "review_state_unavailable"}
+    if not attempt.get("allowed"):
+        return {
+            "dispatched": False,
+            "reason": f"review_budget_denied:{attempt.get('deny_reason') or 'not_allowed'}",
+            "review_mode": attempt.get("review_mode"),
+            "review_round": attempt.get("review_round"),
+            "open_blocker_ids": attempt.get("open_blocker_ids") or [],
+            "finding_ledger_digest": attempt.get("finding_ledger_digest") or "",
+        }
     dispatch_id = _dispatch_id("retry-review", pr, sha)
     try:
         previous = sm.read_dispatch_state(issue, dispatch_id, repo)

@@ -1,8 +1,9 @@
 """Strict versioned receipt parsing (pure logic).
 
 Only an exact structured PASS with matching identities and no blockers or
-objections is acceptable.  Natural-language "PASS" without the JSON receipt is
-unusable, and PASS_WITH_NOTES / NEEDS_CHANGES / UNREVIEWABLE are rejected.
+objections is acceptable.  PASS may carry deferred_notes (non-blocking).
+Natural-language "PASS" without the JSON receipt is unusable, and
+PASS_WITH_NOTES / NEEDS_CHANGES / UNREVIEWABLE are rejected as control verdicts.
 """
 
 from __future__ import annotations
@@ -74,6 +75,11 @@ def parse_receipt(markdown: str) -> tuple[models.ReviewReceipt | None, list[str]
     )
     if err:
         return None, [err]
+    deferred, err = _coerce_string_list(
+        data.get("deferred_notes", []), "deferred_notes"
+    )
+    if err:
+        return None, [err]
     receipt = models.ReviewReceipt(
         schema_version=str(data.get("schema_version", "")),
         verdict=str(data.get("verdict", "")),
@@ -84,6 +90,7 @@ def parse_receipt(markdown: str) -> tuple[models.ReviewReceipt | None, list[str]
         diff_scope=str(data.get("diff_scope", "")),
         blockers=tuple(blockers),
         unresolved_objections=tuple(objections),
+        deferred_notes=tuple(deferred),
         reviewer_session_id=str(data.get("reviewer_session_id", "")),
         implementation_session_id=str(data.get("implementation_session_id", "")),
         transport=str(data.get("transport", "")),

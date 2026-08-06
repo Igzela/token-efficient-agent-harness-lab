@@ -95,7 +95,13 @@ class TestReviewValidatorBehavior(unittest.TestCase):
     def test_every_schema_valid_business_verdict_succeeds_and_preserves_evidence(self):
         for verdict in ("PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL"):
             with self.subTest(verdict=verdict):
-                harness = ValidatorHarness(review_payload(verdict, blockers=["blocked"] if verdict != "PASS" else []))
+                # Review Convergence: PASS/PASS_WITH_NOTES must not carry blockers;
+                # BLOCKED requires at least one blocker. FAIL may record defects.
+                if verdict in {"PASS", "PASS_WITH_NOTES"}:
+                    blockers = []
+                else:
+                    blockers = ["blocked"]
+                harness = ValidatorHarness(review_payload(verdict, blockers=blockers))
                 try:
                     result, sidecar, outputs = harness.run()
                 finally:
@@ -108,10 +114,33 @@ class TestReviewValidatorBehavior(unittest.TestCase):
                 self.assertEqual(outputs["classification"], "valid_verdict")
                 self.assertNotIn("summary", outputs)
 
+    def test_pass_may_carry_deferred_notes_without_blockers(self):
+        harness = ValidatorHarness(review_payload(
+            "PASS",
+            blockers=[],
+            major_notes=["optional rename residual"],
+            minor_notes=["comment polish deferred"],
+        ))
+        try:
+            result, sidecar, outputs = harness.run()
+        finally:
+            harness.close()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sidecar["verdict"], "PASS")
+        self.assertEqual(sidecar["major_notes"], ["optional rename residual"])
+        self.assertEqual(sidecar["minor_notes"], ["comment polish deferred"])
+        self.assertEqual(outputs["verdict"], "PASS")
+
     def test_invalid_results_fail_and_leave_only_bounded_failure_metadata(self):
         cases = {
-            "pass_blockers": (review_payload("PASS", blockers=["no"]), None, True, "pass_has_blockers"),
-            "pass_missing_proof": (review_payload("PASS", security_ok=False), None, True, "pass_proof_missing"),
+            "pass_blockers": (review_payload("PASS", blockers=["no"]), None, True, "convergence_cross_field_invalid"),
+            "pass_missing_proof": (review_payload("PASS", security_ok=False), None, True, "convergence_cross_field_invalid"),
+            "pass_with_notes_has_blockers": (
+                review_payload("PASS_WITH_NOTES", blockers=["no"]), None, True, "convergence_cross_field_invalid"
+            ),
+            "blocked_without_blockers": (
+                review_payload("BLOCKED", blockers=[]), None, True, "convergence_cross_field_invalid"
+            ),
             "malformed_json": (None, b"{not json", True, "artifact_invalid_json"),
             "missing": (None, None, False, "artifact_missing"),
             "oversized": (None, b"x" * (65 * 1024), True, "artifact_too_large"),
@@ -452,3 +481,490 @@ class TestReviewThreadPagination(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConvergenceStateMachineWiring(unittest.TestCase):
+    """record_validated_review applies the R1/repair/R2 transitions durably."""
+
+    def _sidecar(self, path, verdict, **overrides):
+        payload = {
+            "kind": "agent-orchestrator-review-validation",
+            "version": 2,
+            "classification": "valid_verdict",
+            "pr_number": 207,
+            "reviewed_head_sha": HEAD,
+            "verdict": verdict,
+            "summary": f"{verdict} review result",
+            "blockers": [],
+            "major_notes": [],
+            "minor_notes": [],
+            "artifact_sha256": "a" * 64,
+            "review_workflow_run_id": 91234,
+            "review_mode": "full",
+            "review_round": 1,
+            "reviewed_base": "c" * 40,
+            "reviewed_range": f"{'c' * 40}...{HEAD}",
+            "prior_reviewed_head": "",
+            "findings": None,
+            "finding_ledger_digest": "",
+            "open_blocker_ids": [],
+            "deferred_note_ids": [],
+            "decision_required_ids": [],
+            "observed_ci_status": "unknown",
+        }
+        payload.update(overrides)
+        if payload["findings"] is None:
+            payload.pop("findings")
+        path.write_text(json.dumps(payload))
+        return path
+
+    def _recorded(self, records):
+        return [
+            json.loads(body)
+            for body in records
+            if "agent-orchestrator-review-state" in body
+        ]
+
+    def test_r1_blocked_records_v3_state_with_repair_budget(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            tmp.close()
+            sidecar = self._sidecar(
+                Path(tmp.name),
+                "BLOCKED",
+                blockers=["exact blocker"],
+                review_round=1,
+            )
+            recorded = []
+            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(sm, "read_review_state", return_value=None), \
+                 mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
+                ok, reason = sm.record_validated_review(42, 207, HEAD, sidecar, "acme/repo")
+            os.unlink(sidecar)
+        self.assertTrue(ok, reason)
+        self.assertEqual(len(recorded), 1)
+        state = self._recorded(recorded)[0]
+        self.assertEqual(state["version"], 3)
+        self.assertEqual(state["verdict"], "BLOCKED")
+        self.assertEqual(state["review_round"], 1)
+        self.assertEqual(state["review_mode"], "full")
+        self.assertEqual(state["autonomous_repairs_remaining"], 1)
+        self.assertEqual(state["open_blocker_ids"], ["blocker-1"])
+        self.assertEqual(state["review_protocol_version"], "review-convergence.v1")
+
+    def test_r2_pass_after_invalidated_prior_records_terminal_pass(self):
+        prior = {
+            "kind": "agent-orchestrator-review-state",
+            "version": 3,
+            "issue_number": 42,
+            "pr_number": 207,
+            "head_sha": "b" * 40,
+            "verdict": "INVALIDATED",
+            "summary": "invalidated",
+            "blockers": ["old blocker"],
+            "major_notes": [],
+            "minor_notes": [],
+            "artifact_sha256": "",
+            "review_workflow_run_id": None,
+            "base_sha": "c" * 40,
+            "reviewed_range": f"{'c' * 40}...{'b' * 40}",
+            "review_mode": "repair_verification",
+            "review_round": 2,
+            "prior_reviewed_head": "a" * 40,
+            "findings": [],
+            "finding_ledger_digest": "",
+            "open_blocker_ids": ["blocker-1"],
+            "deferred_note_ids": [],
+            "decision_required_ids": [],
+            "autonomous_repairs_remaining": 0,
+            "stop_reason": "awaiting_r2",
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            tmp.close()
+            sidecar = self._sidecar(
+                Path(tmp.name),
+                "PASS",
+                review_mode="repair_verification",
+                review_round=2,
+                reviewed_head_sha=HEAD,
+                reviewed_base="c" * 40,
+                reviewed_range=f"{'c' * 40}...{HEAD}",
+                prior_reviewed_head="a" * 40,
+                findings=[{
+                    "id": "blocker-1",
+                    "axis": "legacy",
+                    "evidence": "resolved",
+                    "severity": "blocker",
+                    "disposition": "block_current_head",
+                    "scope_relation": "in_packet",
+                    "origin_head": "a" * 40,
+                    "acceptance_condition": "resolved",
+                    "status": "resolved",
+                }],
+                open_blocker_ids=[],
+            )
+            recorded = []
+            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(sm, "read_review_state", return_value=prior), \
+                 mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
+                ok, reason = sm.record_validated_review(42, 207, HEAD, sidecar, "acme/repo")
+            os.unlink(sidecar)
+        self.assertTrue(ok, reason)
+        state = self._recorded(recorded)[0]
+        self.assertEqual(state["verdict"], "PASS")
+        self.assertEqual(state["review_round"], 2)
+        self.assertEqual(state["review_mode"], "repair_verification")
+        self.assertEqual(state["autonomous_repairs_remaining"], 0)
+        self.assertEqual(state["stop_reason"], "")
+        self.assertEqual(state["prior_reviewed_head"], "a" * 40)
+
+    def test_r2_prior_blocker_disappearing_is_rejected(self):
+        prior = {
+            "kind": "agent-orchestrator-review-state",
+            "version": 3,
+            "issue_number": 42,
+            "pr_number": 207,
+            "head_sha": "b" * 40,
+            "verdict": "INVALIDATED",
+            "summary": "invalidated",
+            "blockers": ["old blocker"],
+            "major_notes": [],
+            "minor_notes": [],
+            "artifact_sha256": "",
+            "review_workflow_run_id": None,
+            "base_sha": "c" * 40,
+            "reviewed_range": f"{'c' * 40}...{'b' * 40}",
+            "review_mode": "repair_verification",
+            "review_round": 2,
+            "prior_reviewed_head": "a" * 40,
+            "findings": [],
+            "finding_ledger_digest": "",
+            "open_blocker_ids": ["blocker-1"],
+            "deferred_note_ids": [],
+            "decision_required_ids": [],
+            "autonomous_repairs_remaining": 0,
+            "stop_reason": "awaiting_r2",
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            tmp.close()
+            # Structured findings with no prior blocker id → must be rejected.
+            sidecar = self._sidecar(
+                Path(tmp.name),
+                "PASS",
+                review_mode="repair_verification",
+                review_round=2,
+                reviewed_head_sha=HEAD,
+                reviewed_base="c" * 40,
+                reviewed_range=f"{'c' * 40}...{HEAD}",
+                prior_reviewed_head="a" * 40,
+                findings=[],
+            )
+            recorded = []
+            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(sm, "read_review_state", return_value=prior), \
+                 mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
+                ok, reason = sm.record_validated_review(42, 207, HEAD, sidecar, "acme/repo")
+            os.unlink(sidecar)
+        self.assertFalse(ok)
+        self.assertIn("transition_rejected", reason)
+        self.assertEqual(recorded, [])
+
+    def test_invalidate_evidence_consumes_repair_batch_on_blocked_prior(self):
+        prior = {
+            "kind": "agent-orchestrator-review-state",
+            "version": 3,
+            "issue_number": 42,
+            "pr_number": 207,
+            "head_sha": "a" * 40,
+            "verdict": "BLOCKED",
+            "summary": "blocked",
+            "blockers": ["blocker"],
+            "major_notes": [],
+            "minor_notes": [],
+            "artifact_sha256": "0" * 64,
+            "review_workflow_run_id": 9,
+            "base_sha": "c" * 40,
+            "reviewed_range": f"{'c' * 40}...{'a' * 40}",
+            "review_mode": "full",
+            "review_round": 1,
+            "prior_reviewed_head": "",
+            "findings": [],
+            "finding_ledger_digest": "",
+            "open_blocker_ids": ["blocker-1"],
+            "deferred_note_ids": [],
+            "decision_required_ids": [],
+            "autonomous_repairs_remaining": 1,
+            "stop_reason": "",
+        }
+        recorded = []
+        with mock.patch.object(sm, "read_ci_state", return_value=None), \
+             mock.patch.object(sm, "record_ci_state", return_value=True), \
+             mock.patch.object(sm, "read_review_state", return_value=prior), \
+             mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
+            ok = sm.invalidate_evidence(42, 207, HEAD, "a" * 40, "acme/repo")
+        self.assertTrue(ok)
+        state = self._recorded(recorded)[0]
+        self.assertEqual(state["verdict"], "INVALIDATED")
+        self.assertEqual(state["review_round"], 2)
+        self.assertEqual(state["review_mode"], "repair_verification")
+        self.assertEqual(state["autonomous_repairs_remaining"], 0)
+        self.assertEqual(state["prior_reviewed_head"], "a" * 40)
+        self.assertEqual(state["open_blocker_ids"], ["blocker-1"])
+
+
+class TestReviewRepairHeadWiring(unittest.TestCase):
+    """F-1: a review-repair head (no explicit invalidation) consumes the batch."""
+
+    def _blocked_prior(self):
+        return {
+            "kind": "agent-orchestrator-review-state",
+            "version": 3,
+            "issue_number": 42,
+            "pr_number": 207,
+            "head_sha": "a" * 40,
+            "verdict": "BLOCKED",
+            "summary": "blocked",
+            "blockers": ["old blocker"],
+            "major_notes": [],
+            "minor_notes": [],
+            "artifact_sha256": "0" * 64,
+            "review_workflow_run_id": 9,
+            "base_sha": "c" * 40,
+            "reviewed_range": f"{'c' * 40}...{'a' * 40}",
+            "review_mode": "full",
+            "review_round": 1,
+            "prior_reviewed_head": "",
+            "findings": [{
+                "id": "blocker-1",
+                "axis": "legacy",
+                "evidence": "old blocker",
+                "severity": "blocker",
+                "disposition": "block_current_head",
+                "scope_relation": "in_packet",
+                "origin_head": "a" * 40,
+                "acceptance_condition": "fixed",
+                "status": "open",
+            }],
+            "finding_ledger_digest": "",
+            "open_blocker_ids": ["blocker-1"],
+            "deferred_note_ids": [],
+            "decision_required_ids": [],
+            "autonomous_repairs_remaining": 1,
+            "stop_reason": "",
+        }
+
+    def _sidecar(self, path, verdict, *, review_mode, review_round, **overrides):
+        payload = {
+            "kind": "agent-orchestrator-review-validation",
+            "version": 2,
+            "classification": "valid_verdict",
+            "pr_number": 207,
+            "reviewed_head_sha": "b" * 40,
+            "verdict": verdict,
+            "summary": f"{verdict} review result",
+            "blockers": [],
+            "major_notes": [],
+            "minor_notes": [],
+            "artifact_sha256": "a" * 64,
+            "review_workflow_run_id": 91234,
+            "review_mode": review_mode,
+            "review_round": review_round,
+            "reviewed_base": "c" * 40,
+            "reviewed_range": f"{'c' * 40}...{'b' * 40}",
+            "prior_reviewed_head": "a" * 40,
+            "findings": None,
+            "finding_ledger_digest": "",
+            "open_blocker_ids": [],
+            "deferred_note_ids": [],
+            "decision_required_ids": [],
+            "observed_ci_status": "unknown",
+        }
+        payload.update(overrides)
+        if payload["findings"] is None:
+            payload.pop("findings")
+        path.write_text(json.dumps(payload))
+        return path
+
+    def _recorded(self, records):
+        return [
+            json.loads(body)
+            for body in records
+            if "agent-orchestrator-review-state" in body
+        ]
+
+    def test_repair_head_r2_pass_records_round_two_with_batch_consumed(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            tmp.close()
+            sidecar = self._sidecar(
+                Path(tmp.name),
+                "PASS",
+                review_mode="repair_verification",
+                review_round=2,
+            )
+            recorded = []
+            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(sm, "read_review_state", return_value=self._blocked_prior()), \
+                 mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
+                ok, reason = sm.record_validated_review(42, 207, "b" * 40, sidecar, "acme/repo")
+            os.unlink(sidecar)
+        self.assertTrue(ok, reason)
+        state = self._recorded(recorded)[0]
+        self.assertEqual(state["verdict"], "PASS")
+        self.assertEqual(state["review_round"], 2)
+        self.assertEqual(state["review_mode"], "repair_verification")
+        self.assertEqual(state["autonomous_repairs_remaining"], 0)
+        self.assertEqual(state["prior_reviewed_head"], "a" * 40)
+        self.assertEqual(state["open_blocker_ids"], [])
+
+    def test_repair_head_with_full_mode_artifact_is_rejected(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            tmp.close()
+            sidecar = self._sidecar(
+                Path(tmp.name),
+                "PASS",
+                review_mode="full",
+                review_round=1,
+            )
+            recorded = []
+            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(sm, "read_review_state", return_value=self._blocked_prior()), \
+                 mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
+                ok, reason = sm.record_validated_review(42, 207, "b" * 40, sidecar, "acme/repo")
+            os.unlink(sidecar)
+        self.assertFalse(ok)
+        self.assertIn("review_mode_mismatch", reason)
+        self.assertEqual(recorded, [])
+
+    def test_invalidate_after_decision_required_does_not_reset_budget(self):
+        prior = self._blocked_prior()
+        prior["verdict"] = "DECISION_REQUIRED"
+        prior["stop_reason"] = "decision_required"
+        prior["autonomous_repairs_remaining"] = 0
+        prior["open_blocker_ids"] = []
+        recorded = []
+        with mock.patch.object(sm, "read_ci_state", return_value=None), \
+             mock.patch.object(sm, "record_ci_state", return_value=True), \
+             mock.patch.object(sm, "read_review_state", return_value=prior), \
+             mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
+            ok = sm.invalidate_evidence(42, 207, "b" * 40, "a" * 40, "acme/repo")
+        self.assertTrue(ok)
+        state = self._recorded(recorded)[0]
+        self.assertEqual(state["stop_reason"], "decision_required")
+        self.assertEqual(state["autonomous_repairs_remaining"], 0)
+        self.assertEqual(state["review_round"], 2)
+
+
+class TestFreshR1AfterTerminalPass(unittest.TestCase):
+    """A new head after a terminal R2 PASS starts a fresh R1, not forced R2."""
+
+    def _terminal_pass_prior(self):
+        return {
+            "kind": "agent-orchestrator-review-state",
+            "version": 3,
+            "issue_number": 42,
+            "pr_number": 207,
+            "head_sha": "b" * 40,
+            "verdict": "PASS",
+            "summary": "pass",
+            "blockers": [],
+            "major_notes": [],
+            "minor_notes": [],
+            "artifact_sha256": "0" * 64,
+            "review_workflow_run_id": 9,
+            "base_sha": "c" * 40,
+            "reviewed_range": f"{'c' * 40}...{'b' * 40}",
+            "review_mode": "repair_verification",
+            "review_round": 2,
+            "prior_reviewed_head": "a" * 40,
+            "findings": [],
+            "finding_ledger_digest": "",
+            "open_blocker_ids": [],
+            "deferred_note_ids": [],
+            "decision_required_ids": [],
+            "autonomous_repairs_remaining": 0,
+            "stop_reason": "",
+        }
+
+    def test_new_head_after_r2_pass_records_fresh_r1_not_forced_r2(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            tmp.close()
+            payload = {
+                "kind": "agent-orchestrator-review-validation",
+                "version": 2,
+                "classification": "valid_verdict",
+                "pr_number": 207,
+                "reviewed_head_sha": "d" * 40,
+                "verdict": "PASS",
+                "summary": "fresh surface pass",
+                "blockers": [],
+                "major_notes": [],
+                "minor_notes": [],
+                "artifact_sha256": "a" * 64,
+                "review_workflow_run_id": 91234,
+                "review_mode": "full",
+                "review_round": 1,
+                "reviewed_base": "c" * 40,
+                "reviewed_range": f"{'c' * 40}...{'d' * 40}",
+                "prior_reviewed_head": "",
+                "findings": None,
+                "finding_ledger_digest": "",
+                "open_blocker_ids": [],
+                "deferred_note_ids": [],
+                "decision_required_ids": [],
+                "observed_ci_status": "unknown",
+            }
+            Path(tmp.name).write_text(json.dumps(payload))
+            recorded = []
+            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(sm, "read_review_state", return_value=self._terminal_pass_prior()), \
+                 mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
+                ok, reason = sm.record_validated_review(42, 207, "d" * 40, tmp.name, "acme/repo")
+            os.unlink(tmp.name)
+        self.assertTrue(ok, reason)
+        state = json.loads(recorded[0])
+        self.assertEqual(state["verdict"], "PASS")
+        self.assertEqual(state["review_round"], 1)
+        self.assertEqual(state["review_mode"], "full")
+        self.assertEqual(state["autonomous_repairs_remaining"], 1)
+        self.assertEqual(state["prior_reviewed_head"], "b" * 40)
+
+    def test_new_head_after_r2_pass_blocking_finding_can_be_recorded(self):
+        # A fresh R1 finding a blocker on the new head must be recordable.
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            tmp.close()
+            payload = {
+                "kind": "agent-orchestrator-review-validation",
+                "version": 2,
+                "classification": "valid_verdict",
+                "pr_number": 207,
+                "reviewed_head_sha": "d" * 40,
+                "verdict": "BLOCKED",
+                "summary": "fresh blocker",
+                "blockers": ["new defect"],
+                "major_notes": [],
+                "minor_notes": [],
+                "artifact_sha256": "a" * 64,
+                "review_workflow_run_id": 91234,
+                "review_mode": "full",
+                "review_round": 1,
+                "reviewed_base": "c" * 40,
+                "reviewed_range": f"{'c' * 40}...{'d' * 40}",
+                "prior_reviewed_head": "",
+                "findings": None,
+                "finding_ledger_digest": "",
+                "open_blocker_ids": [],
+                "deferred_note_ids": [],
+                "decision_required_ids": [],
+                "observed_ci_status": "unknown",
+            }
+            Path(tmp.name).write_text(json.dumps(payload))
+            recorded = []
+            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(sm, "read_review_state", return_value=self._terminal_pass_prior()), \
+                 mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
+                ok, reason = sm.record_validated_review(42, 207, "d" * 40, tmp.name, "acme/repo")
+            os.unlink(tmp.name)
+        self.assertTrue(ok, reason)
+        state = json.loads(recorded[0])
+        self.assertEqual(state["verdict"], "BLOCKED")
+        self.assertEqual(state["review_round"], 1)
+        self.assertEqual(state["open_blocker_ids"], ["blocker-1"])

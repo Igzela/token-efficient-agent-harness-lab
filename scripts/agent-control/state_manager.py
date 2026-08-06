@@ -53,13 +53,30 @@ LOCAL_RELEASE_REASONS = frozenset({
     "local_worktree_failure",
     "local_aborted",
 })
+# CI repair budget (failed CI → autonomous repair heads). Distinct from review rounds.
 MAX_REPAIR_ATTEMPTS = 2
+# Review Convergence budgets: single owner is review_convergence.py.
+# Import rather than duplicating bare 2/1 literals.
+from review_convergence import (  # type: ignore
+    MAX_AUTONOMOUS_REPAIR_BATCHES,
+    MAX_SUBSTANTIVE_REVIEW_ROUNDS,
+    REVIEW_PROTOCOL_VERSION,
+    INITIAL_AUTONOMOUS_REPAIRS_REMAINING,
+)
+
 MAX_REVIEW_EVIDENCE_BYTES = 64 * 1024
 MAX_REVIEW_API_PAGES = 20
 MAX_REVIEW_API_NODES = 1000
 MAX_REVIEW_THREAD_PAGES = 20
 MAX_REVIEW_THREADS = 2000
-REVIEW_VERDICTS = frozenset({"PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL"})
+# DECISION_REQUIRED is a terminal non-authorizing control outcome (no auto R3).
+# INVALIDATED marks evidence invalidated by a new head (non-authorizing).
+REVIEW_VERDICTS = frozenset({
+    "PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL", "DECISION_REQUIRED", "INVALIDATED",
+})
+# Only exact PASS authorizes merge-ready labels. PASS_WITH_NOTES is schema-valid
+# for recording deferred-note-style history but is not a control PASS.
+MERGE_AUTHORIZING_REVIEW_VERDICTS = frozenset({"PASS"})
 WORKFLOW_FAILURE_KINDS = frozenset({"implementation", "review", "ci-repair"})
 PREFLIGHT_FAILURE_REASONS = frozenset({
     "control_not_live",
@@ -155,6 +172,13 @@ class CIAcquisitionState:
 
 @dataclass(frozen=True)
 class ReviewState:
+    """Durable review state. Wire version 3 is the only new-write version.
+
+    Version 2 remains readable for compatibility. Convergence fields below
+    are required on v3 writes; empty defaults allow constructing INVALIDATED
+    markers and transitional records.
+    """
+
     issue_number: int
     pr_number: int
     head_sha: str
@@ -165,9 +189,27 @@ class ReviewState:
     minor_notes: list[str] = field(default_factory=list)
     artifact_sha256: str = ""
     review_workflow_run_id: int | None = None
+    # Review Convergence Protocol (v3)
+    base_sha: str = ""
+    reviewed_range: str = ""
+    review_mode: str = "full"
+    review_round: int = 1
+    prior_reviewed_head: str = ""
+    findings: list = field(default_factory=list)
+    finding_ledger_digest: str = ""
+    open_blocker_ids: list = field(default_factory=list)
+    deferred_note_ids: list = field(default_factory=list)
+    decision_required_ids: list = field(default_factory=list)
+    autonomous_repairs_remaining: int = 1
+    stop_reason: str = ""
+    review_protocol_version: str = ""
 
     def to_wire(self):
-        return _state_wire("agent-orchestrator-review-state", 2, self)
+        # New writes always use version 3.
+        payload = _state_wire("agent-orchestrator-review-state", 3, self)
+        if not payload.get("review_protocol_version"):
+            payload["review_protocol_version"] = REVIEW_PROTOCOL_VERSION
+        return payload
 
 
 @dataclass(frozen=True)
@@ -223,11 +265,18 @@ class DispatchState:
 
 
 def labels_for_review_verdict(verdict):
-    """Return the non-active state labels for a finalized review verdict."""
+    """Return the non-active state labels for a finalized review verdict.
+
+    Review Convergence Protocol: only exact PASS is merge-authorizing.
+    PASS_WITH_NOTES / BLOCKED / FAIL / DECISION_REQUIRED release capacity
+    into review-blocked. INVALIDATED is not a finalization verdict.
+    """
 
     if verdict not in REVIEW_VERDICTS:
         raise ValueError("unsupported review verdict")
-    if verdict == "PASS":
+    if verdict == "INVALIDATED":
+        raise ValueError("INVALIDATED is not a finalization verdict")
+    if verdict in MERGE_AUTHORIZING_REVIEW_VERDICTS:
         return {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}
     return {LABEL_REVIEW_BLOCKED}
 
@@ -418,6 +467,24 @@ def get_pr_info(pr_number, repo=""):
         return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
         return None
+
+
+def _pr_base_sha(pr_number, repo=""):
+    """Fetch the exact PR base object id for the reviewed range binding."""
+    args = ["pr", "view", str(pr_number), "--json", "baseRefOid"]
+    if repo:
+        args.extend(["--repo", repo])
+    result = _gh(*args)
+    if not result:
+        return ""
+    try:
+        parsed = json.loads(result)
+    except json.JSONDecodeError:
+        return ""
+    base = parsed.get("baseRefOid") if isinstance(parsed, dict) else ""
+    if isinstance(base, str) and re.fullmatch(r"[0-9a-f]{40}", base):
+        return base
+    return ""
 
 
 def parse_dependencies(body):
@@ -1221,9 +1288,31 @@ def record_review_state(
     minor_notes=None,
     artifact_sha256="",
     review_workflow_run_id=None,
+    base_sha="",
+    reviewed_range="",
+    review_mode="full",
+    review_round=1,
+    prior_reviewed_head="",
+    findings=None,
+    finding_ledger_digest="",
+    open_blocker_ids=None,
+    deferred_note_ids=None,
+    decision_required_ids=None,
+    autonomous_repairs_remaining=None,
+    stop_reason="",
+    review_protocol_version="",
 ):
-    """Persist only bounded review evidence already accepted by the validator."""
+    """Persist only bounded review evidence already accepted by the validator.
 
+    New writes use ReviewState wire version 3 (Review Convergence Protocol).
+    """
+
+    if autonomous_repairs_remaining is None:
+        autonomous_repairs_remaining = INITIAL_AUTONOMOUS_REPAIRS_REMAINING
+    if not review_protocol_version:
+        review_protocol_version = REVIEW_PROTOCOL_VERSION
+    if not reviewed_range and base_sha and head_sha:
+        reviewed_range = f"{base_sha}...{head_sha}"
     state = ReviewState(
         int(issue_number),
         int(pr_number),
@@ -1235,6 +1324,19 @@ def record_review_state(
         list(minor_notes or []),
         artifact_sha256,
         review_workflow_run_id,
+        base_sha or "",
+        reviewed_range or "",
+        review_mode or "full",
+        int(review_round or 1),
+        prior_reviewed_head or "",
+        list(findings or []),
+        finding_ledger_digest or "",
+        list(open_blocker_ids or []),
+        list(deferred_note_ids or []),
+        list(decision_required_ids or []),
+        int(autonomous_repairs_remaining),
+        stop_reason or "",
+        review_protocol_version,
     ).to_wire()
     return comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo)
 
@@ -1262,7 +1364,7 @@ def _load_review_validation_sidecar(path, expected_classification):
         raise ValueError("validation sidecar is invalid")
     if not isinstance(value, dict):
         raise ValueError("validation sidecar is invalid")
-    if value.get("kind") != "agent-orchestrator-review-validation" or value.get("version") != 1:
+    if value.get("kind") != "agent-orchestrator-review-validation" or value.get("version") not in (1, 2):
         raise ValueError("validation sidecar identity is invalid")
     if value.get("classification") != expected_classification:
         raise ValueError("validation sidecar classification is invalid")
@@ -1276,7 +1378,16 @@ def _validated_review_evidence(path, pr_number, head_sha):
         "verdict", "summary", "blockers", "major_notes", "minor_notes",
         "artifact_sha256", "review_workflow_run_id",
     }
-    if set(value) != required:
+    allowed = required | {
+        "review_mode", "review_round", "reviewed_base", "reviewed_range",
+        "prior_reviewed_head", "findings", "finding_ledger_digest",
+        "open_blocker_ids", "deferred_note_ids", "decision_required_ids",
+        "observed_ci_status",
+    }
+    findings_value = value.get("findings")
+    if findings_value is not None and not isinstance(findings_value, list):
+        raise ValueError("review validation findings are invalid")
+    if not required.issubset(set(value)) or not set(value) <= allowed:
         raise ValueError("review validation sidecar fields are invalid")
     if value.get("pr_number") != int(pr_number) or value.get("reviewed_head_sha") != head_sha:
         raise ValueError("review validation sidecar binding is invalid")
@@ -1291,6 +1402,25 @@ def _validated_review_evidence(path, pr_number, head_sha):
     run_id = value.get("review_workflow_run_id")
     if run_id is not None and (type(run_id) is not int or run_id < 1):
         raise ValueError("review workflow identity is invalid")
+    mode = value.get("review_mode")
+    if mode is not None and mode not in {"full", "repair_verification"}:
+        raise ValueError("review validation mode is invalid")
+    review_round = value.get("review_round")
+    if review_round is not None and (type(review_round) is not int or not (1 <= review_round <= 2)):
+        raise ValueError("review validation round is invalid")
+    base = value.get("reviewed_base")
+    if base is not None and re.fullmatch(r"[0-9a-f]{40}", base) is None:
+        raise ValueError("review validation base is invalid")
+    for id_field in ("open_blocker_ids", "deferred_note_ids", "decision_required_ids"):
+        ids = value.get(id_field)
+        if ids is not None and (
+            not isinstance(ids, list)
+            or any(not isinstance(x, str) or not x for x in ids)
+        ):
+            raise ValueError(f"review validation {id_field} is invalid")
+    ledger_digest = value.get("finding_ledger_digest")
+    if ledger_digest not in (None, "") and re.fullmatch(r"[0-9a-f]{64}", ledger_digest) is None:
+        raise ValueError("review validation ledger digest is invalid")
     return {
         "verdict": value["verdict"],
         "summary": summary,
@@ -1299,11 +1429,25 @@ def _validated_review_evidence(path, pr_number, head_sha):
         "minor_notes": _bounded_review_strings(value["minor_notes"], "minor_notes"),
         "artifact_sha256": digest,
         "review_workflow_run_id": run_id,
+        "review_mode": mode,
+        "review_round": review_round,
+        "reviewed_base": base,
+        "reviewed_range": value.get("reviewed_range"),
+        "prior_reviewed_head": value.get("prior_reviewed_head"),
+        "findings": findings_value,
+        "finding_ledger_digest": ledger_digest,
+        "open_blocker_ids": value.get("open_blocker_ids") or [],
+        "deferred_note_ids": value.get("deferred_note_ids") or [],
+        "decision_required_ids": value.get("decision_required_ids") or [],
+        "observed_ci_status": value.get("observed_ci_status") or "unknown",
     }
 
 
 def record_validated_review(issue_number, pr_number, head_sha, sidecar_path, repo=""):
-    """Exact-head bind and durably record one schema-valid review verdict."""
+    """Exact-head bind and durably record one schema-valid review verdict.
+
+    Applies Review Convergence R1/R2 transitions via review_convergence.
+    """
 
     try:
         evidence = _validated_review_evidence(sidecar_path, pr_number, head_sha)
@@ -1330,20 +1474,163 @@ def record_validated_review(issue_number, pr_number, head_sha, sidecar_path, rep
         )
         if same:
             return True, "already_recorded"
-        if previous.get("head_sha") == head_sha and previous.get("verdict") != "INVALIDATED":
+        # A same-head re-review is allowed only when the prior record is not a
+        # terminal-authorizing PASS and not a DECISION_REQUIRED stop; the
+        # review_convergence derive gate below enforces the round/repair budget.
+        if (
+            previous.get("head_sha") == head_sha
+            and previous.get("verdict") in {"PASS", "DECISION_REQUIRED"}
+        ):
             return False, "conflicting_review_state_exists"
+
+    import review_convergence as rc
+
+    attempt = rc.derive_next_review_attempt(previous, head_sha)
+    if not attempt.get("allowed"):
+        # DECISION_REQUIRED / budget-exhausted / post-R2 states cannot be
+        # silently reopened by an arriving artifact; only explicit human
+        # authority may resume.
+        return False, f"review_budget_denied:{attempt.get('deny_reason') or 'not_allowed'}"
+    derived_mode = str(attempt["review_mode"])
+    derived_round = int(attempt["review_round"])
+    artifact_mode = evidence.get("review_mode")
+    if artifact_mode is not None and artifact_mode != derived_mode:
+        return False, f"review_mode_mismatch:{artifact_mode}!= {derived_mode}"
+    artifact_round = evidence.get("review_round")
+    if artifact_round is not None and int(artifact_round) != derived_round:
+        return False, f"review_round_mismatch:{artifact_round}!={derived_round}"
+    # Build normalized decision from legacy/extended sidecar fields.
+    artifact = {
+        "verdict": evidence["verdict"],
+        "summary": evidence["summary"],
+        "reviewed_head_sha": head_sha,
+        "blockers": evidence["blockers"],
+        "major_notes": evidence["major_notes"],
+        "minor_notes": evidence["minor_notes"],
+        "security_ok": True,
+        "rollback_ok": True,
+        "review_mode": derived_mode,
+        "review_round": derived_round,
+        "prior_reviewed_head": evidence.get("prior_reviewed_head")
+        or attempt.get("prior_reviewed_head")
+        or "",
+        "findings": evidence.get("findings"),
+        "reviewed_base": _pr_base_sha(pr_number, repo)
+        or ((previous or {}).get("base_sha") if previous else "")
+        or evidence.get("reviewed_base")
+        or "",
+    }
+    # When findings not in sidecar, legacy lists are used by decision_from_legacy_artifact.
+    trusted_base = _pr_base_sha(pr_number, repo) or ((previous or {}).get("base_sha") if previous else "")
+    artifact_base = evidence.get("reviewed_base")
+    if (
+        artifact_base
+        and trusted_base
+        and artifact_base != trusted_base
+    ):
+        return False, "reviewed_base_mismatch"
+    try:
+        decision = rc.decision_from_legacy_artifact(
+            artifact,
+            review_mode=derived_mode,
+            review_round=derived_round,
+            base_sha=str(artifact.get("reviewed_base") or ""),
+            prior_reviewed_head=str(artifact.get("prior_reviewed_head") or ""),
+        )
+    except rc.ConvergenceError as exc:
+        return False, f"convergence_rejected:{exc}"
+
+    try:
+        previous_round = int(previous.get("review_round") or 1) if previous else 0
+        if previous and (
+            (
+                previous.get("verdict") == "INVALIDATED"
+                and previous_round >= 2
+            )
+            or decision.review_mode == "repair_verification"
+        ):
+            # Build a lightweight prior RoundState from previous durable fields.
+            prior_round = rc.ReviewRoundState(
+                review_protocol_version=previous.get("review_protocol_version")
+                or rc.REVIEW_PROTOCOL_VERSION,
+                review_mode=previous.get("review_mode") or "full",
+                review_round=int(previous.get("review_round") or 1),
+                prior_reviewed_head=previous.get("prior_reviewed_head") or "",
+                reviewed_base=previous.get("base_sha") or decision.reviewed_base,
+                reviewed_head=previous.get("head_sha") or "",
+                reviewed_range=previous.get("reviewed_range") or "",
+                verdict=previous.get("verdict") or "",
+                findings=tuple(previous.get("findings") or []),
+                finding_ledger_digest=previous.get("finding_ledger_digest") or "",
+                open_blocker_ids=tuple(previous.get("open_blocker_ids") or []),
+                deferred_note_ids=tuple(previous.get("deferred_note_ids") or []),
+                decision_required_ids=tuple(previous.get("decision_required_ids") or []),
+                autonomous_repairs_remaining=int(
+                    previous.get("autonomous_repairs_remaining") or 0
+                ),
+                stop_reason=previous.get("stop_reason") or "",
+                blockers=tuple(previous.get("blockers") or []),
+                major_notes=tuple(previous.get("major_notes") or []),
+                minor_notes=tuple(previous.get("minor_notes") or []),
+            )
+            if decision.review_mode != "repair_verification":
+                # Force R2 mode when prior was invalidated by repair.
+                decision = rc.ReviewDecision(
+                    verdict=decision.verdict,
+                    summary=decision.summary,
+                    reviewed_base=decision.reviewed_base or prior_round.reviewed_base,
+                    reviewed_head=decision.reviewed_head,
+                    reviewed_range=decision.reviewed_range,
+                    review_mode="repair_verification",
+                    review_round=2,
+                    findings=decision.findings,
+                    prior_reviewed_head=prior_round.prior_reviewed_head
+                    or prior_round.reviewed_head,
+                    security_ok=decision.security_ok,
+                    rollback_ok=decision.rollback_ok,
+                    observed_ci_status=decision.observed_ci_status,
+                )
+            round_state = rc.apply_r2_decision(
+                prior_round,
+                decision,
+                artifact_sha256=evidence["artifact_sha256"],
+                review_workflow_run_id=evidence["review_workflow_run_id"],
+            )
+        else:
+            round_state = rc.initial_r1_state(
+                decision,
+                artifact_sha256=evidence["artifact_sha256"],
+                review_workflow_run_id=evidence["review_workflow_run_id"],
+            )
+    except rc.ConvergenceError as exc:
+        return False, f"transition_rejected:{exc}"
+
+    fields = round_state.to_persistence_fields()
     if not record_review_state(
         issue_number,
         pr_number,
         head_sha,
-        evidence["verdict"],
-        evidence["summary"],
+        fields["verdict"],
+        fields["summary"],
         repo,
-        evidence["blockers"],
-        evidence["major_notes"],
-        evidence["minor_notes"],
-        evidence["artifact_sha256"],
-        evidence["review_workflow_run_id"],
+        fields["blockers"],
+        fields["major_notes"],
+        fields["minor_notes"],
+        fields["artifact_sha256"],
+        fields["review_workflow_run_id"],
+        base_sha=fields["base_sha"],
+        reviewed_range=fields["reviewed_range"],
+        review_mode=fields["review_mode"],
+        review_round=fields["review_round"],
+        prior_reviewed_head=fields["prior_reviewed_head"],
+        findings=fields["findings"],
+        finding_ledger_digest=fields["finding_ledger_digest"],
+        open_blocker_ids=fields["open_blocker_ids"],
+        deferred_note_ids=fields["deferred_note_ids"],
+        decision_required_ids=fields["decision_required_ids"],
+        autonomous_repairs_remaining=fields["autonomous_repairs_remaining"],
+        stop_reason=fields["stop_reason"],
+        review_protocol_version=fields["review_protocol_version"],
     ):
         return False, "review_state_write_failed"
     return True, "recorded"
@@ -1442,7 +1729,11 @@ def record_review_infrastructure_failure(issue_number, pr_number, head_sha, repo
 
 
 def invalidate_evidence(issue_number, pr_number, new_head_sha, old_head_sha, repo=""):
-    """Bind explicit non-authorizing CI/review state to a newly pushed head."""
+    """Bind explicit non-authorizing CI/review state to a newly pushed head.
+
+    Preserves prior finding-ledger identity and consumes the autonomous repair
+    batch when the prior review had open blockers (R1 → repair → R2 path).
+    """
 
     previous_ci = read_ci_state(issue_number, repo) or {}
     previous_run = previous_ci.get("workflow_run_id") or previous_ci.get("ci_run_id") or 0
@@ -1451,9 +1742,132 @@ def invalidate_evidence(issue_number, pr_number, new_head_sha, old_head_sha, rep
         extra={"invalidated_head": old_head_sha, "reason": "new_head"}, repo=repo,
     ):
         return False
+    previous_review = None
+    try:
+        previous_review = read_review_state(issue_number, repo)
+    except StateUnavailableError:
+        previous_review = None
+
+    import review_convergence as rc
+
+    if previous_review and previous_review.get("head_sha") == old_head_sha:
+        try:
+            prior_round = rc.ReviewRoundState(
+                review_protocol_version=previous_review.get("review_protocol_version")
+                or rc.REVIEW_PROTOCOL_VERSION,
+                review_mode=previous_review.get("review_mode") or "full",
+                review_round=int(previous_review.get("review_round") or 1),
+                prior_reviewed_head=previous_review.get("prior_reviewed_head") or "",
+                reviewed_base=previous_review.get("base_sha") or "",
+                reviewed_head=old_head_sha,
+                reviewed_range=previous_review.get("reviewed_range") or "",
+                verdict=previous_review.get("verdict") or "",
+                findings=tuple(previous_review.get("findings") or []),
+                finding_ledger_digest=previous_review.get("finding_ledger_digest") or "",
+                open_blocker_ids=tuple(previous_review.get("open_blocker_ids") or []),
+                deferred_note_ids=tuple(previous_review.get("deferred_note_ids") or []),
+                decision_required_ids=tuple(
+                    previous_review.get("decision_required_ids") or []
+                ),
+                autonomous_repairs_remaining=int(
+                    previous_review.get(
+                        "autonomous_repairs_remaining",
+                        rc.INITIAL_AUTONOMOUS_REPAIRS_REMAINING,
+                    )
+                ),
+                stop_reason=previous_review.get("stop_reason") or "",
+                blockers=tuple(previous_review.get("blockers") or []),
+                major_notes=tuple(previous_review.get("major_notes") or []),
+                minor_notes=tuple(previous_review.get("minor_notes") or []),
+            )
+            if (
+                prior_round.autonomous_repairs_remaining > 0
+                and prior_round.open_blocker_ids
+                and prior_round.review_round < rc.MAX_SUBSTANTIVE_REVIEW_ROUNDS
+            ):
+                round_state = rc.after_repair_batch_consumed(
+                    prior_round, new_head_sha=new_head_sha
+                )
+                fields = round_state.to_persistence_fields()
+                return record_review_state(
+                    issue_number,
+                    pr_number,
+                    new_head_sha,
+                    fields["verdict"],
+                    fields["summary"],
+                    repo,
+                    fields["blockers"],
+                    fields["major_notes"],
+                    fields["minor_notes"],
+                    fields["artifact_sha256"],
+                    fields["review_workflow_run_id"],
+                    base_sha=fields["base_sha"],
+                    reviewed_range=fields["reviewed_range"],
+                    review_mode=fields["review_mode"],
+                    review_round=fields["review_round"],
+                    prior_reviewed_head=fields["prior_reviewed_head"],
+                    findings=fields["findings"],
+                    finding_ledger_digest=fields["finding_ledger_digest"],
+                    open_blocker_ids=fields["open_blocker_ids"],
+                    deferred_note_ids=fields["deferred_note_ids"],
+                    decision_required_ids=fields["decision_required_ids"],
+                    autonomous_repairs_remaining=fields["autonomous_repairs_remaining"],
+                    stop_reason=fields["stop_reason"],
+                    review_protocol_version=fields["review_protocol_version"],
+                )
+        except (rc.ConvergenceError, TypeError, ValueError):
+            pass
+        if (
+            previous_review
+            and previous_review.get("head_sha") == old_head_sha
+            and (
+                previous_review.get("verdict") == "DECISION_REQUIRED"
+                or int(previous_review.get("autonomous_repairs_remaining") or 0) == 0
+                or int(previous_review.get("review_round") or 1) >= 2
+                or bool(previous_review.get("open_blocker_ids"))
+            )
+        ):
+            # Budget exhausted, terminal, or open blockers that could not be
+            # consumed through the batch path: a new head must not reset the
+            # autonomous budget; only explicit human authority can reopen.
+            return record_review_state(
+                issue_number,
+                pr_number,
+                new_head_sha,
+                "INVALIDATED",
+                f"prior evidence for head {old_head_sha} was invalidated by new head {new_head_sha}; "
+                "review budget is exhausted and requires human authority",
+                repo,
+                prior_reviewed_head=old_head_sha,
+                review_mode="repair_verification",
+                review_round=2,
+                autonomous_repairs_remaining=0,
+                stop_reason="decision_required",
+                findings=list(previous_review.get("findings") or []),
+                finding_ledger_digest=previous_review.get("finding_ledger_digest") or "",
+                open_blocker_ids=list(previous_review.get("open_blocker_ids") or []),
+                deferred_note_ids=list(previous_review.get("deferred_note_ids") or []),
+                decision_required_ids=list(previous_review.get("decision_required_ids") or []),
+            )
     return record_review_state(
-        issue_number, pr_number, new_head_sha, "INVALIDATED",
-        f"prior evidence for head {old_head_sha} was invalidated by new head {new_head_sha}", repo,
+        issue_number,
+        pr_number,
+        new_head_sha,
+        "INVALIDATED",
+        f"prior evidence for head {old_head_sha} was invalidated by new head {new_head_sha}",
+        repo,
+        prior_reviewed_head=old_head_sha,
+        review_mode="full",
+        review_round=1,
+        autonomous_repairs_remaining=1,
+        stop_reason="awaiting_review",
+        findings=list((previous_review or {}).get("findings") or []),
+        finding_ledger_digest=(previous_review or {}).get("finding_ledger_digest") or "",
+        open_blocker_ids=list((previous_review or {}).get("open_blocker_ids") or []),
+        deferred_note_ids=list((previous_review or {}).get("deferred_note_ids") or []),
+        decision_required_ids=list(
+            (previous_review or {}).get("decision_required_ids") or []
+        ),
     )
 
 
@@ -1465,7 +1879,10 @@ def record_merge_state(issue_number, pr_number, expected_head_sha, merge_commit_
 
 
 def read_review_state(issue_number, repo=""):
-    """Read the most recent review state from Issue comments."""
+    """Read the most recent review state from Issue comments.
+
+    Accepts wire version 2 (legacy, read-only) and version 3 (convergence).
+    """
     body = get_issue_comment_bodies(issue_number, "agent-orchestrator-review-state", repo)
     if not body:
         return None
@@ -1473,7 +1890,12 @@ def read_review_state(issue_number, repo=""):
         state = json.loads(body)
     except json.JSONDecodeError:
         return None
-    return state if isinstance(state, dict) and state.get("kind") == "agent-orchestrator-review-state" else None
+    if not isinstance(state, dict) or state.get("kind") != "agent-orchestrator-review-state":
+        return None
+    version = state.get("version")
+    if version not in (2, 3):
+        return None
+    return state
 
 
 def get_active_workers(repo=""):

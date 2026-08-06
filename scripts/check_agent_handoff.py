@@ -91,6 +91,10 @@ REQUIRED_TEXT = {
         "Action Permission Matrix",
         "New architecture/authority/recovery decision",
         "docs/archive/",
+        "## Review Convergence Protocol",
+        "MAX_SUBSTANTIVE_REVIEW_ROUNDS",
+        "MAX_AUTONOMOUS_REPAIR_BATCHES",
+        "DECISION_REQUIRED",
     ],
     "docs/RUNBOOK.md": [
         "# Agent Control Plane",
@@ -105,6 +109,27 @@ REQUIRED_TEXT = {
         "exact_head_review",
         "next_permitted_action",
         "--offline",
+        "review_state_projection",
+    ],
+    "scripts/agent-control/review_convergence.py": [
+        "REVIEW_PROTOCOL_VERSION",
+        "MAX_SUBSTANTIVE_REVIEW_ROUNDS = 2",
+        "MAX_AUTONOMOUS_REPAIR_BATCHES = 1",
+        "MAX_DEFERRED_NOTES",
+        "MAX_NOTE_LEN",
+        "class ReviewDecision",
+        "class ReviewFinding",
+        "def apply_r2_decision",
+        "def derive_next_review_attempt",
+        "def project_capsule_fields",
+    ],
+    "scripts/agent-control/validate_review.py": [
+        "review_convergence",
+        "convergence_cross_field_invalid",
+    ],
+    "START_HERE.md": [
+        "review_protocol_version",
+        "review_round",
     ],
     "scripts/verify_rust_typescript_stack.sh": [
         "bash scripts/check_wire_codegen_drift.sh",
@@ -446,6 +471,34 @@ def check_project_context(failures: list[str]) -> None:
     baseline = payload.get("accepted_baseline", {})
     if baseline.get("availability") not in {"confirmed", "local_only", "unavailable"}:
         failures.append("project context baseline availability is invalid")
+    binding = payload.get("binding", {})
+    projection = binding.get("review_state_projection")
+    if not isinstance(projection, dict):
+        failures.append("project context binding is missing review_state_projection")
+    else:
+        required_projection = {
+            "review_protocol_version",
+            "review_mode",
+            "review_round",
+            "prior_reviewed_head",
+            "reviewed_head",
+            "finding_ledger_digest",
+            "open_blocker_ids",
+            "deferred_note_ids",
+            "autonomous_repairs_remaining",
+            "stop_reason",
+            "review_state",
+        }
+        missing = sorted(required_projection - set(projection))
+        if missing:
+            failures.append(
+                f"review_state_projection is missing fields: {missing}"
+            )
+        for forbidden in ("severity", "findings", "acceptance_condition", "disposition"):
+            if forbidden in projection:
+                failures.append(
+                    f"capsule review_state_projection must not project {forbidden!r}"
+                )
 
 
 def main() -> int:

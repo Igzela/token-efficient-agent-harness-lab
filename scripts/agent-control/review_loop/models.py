@@ -45,6 +45,14 @@ class DeliveryOutcome(str, enum.Enum):
 
 VALID_RECEIPT_VERDICTS = frozenset({"PASS"})
 
+# Canonical convergence bounds come from the single pure owner
+# (review_convergence.py): deferred-note count, per-note length, total size,
+# and control-character limits are enforced here on the transport receipt.
+# review_loop_cli.py and every test entry point put scripts/agent-control on
+# sys.path, so the canonical owner is always importable.
+from review_convergence import MAX_DEFERRED_NOTES, MAX_NOTE_LEN  # type: ignore
+MAX_DEFERRED_NOTES_TOTAL_BYTES = 64 * 1024
+
 
 @dataclasses.dataclass(frozen=True)
 class ReviewRequestEnvelope:
@@ -95,7 +103,11 @@ class ReviewRequestEnvelope:
 
 @dataclasses.dataclass(frozen=True)
 class ReviewReceipt:
-    """Structured independent-review verdict; only exact PASS is acceptable."""
+    """Structured independent-review verdict; only exact PASS is acceptable.
+
+    Review Convergence Protocol: PASS may carry deferred_notes (non-blocking).
+    Open blockers or unresolved objections still reject the receipt.
+    """
 
     schema_version: str
     verdict: str
@@ -109,6 +121,7 @@ class ReviewReceipt:
     reviewer_session_id: str
     implementation_session_id: str
     transport: str
+    deferred_notes: tuple[str, ...] = ()
 
     def validate(self) -> list[str]:
         errors = []
@@ -126,6 +139,22 @@ class ReviewReceipt:
             errors.append(f"receipt has blockers: {self.blockers}")
         if self.unresolved_objections:
             errors.append(f"receipt has unresolved objections: {self.unresolved_objections}")
+        if len(self.deferred_notes) > MAX_DEFERRED_NOTES:
+            errors.append(f"deferred_notes exceeds cap of {MAX_DEFERRED_NOTES}")
+        if any(not isinstance(note, str) or not note.strip() for note in self.deferred_notes):
+            errors.append("deferred_notes must be non-empty strings")
+        if any(len(note) > MAX_NOTE_LEN for note in self.deferred_notes):
+            errors.append(f"deferred note exceeds length cap of {MAX_NOTE_LEN}")
+        if any(
+            "\0" in note or "\r" in note
+            for note in self.deferred_notes
+        ):
+            errors.append("deferred_notes must not contain unsupported control characters")
+        total_bytes = sum(len(note.encode("utf-8")) for note in self.deferred_notes)
+        if total_bytes > MAX_DEFERRED_NOTES_TOTAL_BYTES:
+            errors.append(
+                f"deferred_notes total size exceeds cap of {MAX_DEFERRED_NOTES_TOTAL_BYTES} bytes"
+            )
         if self.diff_scope != "complete_base_head":
             errors.append(f"diff_scope {self.diff_scope!r} is not complete_base_head")
         if not self.reviewer_session_id:
@@ -168,6 +197,7 @@ class ReviewReceipt:
                 "diff_scope": self.diff_scope,
                 "blockers": list(self.blockers),
                 "unresolved_objections": list(self.unresolved_objections),
+                "deferred_notes": list(self.deferred_notes),
                 "reviewer_session_id": self.reviewer_session_id,
                 "implementation_session_id": self.implementation_session_id,
                 "transport": self.transport,
@@ -189,6 +219,7 @@ class ReviewReceipt:
             diff_scope=data["diff_scope"],
             blockers=tuple(data.get("blockers", [])),
             unresolved_objections=tuple(data.get("unresolved_objections", [])),
+            deferred_notes=tuple(data.get("deferred_notes", [])),
             reviewer_session_id=data["reviewer_session_id"],
             implementation_session_id=data["implementation_session_id"],
             transport=data["transport"],

@@ -26,12 +26,15 @@ Conciseness is a quality-preserving optimization, never a reason to remove requi
 | Who owns a module or responsibility? | `docs/MODULE_MAP.md` |
 | What are the durable architecture, authority, security, and recovery rules? | `docs/ARCHITECTURE_BOOK.md` |
 | How are PRs, CI, review, merge, and rollback handled? | `docs/REAL_WORLD_TESTING_PLAYBOOK.md` |
+| How does independent review converge (severity vs disposition, R1/R2 budget, exact PASS + deferred notes)? | `docs/REAL_WORLD_TESTING_PLAYBOOK.md` → **Review Convergence Protocol** |
 | What operator procedure has actually been proved? | `docs/RUNBOOK.md` |
 | What may an implementation agent do? | `AGENTS.md` |
 | What is the public product and how is it used? | `README.md` |
 | What is specific to Claude Code? | `CLAUDE.md` |
 
 Current code, merged history, exact-head CI, and authoritative documents outrank stale chat summaries, old local branches, prior review conclusions, or branch-local status prose.
+
+Independent review is a **convergence process**, not an unbounded nit loop. Exact `PASS` is the only merge-authorizing control verdict and may carry deferred non-blocking notes; open blocking disposition, not zero suggestions, gates merge eligibility. Capsule generators project review state only—they do not decide severity, disposition, or repair rounds. Full rules live in the playbook section above; do not restate them elsewhere.
 
 ## Establish the Leading Valid Frontier
 
@@ -63,7 +66,7 @@ A new PR head invalidates earlier CI and review conclusions for that PR. A block
 |---|---|
 | Planning or architecture model | `START_HERE.md` → `docs/CURRENT_STATUS.md` → `docs/NEXT_DECISION.md` → relevant `docs/ARCHITECTURE_BOOK.md` sections → code/tests |
 | Coding agent | `START_HERE.md` → `AGENTS.md` → current status/next decision → `docs/MODULE_MAP.md` → relevant code/tests |
-| Independent reviewer | `START_HERE.md` → current status/next decision → testing playbook → complete `main...head` diff → relevant owners/tests |
+| Independent reviewer | `START_HERE.md` → current status/next decision → testing playbook **Review Convergence Protocol** + Exact-Head Review Receipt → complete `base...head` diff → relevant owners/tests; emit exact `PASS` with empty open blockers (deferred notes allowed) or stop with blockers / `DECISION_REQUIRED` |
 | CI repair agent | `START_HERE.md` → `AGENTS.md` → testing playbook → exact failing logs → relevant owners/tests |
 | Operator | `START_HERE.md` → current status → `docs/RUNBOOK.md` |
 | Contributor or user | `README.md`; use this file before repository-maintenance work |
@@ -136,7 +139,21 @@ forbidden_next_actions:
 documents_updated:
 ```
 
-Report unavailable evidence explicitly. Do not claim acceptance, CI success, merge eligibility, provider effects, or cost measurements that were not observed.
+When independent review or repair rounds ran, also report the bounded convergence fields that were observed (omit or mark unavailable when not run):
+
+```yaml
+review_protocol_version:
+review_mode:                 # full | repair_verification
+review_round:                # 1 | 2; never more without explicit human authority
+prior_reviewed_head:
+finding_ledger_digest:
+open_blocker_ids:
+deferred_note_ids:
+autonomous_repairs_remaining:
+stop_reason:                 # empty | decision_required | budget_exhausted | ...
+```
+
+Report unavailable evidence explicitly. Do not claim acceptance, CI success, merge eligibility, provider effects, or cost measurements that were not observed. Do not treat deferred notes as open blockers, and do not claim exact-head review acceptance from an unbound aggregate label.
 
 ## Staleness and Conflict Rules
 
