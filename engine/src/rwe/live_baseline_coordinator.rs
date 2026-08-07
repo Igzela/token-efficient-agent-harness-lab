@@ -654,6 +654,30 @@ fn is_terminal_classification(c: &str) -> bool {
     terminal_classifications().contains(&c)
 }
 
+/// Honest run terminal status. `succeeded` is reachable only through a sealed
+/// live baseline or a fixture where EVERY required cell classifies as
+/// `fixture_success`. Merely terminalizing (controlled_failure, verifier_failed,
+/// timeout, cancelled, blocked_*, cleanup_failed, injected_* classes) is a
+/// completed-but-failed run; `outcome_unknown` stays outcome_unknown.
+fn run_terminal_status(
+    live_baseline_sealed: bool,
+    integration_fixture_succeeded: bool,
+    cell_results: &[Value],
+) -> &'static str {
+    if live_baseline_sealed {
+        "succeeded"
+    } else if cell_results
+        .iter()
+        .any(|e| e.get("classification").and_then(Value::as_str) == Some("outcome_unknown"))
+    {
+        "outcome_unknown"
+    } else if integration_fixture_succeeded {
+        "succeeded"
+    } else {
+        "failed"
+    }
+}
+
 fn stop_rules_from_schedule(frozen: &OperatorFrozenContractSet) -> Vec<String> {
     frozen
         .schedule
@@ -1905,6 +1929,14 @@ pub fn run_frozen_schedule(
                 .unwrap_or("");
             is_terminal_classification(class) && class != "outcome_unknown"
         });
+    // Fixture SUCCESS is a strictly stronger claim than fixture completion:
+    // every required fixture cell must classify as fixture_success. Merely
+    // terminating with controlled_failure / verifier_failed / timeout /
+    // cancelled / blocked_* / cleanup_failed is completion, never success.
+    let integration_fixture_succeeded = integration_fixture_completed
+        && cell_results
+            .iter()
+            .all(|e| e.get("classification").and_then(Value::as_str) == Some("fixture_success"));
 
     let aggregate = sort_value(&json!({
         "schema_version": RWE_RUN_EVIDENCE_SCHEMA,
@@ -1922,6 +1954,7 @@ pub fn run_frozen_schedule(
         "provider_transport_provenance": provider_transport_provenance,
         "injected_provider_call_performed": any_injected_provider,
         "integration_fixture_completed": integration_fixture_completed,
+        "integration_fixture_succeeded": integration_fixture_succeeded,
         "live_baseline_sealed": live_baseline_sealed,
         "provider_free_fixture_completion": false,
         "stopped_by": stopped_by,
@@ -1929,22 +1962,21 @@ pub fn run_frozen_schedule(
         "note": if live_baseline_sealed {
             "live baseline sealed from store-owned ProductTask/terminal receipts with external provider transport provenance"
         } else if any_injected_provider {
-            "integration fixture completed through the injected transport; not a sealed live baseline"
+            if integration_fixture_succeeded {
+                "integration fixture completed and succeeded through the injected transport; not a sealed live baseline"
+            } else {
+                "integration fixture terminated without success through the injected transport; not a sealed live baseline"
+            }
         } else {
             "provider-free, injected, or incomplete store receipts; not a sealed live baseline"
         },
     }));
     let evidence_sha = sha256_hex(aggregate.to_string().as_bytes());
-    let status = if live_baseline_sealed || integration_fixture_completed {
-        "succeeded"
-    } else if cell_results
-        .iter()
-        .any(|e| e.get("classification").and_then(Value::as_str) == Some("outcome_unknown"))
-    {
-        "outcome_unknown"
-    } else {
-        "failed"
-    };
+    let status = run_terminal_status(
+        live_baseline_sealed,
+        integration_fixture_succeeded,
+        &cell_results,
+    );
     let completed = store.complete_rwe_run(run_id, &lease, status, &aggregate, &evidence_sha)?;
     Ok(sort_value(&json!({
         "schema_version": RWE_LIVE_BASELINE_COORDINATOR_SCHEMA,
@@ -1957,6 +1989,7 @@ pub fn run_frozen_schedule(
         "provider_transport_provenance": provider_transport_provenance,
         "injected_provider_call_performed": any_injected_provider,
         "integration_fixture_completed": integration_fixture_completed,
+        "integration_fixture_succeeded": integration_fixture_succeeded,
         "provider_calls": if any_live_provider && provider_transport_provenance == "external" {
             "observed_in_cell_evidence"
         } else {
@@ -2162,7 +2195,19 @@ fn execute_armed_delegated_rwe_cell(
     .map_err(|_| "delegated manifest price profile malformed")?;
     let source: std::sync::Arc<dyn crate::provider::managed_deepseek::ManagedAuthoritySource> =
         store.clone();
-    let executor = match transport {
+    // The injectable seam can never be the canonical production boundary: any
+    // transport passed through the fake slot is wrapped in
+    // InjectedTransportBoundary, so even a real ReqwestTransport placed in the
+    // fake slot is Injected by construction. Provenance is minted by concrete
+    // type (production_transport_provenance), never self-declared by the
+    // transport object; the None branch constructs the canonical
+    // ReqwestTransport and is the only External path.
+    let serving_transport = transport.as_ref().map(|tx| {
+        std::sync::Arc::new(crate::provider::transport::InjectedTransportBoundary(
+            std::sync::Arc::clone(tx),
+        )) as std::sync::Arc<dyn crate::provider::transport::HttpTransport>
+    });
+    let executor = match serving_transport {
         Some(tx) => {
             let mk = |model: &str| -> Result<std::sync::Arc<ManagedDeepSeekProvider>, String> {
                 let config = ProviderConfig::new(
@@ -2185,7 +2230,7 @@ fn execute_armed_delegated_rwe_cell(
                     CredentialBoundary::new("env")
                         .map_err(|e| format!("managed credential boundary failed: {e}"))?,
                     credential,
-                    std::sync::Arc::clone(tx),
+                    std::sync::Arc::clone(&tx),
                 )))
             };
             ManagedDeepSeekNodeExecutor::new(
@@ -2603,6 +2648,7 @@ pub fn project_first_baseline_evidence(run_aggregate: &Value) -> Value {
         "provider_transport_provenance": run_aggregate.get("provider_transport_provenance"),
         "injected_provider_call_performed": run_aggregate.get("injected_provider_call_performed"),
         "integration_fixture_completed": run_aggregate.get("integration_fixture_completed"),
+        "integration_fixture_succeeded": run_aggregate.get("integration_fixture_succeeded"),
         "comparison_eligible": false,
         "aggregate_provider_requests": run_aggregate.get("aggregate_provider_requests"),
         "aggregate_total_tokens": run_aggregate.get("aggregate_total_tokens"),
@@ -2739,10 +2785,14 @@ mod tests {
     }
 
     fn success_outcomes() -> Vec<CellOutcome> {
+        outcomes_with_classification("injected_success")
+    }
+
+    fn outcomes_with_classification(class: &str) -> Vec<CellOutcome> {
         (0..4)
             .map(|i| CellOutcome {
-                classification: "injected_success".into(),
-                provider_requests: 0,
+                classification: class.into(),
+                provider_requests: 3,
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
@@ -2864,6 +2914,142 @@ mod tests {
         let again =
             run_frozen_schedule(&store, &principal, "run-c4", "auth-c4", &lease, &driver).unwrap();
         assert_eq!(again["attempts_recorded"], 4);
+    }
+
+    #[test]
+    fn fixture_run_with_failures_never_reports_succeeded() {
+        // Completion and success are separate: a fixture that merely
+        // terminalizes with failure classes must record status "failed" (or
+        // "outcome_unknown"), never "succeeded", and integration_fixture_succeeded
+        // must stay false. Each scenario runs the full 4-cell schedule.
+        let scenarios: &[(&str, &str)] = &[
+            ("verifier_failed", "run-vf"),
+            ("controlled_failure", "run-cf"),
+            ("blocked_budget", "run-bb"),
+        ];
+        for (class, run_id) in scenarios {
+            let dir = tempdir().unwrap();
+            let store = Arc::new(
+                LocalProductStore::new_with_clock(dir.path().join("fx.db"), || {
+                    "2026-07-25T12:00:00Z".into()
+                })
+                .unwrap(),
+            );
+            let principal = operator(&store, "t-fx", "op-fx");
+            let lease = admit_ready(&store, &principal, "auth-fx", run_id, "ptask-gp-fx");
+            let driver = InjectedCellDriver {
+                outcomes: outcomes_with_classification(class),
+            };
+            let result =
+                run_frozen_schedule(&store, &principal, run_id, "auth-fx", &lease, &driver)
+                    .unwrap();
+            assert_eq!(
+                result["integration_fixture_completed"], true,
+                "{class} cells are terminal; the fixture completed: {result}"
+            );
+            assert_eq!(
+                result["integration_fixture_succeeded"], false,
+                "a fixture with {class} cells never succeeded: {result}"
+            );
+            assert_eq!(
+                result["run"]["status"], "failed",
+                "merely terminalized {class} cells must not report succeeded: {result}"
+            );
+            assert_eq!(result["live_baseline_sealed"], false);
+        }
+        // outcome_unknown stays outcome_unknown and never completes.
+        let dir = tempdir().unwrap();
+        let store = Arc::new(
+            LocalProductStore::new_with_clock(dir.path().join("fxou.db"), || {
+                "2026-07-25T12:00:00Z".into()
+            })
+            .unwrap(),
+        );
+        let principal = operator(&store, "t-fxou", "op-fxou");
+        let lease = admit_ready(&store, &principal, "auth-fxou", "run-fxou", "ptask-gp-fxou");
+        let driver = InjectedCellDriver {
+            outcomes: outcomes_with_classification("outcome_unknown"),
+        };
+        let result =
+            run_frozen_schedule(&store, &principal, "run-fxou", "auth-fxou", &lease, &driver)
+                .unwrap();
+        assert_eq!(result["integration_fixture_completed"], false);
+        assert_eq!(result["integration_fixture_succeeded"], false);
+        assert_eq!(result["run"]["status"], "outcome_unknown");
+        assert_eq!(
+            result["aggregate"]["stopped_by"],
+            "outcome_unknown_no_retry"
+        );
+    }
+
+    #[test]
+    fn fixture_run_with_all_fixture_success_cells_reports_succeeded() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(
+            LocalProductStore::new_with_clock(dir.path().join("fxs.db"), || {
+                "2026-07-25T12:00:00Z".into()
+            })
+            .unwrap(),
+        );
+        let principal = operator(&store, "t-fxs", "op-fxs");
+        let lease = admit_ready(&store, &principal, "auth-fxs", "run-fxs", "ptask-gp-fxs");
+        let driver = InjectedCellDriver {
+            outcomes: outcomes_with_classification("fixture_success"),
+        };
+        let result =
+            run_frozen_schedule(&store, &principal, "run-fxs", "auth-fxs", &lease, &driver)
+                .unwrap();
+        assert_eq!(result["integration_fixture_completed"], true);
+        assert_eq!(result["integration_fixture_succeeded"], true);
+        assert_eq!(result["run"]["status"], "succeeded");
+        assert_eq!(result["live_baseline_sealed"], false);
+    }
+
+    #[test]
+    fn run_terminal_status_never_calls_merely_terminal_runs_succeeded() {
+        let cell = |class: &str| json!({"classification": class});
+        // Sealed live baseline -> succeeded.
+        assert_eq!(
+            run_terminal_status(true, false, &[cell("success"), cell("success")]),
+            "succeeded"
+        );
+        // All required fixture cells fixture_success -> succeeded.
+        assert_eq!(
+            run_terminal_status(false, true, &[cell("fixture_success")]),
+            "succeeded"
+        );
+        // outcome_unknown dominates.
+        assert_eq!(
+            run_terminal_status(
+                false,
+                false,
+                &[cell("outcome_unknown"), cell("fixture_success")]
+            ),
+            "outcome_unknown"
+        );
+        // Every merely-terminal failure class -> failed, never succeeded.
+        for class in [
+            "controlled_failure",
+            "verifier_failed",
+            "provider_known_failure",
+            "timeout",
+            "cancelled",
+            "blocked_ci_environment",
+            "blocked_provider_free_mode",
+            "blocked_missing_credential",
+            "blocked_budget",
+            "blocked_authority",
+            "blocked_live_session_incomplete",
+            "cleanup_failed",
+            "injected_success",
+            "injected_verifier_failed",
+        ] {
+            assert_eq!(
+                run_terminal_status(false, false, &[cell(class)]),
+                "failed",
+                "{class} must map to failed, never succeeded"
+            );
+        }
     }
 
     #[test]
@@ -3522,6 +3708,125 @@ mod tests {
             );
             assert_ne!(a["evidence_json"]["evidence_source"], "injected");
         }
+        std::env::remove_var(crate::product_golden_path::PRODUCT_TASK_GATE);
+    }
+
+    /// A deliberately hostile transport that behaves like a production client
+    /// but is not the canonical ReqwestTransport concrete type. The trait has
+    /// no provenance surface, so it can never mint External; the fake slot is
+    /// wrapped in InjectedTransportBoundary regardless.
+    struct SpoofExternalTransport {
+        responses: std::sync::Mutex<
+            std::collections::VecDeque<
+                Result<
+                    crate::provider::transport::HttpResponse,
+                    crate::provider::transport::HttpError,
+                >,
+            >,
+        >,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::provider::transport::HttpTransport for SpoofExternalTransport {
+        async fn send(
+            &self,
+            _request: &crate::provider::transport::HttpRequest,
+        ) -> Result<crate::provider::transport::HttpResponse, crate::provider::transport::HttpError>
+        {
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| {
+                    Err(crate::provider::transport::HttpError::Connection(
+                        "no spoof responses left".to_string(),
+                    ))
+                })
+        }
+    }
+
+    #[test]
+    fn fake_transport_slot_cannot_impersonate_external_provenance() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(
+            LocalProductStore::new_with_clock(dir.path().join("spoof.db"), || {
+                "2026-07-25T12:00:00Z".into()
+            })
+            .unwrap(),
+        );
+        let principal = operator(&store, "t-spoof", "op-spoof");
+        let lease = admit_ready(
+            &store,
+            &principal,
+            "auth-spoof",
+            "run-spoof",
+            "ptask-gp-spoof",
+        );
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(target.join("apps/api/src")).unwrap();
+        std::fs::create_dir_all(target.join("apps/api/tests")).unwrap();
+        std::fs::write(target.join("README.md"), "rwe\n").unwrap();
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(crate::product_golden_path::PRODUCT_TASK_GATE, "1");
+        let had_ci = std::env::var_os("CI");
+        std::env::remove_var("CI");
+        // 4 cells x 3 requests of plausible-looking responses: the spoof
+        // transport completes the full lifecycle but must never mint External.
+        let responses = (0..12)
+            .map(|_| {
+                Ok(HttpResponse {
+                    status: 200,
+                    body: br#"{"choices":[{"message":{"content":"{}"}}]}"#.to_vec(),
+                })
+            })
+            .collect::<std::collections::VecDeque<_>>();
+        let transport = std::sync::Arc::new(SpoofExternalTransport {
+            responses: std::sync::Mutex::new(responses),
+        });
+        let driver = ProductGoldenPathCellDriver {
+            allow_live_provider_effects: false,
+            target_repo_path: Some(target),
+            fake_transport: Some(transport),
+            cell_executor_key_id: None,
+            cell_confirmer_key_id: None,
+        };
+        let result = run_frozen_schedule(
+            &store,
+            &principal,
+            "run-spoof",
+            "auth-spoof",
+            &lease,
+            &driver,
+        )
+        .unwrap();
+        match had_ci {
+            Some(v) => std::env::set_var("CI", v),
+            None => std::env::remove_var("CI"),
+        }
+        // The spoof path can never become a live baseline: the run seals
+        // nothing, performs no live provider call, and its provenance is
+        // never external (fail-closed to none/injected).
+        assert_eq!(result["live_baseline_sealed"], false);
+        assert_eq!(result["provider_call_performed"], false);
+        assert_ne!(
+            result["provider_transport_provenance"], "external",
+            "a custom transport cannot mint external provenance: {result}"
+        );
+        let attempts = store.list_rwe_task_attempts_for_run("run-spoof").unwrap();
+        assert_eq!(attempts.len(), 4);
+        for a in &attempts {
+            assert_ne!(
+                a["evidence_json"]["provider_transport_provenance"], "external",
+                "durable attempt evidence must never carry external provenance for the spoof path: {a}"
+            );
+            assert_eq!(a["evidence_json"]["live_provider_request"], false);
+        }
+        // The store evidence gate (store_evidence_transport_provenance) is
+        // exercised directly by store_evidence_transport_provenance_gate_is_fail_closed;
+        // here the durable attempt evidence itself must never carry external
+        // provenance for the spoof path.
         std::env::remove_var(crate::product_golden_path::PRODUCT_TASK_GATE);
     }
 

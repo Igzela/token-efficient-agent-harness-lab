@@ -175,6 +175,11 @@ fn main() {
                     .or_else(|| aggregate.get("integration_fixture_completed"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                let integration_fixture_succeeded = coord
+                    .get("integration_fixture_succeeded")
+                    .or_else(|| aggregate.get("integration_fixture_succeeded"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 json!({
                     "schema_version": "rwe_live_baseline_cli_run.v1",
                     "coordinator": coord,
@@ -184,6 +189,7 @@ fn main() {
                     "provider_transport_provenance": provider_transport_provenance,
                     "injected_provider_call_performed": injected_provider_call_performed,
                     "integration_fixture_completed": integration_fixture_completed,
+                    "integration_fixture_succeeded": integration_fixture_succeeded,
                     "target_write_performed": false,
                     "live_baseline_sealed": coord.get("live_baseline_sealed").cloned().unwrap_or(json!(false)),
                     "composition_seam": RWE_LIVE_CELL_COMPOSITION_SEAM,

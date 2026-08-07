@@ -27,7 +27,8 @@ use super::config::{CredentialRef, ProviderConfig};
 use super::credential::CredentialBoundary;
 use super::openai::OpenAiProvider;
 use super::transport::{
-    HttpError, HttpRequest, HttpResponse, HttpTransport, ProviderTransportProvenance,
+    production_transport_provenance, HttpError, HttpRequest, HttpResponse, HttpTransport,
+    ProviderTransportProvenance,
 };
 
 pub const MANAGED_DEEPSEEK_PROFILE_SCHEMA: &str = "managed_deepseek_profile.v1";
@@ -1303,7 +1304,7 @@ impl ManagedDeepSeekProvider {
         credential: CredentialRef,
         transport: Arc<dyn HttpTransport>,
     ) -> Self {
-        let transport_provenance = transport.transport_provenance();
+        let transport_provenance = production_transport_provenance(&transport);
         Self {
             inner: ManagedDeepSeekInner::OpenAi(Arc::new(OpenAiProvider::new(
                 config, boundary, credential, transport, None,
@@ -1318,7 +1319,7 @@ impl ManagedDeepSeekProvider {
         credential: CredentialRef,
         transport: Arc<dyn HttpTransport>,
     ) -> Self {
-        let transport_provenance = transport.transport_provenance();
+        let transport_provenance = production_transport_provenance(&transport);
         Self {
             inner: ManagedDeepSeekInner::Anthropic(Arc::new(AnthropicProvider::new(
                 config, boundary, credential, transport, None,

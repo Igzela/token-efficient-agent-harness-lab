@@ -180,7 +180,7 @@ Board B does not authorize a live run. A live baseline still requires a new sepa
 
 **Prerequisite:** Board A and Board B accepted, plus a separate one-use live-run authorization against the accepted exact head.
 
-Draft PR #363 is an open implementation surface for the provider-free composition of that baseline under existing Product Golden Path and `LocalProductStore` owners (exact frozen Igzela/alters-lab bindings). It is not accepted, not COMPLETE, and does not invent a coordinator prerequisite or authorize live provider/target effects until merge and separate live-run authority. Its armed fixture and the CLI live path sit behind the operator gates `ACP_RWE_ARMED_LIVE_RUN=1` / `ACP_RWE_OPERATOR_LIVE_RUN=1`; injected executions never seal a baseline.
+PR #363 is an open implementation surface for the provider-free composition of that baseline under existing Product Golden Path and `LocalProductStore` owners (exact frozen Igzela/alters-lab bindings). It is Ready for review but not accepted, not COMPLETE, and does not invent a coordinator prerequisite or authorize live provider/target effects until merge and separate live-run authority. Its armed fixture and the CLI live path sit behind the operator gates `ACP_RWE_ARMED_LIVE_RUN=1` / `ACP_RWE_OPERATOR_LIVE_RUN=1`; injected executions never seal a baseline.
 
 
 ### First Live Baseline Exit Gate
