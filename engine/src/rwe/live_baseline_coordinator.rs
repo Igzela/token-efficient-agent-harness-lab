@@ -2893,6 +2893,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         std::env::set_var(crate::product_golden_path::PRODUCT_TASK_GATE, "1");
+        // The coordinator refuses to execute any cell effect while CI is set;
+        // simulate the operator environment around this provider-free run.
+        let had_ci = std::env::var_os("CI");
+        std::env::remove_var("CI");
         let driver = ProductGoldenPathCellDriver {
             allow_live_provider_effects: false,
             target_repo_path: Some(target),
@@ -2909,6 +2913,10 @@ mod tests {
             &driver,
         )
         .unwrap();
+        match had_ci {
+            Some(v) => std::env::set_var("CI", v),
+            None => std::env::remove_var("CI"),
+        }
         assert_eq!(result["live_baseline_sealed"], false);
         assert_eq!(result["provider_call_performed"], false);
         let attempts = store.list_rwe_task_attempts_for_run("run-unarmed").unwrap();
@@ -3482,6 +3490,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         std::env::set_var(crate::product_golden_path::PRODUCT_TASK_GATE, "1");
+        // The coordinator refuses to execute any cell effect while CI is set;
+        // simulate the operator environment around this fake-transport run.
+        let had_ci = std::env::var_os("CI");
+        std::env::remove_var("CI");
         let transport = std::sync::Arc::new(MockTransport::new(vec![Ok(HttpResponse {
             status: 200,
             body: br#"{"choices":[{"message":{"content":"{}"}}]}"#.to_vec(),
@@ -3496,6 +3508,10 @@ mod tests {
         let result =
             run_frozen_schedule(&store, &principal, "run-ftx", "auth-ftx", &lease, &driver)
                 .unwrap();
+        match had_ci {
+            Some(v) => std::env::set_var("CI", v),
+            None => std::env::remove_var("CI"),
+        }
         assert_eq!(result["live_baseline_sealed"], false);
         assert_eq!(result["provider_call_performed"], false);
         assert_eq!(result["provider_transport_provenance"], "none");
