@@ -176,11 +176,15 @@ Accepted provider-free production wiring:
 
 Board B does not authorize a live run. A live baseline still requires a new separately authorized run against the accepted exact head.
 
-### First Live Baseline — Next Permitted Work
+### First Live Baseline — Attempted, Not Accepted
 
 **Prerequisite:** Board A and Board B accepted, the composition seam + store cell fence merged (PR #363, `995e57e…`), plus a separate one-use live-run authorization against the accepted exact head.
 
 The live-baseline composition seam is now accepted main capability: `engine/src/rwe/live_baseline_coordinator.rs` orchestrates the frozen 4-cell schedule over Board B admit, the store cell fence, ProductTask/managed executor/spend journal/verifier/artifact/Draft PR/terminal/cleanup under existing owners, with unbypassable provider transport provenance and fixture-completion-vs-success semantics. It does not authorize a live run by itself. A real baseline must run the accepted production path (canonical `ReqwestTransport` external provenance), not the injected fixture; it still requires the separate one-use live-run authorization against the accepted exact head, and no claim stronger than the observed evidence-sufficiency state is allowed.
+
+Two authorized one-use live runs (`auth-live-003`/`auth-live-004`, run-live-20260807-c/-d, 2026-08-07) executed all 4 frozen cells each through the genuine delegated lifecycle and failed deterministically at the implementation stage: 8/8 planning nodes (deepseek-v4-pro) completed real provider requests (USD 0.002042876 total client-recorded), 8/8 implementation nodes (deepseek-v4-flash) aborted after ~20.2 s with `provider_response: DeepSeek response transport was malformed`, caused by the engine's hard 20-second transport read timeout (`HTTP_READ_TIMEOUT`) against a reasoning model whose implementation completion takes ~38.7 s server-side (probe-verified: HTTP 200, `finish_reason=length`, all 4000 output tokens in `reasoning_content`, `content=""`). No seal, no Draft PRs, no target writes, no budget breach; schedule unchanged; evidence frozen and independently reviewed (see `docs/CURRENT_STATUS.md`).
+
+**Next step is a planning decision, not another run:** `DECISION_REQUIRED` on (1) a bounded repair packet for the transport read timeout and (2) the frozen schedule's model/output-token pairing (refreeze or bound adjustment), before any further live attempt.
 
 
 ### First Live Baseline Exit Gate

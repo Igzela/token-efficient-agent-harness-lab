@@ -62,6 +62,18 @@ PR #363 is merged and accepted as `995e57e50defd85632b782e3da87416e62cf6d92`. It
 
 The frozen corpus, protocol, schedule, and Board B production wiring are accepted prerequisites. They do **not** authorize a live RWE baseline by themselves.
 
+## First Live Baseline Attempts — Not Accepted
+
+Two separately authorized one-use live runs of the frozen Board A schedule were executed against the accepted exact head on 2026-08-07 (authorizations `auth-live-003`/`auth-live-004`, operator principal `op-live-001`, executor/confirmer cell keys with role-separated scopes, `fixture_only=false`, draft-PR-only, auto-merge disabled):
+
+- run-live-20260807-c and run-live-20260807-d each executed all 4 frozen cells through the genuine delegated lifecycle (store owners, real provider calls, real `ReqwestTransport` external provenance).
+- Every planning node (deepseek-v4-pro) completed a real provider request (8 requests, USD 0.002042876 client-recorded spend, well under the USD 0.80 ceiling). Every implementation node (deepseek-v4-flash) failed deterministically after ~20.2 s with `provider_response: DeepSeek response transport was malformed`.
+- Root cause (verified): the engine transport enforces a hard 20-second read timeout (`HTTP_READ_TIMEOUT`, `engine/src/provider/transport.rs`); deepseek-v4-flash is a reasoning model whose implementation-stage completion takes ~38.7 s server-side (verified by direct operator probe: HTTP 200, `finish_reason=length`, all 4000 output tokens spent on `reasoning_content`, `content=""`). Secondary finding: with `max_output_tokens` 4000 the frozen model pairing cannot emit content, so the implementation stage would also fail after a timeout repair.
+- Outcome: no seal, no Draft PRs, no target-repo writes, no budget breach; 8/8 cells `controlled_failure`; schedule unchanged (no retune, no refreeze); no engine change was made mid-experiment.
+- Raw evidence frozen under `/tmp/opencode/rwe-live-baseline-evidence/` (run JSONs, store table exports, diagnostic probe, receipt); independent evidence review `rev-live-20260807` returned overall PASS with five secondary items now corrected in the receipt.
+
+The next live attempt requires a planning decision: (1) a bounded repair packet for the transport read timeout (engine change, new head) and (2) a decision on the frozen schedule's model/output-token pairing (refreeze or bound adjustment). Neither may proceed silently from this document.
+
 ## Active Frontier
 
 `PE7-REAL-WORKLOAD-EVIDENCE-1` is `READY_FOR_EXECUTION` at the first live frozen RWE baseline.
@@ -86,7 +98,7 @@ Merged or closed PRs are not open review surfaces and should not be retained in 
 | Minimum First RWE Board A: frozen corpus/protocol/schedule and authorization v2 contract | `COMPLETE` | PR #361 accepted |
 | Minimum First RWE Board B: production issue/admit/spend wiring | `COMPLETE` | Provider-free production `rwe_run_authorization.v2` issue/admit and one-use spend wiring accepted |
 | Live baseline composition seam + store cell fence | `COMPLETE` | PR #363 accepted as `995e57e…`; authorizes no live run by itself |
-| First live frozen RWE baseline | `BLOCKED_PREREQUISITE` | Separate one-use live-run authority against accepted exact head |
+| First live frozen RWE baseline | `DECISION_REQUIRED` | Attempted 2026-08-07 (auth-live-003/004), not accepted; deterministic transport read-timeout failure root-caused; repair packet + schedule pairing decision required before next attempt |
 | Architecture Convergence AC1–AC7 | `BLOCKED_PREREQUISITE` | Accepted pre-convergence RWE baseline |
 | Identical-corpus/protocol replay | `BLOCKED_PREREQUISITE` | Architecture Convergence complete |
 | Harness-Evolution experiment-control hardening | `BLOCKED_PREREQUISITE` | Comparable replay evidence and accepted design packet |
