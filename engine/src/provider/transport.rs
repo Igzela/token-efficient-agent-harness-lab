@@ -11,9 +11,9 @@ const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 const HTTP_DEFAULT_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Absolute transport safety ceiling: no single external request may exceed
 /// this total wall time. It exists only to keep every request finite against
-/// absurd or non-finite caller values, and it never truncates an admitted
-/// managed envelope (authorized per-request timeouts are capped at 900 s by
-/// contract), so it is a pure safety net, not a second timeout authority.
+/// absurd or non-finite caller values, and it never truncates an admitted RWE
+/// live envelope (the RWE admission layer bounds authorized timeouts to
+/// 900 s), so it is a pure safety net, not a second timeout authority.
 const HTTP_ABSOLUTE_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// Resolves the effective total timeout for one request.
@@ -33,16 +33,16 @@ fn effective_total_timeout(request: &HttpRequest) -> std::time::Duration {
 }
 
 /// Classifies a body-read failure. A transport expiry while reading the body
-/// is a timeout, not a malformed response; a connection drop is a connection
-/// error; only genuinely malformed body transport should surface as `Parse`.
-/// This matters for managed callers: `Timeout` maps to
-/// `provider_timeout`/`OutcomeUnknown` (no automatic retry) instead of a
-/// misleading `provider_response: transport malformed`.
+/// is a timeout, not a malformed response; anything else that ends the body
+/// early (truncation, reset, malformed framing) is a `Parse` — the response
+/// did not deliver its declared content. This matters for managed callers:
+/// `Timeout` maps to `provider_timeout`/`OutcomeUnknown` (no automatic retry)
+/// instead of a misleading `provider_response: transport malformed`. Connect-
+/// phase failures are classified before the body exists (see `send`), so the
+/// body-phase branch needs no connection case.
 fn classify_body_read_error(error: reqwest::Error) -> HttpError {
     if error.is_timeout() {
         HttpError::Timeout(error.to_string())
-    } else if error.is_connect() {
-        HttpError::Connection(error.to_string())
     } else {
         HttpError::Parse(format!("failed to read body: {error}"))
     }
@@ -599,6 +599,15 @@ mod tests {
 
     #[tokio::test]
     async fn connect_refused_is_classified_as_connection() {
+        // System-proxy discovery is disabled so an environment forward proxy
+        // cannot answer the refused loopback port on our behalf.
+        let client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .no_proxy()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let transport = ReqwestTransport::with_client(client);
         let req = HttpRequest {
             url: "http://127.0.0.1:1/".to_string(),
             method: "GET".to_string(),
@@ -606,7 +615,7 @@ mod tests {
             body: None,
             timeout_secs: Some(2.0),
         };
-        let error = ReqwestTransport::new().send(&req).await.unwrap_err();
+        let error = transport.send(&req).await.unwrap_err();
         assert!(
             matches!(error, HttpError::Connection(_)),
             "expected Connection, got {error:?}"

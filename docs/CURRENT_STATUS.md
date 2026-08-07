@@ -149,12 +149,7 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 
 ## Open Work Coordination
 
-The first live frozen RWE baseline is `DECISION_REQUIRED`. The approved chain, executed in order on accepted `main`, is:
-
-1. transport timeout-ownership repair (engine PR): persisted `ManagedCallLimits.timeout_ms` stays the provider-call timeout authority; the transport applies no stricter hidden ceiling than the authorized request timeout; connect timeout stays bounded; every external request keeps a finite total timeout; timeout/connection/parse errors are classified correctly (timeout → `provider_timeout`, effect `OutcomeUnknown`, no auto-retry);
-2. after the repair is accepted, a provider-compatibility calibration for deepseek-v4-flash implementation content (pre-registered 8192 → 16384 output-token envelopes, max 2 provider requests, first viable bound wins, no task-success signal used, no 4-cell run, no target PR, no default-branch write);
-3. after calibration, a versioned refreeze (same target repo/commit/tasks/paths/verifier/reviewer policy/repetitions/seeds/stop rules/statistical method/margins/implementer model; only compatibility-necessary output-token envelope and dependent totals/hashes/bindings change; old v1 failure evidence remains valid);
-4. only after all three are accepted, request a new one-use, finite, new-freeze-bound, accepted-main-bound live-run authorization and execute the new 4-cell First Live Frozen RWE Baseline with external canonical `ReqwestTransport` provenance, Draft-PR-only output, no default-branch writes, no auto-merge, no outcome-unknown retry, full failed-attempt accounting, and a store-owned seal.
+The first live frozen RWE baseline is `DECISION_REQUIRED`. The approved chain, executed in order on accepted `main`, is: transport timeout-ownership repair → provider-compatibility calibration (after repair accepted) → versioned refreeze (after calibration) → new one-use live-run authorization. The authoritative step-by-step chain and each step's acceptance conditions are in `docs/NEXT_DECISION.md` (`PE7-REAL-WORKLOAD-EVIDENCE-1` packet); this file records only the status facts: the repair is in flight as an engine PR, calibration and refreeze have not started, and no step may begin before the previous one is accepted.
 
 AC1–AC7 remain `BLOCKED_PREREQUISITE`; an accepted pre-convergence baseline moves `PE7-ARCHITECTURE-CONVERGENCE-1` to the next active frontier, and AC implementation stays out of this round.
 
