@@ -2413,26 +2413,33 @@ followed by a one-sentence summary of the change.";
                         .output_tokens
                         .saturating_sub(response.usage.reasoning_output_tokens);
                     let content_nonempty = !response.output_text.trim().is_empty();
+                    // Syntactic implementation-format parseability only (no
+                    // verifier/evaluator signal per Decision C): at least one
+                    // complete fenced code block, as the prompt requires.
+                    let parseable =
+                        content_nonempty && response.output_text.matches("```").count() >= 2;
                     entry["finish_reason"] = response.stop_reason.clone().into();
                     entry["reasoning_output_tokens"] =
                         response.usage.reasoning_output_tokens.into();
                     entry["output_tokens"] = response.usage.output_tokens.into();
                     entry["content_tokens"] = content_tokens.into();
                     entry["content_nonempty"] = content_nonempty.into();
-                    entry["parseable"] = content_nonempty.into();
+                    entry["parseable"] = parseable.into();
                     entry["request_id"] = response.request_id.clone().into();
                     entry["cost_usd"] = response
                         .estimated_cost_usd
                         .map(|value| (value * 1_000_000.0).round() / 1_000_000.0)
                         .unwrap_or_default()
                         .into();
-                    entry["outcome"] = if content_nonempty {
+                    entry["outcome"] = if parseable {
                         "viable"
+                    } else if content_nonempty {
+                        "unparseable"
                     } else {
                         "empty_content"
                     }
                     .into();
-                    if content_nonempty {
+                    if parseable {
                         viable_envelope = Some(envelope);
                     }
                 }
