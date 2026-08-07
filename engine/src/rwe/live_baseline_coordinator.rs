@@ -1383,7 +1383,7 @@ fn classify_execution_error(err: &str) -> &'static str {
 fn store_evidence_transport_provenance(projection: &Value) -> Result<String, String> {
     let pe = projection
         .get("provider_execution")
-        .and_then(|value| if value.is_null() { None } else { Some(value) })
+        .filter(|value| !value.is_null())
         .ok_or("RWE cell store evidence lacks provider execution")?;
     let aggregate = pe
         .get("transport_provenance")

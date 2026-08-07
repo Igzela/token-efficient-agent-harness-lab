@@ -81,13 +81,10 @@ impl RweCellBudgetEnvelope {
             .and_then(Value::as_u64)
             .filter(|v| *v > 0)
             .ok_or("cell max_wall_time_ms must be positive")?;
-        let max_cost = cell.get("max_cost").and_then(Value::as_f64).and_then(|c| {
-            if c.is_finite() && c > 0.0 {
-                Some(c)
-            } else {
-                None
-            }
-        });
+        let max_cost = cell
+            .get("max_cost")
+            .and_then(Value::as_f64)
+            .filter(|c| c.is_finite() && *c > 0.0);
         if max_input_tokens
             .saturating_add(max_output_tokens)
             .saturating_mul(1)
