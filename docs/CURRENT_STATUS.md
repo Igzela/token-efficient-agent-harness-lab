@@ -49,6 +49,17 @@ PR #361 is merged and accepted as `9aea39b75a7999ae7db22176b77e06bcf7a6890f`. It
 
 Board B of `PE7-REAL-WORKLOAD-EVIDENCE-1` is accepted as provider-free production issue/admit/one-use spend wiring for `rwe_run_authorization.v2` under the existing authenticated RWE/`LocalProductStore` owner. Bindings derive from freeze owners and the authenticated principal; rejected, stale, expired, revoked, wrong-tenant, and conflicting requests fail closed without consuming authority. SQLite/PostgreSQL issue and admit audit parity is preserved. No second spend, store, scheduler, evaluator, approval, output, audit, or rollback owner was added. Board B authorizes no Provider call and no target effect by itself.
 
+PR #363 is merged and accepted as `995e57e50defd85632b782e3da87416e62cf6d92`. It lands the frozen live-baseline **composition seam and store cell fence** as accepted main capability:
+
+- role-separated delegated attempt admit/activate, one-use v2 spend authority, per-cell dispatch reservation (single winner, replay-safe), terminalization ordering, restart recovery, SQLite/PostgreSQL parity;
+- unbypassable provider transport provenance: the `HttpTransport` trait has no self-declaration surface; `External` is minted only for the canonical `ReqwestTransport` concrete type, the fake seam is always wrapped in `InjectedTransportBoundary`, and injected/provider-free execution can never seal a live baseline;
+- strict one-way allowed-path containment (parents, `..`, absolute, and pseudo-children of file entries fail closed);
+- fixture honesty: the operator-gated armed integration fixture (`ACP_RWE_ARMED_LIVE_RUN=1`) runs the genuine delegated lifecycle through the injected transport, records cells as `fixture_success` (never `success`), and never seals; the CLI live path additionally requires `ACP_RWE_OPERATOR_LIVE_RUN=1`;
+- fixture completion is not fixture success: `integration_fixture_succeeded` requires every cell `fixture_success`; merely terminalized failure classes never report `succeeded`;
+- the frozen corpus tree-hash inconsistency was repaired deterministically (task bodies unchanged; `137e912f…` independently recomputed as the supervised-patch content hash of the frozen commit).
+
+#363 authorizes no live baseline by itself: a separate one-use live-run authorization against the accepted exact head is still required before any real provider POST or target effect.
+
 The frozen corpus, protocol, schedule, and Board B production wiring are accepted prerequisites. They do **not** authorize a live RWE baseline by themselves.
 
 ## Active Frontier
@@ -57,14 +68,13 @@ The frozen corpus, protocol, schedule, and Board B production wiring are accepte
 
 The next permitted work is a separately authorized one-use live run of the frozen Board A schedule against the accepted exact head, after current live-run authority is issued. The 4-cell live coordinator, provider-backed execution, target writes, and evidence closeout remain outside Board B and require that separate authority.
 
-The first live RWE run remains blocked until a separate current live-run authorization is issued against the accepted exact head. Branch-local heads never authorize live baseline, provider calls, or target effects. PR #363's armed integration fixture performs a genuine delegated lifecycle (store owners + real Draft PR creation on the exact frozen target) through the injected transport only when the operator live-run gate `ACP_RWE_ARMED_LIVE_RUN=1` is set with populated token references; the CLI live path additionally requires `ACP_RWE_OPERATOR_LIVE_RUN=1`. Without the gates the test SKIPs, so CI never creates external effects, and the fixture never seals a live baseline (injected cells are `fixture_success`, never `success`).
+The first live RWE run remains blocked until a separate current live-run authorization is issued against the accepted exact head. Branch-local heads never authorize live baseline, provider calls, or target effects. The accepted composition seam (merged #363) runs the genuine delegated lifecycle (store owners + real Draft PR creation on the exact frozen target) through the injected transport only when the operator live-run gate `ACP_RWE_ARMED_LIVE_RUN=1` is set with populated token references; the CLI live path additionally requires `ACP_RWE_OPERATOR_LIVE_RUN=1`. Without the gates the test SKIPs, so CI never creates external effects, and the fixture never seals a live baseline (injected cells are `fixture_success`, never `success`).
 
 ## Open Review Surfaces
 
 | PR | Purpose | Status |
 |---|---|---|
 | #225 | Presentation-only Dashboard theme | OPEN; independent and last; cannot substitute for runtime or evidence work |
-| #363 | Frozen RWE composition seam + store cell fence + operator-gated armed live Draft PR integration fixture | OPEN, Ready for review, unmerged; not accepted; armed fixture runs only under `ACP_RWE_ARMED_LIVE_RUN=1`, live CLI path under `ACP_RWE_OPERATOR_LIVE_RUN=1`; does not authorize an accepted live baseline, provider calls outside the injected transport, or target default-branch effects until merged and separately authorized |
 | `Igzela/alters-lab#5` | Draft-PR output from the accepted bounded live Golden Path observation | OPEN, Draft, unmerged; no merge authority |
 
 Merged or closed PRs are not open review surfaces and should not be retained in this table.
@@ -75,6 +85,7 @@ Merged or closed PRs are not open review surfaces and should not be retained in 
 |---|---|---|
 | Minimum First RWE Board A: frozen corpus/protocol/schedule and authorization v2 contract | `COMPLETE` | PR #361 accepted |
 | Minimum First RWE Board B: production issue/admit/spend wiring | `COMPLETE` | Provider-free production `rwe_run_authorization.v2` issue/admit and one-use spend wiring accepted |
+| Live baseline composition seam + store cell fence | `COMPLETE` | PR #363 accepted as `995e57e…`; authorizes no live run by itself |
 | First live frozen RWE baseline | `BLOCKED_PREREQUISITE` | Separate one-use live-run authority against accepted exact head |
 | Architecture Convergence AC1–AC7 | `BLOCKED_PREREQUISITE` | Accepted pre-convergence RWE baseline |
 | Identical-corpus/protocol replay | `BLOCKED_PREREQUISITE` | Architecture Convergence complete |

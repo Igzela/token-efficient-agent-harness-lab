@@ -178,9 +178,9 @@ Board B does not authorize a live run. A live baseline still requires a new sepa
 
 ### First Live Baseline — Next Permitted Work
 
-**Prerequisite:** Board A and Board B accepted, plus a separate one-use live-run authorization against the accepted exact head.
+**Prerequisite:** Board A and Board B accepted, the composition seam + store cell fence merged (PR #363, `995e57e…`), plus a separate one-use live-run authorization against the accepted exact head.
 
-PR #363 is an open implementation surface for the provider-free composition of that baseline under existing Product Golden Path and `LocalProductStore` owners (exact frozen Igzela/alters-lab bindings). It is Ready for review but not accepted, not COMPLETE, and does not invent a coordinator prerequisite or authorize live provider/target effects until merge and separate live-run authority. Its armed fixture and the CLI live path sit behind the operator gates `ACP_RWE_ARMED_LIVE_RUN=1` / `ACP_RWE_OPERATOR_LIVE_RUN=1`; injected executions never seal a baseline.
+The live-baseline composition seam is now accepted main capability: `engine/src/rwe/live_baseline_coordinator.rs` orchestrates the frozen 4-cell schedule over Board B admit, the store cell fence, ProductTask/managed executor/spend journal/verifier/artifact/Draft PR/terminal/cleanup under existing owners, with unbypassable provider transport provenance and fixture-completion-vs-success semantics. It does not authorize a live run by itself. A real baseline must run the accepted production path (canonical `ReqwestTransport` external provenance), not the injected fixture; it still requires the separate one-use live-run authorization against the accepted exact head, and no claim stronger than the observed evidence-sufficiency state is allowed.
 
 
 ### First Live Baseline Exit Gate
