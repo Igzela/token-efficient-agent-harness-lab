@@ -45,7 +45,7 @@ No downstream packet starts automatically. Every packet must satisfy its named p
 
 ## Active Routing
 
-1. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `READY_FOR_EXECUTION` at the first live frozen RWE baseline (Board A and Board B complete).
+1. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `DECISION_REQUIRED` at the first live frozen RWE baseline: approved chain = transport timeout-ownership repair → compatibility calibration → versioned refreeze → new one-use live-run authorization; no direct re-run of the old frozen schedule.
 2. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
 3. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
 4. `PE7-HARNESS-EVOLUTION-EXPERIMENT-CONTROL-HARDENING-1` — `BLOCKED_PREREQUISITE`.
@@ -147,7 +147,7 @@ Stop before any of the following:
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — Minimum First RWE
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `DECISION_REQUIRED` at the first live frozen RWE baseline
 
 ### Board A — Complete
 
@@ -184,7 +184,12 @@ The live-baseline composition seam is now accepted main capability: `engine/src/
 
 Two authorized one-use live runs (`auth-live-003`/`auth-live-004`, run-live-20260807-c/-d, 2026-08-07) executed all 4 frozen cells each through the genuine delegated lifecycle and failed deterministically at the implementation stage: 8/8 planning nodes (deepseek-v4-pro) completed real provider requests (USD 0.002042876 total client-recorded), 8/8 implementation nodes (deepseek-v4-flash) aborted after ~20.2 s with `provider_response: DeepSeek response transport was malformed`, caused by the engine's hard 20-second transport read timeout (`HTTP_READ_TIMEOUT`) against a reasoning model whose implementation completion takes ~38.7 s server-side (probe-verified: HTTP 200, `finish_reason=length`, all 4000 output tokens in `reasoning_content`, `content=""`). No seal, no Draft PRs, no target writes, no budget breach; schedule unchanged; evidence frozen and independently reviewed (see `docs/CURRENT_STATUS.md`).
 
-**Next step is a planning decision, not another run:** `DECISION_REQUIRED` on (1) a bounded repair packet for the transport read timeout and (2) the frozen schedule's model/output-token pairing (refreeze or bound adjustment), before any further live attempt.
+**Next step is the approved repair chain, not another run:** the first live frozen RWE baseline stays `DECISION_REQUIRED` until, in order:
+
+1. **transport timeout-ownership repair** (Decision A, approved): persisted `ManagedCallLimits.timeout_ms` remains the provider-call timeout authority; the transport applies no hidden stricter ceiling than the authorized request timeout (current 20 s/30 s transport constants must not silently cap an authorized envelope); connect timeout stays bounded; every external request keeps a finite total timeout; body-read failures classify as `HttpError::Timeout` / `HttpError::Connection` / `HttpError::Parse` correctly so managed DeepSeek reports `provider_timeout` with effect `OutcomeUnknown` (no auto-retry). Implementer model stays `deepseek-v4-flash` (Decision B, approved).
+2. **compatibility calibration** (Decision C, approved, after repair accepted): one tiny non-scoring calibration to find the smallest `deepseek-v4-flash` output-token envelope that returns non-empty parseable implementation content; pre-registered candidates 8192 then 16384; max 2 provider requests; first viable bound wins; no task-verifier/evaluator signal used; no 4-cell run, no target PR, no default-branch write. If 16384 yields no usable content, stop `DECISION_REQUIRED`.
+3. **versioned refreeze** (Decision D, approved, after calibration): create a new versioned frozen contract without overwriting v1; keep target repo, target source commit, both task objectives, allowed paths, verifier, reviewer policy, repetitions, seeds, stop rules, statistical method, non-inferiority margins, implementer model, and task wall-time unchanged; change only compatibility-necessary `per_task_max_output_tokens`, `per_task_max_total_tokens`, dependent cell/run budget totals, dependent canonical hashes, and authorization bindings; new corpus/protocol/schedule hashes; independently reviewed; old v1 failed-attempt evidence remains valid failure evidence and refreeze is documented as compatibility repair, not score optimization.
+4. Only after 1–3 are accepted: request a new one-use, finite, new-freeze-bound, accepted-main-bound live-run authorization (never reuse auth-live-003/004 or the old schedule hash) and execute the new 4-cell First Live Frozen RWE Baseline with external canonical `ReqwestTransport` provenance, Draft-PR-only output, no default-branch writes, no auto-merge, no outcome-unknown retry, full failed-attempt accounting, and a store-owned seal. If accepted, `PE7-ARCHITECTURE-CONVERGENCE-1` advances to the next active frontier; AC implementation is not part of this round.
 
 
 ### First Live Baseline Exit Gate
