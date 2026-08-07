@@ -2141,6 +2141,21 @@ mod tests {
     }
 
     #[test]
+    fn transport_timeout_maps_to_provider_timeout_outcome_unknown_not_retryable() {
+        let error = ManagedProviderCallError::from_http(HttpError::Timeout(
+            "body read exceeded authorized budget".into(),
+        ));
+        assert_eq!(error.domain, "provider_timeout");
+        assert!(!error.retryable);
+        assert_eq!(error.effect, ManagedFailureEffect::OutcomeUnknown);
+        assert!(
+            error.message.contains("timed out"),
+            "the failure record must surface the timeout: {}",
+            error.message
+        );
+    }
+
+    #[test]
     fn aliases_and_fallback_models_are_rejected_before_send() {
         let mut req = request(DeepSeekProtocol::AnthropicCompatible);
         req.requested_model = "claude-haiku".into();

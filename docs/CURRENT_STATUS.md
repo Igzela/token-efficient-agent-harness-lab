@@ -76,11 +76,16 @@ The next live attempt requires a planning decision: (1) a bounded repair packet 
 
 ## Active Frontier
 
-`PE7-REAL-WORKLOAD-EVIDENCE-1` is `READY_FOR_EXECUTION` at the first live frozen RWE baseline.
+The first live frozen RWE baseline is `DECISION_REQUIRED`. Two authorized one-use live runs (auth-live-003/004, 2026-08-07) executed the frozen schedule through the genuine delegated lifecycle and failed deterministically at the implementation stage; root cause is the engine transport's hidden 20-second read timeout (`HTTP_READ_TIMEOUT`) against deepseek-v4-flash reasoning generation (~38.7 s server-side), with a secondary model/output-token pairing finding (all 4000 output tokens consumed by `reasoning_content`, `content=""`). Details and frozen evidence are recorded above under "First Live Baseline Attempts — Not Accepted".
 
-The next permitted work is a separately authorized one-use live run of the frozen Board A schedule against the accepted exact head, after current live-run authority is issued. The 4-cell live coordinator, provider-backed execution, target writes, and evidence closeout remain outside Board B and require that separate authority.
+The next permitted work is the approved repair chain, not another live run:
 
-The first live RWE run remains blocked until a separate current live-run authorization is issued against the accepted exact head. Branch-local heads never authorize live baseline, provider calls, or target effects. The accepted composition seam (merged #363) runs the genuine delegated lifecycle (store owners + real Draft PR creation on the exact frozen target) through the injected transport only when the operator live-run gate `ACP_RWE_ARMED_LIVE_RUN=1` is set with populated token references; the CLI live path additionally requires `ACP_RWE_OPERATOR_LIVE_RUN=1`. Without the gates the test SKIPs, so CI never creates external effects, and the fixture never seals a live baseline (injected cells are `fixture_success`, never `success`).
+1. bounded transport timeout-ownership repair (persisted `ManagedCallLimits.timeout_ms` remains the provider-call timeout authority; no hidden stricter transport ceiling; correct timeout/connection/parse classification) — engine PR;
+2. after the repair is accepted, one provider-compatibility calibration for deepseek-v4-flash implementation content (pre-registered candidate envelopes, max 2 provider requests, first viable bound wins, no evaluator/task-success signal) — not a scoring run;
+3. after calibration, a versioned refreeze that keeps every experiment field except the compatibility-necessary output-token envelope and dependent bindings — new corpus/protocol/schedule hashes, old failed attempts remain valid failure evidence;
+4. only after all three are accepted may a new one-use, finite, new-freeze-bound, accepted-main-bound live-run authorization be requested for a new 4-cell First Live Frozen RWE Baseline.
+
+AC1–AC7 remain `BLOCKED_PREREQUISITE` until an accepted pre-convergence RWE baseline exists. No branch-local head authorizes live baseline, provider calls, or target effects. The accepted composition seam (merged #363) runs the genuine delegated lifecycle through the injected transport only when the operator gate `ACP_RWE_ARMED_LIVE_RUN=1` is set with populated token references; the CLI live path additionally requires `ACP_RWE_OPERATOR_LIVE_RUN=1`. Without the gates the test SKIPs, so CI never creates external effects, and the fixture never seals a live baseline.
 
 ## Open Review Surfaces
 
@@ -136,7 +141,7 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 
 ## Confirmed Integration Gaps
 
-1. No repeated live frozen RWE baseline exists; a separate one-use live-run authorization against the accepted exact head is still required.
+1. No accepted live frozen RWE baseline exists; the first baseline is `DECISION_REQUIRED` pending the approved transport repair, compatibility calibration, and versioned refreeze chain.
 2. Architecture Convergence has not started because its baseline prerequisite is absent.
 3. No diversity, contamination, evaluator-gaming, or mutation-family control packet has been implemented for generational Harness experiments.
 4. No accepted memory/skill projection experiment exists; raw evidence remains authoritative and summaries remain non-authoritative projections.
@@ -144,13 +149,9 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 
 ## Open Work Coordination
 
-The next permitted action is the first live frozen RWE baseline of `PE7-REAL-WORKLOAD-EVIDENCE-1`, only after a separate current one-use live-run authorization is issued against the accepted exact head:
+The first live frozen RWE baseline is `DECISION_REQUIRED`. The approved chain, executed in order on accepted `main`, is: transport timeout-ownership repair → provider-compatibility calibration (after repair accepted) → versioned refreeze (after calibration) → new one-use live-run authorization. The authoritative step-by-step chain and each step's acceptance conditions are in `docs/NEXT_DECISION.md` (`PE7-REAL-WORKLOAD-EVIDENCE-1` packet); this file records only the status facts: the repair is in flight as an engine PR, calibration and refreeze have not started, and no step may begin before the previous one is accepted.
 
-- execute the frozen Board A schedule without changing corpus, protocol, reviewer policy, budgets, seeds, verifier, or thresholds;
-- reuse the accepted Board B production issue/admit/spend path and existing ProductTask, managed-provider, scheduler, store, audit, approval, output, cleanup, and terminal-evidence owners;
-- record layered success, failure class, provider/request/token/latency/cost evidence, approval/output/terminal bindings, recovery and cleanup, full failed-attempt cost, and evidence sufficiency;
-- make every missing, stale, conflicting, expired, duplicate, outcome-unknown, or over-budget state fail closed before an external effect;
-- claim no result stronger than the observed evidence-sufficiency state.
+AC1–AC7 remain `BLOCKED_PREREQUISITE`; an accepted pre-convergence baseline moves `PE7-ARCHITECTURE-CONVERGENCE-1` to the next active frontier, and AC implementation stays out of this round.
 
 ## Safety Boundary
 

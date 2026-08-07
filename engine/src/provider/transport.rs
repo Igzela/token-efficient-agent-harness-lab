@@ -1,9 +1,52 @@
 use std::sync::Mutex;
 
 pub const MAX_HTTP_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+/// Bounded connection-establishment timeout. Connect is transport-level and
+/// always bounded; it is not a response-arrival ceiling.
 const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const HTTP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
-const HTTP_OVERALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Default total request timeout used only when the caller authorizes no
+/// per-request timeout. It never overrides an authorized timeout: the
+/// per-request budget from `HttpRequest.timeout_secs` is the sole authority
+/// whenever it is present and finite.
+const HTTP_DEFAULT_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Absolute transport safety ceiling: no single external request may exceed
+/// this total wall time. It exists only to keep every request finite against
+/// absurd or non-finite caller values, and it never truncates an admitted RWE
+/// live envelope (the RWE admission layer bounds authorized timeouts to
+/// 900 s), so it is a pure safety net, not a second timeout authority.
+const HTTP_ABSOLUTE_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Resolves the effective total timeout for one request.
+///
+/// The authorized per-request budget wins whenever it is present and finite
+/// (`HttpRequest.timeout_secs`); otherwise the default applies. Either way the
+/// absolute safety ceiling bounds the result, so no request can ever wait
+/// unboundedly and no authorized budget is silently truncated below the
+/// admitted envelope.
+fn effective_total_timeout(request: &HttpRequest) -> std::time::Duration {
+    let authorized = request
+        .timeout_secs
+        .filter(|secs| secs.is_finite() && *secs > 0.0)
+        .map(std::time::Duration::from_secs_f64)
+        .unwrap_or(HTTP_DEFAULT_TOTAL_TIMEOUT);
+    authorized.min(HTTP_ABSOLUTE_TOTAL_TIMEOUT)
+}
+
+/// Classifies a body-read failure. A transport expiry while reading the body
+/// is a timeout, not a malformed response; anything else that ends the body
+/// early (truncation, reset, malformed framing) is a `Parse` — the response
+/// did not deliver its declared content. This matters for managed callers:
+/// `Timeout` maps to `provider_timeout`/`OutcomeUnknown` (no automatic retry)
+/// instead of a misleading `provider_response: transport malformed`. Connect-
+/// phase failures are classified before the body exists (see `send`), so the
+/// body-phase branch needs no connection case.
+fn classify_body_read_error(error: reqwest::Error) -> HttpError {
+    if error.is_timeout() {
+        HttpError::Timeout(error.to_string())
+    } else {
+        HttpError::Parse(format!("failed to read body: {error}"))
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HttpRequest {
@@ -115,8 +158,6 @@ impl ReqwestTransport {
             .use_rustls_tls()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(HTTP_CONNECT_TIMEOUT)
-            .read_timeout(HTTP_READ_TIMEOUT)
-            .timeout(HTTP_OVERALL_TIMEOUT)
             .build()
             .expect("failed to build reqwest client");
         Self { client }
@@ -156,9 +197,8 @@ impl HttpTransport for ReqwestTransport {
             req_builder = req_builder.body(body.clone());
         }
 
-        if let Some(secs) = request.timeout_secs {
-            req_builder = req_builder.timeout(std::time::Duration::from_secs_f64(secs));
-        }
+        let deadline = tokio::time::Instant::now() + effective_total_timeout(request);
+        req_builder = req_builder.timeout(effective_total_timeout(request));
 
         let mut response = req_builder.send().await.map_err(|e| {
             if e.is_timeout() {
@@ -182,11 +222,21 @@ impl HttpTransport for ReqwestTransport {
             return Err(HttpError::Parse("response body limit exceeded".to_string()));
         }
         let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| HttpError::Parse(format!("failed to read body: {e}")))?
-        {
+        // reqwest's per-request timeout ends when response headers arrive, so
+        // the authorized total must also bound the body read itself. The
+        // absolute deadline computed once at request start keeps the whole
+        // request inside the authorized budget and fails closed with a timeout
+        // even if the server stalls mid-body.
+        loop {
+            let chunk = match tokio::time::timeout_at(deadline, response.chunk()).await {
+                Err(_) => {
+                    return Err(HttpError::Timeout(
+                        "response body read exceeded authorized total timeout".to_string(),
+                    ))
+                }
+                Ok(chunk_result) => chunk_result.map_err(classify_body_read_error)?,
+            };
+            let Some(chunk) = chunk else { break };
             if body.len().saturating_add(chunk.len()) > MAX_HTTP_RESPONSE_BYTES {
                 return Err(HttpError::Parse("response body limit exceeded".to_string()));
             }
@@ -261,6 +311,45 @@ mod tests {
             let mut request = [0_u8; 4_096];
             let _ = stream.read(&mut request);
             stream.write_all(&response).unwrap();
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    /// Serves one response after the given delay has elapsed since the request
+    /// arrived, to prove the client honors an authorized total timeout rather
+    /// than a fixed arrival/read cap.
+    fn serve_once_after(
+        delay: std::time::Duration,
+        response: Vec<u8>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4_096];
+            let _ = stream.read(&mut request);
+            std::thread::sleep(delay);
+            stream.write_all(&response).unwrap();
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    /// Serves headers and a partial body immediately, then stalls, to prove
+    /// that a mid-body stall is governed by the authorized total timeout and
+    /// classified as a timeout, not a malformed response.
+    fn serve_headers_then_stall(
+        headers: Vec<u8>,
+        stall: std::time::Duration,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4_096];
+            let _ = stream.read(&mut request);
+            stream.write_all(&headers).unwrap();
+            stream.flush().unwrap();
+            std::thread::sleep(stall);
         });
         (format!("http://{address}"), handle)
     }
@@ -427,6 +516,143 @@ mod tests {
         server.join().unwrap();
         assert!(
             matches!(error, HttpError::Parse(message) if message.contains("failed to read body"))
+        );
+    }
+
+    #[test]
+    fn effective_total_timeout_respects_authorized_budget_and_ceiling() {
+        let req = |secs: Option<f64>| HttpRequest {
+            url: "http://example.com".to_string(),
+            method: "GET".to_string(),
+            headers: Vec::new(),
+            body: None,
+            timeout_secs: secs,
+        };
+        let s = std::time::Duration::from_secs;
+        // An admitted managed envelope (up to 900 s) is never truncated by the
+        // transport: the authorized budget is the sole timeout authority and
+        // there is no hidden 20 s/30 s arrival cap.
+        assert_eq!(effective_total_timeout(&req(Some(900.0))), s(900));
+        assert_eq!(effective_total_timeout(&req(Some(21.0))), s(21));
+        assert_eq!(
+            effective_total_timeout(&req(Some(0.5))),
+            s(0) + std::time::Duration::from_millis(500)
+        );
+        // No authorized budget means the finite default applies.
+        assert_eq!(effective_total_timeout(&req(None)), s(30));
+        // Non-finite or non-positive values fail closed to the default rather
+        // than panicking or waiting unboundedly.
+        assert_eq!(effective_total_timeout(&req(Some(f64::NAN))), s(30));
+        assert_eq!(effective_total_timeout(&req(Some(f64::INFINITY))), s(30));
+        assert_eq!(effective_total_timeout(&req(Some(-5.0))), s(30));
+        assert_eq!(effective_total_timeout(&req(Some(0.0))), s(30));
+        // The absolute safety ceiling keeps even absurd values finite.
+        assert_eq!(effective_total_timeout(&req(Some(1e9))), s(3600));
+    }
+
+    /// Regression proof for the removed hidden 20 s read cap: a response whose
+    /// arrival takes longer than the legacy cap but within the authorized
+    /// budget must succeed. With the old client-level read timeout this test
+    /// failed with a transport error at ~20 s.
+    #[tokio::test]
+    async fn authorized_timeout_longer_than_legacy_read_cap_succeeds() {
+        let (url, server) = serve_once_after(
+            std::time::Duration::from_secs(21),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_vec(),
+        );
+        let mut req = request(url);
+        req.timeout_secs = Some(25.0);
+        let start = std::time::Instant::now();
+        let result = ReqwestTransport::new().send(&req).await;
+        server.join().unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(result.unwrap().body, b"ok");
+        assert!(
+            elapsed < std::time::Duration::from_secs(24),
+            "response arrival took {elapsed:?}; authorized 25 s budget must govern"
+        );
+    }
+
+    /// A mid-body stall is governed by the authorized total timeout and must
+    /// surface as a timeout (provider_timeout/OutcomeUnknown downstream), not
+    /// as a malformed-response parse error.
+    #[tokio::test]
+    async fn body_stall_exceeds_authorized_timeout_is_classified_as_timeout() {
+        let headers =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\npartial".to_vec();
+        let (url, server) = serve_headers_then_stall(headers, std::time::Duration::from_secs(10));
+        let mut req = request(url);
+        req.timeout_secs = Some(3.0);
+        let start = std::time::Instant::now();
+        let error = ReqwestTransport::new().send(&req).await.unwrap_err();
+        let elapsed = start.elapsed();
+        server.join().unwrap();
+        assert!(
+            matches!(error, HttpError::Timeout(_)),
+            "expected Timeout, got {error:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(6),
+            "total timeout must fail closed within the authorized budget, took {elapsed:?}, error: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_refused_is_classified_as_connection() {
+        // System-proxy discovery is disabled so an environment forward proxy
+        // cannot answer the refused loopback port on our behalf.
+        let client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .no_proxy()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let transport = ReqwestTransport::with_client(client);
+        let req = HttpRequest {
+            url: "http://127.0.0.1:1/".to_string(),
+            method: "GET".to_string(),
+            headers: Vec::new(),
+            body: None,
+            timeout_secs: Some(2.0),
+        };
+        let error = transport.send(&req).await.unwrap_err();
+        assert!(
+            matches!(error, HttpError::Connection(_)),
+            "expected Connection, got {error:?}"
+        );
+    }
+
+    /// The connect phase stays bounded even when no response ever arrives: a
+    /// dropped-SYN destination must yield a timeout/connection error within a
+    /// short window, never a parse error or an unbounded wait. The test client
+    /// disables system-proxy discovery so an environment forward proxy cannot
+    /// answer the blackhole address on our behalf.
+    #[tokio::test]
+    async fn connect_timeout_stays_bounded() {
+        let client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .no_proxy()
+            .connect_timeout(std::time::Duration::from_millis(500))
+            .build()
+            .unwrap();
+        let transport = ReqwestTransport::with_client(client);
+        let req = HttpRequest {
+            url: "http://10.255.255.1:80/".to_string(),
+            method: "GET".to_string(),
+            headers: Vec::new(),
+            body: None,
+            timeout_secs: Some(60.0),
+        };
+        let start = std::time::Instant::now();
+        let error = transport.send(&req).await.unwrap_err();
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(error, HttpError::Connection(_) | HttpError::Timeout(_)),
+            "expected a bounded Connection/Timeout error, got {error:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "connect must stay bounded, took {elapsed:?}"
         );
     }
 
