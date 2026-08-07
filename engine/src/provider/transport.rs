@@ -41,9 +41,68 @@ impl std::fmt::Display for HttpError {
     }
 }
 
+/// Provenance of the HTTP transport that serves managed provider requests.
+///
+/// It is a property of the transport object actually executing the request, not
+/// a caller-supplied flag: the production `ReqwestTransport` declares
+/// `External`; `MockTransport` and other test-injected transports declare
+/// `Injected`. The durable provider journal records this per request, and a
+/// live baseline seal is impossible while any claim is not `external`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderTransportProvenance {
+    External,
+    Injected,
+}
+
+impl ProviderTransportProvenance {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProviderTransportProvenance::External => "external",
+            ProviderTransportProvenance::Injected => "injected",
+        }
+    }
+}
+
 #[async_trait::async_trait]
-pub trait HttpTransport: Send + Sync {
+pub trait HttpTransport: Send + Sync + std::any::Any {
     async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError>;
+}
+
+/// Canonical provenance minting for a serving transport object.
+///
+/// `External` is minted only when the concrete transport is the production
+/// `ReqwestTransport` boundary. Transport objects cannot self-declare
+/// provenance — the trait has no provenance method — so a custom or injected
+/// transport that mimics the interface can never mint `External`. Anything
+/// else (mock transports, wrapper boundaries, any future implementation)
+/// fails closed to `Injected`. The production authority is therefore the
+/// concrete canonical type, checked by the provider owner, not a flag any
+/// implementor can set.
+pub fn production_transport_provenance(
+    transport: &std::sync::Arc<dyn HttpTransport>,
+) -> ProviderTransportProvenance {
+    let any = std::sync::Arc::clone(transport) as std::sync::Arc<dyn std::any::Any + Send + Sync>;
+    if any.downcast::<ReqwestTransport>().is_ok() {
+        ProviderTransportProvenance::External
+    } else {
+        ProviderTransportProvenance::Injected
+    }
+}
+
+/// Injectable seam boundary. The coordinator wraps any test-injected transport
+/// in this boundary before it reaches the provider, so the fake seam can never
+/// be the canonical `ReqwestTransport` concrete type regardless of what the
+/// caller passed in: every request served through a fake seam is `Injected`
+/// by construction, and no fake transport can upgrade itself to a live
+/// external baseline.
+pub struct InjectedTransportBoundary(pub std::sync::Arc<dyn HttpTransport>);
+
+#[async_trait::async_trait]
+impl HttpTransport for InjectedTransportBoundary {
+    async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+        self.0.send(request).await
+    }
 }
 
 pub struct ReqwestTransport {
@@ -437,5 +496,56 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(transport.send(&req)).unwrap();
         assert_eq!(result.status, 200);
+    }
+
+    /// A custom transport implementation has no provenance surface at all:
+    /// the trait offers no self-declaration method, so it cannot impersonate
+    /// the production boundary. Only the concrete ReqwestTransport type mints
+    /// External; the injectable seam boundary stays Injected even when it
+    /// wraps a real ReqwestTransport (fail-closed by construction).
+    struct SpoofTransport;
+
+    #[async_trait::async_trait]
+    impl HttpTransport for SpoofTransport {
+        async fn send(&self, _request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            Ok(HttpResponse {
+                status: 200,
+                body: b"{}".to_vec(),
+            })
+        }
+    }
+
+    #[test]
+    fn production_provenance_mints_external_only_for_reqwest_concrete_type() {
+        let reqwest: std::sync::Arc<dyn HttpTransport> =
+            std::sync::Arc::new(ReqwestTransport::new());
+        assert_eq!(
+            production_transport_provenance(&reqwest),
+            ProviderTransportProvenance::External,
+            "the canonical production boundary is the only External source"
+        );
+        let mock: std::sync::Arc<dyn HttpTransport> =
+            std::sync::Arc::new(MockTransport::new(vec![]));
+        assert_eq!(
+            production_transport_provenance(&mock),
+            ProviderTransportProvenance::Injected
+        );
+        let spoof: std::sync::Arc<dyn HttpTransport> = std::sync::Arc::new(SpoofTransport);
+        assert_eq!(
+            production_transport_provenance(&spoof),
+            ProviderTransportProvenance::Injected,
+            "a custom transport cannot self-declare External"
+        );
+        // Strongest spoof attempt: smuggle the real production boundary through
+        // the injectable seam. The seam wrapper is not the canonical concrete
+        // type, so the minted provenance is Injected.
+        let smuggled: std::sync::Arc<dyn HttpTransport> = std::sync::Arc::new(
+            InjectedTransportBoundary(std::sync::Arc::new(ReqwestTransport::new())),
+        );
+        assert_eq!(
+            production_transport_provenance(&smuggled),
+            ProviderTransportProvenance::Injected,
+            "the fake seam stays Injected even when it wraps ReqwestTransport"
+        );
     }
 }

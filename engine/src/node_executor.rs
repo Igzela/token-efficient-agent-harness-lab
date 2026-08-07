@@ -1187,11 +1187,14 @@ impl CommandNodeExecutor {
     }
 
     fn is_command_allowed(&self, command: &str) -> bool {
-        let first_token = command.split_whitespace().next().unwrap_or("");
-        if first_token.contains('/') {
+        let Ok((_env, argv)) = Self::parse_command_env_and_argv(command) else {
+            return false;
+        };
+        let binary = argv.first().map(String::as_str).unwrap_or("");
+        if binary.contains('/') {
             return false;
         }
-        let binary = first_token.rsplit('/').next().unwrap_or(first_token);
+        let binary = binary.rsplit('/').next().unwrap_or(binary);
         self.allowed_binaries.iter().any(|a| a == binary)
             || self.allowed_commands.iter().any(|a| a == binary)
     }
@@ -1207,8 +1210,42 @@ impl CommandNodeExecutor {
         false
     }
 
-    fn parse_argv(command: &str) -> Vec<String> {
-        command.split_whitespace().map(|s| s.to_string()).collect()
+    /// Parse a command string into optional leading ENV=value pairs and argv.
+    ///
+    /// Verification/RWE shapes use the single strict product verifier parser.
+    /// Non-verification commands remain simple whitespace argv (no env prefix).
+    #[allow(clippy::type_complexity)]
+    fn parse_command_env_and_argv(
+        command: &str,
+    ) -> Result<(Vec<(String, String)>, Vec<String>), String> {
+        let trimmed = command.trim();
+        if trimmed.is_empty() {
+            return Err("empty command".into());
+        }
+        // Prefer the shared strict verifier parser when the command matches an
+        // admitted verification shape (legacy docs smoke, PYTHONPATH+pytest, etc.).
+        if let Ok(parsed) =
+            crate::product_golden_path::parse_strict_product_verification_command(trimmed)
+        {
+            return Ok(parsed);
+        }
+        // Non-verification commands: no ENV= prefixes, simple argv only.
+        if trimmed.split_whitespace().any(|t| {
+            t.contains('=')
+                && !t.starts_with('-')
+                && t.split_once('=').is_some_and(|(k, _)| {
+                    !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                })
+        }) {
+            return Err(
+                "command env assignments only admitted for product verification shapes".into(),
+            );
+        }
+        let argv: Vec<String> = trimmed.split_whitespace().map(str::to_string).collect();
+        if argv.is_empty() {
+            return Err("command has no executable".into());
+        }
+        Ok((Vec::new(), argv))
     }
 
     fn workspace_cwd(input: &NodeExecutionInput) -> Result<PathBuf, String> {
@@ -1344,7 +1381,26 @@ impl NodeExecutor for CommandNodeExecutor {
             };
         }
 
-        let argv = Self::parse_argv(command);
+        let (command_env, argv) = match Self::parse_command_env_and_argv(command) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                return NodeExecutionOutput {
+                    status: "failed".to_string(),
+                    executor_type: "command".to_string(),
+                    output: None,
+                    error_domain: Some("command_not_allowed".to_string()),
+                    error_message: Some(e),
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                    latency_ms: Some(start.elapsed().as_millis() as i64),
+                    process_outcome: Some(ProcessOutcome::unavailable(
+                        "command rejected before process spawn",
+                    )),
+                    resolved_model: None,
+                };
+            }
+        };
         if argv.is_empty() {
             return NodeExecutionOutput {
                 status: "failed".to_string(),
@@ -1394,6 +1450,9 @@ impl NodeExecutor for CommandNodeExecutor {
             "PATH",
             std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string()),
         );
+        for (k, v) in &command_env {
+            cmd.env(k, v);
+        }
         for (k, v) in &self.env_vars {
             cmd.env(k, v);
         }
@@ -7754,5 +7813,93 @@ mod tests {
         let ctx: serde_json::Value =
             serde_json::from_str(p["context_summary"].as_str().unwrap()).unwrap();
         assert_eq!(ctx["current_round"], 0, "context must be unchanged");
+    }
+
+    #[test]
+    fn parse_command_env_admits_frozen_rwe_pytest_shape() {
+        let (env, argv) = CommandNodeExecutor::parse_command_env_and_argv(
+            "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q",
+        )
+        .unwrap();
+        assert_eq!(
+            env,
+            vec![("PYTHONPATH".to_string(), "apps/api/src".to_string())]
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "python3".to_string(),
+                "-m".to_string(),
+                "pytest".to_string(),
+                "apps/api/tests/".to_string(),
+                "-q".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_command_env_rejects_arbitrary_env_and_weaken_flags() {
+        assert!(CommandNodeExecutor::parse_command_env_and_argv(
+            "FOO=bar python3 -m pytest apps/api/tests/ -q"
+        )
+        .is_err());
+        assert!(CommandNodeExecutor::parse_command_env_and_argv(
+            "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ --no-header"
+        )
+        .is_err());
+        assert!(CommandNodeExecutor::parse_command_env_and_argv(
+            "PYTHONPATH=/abs/path python3 -m pytest apps/api/tests/ -q"
+        )
+        .is_err());
+        assert!(CommandNodeExecutor::parse_command_env_and_argv(
+            "PYTHONPATH=apps/api/src python3 -m pytest ../../escape -q"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn command_executor_applies_pythonpath_via_env_not_shell() {
+        // The executor allowlist only admits the frozen RWE verifier shape
+        // `PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q`.
+        // The host python may lack pytest (minimal CI images before the CI
+        // lane installs it); skip honestly in that case.
+        let pytest_available = std::process::Command::new("python3")
+            .args(["-c", "import pytest"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !pytest_available {
+            eprintln!("SKIP: frozen pytest verifier shape requires host python3 with pytest");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("apps/api/src");
+        let tests = root.path().join("apps/api/tests");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&tests).unwrap();
+        std::fs::write(src.join("__init__.py"), b"").unwrap();
+        std::fs::write(
+            tests.join("test_env_exec.py"),
+            b"def test_ok():\n    assert True\n",
+        )
+        .unwrap();
+        let root_canon = std::fs::canonicalize(root.path()).unwrap();
+        let executor = CommandNodeExecutor::default().with_timeout(30_000);
+        let out = executor.execute_node(&NodeExecutionInput {
+            node_id: "ver-1".into(),
+            task_type: "command".into(),
+            run_id: "run-ver".into(),
+            workflow_id: "wf-ver".into(),
+            node_metadata: json!({
+                "command": "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q",
+                "workspace_path": root_canon.to_string_lossy(),
+                "workspace_root": root_canon.to_string_lossy(),
+            }),
+        });
+        assert_eq!(
+            out.status, "completed",
+            "verifier env execution failed: {:?} {:?}",
+            out.error_domain, out.error_message
+        );
     }
 }

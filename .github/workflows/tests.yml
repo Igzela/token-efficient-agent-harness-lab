@@ -275,6 +275,12 @@ jobs:
           key: ${{ runner.os }}-rust-deps-2026-07-10-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-rust-deps-2026-07-10-
+      - name: Install pytest for the frozen RWE verifier shape
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --user pytest
+          python3 -m pytest --version
       - name: Run cargo test
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         # HTTP integration tests use process-wide environment gates; keep the
@@ -388,6 +394,12 @@ jobs:
           key: ${{ runner.os }}-rust-deps-2026-07-10-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-rust-deps-2026-07-10-
+      - name: Install pytest for the frozen RWE verifier shape
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --user pytest
+          python3 -m pytest --version
       - name: Run PostgreSQL integration tests
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: bash scripts/ci/run_postgres_tests.sh

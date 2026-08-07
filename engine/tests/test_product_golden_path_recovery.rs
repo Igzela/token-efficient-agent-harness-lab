@@ -2548,14 +2548,16 @@ fn product_verification_rejects_writable_or_absolute_path_commands_at_intake() {
                 format!("tee {}", protected.display()),
                 "read-only admitted binary",
             ),
-            ("python3 mutate.py".to_string(), "read-only admitted binary"),
+            // python3 is admitted only as `python3 -m pytest <relative…>` (or legacy
+            // docs smoke for managed DeepSeek); arbitrary scripts fail on shape.
+            ("python3 mutate.py".to_string(), "python3 -m pytest"),
             (
                 "cat /etc/passwd".to_string(),
                 "relative to the bound workspace",
             ),
             (
                 "test -f ../outside".to_string(),
-                "relative to the bound workspace",
+                "forbidden shell metacharacters",
             ),
         ]
         .into_iter()

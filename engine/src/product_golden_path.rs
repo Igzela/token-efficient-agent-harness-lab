@@ -37,11 +37,134 @@ pub const MAX_ALLOWED_PATHS: usize = 64;
 pub const MAX_VERIFICATION_COMMANDS: usize = 8;
 pub const MAX_VERIFICATION_COMMAND_BYTES: usize = 512;
 pub const PRODUCT_VERIFICATION_READ_ONLY_COMMANDS: &[&str] = &[
-    "echo", "cat", "ls", "head", "tail", "grep", "wc", "true", "false", "test",
+    "echo", "cat", "ls", "head", "tail", "grep", "wc", "true", "false", "test", "python3",
 ];
-const MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_COMMAND: &str =
+/// Legacy accepted smoke verifier (still valid).
+pub const MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND: &str =
     "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md";
-const MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS: u64 = 5_000;
+/// Maximum wall-clock for a managed-DeepSeek deterministic verifier node.
+/// Raised from the docs-smoke 5s bound so frozen RWE pytest cells can run under
+/// the same owner without a second verification system.
+const MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS: u64 = 900_000;
+
+/// Strict shared parser for product/RWE verification commands.
+///
+/// Admitted shapes:
+/// - legacy docs smoke (exact constant)
+/// - `PYTHONPATH=<relative> python3 -m pytest <relative paths…> [-q]`
+/// - other admitted read-only binaries via existing argv rules (no env prefix)
+///
+/// Returns (optional env pairs, argv). Env is limited to PYTHONPATH.
+#[allow(clippy::type_complexity)]
+pub fn parse_strict_product_verification_command(
+    command: &str,
+) -> Result<(Vec<(String, String)>, Vec<String>), String> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err("verification command is empty".into());
+    }
+    if command.starts_with('/') || command.starts_with('.') {
+        return Err("verification command must not be an absolute or relative binary path".into());
+    }
+    if command.contains("..")
+        || command.contains(';')
+        || command.contains('|')
+        || command.contains('&')
+        || command.contains('`')
+        || command.contains('$')
+        || command.contains('\n')
+    {
+        return Err("verification command contains forbidden shell metacharacters".into());
+    }
+    if command == MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND {
+        return Ok((
+            Vec::new(),
+            command.split_whitespace().map(str::to_string).collect(),
+        ));
+    }
+
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    let mut env = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let token = tokens[i];
+        if let Some((key, value)) = token.split_once('=') {
+            if key.is_empty()
+                || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                || key.starts_with('-')
+            {
+                break;
+            }
+            if key != "PYTHONPATH" {
+                return Err(format!("verification env assignment not admitted: {key}"));
+            }
+            if value.is_empty() || value.contains("..") || Path::new(value).is_absolute() {
+                return Err("PYTHONPATH must be a non-empty repository-relative path".into());
+            }
+            env.push((key.to_string(), value.to_string()));
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    let argv: Vec<String> = tokens[i..].iter().map(|s| (*s).to_string()).collect();
+    if argv.is_empty() {
+        return Err("verification command has no executable".into());
+    }
+    if !PRODUCT_VERIFICATION_READ_ONLY_COMMANDS.contains(&argv[0].as_str()) {
+        return Err(format!(
+            "verification command must use a read-only admitted binary: {}",
+            argv[0]
+        ));
+    }
+    if argv[0] == "python3" || !env.is_empty() {
+        if argv.len() < 4 || argv[0] != "python3" || argv[1] != "-m" || argv[2] != "pytest" {
+            return Err(
+                "python3 verification must be `python3 -m pytest <relative paths…>`".into(),
+            );
+        }
+        for arg in argv.iter().skip(3) {
+            if arg.starts_with('-') {
+                if arg != "-q" {
+                    return Err(format!(
+                        "pytest flag not admitted for frozen verifier execution: {arg}"
+                    ));
+                }
+                continue;
+            }
+            if Path::new(arg).is_absolute()
+                || Path::new(arg)
+                    .components()
+                    .any(|c| matches!(c, Component::ParentDir))
+            {
+                return Err("pytest paths must be repository-relative".into());
+            }
+        }
+    } else {
+        let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        validate_product_verification_command_argv(&argv_refs)?;
+    }
+    for argument in argv.iter().skip(1) {
+        if Path::new(argument).is_absolute()
+            || Path::new(argument)
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+            || Path::new(argument).components().any(|component| {
+                matches!(
+                    component,
+                    Component::Normal(name)
+                        if matches!(name.to_str(), Some(".git" | "target" | "node_modules"))
+                )
+            })
+            || (argument.starts_with('-') && argument.contains('/'))
+        {
+            return Err(
+                "verification command arguments must remain relative to the bound workspace".into(),
+            );
+        }
+    }
+    Ok((env, argv))
+}
 
 fn grep_short_option_recurses(argument: &str) -> bool {
     let mut flags = argument.trim_start_matches('-').chars().peekable();
@@ -164,30 +287,57 @@ fn validate_product_verification_command_argv(argv: &[&str]) -> Result<(), Strin
     Ok(())
 }
 
+/// Resolve the deterministic verifier command for a managed-DeepSeek product graph.
+///
+/// Accepts exactly one intake-validated verification command whose binary is in
+/// the admitted read-only set (including legacy docs smoke and frozen RWE pytest
+/// shapes). Caller text never bypasses argv admission.
 fn exact_managed_deepseek_verifier_command(
     verification_commands: &Value,
-) -> Result<&'static str, String> {
+) -> Result<String, String> {
     let commands = verification_commands.as_array().ok_or_else(|| {
-        "managed DeepSeek verifier is not the exact bounded docs check".to_string()
+        "managed DeepSeek requires exactly one intake-validated verification command".to_string()
     })?;
     let command = commands
         .first()
         .filter(|_| commands.len() == 1)
         .ok_or_else(|| {
-            "managed DeepSeek verifier is not the exact bounded docs check".to_string()
+            "managed DeepSeek requires exactly one intake-validated verification command"
+                .to_string()
         })?;
-    if command.get("command").and_then(Value::as_str)
-        != Some(MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_COMMAND)
-        || command
-            .get("timeout_ms")
-            .and_then(Value::as_u64)
-            .is_none_or(|timeout| {
-                timeout == 0 || timeout > MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS
-            })
-    {
-        return Err("managed DeepSeek verifier is not the exact bounded docs check".to_string());
+    let command_text = command
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "managed DeepSeek verification command missing".to_string())?;
+    let timeout = command
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "managed DeepSeek verification timeout_ms missing".to_string())?;
+    if timeout == 0 || timeout > MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS {
+        return Err(format!(
+            "managed DeepSeek verification timeout_ms must be 1..{MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS}"
+        ));
     }
-    Ok(MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_COMMAND)
+    // One strict parser: legacy docs smoke always; frozen RWE pytest only when
+    // the command is the exact frozen RWE verifier (not arbitrary pytest).
+    let (env, argv) = parse_strict_product_verification_command(command_text)?;
+    let _ = env;
+    if command_text == MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND {
+        return Ok(command_text.to_string());
+    }
+    if crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_verifier_command(command_text)
+        && argv.first().map(String::as_str) == Some("python3")
+        && argv.get(1).map(String::as_str) == Some("-m")
+        && argv.get(2).map(String::as_str) == Some("pytest")
+    {
+        return Ok(command_text.to_string());
+    }
+    Err(
+        "managed DeepSeek verifier must be the legacy docs smoke or exact frozen RWE pytest"
+            .to_string(),
+    )
 }
 
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
@@ -687,51 +837,30 @@ pub fn validate_intake(
                 "verification command must be 1..{MAX_VERIFICATION_COMMAND_BYTES} bytes"
             ));
         }
-        // Reject absolute executable paths and shell metacharacters that would admit arbitrary binaries.
-        if command.starts_with('/') || command.starts_with('.') {
-            return Err(
-                "verification command must not be an absolute or relative binary path".to_string(),
-            );
-        }
-        let argv = command.split_whitespace().collect::<Vec<_>>();
-        if !PRODUCT_VERIFICATION_READ_ONLY_COMMANDS.contains(&argv[0]) {
-            return Err(format!(
-                "verification command must use a read-only admitted binary: {}",
-                argv[0]
-            ));
-        }
-        validate_product_verification_command_argv(&argv)?;
-        if argv.iter().skip(1).any(|argument| {
-            Path::new(argument).is_absolute()
-                || Path::new(argument)
-                    .components()
-                    .any(|component| matches!(component, Component::ParentDir))
-                || Path::new(argument).components().any(|component| {
-                    matches!(
-                        component,
-                        Component::Normal(name)
-                            if matches!(name.to_str(), Some(".git" | "target" | "node_modules"))
-                    )
-                })
-                || (argument.starts_with('-') && argument.contains('/'))
-        }) {
-            return Err(
-                "verification command arguments must remain relative to the bound workspace"
-                    .to_string(),
-            );
-        }
-        if command.contains("..")
-            || command.contains(';')
-            || command.contains('|')
-            || command.contains('&')
-            || command.contains('`')
-            || command.contains('$')
-            || command.contains('\n')
-        {
-            return Err("verification command contains forbidden shell metacharacters".to_string());
-        }
+        // One strict parser for admitted verification shapes. Pytest expansion is
+        // only accepted for exact frozen RWE authorization (checked after risk_class).
+        let (_env, argv) = parse_strict_product_verification_command(command)?;
         if cmd.timeout_ms == 0 || cmd.timeout_ms > 3_600_000 {
             return Err("verification command timeout_ms must be 1..3600000".to_string());
+        }
+        let is_pytest_shape = argv.first().map(String::as_str) == Some("python3")
+            && argv.get(1).map(String::as_str) == Some("-m")
+            && argv.get(2).map(String::as_str) == Some("pytest");
+        if is_pytest_shape {
+            // Scope pytest only to exact frozen RWE — never arbitrary ProductTask policy.
+            let risk = request.risk_class.trim();
+            if !crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_product_intake(
+                risk,
+                request.source_revision.trim(),
+                &request.allowed_paths,
+                command,
+                cmd.timeout_ms,
+            ) {
+                return Err(
+                    "python3 -m pytest verification is admitted only for exact frozen RWE authorization"
+                        .into(),
+                );
+            }
         }
         verification_commands.push(ProductVerificationCommand {
             command: command.to_string(),
@@ -1574,13 +1703,29 @@ pub fn compile_product_executable_graph(
             } else {
                 let mut stage_binding = binding.clone().unwrap_or_else(|| json!({}));
                 stage_binding["node_id"] = json!(node_id);
+                // Prefer a concrete allowed path for prompts (workspace-bound, not caller text).
+                let prompt_path = allowed_paths
+                    .as_array()
+                    .and_then(|a| a.first())
+                    .and_then(Value::as_str)
+                    .unwrap_or("docs/USER_GUIDE.md");
+                // The docs Golden Path planner gate admits only the legacy
+                // clarify intent for docs/USER_GUIDE.md; frozen RWE cells admit
+                // bounded_product_task inside the frozen union. Emit the intent
+                // that matches the scope so a real model obeying the prompt is
+                // accepted by the executor validator.
+                let planning_intent = if prompt_path == "docs/USER_GUIDE.md" {
+                    "clarify_doctor_read_only_health_check"
+                } else {
+                    "bounded_product_task"
+                };
                 let prompt = match *stage {
                     "planning" => format!(
-                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_deepseek_plan.v1\",\"status\":\"planned\",\"path\":\"docs/USER_GUIDE.md\",\"intent\":\"clarify_doctor_read_only_health_check\"}}.",
+                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_deepseek_plan.v1\",\"status\":\"planned\",\"path\":\"{prompt_path}\",\"intent\":\"{planning_intent}\"}}. Stay within allowed_paths.",
                         objective_preview
                     ),
                     "implementation" => format!(
-                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_workspace_action.v1\",\"action\":\"replace_text\",\"path\":\"docs/USER_GUIDE.md\",\"old_text\":\"...\",\"new_text\":\"...\"}}. Use only the exact allowed path and make one bounded replacement.",
+                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_workspace_action.v1\",\"action\":\"replace_text\",\"path\":\"{prompt_path}\",\"old_text\":\"...\",\"new_text\":\"...\"}}. Use only an exact allowed path and make one bounded replacement.",
                         objective_preview
                     ),
                     "review" => format!(
@@ -1739,12 +1884,49 @@ mod tests {
         assert_eq!(graph["nodes"][2]["task_type"], "command");
         assert_eq!(
             graph["nodes"][2]["command"],
-            "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md"
+            MANAGED_DEEPSEEK_LEGACY_DOCS_VERIFIER_COMMAND
         );
         assert_eq!(graph["nodes"][3]["managed_deepseek"]["role"], "reviewer");
         assert_eq!(
             node["managed_executor_identity"]["planner_model"],
             "deepseek-v4-pro"
+        );
+        // Regression: the docs Golden Path planning prompt must keep the legacy
+        // clarify intent so a real model obeying the prompt passes the executor
+        // planner gate (bounded_product_task is only valid inside the frozen
+        // RWE union; docs/USER_GUIDE.md is not in it).
+        let planning_prompt = graph["nodes"][0]["managed_deepseek"]["prompt"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            planning_prompt.contains("clarify_doctor_read_only_health_check"),
+            "docs GP planning prompt lost the legacy intent: {planning_prompt}"
+        );
+        assert!(
+            !planning_prompt.contains("bounded_product_task"),
+            "docs GP planning prompt must not request the RWE intent: {planning_prompt}"
+        );
+        // And a non-docs allowed path requests the bounded RWE intent while
+        // keeping the admitted docs verifier shape.
+        let mut rwe_task = managed_deepseek_graph_task(json!([{
+            "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+            "timeout_ms": 5_000
+        }]));
+        rwe_task["workspace_binding"]["allowed_paths"] =
+            json!(["apps/api/tests/test_alters_persist.py"]);
+        let rwe_graph = compile_product_executable_graph(
+            &rwe_task,
+            "2026-07-30T00:00:00Z",
+            &crate::read_only_planner::WorkflowPlanIds::for_sequence(1),
+            "managed_deepseek",
+        )
+        .unwrap();
+        let rwe_prompt = rwe_graph["nodes"][0]["managed_deepseek"]["prompt"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            rwe_prompt.contains("bounded_product_task"),
+            "non-docs planning prompt must request the bounded RWE intent: {rwe_prompt}"
         );
     }
 
@@ -1778,7 +1960,7 @@ mod tests {
                 "excessive_timeout",
                 Some(json!([{
                     "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
-                    "timeout_ms": 5_001
+                    "timeout_ms": 900_001
                 }])),
             ),
             (
@@ -1810,10 +1992,39 @@ mod tests {
             )
             .expect_err(name);
             assert!(
-                error.contains("exact bounded docs check"),
+                error.contains("exact bounded docs check")
+                    || error.contains("exact frozen RWE pytest")
+                    || error.contains("legacy docs smoke")
+                    || error.contains("intake-validated verification")
+                    || error.contains("verification command")
+                    || error.contains("timeout_ms")
+                    || error.contains("not admitted")
+                    || error.contains("python3"),
                 "{name}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn managed_deepseek_accepts_frozen_rwe_pytest_verifier_shape() {
+        let task = managed_deepseek_graph_task(json!([{
+            "command": "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q",
+            "timeout_ms": 900_000
+        }]));
+        let mut task = task;
+        task["workspace_binding"]["allowed_paths"] =
+            json!(["apps/api/src", "apps/api/tests", "README.md"]);
+        let graph = compile_product_executable_graph(
+            &task,
+            "2026-07-30T00:00:00Z",
+            &crate::read_only_planner::WorkflowPlanIds::for_sequence(2),
+            "managed_deepseek",
+        )
+        .unwrap();
+        assert_eq!(
+            graph["nodes"][2]["command"],
+            "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q"
+        );
     }
 
     #[test]

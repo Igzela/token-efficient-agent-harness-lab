@@ -14,6 +14,9 @@ pub const OPERATOR_CORPUS_RELATIVE_ROOT: &str = "rwe/corpora/rwe-minimum-first-c
 pub const OPERATOR_TARGET_REPO: &str = "Igzela/alters-lab";
 pub const OPERATOR_ADMITTED_EXECUTOR: &str = "managed_deepseek";
 pub const OPERATOR_ADMITTED_MODEL: &str = "deepseek-v4-flash";
+/// Planner/reviewer model admitted by the managed_deepseek delegated route
+/// (deepseek-v4-pro) for frozen RWE cells; implementer uses OPERATOR_ADMITTED_MODEL.
+pub const OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL: &str = "deepseek-v4-pro";
 /// The managed_deepseek executor is an in-process adapter compiled into the
 /// engine binary (no external codex/cli subprocess). The corpus-level
 /// `admitted_codex_version` field therefore binds the engine crate version:
@@ -151,11 +154,11 @@ mod tests {
     // (scripts/gen_rwe_corpus.py, canonical form). These lock the accepted-main
     // artifacts to their published hashes.
     const EXPECTED_CORPUS_SHA: &str =
-        "71daa3512f00a82b7203c6cfb5381f5db9661c46b778e83286dd52cb37a85abb";
+        "81a65fc93fc6b381ce127a7b9b62b0afaa233ec366ed78a5db43f0b53ab2eccc";
     const EXPECTED_PROTOCOL_SHA: &str =
-        "da29f2b9107022a0626be840448f348585d5155cba63f9cfb96ebbbde81446de";
+        "15efbc60d5edf21ae7c79537f76bfb0b9be6030a57f3b83201e51df6e2e9adb9";
     const EXPECTED_SCHEDULE_SHA: &str =
-        "f1b6c6fdbca9daca06cf8eee155b809dc0e7f7de49cf741e680e2cf7757cf75c";
+        "2500bb77d15bc1d9c9a1c2db612ff602abfa9e203747159eafe035fc075dc765";
 
     fn frozen_protocol() -> crate::rwe::economic_protocol::FrozenEvidenceDocument {
         let raw =

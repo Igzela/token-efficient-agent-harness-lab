@@ -263,19 +263,53 @@ impl DelegationContract {
         if self.delegation_id.trim().is_empty() || self.executions != 1 {
             return Err("delegation must contain one execution and an id".into());
         }
-        if self.repositories != ["Igzela/alters-lab"]
-            || self.task_classes != ["documentation"]
-            || self.allowed_paths != ["docs/USER_GUIDE.md"]
-        {
-            return Err("delegation scope is outside the bounded documentation policy".into());
+        let docs_scope = self.repositories == ["Igzela/alters-lab"]
+            && self.task_classes == ["documentation"]
+            && self.allowed_paths == ["docs/USER_GUIDE.md"]
+            && self.max_changed_files == 1
+            && self.max_changed_lines == 100
+            && (self.max_cost_usd_per_run - 0.50).abs() <= f64::EPSILON
+            && (self.max_total_cost_usd - 0.50).abs() <= f64::EPSILON;
+        let rwe_scope = {
+            let union = crate::rwe::frozen_rwe_bindings::frozen_rwe_union_allowed_paths()
+                .unwrap_or_default();
+            let (max_files, max_lines) =
+                crate::rwe::frozen_rwe_bindings::frozen_rwe_max_patch_limits().unwrap_or((0, 0));
+            // One-execution RWE cell: monetary ceilings equal frozen schedule cell max_cost.
+            let cell_cost = crate::rwe::operator_corpus::freeze_current_operator_contract_set()
+                .ok()
+                .and_then(|frozen| {
+                    frozen
+                        .schedule
+                        .body
+                        .get("cells")
+                        .and_then(Value::as_array)
+                        .and_then(|cells| cells.first())
+                        .and_then(|cell| {
+                            crate::rwe::frozen_rwe_bindings::frozen_schedule_cell_max_cost(cell)
+                                .ok()
+                                .flatten()
+                        })
+                });
+            let cost_ok = cell_cost.is_some_and(|c| {
+                (self.max_cost_usd_per_run - c).abs() <= f64::EPSILON
+                    && (self.max_total_cost_usd - c).abs() <= f64::EPSILON
+            });
+            self.repositories == ["Igzela/alters-lab"]
+                && self.task_classes == ["rwe"]
+                && !union.is_empty()
+                && self.allowed_paths == union
+                && self.max_changed_files == max_files
+                && self.max_changed_lines == max_lines
+                && cost_ok
+        };
+        if !docs_scope && !rwe_scope {
+            return Err(
+                "delegation scope is outside the bounded documentation or exact frozen RWE policy"
+                    .into(),
+            );
         }
-        if self.max_changed_files != 1 || self.max_changed_lines != 100 {
-            return Err("delegation change limits are not the bounded policy".into());
-        }
-        if self.protocol != "openai_compatible"
-            || (self.max_cost_usd_per_run - 0.50).abs() > f64::EPSILON
-            || (self.max_total_cost_usd - 0.50).abs() > f64::EPSILON
-        {
+        if self.protocol != "openai_compatible" {
             return Err("delegation spend policy is invalid".into());
         }
         if self.models
@@ -373,11 +407,28 @@ pub fn derive_final_execution_manifest(
             return Err(format!("execution identity {key} is required"));
         }
     }
-    if execution.get("target_repository").and_then(Value::as_str) != Some("Igzela/alters-lab")
-        || execution.get("mutable_paths") != Some(&json!(["docs/USER_GUIDE.md"]))
-        || execution.get("verifier").and_then(Value::as_str)
-            != Some("deterministic_docs_health_check_v1")
-    {
+    let mutable = execution
+        .get("mutable_paths")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let verifier = execution
+        .get("verifier")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let docs_exec = execution.get("target_repository").and_then(Value::as_str)
+        == Some("Igzela/alters-lab")
+        && mutable == ["docs/USER_GUIDE.md"]
+        && verifier == crate::rwe::frozen_rwe_bindings::DOCS_GP_VERIFIER_IDENTITY;
+    let rwe_exec = execution.get("target_repository").and_then(Value::as_str)
+        == Some("Igzela/alters-lab")
+        && crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_allowed_paths(&mutable)
+        && verifier == crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY;
+    if !docs_exec && !rwe_exec {
         return Err("execution identity is outside the delegation".into());
     }
     let (proposal_repository, proposal_main_sha, proposal_paths, proposal_cap, proposal_verifier) =
@@ -439,7 +490,7 @@ pub fn derive_final_execution_manifest(
         "target": {
             "repository": "Igzela/alters-lab",
             "main_sha": execution.get("target_main_sha"),
-            "mutable_paths": ["docs/USER_GUIDE.md"]
+            "mutable_paths": execution.get("mutable_paths")
         },
         "models": delegation.models.clone(),
         "protocol": delegation.protocol.clone(),
@@ -461,10 +512,29 @@ pub fn derive_final_execution_manifest(
             "max_total_cost_usd": delegation.max_total_cost_usd,
             "max_provider_requests": 3,
             "max_retries": 0,
-            "max_input_tokens": 8000,
-            "max_output_tokens": 4000,
-            "max_cumulative_tokens": 24000,
-            "timeout_ms": 30000
+            // Docs GP classic envelope vs exact frozen RWE schedule cell ceilings.
+            "max_input_tokens": if execution.get("verifier").and_then(Value::as_str)
+                == Some(crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY)
+            {
+                12_000
+            } else {
+                8_000
+            },
+            "max_output_tokens": 4_000,
+            "max_cumulative_tokens": if execution.get("verifier").and_then(Value::as_str)
+                == Some(crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY)
+            {
+                16_000
+            } else {
+                24_000
+            },
+            "timeout_ms": if execution.get("verifier").and_then(Value::as_str)
+                == Some(crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY)
+            {
+                900_000
+            } else {
+                30_000
+            }
         },
         "output": delegation.output,
         "recovery": {
@@ -582,7 +652,15 @@ pub fn confirm_delegated_artifact_output(
         && provider_execution
             .get("cumulative_tokens")
             .and_then(Value::as_u64)
-            .is_some_and(|tokens| tokens <= 24_000)
+            .is_some_and(|tokens| {
+                // Docs envelope 24k; frozen RWE cell envelope uses schedule max_total_tokens.
+                let ceiling = if delegation.task_classes == ["rwe"] {
+                    16_000
+                } else {
+                    24_000
+                };
+                tokens <= ceiling
+            })
         && provider_execution
             .get("realized_cost_usd")
             .and_then(Value::as_f64)
@@ -601,9 +679,10 @@ pub fn confirm_delegated_artifact_output(
         .and_then(Value::as_array)
         .ok_or("artifact changed_files is required")?;
     if changed_files.len() as u64 > delegation.max_changed_files
-        || changed_files
-            .iter()
-            .any(|path| path.as_str() != Some("docs/USER_GUIDE.md"))
+        || changed_files.iter().any(|path| {
+            let p = path.as_str().unwrap_or("");
+            !crate::rwe::frozen_rwe_bindings::path_under_allowed_paths(p, &delegation.allowed_paths)
+        })
     {
         return Err("artifact path or file-count policy failed".into());
     }
@@ -700,56 +779,103 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
         "usage_parser_version": crate::provider::managed_deepseek::DEEPSEEK_USAGE_PARSER_VERSION,
         "price_profile": crate::provider::managed_deepseek::DeepSeekPriceProfile::default()
     });
+    let mutable = manifest
+        .pointer("/target/mutable_paths")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let verifier = manifest.pointer("/verifier").and_then(Value::as_str);
+    let max_files = manifest
+        .pointer("/limits/max_changed_files")
+        .and_then(Value::as_u64);
+    let max_lines = manifest
+        .pointer("/limits/max_changed_lines")
+        .and_then(Value::as_u64);
+    let max_cost = manifest
+        .pointer("/limits/max_cost_usd")
+        .and_then(Value::as_f64);
+    let max_total_cost = manifest
+        .pointer("/limits/max_total_cost_usd")
+        .and_then(Value::as_f64);
+    let docs_policy = mutable == ["docs/USER_GUIDE.md"]
+        && verifier == Some(crate::rwe::frozen_rwe_bindings::DOCS_GP_VERIFIER_IDENTITY)
+        && max_files == Some(1)
+        && max_lines == Some(100)
+        && max_cost == Some(0.50)
+        && max_total_cost == Some(0.50);
+    let rwe_cell_cost = crate::rwe::operator_corpus::freeze_current_operator_contract_set()
+        .ok()
+        .and_then(|frozen| {
+            frozen
+                .schedule
+                .body
+                .get("cells")
+                .and_then(Value::as_array)
+                .and_then(|cells| cells.first())
+                .and_then(|cell| {
+                    crate::rwe::frozen_rwe_bindings::frozen_schedule_cell_max_cost(cell)
+                        .ok()
+                        .flatten()
+                })
+        });
+    let rwe_policy = {
+        let (f, l) =
+            crate::rwe::frozen_rwe_bindings::frozen_rwe_max_patch_limits().unwrap_or((0, 0));
+        crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_allowed_paths(&mutable)
+            && verifier == Some(crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY)
+            && max_files == Some(f)
+            && max_lines == Some(l)
+            && rwe_cell_cost.is_some()
+            && max_cost == rwe_cell_cost
+            && max_total_cost == rwe_cell_cost
+    };
     let policy_matches = manifest
         .pointer("/target/repository")
         .and_then(Value::as_str)
         == Some("Igzela/alters-lab")
-        && manifest.pointer("/target/mutable_paths") == Some(&json!(["docs/USER_GUIDE.md"]))
+        && (docs_policy || rwe_policy)
         && manifest.get("protocol").and_then(Value::as_str) == Some("openai_compatible")
         && manifest.get("models") == Some(&expected_models)
         && manifest.get("provider") == Some(&expected_provider)
-        && manifest.pointer("/verifier").and_then(Value::as_str)
-            == Some("deterministic_docs_health_check_v1")
-        && manifest
-            .pointer("/limits/max_changed_files")
-            .and_then(Value::as_u64)
-            == Some(1)
-        && manifest
-            .pointer("/limits/max_changed_lines")
-            .and_then(Value::as_u64)
-            == Some(100)
-        && manifest
-            .pointer("/limits/max_cost_usd")
-            .and_then(Value::as_f64)
-            == Some(0.50)
-        && manifest
-            .pointer("/limits/max_total_cost_usd")
-            .and_then(Value::as_f64)
-            == Some(0.50)
-        && manifest
-            .pointer("/limits/max_provider_requests")
-            .and_then(Value::as_u64)
-            == Some(3)
-        && manifest
-            .pointer("/limits/max_retries")
-            .and_then(Value::as_u64)
-            == Some(0)
-        && manifest
-            .pointer("/limits/max_input_tokens")
-            .and_then(Value::as_u64)
-            == Some(8_000)
-        && manifest
-            .pointer("/limits/max_output_tokens")
-            .and_then(Value::as_u64)
-            == Some(4_000)
-        && manifest
-            .pointer("/limits/max_cumulative_tokens")
-            .and_then(Value::as_u64)
-            == Some(24_000)
-        && manifest
-            .pointer("/limits/timeout_ms")
-            .and_then(Value::as_u64)
-            == Some(30_000)
+        && {
+            // Docs GP uses the classic 3/8k/4k/24k/30s envelope. Frozen RWE cells use
+            // the exact schedule cell ceilings (3 requests, 12k/4k/16k tokens, 900s).
+            let req = manifest
+                .pointer("/limits/max_provider_requests")
+                .and_then(Value::as_u64);
+            let retries = manifest
+                .pointer("/limits/max_retries")
+                .and_then(Value::as_u64);
+            let input = manifest
+                .pointer("/limits/max_input_tokens")
+                .and_then(Value::as_u64);
+            let output = manifest
+                .pointer("/limits/max_output_tokens")
+                .and_then(Value::as_u64);
+            let cum = manifest
+                .pointer("/limits/max_cumulative_tokens")
+                .and_then(Value::as_u64);
+            let timeout = manifest
+                .pointer("/limits/timeout_ms")
+                .and_then(Value::as_u64);
+            let docs_limits = req == Some(3)
+                && retries == Some(0)
+                && input == Some(8_000)
+                && output == Some(4_000)
+                && cum == Some(24_000)
+                && timeout == Some(30_000);
+            let rwe_limits = req == Some(3)
+                && retries == Some(0)
+                && input == Some(12_000)
+                && output == Some(4_000)
+                && cum == Some(16_000)
+                && timeout == Some(900_000);
+            (docs_policy && docs_limits) || (rwe_policy && rwe_limits)
+        }
         && manifest.get("output") == Some(&expected_output);
     if !policy_matches {
         return Err("final manifest is outside the persisted delegation policy".into());
@@ -830,14 +956,37 @@ fn delegated_execution_contract(
                 .ok_or("delegated manifest usage parser is missing")?
                 .into(),
             requested_model: requested_model.into(),
+            // The exact frozen cell envelope from the validated manifest (docs GP
+            // 8k/4k/24k/30s/0.50; frozen RWE cells 12k/4k/16k/900s/0.20). Never
+            // invent or relax the provider ceiling outside the persisted manifest.
             limits: crate::provider::managed_deepseek::ManagedCallLimits {
-                max_requests: 3,
-                max_retries: 0,
-                max_input_tokens: 8_000,
-                max_output_tokens: 4_000,
-                max_cumulative_tokens: 24_000,
-                timeout_ms: 30_000,
-                max_cost_usd: Some(0.50),
+                max_requests: manifest
+                    .pointer("/limits/max_provider_requests")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3),
+                max_retries: manifest
+                    .pointer("/limits/max_retries")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                max_input_tokens: manifest
+                    .pointer("/limits/max_input_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(8_000),
+                max_output_tokens: manifest
+                    .pointer("/limits/max_output_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(4_000),
+                max_cumulative_tokens: manifest
+                    .pointer("/limits/max_cumulative_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(24_000),
+                timeout_ms: manifest
+                    .pointer("/limits/timeout_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(30_000),
+                max_cost_usd: manifest
+                    .pointer("/limits/max_cost_usd")
+                    .and_then(Value::as_f64),
             },
             price_profile,
         },
@@ -8954,7 +9103,7 @@ fn validate_delegated_workspace_authority(
 /// rows on every check; the provider layer never accepts caller assertions as
 /// authority and never persists a second lease or budget.
 impl LocalProductStore {
-    fn apply_managed_workspace_action(
+    pub(crate) fn apply_managed_workspace_action(
         &self,
         binding: &crate::provider::managed_deepseek::ManagedCallBinding,
         node_metadata: &Value,
@@ -9106,8 +9255,11 @@ impl LocalProductStore {
         }
         let allowed = owner_allowed
             .as_array()
-            .ok_or("workspace action allowed_paths are missing")?;
-        if allowed.len() != 1 || allowed[0].as_str() != Some(path) {
+            .ok_or("workspace action allowed_paths are missing")?
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        if !crate::rwe::frozen_rwe_bindings::path_under_allowed_paths(path, &allowed) {
             return Err("workspace action path is outside the exact allowed path".to_string());
         }
         let workspace = Path::new(owner_workspace);
@@ -9170,7 +9322,12 @@ impl LocalProductStore {
                 return Err("workspace action contains a sensitive literal".to_string());
             }
         }
-        if changed_line_budget > 100 || after_text.len() > 1_048_576 {
+        // Docs GP: 100 lines. Frozen RWE: schedule patch_max_lines (max of frozen tasks).
+        let line_ceiling = crate::rwe::frozen_rwe_bindings::frozen_rwe_max_patch_limits()
+            .map(|(_, lines)| lines)
+            .unwrap_or(100)
+            .max(100);
+        if changed_line_budget as u64 > line_ceiling || after_text.len() > 1_048_576 {
             return Err("workspace action exceeds the delegated change bounds".to_string());
         }
         file.rewind().map_err(|error| error.to_string())?;
@@ -9622,6 +9779,7 @@ fn claim_provider_journal_entry(
         "role": request.role,
         "protocol": request.protocol,
         "requested_model": request.requested_model,
+        "transport_provenance": request.transport_provenance.as_str(),
         "request_sha256": request_sha256,
         "status": "sending",
         "scheduler_lease": {
@@ -9662,6 +9820,13 @@ fn reconcile_provider_journal_entry(
         .ok_or("durable provider request claim is missing")?;
     if entry.get("status").and_then(Value::as_str) != Some("sending") {
         return Err("durable provider request claim is already reconciled".into());
+    }
+    // Provenance is immutable after claim: a replay with a different transport
+    // cannot upgrade an injected claim into an external one.
+    if entry.get("transport_provenance").and_then(Value::as_str)
+        != Some(request.transport_provenance.as_str())
+    {
+        return Err("durable provider request transport provenance is mismatched".into());
     }
     let object = entry
         .as_object_mut()
@@ -9724,7 +9889,6 @@ impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductS
     ) -> Result<(), String> {
         self.claim_delegated_provider_request(request)
     }
-
     fn reconcile_provider_request(
         &self,
         request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,
@@ -9733,8 +9897,37 @@ impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductS
     ) -> Result<(), String> {
         self.reconcile_delegated_provider_request(request, response, effect)
     }
-
     fn stage_context(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+        node_metadata: &Value,
+    ) -> Result<Option<Value>, String> {
+        self.store_managed_stage_context(binding, node_metadata)
+    }
+    fn current_authority(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    ) -> Result<crate::provider::managed_deepseek::PersistedAuthoritySnapshot, String> {
+        self.store_current_managed_authority(binding)
+    }
+
+    fn apply_workspace_action(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+        node_metadata: &Value,
+        model_output: &str,
+    ) -> Result<Value, String> {
+        if self
+            .current_delegated_provider_authority(binding)?
+            .is_none()
+        {
+            return Err("managed workspace action requires a current delegated authority".into());
+        }
+        self.apply_managed_workspace_action(binding, node_metadata, model_output)
+    }
+}
+impl LocalProductStore {
+    pub(crate) fn store_managed_stage_context(
         &self,
         binding: &crate::provider::managed_deepseek::ManagedCallBinding,
         node_metadata: &Value,
@@ -9755,29 +9948,63 @@ impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductS
         let task = self
             .get_product_task(&binding.product_task_id)?
             .ok_or("managed stage context ProductTask is missing")?;
-        if task.pointer("/workspace_binding/allowed_paths") != Some(&json!(["docs/USER_GUIDE.md"]))
-        {
+        let allowed_paths = task
+            .pointer("/workspace_binding/allowed_paths")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let docs_paths = allowed_paths == ["docs/USER_GUIDE.md"];
+        let rwe_paths =
+            crate::rwe::frozen_rwe_bindings::is_exact_frozen_rwe_allowed_paths(&allowed_paths);
+        if !docs_paths && !rwe_paths {
             return Err("managed stage context allowed path binding changed".into());
         }
         let workspace_path = task
             .pointer("/workspace_binding/workspace_path")
             .and_then(Value::as_str)
             .ok_or("managed stage context workspace path is missing")?;
-        let file_path = Path::new(workspace_path).join("docs/USER_GUIDE.md");
-        let mut file = open_absolute_path_without_symlinks(&file_path, libc::O_RDONLY)
-            .map_err(|_| "managed stage context allowed file is unavailable")?;
-        let metadata = file
-            .metadata()
-            .map_err(|_| "managed stage context allowed file metadata is unavailable")?;
-        if !metadata.is_file() || metadata.len() > 64 * 1024 {
-            return Err("managed stage context allowed file exceeds its bounded input".into());
-        }
-        let mut content = String::new();
-        file.read_to_string(&mut content)
-            .map_err(|_| "managed stage context allowed file is not UTF-8")?;
-        if crate::provider::redaction::contains_sensitive_patterns(&content) {
-            return Err("managed stage context secret scan failed before provider request".into());
-        }
+        // Docs GP stages the single USER_GUIDE file; frozen RWE stages a bounded path index
+        // plus first allowed file content when present (never invents secrets).
+        let stage_path = if docs_paths {
+            "docs/USER_GUIDE.md".to_string()
+        } else {
+            allowed_paths
+                .first()
+                .cloned()
+                .ok_or("managed stage context frozen RWE paths empty")?
+        };
+        let file_path = Path::new(workspace_path).join(&stage_path);
+        let (content, staged_path) = if file_path.is_file() {
+            let mut file = open_absolute_path_without_symlinks(&file_path, libc::O_RDONLY)
+                .map_err(|_| "managed stage context allowed file is unavailable")?;
+            let metadata = file
+                .metadata()
+                .map_err(|_| "managed stage context allowed file metadata is unavailable")?;
+            if !metadata.is_file() || metadata.len() > 64 * 1024 {
+                return Err("managed stage context allowed file exceeds its bounded input".into());
+            }
+            let mut content = String::new();
+            file.read_to_string(&mut content)
+                .map_err(|_| "managed stage context allowed file is not UTF-8")?;
+            if crate::provider::redaction::contains_sensitive_patterns(&content) {
+                return Err(
+                    "managed stage context secret scan failed before provider request".into(),
+                );
+            }
+            (content, stage_path)
+        } else if rwe_paths {
+            // Directory prefixes are valid RWE allowed paths; stage a bounded path list only.
+            (
+                format!("frozen_rwe_allowed_paths:{}", allowed_paths.join(",")),
+                stage_path,
+            )
+        } else {
+            return Err("managed stage context allowed file is unavailable".into());
+        };
         let run_id = task
             .get("run_id")
             .and_then(Value::as_str)
@@ -9832,28 +10059,13 @@ impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductS
             "planner_receipt": planner_receipt,
             "deterministic_verification": verification,
             "allowed_file": {
-                "path": "docs/USER_GUIDE.md",
+                "path": staged_path,
                 "content": content
-            }
+            },
+            "allowed_paths": allowed_paths
         }))))
     }
-
-    fn apply_workspace_action(
-        &self,
-        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
-        node_metadata: &Value,
-        model_output: &str,
-    ) -> Result<Value, String> {
-        if self
-            .current_delegated_provider_authority(binding)?
-            .is_none()
-        {
-            return Err("managed workspace action requires a current delegated authority".into());
-        }
-        self.apply_managed_workspace_action(binding, node_metadata, model_output)
-    }
-
-    fn current_authority(
+    pub(crate) fn store_current_managed_authority(
         &self,
         binding: &crate::provider::managed_deepseek::ManagedCallBinding,
     ) -> Result<crate::provider::managed_deepseek::PersistedAuthoritySnapshot, String> {
@@ -12572,6 +12784,22 @@ mod tests {
             })
             .unwrap();
         store.claim_delegated_provider_request(&request).unwrap();
+        // The durable claim records the request's execution-path transport
+        // provenance (for_role defaults to the fail-closed injected value).
+        let claimed_journal: String = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation.delegation_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(claimed_journal.contains("\"transport_provenance\":\"injected\""));
+        assert!(claimed_journal.contains("\"status\":\"sending\""));
         assert!(store
             .complete_delegated_attempt(
                 &delegation.delegation_id,
@@ -12613,6 +12841,10 @@ mod tests {
             .unwrap();
         assert!(!journal.contains("DO_NOT_PERSIST_PROVIDER_PROMPT_CONTENT"));
         assert!(journal.contains("\"status\":\"outcome_unknown\""));
+        // Provenance survives restart and reconcile unchanged; an injected
+        // claim can never be upgraded to external.
+        assert!(journal.contains("\"transport_provenance\":\"injected\""));
+        assert!(!journal.contains("\"transport_provenance\":\"external\""));
         let replay = restarted
             .admit_delegated_attempt(
                 &delegated_test_principal("delegated-activator"),
@@ -12663,6 +12895,97 @@ mod tests {
             &manifest,
         );
         assert!(retry.is_err(), "outcome_unknown must not permit a retry");
+    }
+
+    #[test]
+    fn provider_journal_claim_records_injected_provenance_and_reconcile_preserves_it() {
+        use crate::provider::managed_deepseek::{
+            DeepSeekProtocol, ManagedCallBinding, ManagedCallLimits, ManagedModelRole,
+            ManagedProviderCallRequest,
+        };
+        use crate::provider::transport::ProviderTransportProvenance;
+        let binding = ManagedCallBinding {
+            product_task_id: "pt-journal".into(),
+            workflow_id: "wf-journal".into(),
+            node_id: "planning".into(),
+            attempt_id: "attempt-journal".into(),
+            spend_authorization_id: "spend-journal".into(),
+            attempt_lease_id: "lease-journal".into(),
+        };
+        let mut request = ManagedProviderCallRequest::for_role(
+            ManagedModelRole::Planner,
+            DeepSeekProtocol::OpenAiCompatible,
+            binding,
+        );
+        request.limits = ManagedCallLimits {
+            max_requests: 3,
+            max_retries: 0,
+            max_input_tokens: 8_000,
+            max_output_tokens: 4_000,
+            max_cumulative_tokens: 24_000,
+            timeout_ms: 30_000,
+            max_cost_usd: None,
+        };
+        // for_role defaults to the fail-closed injected provenance; only the
+        // executor stamping from the actual transport can set external.
+        assert_eq!(request.transport_provenance.as_str(), "injected");
+        let scheduler = ManagedSchedulerLeaseAuthority {
+            run_id: "run-journal".into(),
+            attempt_count: 1,
+            lease_owner_token_sha256: "lease-token-sha".into(),
+            allowed_paths: json!([]),
+            workspace_path: "/redacted/workspace".into(),
+        };
+        let claimed =
+            claim_provider_journal_entry("[]", &request, &scheduler, "2026-07-25T12:00:00Z")
+                .unwrap();
+        let parsed: Value = serde_json::from_str(&claimed).unwrap();
+        assert_eq!(
+            parsed[0]["schema_version"],
+            "managed_provider_request_claim.v1"
+        );
+        assert_eq!(parsed[0]["transport_provenance"], "injected");
+        assert_eq!(parsed[0]["status"], "sending");
+        // Reconcile preserves provenance and never upgrades it.
+        let reconciled = reconcile_provider_journal_entry(
+            &claimed,
+            &request,
+            None,
+            crate::provider::managed_deepseek::ManagedFailureEffect::PreSend,
+            "2026-07-25T12:00:00Z",
+        )
+        .unwrap();
+        let parsed2: Value = serde_json::from_str(&reconciled).unwrap();
+        assert_eq!(parsed2[0]["transport_provenance"], "injected");
+        assert_eq!(parsed2[0]["status"], "failed_before_send");
+        // A request that forges external provenance cannot reconcile or claim
+        // the same node: the claim hash and node identity bind the provenance.
+        let mut forged = request.clone();
+        forged.transport_provenance = ProviderTransportProvenance::External;
+        assert!(reconcile_provider_journal_entry(
+            &reconciled,
+            &forged,
+            None,
+            crate::provider::managed_deepseek::ManagedFailureEffect::PreSend,
+            "2026-07-25T12:00:00Z",
+        )
+        .is_err());
+        assert!(claim_provider_journal_entry(
+            &reconciled,
+            &forged,
+            &scheduler,
+            "2026-07-25T12:00:00Z"
+        )
+        .is_err());
+        // An external-provenance claim on a fresh node records external.
+        let mut external = request.clone();
+        external.binding.node_id = "review".into();
+        external.transport_provenance = ProviderTransportProvenance::External;
+        let external_claimed =
+            claim_provider_journal_entry("[]", &external, &scheduler, "2026-07-25T12:00:00Z")
+                .unwrap();
+        let parsed3: Value = serde_json::from_str(&external_claimed).unwrap();
+        assert_eq!(parsed3[0]["transport_provenance"], "external");
     }
 
     #[test]
@@ -12861,6 +13184,37 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("path"));
+
+        // Strict containment: the parent of the allowed file entry, pseudo
+        // children of it, and prefix-collision names are never admitted.
+        for escaped_path in [
+            "docs",
+            "docs/USER_GUIDE.md/child",
+            "README.md.bak",
+            "README.md/child",
+            "docs/USER_GUIDE.md/../../outside",
+        ] {
+            let escaping = json!({
+                "artifact_sha256": "a".repeat(64),
+                "changed_files": [escaped_path],
+                "changed_lines": 1
+            });
+            let err = confirm_delegated_artifact_output(
+                &delegation,
+                &manifest,
+                &escaping,
+                &verification,
+                &review,
+                &provider_execution,
+                "6".repeat(40).as_str(),
+                0.01,
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("path"),
+                "{escaped_path} must fail closed: {err}"
+            );
+        }
 
         let artifact = json!({
             "artifact_sha256": "a".repeat(64),

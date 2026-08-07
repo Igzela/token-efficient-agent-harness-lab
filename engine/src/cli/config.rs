@@ -733,9 +733,10 @@ fn env_required_f64(key: &str) -> Result<f64, String> {
 
 /// Process environments are shared by all lib tests. Keep CLI profile tests
 /// serialized across modules so a temporary admission fixture cannot race a
-/// concurrent configuration test.
-#[cfg(test)]
-pub(crate) fn cli_env_test_lock() -> &'static std::sync::Mutex<()> {
+/// concurrent configuration test. Also used by the PostgreSQL parity suite
+/// and the RWE armed live-run fixture.
+#[doc(hidden)]
+pub fn cli_env_test_lock() -> &'static std::sync::Mutex<()> {
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
