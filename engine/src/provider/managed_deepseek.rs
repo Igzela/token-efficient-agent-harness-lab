@@ -2002,7 +2002,7 @@ fn collect_openai_stream_tool_calls(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::transport::{HttpError, HttpRequest, MockTransport};
+    use crate::provider::transport::{HttpError, HttpRequest, MockTransport, ReqwestTransport};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
 
@@ -2165,9 +2165,15 @@ mod tests {
             .contains("admitted DeepSeek identity"));
     }
 
+    // Holding the canonical env test lock across mock awaits is deliberate:
+    // every env-touching test in this module serializes on it.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn both_protocols_send_exact_route_and_redact_credential_boundary() {
         let _lock = key_lock().lock().await;
+        let _env = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let secret = fixture_secret();
         std::env::set_var(DEEPSEEK_CREDENTIAL_REFERENCE, &secret);
         for (protocol, role, model) in [
@@ -2229,9 +2235,15 @@ mod tests {
         std::env::remove_var(DEEPSEEK_CREDENTIAL_REFERENCE);
     }
 
+    // Holding the canonical env test lock across mock awaits is deliberate:
+    // every env-touching test in this module serializes on it.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn missing_credential_fails_closed_before_transport() {
         let _lock = key_lock().lock().await;
+        let _env = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::remove_var(DEEPSEEK_CREDENTIAL_REFERENCE);
         let transport = Arc::new(CapturingTransport {
             request: Mutex::new(None),
@@ -2257,9 +2269,15 @@ mod tests {
         assert!(transport.request.lock().unwrap().is_none());
     }
 
+    // Holding the canonical env test lock across mock awaits is deliberate:
+    // every env-touching test in this module serializes on it.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn missing_identity_usage_and_truncated_stream_fail_closed() {
         let _lock = key_lock().lock().await;
+        let _env = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let secret = fixture_secret();
         std::env::set_var(DEEPSEEK_CREDENTIAL_REFERENCE, &secret);
         let mut req = request(DeepSeekProtocol::OpenAiCompatible);
@@ -2277,6 +2295,186 @@ mod tests {
         let error = provider.invoke(&req).await.unwrap_err();
         assert_eq!(error.domain, "provider_response");
         std::env::remove_var(DEEPSEEK_CREDENTIAL_REFERENCE);
+    }
+
+    const RWE_COMPATIBILITY_CALIBRATION_GATE: &str = "RWE_COMPATIBILITY_CALIBRATION";
+    const RWE_CALIBRATION_CANDIDATE_ENVELOPES: [u64; 2] = [8_192, 16_384];
+    const RWE_CALIBRATION_MAX_PROVIDER_REQUESTS: usize = 2;
+    const RWE_CALIBRATION_AUTHORIZED_TIMEOUT_MS: u64 = 900_000;
+    const RWE_CALIBRATION_MAX_COST_USD: f64 = 0.05;
+    const RWE_CALIBRATION_PROMPT: &str = "\
+You are implementing one small, self-contained change in a minimal Python codebase. \
+This is a synthetic compatibility probe; it is not a real task, and no verifier or \
+evaluator runs against your output.
+
+Task: add a pure function `parse_key_value(text: str) -> dict[str, str]` to \
+`config_parser.py` that parses lines of the form `key = value` into a dict, ignoring \
+blank lines and lines whose first non-whitespace character is '#'. Surrounding double \
+quotes around a value are stripped, and a quoted value may itself contain '='.
+
+Constraints:
+- Only create or edit `config_parser.py` and `test_config_parser.py`.
+- No external dependencies; the function must be pure.
+- Add a regression test in `test_config_parser.py` covering blank lines, comment \
+lines, quoted values containing '=', and lines with a missing key.
+
+Verification command (not executed here): `PYTHONPATH=. python3 -m pytest \
+test_config_parser.py -q`.
+
+Reply with the complete contents of both files, each in its own fenced code block, \
+followed by a one-sentence summary of the change.";
+
+    fn calibration_binding() -> ManagedCallBinding {
+        ManagedCallBinding {
+            product_task_id: "ptask-rwe-calibration-001".into(),
+            workflow_id: "wf-rwe-calibration-001".into(),
+            node_id: "node-rwe-calibration-impl".into(),
+            attempt_id: "attempt-rwe-calibration-001".into(),
+            spend_authorization_id: "decision-c-pre-registered-envelopes".into(),
+            attempt_lease_id: "lease-rwe-calibration-001".into(),
+        }
+    }
+
+    /// Decision C compatibility calibration: find the smallest pre-registered
+    /// `deepseek-v4-flash` output-token envelope that returns non-empty parseable
+    /// implementation content. Operator-gated (mirrors `ACP_RWE_ARMED_LIVE_RUN`);
+    /// CI never sets the gate, so normal runs SKIP and create no external effect.
+    /// Pre-registered candidates are 8192 then 16384; at most 2 provider requests;
+    /// the first viable bound wins. Records only aggregate redacted fields (never
+    /// the prompt, output text, or credential) and fails closed when 16384 yields
+    /// no usable content (the Decision C `DECISION_REQUIRED` stop).
+    // Holding the canonical env test lock across mock awaits is deliberate:
+    // every env-touching test in this module serializes on it.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn rwe_implementer_output_envelope_calibration_is_operator_gated_and_records_redacted_evidence(
+    ) {
+        if !std::env::var(RWE_COMPATIBILITY_CALIBRATION_GATE).is_ok_and(|value| value == "1") {
+            eprintln!(
+                "SKIP: RWE compatibility calibration requires {RWE_COMPATIBILITY_CALIBRATION_GATE}=1 with DEEPSEEK_API_KEY set (Decision C operator run)"
+            );
+            return;
+        }
+        let _lock = key_lock().lock().await;
+        let _env = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if std::env::var(DEEPSEEK_CREDENTIAL_REFERENCE).is_err() {
+            panic!(
+                "armed RWE compatibility calibration requires DEEPSEEK_API_KEY in the environment (operator-held credential)"
+            );
+        }
+        let transport: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::new());
+        let boundary = CredentialBoundary::new("env").unwrap();
+        let config = config_for(DeepSeekProtocol::OpenAiCompatible, "deepseek-v4-flash");
+        let started_at = chrono::Utc::now().to_rfc3339();
+        let mut attempts: Vec<Value> = Vec::new();
+        let mut requests_sent = 0usize;
+        let mut viable_envelope: Option<u64> = None;
+        for envelope in RWE_CALIBRATION_CANDIDATE_ENVELOPES {
+            if requests_sent >= RWE_CALIBRATION_MAX_PROVIDER_REQUESTS {
+                break;
+            }
+            let mut request = ManagedProviderCallRequest::for_role(
+                ManagedModelRole::Implementer,
+                DeepSeekProtocol::OpenAiCompatible,
+                calibration_binding(),
+            );
+            request.messages = vec![ManagedMessage::text("user", RWE_CALIBRATION_PROMPT)];
+            request.max_output_tokens = envelope;
+            request.limits = ManagedCallLimits {
+                max_requests: RWE_CALIBRATION_MAX_PROVIDER_REQUESTS as u64,
+                max_retries: 0,
+                max_input_tokens: 8_192,
+                max_output_tokens: envelope,
+                max_cumulative_tokens: 32_768,
+                timeout_ms: RWE_CALIBRATION_AUTHORIZED_TIMEOUT_MS,
+                max_cost_usd: Some(RWE_CALIBRATION_MAX_COST_USD),
+            };
+            request.transport_provenance = production_transport_provenance(&transport);
+            request
+                .validate()
+                .expect("calibration request must be a valid bounded managed envelope");
+            let started = tokio::time::Instant::now();
+            let outcome =
+                invoke_openai_wire(&config, &boundary, &credential(), &transport, &request).await;
+            let latency_ms = started.elapsed().as_millis() as u64;
+            requests_sent += 1;
+            let mut entry = json!({
+                "candidate_output_envelope": envelope,
+                "request_ordinal": requests_sent,
+                "latency_ms": latency_ms,
+                "authorized_timeout_ms": RWE_CALIBRATION_AUTHORIZED_TIMEOUT_MS,
+            });
+            match outcome {
+                Ok(response) => {
+                    let content_tokens = response
+                        .usage
+                        .output_tokens
+                        .saturating_sub(response.usage.reasoning_output_tokens);
+                    let content_nonempty = !response.output_text.trim().is_empty();
+                    entry["finish_reason"] = response.stop_reason.clone().into();
+                    entry["reasoning_output_tokens"] =
+                        response.usage.reasoning_output_tokens.into();
+                    entry["output_tokens"] = response.usage.output_tokens.into();
+                    entry["content_tokens"] = content_tokens.into();
+                    entry["content_nonempty"] = content_nonempty.into();
+                    entry["parseable"] = content_nonempty.into();
+                    entry["request_id"] = response.request_id.clone().into();
+                    entry["cost_usd"] = response
+                        .estimated_cost_usd
+                        .map(|value| (value * 1_000_000.0).round() / 1_000_000.0)
+                        .unwrap_or_default()
+                        .into();
+                    entry["outcome"] = if content_nonempty {
+                        "viable"
+                    } else {
+                        "empty_content"
+                    }
+                    .into();
+                    if content_nonempty {
+                        viable_envelope = Some(envelope);
+                    }
+                }
+                Err(error) => {
+                    entry["outcome"] = "error".into();
+                    entry["error_domain"] = error.domain.clone().into();
+                    entry["error_retryable"] = error.retryable.into();
+                    entry["error_effect"] = format!("{:?}", error.effect).into();
+                }
+            }
+            attempts.push(entry);
+            if viable_envelope.is_some() {
+                break;
+            }
+        }
+        let record = json!({
+            "schema": "rwe_compatibility_calibration.v1",
+            "date_utc": started_at,
+            "model": "deepseek-v4-flash",
+            "thinking": {"mode": "enabled", "reasoning_effort": "high"},
+            "protocol": "openai_compatible",
+            "role": "implementer",
+            "transport_provenance": format!("{:?}", production_transport_provenance(&transport)),
+            "pre_registered_candidate_envelopes": RWE_CALIBRATION_CANDIDATE_ENVELOPES,
+            "max_provider_requests": RWE_CALIBRATION_MAX_PROVIDER_REQUESTS,
+            "requests_sent": requests_sent,
+            "viable_envelope": viable_envelope,
+            "attempts": attempts,
+        });
+        eprintln!(
+            "RWE_COMPATIBILITY_CALIBRATION_EVIDENCE {}",
+            serde_json::to_string_pretty(&record).expect("calibration record serializes")
+        );
+        let Some(bound) = viable_envelope else {
+            panic!(
+                "16384 yielded no usable content; stop DECISION_REQUIRED (no viable deepseek-v4-flash output envelope within pre-registered candidates)"
+            );
+        };
+        assert!(
+            RWE_CALIBRATION_CANDIDATE_ENVELOPES.contains(&bound),
+            "calibration envelope must be one of the pre-registered candidates"
+        );
     }
 
     #[test]
@@ -2432,9 +2630,15 @@ mod tests {
         );
     }
 
+    // Holding the canonical env test lock across mock awaits is deliberate:
+    // every env-touching test in this module serializes on it.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn openai_messages_tools_and_tool_result_round_trip_are_bounded() {
         let _lock = key_lock().lock().await;
+        let _env = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let secret = fixture_secret();
         std::env::set_var(DEEPSEEK_CREDENTIAL_REFERENCE, &secret);
         let transport = Arc::new(CapturingTransport {
@@ -2504,9 +2708,15 @@ mod tests {
         std::env::remove_var(DEEPSEEK_CREDENTIAL_REFERENCE);
     }
 
+    // Holding the canonical env test lock across mock awaits is deliberate:
+    // every env-touching test in this module serializes on it.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn openai_and_anthropic_streams_require_terminal_usage_and_preserve_identity() {
         let _lock = key_lock().lock().await;
+        let _env = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let secret = fixture_secret();
         std::env::set_var(DEEPSEEK_CREDENTIAL_REFERENCE, &secret);
         let openai_stream = concat!(
@@ -2771,9 +2981,15 @@ mod tests {
         assert_eq!(failed_snap.cumulative_tokens, 0);
     }
 
+    // Holding the canonical env test lock across mock awaits is deliberate:
+    // every env-touching test in this module serializes on it.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn production_entry_requires_and_uses_persisted_authority() {
         let _lock = key_lock().lock().await;
+        let _env = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let secret = fixture_secret();
         std::env::set_var(DEEPSEEK_CREDENTIAL_REFERENCE, &secret);
         let provider = ManagedDeepSeekProvider::new_openai(
