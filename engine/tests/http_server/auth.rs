@@ -29,6 +29,10 @@ use super::common::*;
 
 #[tokio::test]
 async fn axum_local_store_persists_dispatch_history_and_dashboard_summary() {
+    // Env-clean test: requires the default noop routing while other tests set
+    // process-global trusted-local env vars; serialize with those writers via
+    // the canonical provider CLI env lock.
+    let _env_lock = provider_cli_env_lock().lock().await;
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("local-team.db");
 
@@ -130,6 +134,10 @@ async fn axum_local_store_persists_dispatch_history_and_dashboard_summary() {
 
 #[tokio::test]
 async fn axum_local_store_exposes_team_config_costs_and_export() {
+    // Env-clean test: requires the default noop routing while other tests set
+    // process-global trusted-local env vars; serialize with those writers via
+    // the canonical provider CLI env lock.
+    let _env_lock = provider_cli_env_lock().lock().await;
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
     store
