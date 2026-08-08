@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-08-02.
+Last updated: 2026-08-08.
 
 Current version: v36.
 
@@ -116,7 +116,7 @@ Default posture:
 - Provider calls are forbidden in CI.
 - Secrets, credentials, raw prompts, raw outputs, transcripts, private paths, and unredacted repository content are excluded from durable evidence.
 
-Full Agent Autonomy Mode permits repository-scoped work that remains testable, observable, reviewable, verification-gated, compatible, and rollbackable. It does not grant provider spend, target output, merge, release, deployment, or production-adoption authority.
+Full Agent Autonomy Mode permits repository-scoped work that remains testable, observable, reviewable, verification-gated, compatible, and rollbackable. It does not grant provider spend, target output, runtime- or candidate-controlled merge, release, deployment, or production-adoption authority. Repository-maintainer commits and merges are governed separately and exclusively by `docs/REAL_WORLD_TESTING_PLAYBOOK.md`, including exact-head review, canonical CI, objection, recovery, and rollback gates.
 
 ## Runtime Shape
 
@@ -337,39 +337,48 @@ This evidence informs RWE replay and Level-2 decisions. It does not create a sec
 
 ## Real Workload Evidence
 
-The first RWE baseline is the prerequisite for Architecture Convergence.
+The first small live RWE run is a lifecycle-viability gate, not by itself the decision baseline for Architecture Convergence. Architecture Convergence requires an accepted task-level measurement contract and a decision-grade pre-convergence baseline after viability is proved.
 
 A valid corpus is real, versioned, hash-bound, replayable, fixed before convergence, bound to exact task/source/mutable-surface/verification/output/executor/budget identities, executed under separate one-use RWE spend authority, and incapable of labeling fixture execution as a live baseline.
 
 Before the first economic comparison, the frozen corpus also binds each task's primary value basis, value source/confidence, acceptance rubric, reviewer policy, minimum repetitions, budget points, stop rules, non-inferiority margins, and cost-completeness requirements. Fixture corpora continue to prove authority and persistence only; they cannot establish task value or an economic baseline.
 
-The baseline records layered success, failure class, runtime evidence, recovery behavior, approval/output/terminal bindings, realized lifecycle cost, evidence-sufficiency state, and the implementation-cost receipt. Production task-mix value may later be observed separately, but it cannot replace the frozen-corpus comparison used for Architecture Convergence and Level-2 decisions.
+The viability run and decision baseline both record layered success, failure class, runtime evidence, recovery behavior, approval/output/terminal bindings, realized lifecycle cost, evidence-sufficiency state, and the implementation-cost receipt. Cross-task inference treats tasks or pre-registered task families as the independent unit; repetitions estimate within-task variability and do not create additional independent tasks. Production task-mix value may later be observed separately, but it cannot replace the frozen-corpus comparison used for Architecture Convergence and Level-2 decisions.
+
+Architecture attribution does not rely on an unqualified historical before/after comparison. The pre-convergence Harness, configuration, dependencies, and environment remain reconstructable so accepted pre- and post-convergence Harnesses can be randomized/interleaved in one controlled contemporary replay window. Historical evidence remains valid incident, compatibility, and drift evidence.
+
+High-decision-density work is separated into four durable execution classes: provider-free contract freeze, bounded implementation, separately authorized external effect, and evidence/decision closeout. A packet may not both choose an authority/statistical/evaluator/spend/retention contract and implement or evaluate that choice. A live experiment may not repair its own protocol, and the process that executes an effect may not silently upgrade the resulting claim. Adjacent provider-free work may share one change only when it has one owner, allowed-path set, semantic delta, rollback point, and independently reviewable stop boundary; external effects, human decisions, schema/authority changes, and cross-owner work remain separate.
 
 ## Architecture Convergence
 
 Architecture Convergence is incremental compatibility work, not a rewrite:
 
-1. AC1 unified `ProcessSupervisor`.
-2. AC2 typed execution boundary.
-3. AC3 Golden Path responsibility split.
-4. AC4 transaction-scoped domain views.
-5. AC5 explicit runtime composition root.
-6. AC6 Rust-authoritative API/SDK/Dashboard schema convergence.
-7. AC7 obsolete-abstraction cleanup after all callers and evidence migrate.
+1. AC0 production-call-site, owner, invariant, golden-trace, order, and rollback inventory/freeze; no ownership move.
+2. AC1 unified `ProcessSupervisor`.
+3. AC2 typed execution boundary.
+4. AC3 Golden Path responsibility split.
+5. AC4 transaction-scoped domain views.
+6. AC5 explicit runtime composition root.
+7. AC6 Rust-authoritative API/SDK/Dashboard schema convergence.
+8. AC7 obsolete-abstraction cleanup after all callers and evidence migrate.
 
-Each packet changes one coherent ownership boundary, preserves compatibility and rollback, and records implementation cost. The identical frozen RWE corpus and pre-registered economic protocol are replayed after AC1–AC7.
+Each AC stage changes one coherent ownership boundary, preserves compatibility and rollback, and records implementation cost. AC0 separates runtime inventory, data/contract inventory, and trace/order freeze. AC1–AC6 each freeze a current-main contract before additive core work and enumerate caller/consumer migration separately; AC6 also separates Rust/codegen, SDK, and Dashboard consumer migration. AC7 freezes a zero-caller removal manifest before deletion-only work and independent closeout. A migration or cleanup packet cannot enlarge its preceding contract. After AC7, the frozen RWE corpus and protocol are replayed through reconstructable old/new Harnesses in the contemporary controlled comparison above.
 
 ## Harness Evolution
 
-Level-1 is a default-off one-generation laboratory with immutable active-Harness identity, candidate lineage, equal-budget evaluation, hard gates, sealed holdout, Pareto archive, operator acknowledgement, and PR_READY output. It stops before production adoption. VDE does not rewrite or silently broaden its current evaluator or `MetricVector`.
+Experiment control is established in separate bounded layers: identity/lineage/mutation registry; evaluator/holdout/contamination/gaming boundary; equal total-lifecycle budget; diversity/exploration controls; and hard-gate-first Pareto/stop/restart/recovery behavior. No layer creates a second evaluator, budget, store, scheduler, or adoption owner.
 
-Level-2 is eligible only after an evidence-backed GO decision using Golden Path stability, pre/post-convergence identical-corpus RWE, contamination risk, layered accepted-success reliability, realized lifecycle cost, review/rework/recovery burden, maintenance surface, implementation feasibility, and existing Level-1 composition.
+Level-1 core is a default-off one-generation laboratory with immutable active-Harness identity, candidate lineage, total-lifecycle-budget evaluation, hard gates, sealed holdout, Pareto archive, operator acknowledgement, and PR_READY output. Memory and skill projections are disabled in the core comparison so attribution remains identifiable. Optional memory-only and skill-only factor experiments may follow Level-1 but do not block the core Level-2 route. VDE does not rewrite or silently broaden the current evaluator or `MetricVector`.
+
+Product durable memory and Harness-Evolution projections are separate domains. Sensitive raw prompts, raw outputs, transcripts, private paths, and unredacted repository content remain excluded from durable repository evidence. Experimental projections are derived, source-bound, deletable, rebuildable, invalidatable, and non-authoritative; they cannot grant routing, spend, evaluator, output, parent-selection, or adoption authority.
+
+Level-2 is eligible only after a pre-registered-rule audit, independent evidence analysis, and explicit human GO decision using Golden Path stability, pre/post-convergence identical-corpus RWE, contamination risk, layered accepted-success reliability, realized lifecycle cost, review/rework/recovery burden, maintenance surface, implementation feasibility, and existing Level-1 composition.
 
 A Level-2 GO requires every hard gate to pass, pre-registered quality and reliability non-inferiority, an eligible comparable value basis, uncertainty-aware improvement evidence, and no unacceptable authority, review, recovery, maintenance, or rollback regression. Pareto evidence precedes any scalar summary.
 
-Even on GO, Level-2 remains bounded and may not modify `main`, merge, deploy, rewrite its evaluator, expand its authority, or adopt a production Harness automatically.
+Even on GO, Level-2 remains bounded and may not modify `main`, merge, deploy, rewrite its evaluator, expand its authority, or adopt a production Harness automatically. Controller work separates the accepted state-machine contract, LocalProductStore state/lease persistence, generation orchestration, immutable evaluation/selection integration, stop/recovery semantics, provider-free simulation, one separately authorized pilot, and independent closeout. No implementation slice inherits authority from a later slice.
 
-The Meta Improver is later and separately authorized. It requires unseen tasks, immutable evaluator/labels, contamination controls, baselines, statistical thresholds, seeds, budgets, and stop/rollback rules. A NO-GO result is valid completion.
+After final sealed transfer, production adoption and Meta Improver research are independent decisions. Adoption is human-authorized and does not require Meta research; Meta research does not grant adoption. Meta research first requires a separate human GO/NO-GO and bounded second-order claim protocol, then isolates operator interface, unseen-family corpus/evaluator, equal lifecycle budget, O0 baseline, O1 treatment, disjoint mechanics pilot, full comparison, independent replication, and final analysis. One improved descendant is never operator-level evidence. A NO-GO, harm, null, or insufficient result is valid completion.
 
 ## External Adapter Boundary
 

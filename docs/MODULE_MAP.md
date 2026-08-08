@@ -1,10 +1,10 @@
 # Module Map
 
-Last updated: 2026-08-01.
+Last updated: 2026-08-08.
 
 This is the concise ownership map for accepted `main`. Current facts are in `docs/CURRENT_STATUS.md`; execution order and gates are in `docs/NEXT_DECISION.md`; architecture invariants are in `docs/ARCHITECTURE_BOOK.md`.
 
-Open PR branches are listed separately and are not canonical owners until merged. PR #300 (provider-free RWE authority), PR #301 (CC Switch observation-only adaptation), PR #306 (non-authoritative context-capsule automation), and PR #308 (provider-free ProductTask workspace preparation/recovery) are merged and accepted.
+Open PR branches are listed separately and are not canonical owners until merged. Accepted owner identities come from remote `main`, not from a branch-local status claim.
 
 Full Agent Autonomy Mode permits repository-scoped work that is testable, observable, reviewable, verification-gated, compatible, and rollbackable. Provider calls, target output, release, deployment, spend, and authority-critical actions retain separate gates.
 
@@ -13,6 +13,7 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Area | Canonical owner | Boundary |
 |---|---|---|
 | Repository navigation and context capsule | `START_HERE.md`, `scripts/project_context.py`, `tools/test_project_context.py`, `scripts/check_agent_handoff.py`, `.github/workflows/tests.yml` (context-capsule publisher job), `scripts/agent-control/prompt_builder.py` | One on-demand fail-closed transport view and exact-head workflow publication/session injection derived from accepted owners; not a status database or authority owner |
+| Forward packet routing | `docs/NEXT_DECISION.md` | Sole owner of packet order, class, prerequisites, allowed semantic delta, exit, stop, and consolidation eligibility; planning records never grant runtime, spend, evaluator, output, merge, release, deployment, or adoption authority |
 | API and composition root | `engine/src/main.rs`, `engine/src/http_server/` | Sole startup/composition surface; runtime modes remain explicitly gated |
 | Dispatch analysis | `engine/src/dispatch_engine.rs`, analyzers, selectors, planners, decomposers | Advisory/default-noop unless an accepted contract admits execution |
 | Workflow runtime | `engine/src/workflow/`, `engine/src/scheduler.rs`, `engine/src/scheduler/`, `engine/src/executor_pool.rs`, `engine/src/node_executor.rs` | Sole persisted run, node, lease, retry, pause/kill, and concurrency path |
@@ -30,11 +31,12 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Terminal evidence | `engine/src/storage/local_product_store/` product terminal-evidence owners | Exact persisted task/run/node/workspace/source/artifact/approval/output/audit binding |
 | Persistence and audit | `engine/src/storage/local_product_store/` and PostgreSQL backend | Sole SQLite/PostgreSQL transaction, migration, audit, idempotency, evidence, and rollback owner |
 | Scorecards/replay | Existing scorecard, trace, replay, and store owners | Derived comparison evidence; cannot mutate live routing or policy by itself |
-| Real Workload Evidence corpus | `engine/src/rwe/` and fixture corpus owners from PR #300; operator corpus/protocol/schedule freeze from PR #361 | Provider-free corpus authority, authorization/run/task-attempt persistence; no live baseline from fixtures |
+| Real Workload Evidence freeze | `engine/src/rwe/operator_corpus.rs`, `engine/src/rwe/corpus.rs`, `engine/src/rwe/economic_protocol.rs`, `engine/src/rwe/execution_schedule.rs`, and versioned `engine/rwe/corpora/` artifacts | Sole provider-free operator corpus/protocol/schedule freeze and canonical-hash boundary. Versions coexist; a refreeze never overwrites prior artifacts or evidence. Freeze code grants no spend, live-run, evaluator, output, or adoption authority. |
 | RWE run authorization and spend | `engine/src/storage/local_product_store/rwe_authority.rs` plus `engine/src/rwe/runner.rs` (PR #300 fixture authority; PR #361 v2 contract; Board B production issue/admit/spend) | Store-owned one-use RWE spend via `rwe_run_authorizations`; v1 fixture envelope and production `rwe_run_authorization.v2` issue/admit under this single owner; bindings derived from freeze owners and principal; no second spend/budget owner |
 | RWE first live baseline composition | `engine/src/rwe/live_baseline_coordinator.rs`, thin CLI `rwe-live-baseline`; reuses Product Golden Path + `LocalProductStore` owners for exact frozen RWE bindings | merged PR #363 (`995e57e…`), accepted main capability; orchestrates frozen 4-cell schedule over Board B admit, store cell fence, ProductTask/managed executor/spend journal/verifier/artifact/Draft PR/terminal/cleanup; no second scheduler/store/budget/runtime |
 | RWE economic protocol and VDE artifacts | `engine/src/rwe/economic_protocol.rs` (PR #319) | Immutable/hash-bound protocol and artifact validation only; no runtime, store, budget, reviewer, output, adoption, or release authority |
 | Harness Evolution Level-1 | `engine/src/harness_evolution*.rs` plus existing store owners | Default-off one-generation fixture laboratory; active Harness immutable |
+| Product durable memory | `engine/src/storage/local_product_store/durable_memory.rs` plus existing store/migration/audit owners | Product-scoped persisted memory records under the sole store owner; not a Harness-Evolution projection, routing authority, evaluator, spend owner, or adoption source |
 | SDK and Dashboard | `sdk/`, `dashboard/` | Typed interaction and projection only; no backend authority |
 | Wire contracts | `wire_contract/`, `codegen/` | Shared cross-language schemas; drift checked by `scripts/check_wire_codegen_drift.sh` |
 | Event schema contract | `engine/src/event_schema.rs` | Canonical event schema validation, idempotency hashing, and JSONL evidence guard (`docs/stage0/events.jsonl`); production module with no dependency on the deleted reference surface. The reference-only `engine/src/event_source/` module (append-only event store, projections, task queue) and the reference-only error types in `engine/src/errors.rs` are deleted: they had no production caller, the active runtime and `LocalProductStore` are the sole store/runtime/audit owners, and event-sourcing reference value is owned by `docs/ARCHITECTURE_BOOK.md` plus `event_schema` |
@@ -79,6 +81,7 @@ No earlier authority implies a later one. In particular, risk acknowledgement is
 
 | PR | Proposed modules/scope | Rule |
 |---|---|---|
+| #365 | `START_HERE.md` and `AGENTS.md` review-state clarification | Draft and non-authoritative; no runtime or packet ownership |
 | #225 | Dashboard presentation | Last; may project accepted schemas only |
 
 PR #297/#298 are closed without merge as superseded by accepted PR #299. PR #300 is merged and accepted. PR #301 is merged and accepted (observation-only; no authority import). PR #306 is merged and accepted (context transport only; no authority import). PR #308 is merged and accepted (provider-free workspace preparation/recovery only; no live authority import). PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304.
@@ -89,17 +92,18 @@ Do not copy explanatory labels into file names. Always inspect the actual final 
 
 ## Architecture Convergence Map
 
-Architecture Convergence reuses these owners and changes boundaries incrementally:
+Architecture Convergence reuses these owners and changes boundaries incrementally. Exact routing, prerequisites, and execution-ready expansion are owned only by `docs/NEXT_DECISION.md`:
 
-1. AC1 — one `ProcessSupervisor` owner for admitted process lifecycle.
-2. AC2 — one typed execution boundary with executor-specific adapters.
-3. AC3 — split Golden Path orchestration responsibilities without changing state semantics.
-4. AC4 — transaction-scoped domain views over the existing store owner.
-5. AC5 — one explicit runtime composition root.
-6. AC6 — authoritative API/SDK/Dashboard schemas derived from Rust-owned contracts.
-7. AC7 — delete obsolete abstractions only after all callers, fixtures, scripts, and replay evidence are migrated.
+1. AC0 — runtime inventory, data/contract inventory, then trace/order freeze; no ownership move.
+2. AC1 — ProcessSupervisor contract, additive core, then enumerated caller migration.
+3. AC2 — typed-execution contract, additive boundary/adapters, then enumerated caller migration.
+4. AC3 — responsibility contract, pure orchestrator extraction, then store/effect-port migration without state-semantic change.
+5. AC4 — transaction-view contract, borrowed view core on both backends, then enumerated caller migration.
+6. AC5 — configuration/composition contract, additive root, then module migration and approved legacy-read cleanup.
+7. AC6 — schema contract, Rust/codegen source, SDK migration, Dashboard data migration, then compatibility closeout.
+8. AC7 — zero-caller removal manifest, deletion-only implementation, then independent reference/behavior closeout.
 
-The frozen RWE corpus is the before/after compatibility oracle. Architecture work cannot create a second scheduler, database, budget, approval, output, evidence, or rollback owner.
+Every implementation/migration slice is blocked on its accepted current-main contract and cannot enlarge that contract. The frozen RWE corpus is the before/after compatibility oracle. Architecture work cannot create a second scheduler, database, budget, approval, output, evidence, or rollback owner.
 
 ## Cost and Efficiency Evidence
 
@@ -110,7 +114,9 @@ This evidence informs RWE replay and Level-2 GO/NO-GO. It does not become a call
 ## Capability Boundaries
 
 - Context capsules summarize and route from accepted owners; they never authorize execution, spend, output, merge, release, deployment, RWE acceptance, or production adoption.
+- `CONTRACT`, `IMPLEMENT`, `EFFECT`, and `CLOSEOUT` are planning/execution classes, not new module owners. External effects and human decisions remain separately authorized even when adjacent provider-free packets can be safely consolidated.
 - RWE must reuse existing task, scheduler, usage, scorecard, replay, audit, approval, output, terminal-evidence, and cleanup owners.
+- Product durable memory and future experimental memory/skill projections are separate domains. No accepted Harness-Evolution projection owner exists yet; any future projection is derived, deletable, rebuildable, non-authoritative, and may not become routing, spend, evaluator, output, or adoption authority.
 - External runtimes and repositories may provide bounded adapters, parsers, or comparison evidence; they may not replace the core owners.
 - Provider/session logs are post-call evidence, not pre-call authority.
 - Local price tables produce estimates only and must remain versioned and source-labeled.
