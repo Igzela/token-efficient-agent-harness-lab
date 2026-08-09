@@ -193,6 +193,32 @@ VALID_PACKET_STATES = {
     "COMPLETE",
 }
 
+ACCEPTED_PACKET_RECEIPT_RE = re.compile(
+    rf"^\|\s*`?(?P<packet>{PACKET_ID_PATTERN})`?\s*\|\s*`?COMPLETE`?\s*\|",
+    re.MULTILINE,
+)
+FUTURE_ROUTE_REQUIRED_SECTIONS = (
+    "## Weak-Agent Full-Course Contract",
+    "## Worker Tiers",
+    "## Cheap-Agent Dispatch Protocol",
+    "## Known Planned-Seam Gaps",
+    "## Promotion Contract",
+    "## Stop and Resume Protocol",
+    "## Execution Profile Field Contract",
+)
+FUTURE_PACKET_PROFILE_FIELDS = (
+    "Execution profile",
+    "Worker tier",
+    "Owner/seam",
+    "Allowed paths at promotion",
+    "Ordered work",
+    "Verification",
+    "Rollback/recovery",
+    "Human/effect gate",
+    "Consolidation boundary",
+    "Negative-result route",
+)
+
 
 def read(relative_path: str) -> str:
     path = ROOT / relative_path
@@ -331,6 +357,123 @@ def parse_packet_contracts(
     return packets
 
 
+def accepted_packet_receipts(status_text: str) -> set[str]:
+    """Return packet identities whose accepted completion is durable status truth."""
+
+    return {
+        match.group("packet")
+        for match in ACCEPTED_PACKET_RECEIPT_RE.finditer(status_text)
+    }
+
+
+def future_route_contract_failures(future_text: str) -> list[str]:
+    """Validate the weak-agent execution dossier attached to every future packet."""
+
+    failures: list[str] = []
+    for heading in FUTURE_ROUTE_REQUIRED_SECTIONS:
+        if heading not in future_text:
+            failures.append(f"FUTURE_ROUTE is missing future-route section {heading!r}")
+
+    headings = list(PACKET_HEADING_RE.finditer(future_text))
+    seen_profiles: dict[str, str] = {}
+    placeholder_values = {"TBD", "TODO", "FIXME", "UNKNOWN", "N/A", "TO BE DETERMINED"}
+    for index, match in enumerate(headings):
+        packet_id = match.group("packet")
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(future_text)
+        block = future_text[match.start() : end]
+        for label in FUTURE_PACKET_PROFILE_FIELDS:
+            values = re.findall(
+                rf"^\*\*{re.escape(label)}:\*\*\s*(?P<value>\S.*)$",
+                block,
+                re.MULTILINE,
+            )
+            if not values:
+                failures.append(f"{packet_id} is missing {label}")
+            elif len(values) != 1:
+                failures.append(f"{packet_id} must have exactly one {label} field")
+            else:
+                value = values[0].strip()
+                normalized = value.strip("` .").upper()
+                if label not in {"Execution profile", "Worker tier"} and (
+                    normalized in placeholder_values
+                ):
+                    failures.append(f"{packet_id} has placeholder {label}: {value!r}")
+                if label == "Execution profile":
+                    profile_id = value.strip("`")
+                    if profile_id in seen_profiles:
+                        failures.append(
+                            f"duplicate Execution profile {profile_id!r}: "
+                            f"{seen_profiles[profile_id]} and {packet_id}"
+                        )
+                    else:
+                        seen_profiles[profile_id] = packet_id
+
+        packet_class = re.search(
+            r"^\*\*Class:\*\*\s*`?(?P<value>[A-Z]+)`?\s*$",
+            block,
+            re.MULTILINE,
+        )
+        tier = re.search(
+            r"^\*\*Worker tier:\*\*\s*`?(?P<value>T[0-3])`?\b",
+            block,
+            re.MULTILINE,
+        )
+        if not packet_class:
+            failures.append(f"{packet_id} is missing or has invalid Class")
+        elif packet_class.group("value") not in {
+            "CONTRACT",
+            "IMPLEMENT",
+            "EFFECT",
+            "CLOSEOUT",
+        }:
+            failures.append(f"{packet_id} has unsupported Class")
+        if not tier:
+            failures.append(f"{packet_id} is missing or has invalid Worker tier")
+        if tier and packet_class and packet_class.group("value") == "EFFECT":
+            if tier.group("value") != "T3":
+                failures.append(f"{packet_id} EFFECT work must use Worker tier T3")
+    return failures
+
+
+def _packet_dependency_cycle(
+    packets: dict[str, dict[str, object]],
+) -> list[str] | None:
+    graph = {
+        packet_id: [
+            prerequisite
+            for prerequisite in packet["prerequisites"]
+            if prerequisite in packets
+        ]
+        for packet_id, packet in packets.items()
+    }
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    path: list[str] = []
+
+    def visit(packet_id: str) -> list[str] | None:
+        if packet_id in visiting:
+            start = path.index(packet_id)
+            return path[start:] + [packet_id]
+        if packet_id in visited:
+            return None
+        visiting.add(packet_id)
+        path.append(packet_id)
+        for prerequisite in graph[packet_id]:
+            cycle = visit(prerequisite)
+            if cycle:
+                return cycle
+        path.pop()
+        visiting.remove(packet_id)
+        visited.add(packet_id)
+        return None
+
+    for packet_id in sorted(graph):
+        cycle = visit(packet_id)
+        if cycle:
+            return cycle
+    return None
+
+
 def active_state_failures(
     status_text: str, next_text: str, future_text: str = ""
 ) -> list[str]:
@@ -343,8 +486,17 @@ def active_state_failures(
             f"{packet_id} is duplicated between NEXT_DECISION and FUTURE_ROUTE"
         )
     packets = {**future_packets, **current_packets}
+    accepted_packets = accepted_packet_receipts(status_text)
+
+    for packet_id in sorted(accepted_packets & set(packets)):
+        if packets[packet_id]["state"] != "COMPLETE":
+            failures.append(
+                f"{packet_id} is COMPLETE in accepted receipts but active as "
+                f"{packets[packet_id]['state']}"
+            )
 
     if future_text:
+        failures.extend(future_route_contract_failures(future_text))
         if len(current_packets) != 1:
             failures.append(
                 "NEXT_DECISION must contain exactly one expanded current packet; "
@@ -355,6 +507,19 @@ def active_state_failures(
                 failures.append(
                     f"FUTURE_ROUTE packet {packet_id} must remain BLOCKED_PREREQUISITE"
                 )
+        for packet_id, packet in future_packets.items():
+            unknown = [
+                prerequisite
+                for prerequisite in packet["prerequisites"]
+                if prerequisite not in packets and prerequisite not in accepted_packets
+            ]
+            if unknown:
+                failures.append(
+                    f"{packet_id} references unknown prerequisites: {unknown}"
+                )
+        cycle = _packet_dependency_cycle(packets)
+        if cycle:
+            failures.append("packet dependency cycle: " + " -> ".join(cycle))
 
     for packet_id, packet in current_packets.items():
         state = str(packet["state"])
@@ -364,8 +529,11 @@ def active_state_failures(
             incomplete = [
                 prerequisite
                 for prerequisite in packet["prerequisites"]
-                if prerequisite not in packets
-                or packets[prerequisite]["state"] != "COMPLETE"
+                if prerequisite not in accepted_packets
+                and (
+                    prerequisite not in packets
+                    or packets[prerequisite]["state"] != "COMPLETE"
+                )
             ]
             if incomplete:
                 failures.append(
@@ -404,8 +572,11 @@ def active_state_failures(
         incomplete = [
             prerequisite
             for prerequisite in first["prerequisites"]
-            if prerequisite not in packets
-            or packets[prerequisite]["state"] != "COMPLETE"
+            if prerequisite not in accepted_packets
+            and (
+                prerequisite not in packets
+                or packets[prerequisite]["state"] != "COMPLETE"
+            )
         ]
         if incomplete:
             failures.append(

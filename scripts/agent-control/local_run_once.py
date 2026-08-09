@@ -758,7 +758,12 @@ class LocalRunOnce:
                 prompt_file.write_text(
                     prompt_builder.build_claim_bound_plan_implementation_prompt(
                         packet_id, candidate.goal, candidate.allowed_paths,
-                        candidate.source_main_sha, candidate.branch, repo_root=self.repo_path,
+                        candidate.source_main_sha, candidate.branch,
+                        prerequisites=candidate.prerequisites,
+                        forbidden_changes=candidate.forbidden_changes,
+                        verification=candidate.verification,
+                        rollback=candidate.rollback,
+                        repo_root=self.repo_path,
                     ),
                     encoding="utf-8",
                 )

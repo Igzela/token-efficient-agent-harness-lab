@@ -228,6 +228,192 @@ class CheckAgentHandoffTests(unittest.TestCase):
             failures,
         )
 
+    def test_accepted_packet_receipt_satisfies_current_prerequisite(self) -> None:
+        checker = load_handoff_checker()
+        status = """## Accepted Packet Receipts
+| Packet | State | Accepted evidence |
+|---|---|---|
+| `PE7-A-1` | `COMPLETE` | merge `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` |
+"""
+        current = """## Active Routing
+1. `PE7-B-1` — `READY_FOR_EXECUTION`.
+## Packet PE7-B-1
+**State:** `READY_FOR_EXECUTION`
+**Prerequisite:** PE7-A-1
+"""
+
+        self.assertEqual(checker.active_state_failures(status, current), [])
+
+    def test_future_route_rejects_packet_without_execution_profile(self) -> None:
+        checker = load_handoff_checker()
+        future = """# Future Route
+
+This document is routing-only.
+
+### Packet PE7-B-1
+
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE7-A-1
+**Class:** `CONTRACT`
+"""
+
+        failures = checker.future_route_contract_failures(future)
+
+        self.assertTrue(
+            any("missing future-route section" in failure for failure in failures),
+            failures,
+        )
+        self.assertTrue(
+            any("PE7-B-1 is missing Execution profile" in failure for failure in failures),
+            failures,
+        )
+
+    def test_future_route_accepts_complete_weak_agent_profile(self) -> None:
+        checker = load_handoff_checker()
+        future = """# Future Route
+
+This document is routing-only.
+
+## Weak-Agent Full-Course Contract
+## Worker Tiers
+## Cheap-Agent Dispatch Protocol
+## Known Planned-Seam Gaps
+## Promotion Contract
+## Stop and Resume Protocol
+## Execution Profile Field Contract
+
+### Packet PE7-B-1
+
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE7-A-1
+**Class:** `CONTRACT`
+**Execution profile:** `RWE-B-CONTRACT`
+**Worker tier:** `T2`
+**Owner/seam:** Existing RWE authority; revalidate the exact symbol on promotion.
+**Allowed paths at promotion:** `engine/src/rwe/**`, tests, and canonical docs only.
+**Ordered work:** Revalidate owner -> freeze contract -> add negative tests -> verify.
+**Verification:** Focused tests, baseline handoff checks, and exact diff review.
+**Rollback/recovery:** Revert the packet; preserve prior accepted artifacts and receipts.
+**Human/effect gate:** No external effect; primary approval is required for contract choices.
+**Consolidation boundary:** Do not combine with implementation or effect packets.
+**Negative-result route:** Record `DECISION_REQUIRED`; do not invent a contract value.
+"""
+
+        self.assertEqual(checker.future_route_contract_failures(future), [])
+
+    def test_future_route_requires_cheap_agent_dispatch_protocol(self) -> None:
+        checker = load_handoff_checker()
+        future = """# Future Route
+## Weak-Agent Full-Course Contract
+## Worker Tiers
+## Promotion Contract
+## Stop and Resume Protocol
+## Execution Profile Field Contract
+"""
+
+        failures = checker.future_route_contract_failures(future)
+
+        self.assertIn(
+            "FUTURE_ROUTE is missing future-route section '## Cheap-Agent Dispatch Protocol'",
+            failures,
+        )
+
+    def test_future_route_requires_planned_seam_gap_registry(self) -> None:
+        checker = load_handoff_checker()
+        future = """# Future Route
+## Weak-Agent Full-Course Contract
+## Worker Tiers
+## Cheap-Agent Dispatch Protocol
+## Promotion Contract
+## Stop and Resume Protocol
+## Execution Profile Field Contract
+"""
+
+        failures = checker.future_route_contract_failures(future)
+
+        self.assertIn(
+            "FUTURE_ROUTE is missing future-route section '## Known Planned-Seam Gaps'",
+            failures,
+        )
+
+    def test_future_route_rejects_duplicate_profile_ids_and_placeholders(self) -> None:
+        checker = load_handoff_checker()
+        header = """# Future Route
+## Weak-Agent Full-Course Contract
+## Worker Tiers
+## Cheap-Agent Dispatch Protocol
+## Known Planned-Seam Gaps
+## Promotion Contract
+## Stop and Resume Protocol
+## Execution Profile Field Contract
+"""
+        packet = """### Packet {packet_id}
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE7-A-1
+**Class:** `CONTRACT`
+**Execution profile:** `DUPLICATED.v1`
+**Worker tier:** `T2`
+**Owner/seam:** {owner}
+**Allowed paths at promotion:** Exact accepted paths are narrowed on promotion.
+**Ordered work:** Inventory -> freeze -> test -> independently review the contract.
+**Verification:** Focused negative tests plus handoff and complete-diff review.
+**Rollback/recovery:** Revert the contract while retaining accepted evidence.
+**Human/effect gate:** T2 accepts contract choices; no external effect.
+**Consolidation boundary:** Keep separate from implementation and effects.
+**Negative-result route:** Stop DECISION_REQUIRED without inventing values.
+"""
+        future = header + packet.format(packet_id="PE7-B-1", owner="TBD") + packet.format(
+            packet_id="PE7-C-1", owner="Existing owner revalidated on promotion."
+        )
+
+        failures = checker.future_route_contract_failures(future)
+
+        self.assertTrue(any("placeholder Owner/seam" in item for item in failures), failures)
+        self.assertTrue(any("duplicate Execution profile" in item for item in failures), failures)
+
+    def test_future_route_rejects_unknown_prerequisite(self) -> None:
+        checker = load_handoff_checker()
+        current = """## Active Routing
+1. `PE7-A-1` — `READY_FOR_EXECUTION`.
+## Packet PE7-A-1
+**State:** `READY_FOR_EXECUTION`
+"""
+        future = """# Future Route
+### Packet PE7-B-1
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE7-MISSING-1
+"""
+
+        failures = checker.active_state_failures("", current, future)
+
+        self.assertIn(
+            "PE7-B-1 references unknown prerequisites: ['PE7-MISSING-1']",
+            failures,
+        )
+
+    def test_future_route_rejects_dependency_cycle(self) -> None:
+        checker = load_handoff_checker()
+        current = """## Active Routing
+1. `PE7-A-1` — `READY_FOR_EXECUTION`.
+## Packet PE7-A-1
+**State:** `READY_FOR_EXECUTION`
+"""
+        future = """# Future Route
+### Packet PE7-B-1
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE7-C-1
+### Packet PE7-C-1
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE7-B-1
+"""
+
+        failures = checker.active_state_failures("", current, future)
+
+        self.assertTrue(
+            any("packet dependency cycle" in failure for failure in failures),
+            failures,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

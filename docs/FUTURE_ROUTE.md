@@ -8,25 +8,92 @@ The current executable window and common execution contracts live in `docs/NEXT_
 
 When an accepted predecessor closes, do not execute its successor from this file. Refresh remote `main`, reconcile any negative or insufficient disposition, remove exactly one eligible packet from this index, and expand its complete twelve-field contract in `docs/NEXT_DECISION.md`. Any unresolved value or duplicate packet identity is `DECISION_REQUIRED`.
 
+## Weak-Agent Full-Course Contract
+
+“Weak agent can complete the full course” means a T0/T1 worker can carry every deterministic step, emit an exact pause receipt at a real T2/T3 gate, and resume from that receipt without reconstructing hidden context. It never means that a cheap agent may choose architecture, statistical thresholds, evaluator rules, credentials, spend, adoption, release, or another person's approval.
+
+For every packet, the worker follows this fixed loop:
+
+1. refresh accepted `main`, run `uv run --no-project python scripts/project_context.py`, and bind the packet to the resulting main SHA;
+2. prove the prerequisite's accepted receipt and disposition; a merely closed PR or nominally completed packet is insufficient;
+3. load only `START_HERE.md`, the current status/window, this packet and its execution profile, the named owner sections, and exact source/tests; use CodeGraph before textual search;
+4. revalidate every listed owner/path and every `[planned seam; not current code]` against that main; convert candidate paths into a closed allowed-path list in `docs/NEXT_DECISION.md`;
+5. execute the class protocol and ordered work without changing frozen values, crossing a gate, or beginning a successor;
+6. run every packet verification plus applicable repository baseline checks, record failures and consumed cost, and independently inspect the complete diff/evidence;
+7. emit the handoff below, then stop or promote exactly one successor through the planning owner.
+
+The bounded handoff is: `packet_id`, `accepted_main_sha`, `profile_id`, `worker_tier`, `prerequisite_receipt_ids`, `completed_step`, `state`, `blocker_code`, `changed_paths`, `verification_results`, `external_effect_count`, `authority_consumed`, `evidence_ids_and_sha256`, `rollback_state`, `next_owner`, `next_permitted_action`, and `forbidden_next_actions`. It contains no credential, prompt/output/transcript, private path, or unredacted repository content.
+
+## Worker Tiers
+
+| Tier | Work a fast/cheap agent may own | Required escalation |
+|---|---|---|
+| `T0` | Read-only inventory, CodeGraph call paths, deterministic matrices, negative search, digest comparison | T2 resolves omissions, ownership conflicts, and contract choices |
+| `T1` | Exact mechanical implementation, migration, codegen, focused tests, docs, and presentation under a frozen contract | T2 owns schema/authority/evaluator/concurrency/recovery decisions and accepts the complete diff |
+| `T2` | Primary planning/architecture, statistical and evaluator contracts, store/transaction/controller/recovery seams, independent closeout | T3 is still required for external effects, spend, human GO/NO-GO, adoption, release, or deployment |
+| `T3` | Human/operator authority: finite Provider/training/target effects and explicit decisions | Never delegated to model output; one receipt authorizes only its exact named action |
+
+A packet's tier is the highest tier that owns its decisive step. Lower-tier agents should still perform all preceding deterministic preparation and hand the exact pause receipt to that owner.
+
+## Cheap-Agent Dispatch Protocol
+
+Future profiles are not directly executable queue entries. The current plan parser already models `goal`, `allowed_paths`, `prerequisites`, `forbidden_changes`, `verification`, and `rollback`, and the claim-bound prompt transports all six fields. However, autonomous plan execution remains deliberately fail-closed with `plan_lane_deferred_until_terminal_owners`; CI, review, repair, and terminal ownership are not yet plan-aware. Do not remove that stop or treat this document as a claim token. Until a separately accepted packet closes those owners, the planning owner promotes one packet into `docs/NEXT_DECISION.md` and publishes bounded work through the existing Issue task lane.
+
+Package one promoted packet into these waves, retaining one parent packet identity and one rollback point:
+
+| Wave | Cheap-agent work | Write ownership | Gate |
+|---|---|---|---|
+| `W0 bind` | T0 refreshes main/capsule, predecessor receipt, exact paths, and overlap | none | T2 rejects stale or ambiguous frontier |
+| `W1 inspect` | Parallel T0 agents produce owner/call graph, test/negative-case matrix, compatibility/migration matrix, and deletion/rollback inventory | none | T2 reconciles omissions and freezes the exact task split |
+| `W2 red` | T1 test owner adds the smallest failing focused/negative tests under an explicit test-path allowlist | tests only | Red failure must match the frozen contract, not an unrelated defect |
+| `W3 build` | One or more T1 implementers take disjoint code/generated/docs path sets; at most one writer owns any path | disjoint declared paths | No implementation begins before its relevant red test/contract gate |
+| `W4 prove` | T0/T1 run focused and applicable full checks; independent T2 reviews complete diff, authority, recovery, and rollback | no new semantic edits | Findings return as one bounded repair batch while Draft |
+| `W5 close` | T2 binds receipts, exact head, costs, unresolved objections, and next disposition | canonical docs only after acceptance | No successor or EFFECT starts automatically |
+
+Every child Issue/task repeats—not merely links—the parent `packet_id`, accepted-main SHA, goal, exact owned `allowed_paths`, accepted prerequisite receipt IDs, forbidden changes, ordered slice, verification commands, rollback, expected artifact, blocker taxonomy, and forbidden next actions. It also states that other agents share the worktree, that unrelated/other-agent edits must not be reverted, and who owns integration. A task missing any field is not dispatchable.
+
+Parallelism is allowed only inside one promoted provider-free packet and only for disjoint read or write ownership. Contract choices, shared schemas, transactions, evaluator rules, migrations, generated-source authority, and final integration remain serialized through T2. `EFFECT` and human-decision packets use W0/W1 preparation, then pause at T3; they are never split into independently runnable effect children. CI/review waiting may advance another safe task within the same packet, never a later packet.
+
+## Known Planned-Seam Gaps
+
+These are audited absences or unaccepted seams at the current main, not permission to fill them now. Every listed gap is rechecked when its earliest contract packet is promoted; a changed owner or a need for parallel authority is `DECISION_REQUIRED`.
+
+| Route family | Accepted owner to extend | Missing or not-yet-accepted seam | Promotion stop condition |
+|---|---|---|---|
+| RWE measurement/decision baseline | existing RWE corpus, protocol, schedule, artifact, and evidence owners | no accepted estimand/sample/reviewer/retention contract or decision-grade corpus | any threshold, reviewer, retention, or evidence-access value lacks a T2/human owner |
+| AC1 process supervision | AC0-enumerated subprocess/executor callers | no `ProcessSupervisor` module/interface exists today | placement would create a second runtime/executor owner or child cleanup cannot be proved |
+| AC2 typed execution | current executor adapter/node/provider/CLI owners | no accepted cross-executor typed state/outcome/usage contract | any existing outcome cannot map without semantic loss or unknown-as-success coercion |
+| AC3 Golden Path split | `product_golden_path.rs` plus LocalProductStore product-task authority | no accepted pure orchestration/effect-port seam | store, approval, output, audit, or external effect ownership becomes ambiguous |
+| AC4 transaction views | sole LocalProductStore SQLite/PostgreSQL owners | no named borrowed transaction-view interfaces exist | atomic group, borrow/commit/rollback, parity, or recovery cannot be proved |
+| AC5 composition root | current Rust startup, config, HTTP state, provider, and store construction | no single accepted validated composition-root contract | config precedence conflicts, dependency cycle, or secret resolution broadens |
+| EC1 causal mutation evidence | existing HE artifact/store owner | `FailurePatternEvidenceV1`, `MutationHypothesisManifestV1`, and `PredictionOutcomeV1` are planned, not current accepted types | identity/causal source can be caller- or candidate-authored, mutable, or unaddressable |
+| EC2 real evaluator/holdout | accepted evaluator/evidence owner; current `harness_evolution_eval.rs` remains fixture/default-off | no managed sealed holdout, access mediation, or real acceptance evaluator evidence | fixture result, candidate-controlled rule, leakage, or label uncertainty would be reported as acceptance |
+| EC3-EC5 controls | existing budget/spend, HE, evaluator, artifact, lease, and store owners | no accepted total-lifecycle enforcement, diversity admission, immutable Pareto archive, or HE stop/recovery state machine | a second ledger/controller appears or crash/exactly-once/hidden-reject behavior is unresolved |
+| HE memory/skill factor | existing HE experimental artifact/store owner | no HE projection adapter/authority exists | product `durable_memory.rs`, global skills, or summaries would become experiment authority |
+| Level-2 | existing HE/scheduler/evaluator/budget/store owners | no bounded Level-2 controller exists | `recursive_execution.rs` task-tree recursion is proposed as controller, or evaluator/budget/stops become mutable |
+| Meta/R4 | existing EC/Level-2 owners | no accepted fixed O0/O1 or metacognitive operator adapter | treatment cannot be isolated under an immutable outer shell or can rewrite its contract |
+| R5 training | existing artifact/store/evaluator boundaries only | no accepted trainer, external-training adapter, checkpoint owner, or training-effect authority | data rights, base/adapter identity, compute, retry, deletion, or verifier separation is unresolved |
+| R6 outer policy | existing controllers/evidence owners | no accepted mapping for parent, lever, or curriculum policy; only one family may be chosen | action space includes evaluator, goals, safety, permissions, budgets, or unbounded recursive depth |
+| Dashboard | current Dashboard presentation/data consumers | AC6 data/schema migration and final presentation refresh are distinct; neither is accepted yet | final UI asks for backend/schema authority or optional R4-R6 work is treated as a blocker |
+
+## Promotion Contract
+
+Every path below is a **promotion-time candidate**, not present edit authority. Promotion removes exactly one eligible packet from this file, reruns owner/caller inventory on accepted main, and expands it in `docs/NEXT_DECISION.md` with all twelve execution-readiness fields. The promoted packet must replace globs and AC0/contract references with exact files; bind exact evidence, versions, hashes, commands, rollback, and stop/resume owner; and state which profile facts remained valid or changed. A planned seam is a design target only: if no current canonical owner can contain it without a second authority, stop `DECISION_REQUIRED`.
+
+Negative predecessor dispositions are routing inputs, not failures to hide. `NO_GO`, `DECLINE`, `DEFER`, `SATURATED`, `HARM`, `CONTROLLED_FAILURE`, `OUTCOME_UNKNOWN`, and `INSUFFICIENT` require route reconciliation before promotion. Optional memory/skill and R4-R6 branches never block the core route or Dashboard. Dashboard eligibility joins only accepted adoption and fixed-operator Meta dispositions; AC6 Dashboard data migration remains separate from the last presentation refresh.
+
+## Stop and Resume Protocol
+
+On any stop, the worker first prevents new effects, preserves store leases/receipts and restricted evidence, runs safe cleanup/compensation already owned by the active packet, and emits the bounded handoff with `state=DECISION_REQUIRED`, `BLOCKED_PREREQUISITE`, or `OUTCOME_UNKNOWN`. It must state whether an effect may already have occurred; unknown is never rewritten as zero. Resume must refresh main and external state, verify the same packet/evidence/authority identities and rollback state, and continue only from the named `next_permitted_action`. A stale receipt, changed contract, expired authority, missing evidence, or changed effect status requires a new planning/operator decision; never replay the prior command speculatively.
+
+## Execution Profile Field Contract
+
+Each packet combines its existing `Prerequisite`, `Class`, `Outcome`, `Allowed delta`, `Exit`, and `Stop` with ten mandatory fields below. `Owner/seam` and `Allowed paths at promotion` identify where a planning owner must revalidate and narrow the work. `Ordered work`, `Verification`, and `Rollback/recovery` are the worker's runbook. `Worker tier` and `Human/effect gate` mark the pause boundary. `Consolidation boundary` prevents convenience from erasing review or rollback points. `Negative-result route` makes a non-favorable result directly completable rather than an invitation to improvise.
+
 ## Stage RWE v2 viability
 
 These packets prove lifecycle viability only. They do not authorize Architecture Convergence or an economic-improvement claim.
 
-### Packet PE7-RWE-V2-VIABILITY-PREFLIGHT-1
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE7-RWE-V2-REFREEZE-1
-
-**Class:** `CONTRACT`
-
-**Outcome:** Produce a fresh provider-free preflight and an operator-readable one-use authorization request package for the exact accepted v2 freeze.
-
-**Allowed delta:** No code, Provider request, spend consumption, target effect, or authorization issuance. Bind main SHA, all freeze hashes, target, principal/scopes, executor, Provider/model, ceilings, expiry, run ID, evidence locations, and stop rules.
-
-**Exit:** A time-bounded preflight receipt with zero mismatch and a separately reviewable authorization envelope; rerun preflight if its accepted maximum age expires.
-
-**Stop:** Any stale/missing binding, live lease, non-disposable target state, unknown evidence destination, or unresolved Provider/model drift.
 ### Packet PE7-RWE-V2-VIABILITY-RUN-1
 
 **State:** `BLOCKED_PREREQUISITE`
@@ -34,6 +101,26 @@ These packets prove lifecycle viability only. They do not authorize Architecture
 **Prerequisite:** PE7-RWE-V2-VIABILITY-PREFLIGHT-1
 
 **Class:** `EFFECT`
+
+**Execution profile:** `PE7-RWE-V2-VIABILITY-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing `operator_corpus`, `execution_schedule`, `live_baseline_coordinator`, `runner`, and LocalProductStore `rwe_authority` owners; revalidate their exact symbols on promotion.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Recompute v2 corpus/protocol/schedule hashes; validate store-owned authorization, four-cell identities, usage/cost, cleanup, and redaction; run focused RWE plus SQLite/PostgreSQL parity checks when code/store paths are touched.
+
+**Rollback/recovery:** Never delete or rewrite consumed run evidence; revert only analysis/status deltas, retain restricted raw evidence, and resume only from the store-owned terminal/lease state.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. A fresh T3 one-use spend/effect authorization is required only for the run packet.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** Classify `CONTROLLED_FAILURE`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT`; do not retry or advance to measurement readiness until an accepted closeout explicitly permits it.
 
 **Outcome:** Issue one new finite one-use authorization and execute exactly the accepted four-cell v2 schedule once.
 
@@ -49,6 +136,26 @@ These packets prove lifecycle viability only. They do not authorize Architecture
 **Prerequisite:** PE7-RWE-V2-VIABILITY-RUN-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-RWE-V2-VIABILITY-CLOSEOUT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `operator_corpus`, `execution_schedule`, `live_baseline_coordinator`, `runner`, and LocalProductStore `rwe_authority` owners; revalidate their exact symbols on promotion.
+
+**Allowed paths at promotion:** Read existing `engine/src/rwe/**`, `engine/src/storage/local_product_store/rwe_authority.rs`, and `engine/src/bin/rwe_live_baseline.rs`; an EFFECT changes no source, while closeout may change only accepted evidence/status paths named at promotion.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Recompute v2 corpus/protocol/schedule hashes; validate store-owned authorization, four-cell identities, usage/cost, cleanup, and redaction; run focused RWE plus SQLite/PostgreSQL parity checks when code/store paths are touched.
+
+**Rollback/recovery:** Never delete or rewrite consumed run evidence; revert only analysis/status deltas, retain restricted raw evidence, and resume only from the store-owned terminal/lease state.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. A fresh T3 one-use spend/effect authorization is required only for the run packet.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** Classify `CONTROLLED_FAILURE`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT`; do not retry or advance to measurement readiness until an accepted closeout explicitly permits it.
 
 **Outcome:** Independently validate, redact, digest, and classify the v2 run without another Provider request.
 
@@ -69,6 +176,26 @@ These packets make the later comparison decision-grade. All values are frozen be
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-RWE-MR-ESTIMANDS-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing RWE corpus/protocol/schedule and artifact/evidence owners; the measurement specification is a planned contract artifact, not a second evaluator or runtime owner, and must be revalidated on promotion.
+
+**Allowed paths at promotion:** `docs/NEXT_DECISION.md`, the relevant measurement sections of `docs/ARCHITECTURE_BOOK.md`, and a versioned artifact under the existing `engine/rwe/corpora/**` owner only after the contract packet names the exact file.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Schema/hash validation, deterministic dry analysis on synthetic missing/failure cases, contamination and retention negative cases, handoff/security checks, and independent statistical review before freeze.
+
+**Rollback/recovery:** Revert the unobserved contract artifact and docs together; once outcome data is observed, never mutate the protocol—issue a superseding decision packet instead.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. T2 owns statistical, evaluator, retention, and evidence-policy choices; no Provider or target effect is authorized.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Return `DECISION_REQUIRED` for unresolved estimands, sample method, reviewer/retention owner, margins, or evidence access; do not materialize or run the decision baseline.
+
 **Outcome:** Freeze the decision question, primary estimands, hard-gate outcomes, inferential unit, eligible value bases, minimum meaningful effects, non-inferiority margins, and missing/outcome-unknown rules.
 
 **Allowed delta:** Planning evidence only. Repetitions remain nested measurements, not independent tasks; scalar summaries cannot override hard gates.
@@ -83,6 +210,26 @@ These packets make the later comparison decision-grade. All values are frozen be
 **Prerequisite:** PE7-RWE-MR-ESTIMANDS-1
 
 **Class:** `CONTRACT`
+
+**Execution profile:** `PE7-RWE-MR-CORPUS-SAMPLING-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing RWE corpus/protocol/schedule and artifact/evidence owners; the measurement specification is a planned contract artifact, not a second evaluator or runtime owner, and must be revalidated on promotion.
+
+**Allowed paths at promotion:** `docs/NEXT_DECISION.md`, the relevant measurement sections of `docs/ARCHITECTURE_BOOK.md`, and a versioned artifact under the existing `engine/rwe/corpora/**` owner only after the contract packet names the exact file.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Schema/hash validation, deterministic dry analysis on synthetic missing/failure cases, contamination and retention negative cases, handoff/security checks, and independent statistical review before freeze.
+
+**Rollback/recovery:** Revert the unobserved contract artifact and docs together; once outcome data is observed, never mutate the protocol—issue a superseding decision packet instead.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. T2 owns statistical, evaluator, retention, and evidence-policy choices; no Provider or target effect is authorized.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Return `DECISION_REQUIRED` for unresolved estimands, sample method, reviewer/retention owner, margins, or evidence access; do not materialize or run the decision baseline.
 
 **Outcome:** Freeze task-family strata, repositories/languages/difficulty coverage, inclusion/exclusion, contamination screening, repetition nesting, sample-size method, and maximum experiment envelope.
 
@@ -99,6 +246,26 @@ These packets make the later comparison decision-grade. All values are frozen be
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-RWE-MR-OPERATIONS-EVIDENCE-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing RWE corpus/protocol/schedule and artifact/evidence owners; the measurement specification is a planned contract artifact, not a second evaluator or runtime owner, and must be revalidated on promotion.
+
+**Allowed paths at promotion:** `docs/NEXT_DECISION.md`, the relevant measurement sections of `docs/ARCHITECTURE_BOOK.md`, and a versioned artifact under the existing `engine/rwe/corpora/**` owner only after the contract packet names the exact file.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Schema/hash validation, deterministic dry analysis on synthetic missing/failure cases, contamination and retention negative cases, handoff/security checks, and independent statistical review before freeze.
+
+**Rollback/recovery:** Revert the unobserved contract artifact and docs together; once outcome data is observed, never mutate the protocol—issue a superseding decision packet instead.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. T2 owns statistical, evaluator, retention, and evidence-policy choices; no Provider or target effect is authorized.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Return `DECISION_REQUIRED` for unresolved estimands, sample method, reviewer/retention owner, margins, or evidence access; do not materialize or run the decision baseline.
+
 **Outcome:** Freeze reviewer identity/blinding/disagreement rules, environment and drift capture, lifecycle-cost completeness, reconstructable Harness artifacts, and restricted raw/redacted retention/deletion/access policy.
 
 **Allowed delta:** No Provider call or persistence schema change. Reuse existing artifact/evidence owners; define unavailable evidence honestly.
@@ -113,6 +280,26 @@ These packets make the later comparison decision-grade. All values are frozen be
 **Prerequisite:** PE7-RWE-MR-OPERATIONS-EVIDENCE-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-RWE-MR-PROTOCOL-FREEZE-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing RWE corpus/protocol/schedule and artifact/evidence owners; the measurement specification is a planned contract artifact, not a second evaluator or runtime owner, and must be revalidated on promotion.
+
+**Allowed paths at promotion:** `docs/NEXT_DECISION.md`, the relevant measurement sections of `docs/ARCHITECTURE_BOOK.md`, and a versioned artifact under the existing `engine/rwe/corpora/**` owner only after the contract packet names the exact file.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Schema/hash validation, deterministic dry analysis on synthetic missing/failure cases, contamination and retention negative cases, handoff/security checks, and independent statistical review before freeze.
+
+**Rollback/recovery:** Revert the unobserved contract artifact and docs together; once outcome data is observed, never mutate the protocol—issue a superseding decision packet instead.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. T2 owns statistical, evaluator, retention, and evidence-policy choices; no Provider or target effect is authorized.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** Return `DECISION_REQUIRED` for unresolved estimands, sample method, reviewer/retention owner, margins, or evidence access; do not materialize or run the decision baseline.
 
 **Outcome:** Assemble and independently verify the complete decision-baseline plus contemporary-replay protocol.
 
@@ -133,6 +320,26 @@ This stage freezes the runnable artifacts, executes the accepted baseline once, 
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-RWE-DB-SNAPSHOT-CORPUS-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing RWE frozen-corpus, schedule, live coordinator, artifact, and LocalProductStore authority owners; revalidate snapshot and evidence seams against accepted main.
+
+**Allowed paths at promotion:** `engine/rwe/corpora/**`, `engine/src/rwe/**`, existing RWE artifact/store tests, and the exact canonical docs/evidence locations selected by the frozen measurement contract; EFFECT packets change no source.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Byte/hash-identical snapshot reconstruction, allocation/preflight simulation, complete lifecycle-cost and missingness checks, focused RWE tests, parity where persistence is touched, and independent frozen-plan analysis.
+
+**Rollback/recovery:** Revert materialization code/artifacts without deleting accepted snapshots; an executed baseline is immutable evidence and may only be closed out or marked outcome unknown.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. Every live run needs a T3 finite authorization; corpus construction and analysis remain provider-free.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** If sample, drift, contamination, authorization, or evidence completeness fails, close with `INSUFFICIENT`/`OUTCOME_UNKNOWN`; AC0 remains blocked.
+
 **Outcome:** Materialize the frozen task artifacts and a reconstructable pre-AC Harness/config/toolchain snapshot under existing artifact owners.
 
 **Allowed delta:** Provider-free artifact production only. Do not change task semantics, evaluator, budget, runtime owner, or accepted Harness behavior.
@@ -147,6 +354,26 @@ This stage freezes the runnable artifacts, executes the accepted baseline once, 
 **Prerequisite:** PE7-RWE-DB-SNAPSHOT-CORPUS-1
 
 **Class:** `CONTRACT`
+
+**Execution profile:** `PE7-RWE-DB-PREFLIGHT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing RWE frozen-corpus, schedule, live coordinator, artifact, and LocalProductStore authority owners; revalidate snapshot and evidence seams against accepted main.
+
+**Allowed paths at promotion:** `engine/rwe/corpora/**`, `engine/src/rwe/**`, existing RWE artifact/store tests, and the exact canonical docs/evidence locations selected by the frozen measurement contract; EFFECT packets change no source.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Byte/hash-identical snapshot reconstruction, allocation/preflight simulation, complete lifecycle-cost and missingness checks, focused RWE tests, parity where persistence is touched, and independent frozen-plan analysis.
+
+**Rollback/recovery:** Revert materialization code/artifacts without deleting accepted snapshots; an executed baseline is immutable evidence and may only be closed out or marked outcome unknown.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. Every live run needs a T3 finite authorization; corpus construction and analysis remain provider-free.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** If sample, drift, contamination, authorization, or evidence completeness fails, close with `INSUFFICIENT`/`OUTCOME_UNKNOWN`; AC0 remains blocked.
 
 **Outcome:** Run the complete provider-free baseline preflight and prepare finite per-run authorization packages.
 
@@ -163,6 +390,26 @@ This stage freezes the runnable artifacts, executes the accepted baseline once, 
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-RWE-DB-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing RWE frozen-corpus, schedule, live coordinator, artifact, and LocalProductStore authority owners; revalidate snapshot and evidence seams against accepted main.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Byte/hash-identical snapshot reconstruction, allocation/preflight simulation, complete lifecycle-cost and missingness checks, focused RWE tests, parity where persistence is touched, and independent frozen-plan analysis.
+
+**Rollback/recovery:** Revert materialization code/artifacts without deleting accepted snapshots; an executed baseline is immutable evidence and may only be closed out or marked outcome unknown.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. Every live run needs a T3 finite authorization; corpus construction and analysis remain provider-free.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** If sample, drift, contamination, authorization, or evidence completeness fails, close with `INSUFFICIENT`/`OUTCOME_UNKNOWN`; AC0 remains blocked.
+
 **Outcome:** Execute the frozen pre-AC decision baseline under the accepted allocation and finite authorizations.
 
 **Allowed delta:** Only registered task executions and reviews. No selective rerun, hidden failure, task substitution, threshold change, or mid-run protocol repair.
@@ -177,6 +424,26 @@ This stage freezes the runnable artifacts, executes the accepted baseline once, 
 **Prerequisite:** PE7-RWE-DB-RUN-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-RWE-DB-ANALYSIS-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing RWE frozen-corpus, schedule, live coordinator, artifact, and LocalProductStore authority owners; revalidate snapshot and evidence seams against accepted main.
+
+**Allowed paths at promotion:** `engine/rwe/corpora/**`, `engine/src/rwe/**`, existing RWE artifact/store tests, and the exact canonical docs/evidence locations selected by the frozen measurement contract; EFFECT packets change no source.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Byte/hash-identical snapshot reconstruction, allocation/preflight simulation, complete lifecycle-cost and missingness checks, focused RWE tests, parity where persistence is touched, and independent frozen-plan analysis.
+
+**Rollback/recovery:** Revert materialization code/artifacts without deleting accepted snapshots; an executed baseline is immutable evidence and may only be closed out or marked outcome unknown.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. Every live run needs a T3 finite authorization; corpus construction and analysis remain provider-free.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** If sample, drift, contamination, authorization, or evidence completeness fails, close with `INSUFFICIENT`/`OUTCOME_UNKNOWN`; AC0 remains blocked.
 
 **Outcome:** Apply the frozen analysis plan and decide whether the pre-AC baseline is sufficient and safe to carry into convergence.
 
@@ -197,6 +464,26 @@ AC0 inventories and freezes; it makes no production ownership move.
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-AC0-RUNTIME-INVENTORY-1.v1`
+
+**Worker tier:** `T0`
+
+**Owner/seam:** Current Rust runtime, LocalProductStore, wire/codegen/SDK/Dashboard, and test owners discovered from CodeGraph; AC0 creates manifests only and must not invent a convergence owner.
+
+**Allowed paths at promotion:** Read-only inventory across `engine/src/**`, `engine/tests/**`, `wire_contract/**`, `codegen/**`, `sdk/**`, and `dashboard/src/**`; write only the exact versioned manifest and canonical docs selected on promotion.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** CodeGraph call-path coverage plus negative `rg` reconciliation, duplicate/zero-caller checks, dependency-cycle validation, trace replay, handoff/security checks, and independent omission review.
+
+**Rollback/recovery:** Revert manifests/docs as one unit; no runtime rollback is needed because AC0 changes no behavior.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. T0 may collect evidence; T2 must freeze scope/order and resolve ownership conflicts.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Any unowned spawn, mutation group, schema projection, config source, legacy abstraction, or ordering conflict is `DECISION_REQUIRED`; AC1 cannot start from a partial inventory.
+
 **Outcome:** Enumerate every production subprocess spawn/kill/reap site, executor adapter, environment/config read, timeout/cancellation path, and affected test fixture.
 
 **Allowed delta:** Inventory and call-graph evidence only; no refactor or deletion.
@@ -212,6 +499,26 @@ AC0 inventories and freezes; it makes no production ownership move.
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-AC0-DATA-CONTRACT-INVENTORY-1.v1`
+
+**Worker tier:** `T0`
+
+**Owner/seam:** Current Rust runtime, LocalProductStore, wire/codegen/SDK/Dashboard, and test owners discovered from CodeGraph; AC0 creates manifests only and must not invent a convergence owner.
+
+**Allowed paths at promotion:** Read-only inventory across `engine/src/**`, `engine/tests/**`, `wire_contract/**`, `codegen/**`, `sdk/**`, and `dashboard/src/**`; write only the exact versioned manifest and canonical docs selected on promotion.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** CodeGraph call-path coverage plus negative `rg` reconciliation, duplicate/zero-caller checks, dependency-cycle validation, trace replay, handoff/security checks, and independent omission review.
+
+**Rollback/recovery:** Revert manifests/docs as one unit; no runtime rollback is needed because AC0 changes no behavior.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. T0 may collect evidence; T2 must freeze scope/order and resolve ownership conflicts.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Any unowned spawn, mutation group, schema projection, config source, legacy abstraction, or ordering conflict is `DECISION_REQUIRED`; AC1 cannot start from a partial inventory.
+
 **Outcome:** Enumerate Golden Path responsibilities, store transaction entries, schemas/codegen/SDK/Dashboard projections, config construction, and legacy abstractions.
 
 **Allowed delta:** Inventory only. Do not introduce transaction views, schema sources, composition roots, or replacement modules.
@@ -226,6 +533,26 @@ AC0 inventories and freezes; it makes no production ownership move.
 **Prerequisite:** PE7-AC0-DATA-CONTRACT-INVENTORY-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-AC0-TRACE-ORDER-FREEZE-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Current Rust runtime, LocalProductStore, wire/codegen/SDK/Dashboard, and test owners discovered from CodeGraph; AC0 creates manifests only and must not invent a convergence owner.
+
+**Allowed paths at promotion:** Read-only inventory across `engine/src/**`, `engine/tests/**`, `wire_contract/**`, `codegen/**`, `sdk/**`, and `dashboard/src/**`; write only the exact versioned manifest and canonical docs selected on promotion.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** CodeGraph call-path coverage plus negative `rg` reconciliation, duplicate/zero-caller checks, dependency-cycle validation, trace replay, handoff/security checks, and independent omission review.
+
+**Rollback/recovery:** Revert manifests/docs as one unit; no runtime rollback is needed because AC0 changes no behavior.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. T0 may collect evidence; T2 must freeze scope/order and resolve ownership conflicts.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** Any unowned spawn, mutation group, schema projection, config source, legacy abstraction, or ordering conflict is `DECISION_REQUIRED`; AC1 cannot start from a partial inventory.
 
 **Outcome:** Freeze provider-free golden traces, AC dependency order, rollback points, and the exact file-level AC1 contract; bound the candidate surfaces for AC2-AC7.
 
@@ -246,6 +573,26 @@ AC1 converges admitted subprocess lifecycle without taking scheduler, spend, exe
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-AC1-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing per-caller subprocess/executor owners from AC0 plus a [planned seam; not current code] shared `ProcessSupervisor`; revalidate module placement and API before promotion.
+
+**Allowed paths at promotion:** Only exact `engine/src/**` and `engine/tests/**` rows named by the accepted AC0 manifest and AC1 contract; no repository-wide migration glob becomes edit authority.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Spawn failure, bounded stdout/stderr, timeout, cancellation, process-tree kill/reap, late completion, crash/restart, environment/cwd, and behavior-compatibility tests plus full Rust/security checks.
+
+**Rollback/recovery:** Keep the old caller path behind the accepted compatibility boundary until each migration batch passes; revert additive core or one enumerated batch without orphaning children.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Stop on an unenumerated caller, unverifiable child cleanup, platform behavior gap, or need for a second scheduler/executor owner; leave AC2 blocked.
+
 **Outcome:** Freeze ProcessSupervisor interfaces, process identity, executable/args/env/cwd, stdio limits, timeout/cancel/kill/reap, child cleanup, outcome taxonomy, adapters, and caller migration order.
 
 **Allowed delta:** Current-main contract expansion only; no process behavior change.
@@ -261,6 +608,26 @@ AC1 converges admitted subprocess lifecycle without taking scheduler, spend, exe
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-AC1-SUPERVISOR-CORE-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing per-caller subprocess/executor owners from AC0 plus a [planned seam; not current code] shared `ProcessSupervisor`; revalidate module placement and API before promotion.
+
+**Allowed paths at promotion:** Only exact `engine/src/**` and `engine/tests/**` rows named by the accepted AC0 manifest and AC1 contract; no repository-wide migration glob becomes edit authority.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Spawn failure, bounded stdout/stderr, timeout, cancellation, process-tree kill/reap, late completion, crash/restart, environment/cwd, and behavior-compatibility tests plus full Rust/security checks.
+
+**Rollback/recovery:** Keep the old caller path behind the accepted compatibility boundary until each migration batch passes; revert additive core or one enumerated batch without orphaning children.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Stop on an unenumerated caller, unverifiable child cleanup, platform behavior gap, or need for a second scheduler/executor owner; leave AC2 blocked.
+
 **Outcome:** Add the shared supervisor core and typed process outcome behind existing behavior.
 
 **Allowed delta:** Additive core only; existing callers remain on compatibility adapters and observed behavior stays golden-trace equivalent.
@@ -275,6 +642,26 @@ AC1 converges admitted subprocess lifecycle without taking scheduler, spend, exe
 **Prerequisite:** PE7-AC1-SUPERVISOR-CORE-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-AC1-CALLER-MIGRATION-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing per-caller subprocess/executor owners from AC0 plus a [planned seam; not current code] shared `ProcessSupervisor`; revalidate module placement and API before promotion.
+
+**Allowed paths at promotion:** Only exact `engine/src/**` and `engine/tests/**` rows named by the accepted AC0 manifest and AC1 contract; no repository-wide migration glob becomes edit authority.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Spawn failure, bounded stdout/stderr, timeout, cancellation, process-tree kill/reap, late completion, crash/restart, environment/cwd, and behavior-compatibility tests plus full Rust/security checks.
+
+**Rollback/recovery:** Keep the old caller path behind the accepted compatibility boundary until each migration batch passes; revert additive core or one enumerated batch without orphaning children.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Stop on an unenumerated caller, unverifiable child cleanup, platform behavior gap, or need for a second scheduler/executor owner; leave AC2 blocked.
 
 **Outcome:** Migrate the AC0-enumerated caller groups to ProcessSupervisor and close the AC1 compatibility layer.
 
@@ -295,6 +682,26 @@ AC2 distinguishes effect and outcome states while leaving admission, leases, spe
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-AC2-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `executor_adapter`, `node_executor`, provider executor, CLI executor, and scheduler result owners plus a [planned seam; not current code] typed execution boundary; revalidate exact mappings.
+
+**Allowed paths at promotion:** Only AC0/AC1-enumerated files under `engine/src/{provider,cli,scheduler}/**`, `engine/src/*executor*.rs`, and their exact tests, narrowed in the promoted contract.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Exhaustive executor outcome/usage mapping, unknown variant fail-closed, timeout/outcome-unknown compatibility, serialization/tamper tests, and full Rust plus integration checks.
+
+**Rollback/recovery:** Retain accepted adapters until all named callers migrate; revert one mapping batch and preserve durable legacy outcome interpretation.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** An unmappable executor result, schema need, or semantic change outside the frozen table is `DECISION_REQUIRED`; do not coerce unknown states to success.
+
 **Outcome:** Freeze the typed execution state/outcome/usage contract and executor-specific mapping table.
 
 **Allowed delta:** No wire/schema or runtime change until compatibility and failure mappings are accepted.
@@ -310,6 +717,26 @@ AC2 distinguishes effect and outcome states while leaving admission, leases, spe
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-AC2-BOUNDARY-CORE-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing `executor_adapter`, `node_executor`, provider executor, CLI executor, and scheduler result owners plus a [planned seam; not current code] typed execution boundary; revalidate exact mappings.
+
+**Allowed paths at promotion:** Only AC0/AC1-enumerated files under `engine/src/{provider,cli,scheduler}/**`, `engine/src/*executor*.rs`, and their exact tests, narrowed in the promoted contract.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Exhaustive executor outcome/usage mapping, unknown variant fail-closed, timeout/outcome-unknown compatibility, serialization/tamper tests, and full Rust plus integration checks.
+
+**Rollback/recovery:** Retain accepted adapters until all named callers migrate; revert one mapping batch and preserve durable legacy outcome interpretation.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** An unmappable executor result, schema need, or semantic change outside the frozen table is `DECISION_REQUIRED`; do not coerce unknown states to success.
+
 **Outcome:** Implement the typed boundary and adapters without migrating all callers.
 
 **Allowed delta:** Additive types/mappers only; no second executor, journal, scheduler, budget, or public behavior owner.
@@ -324,6 +751,26 @@ AC2 distinguishes effect and outcome states while leaving admission, leases, spe
 **Prerequisite:** PE7-AC2-BOUNDARY-CORE-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-AC2-CALLER-MIGRATION-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing `executor_adapter`, `node_executor`, provider executor, CLI executor, and scheduler result owners plus a [planned seam; not current code] typed execution boundary; revalidate exact mappings.
+
+**Allowed paths at promotion:** Only AC0/AC1-enumerated files under `engine/src/{provider,cli,scheduler}/**`, `engine/src/*executor*.rs`, and their exact tests, narrowed in the promoted contract.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Exhaustive executor outcome/usage mapping, unknown variant fail-closed, timeout/outcome-unknown compatibility, serialization/tamper tests, and full Rust plus integration checks.
+
+**Rollback/recovery:** Retain accepted adapters until all named callers migrate; revert one mapping batch and preserve durable legacy outcome interpretation.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** An unmappable executor result, schema need, or semantic change outside the frozen table is `DECISION_REQUIRED`; do not coerce unknown states to success.
 
 **Outcome:** Migrate enumerated executors/callers and remove only superseded internal result plumbing approved by the contract.
 
@@ -344,6 +791,26 @@ AC3 separates orchestration, store mutation, and external effects without changi
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-AC3-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `engine/src/product_golden_path.rs` and LocalProductStore `product_tasks` owners plus a [planned seam; not current code] pure orchestration decision layer; revalidate effect-port boundaries.
+
+**Allowed paths at promotion:** `engine/src/product_golden_path.rs`, exact product-task/store modules, entrypoints, and focused tests named by the AC3 contract; no parallel workflow, approval, output, or audit owner.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Golden traces, role/authority negatives, exactly-once output, lease/restart/late-write, cleanup/compensation, SQLite/PostgreSQL parity, and full Product Golden Path tests.
+
+**Rollback/recovery:** Migrate behind current entrypoints, preserve durable state compatibility, and revert one port batch to the prior owner without replaying an external effect.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Stop on ownership ambiguity, effect-before-authority, non-replayable transition, or schema change not frozen by the contract; AC4 remains blocked.
+
 **Outcome:** Freeze the Golden Path responsibility matrix, state transitions, audit identities, pure inputs/outputs, effect ports, store commands, and migration sequence.
 
 **Allowed delta:** No endpoint, state, persistence, Provider, approval, output, or terminal behavior change.
@@ -359,6 +826,26 @@ AC3 separates orchestration, store mutation, and external effects without changi
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-AC3-ORCHESTRATOR-CORE-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing `engine/src/product_golden_path.rs` and LocalProductStore `product_tasks` owners plus a [planned seam; not current code] pure orchestration decision layer; revalidate effect-port boundaries.
+
+**Allowed paths at promotion:** `engine/src/product_golden_path.rs`, exact product-task/store modules, entrypoints, and focused tests named by the AC3 contract; no parallel workflow, approval, output, or audit owner.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Golden traces, role/authority negatives, exactly-once output, lease/restart/late-write, cleanup/compensation, SQLite/PostgreSQL parity, and full Product Golden Path tests.
+
+**Rollback/recovery:** Migrate behind current entrypoints, preserve durable state compatibility, and revert one port batch to the prior owner without replaying an external effect.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Stop on ownership ambiguity, effect-before-authority, non-replayable transition, or schema change not frozen by the contract; AC4 remains blocked.
+
 **Outcome:** Extract the pure orchestration decision layer behind current entrypoints.
 
 **Allowed delta:** Pure computation and compatibility façade only; no direct store or external effect in the extracted core.
@@ -373,6 +860,26 @@ AC3 separates orchestration, store mutation, and external effects without changi
 **Prerequisite:** PE7-AC3-ORCHESTRATOR-CORE-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-AC3-PORT-MIGRATION-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing `engine/src/product_golden_path.rs` and LocalProductStore `product_tasks` owners plus a [planned seam; not current code] pure orchestration decision layer; revalidate effect-port boundaries.
+
+**Allowed paths at promotion:** `engine/src/product_golden_path.rs`, exact product-task/store modules, entrypoints, and focused tests named by the AC3 contract; no parallel workflow, approval, output, or audit owner.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Golden traces, role/authority negatives, exactly-once output, lease/restart/late-write, cleanup/compensation, SQLite/PostgreSQL parity, and full Product Golden Path tests.
+
+**Rollback/recovery:** Migrate behind current entrypoints, preserve durable state compatibility, and revert one port batch to the prior owner without replaying an external effect.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Stop on ownership ambiguity, effect-before-authority, non-replayable transition, or schema change not frozen by the contract; AC4 remains blocked.
 
 **Outcome:** Route store mutations and external effects through the accepted ports and migrate existing entrypoints.
 
@@ -393,6 +900,26 @@ AC4 adds borrowed domain views over one underlying LocalProductStore transaction
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-AC4-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Sole LocalProductStore owner in `engine/src/storage/local_product_store/**` plus [planned seams; not current code] borrowed transaction views for only AC0-proven mutation groups; revalidate both backends.
+
+**Allowed paths at promotion:** Exact LocalProductStore modules, `schema.rs`, `migrations.rs`, PostgreSQL backend files, and parity tests named by the contract; never create a second store or generic transaction framework.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Atomic commit/rollback, borrow/lifetime boundary, nested-call refusal, deadlock/concurrency, crash/restart, idempotency, migration rollback, and SQLite/PostgreSQL parity tests.
+
+**Rollback/recovery:** Keep old entrypoints until migrated; revert view/core and caller batch with the accepted migration rollback, never manual database surgery.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. T2 review is mandatory for transaction, schema, concurrency, and recovery decisions.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Stop if a mutation group is not truly atomic across owners, parity cannot be proved, or recovery requires broadening the store boundary.
+
 **Outcome:** Freeze only the repeated cross-domain mutation groups that justify transaction views, including borrow/commit/rollback rules and backend parity.
 
 **Allowed delta:** No schema or transaction behavior change.
@@ -408,6 +935,26 @@ AC4 adds borrowed domain views over one underlying LocalProductStore transaction
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-AC4-VIEWS-CORE-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Sole LocalProductStore owner in `engine/src/storage/local_product_store/**` plus [planned seams; not current code] borrowed transaction views for only AC0-proven mutation groups; revalidate both backends.
+
+**Allowed paths at promotion:** Exact LocalProductStore modules, `schema.rs`, `migrations.rs`, PostgreSQL backend files, and parity tests named by the contract; never create a second store or generic transaction framework.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Atomic commit/rollback, borrow/lifetime boundary, nested-call refusal, deadlock/concurrency, crash/restart, idempotency, migration rollback, and SQLite/PostgreSQL parity tests.
+
+**Rollback/recovery:** Keep old entrypoints until migrated; revert view/core and caller batch with the accepted migration rollback, never manual database surgery.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. T2 review is mandatory for transaction, schema, concurrency, and recovery decisions.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Stop if a mutation group is not truly atomic across owners, parity cannot be proved, or recovery requires broadening the store boundary.
+
 **Outcome:** Implement the accepted borrowed transaction views for SQLite and PostgreSQL.
 
 **Allowed delta:** Additive internal API only; same underlying transaction/connection, locks, audit, and rollback semantics.
@@ -422,6 +969,26 @@ AC4 adds borrowed domain views over one underlying LocalProductStore transaction
 **Prerequisite:** PE7-AC4-VIEWS-CORE-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-AC4-CALLER-MIGRATION-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Sole LocalProductStore owner in `engine/src/storage/local_product_store/**` plus [planned seams; not current code] borrowed transaction views for only AC0-proven mutation groups; revalidate both backends.
+
+**Allowed paths at promotion:** Exact LocalProductStore modules, `schema.rs`, `migrations.rs`, PostgreSQL backend files, and parity tests named by the contract; never create a second store or generic transaction framework.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Atomic commit/rollback, borrow/lifetime boundary, nested-call refusal, deadlock/concurrency, crash/restart, idempotency, migration rollback, and SQLite/PostgreSQL parity tests.
+
+**Rollback/recovery:** Keep old entrypoints until migrated; revert view/core and caller batch with the accepted migration rollback, never manual database surgery.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. T2 review is mandatory for transaction, schema, concurrency, and recovery decisions.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Stop if a mutation group is not truly atomic across owners, parity cannot be proved, or recovery requires broadening the store boundary.
 
 **Outcome:** Migrate only the contract-enumerated cross-domain callers and close redundant transaction plumbing.
 
@@ -442,6 +1009,26 @@ AC5 centralizes parsing, validation, and dependency construction while keeping e
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-AC5-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `engine/src/main.rs`, CLI/provider/store config, HTTP server state, and startup owners plus a [planned seam; not current code] validated Rust composition root; revalidate precedence and secret resolution.
+
+**Allowed paths at promotion:** Exact startup/config modules under `engine/src/**` and tests enumerated by the AC5 contract; environment reads outside that manifest remain untouched until separately migrated.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Configuration precedence matrix, missing/invalid/secret-shaped inputs, mode graph, deterministic construction, startup failure, compatibility, and full server/runtime tests.
+
+**Rollback/recovery:** Preserve old constructors behind one rollback point until all named modules migrate; revert a batch without changing stored config or exposing credentials.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Conflicting precedence, runtime-global reads not in AC0, cyclic dependencies, or secret material crossing the resolver boundary is `DECISION_REQUIRED`.
+
 **Outcome:** Freeze configuration sources, precedence, validated types, dependency graph, runtime modes, secret-resolution boundary, and module migration batches.
 
 **Allowed delta:** No configuration behavior change and no new environment variable.
@@ -457,6 +1044,26 @@ AC5 centralizes parsing, validation, and dependency construction while keeping e
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-AC5-ROOT-CORE-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing `engine/src/main.rs`, CLI/provider/store config, HTTP server state, and startup owners plus a [planned seam; not current code] validated Rust composition root; revalidate precedence and secret resolution.
+
+**Allowed paths at promotion:** Exact startup/config modules under `engine/src/**` and tests enumerated by the AC5 contract; environment reads outside that manifest remain untouched until separately migrated.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Configuration precedence matrix, missing/invalid/secret-shaped inputs, mode graph, deterministic construction, startup failure, compatibility, and full server/runtime tests.
+
+**Rollback/recovery:** Preserve old constructors behind one rollback point until all named modules migrate; revert a batch without changing stored config or exposing credentials.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Conflicting precedence, runtime-global reads not in AC0, cyclic dependencies, or secret material crossing the resolver boundary is `DECISION_REQUIRED`.
+
 **Outcome:** Implement validated configuration/dependency construction in the existing Rust startup composition surface.
 
 **Allowed delta:** Additive root and compatibility injection only; no module migration or mode-default change beyond the contract.
@@ -471,6 +1078,26 @@ AC5 centralizes parsing, validation, and dependency construction while keeping e
 **Prerequisite:** PE7-AC5-ROOT-CORE-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-AC5-MODULE-MIGRATION-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing `engine/src/main.rs`, CLI/provider/store config, HTTP server state, and startup owners plus a [planned seam; not current code] validated Rust composition root; revalidate precedence and secret resolution.
+
+**Allowed paths at promotion:** Exact startup/config modules under `engine/src/**` and tests enumerated by the AC5 contract; environment reads outside that manifest remain untouched until separately migrated.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Configuration precedence matrix, missing/invalid/secret-shaped inputs, mode graph, deterministic construction, startup failure, compatibility, and full server/runtime tests.
+
+**Rollback/recovery:** Preserve old constructors behind one rollback point until all named modules migrate; revert a batch without changing stored config or exposing credentials.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Conflicting precedence, runtime-global reads not in AC0, cyclic dependencies, or secret material crossing the resolver boundary is `DECISION_REQUIRED`.
 
 **Outcome:** Migrate contract-enumerated modules off independent shared environment/config interpretation and remove approved legacy reads.
 
@@ -491,6 +1118,26 @@ AC6 makes affected Rust contracts authoritative and migrates each consumer famil
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-AC6-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Authoritative Rust types plus existing `wire_contract`, `codegen/generate_wire_types.py`, SDK, and Dashboard data-projection owners; revalidate producer/consumer matrix before edits.
+
+**Allowed paths at promotion:** Exact Rust type modules, `wire_contract/**`, `codegen/**`, `sdk/python/**`, `sdk/typescript/**`, and Dashboard data types/API consumers named by contract; presentation redesign is excluded.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Rust serialization/golden tests, `bash scripts/check_wire_codegen_drift.sh`, `bash scripts/verify_rust_typescript_stack.sh`, Python/TypeScript SDK tests, Dashboard typecheck/tests, compatibility and downgrade fixtures.
+
+**Rollback/recovery:** Use the frozen compatibility/deprecation window and reversible migration order; restore prior generated artifacts and dual-read/write behavior as one reviewed rollback.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. Schema/version choices require T2; AC6 Dashboard work is data migration, not the final presentation refresh.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Unknown consumer, non-deterministic codegen, wire break, migration ambiguity, or presentation request is `DECISION_REQUIRED`; AC7 cannot delete compatibility early.
+
 **Outcome:** Freeze authoritative Rust types, wire/schema projections, compatibility matrix, version/deprecation window, migration ordering, and rollback.
 
 **Allowed delta:** No field/type change until old-reader/new-writer and consumer impact are explicit.
@@ -505,6 +1152,26 @@ AC6 makes affected Rust contracts authoritative and migrates each consumer famil
 **Prerequisite:** PE7-AC6-CONTRACT-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-AC6-RUST-CODEGEN-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Authoritative Rust types plus existing `wire_contract`, `codegen/generate_wire_types.py`, SDK, and Dashboard data-projection owners; revalidate producer/consumer matrix before edits.
+
+**Allowed paths at promotion:** Exact Rust type modules, `wire_contract/**`, `codegen/**`, `sdk/python/**`, `sdk/typescript/**`, and Dashboard data types/API consumers named by contract; presentation redesign is excluded.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Rust serialization/golden tests, `bash scripts/check_wire_codegen_drift.sh`, `bash scripts/verify_rust_typescript_stack.sh`, Python/TypeScript SDK tests, Dashboard typecheck/tests, compatibility and downgrade fixtures.
+
+**Rollback/recovery:** Use the frozen compatibility/deprecation window and reversible migration order; restore prior generated artifacts and dual-read/write behavior as one reviewed rollback.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. Schema/version choices require T2; AC6 Dashboard work is data migration, not the final presentation refresh.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Unknown consumer, non-deterministic codegen, wire break, migration ambiguity, or presentation request is `DECISION_REQUIRED`; AC7 cannot delete compatibility early.
 
 **Outcome:** Implement the Rust source types and deterministic schema/codegen projections.
 
@@ -521,6 +1188,26 @@ AC6 makes affected Rust contracts authoritative and migrates each consumer famil
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-AC6-SDK-MIGRATION-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Authoritative Rust types plus existing `wire_contract`, `codegen/generate_wire_types.py`, SDK, and Dashboard data-projection owners; revalidate producer/consumer matrix before edits.
+
+**Allowed paths at promotion:** Exact Rust type modules, `wire_contract/**`, `codegen/**`, `sdk/python/**`, `sdk/typescript/**`, and Dashboard data types/API consumers named by contract; presentation redesign is excluded.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Rust serialization/golden tests, `bash scripts/check_wire_codegen_drift.sh`, `bash scripts/verify_rust_typescript_stack.sh`, Python/TypeScript SDK tests, Dashboard typecheck/tests, compatibility and downgrade fixtures.
+
+**Rollback/recovery:** Use the frozen compatibility/deprecation window and reversible migration order; restore prior generated artifacts and dual-read/write behavior as one reviewed rollback.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. Schema/version choices require T2; AC6 Dashboard work is data migration, not the final presentation refresh.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Unknown consumer, non-deterministic codegen, wire break, migration ambiguity, or presentation request is `DECISION_REQUIRED`; AC7 cannot delete compatibility early.
+
 **Outcome:** Migrate SDK consumers to generated/versioned contracts.
 
 **Allowed delta:** SDK projection/adapters/tests only; no backend authority or Dashboard change.
@@ -536,6 +1223,26 @@ AC6 makes affected Rust contracts authoritative and migrates each consumer famil
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-AC6-DASHBOARD-MIGRATION-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Authoritative Rust types plus existing `wire_contract`, `codegen/generate_wire_types.py`, SDK, and Dashboard data-projection owners; revalidate producer/consumer matrix before edits.
+
+**Allowed paths at promotion:** Exact Rust type modules, `wire_contract/**`, `codegen/**`, `sdk/python/**`, `sdk/typescript/**`, and Dashboard data types/API consumers named by contract; presentation redesign is excluded.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Rust serialization/golden tests, `bash scripts/check_wire_codegen_drift.sh`, `bash scripts/verify_rust_typescript_stack.sh`, Python/TypeScript SDK tests, Dashboard typecheck/tests, compatibility and downgrade fixtures.
+
+**Rollback/recovery:** Use the frozen compatibility/deprecation window and reversible migration order; restore prior generated artifacts and dual-read/write behavior as one reviewed rollback.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. Schema/version choices require T2; AC6 Dashboard work is data migration, not the final presentation refresh.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Unknown consumer, non-deterministic codegen, wire break, migration ambiguity, or presentation request is `DECISION_REQUIRED`; AC7 cannot delete compatibility early.
+
 **Outcome:** Migrate Dashboard data projections to the accepted generated/versioned contracts without presentation redesign.
 
 **Allowed delta:** Data/type adapters and tests only; no workflow, evaluator, spend, approval, adoption, or output authority.
@@ -550,6 +1257,26 @@ AC6 makes affected Rust contracts authoritative and migrates each consumer famil
 **Prerequisite:** PE7-AC6-DASHBOARD-MIGRATION-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-AC6-COMPATIBILITY-CLOSEOUT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Authoritative Rust types plus existing `wire_contract`, `codegen/generate_wire_types.py`, SDK, and Dashboard data-projection owners; revalidate producer/consumer matrix before edits.
+
+**Allowed paths at promotion:** Exact Rust type modules, `wire_contract/**`, `codegen/**`, `sdk/python/**`, `sdk/typescript/**`, and Dashboard data types/API consumers named by contract; presentation redesign is excluded.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Rust serialization/golden tests, `bash scripts/check_wire_codegen_drift.sh`, `bash scripts/verify_rust_typescript_stack.sh`, Python/TypeScript SDK tests, Dashboard typecheck/tests, compatibility and downgrade fixtures.
+
+**Rollback/recovery:** Use the frozen compatibility/deprecation window and reversible migration order; restore prior generated artifacts and dual-read/write behavior as one reviewed rollback.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. Schema/version choices require T2; AC6 Dashboard work is data migration, not the final presentation refresh.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** Unknown consumer, non-deterministic codegen, wire break, migration ambiguity, or presentation request is `DECISION_REQUIRED`; AC7 cannot delete compatibility early.
 
 **Outcome:** Verify every affected producer/consumer, deprecation window, migration, rollback, and drift guard before AC7.
 
@@ -570,6 +1297,26 @@ AC7 deletes only surfaces proven obsolete by accepted inventory and completed mi
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-AC7-REMOVAL-MANIFEST-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** The accepted AC0 inventory and AC1-AC6 owners; AC7 deletes only zero-caller items in the frozen removal manifest and creates no replacement owner.
+
+**Allowed paths at promotion:** Only exact files/symbols listed in the accepted removal manifest plus mechanically affected tests/docs; no broad directory deletion or guessed legacy cleanup.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** CodeGraph plus negative `rg` zero-caller proof, compatibility fixtures, full Rust/SDK/Dashboard checks as applicable, migration/recovery evidence, security/handoff, and diff review.
+
+**Rollback/recovery:** One removal batch equals one revertable owner group; restore deleted compatibility code and its tests without rolling back unrelated accepted convergence.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Any live/dynamic caller, unresolved deprecation window, missing rollback, or behavior delta stops deletion and routes a new contract decision.
+
 **Outcome:** Freeze a deletion manifest grouped by one canonical owner and rollback point, with zero-caller proof and compatibility disposition per item.
 
 **Allowed delta:** Reference searches and evidence only; no deletion.
@@ -585,6 +1332,26 @@ AC7 deletes only surfaces proven obsolete by accepted inventory and completed mi
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-AC7-CLEANUP-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** The accepted AC0 inventory and AC1-AC6 owners; AC7 deletes only zero-caller items in the frozen removal manifest and creates no replacement owner.
+
+**Allowed paths at promotion:** Only exact files/symbols listed in the accepted removal manifest plus mechanically affected tests/docs; no broad directory deletion or guessed legacy cleanup.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** CodeGraph plus negative `rg` zero-caller proof, compatibility fixtures, full Rust/SDK/Dashboard checks as applicable, migration/recovery evidence, security/handoff, and diff review.
+
+**Rollback/recovery:** One removal batch equals one revertable owner group; restore deleted compatibility code and its tests without rolling back unrelated accepted convergence.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Any live/dynamic caller, unresolved deprecation window, missing rollback, or behavior delta stops deletion and routes a new contract decision.
+
 **Outcome:** Delete the approved obsolete batches and mechanically repair references.
 
 **Allowed delta:** Deletion only; no new feature, owner, schema, abstraction, or behavior.
@@ -599,6 +1366,26 @@ AC7 deletes only surfaces proven obsolete by accepted inventory and completed mi
 **Prerequisite:** PE7-AC7-CLEANUP-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-AC7-CLOSEOUT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** The accepted AC0 inventory and AC1-AC6 owners; AC7 deletes only zero-caller items in the frozen removal manifest and creates no replacement owner.
+
+**Allowed paths at promotion:** Only exact files/symbols listed in the accepted removal manifest plus mechanically affected tests/docs; no broad directory deletion or guessed legacy cleanup.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** CodeGraph plus negative `rg` zero-caller proof, compatibility fixtures, full Rust/SDK/Dashboard checks as applicable, migration/recovery evidence, security/handoff, and diff review.
+
+**Rollback/recovery:** One removal batch equals one revertable owner group; restore deleted compatibility code and its tests without rolling back unrelated accepted convergence.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** Any live/dynamic caller, unresolved deprecation window, missing rollback, or behavior delta stops deletion and routes a new contract decision.
 
 **Outcome:** Independently verify convergence completeness and preserve the reconstructable pre/post Harness identities.
 
@@ -619,6 +1406,26 @@ The causal comparison uses reconstructable old/new Harnesses in one randomized/i
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-RWE-CR-RECONSTRUCTION-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing RWE corpus/schedule/coordinator/evidence owners and accepted pre/post Harness artifacts; add no benchmark runtime or evaluator owner, and revalidate both identities.
+
+**Allowed paths at promotion:** Exact existing RWE/artifact paths and isolated reconstruction fixtures named by the protocol; EFFECT changes no source and writes only restricted evidence.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Hash-bound old/new reconstruction, deterministic allocation/interleaving simulation, drift and contamination negatives, full cost/missingness capture, RWE tests, and independent frozen analysis.
+
+**Rollback/recovery:** Revert reconstruction helpers without deleting either Harness snapshot; executed comparisons are immutable and cannot be selectively rerun.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. The replay run requires T3 finite authority; reconstruction and analysis are provider-free and blinded where frozen.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Return `NO_GO`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT` when registered gates fail; do not enter EC1 or claim architecture causality.
+
 **Outcome:** Rebuild and provider-free validate the frozen pre-AC Harness beside the accepted post-AC Harness under isolated identities.
 
 **Allowed delta:** Reconstruction adapters/artifacts only; neither Harness behavior, corpus, evaluator, or Provider route changes.
@@ -633,6 +1440,26 @@ The causal comparison uses reconstructable old/new Harnesses in one randomized/i
 **Prerequisite:** PE7-RWE-CR-RECONSTRUCTION-1
 
 **Class:** `CONTRACT`
+
+**Execution profile:** `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing RWE corpus/schedule/coordinator/evidence owners and accepted pre/post Harness artifacts; add no benchmark runtime or evaluator owner, and revalidate both identities.
+
+**Allowed paths at promotion:** Exact existing RWE/artifact paths and isolated reconstruction fixtures named by the protocol; EFFECT changes no source and writes only restricted evidence.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Hash-bound old/new reconstruction, deterministic allocation/interleaving simulation, drift and contamination negatives, full cost/missingness capture, RWE tests, and independent frozen analysis.
+
+**Rollback/recovery:** Revert reconstruction helpers without deleting either Harness snapshot; executed comparisons are immutable and cannot be selectively rerun.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. The replay run requires T3 finite authority; reconstruction and analysis are provider-free and blinded where frozen.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Return `NO_GO`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT` when registered gates fail; do not enter EC1 or claim architecture causality.
 
 **Outcome:** Freeze randomization/interleaving, allocation concealment, drift covariates, capacity, finite authorizations, and immediate preflight.
 
@@ -649,6 +1476,26 @@ The causal comparison uses reconstructable old/new Harnesses in one randomized/i
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-RWE-CR-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing RWE corpus/schedule/coordinator/evidence owners and accepted pre/post Harness artifacts; add no benchmark runtime or evaluator owner, and revalidate both identities.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Hash-bound old/new reconstruction, deterministic allocation/interleaving simulation, drift and contamination negatives, full cost/missingness capture, RWE tests, and independent frozen analysis.
+
+**Rollback/recovery:** Revert reconstruction helpers without deleting either Harness snapshot; executed comparisons are immutable and cannot be selectively rerun.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. The replay run requires T3 finite authority; reconstruction and analysis are provider-free and blinded where frozen.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** Return `NO_GO`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT` when registered gates fail; do not enter EC1 or claim architecture causality.
+
 **Outcome:** Execute the randomized/interleaved old/new replay exactly once under accepted global stop rules.
 
 **Allowed delta:** Registered effects only; no arm-specific retry, schedule change, or protocol repair.
@@ -663,6 +1510,26 @@ The causal comparison uses reconstructable old/new Harnesses in one randomized/i
 **Prerequisite:** PE7-RWE-CR-RUN-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-RWE-CR-ANALYSIS-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing RWE corpus/schedule/coordinator/evidence owners and accepted pre/post Harness artifacts; add no benchmark runtime or evaluator owner, and revalidate both identities.
+
+**Allowed paths at promotion:** Exact existing RWE/artifact paths and isolated reconstruction fixtures named by the protocol; EFFECT changes no source and writes only restricted evidence.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Hash-bound old/new reconstruction, deterministic allocation/interleaving simulation, drift and contamination negatives, full cost/missingness capture, RWE tests, and independent frozen analysis.
+
+**Rollback/recovery:** Revert reconstruction helpers without deleting either Harness snapshot; executed comparisons are immutable and cannot be selectively rerun.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. The replay run requires T3 finite authority; reconstruction and analysis are provider-free and blinded where frozen.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** Return `NO_GO`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT` when registered gates fail; do not enter EC1 or claim architecture causality.
 
 **Outcome:** Estimate the registered AC effect and decide Harness-Evolution eligibility.
 
@@ -689,6 +1556,26 @@ All three records are redacted, hash-bound, replayable, and must retain `unknown
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-EC1-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `engine/src/harness_evolution.rs` and LocalProductStore `harness_evolution.rs` owners plus [planned seams; not current code] causal evidence and mutation-manifest types; revalidate placement.
+
+**Allowed paths at promotion:** Those two owner files, exact artifact/schema/migration modules, and HE tests named by contract; no second artifact/store owner and no candidate-controlled identity.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Canonical hash/tamper, stale parent, duplicate lineage, invalidation, missing causal source, mutation-family allowlist, restart/parity, and provider-free generation fixture tests.
+
+**Rollback/recovery:** Add types/records compatibly, preserve immutable prior identities, and roll back new admissions without deleting lineage or failure evidence.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. T2 owns identity/schema/causal contracts even when T1 performs mechanical serialization work.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Unaddressable causal evidence, mutable identity, unbounded generator, or store-owner conflict is `DECISION_REQUIRED`; EC2 remains blocked.
+
 **Outcome:** Freeze active-Harness, candidate, parent, generator, lineage, mutation-family, identity-hash, invalidation, budget, `FailurePatternEvidenceV1`, `MutationHypothesisManifestV1`, and `PredictionOutcomeV1` bindings.
 
 **Allowed delta:** No candidate generation, evaluation, or persistence change.
@@ -703,6 +1590,26 @@ All three records are redacted, hash-bound, replayable, and must retain `unknown
 **Prerequisite:** PE7-HE-EC1-CONTRACT-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-HE-EC1-IDENTITY-LINEAGE-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `engine/src/harness_evolution.rs` and LocalProductStore `harness_evolution.rs` owners plus [planned seams; not current code] causal evidence and mutation-manifest types; revalidate placement.
+
+**Allowed paths at promotion:** Those two owner files, exact artifact/schema/migration modules, and HE tests named by contract; no second artifact/store owner and no candidate-controlled identity.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Canonical hash/tamper, stale parent, duplicate lineage, invalidation, missing causal source, mutation-family allowlist, restart/parity, and provider-free generation fixture tests.
+
+**Rollback/recovery:** Add types/records compatibly, preserve immutable prior identities, and roll back new admissions without deleting lineage or failure evidence.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. T2 owns identity/schema/causal contracts even when T1 performs mechanical serialization work.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Unaddressable causal evidence, mutable identity, unbounded generator, or store-owner conflict is `DECISION_REQUIRED`; EC2 remains blocked.
 
 **Outcome:** Implement immutable identity and lineage recording under existing artifact/store owners, including source identities for later causal manifests.
 
@@ -719,6 +1626,26 @@ All three records are redacted, hash-bound, replayable, and must retain `unknown
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-HE-EC1-CAUSAL-MANIFEST-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `engine/src/harness_evolution.rs` and LocalProductStore `harness_evolution.rs` owners plus [planned seams; not current code] causal evidence and mutation-manifest types; revalidate placement.
+
+**Allowed paths at promotion:** Those two owner files, exact artifact/schema/migration modules, and HE tests named by contract; no second artifact/store owner and no candidate-controlled identity.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Canonical hash/tamper, stale parent, duplicate lineage, invalidation, missing causal source, mutation-family allowlist, restart/parity, and provider-free generation fixture tests.
+
+**Rollback/recovery:** Add types/records compatibly, preserve immutable prior identities, and roll back new admissions without deleting lineage or failure evidence.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. T2 owns identity/schema/causal contracts even when T1 performs mechanical serialization work.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Unaddressable causal evidence, mutable identity, unbounded generator, or store-owner conflict is `DECISION_REQUIRED`; EC2 remains blocked.
+
 **Outcome:** Implement validation and immutable persistence for source-bound failure-pattern evidence and pre-execution mutation hypotheses by extending the existing Harness-Evolution artifact/store owner.
 
 **Allowed delta:** Redacted records, hashes, validation, and feedback-evidence adapters only; no candidate execution, evaluator result, selection, or admission-policy change.
@@ -733,6 +1660,26 @@ All three records are redacted, hash-bound, replayable, and must retain `unknown
 **Prerequisite:** PE7-HE-EC1-CAUSAL-MANIFEST-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-HE-EC1-MUTATION-REGISTRY-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `engine/src/harness_evolution.rs` and LocalProductStore `harness_evolution.rs` owners plus [planned seams; not current code] causal evidence and mutation-manifest types; revalidate placement.
+
+**Allowed paths at promotion:** Those two owner files, exact artifact/schema/migration modules, and HE tests named by contract; no second artifact/store owner and no candidate-controlled identity.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Canonical hash/tamper, stale parent, duplicate lineage, invalidation, missing causal source, mutation-family allowlist, restart/parity, and provider-free generation fixture tests.
+
+**Rollback/recovery:** Add types/records compatibly, preserve immutable prior identities, and roll back new admissions without deleting lineage or failure evidence.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. T2 owns identity/schema/causal contracts even when T1 performs mechanical serialization work.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Unaddressable causal evidence, mutable identity, unbounded generator, or store-owner conflict is `DECISION_REQUIRED`; EC2 remains blocked.
 
 **Outcome:** Implement the accepted mutation-family registry and bounded generator adapters, requiring each generated candidate to bind an addressable causal manifest.
 
@@ -753,6 +1700,26 @@ EC2 seals evaluation authority and threat controls before candidate experiments.
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-EC2-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `engine/src/harness_evolution_eval.rs` fixture path and accepted evaluator/evidence owners; [planned seam; not current acceptance] sealed holdout mediation must extend, not replace, them.
+
+**Allowed paths at promotion:** Exact evaluator, HE, store/artifact, and test paths selected by contract; candidate/generator code cannot edit evaluator rules, labels, holdout, or sentinels.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Seal/tamper/access, contamination/gaming/safety sentinel, blinding, immutable label, missingness, prediction-outcome derivation, restart/parity, and adversarial candidate tests.
+
+**Rollback/recovery:** Keep fixture/default-off behavior until real controls pass; revoke new access and restore prior evaluator adapter while retaining audit/invalidation evidence.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. Independent T2 evaluator/security review is mandatory; no candidate or cheap worker may choose thresholds after outcomes.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Leakage, candidate influence, unverifiable labels, evaluator-owner duplication, or fixture-only evidence blocks EC3 and all improvement claims.
+
 **Outcome:** Freeze evaluator constellation, sealed holdout, reviewer policy, immutable labels, access classes, contamination/gaming/safety sentinels, invalidation, and evaluator-owned `PredictionOutcomeV1` derivation rules.
 
 **Allowed delta:** No evaluator implementation or holdout access.
@@ -767,6 +1734,26 @@ EC2 seals evaluation authority and threat controls before candidate experiments.
 **Prerequisite:** PE7-HE-EC2-CONTRACT-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-HE-EC2-HOLDOUT-SEAL-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `engine/src/harness_evolution_eval.rs` fixture path and accepted evaluator/evidence owners; [planned seam; not current acceptance] sealed holdout mediation must extend, not replace, them.
+
+**Allowed paths at promotion:** Exact evaluator, HE, store/artifact, and test paths selected by contract; candidate/generator code cannot edit evaluator rules, labels, holdout, or sentinels.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Seal/tamper/access, contamination/gaming/safety sentinel, blinding, immutable label, missingness, prediction-outcome derivation, restart/parity, and adversarial candidate tests.
+
+**Rollback/recovery:** Keep fixture/default-off behavior until real controls pass; revoke new access and restore prior evaluator adapter while retaining audit/invalidation evidence.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. Independent T2 evaluator/security review is mandatory; no candidate or cheap worker may choose thresholds after outcomes.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Leakage, candidate influence, unverifiable labels, evaluator-owner duplication, or fixture-only evidence blocks EC3 and all improvement claims.
 
 **Outcome:** Materialize sealed holdout identities, labels, access mediation, audit, and invalidation controls.
 
@@ -783,6 +1770,26 @@ EC2 seals evaluation authority and threat controls before candidate experiments.
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-HE-EC2-SENTINEL-CONFORMANCE-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `engine/src/harness_evolution_eval.rs` fixture path and accepted evaluator/evidence owners; [planned seam; not current acceptance] sealed holdout mediation must extend, not replace, them.
+
+**Allowed paths at promotion:** Exact evaluator, HE, store/artifact, and test paths selected by contract; candidate/generator code cannot edit evaluator rules, labels, holdout, or sentinels.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Seal/tamper/access, contamination/gaming/safety sentinel, blinding, immutable label, missingness, prediction-outcome derivation, restart/parity, and adversarial candidate tests.
+
+**Rollback/recovery:** Keep fixture/default-off behavior until real controls pass; revoke new access and restore prior evaluator adapter while retaining audit/invalidation evidence.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. Independent T2 evaluator/security review is mandatory; no candidate or cheap worker may choose thresholds after outcomes.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Leakage, candidate influence, unverifiable labels, evaluator-owner duplication, or fixture-only evidence blocks EC3 and all improvement claims.
+
 **Outcome:** Wire safety, contamination, and evaluator-gaming sentinels into the existing evaluator path.
 
 **Allowed delta:** Sentinel observation/invalidation only; no scalar override or new evaluator.
@@ -797,6 +1804,26 @@ EC2 seals evaluation authority and threat controls before candidate experiments.
 **Prerequisite:** PE7-HE-EC2-SENTINEL-CONFORMANCE-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-HE-EC2-PREDICTION-OUTCOME-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `engine/src/harness_evolution_eval.rs` fixture path and accepted evaluator/evidence owners; [planned seam; not current acceptance] sealed holdout mediation must extend, not replace, them.
+
+**Allowed paths at promotion:** Exact evaluator, HE, store/artifact, and test paths selected by contract; candidate/generator code cannot edit evaluator rules, labels, holdout, or sentinels.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Seal/tamper/access, contamination/gaming/safety sentinel, blinding, immutable label, missingness, prediction-outcome derivation, restart/parity, and adversarial candidate tests.
+
+**Rollback/recovery:** Keep fixture/default-off behavior until real controls pass; revoke new access and restore prior evaluator adapter while retaining audit/invalidation evidence.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. Independent T2 evaluator/security review is mandatory; no candidate or cheap worker may choose thresholds after outcomes.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Leakage, candidate influence, unverifiable labels, evaluator-owner duplication, or fixture-only evidence blocks EC3 and all improvement claims.
 
 **Outcome:** Have the existing evaluator path emit immutable `PredictionOutcomeV1` records that compare each frozen fix/regression prediction with actual task, metric, invariant, and missingness evidence.
 
@@ -817,6 +1844,26 @@ EC3 makes equal total lifecycle budget enforceable; token or call equality alone
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-EC3-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing budget/spend, usage, artifact, audit, and HE store owners; [planned seam] HE lifecycle-cost projection must reuse those authorities and be revalidated.
+
+**Allowed paths at promotion:** Exact existing budget/evidence/HE modules, migrations, and tests named by contract; no second budget ledger and no unknown cost coerced to zero.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Reservation/reconciliation, duplicate/missing usage, crash/restart, cancellation, failed-candidate cost, equal-envelope enforcement, parity, and full-cost fixture tests.
+
+**Rollback/recovery:** Disable new HE admission/enforcement, reconcile outstanding reservations through existing owners, and preserve every consumed-cost record.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. Budget ontology and eligibility are T2 decisions; any live spend later remains T3.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Missing trustworthy cost dimensions, unbounded diagnosis/training/review cost, or conflicting spend owner yields `INSUFFICIENT`/`DECISION_REQUIRED`; EC4 remains blocked.
+
 **Outcome:** Freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and the cost of diagnosis, hypothesis construction, prediction, and outcome reconciliation.
 
 **Allowed delta:** No spend or runtime behavior change.
@@ -832,6 +1879,26 @@ EC3 makes equal total lifecycle budget enforceable; token or call equality alone
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-HE-EC3-INSTRUMENTATION-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing budget/spend, usage, artifact, audit, and HE store owners; [planned seam] HE lifecycle-cost projection must reuse those authorities and be revalidated.
+
+**Allowed paths at promotion:** Exact existing budget/evidence/HE modules, migrations, and tests named by contract; no second budget ledger and no unknown cost coerced to zero.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Reservation/reconciliation, duplicate/missing usage, crash/restart, cancellation, failed-candidate cost, equal-envelope enforcement, parity, and full-cost fixture tests.
+
+**Rollback/recovery:** Disable new HE admission/enforcement, reconcile outstanding reservations through existing owners, and preserve every consumed-cost record.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. Budget ontology and eligibility are T2 decisions; any live spend later remains T3.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Missing trustworthy cost dimensions, unbounded diagnosis/training/review cost, or conflicting spend owner yields `INSUFFICIENT`/`DECISION_REQUIRED`; EC4 remains blocked.
+
 **Outcome:** Capture and normalize the accepted lifecycle-cost evidence through existing usage/artifact/store owners.
 
 **Allowed delta:** Observation and immutable evidence only; no admission decision yet.
@@ -846,6 +1913,26 @@ EC3 makes equal total lifecycle budget enforceable; token or call equality alone
 **Prerequisite:** PE7-HE-EC3-INSTRUMENTATION-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-HE-EC3-ENFORCEMENT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing budget/spend, usage, artifact, audit, and HE store owners; [planned seam] HE lifecycle-cost projection must reuse those authorities and be revalidated.
+
+**Allowed paths at promotion:** Exact existing budget/evidence/HE modules, migrations, and tests named by contract; no second budget ledger and no unknown cost coerced to zero.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Reservation/reconciliation, duplicate/missing usage, crash/restart, cancellation, failed-candidate cost, equal-envelope enforcement, parity, and full-cost fixture tests.
+
+**Rollback/recovery:** Disable new HE admission/enforcement, reconcile outstanding reservations through existing owners, and preserve every consumed-cost record.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. Budget ontology and eligibility are T2 decisions; any live spend later remains T3.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Missing trustworthy cost dimensions, unbounded diagnosis/training/review cost, or conflicting spend owner yields `INSUFFICIENT`/`DECISION_REQUIRED`; EC4 remains blocked.
 
 **Outcome:** Enforce equal candidate/global lifecycle envelopes using existing admission/spend owners and deterministic reconciliation.
 
@@ -866,6 +1953,26 @@ EC4 detects duplicates and exploration collapse without treating novelty as auth
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-EC4-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE lineage/artifact/store owners plus a [planned seam; not current code] deterministic diversity admission rule; revalidate feature ownership and bounds.
+
+**Allowed paths at promotion:** Exact HE modules/tests selected by contract; novelty, memory, or embeddings remain evidence only and cannot become authority.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Exact/near-duplicate fixtures, distance determinism, parent/family/seed coverage, collapse thresholds, adversarial gaming, restart/parity, and immutable decision evidence.
+
+**Rollback/recovery:** Disable admission rule and restore prior bounded generation while retaining duplicate/rejection evidence and hashes.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Unstable distance, candidate-controlled features, diversity collapse, or coverage below frozen thresholds closes with `INSUFFICIENT`; EC5 cannot start.
+
 **Outcome:** Freeze exact duplicate and near-duplicate definitions, distance features, family/parent/seed coverage, collapse thresholds, and reporting.
 
 **Allowed delta:** No candidate generation or admission change.
@@ -881,6 +1988,26 @@ EC4 detects duplicates and exploration collapse without treating novelty as auth
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-HE-EC4-ADMISSION-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing HE lineage/artifact/store owners plus a [planned seam; not current code] deterministic diversity admission rule; revalidate feature ownership and bounds.
+
+**Allowed paths at promotion:** Exact HE modules/tests selected by contract; novelty, memory, or embeddings remain evidence only and cannot become authority.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Exact/near-duplicate fixtures, distance determinism, parent/family/seed coverage, collapse thresholds, adversarial gaming, restart/parity, and immutable decision evidence.
+
+**Rollback/recovery:** Disable admission rule and restore prior bounded generation while retaining duplicate/rejection evidence and hashes.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Unstable distance, candidate-controlled features, diversity collapse, or coverage below frozen thresholds closes with `INSUFFICIENT`; EC5 cannot start.
+
 **Outcome:** Implement duplicate/near-duplicate admission and immutable distance evidence.
 
 **Allowed delta:** Diversity admission only; hard safety/quality gates remain separate and prior.
@@ -895,6 +2022,26 @@ EC4 detects duplicates and exploration collapse without treating novelty as auth
 **Prerequisite:** PE7-HE-EC4-ADMISSION-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-EC4-COVERAGE-CLOSEOUT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE lineage/artifact/store owners plus a [planned seam; not current code] deterministic diversity admission rule; revalidate feature ownership and bounds.
+
+**Allowed paths at promotion:** Exact HE modules/tests selected by contract; novelty, memory, or embeddings remain evidence only and cannot become authority.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Exact/near-duplicate fixtures, distance determinism, parent/family/seed coverage, collapse thresholds, adversarial gaming, restart/parity, and immutable decision evidence.
+
+**Rollback/recovery:** Disable admission rule and restore prior bounded generation while retaining duplicate/rejection evidence and hashes.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** Unstable distance, candidate-controlled features, diversity collapse, or coverage below frozen thresholds closes with `INSUFFICIENT`; EC5 cannot start.
 
 **Outcome:** Validate family/parent/seed exploration coverage and collapse sentinel behavior on provider-free fixtures.
 
@@ -915,6 +2062,26 @@ EC5 freezes hard-gate-first selection and the generation state machine before Le
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-EC5-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/evaluator/store/lease owners plus [planned seams; not current code] immutable Pareto archive and HE stop/recovery state machine; revalidate transaction boundaries.
+
+**Allowed paths at promotion:** Exact HE, evaluator, LocalProductStore, migration, and tests named by contract; never reuse `recursive_execution.rs` as an evolution controller.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Hard-gate order, dominance/tie/disagreement, archive completeness, every stop class, lease loss, crash points, exactly-once, late write, cleanup, parity, and deterministic replay tests.
+
+**Rollback/recovery:** Default off, recover only from durable leases/state, preserve all candidates and counterevidence, and revert controller additions without rewriting terminal records.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. T2 owns selection, state-machine, and recovery semantics.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Ambiguous dominance, hidden reject, non-idempotent recovery, or unverifiable stop leaves Level-1 blocked and records `DECISION_REQUIRED`.
+
 **Outcome:** Freeze hard-gate order, Pareto objectives, dominance/ties/disagreement, archive semantics, saturation/contamination/gaming/regression/budget/diversity stops, and recovery invariants.
 
 **Allowed delta:** No selection engine or generation execution.
@@ -930,6 +2097,26 @@ EC5 freezes hard-gate-first selection and the generation state machine before Le
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-HE-EC5-SELECTION-ARCHIVE-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/evaluator/store/lease owners plus [planned seams; not current code] immutable Pareto archive and HE stop/recovery state machine; revalidate transaction boundaries.
+
+**Allowed paths at promotion:** Exact HE, evaluator, LocalProductStore, migration, and tests named by contract; never reuse `recursive_execution.rs` as an evolution controller.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Hard-gate order, dominance/tie/disagreement, archive completeness, every stop class, lease loss, crash points, exactly-once, late write, cleanup, parity, and deterministic replay tests.
+
+**Rollback/recovery:** Default off, recover only from durable leases/state, preserve all candidates and counterevidence, and revert controller additions without rewriting terminal records.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. T2 owns selection, state-machine, and recovery semantics.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Ambiguous dominance, hidden reject, non-idempotent recovery, or unverifiable stop leaves Level-1 blocked and records `DECISION_REQUIRED`.
+
 **Outcome:** Implement hard-gate filtering, Pareto comparison, tie/disagreement handling, and an immutable candidate archive retaining causal manifests, counterevidence, and prediction outcomes.
 
 **Allowed delta:** Selection evidence only; no active-Harness replacement or production adoption.
@@ -944,6 +2131,26 @@ EC5 freezes hard-gate-first selection and the generation state machine before Le
 **Prerequisite:** PE7-HE-EC5-SELECTION-ARCHIVE-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-HE-EC5-STOP-RECOVERY-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/evaluator/store/lease owners plus [planned seams; not current code] immutable Pareto archive and HE stop/recovery state machine; revalidate transaction boundaries.
+
+**Allowed paths at promotion:** Exact HE, evaluator, LocalProductStore, migration, and tests named by contract; never reuse `recursive_execution.rs` as an evolution controller.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Hard-gate order, dominance/tie/disagreement, archive completeness, every stop class, lease loss, crash points, exactly-once, late write, cleanup, parity, and deterministic replay tests.
+
+**Rollback/recovery:** Default off, recover only from durable leases/state, preserve all candidates and counterevidence, and revert controller additions without rewriting terminal records.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. T2 owns selection, state-machine, and recovery semantics.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Ambiguous dominance, hidden reject, non-idempotent recovery, or unverifiable stop leaves Level-1 blocked and records `DECISION_REQUIRED`.
 
 **Outcome:** Implement bounded stop, lease, cancellation, restart, exactly-once, and recovery transitions; freeze the exact Level-1 runnable contract.
 
@@ -964,6 +2171,26 @@ Level-1 runs one generation with memory and skill projections disabled.
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-LEVEL1-PREFLIGHT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing default-off one-generation HE fixture, evaluator, artifact, budget, and store owners; revalidate that every EC1-EC5 accepted control is wired before promotion.
+
+**Allowed paths at promotion:** No source changes in EFFECT; preflight/closeout use exact HE/evidence paths and restricted evidence locations named by the accepted Level-1 contract.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Provider-free conformance for all EC controls, exact identity/budget/holdout checks, one-use run receipt, archive completeness, independent Pareto/prediction recomputation, and cleanup.
+
+**Rollback/recovery:** An executed generation is immutable evidence; stop/recover through EC5, never rerun outcome unknown, and revert only closeout/status projections.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. The run requires T3 finite authority; preflight and independent closeout do not.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Close `SATURATED`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT` without transfer candidate; Level-1 transfer and Level-2 remain blocked.
+
 **Outcome:** Freeze active Harness, parents, mutation families, causal-manifest identities, seeds, candidate limits, full budgets, evaluator/holdout identities, prediction-outcome rules, authorization package, and immediate preflight.
 
 **Allowed delta:** No candidate generation or holdout access.
@@ -979,6 +2206,26 @@ Level-1 runs one generation with memory and skill projections disabled.
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-LEVEL1-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing default-off one-generation HE fixture, evaluator, artifact, budget, and store owners; revalidate that every EC1-EC5 accepted control is wired before promotion.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Provider-free conformance for all EC controls, exact identity/budget/holdout checks, one-use run receipt, archive completeness, independent Pareto/prediction recomputation, and cleanup.
+
+**Rollback/recovery:** An executed generation is immutable evidence; stop/recover through EC5, never rerun outcome unknown, and revert only closeout/status projections.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. The run requires T3 finite authority; preflight and independent closeout do not.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** Close `SATURATED`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT` without transfer candidate; Level-1 transfer and Level-2 remain blocked.
+
 **Outcome:** Execute exactly one bounded generation through candidate creation, diversity admission, full-cost evaluation, hard gates, sealed holdout, and archive.
 
 **Allowed delta:** Registered laboratory effects only; no memory/skill projection, active-Harness adoption, retuning, or second generation.
@@ -993,6 +2240,26 @@ Level-1 runs one generation with memory and skill projections disabled.
 **Prerequisite:** PE7-HE-LEVEL1-RUN-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-LEVEL1-CLOSEOUT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing default-off one-generation HE fixture, evaluator, artifact, budget, and store owners; revalidate that every EC1-EC5 accepted control is wired before promotion.
+
+**Allowed paths at promotion:** No source changes in EFFECT; preflight/closeout use exact HE/evidence paths and restricted evidence locations named by the accepted Level-1 contract.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Provider-free conformance for all EC controls, exact identity/budget/holdout checks, one-use run receipt, archive completeness, independent Pareto/prediction recomputation, and cleanup.
+
+**Rollback/recovery:** An executed generation is immutable evidence; stop/recover through EC5, never rerun outcome unknown, and revert only closeout/status projections.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. The run requires T3 finite authority; preflight and independent closeout do not.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** Close `SATURATED`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT` without transfer candidate; Level-1 transfer and Level-2 remain blocked.
 
 **Outcome:** Recompute hard gates/Pareto results and prediction calibration, select at most one experimental transfer candidate, and emit PR_READY evidence only.
 
@@ -1013,6 +2280,26 @@ Transfer is separate from development-set selection and grants no production aut
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-LEVEL1-TRANSFER-PROTOCOL-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/evaluator/RWE evidence owners with a sealed transfer artifact under the accepted contract; revalidate task-family isolation and model/environment strata.
+
+**Allowed paths at promotion:** Exact transfer corpus/artifact/evaluator paths named at promotion; EFFECT changes no repository source and uses only restricted evidence destinations.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Seal/access/contamination checks, baseline identity, equal-budget allocation, drift/missingness, registered analysis, transfer/non-inferiority, full costs, and independent replication of calculations.
+
+**Rollback/recovery:** Never unseal or retune after outcome; preserve failed runs and revert only provider-free analysis/status code or docs.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. The transfer run requires T3 finite authority and independent evaluator custody.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** A transfer failure, contamination, regression, or insufficient task-family support blocks Level-2; record the negative result as valid completion.
+
 **Outcome:** Seal unseen tasks/task families and, where practical, repository/model/environment strata; freeze baselines, evaluator, budgets, drift, contamination, and decision rules.
 
 **Allowed delta:** No transfer execution or candidate change.
@@ -1028,6 +2315,26 @@ Transfer is separate from development-set selection and grants no production aut
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-LEVEL1-TRANSFER-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/evaluator/RWE evidence owners with a sealed transfer artifact under the accepted contract; revalidate task-family isolation and model/environment strata.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Seal/access/contamination checks, baseline identity, equal-budget allocation, drift/missingness, registered analysis, transfer/non-inferiority, full costs, and independent replication of calculations.
+
+**Rollback/recovery:** Never unseal or retune after outcome; preserve failed runs and revert only provider-free analysis/status code or docs.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. The transfer run requires T3 finite authority and independent evaluator custody.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** A transfer failure, contamination, regression, or insufficient task-family support blocks Level-2; record the negative result as valid completion.
+
 **Outcome:** Execute the selected experimental candidate and frozen baselines on the sealed transfer set.
 
 **Allowed delta:** Registered effects only; no repair or retraining on transfer outcomes.
@@ -1042,6 +2349,26 @@ Transfer is separate from development-set selection and grants no production aut
 **Prerequisite:** PE7-HE-LEVEL1-TRANSFER-RUN-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-LEVEL1-TRANSFER-ANALYSIS-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/evaluator/RWE evidence owners with a sealed transfer artifact under the accepted contract; revalidate task-family isolation and model/environment strata.
+
+**Allowed paths at promotion:** Exact transfer corpus/artifact/evaluator paths named at promotion; EFFECT changes no repository source and uses only restricted evidence destinations.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Seal/access/contamination checks, baseline identity, equal-budget allocation, drift/missingness, registered analysis, transfer/non-inferiority, full costs, and independent replication of calculations.
+
+**Rollback/recovery:** Never unseal or retune after outcome; preserve failed runs and revert only provider-free analysis/status code or docs.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. The transfer run requires T3 finite authority and independent evaluator custody.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** A transfer failure, contamination, regression, or insufficient task-family support blocks Level-2; record the negative result as valid completion.
 
 **Outcome:** Apply the frozen transfer analysis and determine whether evidence is eligible for Level-2 consideration.
 
@@ -1062,6 +2389,26 @@ This side branch may start after Level-1 closeout but never blocks the core Leve
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-MEMORY-SKILL-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE artifact/store/evaluator owners plus [planned experimental seams] memory-only and skill-only projections; product `durable_memory.rs` is not HE projection authority and must not be repurposed.
+
+**Allowed paths at promotion:** Exact HE-owned adapter/artifact/test paths selected by contract; no product-memory authority, global skill installation, or active Harness mutation.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Provenance/expiry/invalidation/delete-rebuild, leakage, arm isolation, equal-budget, contamination, attribution, restart/parity, and no-authority tests.
+
+**Rollback/recovery:** Disable/delete experimental projections through their accepted owner while retaining tombstone/provenance and run evidence; baseline route remains intact.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. The optional run requires T3 finite authority; it is never a Level-2 prerequisite.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Close the optional branch `NO_GO`, `HARM`, or `INSUFFICIENT` without delaying Level-2; never infer a combined-factor effect from separate arms.
+
 **Outcome:** Freeze baseline/no-projection, memory-only, and skill-only arms; projection schema, provenance, expiry, invalidation, deletion/rebuild, leakage, budgets, and attribution.
 
 **Allowed delta:** No projection implementation or experiment. Product durable memory stays a separate domain.
@@ -1076,6 +2423,26 @@ This side branch may start after Level-1 closeout but never blocks the core Leve
 **Prerequisite:** PE7-MEMORY-SKILL-CONTRACT-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-MEMORY-ADAPTER-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing HE artifact/store/evaluator owners plus [planned experimental seams] memory-only and skill-only projections; product `durable_memory.rs` is not HE projection authority and must not be repurposed.
+
+**Allowed paths at promotion:** Exact HE-owned adapter/artifact/test paths selected by contract; no product-memory authority, global skill installation, or active Harness mutation.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Provenance/expiry/invalidation/delete-rebuild, leakage, arm isolation, equal-budget, contamination, attribution, restart/parity, and no-authority tests.
+
+**Rollback/recovery:** Disable/delete experimental projections through their accepted owner while retaining tombstone/provenance and run evidence; baseline route remains intact.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. The optional run requires T3 finite authority; it is never a Level-2 prerequisite.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Close the optional branch `NO_GO`, `HARM`, or `INSUFFICIENT` without delaying Level-2; never infer a combined-factor effect from separate arms.
 
 **Outcome:** Implement the bounded experimental memory projection adapter.
 
@@ -1092,6 +2459,26 @@ This side branch may start after Level-1 closeout but never blocks the core Leve
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-SKILL-ADAPTER-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing HE artifact/store/evaluator owners plus [planned experimental seams] memory-only and skill-only projections; product `durable_memory.rs` is not HE projection authority and must not be repurposed.
+
+**Allowed paths at promotion:** Exact HE-owned adapter/artifact/test paths selected by contract; no product-memory authority, global skill installation, or active Harness mutation.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Provenance/expiry/invalidation/delete-rebuild, leakage, arm isolation, equal-budget, contamination, attribution, restart/parity, and no-authority tests.
+
+**Rollback/recovery:** Disable/delete experimental projections through their accepted owner while retaining tombstone/provenance and run evidence; baseline route remains intact.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. The optional run requires T3 finite authority; it is never a Level-2 prerequisite.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Close the optional branch `NO_GO`, `HARM`, or `INSUFFICIENT` without delaying Level-2; never infer a combined-factor effect from separate arms.
+
 **Outcome:** Implement the bounded experimental skill projection adapter under the same factor contract.
 
 **Allowed delta:** Skill-only derived projection; no registry authority, evaluator mutation, or production installation.
@@ -1107,6 +2494,26 @@ This side branch may start after Level-1 closeout but never blocks the core Leve
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-MEMORY-SKILL-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE artifact/store/evaluator owners plus [planned experimental seams] memory-only and skill-only projections; product `durable_memory.rs` is not HE projection authority and must not be repurposed.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Provenance/expiry/invalidation/delete-rebuild, leakage, arm isolation, equal-budget, contamination, attribution, restart/parity, and no-authority tests.
+
+**Rollback/recovery:** Disable/delete experimental projections through their accepted owner while retaining tombstone/provenance and run evidence; baseline route remains intact.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. The optional run requires T3 finite authority; it is never a Level-2 prerequisite.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** Close the optional branch `NO_GO`, `HARM`, or `INSUFFICIENT` without delaying Level-2; never infer a combined-factor effect from separate arms.
+
 **Outcome:** Execute the frozen baseline, memory-only, and skill-only arms under equal total lifecycle budget.
 
 **Allowed delta:** Registered factor effects only; no combined arm or mid-run projection change.
@@ -1121,6 +2528,26 @@ This side branch may start after Level-1 closeout but never blocks the core Leve
 **Prerequisite:** PE7-MEMORY-SKILL-RUN-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-MEMORY-SKILL-ANALYSIS-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE artifact/store/evaluator owners plus [planned experimental seams] memory-only and skill-only projections; product `durable_memory.rs` is not HE projection authority and must not be repurposed.
+
+**Allowed paths at promotion:** Exact HE-owned adapter/artifact/test paths selected by contract; no product-memory authority, global skill installation, or active Harness mutation.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Provenance/expiry/invalidation/delete-rebuild, leakage, arm isolation, equal-budget, contamination, attribution, restart/parity, and no-authority tests.
+
+**Rollback/recovery:** Disable/delete experimental projections through their accepted owner while retaining tombstone/provenance and run evidence; baseline route remains intact.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. The optional run requires T3 finite authority; it is never a Level-2 prerequisite.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** Close the optional branch `NO_GO`, `HARM`, or `INSUFFICIENT` without delaying Level-2; never infer a combined-factor effect from separate arms.
 
 **Outcome:** Estimate individual factor effects and decide whether any future combined experiment is justified.
 
@@ -1141,6 +2568,26 @@ This stage audits eligibility and records a human decision; it is not controller
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-LEVEL2-RULE-AUDIT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Canonical evidence/docs owners only; no Level-2 controller exists yet, and neither `recursive_execution.rs` nor model output may act as decision authority.
+
+**Allowed paths at promotion:** Accepted evidence references plus `docs/NEXT_DECISION.md`/`docs/CURRENT_STATUS.md`; no runtime, schema, or controller code before explicit GO.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Digest/identity completeness, frozen-rule timing, hard-gate recomputation, lifecycle cost/diversity/transfer sensitivity, objection ledger, and independent reviewer reproduction.
+
+**Rollback/recovery:** Decision receipts are append-only accepted evidence; correct a mistake with a superseding human decision, never rewrite the bound dossier.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. The final Level-2 decision is T3 human authority bound to the exact dossier and maximum controller envelope.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** `NO_GO`, `DEFER`, `HARM`, or `INSUFFICIENT` closes/rewrites the branch and forbids controller work.
+
 **Outcome:** Verify that the Level-2 decision rule, hard gates, non-inferiority, value basis, uncertainty, lifecycle cost, diversity, contamination, feasibility, and stop thresholds were frozen before relevant outcomes.
 
 **Allowed delta:** Audit only; no post-result threshold selection.
@@ -1156,6 +2603,26 @@ This stage audits eligibility and records a human decision; it is not controller
 
 **Class:** `CLOSEOUT`
 
+**Execution profile:** `PE7-HE-LEVEL2-EVIDENCE-ANALYSIS-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Canonical evidence/docs owners only; no Level-2 controller exists yet, and neither `recursive_execution.rs` nor model output may act as decision authority.
+
+**Allowed paths at promotion:** Accepted evidence references plus `docs/NEXT_DECISION.md`/`docs/CURRENT_STATUS.md`; no runtime, schema, or controller code before explicit GO.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Digest/identity completeness, frozen-rule timing, hard-gate recomputation, lifecycle cost/diversity/transfer sensitivity, objection ledger, and independent reviewer reproduction.
+
+**Rollback/recovery:** Decision receipts are append-only accepted evidence; correct a mistake with a superseding human decision, never rewrite the bound dossier.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. The final Level-2 decision is T3 human authority bound to the exact dossier and maximum controller envelope.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** `NO_GO`, `DEFER`, `HARM`, or `INSUFFICIENT` closes/rewrites the branch and forbids controller work.
+
 **Outcome:** Independently apply the frozen rule to Golden Path, RWE, Level-1, transfer, cost, diversity, maintenance, review, recovery, and rollback evidence.
 
 **Allowed delta:** Analysis only; no controller design or candidate adoption.
@@ -1170,6 +2637,26 @@ This stage audits eligibility and records a human decision; it is not controller
 **Prerequisite:** PE7-HE-LEVEL2-EVIDENCE-ANALYSIS-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-LEVEL2-DECISION-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Canonical evidence/docs owners only; no Level-2 controller exists yet, and neither `recursive_execution.rs` nor model output may act as decision authority.
+
+**Allowed paths at promotion:** Accepted evidence references plus `docs/NEXT_DECISION.md`/`docs/CURRENT_STATUS.md`; no runtime, schema, or controller code before explicit GO.
+
+**Ordered work:** T0/T2 assemble and independently verify the exact dossier -> pause -> T3 reads objections/rollback/cost -> sign one bounded disposition -> planning owner synchronizes route; do not execute the disposition's successor.
+
+**Verification:** Digest/identity completeness, frozen-rule timing, hard-gate recomputation, lifecycle cost/diversity/transfer sensitivity, objection ledger, and independent reviewer reproduction.
+
+**Rollback/recovery:** Decision receipts are append-only accepted evidence; correct a mistake with a superseding human decision, never rewrite the bound dossier.
+
+**Human/effect gate:** T0/T2 may prepare but must pause for an explicit T3 human receipt; model output cannot sign or infer it. The final Level-2 decision is T3 human authority bound to the exact dossier and maximum controller envelope.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** `NO_GO`, `DEFER`, `HARM`, or `INSUFFICIENT` closes/rewrites the branch and forbids controller work.
 
 **Outcome:** Obtain the explicit human GO, NO_GO, or DEFER decision bound to the exact dossier and controller envelope.
 
@@ -1190,6 +2677,26 @@ These packets are eligible only after an explicit GO. They separate state, persi
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-LEVEL2-CONTROLLER-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE, scheduler/runtime, evaluator, budget, artifact, lease, and sole LocalProductStore owners plus a [planned seam; not current code] bounded Level-2 controller; `recursive_execution.rs` is explicitly not that owner.
+
+**Allowed paths at promotion:** Exact modules/migrations/tests selected by the GO-bound controller contract; additions must live under existing owners and no second scheduler/store/evaluator may appear.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** State/migration parity, generation limits, parent rule, evaluation/admission, every global/local stop, crash/lease/exactly-once/cleanup, deterministic simulation, and rollback tests before any pilot.
+
+**Rollback/recovery:** Default off; preserve durable controller/run/candidate records, recover through existing leases, and use tested migration/config rollback without adopting a candidate.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. T2 owns controller/schema/recovery implementation; the one pilot alone requires a separate T3 finite authorization.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Any owner conflict, mutable evaluator/budget/stop, unsafe restart, simulation gap, pilot outcome unknown, or maintenance excess ends `NO_GO`/`DECISION_REQUIRED`.
+
 **Outcome:** On GO only, freeze generation/candidate limits, state machine, parent rule, APIs, owners, budgets, evaluator separation, stops, restart, cleanup, schema needs, and pilot envelope.
 
 **Allowed delta:** No controller code, schema migration, or Provider effect.
@@ -1204,6 +2711,26 @@ These packets are eligible only after an explicit GO. They separate state, persi
 **Prerequisite:** PE7-HE-LEVEL2-CONTROLLER-CONTRACT-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-HE-LEVEL2-STATE-PERSISTENCE-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE, scheduler/runtime, evaluator, budget, artifact, lease, and sole LocalProductStore owners plus a [planned seam; not current code] bounded Level-2 controller; `recursive_execution.rs` is explicitly not that owner.
+
+**Allowed paths at promotion:** Exact modules/migrations/tests selected by the GO-bound controller contract; additions must live under existing owners and no second scheduler/store/evaluator may appear.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** State/migration parity, generation limits, parent rule, evaluation/admission, every global/local stop, crash/lease/exactly-once/cleanup, deterministic simulation, and rollback tests before any pilot.
+
+**Rollback/recovery:** Default off; preserve durable controller/run/candidate records, recover through existing leases, and use tested migration/config rollback without adopting a candidate.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. T2 owns controller/schema/recovery implementation; the one pilot alone requires a separate T3 finite authorization.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Any owner conflict, mutable evaluator/budget/stop, unsafe restart, simulation gap, pilot outcome unknown, or maintenance excess ends `NO_GO`/`DECISION_REQUIRED`.
 
 **Outcome:** Implement default-off generation/run/candidate state, leases, lineage links, audit, and migrations under LocalProductStore.
 
@@ -1220,6 +2747,26 @@ These packets are eligible only after an explicit GO. They separate state, persi
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-HE-LEVEL2-GENERATION-ORCHESTRATION-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE, scheduler/runtime, evaluator, budget, artifact, lease, and sole LocalProductStore owners plus a [planned seam; not current code] bounded Level-2 controller; `recursive_execution.rs` is explicitly not that owner.
+
+**Allowed paths at promotion:** Exact modules/migrations/tests selected by the GO-bound controller contract; additions must live under existing owners and no second scheduler/store/evaluator may appear.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** State/migration parity, generation limits, parent rule, evaluation/admission, every global/local stop, crash/lease/exactly-once/cleanup, deterministic simulation, and rollback tests before any pilot.
+
+**Rollback/recovery:** Default off; preserve durable controller/run/candidate records, recover through existing leases, and use tested migration/config rollback without adopting a candidate.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. T2 owns controller/schema/recovery implementation; the one pilot alone requires a separate T3 finite authorization.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Any owner conflict, mutable evaluator/budget/stop, unsafe restart, simulation gap, pilot outcome unknown, or maintenance excess ends `NO_GO`/`DECISION_REQUIRED`.
+
 **Outcome:** Implement the fixed-generation scheduler and candidate lifecycle using existing runtime/executor owners.
 
 **Allowed delta:** Provider-free orchestration with stubbed effects only; one selected laboratory parent per generation.
@@ -1234,6 +2781,26 @@ These packets are eligible only after an explicit GO. They separate state, persi
 **Prerequisite:** PE7-HE-LEVEL2-GENERATION-ORCHESTRATION-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-HE-LEVEL2-EVALUATION-SELECTION-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE, scheduler/runtime, evaluator, budget, artifact, lease, and sole LocalProductStore owners plus a [planned seam; not current code] bounded Level-2 controller; `recursive_execution.rs` is explicitly not that owner.
+
+**Allowed paths at promotion:** Exact modules/migrations/tests selected by the GO-bound controller contract; additions must live under existing owners and no second scheduler/store/evaluator may appear.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** State/migration parity, generation limits, parent rule, evaluation/admission, every global/local stop, crash/lease/exactly-once/cleanup, deterministic simulation, and rollback tests before any pilot.
+
+**Rollback/recovery:** Default off; preserve durable controller/run/candidate records, recover through existing leases, and use tested migration/config rollback without adopting a candidate.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. T2 owns controller/schema/recovery implementation; the one pilot alone requires a separate T3 finite authorization.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Any owner conflict, mutable evaluator/budget/stop, unsafe restart, simulation gap, pilot outcome unknown, or maintenance excess ends `NO_GO`/`DECISION_REQUIRED`.
 
 **Outcome:** Integrate immutable evaluator/sentinels, total lifecycle budgets, diversity admission, hard gates, Pareto archive, and parent selection.
 
@@ -1250,6 +2817,26 @@ These packets are eligible only after an explicit GO. They separate state, persi
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-HE-LEVEL2-STOP-RECOVERY-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE, scheduler/runtime, evaluator, budget, artifact, lease, and sole LocalProductStore owners plus a [planned seam; not current code] bounded Level-2 controller; `recursive_execution.rs` is explicitly not that owner.
+
+**Allowed paths at promotion:** Exact modules/migrations/tests selected by the GO-bound controller contract; additions must live under existing owners and no second scheduler/store/evaluator may appear.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** State/migration parity, generation limits, parent rule, evaluation/admission, every global/local stop, crash/lease/exactly-once/cleanup, deterministic simulation, and rollback tests before any pilot.
+
+**Rollback/recovery:** Default off; preserve durable controller/run/candidate records, recover through existing leases, and use tested migration/config rollback without adopting a candidate.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. T2 owns controller/schema/recovery implementation; the one pilot alone requires a separate T3 finite authorization.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** Any owner conflict, mutable evaluator/budget/stop, unsafe restart, simulation gap, pilot outcome unknown, or maintenance excess ends `NO_GO`/`DECISION_REQUIRED`.
+
 **Outcome:** Implement global/local stops, saturation, regression, exploitation, diversity-collapse, maintenance-burden, crash, lease, exactly-once, and cleanup behavior.
 
 **Allowed delta:** Stop/recovery transitions only; no live effects.
@@ -1264,6 +2851,26 @@ These packets are eligible only after an explicit GO. They separate state, persi
 **Prerequisite:** PE7-HE-LEVEL2-STOP-RECOVERY-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-LEVEL2-SIMULATION-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE, scheduler/runtime, evaluator, budget, artifact, lease, and sole LocalProductStore owners plus a [planned seam; not current code] bounded Level-2 controller; `recursive_execution.rs` is explicitly not that owner.
+
+**Allowed paths at promotion:** Exact modules/migrations/tests selected by the GO-bound controller contract; additions must live under existing owners and no second scheduler/store/evaluator may appear.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** State/migration parity, generation limits, parent rule, evaluation/admission, every global/local stop, crash/lease/exactly-once/cleanup, deterministic simulation, and rollback tests before any pilot.
+
+**Rollback/recovery:** Default off; preserve durable controller/run/candidate records, recover through existing leases, and use tested migration/config rollback without adopting a candidate.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. T2 owns controller/schema/recovery implementation; the one pilot alone requires a separate T3 finite authorization.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** Any owner conflict, mutable evaluator/budget/stop, unsafe restart, simulation gap, pilot outcome unknown, or maintenance excess ends `NO_GO`/`DECISION_REQUIRED`.
 
 **Outcome:** Run provider-free deterministic simulations covering success, every stop class, crash points, contamination, gaming, and rollback.
 
@@ -1280,6 +2887,26 @@ These packets are eligible only after an explicit GO. They separate state, persi
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-LEVEL2-PILOT-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE, scheduler/runtime, evaluator, budget, artifact, lease, and sole LocalProductStore owners plus a [planned seam; not current code] bounded Level-2 controller; `recursive_execution.rs` is explicitly not that owner.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** State/migration parity, generation limits, parent rule, evaluation/admission, every global/local stop, crash/lease/exactly-once/cleanup, deterministic simulation, and rollback tests before any pilot.
+
+**Rollback/recovery:** Default off; preserve durable controller/run/candidate records, recover through existing leases, and use tested migration/config rollback without adopting a candidate.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. T2 owns controller/schema/recovery implementation; the one pilot alone requires a separate T3 finite authorization.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** Any owner conflict, mutable evaluator/budget/stop, unsafe restart, simulation gap, pilot outcome unknown, or maintenance excess ends `NO_GO`/`DECISION_REQUIRED`.
+
 **Outcome:** Execute one small fixed Level-2 laboratory pilot under a separate finite authorization.
 
 **Allowed delta:** Only the audited generation/candidate/evaluation envelope; no continuation across runs, production adoption, or limit increase.
@@ -1294,6 +2921,26 @@ These packets are eligible only after an explicit GO. They separate state, persi
 **Prerequisite:** PE7-HE-LEVEL2-PILOT-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-LEVEL2-CLOSEOUT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE, scheduler/runtime, evaluator, budget, artifact, lease, and sole LocalProductStore owners plus a [planned seam; not current code] bounded Level-2 controller; `recursive_execution.rs` is explicitly not that owner.
+
+**Allowed paths at promotion:** Exact modules/migrations/tests selected by the GO-bound controller contract; additions must live under existing owners and no second scheduler/store/evaluator may appear.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** State/migration parity, generation limits, parent rule, evaluation/admission, every global/local stop, crash/lease/exactly-once/cleanup, deterministic simulation, and rollback tests before any pilot.
+
+**Rollback/recovery:** Default off; preserve durable controller/run/candidate records, recover through existing leases, and use tested migration/config rollback without adopting a candidate.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. T2 owns controller/schema/recovery implementation; the one pilot alone requires a separate T3 finite authorization.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** Any owner conflict, mutable evaluator/budget/stop, unsafe restart, simulation gap, pilot outcome unknown, or maintenance excess ends `NO_GO`/`DECISION_REQUIRED`.
 
 **Outcome:** Independently validate the pilot and select at most one experimental Harness for final transfer.
 
@@ -1314,6 +2961,26 @@ Final transfer is larger and sealed; it is not production adoption.
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-FINAL-TRANSFER-PROTOCOL-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/evaluator/RWE artifact and evidence owners; revalidate selected experimental Harness and every sealed baseline identity.
+
+**Allowed paths at promotion:** Exact sealed corpus/evaluator/artifact paths named by protocol; EFFECT changes no source and uses restricted evidence only.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Seal/contamination, allocation, drift, hard gates, transfer/non-inferiority, full lifecycle cost, failure/missingness, independent analysis, and strongest-claim boundary checks.
+
+**Rollback/recovery:** Never retune/unseal/rerun outcome unknown; preserve raw evidence and revert only provider-free analysis/status projections.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. The final run requires T3 finite authority; evaluator custody and analysis remain independent.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** `NOT_SUPPORTED`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT` is valid completion and blocks favorable adoption/Meta claims while still allowing explicit branch disposition.
+
 **Outcome:** Freeze a larger unseen task/family corpus, baselines, evaluator/labels, budgets, seeds, drift, contamination, stops, analysis, preflight, and finite authorizations.
 
 **Allowed delta:** No execution or candidate repair.
@@ -1329,6 +2996,26 @@ Final transfer is larger and sealed; it is not production adoption.
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-FINAL-TRANSFER-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/evaluator/RWE artifact and evidence owners; revalidate selected experimental Harness and every sealed baseline identity.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Seal/contamination, allocation, drift, hard gates, transfer/non-inferiority, full lifecycle cost, failure/missingness, independent analysis, and strongest-claim boundary checks.
+
+**Rollback/recovery:** Never retune/unseal/rerun outcome unknown; preserve raw evidence and revert only provider-free analysis/status projections.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. The final run requires T3 finite authority; evaluator custody and analysis remain independent.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** `NOT_SUPPORTED`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT` is valid completion and blocks favorable adoption/Meta claims while still allowing explicit branch disposition.
+
 **Outcome:** Execute the selected experimental Harness and baselines on the final sealed set.
 
 **Allowed delta:** Registered transfer effects only; no repair, learning, or evaluator change from transfer outcomes.
@@ -1343,6 +3030,26 @@ Final transfer is larger and sealed; it is not production adoption.
 **Prerequisite:** PE7-HE-FINAL-TRANSFER-RUN-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-FINAL-TRANSFER-ANALYSIS-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/evaluator/RWE artifact and evidence owners; revalidate selected experimental Harness and every sealed baseline identity.
+
+**Allowed paths at promotion:** Exact sealed corpus/evaluator/artifact paths named by protocol; EFFECT changes no source and uses restricted evidence only.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Seal/contamination, allocation, drift, hard gates, transfer/non-inferiority, full lifecycle cost, failure/missingness, independent analysis, and strongest-claim boundary checks.
+
+**Rollback/recovery:** Never retune/unseal/rerun outcome unknown; preserve raw evidence and revert only provider-free analysis/status projections.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. The final run requires T3 finite authority; evaluator custody and analysis remain independent.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** `NOT_SUPPORTED`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT` is valid completion and blocks favorable adoption/Meta claims while still allowing explicit branch disposition.
 
 **Outcome:** Apply the frozen analysis and bound the strongest supported Harness-improvement claim.
 
@@ -1363,6 +3070,26 @@ Adoption is independent of Meta research and remains a human decision.
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-ADOPTION-READINESS-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing candidate artifact, compatibility, rollout/observability, rollback, CI/review, and canonical decision owners; no runtime may self-adopt.
+
+**Allowed paths at promotion:** Read-only accepted candidate/evidence plus exact docs/rollout artifacts named by the readiness contract; adoption decision itself changes no production code or deployment state.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Artifact/diff identity, compatibility/migration, security/maintenance, staged rollback drill, CI/review/objection completeness, and human-readable risk/cost reconciliation.
+
+**Rollback/recovery:** A decision is superseded only by a new human receipt; `DECLINE`/`DEFER` leaves active Harness unchanged and preserves candidate evidence.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. The adoption decision is T3 human authority; release/deployment remains separately unauthorized.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** Any unresolved objection, untested rollback, identity drift, or unsupported final-transfer gate yields `DECLINE`/`DEFER`; no automatic adoption follows.
+
 **Outcome:** Build the exact candidate artifact/diff, compatibility/migration, maintenance/security, rollout/observability, rollback, CI/review, and unresolved-objection dossier.
 
 **Allowed delta:** Readiness planning/evidence only; no adoption, merge, release, deployment, or installation.
@@ -1377,6 +3104,26 @@ Adoption is independent of Meta research and remains a human decision.
 **Prerequisite:** PE7-HE-ADOPTION-READINESS-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-ADOPTION-DECISION-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing candidate artifact, compatibility, rollout/observability, rollback, CI/review, and canonical decision owners; no runtime may self-adopt.
+
+**Allowed paths at promotion:** Read-only accepted candidate/evidence plus exact docs/rollout artifacts named by the readiness contract; adoption decision itself changes no production code or deployment state.
+
+**Ordered work:** T0/T2 assemble and independently verify the exact dossier -> pause -> T3 reads objections/rollback/cost -> sign one bounded disposition -> planning owner synchronizes route; do not execute the disposition's successor.
+
+**Verification:** Artifact/diff identity, compatibility/migration, security/maintenance, staged rollback drill, CI/review/objection completeness, and human-readable risk/cost reconciliation.
+
+**Rollback/recovery:** A decision is superseded only by a new human receipt; `DECLINE`/`DEFER` leaves active Harness unchanged and preserves candidate evidence.
+
+**Human/effect gate:** T0/T2 may prepare but must pause for an explicit T3 human receipt; model output cannot sign or infer it. The adoption decision is T3 human authority; release/deployment remains separately unauthorized.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** Any unresolved objection, untested rollback, identity drift, or unsupported final-transfer gate yields `DECLINE`/`DEFER`; no automatic adoption follows.
 
 **Outcome:** Obtain a human ADOPT, DECLINE, or DEFER receipt for the exact candidate and rollout envelope.
 
@@ -1397,6 +3144,26 @@ Meta research asks whether an improvement operator improves the distribution of 
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-META-CLAIM-PROTOCOL-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/evaluator/artifact/store owners plus [planned seams; not current code] fixed O0/O1 operator adapters; no second evaluator, scheduler, or store.
+
+**Allowed paths at promotion:** Exact HE-owned operator adapter, sealed corpus, artifact/store, and test paths selected by contracts; EFFECT packets change no source.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Operator-interface equivalence, treatment isolation, sealed-set access, equal full-cost budgets, stop/recovery, fixture conformance, blinded comparison/replication, and independent claim analysis.
+
+**Rollback/recovery:** Default off; revert adapters while preserving operator/descendant lineage and every failed/rejected run; never adapt O1 after comparative outcomes.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. Every Meta run requires T3 finite authority; operator/claim contracts and evaluator custody remain T2/independent.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** `META_NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` closes Meta without blocking Dashboard; no R4-R6 or recursive claim becomes eligible.
+
 **Outcome:** Decide whether Meta research is justified and, on GO, freeze the bounded second-order claim, estimands, hard gates, effect/error thresholds, domain, stops, and strongest allowed conclusion.
 
 **Allowed delta:** Planning/GO-NO-GO only; no operator implementation or experiment.
@@ -1411,6 +3178,26 @@ Meta research asks whether an improvement operator improves the distribution of 
 **Prerequisite:** PE7-HE-META-CLAIM-PROTOCOL-1
 
 **Class:** `CONTRACT`
+
+**Execution profile:** `PE7-HE-META-OPERATOR-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/evaluator/artifact/store owners plus [planned seams; not current code] fixed O0/O1 operator adapters; no second evaluator, scheduler, or store.
+
+**Allowed paths at promotion:** Exact HE-owned operator adapter, sealed corpus, artifact/store, and test paths selected by contracts; EFFECT packets change no source.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Operator-interface equivalence, treatment isolation, sealed-set access, equal full-cost budgets, stop/recovery, fixture conformance, blinded comparison/replication, and independent claim analysis.
+
+**Rollback/recovery:** Default off; revert adapters while preserving operator/descendant lineage and every failed/rejected run; never adapt O1 after comparative outcomes.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. Every Meta run requires T3 finite authority; operator/claim contracts and evaluator custody remain T2/independent.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** `META_NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` closes Meta without blocking Dashboard; no R4-R6 or recursive claim becomes eligible.
 
 **Outcome:** On META_GO, freeze O0/O1 operator interfaces, identities, allowed algorithmic difference, input evidence, outputs, lineage, randomness, failure mapping, and non-authorities.
 
@@ -1427,6 +3214,26 @@ Meta research asks whether an improvement operator improves the distribution of 
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-META-CORPUS-EVALUATOR-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/evaluator/artifact/store owners plus [planned seams; not current code] fixed O0/O1 operator adapters; no second evaluator, scheduler, or store.
+
+**Allowed paths at promotion:** Exact HE-owned operator adapter, sealed corpus, artifact/store, and test paths selected by contracts; EFFECT packets change no source.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Operator-interface equivalence, treatment isolation, sealed-set access, equal full-cost budgets, stop/recovery, fixture conformance, blinded comparison/replication, and independent claim analysis.
+
+**Rollback/recovery:** Default off; revert adapters while preserving operator/descendant lineage and every failed/rejected run; never adapt O1 after comparative outcomes.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. Every Meta run requires T3 finite authority; operator/claim contracts and evaluator custody remain T2/independent.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** `META_NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` closes Meta without blocking Dashboard; no R4-R6 or recursive claim becomes eligible.
+
 **Outcome:** Seal development, fixture-pilot, full-comparison, and replication task families; freeze immutable evaluator/labels, baselines, contamination/gaming sentinels, blinding, and access.
 
 **Allowed delta:** No operator access or experiment.
@@ -1441,6 +3248,26 @@ Meta research asks whether an improvement operator improves the distribution of 
 **Prerequisite:** PE7-HE-META-CORPUS-EVALUATOR-1
 
 **Class:** `CONTRACT`
+
+**Execution profile:** `PE7-HE-META-BUDGET-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/evaluator/artifact/store owners plus [planned seams; not current code] fixed O0/O1 operator adapters; no second evaluator, scheduler, or store.
+
+**Allowed paths at promotion:** Exact HE-owned operator adapter, sealed corpus, artifact/store, and test paths selected by contracts; EFFECT packets change no source.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Operator-interface equivalence, treatment isolation, sealed-set access, equal full-cost budgets, stop/recovery, fixture conformance, blinded comparison/replication, and independent claim analysis.
+
+**Rollback/recovery:** Default off; revert adapters while preserving operator/descendant lineage and every failed/rejected run; never adapt O1 after comparative outcomes.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. Every Meta run requires T3 finite authority; operator/claim contracts and evaluator custody remain T2/independent.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** `META_NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` closes Meta without blocking Dashboard; no R4-R6 or recursive claim becomes eligible.
 
 **Outcome:** Freeze equal total lifecycle budgets, candidate/generation/task/repetition limits, randomization, missingness, analysis, stop, recovery, and finite authorization envelopes for O0/O1.
 
@@ -1457,6 +3284,26 @@ Meta research asks whether an improvement operator improves the distribution of 
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-HE-META-O0-BASELINE-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/evaluator/artifact/store owners plus [planned seams; not current code] fixed O0/O1 operator adapters; no second evaluator, scheduler, or store.
+
+**Allowed paths at promotion:** Exact HE-owned operator adapter, sealed corpus, artifact/store, and test paths selected by contracts; EFFECT packets change no source.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Operator-interface equivalence, treatment isolation, sealed-set access, equal full-cost budgets, stop/recovery, fixture conformance, blinded comparison/replication, and independent claim analysis.
+
+**Rollback/recovery:** Default off; revert adapters while preserving operator/descendant lineage and every failed/rejected run; never adapt O1 after comparative outcomes.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. Every Meta run requires T3 finite authority; operator/claim contracts and evaluator custody remain T2/independent.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** `META_NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` closes Meta without blocking Dashboard; no R4-R6 or recursive claim becomes eligible.
+
 **Outcome:** Implement/freeze the baseline improvement operator O0 as a deterministic adapter over existing EC/Level-2 owners.
 
 **Allowed delta:** O0 policy only; no evaluator, budget, authority, adoption, or live effect.
@@ -1471,6 +3318,26 @@ Meta research asks whether an improvement operator improves the distribution of 
 **Prerequisite:** PE7-HE-META-O0-BASELINE-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-HE-META-O1-CANDIDATE-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/evaluator/artifact/store owners plus [planned seams; not current code] fixed O0/O1 operator adapters; no second evaluator, scheduler, or store.
+
+**Allowed paths at promotion:** Exact HE-owned operator adapter, sealed corpus, artifact/store, and test paths selected by contracts; EFFECT packets change no source.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Operator-interface equivalence, treatment isolation, sealed-set access, equal full-cost budgets, stop/recovery, fixture conformance, blinded comparison/replication, and independent claim analysis.
+
+**Rollback/recovery:** Default off; revert adapters while preserving operator/descendant lineage and every failed/rejected run; never adapt O1 after comparative outcomes.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. Every Meta run requires T3 finite authority; operator/claim contracts and evaluator custody remain T2/independent.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** `META_NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` closes Meta without blocking Dashboard; no R4-R6 or recursive claim becomes eligible.
 
 **Outcome:** Implement the pre-registered candidate improvement operator O1 behind the identical interface.
 
@@ -1487,6 +3354,26 @@ Meta research asks whether an improvement operator improves the distribution of 
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-META-FIXTURE-PILOT-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/EC/Level-2/evaluator/artifact/store owners plus [planned seams; not current code] fixed O0/O1 operator adapters; no second evaluator, scheduler, or store.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Operator-interface equivalence, treatment isolation, sealed-set access, equal full-cost budgets, stop/recovery, fixture conformance, blinded comparison/replication, and independent claim analysis.
+
+**Rollback/recovery:** Default off; revert adapters while preserving operator/descendant lineage and every failed/rejected run; never adapt O1 after comparative outcomes.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. Every Meta run requires T3 finite authority; operator/claim contracts and evaluator custody remain T2/independent.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** `META_NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` closes Meta without blocking Dashboard; no R4-R6 or recursive claim becomes eligible.
+
 **Outcome:** Run O0/O1 only on the disjoint fixture-pilot set to verify mechanics, cost capture, stops, and evidence flow; do not estimate the Meta claim.
 
 **Allowed delta:** Finite pilot effects only; full/replication sets remain sealed and claim thresholds cannot change.
@@ -1501,6 +3388,26 @@ Meta research asks whether an improvement operator improves the distribution of 
 **Prerequisite:** PE7-HE-META-FIXTURE-PILOT-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-META-PILOT-CLOSEOUT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/evaluator/artifact/store owners plus [planned seams; not current code] fixed O0/O1 operator adapters; no second evaluator, scheduler, or store.
+
+**Allowed paths at promotion:** Exact HE-owned operator adapter, sealed corpus, artifact/store, and test paths selected by contracts; EFFECT packets change no source.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Operator-interface equivalence, treatment isolation, sealed-set access, equal full-cost budgets, stop/recovery, fixture conformance, blinded comparison/replication, and independent claim analysis.
+
+**Rollback/recovery:** Default off; revert adapters while preserving operator/descendant lineage and every failed/rejected run; never adapt O1 after comparative outcomes.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. Every Meta run requires T3 finite authority; operator/claim contracts and evaluator custody remain T2/independent.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** `META_NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` closes Meta without blocking Dashboard; no R4-R6 or recursive claim becomes eligible.
 
 **Outcome:** Validate pilot conformance and allow only mechanical repairs that preserve the frozen treatment and claim protocol.
 
@@ -1517,6 +3424,26 @@ Meta research asks whether an improvement operator improves the distribution of 
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-META-COMPARISON-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/EC/Level-2/evaluator/artifact/store owners plus [planned seams; not current code] fixed O0/O1 operator adapters; no second evaluator, scheduler, or store.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Operator-interface equivalence, treatment isolation, sealed-set access, equal full-cost budgets, stop/recovery, fixture conformance, blinded comparison/replication, and independent claim analysis.
+
+**Rollback/recovery:** Default off; revert adapters while preserving operator/descendant lineage and every failed/rejected run; never adapt O1 after comparative outcomes.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. Every Meta run requires T3 finite authority; operator/claim contracts and evaluator custody remain T2/independent.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** `META_NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` closes Meta without blocking Dashboard; no R4-R6 or recursive claim becomes eligible.
+
 **Outcome:** Execute the preregistered randomized/blinded O0/O1 full comparison on unseen task families.
 
 **Allowed delta:** Registered operator experiments only; no tuning, selective rerun, or hidden descendant.
@@ -1532,6 +3459,26 @@ Meta research asks whether an improvement operator improves the distribution of 
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-META-REPLICATION-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/EC/Level-2/evaluator/artifact/store owners plus [planned seams; not current code] fixed O0/O1 operator adapters; no second evaluator, scheduler, or store.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Operator-interface equivalence, treatment isolation, sealed-set access, equal full-cost budgets, stop/recovery, fixture conformance, blinded comparison/replication, and independent claim analysis.
+
+**Rollback/recovery:** Default off; revert adapters while preserving operator/descendant lineage and every failed/rejected run; never adapt O1 after comparative outcomes.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. Every Meta run requires T3 finite authority; operator/claim contracts and evaluator custody remain T2/independent.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** `META_NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` closes Meta without blocking Dashboard; no R4-R6 or recursive claim becomes eligible.
+
 **Outcome:** Execute the frozen independent replication/transfer set without inspecting or adapting to comparative conclusions beyond registered safety stops.
 
 **Allowed delta:** Registered replication effects only.
@@ -1546,6 +3493,26 @@ Meta research asks whether an improvement operator improves the distribution of 
 **Prerequisite:** PE7-HE-META-REPLICATION-RUN-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-META-ANALYSIS-DECISION-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/evaluator/artifact/store owners plus [planned seams; not current code] fixed O0/O1 operator adapters; no second evaluator, scheduler, or store.
+
+**Allowed paths at promotion:** Exact HE-owned operator adapter, sealed corpus, artifact/store, and test paths selected by contracts; EFFECT packets change no source.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Operator-interface equivalence, treatment isolation, sealed-set access, equal full-cost budgets, stop/recovery, fixture conformance, blinded comparison/replication, and independent claim analysis.
+
+**Rollback/recovery:** Default off; revert adapters while preserving operator/descendant lineage and every failed/rejected run; never adapt O1 after comparative outcomes.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. Every Meta run requires T3 finite authority; operator/claim contracts and evaluator custody remain T2/independent.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** `META_NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` closes Meta without blocking Dashboard; no R4-R6 or recursive claim becomes eligible.
 
 **Outcome:** Apply the frozen analysis to operator-level distributions, Pareto yield, improvement cost, eligible-descendant rate, and transfer reliability; issue the bounded Meta claim decision.
 
@@ -1584,6 +3551,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-ADVANCED-RECURSION-GATE-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** Only exact branch adapter/artifact/test paths selected by its contract; R5 has no accepted trainer/adapter owner until its contract and authority choose one, and model binaries/data stay outside Git.
+
+**Ordered work:** T0/T2 assemble and independently verify the exact dossier -> pause -> T3 reads objections/rollback/cost -> sign one bounded disposition -> planning owner synchronizes route; do not execute the disposition's successor.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** T0/T2 may prepare but must pause for an explicit T3 human receipt; model output cannot sign or infer it. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
+
 **Outcome:** Decide whether any R4-R6 research is justified and, on human `ADVANCED_GO`, freeze the immutable outer shell, branch-specific claims, maximum depth, mutable surfaces, sandbox, budgets, evidence retention, global stops, and strongest allowed conclusions.
 
 **Allowed delta:** Planning and GO/NO-GO only; no adapter, training, self-modification, Provider request, or target effect.
@@ -1602,6 +3589,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-R4-METACOGNITIVE-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** Only exact branch adapter/artifact/test paths selected by its contract; R5 has no accepted trainer/adapter owner until its contract and authority choose one, and model binaries/data stay outside Git.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
+
 **Outcome:** Freeze the fixed Meta operator baseline and one self-referential treatment whose internal diagnosis, memory, proposal, and modification procedure may edit only an enumerated meta-operator workspace.
 
 **Allowed delta:** Contract only. Evaluator/labels, parent selection, archive admission, budgets, permissions, stops, sandbox, active Harness, adoption, and release remain byte/value/behavior immutable.
@@ -1617,6 +3624,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 **Prerequisite:** PE7-HE-R4-METACOGNITIVE-CONTRACT-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-HE-R4-METACOGNITIVE-ADAPTER-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** Only exact branch adapter/artifact/test paths selected by its contract; R5 has no accepted trainer/adapter owner until its contract and authority choose one, and model binaries/data stay outside Git.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
 
 **Outcome:** Implement a provider-free, default-off metacognitive operator adapter over existing EC/Level-2 owners, with immutable snapshots of every self-change and no direct external-project dependency.
 
@@ -1634,6 +3661,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-R4-COMPARISON-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
+
 **Outcome:** Execute the frozen fixed-operator versus metacognitive-operator comparison on sealed unseen task families under equal lifecycle budgets and finite authorization.
 
 **Allowed delta:** Registered operator effects only; parent selection/evaluator/thresholds remain fixed and no descendant is adopted.
@@ -1650,6 +3697,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-R4-REPLICATION-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
+
 **Outcome:** Execute the unchanged R4 protocol on a separately sealed replication domain without adapting to comparative results.
 
 **Allowed delta:** Registered replication effects only.
@@ -1665,6 +3732,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 **Prerequisite:** PE7-HE-R4-REPLICATION-RUN-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-R4-ANALYSIS-DECISION-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** Only exact branch adapter/artifact/test paths selected by its contract; R5 has no accepted trainer/adapter owner until its contract and authority choose one, and model binaries/data stay outside Git.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
 
 **Outcome:** Test whether bounded self-referential modification improves eligible-descendant distribution, transfer reliability, improvement cost, and prediction calibration over the fixed operator.
 
@@ -1684,6 +3771,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-R5-WEIGHT-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** Only exact branch adapter/artifact/test paths selected by its contract; R5 has no accepted trainer/adapter owner until its contract and authority choose one, and model binaries/data stay outside Git.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
+
 **Outcome:** Freeze a separate training-effect boundary, immutable open-weight base checkpoint, parameter-efficient adapter format, dataset/provenance/license/privacy rules, trainer/optimizer/RNG/compute identities, verifier separation, checkpoint security, budgets, rollback, and four-arm factorial protocol.
 
 **Allowed delta:** Planning only. First-stage weight work is adapter-only (for example LoRA); base or full-model weights, Provider-hosted models, and production model routing remain immutable.
@@ -1699,6 +3806,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 **Prerequisite:** PE7-HE-R5-WEIGHT-CONTRACT-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-HE-R5-WEIGHT-ADAPTER-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** Only exact branch adapter/artifact/test paths selected by its contract; R5 has no accepted trainer/adapter owner until its contract and authority choose one, and model binaries/data stay outside Git.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
 
 **Outcome:** Implement a default-off external-training adapter that records immutable base/adapter/data/trainer/config/seed/compute identities and returns hash-bound artifacts through existing artifact/store owners.
 
@@ -1716,6 +3843,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-R5-FACTORIAL-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
+
 **Outcome:** Execute the preregistered four-arm factorial experiment with fixed update schedules to estimate harness, weight-adapter, and interaction effects before dynamic lever selection.
 
 **Allowed delta:** Registered Harness mutations and adapter-training effects only; no interleaved chooser, full-weight update, production routing, or post-result arm change.
@@ -1731,6 +3878,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 **Prerequisite:** PE7-HE-R5-FACTORIAL-RUN-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-R5-FACTORIAL-ANALYSIS-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** Only exact branch adapter/artifact/test paths selected by its contract; R5 has no accepted trainer/adapter owner until its contract and authority choose one, and model binaries/data stay outside Git.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
 
 **Outcome:** Estimate main and interaction effects, transfer/non-inferiority, coupled-Goodhart sensitivity, full lifecycle value, and whether a fixed SIA-like lever chooser is eligible for one co-evolution pilot.
 
@@ -1748,6 +3915,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-R5-COEVOLUTION-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
+
 **Outcome:** Execute one bounded SIA-like pilot in which a frozen lever-selection policy interleaves Harness and adapter-weight updates under the same immutable outer evaluator and budget owners.
 
 **Allowed delta:** Registered interleaving only; the lever selector does not learn or self-modify, and full-model weights remain unchanged.
@@ -1764,6 +3951,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-R5-TRANSFER-REPLICATION-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
+
 **Outcome:** Replicate the frozen co-evolution treatment and factorial baselines on a separately sealed unseen task/model family.
 
 **Allowed delta:** Registered replication effects only; no chooser, Harness, optimizer, data, threshold, or adapter repair.
@@ -1779,6 +3986,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 **Prerequisite:** PE7-HE-R5-TRANSFER-REPLICATION-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-R5-ANALYSIS-DECISION-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** Only exact branch adapter/artifact/test paths selected by its contract; R5 has no accepted trainer/adapter owner until its contract and authority choose one, and model binaries/data stay outside Git.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
 
 **Outcome:** Decide the bounded Harness+adapter claim and whether full-weight or model-architecture evolution is even planning-eligible.
 
@@ -1798,6 +4025,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-HE-R6-OUTER-POLICY-CONTRACT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** Only exact branch adapter/artifact/test paths selected by its contract; R5 has no accepted trainer/adapter owner until its contract and authority choose one, and model binaries/data stay outside Git.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
+
 **Outcome:** Freeze exactly one mutable outer policy family for the first experiment: parent selection, Harness-vs-weight lever selection, or curriculum proposal. Keep evaluator/labels, task acceptance, hard gates, budgets, permissions, stops, archive integrity, and adoption external and immutable.
 
 **Allowed delta:** Contract only; no simultaneous multi-policy evolution, evaluator evolution, self-generated goals, or live effect.
@@ -1813,6 +4060,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 **Prerequisite:** PE7-HE-R6-OUTER-POLICY-CONTRACT-1
 
 **Class:** `IMPLEMENT`
+
+**Execution profile:** `PE7-HE-R6-OUTER-POLICY-ADAPTER-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** Only exact branch adapter/artifact/test paths selected by its contract; R5 has no accepted trainer/adapter owner until its contract and authority choose one, and model binaries/data stay outside Git.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
 
 **Outcome:** Implement the single accepted outer-policy treatment behind a deterministic, versioned interface over existing controllers and evidence owners.
 
@@ -1830,6 +4097,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-R6-COMPARISON-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
+
 **Outcome:** Execute the fixed versus evolvable outer-policy comparison under finite authority, equal lifecycle budget, sealed tasks, and unchanged R4/R5 components.
 
 **Allowed delta:** Registered policy effects only.
@@ -1846,6 +4133,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 
 **Class:** `EFFECT`
 
+**Execution profile:** `PE7-HE-R6-REPLICATION-RUN-1.v1`
+
+**Worker tier:** `T3`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** No repository source path is writable; owner paths are read-only, and only the contract-named restricted evidence root plus later closeout/status projection may change.
+
+**Ordered work:** Refresh exact main/evidence -> run immediate provider-free preflight -> pause for T3 finite authority -> execute exactly once -> journal every attempt/cost -> reconcile outcome and cleanup -> seal restricted raw plus redacted digest; never auto-retry unknown effects.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** T0/T1 may prepare and preflight, then must pause; only a fresh T3 finite one-use authority may permit the registered external effect. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Never consolidate with preflight, code repair, analysis, another run, or human decision; one authority, one run packet, one immutable receipt.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
+
 **Outcome:** Execute the unchanged outer-policy comparison on a separately sealed replication family.
 
 **Allowed delta:** Registered replication effects only.
@@ -1861,6 +4168,26 @@ Primary research is reference evidence, not an implementation dependency or auth
 **Prerequisite:** PE7-HE-R6-REPLICATION-RUN-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-HE-R6-ANALYSIS-DECISION-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing HE/EC/Level-2/Meta owners plus one branch-specific [planned seam; not current code]; revalidate the immutable outer shell and never use task-tree `recursive_execution.rs` as research depth.
+
+**Allowed paths at promotion:** Only exact branch adapter/artifact/test paths selected by its contract; R5 has no accepted trainer/adapter owner until its contract and authority choose one, and model binaries/data stay outside Git.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** Immutable-shell/treatment isolation, sandbox/escape, lineage/tamper, full lifecycle cost, equal-budget comparison, sealed replication, catastrophic regression, stop/recovery, and no-authority tests.
+
+**Rollback/recovery:** Default off; restore the exact prior operator/Harness/adapter/policy, retain every self-change/checkpoint/transition and cost record, and never undo an unknown external effect by retry.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. The gate and all runs/training require T3 human/operator authority; contracts/adapters require T2 architecture, security, license, and recovery review.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** A negative/insufficient R4 or R5 closes that sibling only; R6 needs explicit dispositions plus separate GO. Any unbounded depth or evaluator/goal mutation stops the portfolio.
 
 **Outcome:** Determine whether one bounded outer-policy family improves the distribution and efficiency of eligible improvements without destabilizing attribution, safety, diversity, or oversight.
 
@@ -1881,6 +4208,26 @@ Presentation work remains the last mandatory product-route surface and never bec
 
 **Class:** `CONTRACT`
 
+**Execution profile:** `PE7-DASHBOARD-DISPOSITION-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `dashboard/src/**` presentation owner and accepted API/data projections; Dashboard never owns runtime, schema, workflow, evaluator, approval, spend, adoption, output, release, or deployment.
+
+**Allowed paths at promotion:** `dashboard/src/**`, dashboard tests/styles/config, and exact presentation docs named by the disposition; `engine/**`, `wire_contract/**`, SDK, routes, and schemas are forbidden for the final refresh.
+
+**Ordered work:** T0 inventory accepted owners/callers -> reconcile predecessor evidence -> T2 freeze values/interfaces/paths/failure and rollback rules -> add deterministic negative fixtures -> independent review -> publish one versioned hash-bound contract.
+
+**Verification:** `bun --cwd dashboard run lint`, `typecheck`, `test`, and `build`; browser evidence for light/dark, desktop/mobile, keyboard, contrast, reduced motion, overflow, console/network errors; handoff/diff and exact-head review.
+
+**Rollback/recovery:** Revert the presentation commit/PR and restore prior static assets; no data migration or backend rollback belongs here.
+
+**Human/effect gate:** No external effect; T2 must accept any architecture, authority, schema, evaluator, statistical, retention, security, or recovery choice. PR disposition/merge remains maintainer-reviewed; presentation implementation is suitable for T1 after the contract is exact.
+
+**Consolidation boundary:** Do not combine with implementation/effect; only adjacent provider-free contract text may share a PR when one owner, path set, rollback, and decision point are proven.
+
+**Negative-result route:** If current schema cannot support the UI, return `DECISION_REQUIRED` to the owning upstream stage; do not add backend behavior. Accessibility failure blocks closeout.
+
 **Outcome:** Decide whether stale PR #225 should close and be recreated, or be refreshed, against the final accepted schema and route dispositions.
 
 **Allowed delta:** PR disposition and presentation contract only; no runtime/schema/business behavior.
@@ -1896,6 +4243,26 @@ Presentation work remains the last mandatory product-route surface and never bec
 
 **Class:** `IMPLEMENT`
 
+**Execution profile:** `PE7-DASHBOARD-REFRESH-1.v1`
+
+**Worker tier:** `T1`
+
+**Owner/seam:** Existing `dashboard/src/**` presentation owner and accepted API/data projections; Dashboard never owns runtime, schema, workflow, evaluator, approval, spend, adoption, output, release, or deployment.
+
+**Allowed paths at promotion:** `dashboard/src/**`, dashboard tests/styles/config, and exact presentation docs named by the disposition; `engine/**`, `wire_contract/**`, SDK, routes, and schemas are forbidden for the final refresh.
+
+**Ordered work:** Revalidate accepted contract and exact paths -> add focused failing/negative tests -> implement one additive or enumerated migration slice -> run compatibility/recovery checks -> remove only contract-approved compatibility -> emit cost/rollback receipt.
+
+**Verification:** `bun --cwd dashboard run lint`, `typecheck`, `test`, and `build`; browser evidence for light/dark, desktop/mobile, keyboard, contrast, reduced motion, overflow, console/network errors; handoff/diff and exact-head review.
+
+**Rollback/recovery:** Revert the presentation commit/PR and restore prior static assets; no data migration or backend rollback belongs here.
+
+**Human/effect gate:** No external effect; T1 may implement only a frozen mechanical contract, while T2 accepts any high-risk seam and the complete diff. PR disposition/merge remains maintainer-reviewed; presentation implementation is suitable for T1 after the contract is exact.
+
+**Consolidation boundary:** Apply the global rule: combine only same-owner mechanical slices explicitly permitted by the parent contract; never cross schema/authority/evaluator/rollback boundaries.
+
+**Negative-result route:** If current schema cannot support the UI, return `DECISION_REQUIRED` to the owning upstream stage; do not add backend behavior. Accessibility failure blocks closeout.
+
 **Outcome:** Apply the accepted presentation-only refresh on the current schema.
 
 **Allowed delta:** CSS/layout/presentation and bounded tests only; no API, runtime, persistence, route, permission, evaluator, budget, adoption, output, or deployment behavior.
@@ -1910,6 +4277,26 @@ Presentation work remains the last mandatory product-route surface and never bec
 **Prerequisite:** PE7-DASHBOARD-REFRESH-1
 
 **Class:** `CLOSEOUT`
+
+**Execution profile:** `PE7-DASHBOARD-CLOSEOUT-1.v1`
+
+**Worker tier:** `T2`
+
+**Owner/seam:** Existing `dashboard/src/**` presentation owner and accepted API/data projections; Dashboard never owns runtime, schema, workflow, evaluator, approval, spend, adoption, output, release, or deployment.
+
+**Allowed paths at promotion:** `dashboard/src/**`, dashboard tests/styles/config, and exact presentation docs named by the disposition; `engine/**`, `wire_contract/**`, SDK, routes, and schemas are forbidden for the final refresh.
+
+**Ordered work:** Acquire immutable evidence and frozen rule -> independently recompute identities/gates/results -> preserve failures/missingness/cost -> issue explicit disposition -> synchronize status and rewrite only eligible routing; perform no new effect.
+
+**Verification:** `bun --cwd dashboard run lint`, `typecheck`, `test`, and `build`; browser evidence for light/dark, desktop/mobile, keyboard, contrast, reduced motion, overflow, console/network errors; handoff/diff and exact-head review.
+
+**Rollback/recovery:** Revert the presentation commit/PR and restore prior static assets; no data migration or backend rollback belongs here.
+
+**Human/effect gate:** No new external effect; independent T2 closeout is required, and any human decision remains a separately signed receipt. PR disposition/merge remains maintainer-reviewed; presentation implementation is suitable for T1 after the contract is exact.
+
+**Consolidation boundary:** Keep independent from the effect/implementation it judges; it may share no head that changes the frozen evidence or rule.
+
+**Negative-result route:** If current schema cannot support the UI, return `DECISION_REQUIRED` to the owning upstream stage; do not add backend behavior. Accessibility failure blocks closeout.
 
 **Outcome:** Independently verify exact-head presentation scope and close the final deferred surface.
 

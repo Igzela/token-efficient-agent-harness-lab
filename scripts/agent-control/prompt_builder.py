@@ -446,6 +446,10 @@ def build_claim_bound_plan_implementation_prompt(
     source_main_sha,
     branch,
     *,
+    prerequisites,
+    forbidden_changes,
+    verification,
+    rollback,
     repo_root=None,
 ):
     """Build a prompt from an already validated plan candidate capsule."""
@@ -460,6 +464,26 @@ def build_claim_bound_plan_implementation_prompt(
         raise ValueError("plan source main SHA is invalid")
     if not isinstance(branch, str) or not branch:
         raise ValueError("plan branch is invalid")
+    contract_fields = {
+        "prerequisites": (prerequisites, True),
+        "forbidden_changes": (forbidden_changes, False),
+        "verification": (verification, False),
+        "rollback": (rollback, False),
+    }
+    for field, (value, allow_empty) in contract_fields.items():
+        if (
+            not isinstance(value, list)
+            or len(value) > 50
+            or (not allow_empty and not value)
+            or any(
+                not isinstance(item, str)
+                or not item.strip()
+                or len(item) > 8192
+                for item in value
+            )
+            or len(value) != len(set(value))
+        ):
+            raise ValueError(f"plan {field} are invalid")
     template_text = load_prompt_template("implementation.md")
     if not template_text:
         raise ValueError("implementation prompt template is unavailable")
@@ -489,8 +513,15 @@ def build_claim_bound_plan_implementation_prompt(
         f"- packet_id: `{packet_id}`\n"
         f"- canonical branch: `{branch}`\n"
         f"- allowed_paths: `{json.dumps(allowed_paths, separators=(',', ':'))}`\n"
+        f"- prerequisites: `{json.dumps(prerequisites, separators=(',', ':'))}`\n"
+        f"- forbidden_changes: `{json.dumps(forbidden_changes, separators=(',', ':'))}`\n"
+        f"- verification: `{json.dumps(verification, separators=(',', ':'))}`\n"
+        f"- rollback: `{json.dumps(rollback, separators=(',', ':'))}`\n"
         "The canonical plan document and trusted ledger claim are authority; the "
-        "transport capsule is not. Do not expand scope or perform GitHub mutations.\n"
+        "transport capsule is not. Re-prove prerequisites before editing, stay within "
+        "allowed paths and forbidden changes, run every verification command, and "
+        "use the recorded rollback on a stop condition. Do not expand scope or "
+        "perform GitHub mutations.\n"
     )
     return prompt
 
