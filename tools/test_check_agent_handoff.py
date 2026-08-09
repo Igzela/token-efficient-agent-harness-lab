@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import subprocess
 import sys
 import unittest
@@ -24,6 +25,18 @@ def load_handoff_checker():
 
 def completed(command: list[str], returncode: int = 0, stdout: str = ""):
     return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr="")
+
+
+def with_future_inventory(checker, future: str) -> str:
+    payload = checker.future_route_inventory_payload(future)
+    marker = "<!-- future-route-inventory:v1 " + json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ) + " -->"
+    return future.replace(
+        "## Portfolio Inventory Manifest",
+        "## Portfolio Inventory Manifest\n\n" + marker,
+        1,
+    )
 
 
 class CheckAgentHandoffTests(unittest.TestCase):
@@ -244,6 +257,28 @@ class CheckAgentHandoffTests(unittest.TestCase):
 
         self.assertEqual(checker.active_state_failures(status, current), [])
 
+    def test_accepted_packet_receipt_is_scoped_to_owner_section(self) -> None:
+        checker = load_handoff_checker()
+        status = """## Unrelated Table
+| Packet | State | Accepted evidence |
+|---|---|---|
+| `PE7-A-1` | `COMPLETE` | merge `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` |
+"""
+
+        self.assertEqual(checker.accepted_packet_receipts(status), set())
+
+    def test_accepted_packet_receipt_requires_durable_evidence_identity(self) -> None:
+        checker = load_handoff_checker()
+        status = """## Accepted Packet Receipts
+| Packet | State | Accepted evidence |
+|---|---|---|
+| `PE7-A-1` | `COMPLETE` | looks good |
+"""
+        failures: list[str] = []
+
+        self.assertEqual(checker.accepted_packet_receipts(status, failures), set())
+        self.assertTrue(any("durable evidence identity" in item for item in failures))
+
     def test_future_route_rejects_packet_without_execution_profile(self) -> None:
         checker = load_handoff_checker()
         future = """# Future Route
@@ -281,13 +316,14 @@ This document is routing-only.
 ## Promotion Contract
 ## Stop and Resume Protocol
 ## Execution Profile Field Contract
+## Portfolio Inventory Manifest
 
 ### Packet PE7-B-1
 
 **State:** `BLOCKED_PREREQUISITE`
 **Prerequisite:** PE7-A-1
 **Class:** `CONTRACT`
-**Execution profile:** `RWE-B-CONTRACT`
+**Execution profile:** `PE7-B-1.v1`
 **Worker tier:** `T2`
 **Owner/seam:** Existing RWE authority; revalidate the exact symbol on promotion.
 **Allowed paths at promotion:** `engine/src/rwe/**`, tests, and canonical docs only.
@@ -297,9 +333,126 @@ This document is routing-only.
 **Human/effect gate:** No external effect; primary approval is required for contract choices.
 **Consolidation boundary:** Do not combine with implementation or effect packets.
 **Negative-result route:** Record `DECISION_REQUIRED`; do not invent a contract value.
+**Outcome:** Freeze the exact RWE contract before any implementation or external effect.
+**Allowed delta:** Versioned planning evidence only; runtime and authority remain unchanged.
+**Exit:** One independently reviewed and hash-bound contract with explicit owners.
+**Stop:** Any missing authority owner, unresolved value, or stale accepted prerequisite.
 """
+        future = with_future_inventory(checker, future)
 
         self.assertEqual(checker.future_route_contract_failures(future), [])
+
+    def test_future_route_requires_full_base_packet_contract(self) -> None:
+        checker = load_handoff_checker()
+        future = """# Future Route
+## Weak-Agent Full-Course Contract
+## Worker Tiers
+## Cheap-Agent Dispatch Protocol
+## Known Planned-Seam Gaps
+## Promotion Contract
+## Stop and Resume Protocol
+## Execution Profile Field Contract
+## Portfolio Inventory Manifest
+### Packet PE7-B-1
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE7-A-1
+**Class:** `CONTRACT`
+**Execution profile:** `PE7-B-1.v1`
+**Worker tier:** `T2`
+**Owner/seam:** Existing RWE authority; revalidate exact symbols before promotion.
+**Allowed paths at promotion:** Narrow exact RWE owner and test paths on promotion.
+**Ordered work:** Inventory -> freeze -> test -> independently review the contract.
+**Verification:** Run focused negative tests, handoff checks, and complete-diff review.
+**Rollback/recovery:** Revert planning evidence and retain prior accepted receipts.
+**Human/effect gate:** T2 accepts contract decisions; external effects stay forbidden.
+**Consolidation boundary:** Keep this contract separate from implementation and effects.
+**Negative-result route:** Stop DECISION_REQUIRED without inventing contract values.
+"""
+        failures = checker.future_route_contract_failures(future)
+
+        self.assertTrue(any("missing Outcome" in item for item in failures), failures)
+        self.assertTrue(any("missing Allowed delta" in item for item in failures), failures)
+        self.assertTrue(any("missing Exit" in item for item in failures), failures)
+        self.assertTrue(any("missing Stop" in item for item in failures), failures)
+
+    def test_future_route_profile_id_must_bind_packet_id(self) -> None:
+        checker = load_handoff_checker()
+        future = """# Future Route
+## Weak-Agent Full-Course Contract
+## Worker Tiers
+## Cheap-Agent Dispatch Protocol
+## Known Planned-Seam Gaps
+## Promotion Contract
+## Stop and Resume Protocol
+## Execution Profile Field Contract
+## Portfolio Inventory Manifest
+### Packet PE7-B-1
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE7-A-1
+**Class:** `CONTRACT`
+**Execution profile:** `SOME-GENERIC-PROFILE.v1`
+**Worker tier:** `T2`
+"""
+
+        failures = checker.future_route_contract_failures(future)
+
+        self.assertTrue(any("must equal 'PE7-B-1.v1'" in item for item in failures), failures)
+
+    def test_future_route_inventory_rejects_tampered_packet_count(self) -> None:
+        checker = load_handoff_checker()
+        future = """# Future Route
+## Weak-Agent Full-Course Contract
+## Worker Tiers
+## Cheap-Agent Dispatch Protocol
+## Known Planned-Seam Gaps
+## Promotion Contract
+## Stop and Resume Protocol
+## Execution Profile Field Contract
+## Portfolio Inventory Manifest
+### Packet PE7-B-1
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE7-A-1
+**Class:** `CONTRACT`
+**Execution profile:** `PE7-B-1.v1`
+**Worker tier:** `T2`
+**Owner/seam:** Existing RWE authority; revalidate exact symbols before promotion.
+**Allowed paths at promotion:** Narrow exact RWE owner and test paths on promotion.
+**Ordered work:** Inventory -> freeze -> test -> independently review the contract.
+**Verification:** Run focused negative tests, handoff checks, and complete-diff review.
+**Rollback/recovery:** Revert planning evidence and retain prior accepted receipts.
+**Human/effect gate:** T2 accepts contract decisions; external effects stay forbidden.
+**Consolidation boundary:** Keep this contract separate from implementation and effects.
+**Negative-result route:** Stop DECISION_REQUIRED without inventing contract values.
+**Outcome:** Freeze the exact RWE contract before implementation or external effects.
+**Allowed delta:** Versioned planning evidence only; runtime and authority stay unchanged.
+**Exit:** One independently reviewed and hash-bound contract with explicit owners.
+**Stop:** Any missing authority owner, unresolved value, or stale prerequisite.
+"""
+        future = with_future_inventory(checker, future).replace(
+            '"packet_count":1', '"packet_count":2', 1
+        )
+
+        failures = checker.future_route_contract_failures(future)
+
+        self.assertTrue(any("inventory manifest mismatch" in item for item in failures), failures)
+
+    def test_weak_agent_dispatch_capsule_rejects_missing_or_unsafe_payload(self) -> None:
+        checker = load_handoff_checker()
+        current = """## Packet PE7-A-1
+**State:** `READY_FOR_EXECUTION`
+"""
+        packets = checker.parse_packet_contracts(current, [])
+
+        missing = checker.weak_agent_dispatch_failures(current, packets)
+        self.assertTrue(any("missing weak-agent-dispatch" in item for item in missing))
+
+        unsafe = current + """
+## Weak-Agent Dispatch Capsule
+<!-- weak-agent-dispatch:v1 {"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-A-1","external_effect_limit":1,"authority_consumption_allowed":true} -->
+"""
+        failures = checker.weak_agent_dispatch_failures(unsafe, packets)
+        self.assertTrue(any("external_effect_limit=0" in item for item in failures))
+        self.assertTrue(any("authority consumption" in item for item in failures))
 
     def test_future_route_requires_cheap_agent_dispatch_protocol(self) -> None:
         checker = load_handoff_checker()

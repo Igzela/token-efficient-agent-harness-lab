@@ -218,7 +218,7 @@ Stop before any of the following:
 
 **Class:** `CONTRACT`
 
-**Readiness:** execution-ready for provider-free preparation and preflight; T1 may execute deterministic steps, T2 accepts the zero-effect evidence package, and T3 authority is neither required nor permitted inside this packet.
+**Readiness:** execution-ready for provider-free preparation and preflight; T1 may execute deterministic steps, T2 accepts the zero-Provider/target/RWE-authority evidence package with its disclosed authentication-bookkeeping write, and T3 authority is neither required nor permitted inside this packet.
 
 ### 1. Outcome and non-goals
 
@@ -227,7 +227,7 @@ Produce two hash-bound artifacts for the exact accepted v2 freeze:
 1. a fresh `rwe_operator_preflight.v1` receipt from the existing `rwe-live-baseline preflight` command; and
 2. an operator-readable **unsigned, not-issued** one-use authorization request package containing only bounded identities, frozen hashes/ceilings, proposed run/authorization IDs and expiry, evidence destinations, and stop rules.
 
-This packet does not change code, corpus, protocol, schedule, schema, store state, evaluator, budget, Provider/model, target repository, or active Harness. It does not call a Provider, issue/admit/consume/revoke an authorization, acquire a run lease, execute a cell, write a target, open a PR in the target, rerun calibration, or authorize the successor.
+This packet does not change code, corpus, protocol, schedule, schema, RWE authority/run/task/evidence state, evaluator, budget, Provider/model, target repository, or active Harness. The CLI authenticates before preflight and the existing authentication owner persistently updates `api_key_metadata.last_used_at`; that bounded audit-bookkeeping write is expected, must be disclosed in the package, and is the only permitted store mutation. The packet does not call a Provider, issue/admit/consume/revoke an authorization, acquire a run lease, execute a cell, write a target, open a PR in the target, rerun calibration, or authorize the successor.
 
 ### 2. Accepted identities and immutable bindings
 
@@ -260,11 +260,12 @@ Read-only owner paths:
 - `engine/src/rwe/runner.rs`;
 - `engine/src/rwe/execution_schedule.rs`;
 - `engine/src/storage/local_product_store/rwe_authority.rs`;
+- `engine/src/storage/local_product_store/managed_acceptance.rs` and `engine/src/storage/local_product_store/keys.rs` for the authentication bookkeeping call path;
 - `engine/src/bin/rwe_live_baseline.rs`;
 - `engine/rwe/corpora/rwe-minimum-first-corpus/v2/**`;
 - focused tests for those owners.
 
-Writable output is limited to a new mode-`0600` file at the operator-provided restricted destination, a separately redacted receipt/request package containing only approved fields and digests, and—after independent acceptance—`docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md` for one frontier transition. No Rust, schema, migration, SDK, Dashboard, workflow, runbook, target, or raw-evidence file is writable. Any code repair, new status/list API, schema migration, or owner change is a separate `DECISION_REQUIRED` packet.
+Writable output is limited to a new mode-`0600` file at the operator-provided restricted destination, a separately redacted receipt/request package containing only approved fields and digests, the store-owned `api_key_metadata.last_used_at` authentication-bookkeeping update, and—after independent acceptance—`docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md` for one frontier transition. No other store state and no Rust, schema, migration, SDK, Dashboard, workflow, runbook, target, or raw-evidence file is writable. Any code repair, new status/list API, schema migration, or owner change is a separate `DECISION_REQUIRED` packet.
 
 ### 5. Ordered weak-agent procedure
 
@@ -274,8 +275,8 @@ Writable output is limited to a new mode-`0600` file at the operator-provided re
 4. Run focused provider-free tests and build the existing CLI. A failure is evidence; do not patch code inside this packet.
 5. Acquire and validate the T2/operator store-inventory receipt. Stop before live-store access if it is absent, the backend/path is ambiguous, schema migration would occur, backup is stale, or an authority/lease is unresolved.
 6. Run `preflight` **without** `--authorization-id`; never invoke the adjacent `admit` or `run` subcommands. Capture stdout directly into the new restricted file with shell tracing disabled, `umask 077`, and no-clobber enabled.
-7. Validate the JSON locally, compute the receipt digest from stdin so no private path is printed, scan the redacted projection for forbidden content, and run the preflight a second time only if the first was zero-effect and the store/input identities are unchanged. The two normalized receipts must match.
-8. Build the unsigned request package with `state=NOT_ISSUED`, `authority_consumed=false`, and `external_effect_count=0`; bind only receipt/evidence digests, never the restricted path or credential.
+7. Validate the single JSON receipt locally, compute its digest from stdin so no private path is printed, and scan the redacted projection for forbidden content. Do not rerun merely to prove determinism: every invocation performs another authentication-bookkeeping update.
+8. Build the unsigned request package with `state=NOT_ISSUED`, `authority_consumed=false`, `external_effect_count=0`, and `known_store_mutation=api_key_metadata.last_used_at`; bind only receipt/evidence digests, never the restricted path or credential.
 9. T2 independently reviews the package and exact evidence. On acceptance, synchronize the three canonical route documents; do not issue authority or begin the run.
 
 ### 6. Command template
@@ -310,7 +311,7 @@ Do not unset or override `CI`; the preflight must fail closed when `CI=true`. Do
 
 ### 7. Receipt verification
 
-The restricted JSON must parse and prove all of the following: `ready=true`; `schema_version=rwe_operator_preflight.v1`; `provider_call_performed=false`; `target_write_performed=false`; `authority_consumed=false`; `live_baseline_sealed=false`; `golden_path_prerequisite_ready=true`; `credential_symbol_present=true`; `authorization=null`; `blockers=[]`; exact frozen hashes/target/provider/model/binary identities; and `cell_count=4`. The redacted package additionally proves the fresh capsule SHA, store-backend logical identity, inventory-receipt digest, input-manifest digest, receipt SHA-256, evidence retention/access class, proposed expiry/ceilings, and all stop rules.
+The restricted JSON must parse and prove all of the following: `ready=true`; `schema_version=rwe_operator_preflight.v1`; `provider_call_performed=false`; `target_write_performed=false`; `authority_consumed=false`; `live_baseline_sealed=false`; `golden_path_prerequisite_ready=true`; `credential_symbol_present=true`; `authorization=null`; `blockers=[]`; exact frozen hashes/target/provider/model/binary identities; and `cell_count=4`. The redacted package additionally proves the fresh capsule SHA, store-backend logical identity, inventory-receipt digest, input-manifest digest, receipt SHA-256, evidence retention/access class, proposed expiry/ceilings, all stop rules, and the expected `api_key_metadata.last_used_at` authentication bookkeeping. The CLI receipt does not prove total store immutability; T2 must reconcile the disclosed bookkeeping path against the store-owner inventory receipt and reject any other mutation.
 
 The verifier rejects any credential value, raw prompt/output/transcript, private path, unredacted repository content, mutable caller-supplied freeze value, missing/zeroed cost ceiling, active/consumed authorization claim, or assertion that preflight authorizes the run.
 
@@ -324,10 +325,10 @@ Use exactly one primary disposition:
 - `AUTHORITY_OR_LEASE_CONFLICT` — an extant authority/run/lease is unresolved;
 - `PREFLIGHT_BLOCKED` — the CLI returns `ready=false` with preserved blocker codes;
 - `IDENTITY_MISMATCH` — a receipt binding differs from the accepted table;
-- `EVIDENCE_INVALID` — write, parse, digest, redaction, retention, or second-run determinism fails;
-- `READY_ZERO_EFFECT` — and only this disposition is eligible for T2 acceptance.
+- `EVIDENCE_INVALID` — write, parse, digest, redaction, retention, or disclosed-store-mutation reconciliation fails;
+- `READY_ZERO_EXTERNAL_EFFECT` — and only this disposition is eligible for T2 acceptance.
 
-On every non-ready disposition, preserve the zero-effect proof and bounded blocker receipt, perform no retry that changes inputs/state, and emit the common weak-agent handoff. Resume only after a named owner supplies a fresh replacement receipt/input and main/store identities are revalidated. If any external effect or authority consumption is observed or cannot be disproved, classify `OUTCOME_UNKNOWN`, stop immediately, and do not use this packet's rollback or retry path.
+On every non-ready disposition, preserve the zero-Provider/target/RWE-authority proof, disclose the authentication-bookkeeping update, retain the bounded blocker receipt, perform no speculative retry, and emit the common weak-agent handoff. Resume only after a named owner supplies a fresh replacement receipt/input and main/store identities are revalidated. If any external effect or authority consumption is observed or cannot be disproved, classify `OUTCOME_UNKNOWN`, stop immediately, and do not use this packet's rollback or retry path.
 
 ### 9. Verification and exit gate
 
@@ -336,20 +337,115 @@ Required evidence:
 - the three focused commands above pass on the accepted checkout;
 - exact v2 hash/cell/budget assertions and v1/v2 distinctness pass;
 - store-owner inventory and recovery receipts are fresh and hash-bound;
-- two normalized provider-free preflight receipts match and both prove zero effects/zero authority;
+- one provider-free preflight receipt proves zero Provider/target effects and zero RWE authority consumption, while T2 evidence discloses and reconciles only the expected authentication-bookkeeping write;
 - secret/sensitive-content scan and redacted/restricted digest reconciliation pass;
 - `uv run --no-project python tools/check_security_baseline.py`;
 - `uv run --no-project python scripts/check_agent_handoff.py`;
 - `git diff --check` for any canonical-doc closeout diff;
 - stable-head independent `PASS` and applicable canonical exact-head CI for the closeout PR.
 
-Exit is one accepted `READY_ZERO_EFFECT` receipt plus unsigned `NOT_ISSUED` request package, exact evidence digests, a rollback statement, and canonical synchronization. A merely runnable CLI, `ready=true` without the inventory/recovery/redaction evidence, or a Draft/fast-check head is not completion.
+Exit is one accepted `READY_ZERO_EXTERNAL_EFFECT` receipt plus unsigned `NOT_ISSUED` request package, exact evidence digests, the disclosed authentication-bookkeeping mutation, a rollback statement, and canonical synchronization. A merely runnable CLI, `ready=true` without the inventory/recovery/redaction evidence, or a Draft/fast-check head is not completion.
 
 ### 10. Compatibility, rollback, and next actions
 
-Compatibility is read-only: v1 remains byte-identical and selected v2 remains the active frozen operator contract. Normal rollback deletes or archives the unaccepted unsigned request package according to its retention class, reverts only canonical-doc closeout changes, and leaves store, authority, run, Provider, target, and frozen artifacts unchanged. Because this packet permits zero effects, any observed store mutation is a hard incident, not a normal rollback success.
+Compatibility preserves v1 byte-identically and selected v2 as the active frozen operator contract. Normal rollback deletes or archives the unaccepted unsigned request package according to its retention class, reverts only canonical-doc closeout changes, and leaves authority, run, Provider, target, and frozen artifacts unchanged. Retain the expected `api_key_metadata.last_used_at` update as audit bookkeeping; do not falsify history by rolling it back. Any other store mutation is a hard incident, not a normal rollback success.
 
 After accepted completion, the planning owner may promote `PE7-RWE-V2-VIABILITY-RUN-1` from `docs/FUTURE_ROUTE.md` into this window. The next packet remains blocked until a **new** immediate preflight and a separate finite T3 one-use authorization bind the exact run. Forbidden next actions are issuing/admitting authority inside this packet, reusing the preflight as spend permission, calling the Provider, executing any cell, repairing code, rerunning calibration, starting measurement readiness/AC0, or changing Dashboard/adoption/Meta state.
+
+### 11. Weak-Agent Dispatch Capsule
+
+This machine-readable capsule is the deterministic input for the existing Issue lane or a directly supervised T0/T1 worker. It is not an `agent-orchestrator-plan:v1` claim, does not activate the deferred plan lane, and grants no authority. `private_paths_allowed=false` means private paths may not enter the capsule, logs, chat, Git, or redacted evidence; the separately supplied restricted destination remains usable under the packet procedure.
+
+<!-- weak-agent-dispatch:v1
+{
+  "accepted_binding_source": "Fresh project_context capsule plus CURRENT_STATUS accepted receipt for PE7-RWE-V2-REFREEZE-1",
+  "allowed_paths": [
+    "docs/CURRENT_STATUS.md after independent T2 acceptance",
+    "docs/NEXT_DECISION.md after independent T2 acceptance",
+    "docs/FUTURE_ROUTE.md after independent T2 acceptance"
+  ],
+  "allowed_outputs": [
+    "One new mode-0600 raw preflight receipt at the operator-supplied restricted destination",
+    "One redacted unsigned NOT_ISSUED request package containing only approved identities and digests",
+    "CURRENT_STATUS, NEXT_DECISION, and FUTURE_ROUTE only after T2 accepts the complete evidence"
+  ],
+  "authority_consumption_allowed": false,
+  "dispatch_lane": "issue_or_direct_agent_only",
+  "expected_artifacts": [
+    "rwe_operator_preflight.v1 restricted receipt and SHA-256",
+    "Redacted unsigned authorization request with READY_ZERO_EXTERNAL_EFFECT disposition",
+    "Bounded weak-agent handoff with verification, rollback, and forbidden-next-action fields"
+  ],
+  "external_effect_limit": 0,
+  "forbidden_changes": [
+    "No Rust, schema, migration, corpus, protocol, schedule, evaluator, budget, Provider, model, target, workflow, runbook, Dashboard, adoption, or Meta change",
+    "No authority issue, admit, consume, revoke, run lease, cell execution, Provider call, target write, or target PR",
+    "No direct SQL, invented store inventory, second preflight for determinism, code repair, calibration rerun, or successor activation"
+  ],
+  "forbidden_next_actions": [
+    "Do not issue or admit RWE authority",
+    "Do not call the Provider or execute a schedule cell",
+    "Do not promote the run packet until this packet is independently accepted and a new immediate preflight plus separate T3 authority exist"
+  ],
+  "goal": "Produce one exact-freeze provider-free preflight receipt and one unsigned, not-issued authorization request while exposing the sole authentication-bookkeeping mutation.",
+  "known_store_mutations": [
+    "Existing authentication owner updates api_key_metadata.last_used_at exactly once for the single preflight invocation; retain it as audit bookkeeping and reject every other store mutation"
+  ],
+  "ordered_steps": [
+    "Refresh accepted main and capsule; prove the PE7-RWE-V2-REFREEZE-1 accepted receipt",
+    "Recompute frozen main, corpus, protocol, schedule, four-cell, request, and token-ceiling identities",
+    "Validate non-secret input presence and format without rendering values",
+    "Run the three focused provider-free commands and stop rather than repair any failure",
+    "Acquire the T2 store inventory, schema, recovery, prerequisite, authority, and lease receipt",
+    "Invoke preflight exactly once without authorization-id using no-clobber mode-0600 capture",
+    "Validate and digest the restricted JSON from stdin; redact and scan the approved projection",
+    "Build the unsigned request with zero external effects, zero authority consumption, and the disclosed last-used bookkeeping write",
+    "Pause for independent T2 acceptance; only then synchronize the three canonical route documents"
+  ],
+  "packet_id": "PE7-RWE-V2-VIABILITY-PREFLIGHT-1",
+  "pause_gates": [
+    "Pause before live-store access when operator input or T2 inventory and recovery evidence is missing or ambiguous",
+    "Stop DECISION_REQUIRED for code repair, a new read API, schema migration, ownership conflict, or any mutation beyond last-used bookkeeping",
+    "Stop OUTCOME_UNKNOWN when Provider, target, authority, or other external effect cannot be disproved"
+  ],
+  "plan_lane_state": "plan_lane_deferred_until_terminal_owners",
+  "prerequisites": [
+    "PE7-RWE-V2-REFREEZE-1 has the exact accepted receipt bound below",
+    "Fresh accepted-main context capsule has no overlapping current packet or owned PR",
+    "T2 supplies a fresh store schema, backup, inventory, Golden Path prerequisite, authority, and lease receipt before live-store access"
+  ],
+  "prerequisite_receipts": [
+    "PE7-RWE-V2-REFREEZE-1 COMPLETE: exact head 36c92b93975366c3f85471f247a3afb128e5351c, merge 3b4afb3e5ab4254904aa5a63473ab6ae0eac1e82, canonical workflow 31312135471, exact-head PASS, and bound calibration digests"
+  ],
+  "private_paths_allowed": false,
+  "read_paths": [
+    "START_HERE.md and the current canonical status, decision, module-map, architecture, and RWE playbook sections",
+    "engine/src/rwe/operator_corpus.rs",
+    "engine/src/rwe/live_baseline_coordinator.rs",
+    "engine/src/rwe/runner.rs",
+    "engine/src/rwe/execution_schedule.rs",
+    "engine/src/storage/local_product_store/rwe_authority.rs",
+    "engine/src/storage/local_product_store/managed_acceptance.rs",
+    "engine/src/storage/local_product_store/keys.rs",
+    "engine/src/bin/rwe_live_baseline.rs",
+    "engine/rwe/corpora/rwe-minimum-first-corpus/v2 and focused owner tests"
+  ],
+  "rollback": "Archive or delete only the unaccepted unsigned package under its retention rule, revert only canonical closeout prose, retain the last-used audit update, and treat any other store mutation as an incident.",
+  "schema_version": "weak_agent_dispatch.v1",
+  "secret_values_allowed": false,
+  "verification": [
+    "cargo test -p engine preflight_fails_closed_without_gp_and_without_consuming",
+    "cargo test -p engine operator_corpus",
+    "cargo build -p engine --bin rwe_live_baseline",
+    "Validate exact v2 hashes, four cells, 12 requests, 80768 tokens, and v1/v2 distinctness",
+    "Reconcile one restricted receipt, redacted digest, inventory digest, and the disclosed authentication bookkeeping",
+    "uv run --no-project python tools/check_security_baseline.py",
+    "uv run --no-project python scripts/check_agent_handoff.py",
+    "git diff --check plus stable-head independent PASS and applicable canonical exact-head CI"
+  ],
+  "worker_tier": "T1 deterministic preparation and execution; T2 store gate and evidence acceptance"
+}
+-->
 
 ## Future Route Boundary
 

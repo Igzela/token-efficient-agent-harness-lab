@@ -82,7 +82,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Timeout ownership repair | `COMPLETE` | PR #368 accepted |
 | Compatibility calibration mechanism | `COMPLETE` | PR #369 accepted; mechanism only |
 | V2 refreeze + bounded test-race repair | `COMPLETE` | PR #370 accepted; exact v2 freeze and canonical lock repair are on main |
-| V2 provider-free viability preflight | `READY_FOR_EXECUTION` | Current packet; fresh exact-main/store/principal/prerequisite inputs and zero-effect receipt required |
+| V2 provider-free viability preflight | `READY_FOR_EXECUTION` | Current packet; one fresh receipt must prove zero Provider/target/RWE-authority effects and disclose the expected `api_key_metadata.last_used_at` authentication-bookkeeping write |
 | V2 four-cell run and closeout | `BLOCKED_PREREQUISITE` | Preflight acceptance, then one separately authorized run and independent closeout |
 | Measurement readiness | `BLOCKED_PREREQUISITE` | 4 packets: estimands, corpus/sample, operations/evidence, protocol freeze |
 | Decision-grade pre-AC baseline | `BLOCKED_PREREQUISITE` | 4 packets: snapshot/corpus, preflight, run, analysis |

@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import re
@@ -194,8 +196,15 @@ VALID_PACKET_STATES = {
 }
 
 ACCEPTED_PACKET_RECEIPT_RE = re.compile(
-    rf"^\|\s*`?(?P<packet>{PACKET_ID_PATTERN})`?\s*\|\s*`?COMPLETE`?\s*\|",
+    rf"^\|\s*`?(?P<packet>{PACKET_ID_PATTERN})`?\s*\|\s*`?COMPLETE`?\s*\|"
+    r"\s*(?P<evidence>[^|]+?)\s*\|\s*$",
     re.MULTILINE,
+)
+FUTURE_ROUTE_INVENTORY_RE = re.compile(
+    r"<!-- future-route-inventory:v1\s*(?P<payload>\{.*?\})\s*-->", re.DOTALL
+)
+WEAK_AGENT_DISPATCH_RE = re.compile(
+    r"<!-- weak-agent-dispatch:v1\s*(?P<payload>\{.*?\})\s*-->", re.DOTALL
 )
 FUTURE_ROUTE_REQUIRED_SECTIONS = (
     "## Weak-Agent Full-Course Contract",
@@ -205,6 +214,7 @@ FUTURE_ROUTE_REQUIRED_SECTIONS = (
     "## Promotion Contract",
     "## Stop and Resume Protocol",
     "## Execution Profile Field Contract",
+    "## Portfolio Inventory Manifest",
 )
 FUTURE_PACKET_PROFILE_FIELDS = (
     "Execution profile",
@@ -217,6 +227,49 @@ FUTURE_PACKET_PROFILE_FIELDS = (
     "Human/effect gate",
     "Consolidation boundary",
     "Negative-result route",
+)
+FUTURE_PACKET_BASE_FIELDS = (
+    "Prerequisite",
+    "Outcome",
+    "Allowed delta",
+    "Exit",
+    "Stop",
+)
+FUTURE_PACKET_NARRATIVE_FIELDS = (
+    "Owner/seam",
+    "Allowed paths at promotion",
+    "Ordered work",
+    "Verification",
+    "Rollback/recovery",
+    "Human/effect gate",
+    "Consolidation boundary",
+    "Negative-result route",
+    "Outcome",
+    "Allowed delta",
+    "Exit",
+    "Stop",
+)
+FUTURE_PACKET_INVENTORY_FIELDS = (
+    "Prerequisite",
+    "Class",
+    *FUTURE_PACKET_PROFILE_FIELDS,
+    "Outcome",
+    "Allowed delta",
+    "Exit",
+    "Stop",
+)
+WEAK_AGENT_DISPATCH_LIST_FIELDS = (
+    "allowed_paths",
+    "read_paths",
+    "allowed_outputs",
+    "prerequisites",
+    "prerequisite_receipts",
+    "forbidden_changes",
+    "ordered_steps",
+    "verification",
+    "pause_gates",
+    "expected_artifacts",
+    "forbidden_next_actions",
 )
 
 
@@ -357,13 +410,200 @@ def parse_packet_contracts(
     return packets
 
 
-def accepted_packet_receipts(status_text: str) -> set[str]:
-    """Return packet identities whose accepted completion is durable status truth."""
+def accepted_packet_receipts(
+    status_text: str, failures: list[str] | None = None
+) -> set[str]:
+    """Return durable completion identities from their sole owning status section."""
+
+    receipt_section = section(status_text, "## Accepted Packet Receipts")
+    if not receipt_section:
+        return set()
+    accepted: set[str] = set()
+    for match in ACCEPTED_PACKET_RECEIPT_RE.finditer(receipt_section):
+        packet_id = match.group("packet")
+        evidence = match.group("evidence")
+        if not re.search(
+            r"(?<![0-9a-f])(?:[0-9a-f]{64}|[0-9a-f]{40})(?![0-9a-f])",
+            evidence,
+            re.IGNORECASE,
+        ):
+            if failures is not None:
+                failures.append(
+                    f"accepted packet receipt {packet_id} lacks a durable evidence identity"
+                )
+            continue
+        if packet_id in accepted and failures is not None:
+            failures.append(f"accepted packet receipt {packet_id} is duplicated")
+        accepted.add(packet_id)
+    return accepted
+
+
+def _json_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _packet_field_values(block: str, label: str) -> list[str]:
+    return [
+        value.strip()
+        for value in re.findall(
+            rf"^\*\*{re.escape(label)}:\*\*\s*(?P<value>\S.*)$",
+            block,
+            re.MULTILINE,
+        )
+    ]
+
+
+def future_route_inventory_payload(future_text: str) -> dict[str, object]:
+    """Build the canonical inventory bound by FUTURE_ROUTE's checked manifest."""
+
+    headings = list(PACKET_HEADING_RE.finditer(future_text))
+    ordered_packet_ids: list[str] = []
+    dependency_graph: list[dict[str, object]] = []
+    profile_contracts: list[dict[str, object]] = []
+    class_counts: dict[str, int] = {}
+    worker_tier_counts: dict[str, int] = {}
+    for index, match in enumerate(headings):
+        packet_id = match.group("packet")
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(future_text)
+        block = future_text[match.start() : end]
+        fields = {
+            label: (values[0] if len(values) == 1 else "")
+            for label in FUTURE_PACKET_INVENTORY_FIELDS
+            if (values := _packet_field_values(block, label))
+        }
+        states = PACKET_STATE_RE.findall(block)
+        packet_class = fields.get("Class", "").strip("`")
+        worker_tier = fields.get("Worker tier", "").strip("`")
+        prerequisites = re.findall(
+            PACKET_ID_PATTERN, fields.get("Prerequisite", "")
+        )
+
+        ordered_packet_ids.append(packet_id)
+        dependency_graph.append(
+            {"packet_id": packet_id, "prerequisites": prerequisites}
+        )
+        profile_contracts.append(
+            {
+                "packet_id": packet_id,
+                "state": states[0] if len(states) == 1 else "",
+                "fields": fields,
+            }
+        )
+        if packet_class:
+            class_counts[packet_class] = class_counts.get(packet_class, 0) + 1
+        if worker_tier:
+            worker_tier_counts[worker_tier] = worker_tier_counts.get(worker_tier, 0) + 1
 
     return {
-        match.group("packet")
-        for match in ACCEPTED_PACKET_RECEIPT_RE.finditer(status_text)
+        "schema_version": "future_route_inventory.v1",
+        "packet_count": len(ordered_packet_ids),
+        "ordered_packet_ids": ordered_packet_ids,
+        "class_counts": dict(sorted(class_counts.items())),
+        "worker_tier_counts": dict(sorted(worker_tier_counts.items())),
+        "ordered_packet_ids_sha256": _json_sha256(ordered_packet_ids),
+        "dependency_graph_sha256": _json_sha256(dependency_graph),
+        "profile_contracts_sha256": _json_sha256(profile_contracts),
     }
+
+
+def _future_route_inventory_failures(future_text: str) -> list[str]:
+    markers = list(FUTURE_ROUTE_INVENTORY_RE.finditer(future_text))
+    if not markers:
+        return ["FUTURE_ROUTE is missing future-route-inventory:v1 marker"]
+    if len(markers) != 1:
+        return [
+            "FUTURE_ROUTE must contain exactly one future-route-inventory:v1 marker"
+        ]
+    try:
+        observed = json.loads(markers[0].group("payload"))
+    except json.JSONDecodeError as exc:
+        return [f"FUTURE_ROUTE inventory manifest is invalid JSON: {exc.msg}"]
+    expected = future_route_inventory_payload(future_text)
+    if observed != expected:
+        mismatched = sorted(
+            key
+            for key in set(expected) | (set(observed) if isinstance(observed, dict) else set())
+            if not isinstance(observed, dict) or observed.get(key) != expected.get(key)
+        )
+        return [
+            "FUTURE_ROUTE inventory manifest mismatch: " + ", ".join(mismatched)
+        ]
+    return []
+
+
+def weak_agent_dispatch_failures(
+    next_text: str, current_packets: dict[str, dict[str, object]]
+) -> list[str]:
+    """Validate the bounded direct/Issue-lane dispatch capsule for the current packet."""
+
+    failures: list[str] = []
+    if not re.search(
+        r"^### 11\. Weak-Agent Dispatch Capsule$", next_text, re.MULTILINE
+    ):
+        failures.append("NEXT_DECISION is missing Weak-Agent Dispatch Capsule section")
+    markers = list(WEAK_AGENT_DISPATCH_RE.finditer(next_text))
+    if not markers:
+        failures.append("NEXT_DECISION is missing weak-agent-dispatch:v1 marker")
+        return failures
+    if len(markers) != 1:
+        failures.append(
+            "NEXT_DECISION must contain exactly one weak-agent-dispatch:v1 marker"
+        )
+        return failures
+    try:
+        payload = json.loads(markers[0].group("payload"))
+    except json.JSONDecodeError as exc:
+        failures.append(f"weak-agent dispatch capsule is invalid JSON: {exc.msg}")
+        return failures
+    if not isinstance(payload, dict):
+        failures.append("weak-agent dispatch capsule must be a JSON object")
+        return failures
+
+    if payload.get("schema_version") != "weak_agent_dispatch.v1":
+        failures.append("weak-agent dispatch capsule has wrong schema_version")
+    if len(current_packets) == 1:
+        current_packet_id = next(iter(current_packets))
+        if payload.get("packet_id") != current_packet_id:
+            failures.append(
+                f"weak-agent dispatch packet_id must equal {current_packet_id!r}"
+            )
+    if payload.get("dispatch_lane") != "issue_or_direct_agent_only":
+        failures.append("weak-agent dispatch must remain on issue_or_direct_agent_only")
+    if payload.get("plan_lane_state") != "plan_lane_deferred_until_terminal_owners":
+        failures.append("weak-agent dispatch must preserve the deferred plan lane")
+    if payload.get("external_effect_limit") != 0:
+        failures.append("weak-agent dispatch must set external_effect_limit=0")
+    if payload.get("authority_consumption_allowed") is not False:
+        failures.append("weak-agent dispatch must forbid authority consumption")
+    if payload.get("secret_values_allowed") is not False:
+        failures.append("weak-agent dispatch must forbid secret values")
+    if payload.get("private_paths_allowed") is not False:
+        failures.append("weak-agent dispatch must forbid private paths")
+
+    goal = payload.get("goal")
+    rollback = payload.get("rollback")
+    if not isinstance(goal, str) or len(goal.strip()) < 20:
+        failures.append("weak-agent dispatch goal must be a concrete narrative")
+    if not isinstance(rollback, str) or len(rollback.strip()) < 20:
+        failures.append("weak-agent dispatch rollback must be a concrete narrative")
+    for field in WEAK_AGENT_DISPATCH_LIST_FIELDS:
+        value = payload.get(field)
+        if not isinstance(value, list) or not value or not all(
+            isinstance(item, str) and item.strip() for item in value
+        ):
+            failures.append(f"weak-agent dispatch {field} must be a non-empty string list")
+    known_store_mutations = payload.get("known_store_mutations")
+    if not isinstance(known_store_mutations, list) or not any(
+        isinstance(item, str) and "api_key_metadata.last_used_at" in item
+        for item in known_store_mutations
+    ):
+        failures.append(
+            "weak-agent dispatch must disclose api_key_metadata.last_used_at bookkeeping"
+        )
+    return failures
 
 
 def future_route_contract_failures(future_text: str) -> list[str]:
@@ -381,12 +621,8 @@ def future_route_contract_failures(future_text: str) -> list[str]:
         packet_id = match.group("packet")
         end = headings[index + 1].start() if index + 1 < len(headings) else len(future_text)
         block = future_text[match.start() : end]
-        for label in FUTURE_PACKET_PROFILE_FIELDS:
-            values = re.findall(
-                rf"^\*\*{re.escape(label)}:\*\*\s*(?P<value>\S.*)$",
-                block,
-                re.MULTILINE,
-            )
+        for label in (*FUTURE_PACKET_PROFILE_FIELDS, *FUTURE_PACKET_BASE_FIELDS):
+            values = _packet_field_values(block, label)
             if not values:
                 failures.append(f"{packet_id} is missing {label}")
             elif len(values) != 1:
@@ -400,6 +636,12 @@ def future_route_contract_failures(future_text: str) -> list[str]:
                     failures.append(f"{packet_id} has placeholder {label}: {value!r}")
                 if label == "Execution profile":
                     profile_id = value.strip("`")
+                    expected_profile_id = f"{packet_id}.v1"
+                    if profile_id != expected_profile_id:
+                        failures.append(
+                            f"{packet_id} Execution profile must equal "
+                            f"{expected_profile_id!r}; found {profile_id!r}"
+                        )
                     if profile_id in seen_profiles:
                         failures.append(
                             f"duplicate Execution profile {profile_id!r}: "
@@ -407,6 +649,14 @@ def future_route_contract_failures(future_text: str) -> list[str]:
                         )
                     else:
                         seen_profiles[profile_id] = packet_id
+                if label in FUTURE_PACKET_NARRATIVE_FIELDS and len(value) < 20:
+                    failures.append(
+                        f"{packet_id} {label} is too short to be execution-specific"
+                    )
+                if label == "Ordered work" and "->" not in value:
+                    failures.append(
+                        f"{packet_id} Ordered work must contain an explicit '->' sequence"
+                    )
 
         packet_class = re.search(
             r"^\*\*Class:\*\*\s*`?(?P<value>[A-Z]+)`?\s*$",
@@ -432,6 +682,7 @@ def future_route_contract_failures(future_text: str) -> list[str]:
         if tier and packet_class and packet_class.group("value") == "EFFECT":
             if tier.group("value") != "T3":
                 failures.append(f"{packet_id} EFFECT work must use Worker tier T3")
+    failures.extend(_future_route_inventory_failures(future_text))
     return failures
 
 
@@ -486,7 +737,7 @@ def active_state_failures(
             f"{packet_id} is duplicated between NEXT_DECISION and FUTURE_ROUTE"
         )
     packets = {**future_packets, **current_packets}
-    accepted_packets = accepted_packet_receipts(status_text)
+    accepted_packets = accepted_packet_receipts(status_text, failures)
 
     for packet_id in sorted(accepted_packets & set(packets)):
         if packets[packet_id]["state"] != "COMPLETE":
@@ -497,6 +748,7 @@ def active_state_failures(
 
     if future_text:
         failures.extend(future_route_contract_failures(future_text))
+        failures.extend(weak_agent_dispatch_failures(next_text, current_packets))
         if len(current_packets) != 1:
             failures.append(
                 "NEXT_DECISION must contain exactly one expanded current packet; "
