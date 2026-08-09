@@ -137,7 +137,7 @@ REQUIRED_TEXT = {
         "agent_session_handoff.v1",
         "def parse_route_contract",
         "def extract_packet",
-        "def build_checkpoint",
+        "def _build_checkpoint",
         "def classify_resume",
         "DECISION_REQUIRED",
     ],
@@ -980,6 +980,8 @@ def session_context_route_failures(start_here: str) -> list[str]:
                 return [f"session context route for {role} does not start at START_HERE.md"]
             if len(route["documents"]) > contract.max_required_documents:
                 return [f"session context route for {role} exceeds the required-document budget"]
+            if route["execution_authorized"] or route["checkpoint_allowed"]:
+                return [f"session context route for {role} grants execution authority"]
     except Exception as error:
         reason = getattr(error, "reason", str(error))
         return [f"START_HERE session context route contract invalid: {reason}"]

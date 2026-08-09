@@ -36,7 +36,7 @@ ENTRY_AUTHORITY = "accepted_context_projection_only; grants_no_new_authority"
 CHECKPOINT_BASENAME = "agent-session-handoff.v1.json"
 
 MAX_ROUTE_DOCUMENT_BYTES = 128 * 1024
-MAX_ROUTE_DOCUMENTS = 8
+MAX_ROUTE_DOCUMENTS = 6
 MAX_CHECKPOINT_BYTES = 64 * 1024
 MAX_DISPATCH_CAPSULE_BYTES = 12 * 1024
 MAX_ENTRY_BYTES = 16 * 1024
@@ -705,7 +705,7 @@ class SessionCheckpoint:
         if branch.startswith("-"):
             raise SessionContextError("checkpoint_branch_invalid")
         role = wire.get("role")
-        if not isinstance(role, str) or role not in ROLES:
+        if role != "coding":
             raise SessionContextError("checkpoint_role_invalid")
         work_state = wire.get("work_state")
         if not isinstance(work_state, str) or work_state not in WORK_STATES:
@@ -1311,7 +1311,10 @@ def build_route(
     if unknown:
         raise SessionContextError("route_option_unsupported")
     documents = (*route.required, *(optional[option] for option in selected))
-    if len(documents) > MAX_ROUTE_DOCUMENTS or len(documents) != len(set(documents)):
+    if (
+        len(documents) > contract.max_required_documents
+        or len(documents) != len(set(documents))
+    ):
         raise SessionContextError("route_document_limit_exceeded")
     return ContextRoute(
         schema_version="agent_context_route.v1",
@@ -1323,8 +1326,8 @@ def build_route(
         packet_sha256=packet_model.packet_sha256,
         documents=tuple(documents),
         included_options=tuple(selected),
-        execution_authorized=packet_model.execution_authorized,
-        checkpoint_allowed=packet_model.checkpoint_allowed,
+        execution_authorized=False,
+        checkpoint_allowed=False,
         bootstrap_order=(
             "read the returned documents in order",
             "run scripts/project_context.py and verify accepted main/live frontier",
@@ -1518,7 +1521,7 @@ def _verification_results(value: object) -> list[dict[str, str]]:
     return [item.to_wire() for item in _verification_models(value)]
 
 
-def build_checkpoint(
+def _build_checkpoint(
     *,
     snapshot: object,
     packet: object,
@@ -1534,8 +1537,8 @@ def build_checkpoint(
 
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
     packet_model = PacketBinding.from_wire(packet, require_checkpoint=True)
-    if role not in ROLES:
-        raise SessionContextError("role_unsupported")
+    if role != "coding":
+        raise SessionContextError("checkpoint_role_invalid")
     if work_state not in WORK_STATES:
         raise SessionContextError("work_state_invalid")
     dirty_paths = list(snapshot_model.dirty_paths)
@@ -1649,7 +1652,7 @@ def _build_auto_checkpoint(
     if not owned_paths:
         raise SessionContextError("checkpoint_auto_no_owned_paths")
     terminal = work_state == "STABLE"
-    return build_checkpoint(
+    return _build_checkpoint(
         snapshot=snapshot_model.to_wire(),
         packet=packet_model.to_wire(),
         role=role,
@@ -1812,6 +1815,19 @@ def classify_resume(
             "Return to the bound branch or obtain an owner-approved replacement handoff.",
         )
     current_paths = set(snapshot_model.dirty_paths)
+    allowed = list(packet_model.allowed_paths)
+    owned = set(receipt_model.owned_paths)
+    if (
+        any(not _path_is_allowed(path, allowed) for path in owned)
+        or not owned.issubset(current_paths)
+    ):
+        return _disposition(
+            receipt_model,
+            packet_model,
+            "DECISION_REQUIRED",
+            "checkpoint_owned_paths_invalid",
+            "Discard the forged or stale checkpoint and recover ownership before continuing.",
+        )
     prior_paths = set(receipt_model.dirty_paths)
     preserve = set(receipt_model.preserve_paths)
     missing_preserve = preserve - current_paths
@@ -1839,7 +1855,6 @@ def classify_resume(
             "Identify the owner of changed preserved work before continuing.",
         )
     added = current_paths - prior_paths
-    allowed = list(packet_model.allowed_paths)
     if any(not _path_is_allowed(path, allowed) for path in added):
         return _disposition(
             receipt_model,
@@ -2348,16 +2363,6 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
     }
 
 
-def _parse_verification(values: list[str]) -> list[dict[str, str]]:
-    results: list[dict[str, str]] = []
-    for value in values:
-        check, separator, status_value = value.rpartition("=")
-        if not separator:
-            raise SessionContextError("verification_argument_invalid")
-        results.append({"check": check, "status": status_value})
-    return _verification_results(results)
-
-
 def _render_route(route: dict[str, Any]) -> str:
     lines = [
         "# Session Context Route",
@@ -2419,18 +2424,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     enter.add_argument("--source", choices=("accepted", "working-tree"), default="accepted")
     enter.add_argument("--offline", action="store_true")
     enter.add_argument("--format", choices=("json",), default="json")
-
-    checkpoint = subparsers.add_parser("checkpoint", help="Replace the local handoff projection.")
-    checkpoint.add_argument("--role", choices=sorted(ROLES), default="coding")
-    checkpoint.add_argument("--packet")
-    checkpoint.add_argument("--work-state", choices=sorted(WORK_STATES), default="WIP")
-    checkpoint.add_argument("--completed-step", required=True)
-    checkpoint.add_argument("--owned-path", action="append", default=[])
-    checkpoint.add_argument("--verification", action="append", default=[])
-    checkpoint.add_argument("--next-action", required=True)
-    checkpoint.add_argument("--forbidden-action", action="append", default=[])
-    checkpoint.add_argument("--offline", action="store_true")
-    checkpoint.add_argument("--no-write", action="store_true")
 
     checkpoint_auto = subparsers.add_parser(
         "checkpoint-auto",
@@ -2517,39 +2510,6 @@ def main(argv: list[str] | None = None) -> int:
             return {"RESUME": 0, "REPAIR": 2, "DECISION_REQUIRED": 3}[
                 value["resume_disposition"]
             ]
-
-        if args.command == "checkpoint":
-            if args.packet and args.packet != packet["packet_id"]:
-                raise SessionContextError("checkpoint_packet_not_current")
-            forbidden = args.forbidden_action or packet.get("forbidden_next_actions", [])
-            receipt = build_checkpoint(
-                snapshot=snapshot,
-                packet=packet,
-                role=args.role,
-                work_state=args.work_state,
-                completed_step=args.completed_step,
-                owned_paths=sorted(set(args.owned_path)),
-                verification_results=_parse_verification(args.verification),
-                next_action=args.next_action,
-                forbidden_next_actions=forbidden,
-            )
-            if not args.no_write:
-                write_checkpoint(receipt)
-            _print(
-                {
-                    "schema_version": CHECKPOINT_SCHEMA,
-                    "checkpoint_id": receipt["checkpoint_id"],
-                    "packet_id": receipt["packet_id"],
-                    "head_sha": receipt["head_sha"],
-                    "work_state": receipt["work_state"],
-                    "owned_path_count": len(receipt["owned_paths"]),
-                    "preserve_path_count": len(receipt["preserve_paths"]),
-                    "storage": "git_private_projection" if not args.no_write else "not_written",
-                    "authority": CHECKPOINT_AUTHORITY,
-                },
-                "json",
-            )
-            return 0
 
         if args.command == "checkpoint-auto":
             if args.packet != packet["packet_id"]:

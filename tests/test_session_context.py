@@ -214,6 +214,8 @@ class RouteContractTests(unittest.TestCase):
                 self.assertLessEqual(len(route["documents"]), 6)
                 self.assertNotIn("docs/FUTURE_ROUTE.md", route["documents"])
                 self.assertEqual(route["packet_id"], "TOOL-SESSION-CONTEXT-1")
+                self.assertFalse(route["execution_authorized"])
+                self.assertFalse(route["checkpoint_allowed"])
 
     def test_future_route_is_loaded_only_by_explicit_successor_selection(self):
         contract = session_context.parse_route_contract(route_document())
@@ -225,6 +227,19 @@ class RouteContractTests(unittest.TestCase):
             include=["successor"],
         )
         self.assertEqual(route["documents"][-1], "docs/FUTURE_ROUTE.md")
+
+    def test_total_route_document_limit_includes_optional_documents(self):
+        contract = session_context.parse_route_contract(route_document())
+        with self.assertRaisesRegex(
+            session_context.SessionContextError, "route_document_limit_exceeded"
+        ):
+            session_context.build_route(
+                contract,
+                role="coding",
+                accepted_main_sha=MAIN,
+                packet=packet_binding(),
+                include=["architecture", "pr-work"],
+            )
 
     def test_unknown_role_option_or_contract_field_fails_closed(self):
         contract = session_context.parse_route_contract(route_document())
@@ -285,7 +300,7 @@ PAYLOAD
         )
         changed_binding = session_context.current_packet_binding(changed_document, MAIN)
         self.assertNotEqual(binding["packet_sha256"], changed_binding["packet_sha256"])
-        receipt = session_context.build_checkpoint(
+        receipt = session_context._build_checkpoint(
             snapshot=checkout_snapshot(),
             packet=binding,
             role="coding",
@@ -397,7 +412,7 @@ class CheckpointTests(unittest.TestCase):
             "forbidden_next_actions": ["Do not start a successor packet."],
         }
         values.update(overrides)
-        return session_context.build_checkpoint(**values)
+        return session_context._build_checkpoint(**values)
 
     def test_checkpoint_separates_owned_wip_from_preserved_user_files(self):
         receipt = self.build()
@@ -423,6 +438,32 @@ class CheckpointTests(unittest.TestCase):
             self.build(owned_paths=["engine.pid"])
         with self.assertRaisesRegex(session_context.SessionContextError, "packet_not_executable"):
             self.build(packet=packet_binding(state="BLOCKED_PREREQUISITE", execution_authorized=False))
+        with self.assertRaisesRegex(
+            session_context.SessionContextError, "checkpoint_role_invalid"
+        ):
+            self.build(role="review")
+        forged_role = self.build()
+        forged_role["role"] = "review"
+        forged_role["checkpoint_id"] = session_context._json_sha256(
+            {key: value for key, value in forged_role.items() if key != "checkpoint_id"}
+        )
+        with self.assertRaisesRegex(
+            session_context.SessionContextError, "checkpoint_role_invalid"
+        ):
+            session_context.validate_checkpoint(forged_role)
+
+    def test_rehashed_out_of_scope_checkpoint_never_resumes(self):
+        receipt = self.build()
+        receipt["owned_paths"] = ["engine.pid"]
+        receipt["preserve_paths"] = ["scripts/session_context.py"]
+        receipt["checkpoint_id"] = session_context._json_sha256(
+            {key: value for key, value in receipt.items() if key != "checkpoint_id"}
+        )
+        result = session_context.classify_resume(
+            receipt, snapshot=checkout_snapshot(), packet=packet_binding()
+        )
+        self.assertEqual(result["disposition"], "DECISION_REQUIRED")
+        self.assertEqual(result["reason"], "checkpoint_owned_paths_invalid")
 
     def test_resume_exact_repairable_and_conflicting_states(self):
         receipt = self.build()
@@ -868,6 +909,10 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(entry["schema_version"], "agent_session_entry.v1")
         self.assertEqual(entry["context_mode"], "FRESH_PACKET")
 
+    def test_manual_checkpoint_cli_is_not_exposed(self):
+        with self.assertRaises(SystemExit):
+            session_context.parse_args(["checkpoint"])
+
     def test_current_repository_dispatch_builds_a_bounded_entry(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
@@ -988,7 +1033,7 @@ class CheckpointTests(unittest.TestCase):
 
             with mock.patch.object(session_context, "ROOT", root):
                 snapshot = session_context.capture_checkout(accepted_main)
-                receipt = session_context.build_checkpoint(
+                receipt = session_context._build_checkpoint(
                     snapshot=snapshot,
                     packet=packet_binding(
                         allowed_paths=["scripts/"],
