@@ -47,6 +47,10 @@ blocked long-horizon sketches      -> FUTURE_ROUTE
 
 Live PR heads, CI conclusions, reviews, mergeability, and next-action sequencing are observations, not accepted document state. `scripts/project_context.py` combines canonical documents from accepted `main` with bounded read-only GitHub observations and reports unavailable or conflicting evidence fail-closed. A capsule is short-lived transport context; it never becomes a status database, packet owner, review judge, CI authority, or permission source.
 
+`scripts/session_context.py` is the single arbitrary-session navigation and local recovery projection. Its accepted-main role router returns at most six default documents and its packet extractor returns one selected packet rather than the whole horizon. Its mode-0600 Git-private checkpoint binds packet digest, accepted main, branch, exact head, dirty paths, per-path content digests, declared owned paths, preserved foreign paths, verification state, and next action. The checkpoint grants no task, lease, provider, output, review, merge, or lifecycle authority. Exact match yields `RESUME`; bounded drift solely within bound task paths yields `REPAIR`; missing identity, changed preserved work, unknown paths, packet/main/branch conflict, blocker, or outcome unknown yields `DECISION_REQUIRED`.
+
+GitHub remains the sole durable queue, lease, and controlled-worker state owner. Accepted documents remain packet/direction owners, exact commits remain code owners, and CI/review receipts remain verification owners. The Git-private checkpoint exists only so a later conversation in the same worktree can detect WIP drift; it is replaceable, local-only, and never accepted evidence. Missing checkpoint on a non-canonical or dirty checkout fails closed rather than guessing from chat.
+
 Exactly one blocked successor may be removed from `FUTURE_ROUTE` and expanded into `NEXT_DECISION` only after its accepted prerequisite and any negative/insufficient disposition are reconciled against current `main`. Duplicate packet identities or future-route activation are invalid handoff states.
 
 ## Decision Model

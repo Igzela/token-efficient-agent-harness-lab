@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib.util
 import json
@@ -15,14 +16,25 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 
+NEXT_DECISION_MAX_BYTES = 64 * 1024
+NEXT_DECISION_MAX_LINES = 600
+NEXT_DECISION_APPEND_ONLY_HEADING_RE = re.compile(
+    r"^#{2,6}\s+(?:change(?:log| history)|progress log|session notes|"
+    r"handoff history|work log|status history)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 REQUIRED_TEXT = {
     "START_HERE.md": [
         "# Start Here",
         "## Quality Order",
         "## Source-of-Truth Hierarchy",
         "## Establish the Leading Valid Frontier",
+        "## One-Command Session Bootstrap",
         "## Role Routes",
+        "agent-context-routes:v1",
         "scripts/project_context.py",
+        "scripts/session_context.py",
         "## Automation Boundary",
         "## End-of-Work Handoff",
         "## Documentation Discipline",
@@ -120,6 +132,15 @@ REQUIRED_TEXT = {
         "--offline",
         "review_state_projection",
     ],
+    "scripts/session_context.py": [
+        "agent_context_routes.v1",
+        "agent_session_handoff.v1",
+        "def parse_route_contract",
+        "def extract_packet",
+        "def build_checkpoint",
+        "def classify_resume",
+        "DECISION_REQUIRED",
+    ],
     "scripts/agent-control/review_convergence.py": [
         "REVIEW_PROTOCOL_VERSION",
         "MAX_SUBSTANTIVE_REVIEW_ROUNDS = 2",
@@ -156,6 +177,7 @@ MODEL_AGNOSTIC_FILES = [
     "docs/FUTURE_ROUTE.md",
     "docs/MODULE_MAP.md",
     "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+    "scripts/session_context.py",
 ]
 
 FORBIDDEN_MODEL_LOCK_MARKERS = [
@@ -887,13 +909,94 @@ def active_state_failures(
     return failures
 
 
+def next_decision_hygiene_failures(next_text: str) -> list[str]:
+    """Keep the executable window bounded and replace-only."""
+
+    failures: list[str] = []
+    byte_count = len(next_text.encode("utf-8"))
+    line_count = len(next_text.splitlines())
+    if byte_count > NEXT_DECISION_MAX_BYTES:
+        failures.append(
+            "NEXT_DECISION exceeds byte budget: "
+            f"{byte_count} > {NEXT_DECISION_MAX_BYTES}"
+        )
+    if line_count > NEXT_DECISION_MAX_LINES:
+        failures.append(
+            "NEXT_DECISION exceeds line budget: "
+            f"{line_count} > {NEXT_DECISION_MAX_LINES}"
+        )
+    headings = NEXT_DECISION_APPEND_ONLY_HEADING_RE.findall(next_text)
+    if headings:
+        failures.append(
+            "NEXT_DECISION contains append-only history; replace stale state in place "
+            "and rely on Git history"
+        )
+    return failures
+
+
+def session_context_route_failures(start_here: str) -> list[str]:
+    """Verify every agent role has one bounded machine-readable route."""
+
+    script = ROOT / "scripts" / "session_context.py"
+    spec = importlib.util.spec_from_file_location("session_context_handoff_check", script)
+    if spec is None or spec.loader is None:
+        return ["cannot import scripts/session_context.py"]
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+        for schema_name in (
+            "RouteContract",
+            "ContextRoute",
+            "PacketExtract",
+            "PacketBinding",
+            "CheckoutSnapshot",
+            "VerificationResult",
+            "SessionCheckpoint",
+            "ResumeDisposition",
+        ):
+            schema = getattr(module, schema_name, None)
+            if not dataclasses.is_dataclass(schema) or not schema.__dataclass_params__.frozen:
+                return [f"session context schema {schema_name} must be a frozen dataclass"]
+        contract = module.parse_route_contract(start_here)
+        packet = {
+            "packet_id": "TOOL-ROUTE-CHECK-1",
+            "state": "READY_FOR_EXECUTION",
+            "source_path": "docs/NEXT_DECISION.md",
+            "packet_sha256": "0" * 64,
+            "allowed_paths": ["scripts/"],
+            "execution_authorized": False,
+            "checkpoint_allowed": True,
+        }
+        for role in sorted(module.ROLES):
+            route = module.build_route(
+                contract,
+                role=role,
+                accepted_main_sha="0" * 40,
+                packet=packet,
+            )
+            if route["documents"][0] != "START_HERE.md":
+                return [f"session context route for {role} does not start at START_HERE.md"]
+            if len(route["documents"]) > contract.max_required_documents:
+                return [f"session context route for {role} exceeds the required-document budget"]
+    except Exception as error:
+        reason = getattr(error, "reason", str(error))
+        return [f"START_HERE session context route contract invalid: {reason}"]
+    return []
+
+
 def check_active_state_consistency(failures: list[str]) -> None:
     status = read("docs/CURRENT_STATUS.md")
     next_text = read("docs/NEXT_DECISION.md")
     future_text = read("docs/FUTURE_ROUTE.md")
+    failures.extend(next_decision_hygiene_failures(next_text))
     failures.extend(active_state_failures(status, next_text, future_text))
     if "## Verified Repository State" not in status:
         failures.append("CURRENT_STATUS must preserve the accepted/open/blocked fact boundary")
+
+
+def check_session_context_routes(failures: list[str]) -> None:
+    failures.extend(session_context_route_failures(read("START_HERE.md")))
 
 
 def check_project_context(failures: list[str]) -> None:
@@ -966,6 +1069,7 @@ def main() -> int:
     check_model_agnostic_governance(failures)
     check_schema_document_drift(failures)
     check_active_state_consistency(failures)
+    check_session_context_routes(failures)
     check_project_context(failures)
 
     wire_guard = ROOT / "scripts" / "check_wire_codegen_drift.sh"

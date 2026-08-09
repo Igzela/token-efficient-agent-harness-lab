@@ -360,9 +360,9 @@ This machine-readable capsule is the deterministic input for the existing Issue 
 {
   "accepted_binding_source": "Fresh project_context capsule plus CURRENT_STATUS accepted receipt for PE7-RWE-V2-REFREEZE-1",
   "allowed_paths": [
-    "docs/CURRENT_STATUS.md after independent T2 acceptance",
-    "docs/NEXT_DECISION.md after independent T2 acceptance",
-    "docs/FUTURE_ROUTE.md after independent T2 acceptance"
+    "docs/CURRENT_STATUS.md",
+    "docs/FUTURE_ROUTE.md",
+    "docs/NEXT_DECISION.md"
   ],
   "allowed_outputs": [
     "One new mode-0600 raw preflight receipt at the operator-supplied restricted destination",
