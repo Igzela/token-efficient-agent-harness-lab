@@ -701,6 +701,7 @@ def load_pr(
         observation_time=observation_time,
     )
     projection_payload = {
+        "number": pr_number,
         "headRefOid": head_sha,
         "body": rest_payload.get("body") or "",
     }

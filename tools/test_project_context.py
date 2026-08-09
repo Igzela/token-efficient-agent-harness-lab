@@ -407,6 +407,52 @@ Phase one was accepted through PR #302.
             "latest_durable_review_state_is_malformed",
         )
 
+    def test_load_pr_binds_durable_review_state_to_requested_pr(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        observer = mock.Mock()
+        observer.pull_request.return_value = {
+            "number": 299,
+            "state": "open",
+            "head": {"sha": head, "ref": "candidate"},
+            "base": {"ref": "main", "sha": base},
+            "body": "Closes #42",
+            "user": {"login": "implementation-agent"},
+        }
+        observer.pull_request_reviews.return_value = []
+        observer.pull_request_comments.return_value = []
+        observer.issue_comments.side_effect = lambda number: (
+            []
+            if number == 299
+            else [
+                {
+                    "user": {"login": "github-actions[bot]"},
+                    "body": json.dumps(
+                        {
+                            "kind": "agent-orchestrator-review-state",
+                            "version": 3,
+                            "issue_number": 42,
+                            "pr_number": 300,
+                            "head_sha": head,
+                            "verdict": "PASS",
+                            "open_blocker_ids": [],
+                        }
+                    ),
+                }
+            ]
+        )
+        observer.check_runs.return_value = []
+
+        result = project_context.load_pr(
+            "owner/repo", 299, offline=False, observer=observer
+        )
+
+        self.assertEqual(result["review_state_projection"]["availability"], "conflict")
+        self.assertEqual(
+            result["review_state_projection"]["unavailable_reason"],
+            "latest_durable_review_state_binding_mismatch",
+        )
+
     def test_offline_baseline_never_uses_detached_head(self) -> None:
         calls: list[tuple[str, ...]] = []
 
