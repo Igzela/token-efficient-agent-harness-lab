@@ -1502,6 +1502,84 @@ Unresolved objections: none
         self.assertIn("Unresolved objections: `unavailable`", rendered)
         self.assertIn("inspect PE7-CONTEXT-CAPSULE-AUTOMATION-1", rendered)
 
+    def test_push_source_matrix_excludes_canonical_active_pr_checks(self) -> None:
+        main_sha = "c" * 40
+        documents = {
+            "availability": "confirmed",
+            "source_sha": main_sha,
+            "current_status": "",
+            "next_decision": """## Active Routing
+1. `PE7-RWE-V2-REFREEZE-1` — `READY_FOR_EXECUTION`.
+## Packet PE7-RWE-V2-REFREEZE-1
+**State:** `READY_FOR_EXECUTION`
+**Owned PR:** #370
+""",
+        }
+        active_pr = {
+            "number": 370,
+            "availability": "confirmed",
+            "head_sha": "a" * 40,
+            "head_branch": "pe7-rwe-v2-refreeze-1",
+            "base_branch": "main",
+            "draft": True,
+            "ci": {
+                "state": "pending",
+                "successful": [],
+                "failed": [],
+                "pending": ["exact-head"],
+                "missing_required": [],
+                "raw_by_canonical": {"exact-head-check": ["exact-head"]},
+            },
+            "exact_head_review": {"state": "unverified"},
+        }
+        checks = {
+            name: {"result": "success"}
+            for name in project_context.REQUIRED_CI_CHECKS
+            if name != "exact-head-check"
+        }
+        with (
+            mock.patch.object(
+                project_context,
+                "accepted_baseline",
+                return_value={
+                    "branch": "main",
+                    "sha": main_sha,
+                    "availability": "confirmed",
+                    "source": "origin/main",
+                },
+            ),
+            mock.patch.object(
+                project_context, "canonical_documents", return_value=documents
+            ),
+            mock.patch.object(project_context, "load_pr", return_value=active_pr),
+            mock.patch.object(
+                project_context,
+                "local_checkout_state",
+                return_value={
+                    "head_sha": main_sha,
+                    "branch": "main",
+                    "detached": False,
+                    "dirty": False,
+                    "change_count": 0,
+                },
+            ),
+        ):
+            capsule = project_context.build_capsule(
+                offline=True,
+                repository="owner/repo",
+                checks_json=json.dumps(checks),
+                event_name="push",
+                expected_head_sha=main_sha,
+            )
+
+        self.assertEqual(capsule["active_frontier"]["number"], 370)
+        self.assertIsNone(capsule["workflow_frontier"])
+        self.assertEqual(capsule["active_frontier"]["ci"]["state"], "pending")
+        matrix = capsule["binding"]["source_required_check_matrix"]
+        exact = next(item for item in matrix if item["logical_name"] == "exact-head-check")
+        self.assertEqual(exact["conclusion"], "not_applicable")
+        self.assertTrue(project_context.is_matrix_successful(matrix, event_name="push"))
+
     def test_pull_request_event_preserves_exact_head_check_required(self) -> None:
         checks = {
             "python-tests": {"result": "success"},

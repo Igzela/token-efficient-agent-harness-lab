@@ -1544,7 +1544,12 @@ def build_capsule(
         if routed_pr_number is not None
         else discovered_pr_number
     )
-    workflow_pr_number = pr_number if pr_number is not None else canonical_pr_number
+    # A push/workflow-dispatch run validates the checked-out commit, not the
+    # canonical active PR.  Keep that PR as the product frontier, but do not
+    # let its check rollup contaminate the current workflow's source matrix.
+    workflow_pr_number = pr_number
+    if workflow_pr_number is None and event_name not in {"push", "workflow_dispatch"}:
+        workflow_pr_number = canonical_pr_number
     if exact_head_proof:
         workflow_pr = load_exact_head_proof(
             exact_head_proof,
