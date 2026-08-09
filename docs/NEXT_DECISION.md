@@ -47,10 +47,12 @@ RWE v2 refreeze
 → bounded Level-2 controller slices only on GO
 → final-transfer protocol → run → analysis
 → independent adoption and Meta-Improver branches
+→ optional R4 metacognitive and R5 weight-adapter research only after supported Meta + separate human GO
+→ optional R6 single outer-policy family only after explicit R4/R5 dispositions + separate human GO
 → Dashboard disposition and presentation refresh last
 ```
 
-The memory/skill factor experiment is an optional branch after Level-1 evaluation. It is not a Level-2 prerequisite. Adoption and Meta Improver remain independent after final transfer; both must reach an explicit completion disposition before the deferred Dashboard refresh becomes eligible.
+The memory/skill factor experiment is an optional branch after Level-1 evaluation. It is not a Level-2 prerequisite. Adoption and Meta Improver remain independent after final transfer; both must reach an explicit completion disposition before the deferred Dashboard refresh becomes eligible. The optional R4-R6 research portfolio does not block adoption or Dashboard, never starts mechanically, and cannot expand evaluator, goal, safety, authority, budget, adoption, release, or deployment mutability.
 
 No downstream micro-packet starts automatically. Every micro-packet must satisfy its named prerequisite on accepted `main` and its class contract below.
 
