@@ -59,13 +59,11 @@ async fn post_json(app: &axum::Router, uri: &str, body: Value) -> axum::response
 }
 
 fn auto_adjustment_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    common::auto_adjustment_env_lock()
 }
 
 fn provider_cli_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    common::provider_cli_env_lock()
 }
 
 struct TrustedLocalProviderWorkflowEnvGuard;
@@ -119,8 +117,7 @@ impl Drop for TrustedLocalProviderWorkflowEnvGuard {
 }
 
 fn adaptive_operator_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    common::adaptive_operator_env_lock()
 }
 
 /// RAII guard for provider/adaptive-fusion execution env vars.
@@ -168,8 +165,7 @@ impl Drop for AdaptiveOperatorEnvGuard {
 }
 
 fn target_repo_output_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    common::target_repo_output_env_lock()
 }
 
 fn product_golden_path_env_lock() -> &'static Mutex<()> {
