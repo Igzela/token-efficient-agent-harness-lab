@@ -80,7 +80,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | AC6 schema convergence | `BLOCKED_PREREQUISITE` | Contract, Rust/codegen, SDK, Dashboard data migration, compatibility closeout |
 | AC7 cleanup | `BLOCKED_PREREQUISITE` | Removal manifest, deletion-only implementation, independent closeout |
 | Contemporary old/new replay | `BLOCKED_PREREQUISITE` | Reconstruction, protocol/preflight, authorized run, analysis |
-| EC1–EC5 experiment control | `BLOCKED_PREREQUISITE` | 15 packets; each control family freezes its contract before implementation |
+| EC1–EC5 experiment control | `BLOCKED_PREREQUISITE` | 17 packets; causal mutation evidence and each control family freeze before implementation |
 | Level-1 core without memory/skill | `BLOCKED_PREREQUISITE` | Preflight, one authorized generation, independent closeout |
 | Level-1 transfer pilot | `BLOCKED_PREREQUISITE` | Sealed protocol, authorized run, analysis |
 | Optional memory/skill factor experiment | `BLOCKED_PREREQUISITE` | 5-packet side branch; not a Level-2 prerequisite |
@@ -89,6 +89,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Final sealed transfer | `BLOCKED_PREREQUISITE` | Protocol, authorized run, analysis |
 | Human adoption branch | `BLOCKED_PREREQUISITE` | Readiness dossier then separate human decision |
 | Meta Improver branch | `BLOCKED_PREREQUISITE` | 11 packets from claim GO/NO-GO through O0/O1 comparison, replication, and claim decision |
+| Optional advanced R4–R6 research | `BLOCKED_PREREQUISITE` | Supported Meta result plus separate human GO; bounded metacognitive, weight-adapter, then one outer-policy family |
 | Dashboard #225 / successor | `DEFERRED` | Disposition, presentation refresh, closeout; always last |
 
 ## Recursive-Improvement Classification
@@ -97,6 +98,9 @@ The repository currently demonstrates neither:
 
 - automatic multi-generation Harness evolution;
 - improvement of the improvement operator itself;
+- self-referential metacognitive-operator improvement;
+- Harness and model-weight/adapter co-evolution;
+- outer parent/lever/curriculum-policy evolution;
 - stable cross-task or cross-model transfer;
 - expanding problem-space exploration;
 - continuous learning;
@@ -118,8 +122,9 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 3. The current two-task/four-cell design is lifecycle viability evidence, not a statistically decision-grade architecture baseline.
 4. No accepted task-level measurement-readiness contract, larger decision baseline, or reconstructable contemporary old/new comparison exists.
 5. AC0–AC7 have not started; each implementation slice remains blocked until its immediately preceding current-main contract packet is accepted.
-6. No accepted lineage/mutation, evaluator/holdout, lifecycle-budget, diversity/exploration, or Pareto/stop/recovery contract or implementation packet exists.
-7. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or Meta operator-comparison result exists.
+6. No accepted causal-mutation, lineage/mutation, evaluator/holdout, lifecycle-budget, diversity/exploration, or Pareto/stop/recovery contract or implementation packet exists.
+7. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or fixed Meta operator-comparison result exists.
+8. No accepted metacognitive-operator, parameter-efficient training adapter, weight/harness factorial, co-evolution, or outer-policy research contract exists; full-weight and model-architecture evolution remain unrouted.
 
 ## Maintenance Boundary
 
