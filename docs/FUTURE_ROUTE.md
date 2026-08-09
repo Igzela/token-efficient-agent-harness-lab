@@ -673,7 +673,13 @@ The causal comparison uses reconstructable old/new Harnesses in one randomized/i
 **Stop:** Non-inferiority, reliability, lifecycle cost, comparability, or evidence-completeness gate fails.
 ## Stage Experiment control EC1 - identity, lineage, mutation
 
-EC1 makes candidate provenance immutable before evaluator or selection work.
+EC1 makes candidate provenance immutable before evaluator or selection work. It also freezes a causal-mutation evidence chain without creating a second failure-intelligence owner:
+
+- `FailurePatternEvidenceV1` separates observed verifier/runtime facts, causal status (`unknown`, `hypothesized`, `supported`, or `disputed`), counterevidence, Harness addressability, and the exact mutable surface. Existing feedback traces, pattern detection, and outcome attribution are inputs, not causal authority.
+- `MutationHypothesisManifestV1` binds one candidate to the failure evidence, exact proposed delta, expected improvement and regression surfaces, metric direction and threshold, preserved invariants, and a pre-registered evaluation plan before candidate execution.
+- `PredictionOutcomeV1` is written only after evaluation by the existing evaluator path. It records actual deltas, missing or contradictory evidence, prediction error, and calibration. It is derived audit evidence, never admission, safety, Pareto-selection, parent-selection, or adoption authority.
+
+All three records are redacted, hash-bound, replayable, and must retain `unknown` or `disputed` rather than converting uncertainty or model confidence into fact.
 
 ### Packet PE7-HE-EC1-CONTRACT-1
 
@@ -683,13 +689,13 @@ EC1 makes candidate provenance immutable before evaluator or selection work.
 
 **Class:** `CONTRACT`
 
-**Outcome:** Freeze active-Harness, candidate, parent, generator, lineage, mutation-family, identity-hash, invalidation, and budget bindings.
+**Outcome:** Freeze active-Harness, candidate, parent, generator, lineage, mutation-family, identity-hash, invalidation, budget, `FailurePatternEvidenceV1`, `MutationHypothesisManifestV1`, and `PredictionOutcomeV1` bindings.
 
-**Allowed delta:** No candidate generation or persistence change.
+**Allowed delta:** No candidate generation, evaluation, or persistence change.
 
-**Exit:** Exact identity/lineage schema and pre-registered mutation registry with ownership/non-authority rules.
+**Exit:** Exact identity/lineage and causal-evidence schemas plus a pre-registered mutation registry with ownership, redaction, counterevidence, addressability, and non-authority rules.
 
-**Stop:** Identity can be caller/model asserted, lineage can be rewritten, or mutation scope can reach evaluator/authority policy.
+**Stop:** Identity or cause can be caller/model asserted, lineage can be rewritten, uncertainty cannot be represented, or mutation scope can reach evaluator/authority policy.
 ### Packet PE7-HE-EC1-IDENTITY-LINEAGE-1
 
 **State:** `BLOCKED_PREREQUISITE`
@@ -698,14 +704,14 @@ EC1 makes candidate provenance immutable before evaluator or selection work.
 
 **Class:** `IMPLEMENT`
 
-**Outcome:** Implement immutable identity and lineage recording under existing artifact/store owners.
+**Outcome:** Implement immutable identity and lineage recording under existing artifact/store owners, including source identities for later causal manifests.
 
 **Allowed delta:** Contract-approved records, hashes, validation, and projections only; no selection or adoption.
 
-**Exit:** Tamper/replay/duplicate/restart/parity tests prove immutable ancestry and exact active-Harness binding.
+**Exit:** Tamper/replay/duplicate/restart/parity tests prove immutable ancestry, exact active-Harness binding, and no orphan causal-evidence reference.
 
 **Stop:** Requires a second store, mutable ancestry, candidate-controlled identity, or destructive migration.
-### Packet PE7-HE-EC1-MUTATION-REGISTRY-1
+### Packet PE7-HE-EC1-CAUSAL-MANIFEST-1
 
 **State:** `BLOCKED_PREREQUISITE`
 
@@ -713,11 +719,26 @@ EC1 makes candidate provenance immutable before evaluator or selection work.
 
 **Class:** `IMPLEMENT`
 
-**Outcome:** Implement the accepted mutation-family registry and bounded generator adapters.
+**Outcome:** Implement validation and immutable persistence for source-bound failure-pattern evidence and pre-execution mutation hypotheses by extending the existing Harness-Evolution artifact/store owner.
+
+**Allowed delta:** Redacted records, hashes, validation, and feedback-evidence adapters only; no candidate execution, evaluator result, selection, or admission-policy change.
+
+**Exit:** Unknown/disputed cause, counterevidence, addressability, invariant, prediction, tamper, duplicate, restart, SQLite/PostgreSQL parity, forbidden-sensitive-field, and proposal-binding tests pass.
+
+**Stop:** Requires a parallel failure-intelligence store, treats confidence as causal proof, permits post-execution hypothesis edits, or cannot distinguish observation from inference.
+### Packet PE7-HE-EC1-MUTATION-REGISTRY-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-EC1-CAUSAL-MANIFEST-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Implement the accepted mutation-family registry and bounded generator adapters, requiring each generated candidate to bind an addressable causal manifest.
 
 **Allowed delta:** Registry/adapters/tests only; no evaluator, parent-selection, spend, merge, or production authority.
 
-**Exit:** Unknown family rejection, scope containment, deterministic seed binding, and complete lineage tests pass.
+**Exit:** Unknown family rejection, unaddressable-pattern rejection, hypothesis/delta digest binding, scope containment, deterministic seed binding, and complete lineage tests pass.
 
 **Stop:** Generator can edit registry/policy/evaluator or escape its admitted Harness surface.
 ## Stage Experiment control EC2 - evaluator and holdout
@@ -732,11 +753,11 @@ EC2 seals evaluation authority and threat controls before candidate experiments.
 
 **Class:** `CONTRACT`
 
-**Outcome:** Freeze evaluator constellation, sealed holdout, reviewer policy, immutable labels, access classes, contamination/gaming/safety sentinels, and invalidation.
+**Outcome:** Freeze evaluator constellation, sealed holdout, reviewer policy, immutable labels, access classes, contamination/gaming/safety sentinels, invalidation, and evaluator-owned `PredictionOutcomeV1` derivation rules.
 
 **Allowed delta:** No evaluator implementation or holdout access.
 
-**Exit:** Threat model and exact evaluator/label/access manifest reusing existing verification/replay/scorecard/review owners.
+**Exit:** Threat model and exact evaluator/label/access/outcome manifest reusing existing verification/replay/scorecard/review owners, with prediction accuracy explicitly non-authoritative.
 
 **Stop:** Candidate path can observe or mutate labels/rubric, sentinel independence is unprovable, or a second evaluator owner is proposed.
 ### Packet PE7-HE-EC2-HOLDOUT-SEAL-1
@@ -769,6 +790,21 @@ EC2 seals evaluation authority and threat controls before candidate experiments.
 **Exit:** Adversarial fixtures prove each sentinel fails closed before Pareto selection and preserves complete rejected-candidate evidence.
 
 **Stop:** A sentinel can be candidate-disabled, mutates labels, or turns uncertainty into pass.
+### Packet PE7-HE-EC2-PREDICTION-OUTCOME-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-EC2-SENTINEL-CONFORMANCE-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Have the existing evaluator path emit immutable `PredictionOutcomeV1` records that compare each frozen fix/regression prediction with actual task, metric, invariant, and missingness evidence.
+
+**Allowed delta:** Derived evaluation evidence and archive projection only; no candidate-authored outcome, evaluator change, selection weight, or safety inference.
+
+**Exit:** Correct/incorrect/partially supported/contradicted/unavailable outcomes, unpredicted regression, incomplete evaluation, tamper, replay, parity, and calibration-summary fixtures pass.
+
+**Stop:** A candidate can write its own outcome, absent regression prediction is treated as safety, prediction accuracy gates selection, or post-result edits can change the manifest.
 ## Stage Experiment control EC3 - total lifecycle budget
 
 EC3 makes equal total lifecycle budget enforceable; token or call equality alone is insufficient.
@@ -777,11 +813,11 @@ EC3 makes equal total lifecycle budget enforceable; token or call equality alone
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PE7-HE-EC2-SENTINEL-CONFORMANCE-1
+**Prerequisite:** PE7-HE-EC2-PREDICTION-OUTCOME-1
 
 **Class:** `CONTRACT`
 
-**Outcome:** Freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, and failure accounting.
+**Outcome:** Freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and the cost of diagnosis, hypothesis construction, prediction, and outcome reconciliation.
 
 **Allowed delta:** No spend or runtime behavior change.
 
@@ -894,13 +930,13 @@ EC5 freezes hard-gate-first selection and the generation state machine before Le
 
 **Class:** `IMPLEMENT`
 
-**Outcome:** Implement hard-gate filtering, Pareto comparison, tie/disagreement handling, and immutable candidate archive.
+**Outcome:** Implement hard-gate filtering, Pareto comparison, tie/disagreement handling, and an immutable candidate archive retaining causal manifests, counterevidence, and prediction outcomes.
 
 **Allowed delta:** Selection evidence only; no active-Harness replacement or production adoption.
 
 **Exit:** Dominance, incomparable basis, tie, rejection, archive tamper, and full-cost fixtures pass.
 
-**Stop:** Best-only reporting, scalar override, candidate-controlled metric, or hidden rejection becomes possible.
+**Stop:** Best-only reporting, scalar override, candidate-controlled metric, hidden rejection, or prediction accuracy becoming selection authority becomes possible.
 ### Packet PE7-HE-EC5-STOP-RECOVERY-1
 
 **State:** `BLOCKED_PREREQUISITE`
@@ -928,7 +964,7 @@ Level-1 runs one generation with memory and skill projections disabled.
 
 **Class:** `CONTRACT`
 
-**Outcome:** Freeze active Harness, parents, mutation families, seeds, candidate limits, full budgets, evaluator/holdout identities, authorization package, and immediate preflight.
+**Outcome:** Freeze active Harness, parents, mutation families, causal-manifest identities, seeds, candidate limits, full budgets, evaluator/holdout identities, prediction-outcome rules, authorization package, and immediate preflight.
 
 **Allowed delta:** No candidate generation or holdout access.
 
@@ -947,7 +983,7 @@ Level-1 runs one generation with memory and skill projections disabled.
 
 **Allowed delta:** Registered laboratory effects only; no memory/skill projection, active-Harness adoption, retuning, or second generation.
 
-**Exit:** Every candidate including rejects has terminal lineage, cost, evaluator/sentinel, diversity, holdout, archive, cleanup, and restricted evidence.
+**Exit:** Every candidate including rejects has terminal lineage, failure-pattern evidence, frozen hypothesis, prediction outcome, cost, evaluator/sentinel, diversity, holdout, archive, cleanup, and restricted evidence.
 
 **Stop:** Any EC stop rule, authority/lease mismatch, contamination, evaluator mutation, budget breach, outcome unknown, or hidden candidate.
 ### Packet PE7-HE-LEVEL1-CLOSEOUT-1
@@ -958,7 +994,7 @@ Level-1 runs one generation with memory and skill projections disabled.
 
 **Class:** `CLOSEOUT`
 
-**Outcome:** Recompute hard gates/Pareto results, select at most one experimental transfer candidate, and emit PR_READY evidence only.
+**Outcome:** Recompute hard gates/Pareto results and prediction calibration, select at most one experimental transfer candidate, and emit PR_READY evidence only.
 
 **Allowed delta:** Analysis/artifact/status only; active Harness remains immutable.
 
@@ -1518,9 +1554,324 @@ Meta research asks whether an improvement operator improves the distribution of 
 **Exit:** Independent META_SUPPORTED, META_NOT_SUPPORTED, HARM, or INSUFFICIENT receipt with uncertainty, multiplicity, sensitivity, domain limits, and full failures/costs.
 
 **Stop:** Only one descendant supports the result, replication fails, hard gates fail, evidence is selective, or conclusion exceeds the tested domain.
+## Stage Optional advanced recursive research portfolio
+
+This portfolio is optional research after a supported fixed-operator Meta result. It is not production adoption, does not make Dashboard or human adoption depend on speculative research, and never activates mechanically. Every branch needs its own human GO, finite authority, equal total lifecycle budget, sealed comparison/replication sets, and explicit negative-result disposition.
+
+Research-improvement depth here is not `engine/src/recursive_execution.rs` task-tree depth. R4 and R5 are independently attributable sibling axes after R3, not a claim that weight adaptation is intrinsically a deeper meta-level; R6 is eligible only after both axes have explicit dispositions:
+
+| Depth | Mutable object | Required boundary |
+|---|---|---|
+| R1 | One Harness candidate generation | Existing Level-1 one-generation laboratory |
+| R2 | Multiple Harness generations under a fixed controller | Existing bounded Level-2 controller |
+| R3 | A fixed improvement operator | Existing Meta O0/O1 branch |
+| R4 | The improvement procedure inside a bounded meta-operator | DGM-H-inspired metacognitive branch; outer evaluator, parent rule, budget, authority, and stops remain immutable |
+| R5 | Harness plus parameter-efficient model adapters | SIA-inspired weight/harness branch; immutable base checkpoint and separately governed training effects |
+| R6 | Exactly one outer search policy family | Parent selection, harness-vs-weight lever selection, or curriculum policy; evaluator and objectives remain external and immutable |
+| Not routed | Evaluator, labels, goals, safety policy, permissions, budgets, adoption, release, or deployment | No self-modification path; any proposal is `DECISION_REQUIRED` and requires a new human architecture decision |
+
+Primary research is reference evidence, not an implementation dependency or authority source:
+
+- [Hyperagents / DGM-H](https://arxiv.org/abs/2603.19461) supports testing editable improvement procedures and archive-based stepping stones. Its main experiments retain fixed parent selection and evaluation; its preliminary modifiable-parent experiment did not significantly beat, and had a lower point estimate than, the handcrafted selector. R4 therefore keeps the complete outer shell fixed; parent-policy evolution is deferred to R6.
+- [SIA](https://arxiv.org/abs/2605.27276) supports testing harness and LoRA weight updates as distinct levers. Its reported comparison spans three tasks and the paper identifies coupled Goodhart risk from both levers optimizing one verifier. R5 therefore requires a four-arm factorial comparison before any interleaved co-evolution claim.
+- The official [Hyperagents](https://github.com/facebookresearch/Hyperagents) and [SIA](https://github.com/hexo-ai/sia) repositories may inform bounded adapters after exact-commit, license, threat, and source-mapping review. They do not become core runtimes, stores, evaluators, trainers, or untrusted-code execution authority.
+
+### Packet PE7-HE-ADVANCED-RECURSION-GATE-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-META-ANALYSIS-DECISION-1 with `META_SUPPORTED`
+
+**Class:** `CONTRACT`
+
+**Outcome:** Decide whether any R4-R6 research is justified and, on human `ADVANCED_GO`, freeze the immutable outer shell, branch-specific claims, maximum depth, mutable surfaces, sandbox, budgets, evidence retention, global stops, and strongest allowed conclusions.
+
+**Allowed delta:** Planning and GO/NO-GO only; no adapter, training, self-modification, Provider request, or target effect.
+
+**Exit:** Hash-bound `ADVANCED_GO` or `ADVANCED_NO_GO` receipt. GO names independently authorized R4 and/or R5 branches and grants neither R6 nor production authority.
+
+**Stop:** Meta evidence is unsupported, recursive depth is unbounded, immutable surfaces are incomplete, oversight/rollback is infeasible, or expected lifecycle cost is unacceptable.
+
+### R4 bounded metacognitive operator (DGM-H-inspired)
+
+### Packet PE7-HE-R4-METACOGNITIVE-CONTRACT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-ADVANCED-RECURSION-GATE-1 with R4 authorized
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze the fixed Meta operator baseline and one self-referential treatment whose internal diagnosis, memory, proposal, and modification procedure may edit only an enumerated meta-operator workspace.
+
+**Allowed delta:** Contract only. Evaluator/labels, parent selection, archive admission, budgets, permissions, stops, sandbox, active Harness, adoption, and release remain byte/value/behavior immutable.
+
+**Exit:** Versioned editable-surface manifest, O0/R4 treatment identity, code/data access map, causal-manifest binding, compile/validation rules, equal-budget comparison and replication protocol, and complete rollback.
+
+**Stop:** The treatment difference is not isolatable, generated code can escape the sandbox, or any outer-shell component must become mutable.
+
+### Packet PE7-HE-R4-METACOGNITIVE-ADAPTER-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R4-METACOGNITIVE-CONTRACT-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Implement a provider-free, default-off metacognitive operator adapter over existing EC/Level-2 owners, with immutable snapshots of every self-change and no direct external-project dependency.
+
+**Allowed delta:** Contract-approved meta-operator workspace, validation, lineage, archive projection, sandbox mediation, and fixtures only; no live effect or outer-loop change.
+
+**Exit:** Self-edit lineage, stale-parent, tamper, forbidden-surface, compile failure, sandbox escape, rollback, restart, deterministic replay, full-cost, and no-authority tests pass.
+
+**Stop:** Adapter becomes another scheduler/store/evaluator, can rewrite its contract, hides failed descendants, or cannot restore the exact prior operator.
+
+### Packet PE7-HE-R4-COMPARISON-RUN-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R4-METACOGNITIVE-ADAPTER-1
+
+**Class:** `EFFECT`
+
+**Outcome:** Execute the frozen fixed-operator versus metacognitive-operator comparison on sealed unseen task families under equal lifecycle budgets and finite authorization.
+
+**Allowed delta:** Registered operator effects only; parent selection/evaluator/thresholds remain fixed and no descendant is adopted.
+
+**Exit:** Every operator, task, descendant, self-edit, reject, failure, cost, stop, cleanup, and causal/prediction record reaches terminal evidence.
+
+**Stop:** Sandbox/authority drift, contamination, evaluator gaming, outcome unknown, selective archive, budget imbalance, or outer-shell change.
+
+### Packet PE7-HE-R4-REPLICATION-RUN-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R4-COMPARISON-RUN-1
+
+**Class:** `EFFECT`
+
+**Outcome:** Execute the unchanged R4 protocol on a separately sealed replication domain without adapting to comparative results.
+
+**Allowed delta:** Registered replication effects only.
+
+**Exit:** Complete replication evidence bound to the same operator identities, mutable surface, outer shell, evaluator, budgets, and claim protocol.
+
+**Stop:** Operator/version drift, cross-domain leakage, outcome unknown, or replication requires a post-result repair.
+
+### Packet PE7-HE-R4-ANALYSIS-DECISION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R4-REPLICATION-RUN-1
+
+**Class:** `CLOSEOUT`
+
+**Outcome:** Test whether bounded self-referential modification improves eligible-descendant distribution, transfer reliability, improvement cost, and prediction calibration over the fixed operator.
+
+**Allowed delta:** Analysis, claim, and branch disposition only.
+
+**Exit:** Independent `METACOGNITIVE_SUPPORTED`, `NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` receipt with domain limits and full failures/costs.
+
+**Stop:** One descendant carries the result, replication fails, added complexity erases value, or the conclusion implies open-ended/self-accelerating improvement.
+
+### R5 Harness and weight-adapter co-evolution (SIA-inspired)
+
+### Packet PE7-HE-R5-WEIGHT-CONTRACT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-ADVANCED-RECURSION-GATE-1 with R5 authorized
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze a separate training-effect boundary, immutable open-weight base checkpoint, parameter-efficient adapter format, dataset/provenance/license/privacy rules, trainer/optimizer/RNG/compute identities, verifier separation, checkpoint security, budgets, rollback, and four-arm factorial protocol.
+
+**Allowed delta:** Planning only. First-stage weight work is adapter-only (for example LoRA); base or full-model weights, Provider-hosted models, and production model routing remain immutable.
+
+**Exit:** Exact `base`, `harness-only`, `weight-only`, and `harness+weight` arms with matched non-factor conditions, fixed update schedule, disjoint development/transfer sets, finite training authority, artifact retention, and deletion/rollback contract.
+
+**Stop:** Training data rights/provenance are unclear, verifier leakage is possible, compute cannot be bounded, arms are confounded, or a second product store/budget/evaluator is proposed.
+
+### Packet PE7-HE-R5-WEIGHT-ADAPTER-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R5-WEIGHT-CONTRACT-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Implement a default-off external-training adapter that records immutable base/adapter/data/trainer/config/seed/compute identities and returns hash-bound artifacts through existing artifact/store owners.
+
+**Allowed delta:** Adapter, validation, sandbox/job mediation, artifact references, redacted receipts, and provider-free fixtures only; model binaries remain outside the repository and no training runs in CI.
+
+**Exit:** Wrong-base, poisoned/malformed adapter, data/config drift, duplicate job, crash, cancellation, outcome unknown, checksum, deletion, rollback, restart, parity, and no-production-route tests pass.
+
+**Stop:** Credentials or training data enter durable evidence, adapter can replace the active model, training effects can retry ambiguously, or external infrastructure becomes a core authority.
+
+### Packet PE7-HE-R5-FACTORIAL-RUN-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R5-WEIGHT-ADAPTER-1
+
+**Class:** `EFFECT`
+
+**Outcome:** Execute the preregistered four-arm factorial experiment with fixed update schedules to estimate harness, weight-adapter, and interaction effects before dynamic lever selection.
+
+**Allowed delta:** Registered Harness mutations and adapter-training effects only; no interleaved chooser, full-weight update, production routing, or post-result arm change.
+
+**Exit:** Complete task/arm/checkpoint/candidate/failure/reject/cost/contamination/cleanup evidence with matched budgets and terminal artifact lineage.
+
+**Stop:** Arm imbalance, verifier coupling sentinel, data leakage, catastrophic capability regression, outcome unknown, budget breach, or selective checkpoint reporting.
+
+### Packet PE7-HE-R5-FACTORIAL-ANALYSIS-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R5-FACTORIAL-RUN-1
+
+**Class:** `CLOSEOUT`
+
+**Outcome:** Estimate main and interaction effects, transfer/non-inferiority, coupled-Goodhart sensitivity, full lifecycle value, and whether a fixed SIA-like lever chooser is eligible for one co-evolution pilot.
+
+**Allowed delta:** Frozen analysis and `COEVOLUTION_ELIGIBLE`/`NO_GO`/`HARM`/`INSUFFICIENT` disposition only.
+
+**Exit:** Independent factorial receipt with all four arms, uncertainty, multiplicity, sensitivity, adapter/base identities, and strongest allowed claim.
+
+**Stop:** Weight-only attribution is unavailable, interaction is post hoc, transfer regresses, or the chooser would be tuned on the comparison result.
+
+### Packet PE7-HE-R5-COEVOLUTION-RUN-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R5-FACTORIAL-ANALYSIS-1 with `COEVOLUTION_ELIGIBLE` and separate human authorization
+
+**Class:** `EFFECT`
+
+**Outcome:** Execute one bounded SIA-like pilot in which a frozen lever-selection policy interleaves Harness and adapter-weight updates under the same immutable outer evaluator and budget owners.
+
+**Allowed delta:** Registered interleaving only; the lever selector does not learn or self-modify, and full-model weights remain unchanged.
+
+**Exit:** Every lever decision, causal manifest, trajectory identity, Harness delta, adapter checkpoint, cost, stop, and reject reaches terminal evidence.
+
+**Stop:** Selector or evaluator changes, alternating updates amplify verifier gaming, capability regression crosses a hard gate, or evidence cannot attribute each state transition.
+
+### Packet PE7-HE-R5-TRANSFER-REPLICATION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R5-COEVOLUTION-RUN-1
+
+**Class:** `EFFECT`
+
+**Outcome:** Replicate the frozen co-evolution treatment and factorial baselines on a separately sealed unseen task/model family.
+
+**Allowed delta:** Registered replication effects only; no chooser, Harness, optimizer, data, threshold, or adapter repair.
+
+**Exit:** Complete blinded replication evidence with base/adapter lineage, transfer, drift, regression, cost, and cleanup.
+
+**Stop:** Model/task leakage, checkpoint incompatibility, outcome unknown, treatment drift, or replication hard-gate failure.
+
+### Packet PE7-HE-R5-ANALYSIS-DECISION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R5-TRANSFER-REPLICATION-1
+
+**Class:** `CLOSEOUT`
+
+**Outcome:** Decide the bounded Harness+adapter claim and whether full-weight or model-architecture evolution is even planning-eligible.
+
+**Allowed delta:** Analysis and `WEIGHT_COEVOLUTION_SUPPORTED`, `NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` disposition only. Full-weight work remains unrouted unless a later human decision creates a new contract.
+
+**Exit:** Independent receipt covering factorial attribution, co-evolution increment, replication, catastrophic-forgetting/regression, contamination, compute, storage, and rollback costs.
+
+**Stop:** Gains do not survive replication, base-model capabilities regress, checkpoint provenance is incomplete, or the conclusion generalizes beyond the tested adapter/model/domain.
+
+### R6 bounded outer-policy evolution
+
+### Packet PE7-HE-R6-OUTER-POLICY-CONTRACT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R4-ANALYSIS-DECISION-1 and PE7-HE-R5-ANALYSIS-DECISION-1, with at least one supported result and separate human R6 GO
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze exactly one mutable outer policy family for the first experiment: parent selection, Harness-vs-weight lever selection, or curriculum proposal. Keep evaluator/labels, task acceptance, hard gates, budgets, permissions, stops, archive integrity, and adoption external and immutable.
+
+**Allowed delta:** Contract only; no simultaneous multi-policy evolution, evaluator evolution, self-generated goals, or live effect.
+
+**Exit:** One identifiable fixed-policy baseline/treatment difference, state/action/outcome schema, off-policy evaluation limits, equal-budget comparison, sealed replication, rollback, and strongest allowed R6 claim.
+
+**Stop:** Policy effects cannot be isolated, policy can choose its own evaluator/data/limits, or recursive depth can grow without a new human decision.
+
+### Packet PE7-HE-R6-OUTER-POLICY-ADAPTER-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R6-OUTER-POLICY-CONTRACT-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Implement the single accepted outer-policy treatment behind a deterministic, versioned interface over existing controllers and evidence owners.
+
+**Allowed delta:** Policy adapter, immutable transition evidence, sandbox/fixtures, and rollback only; no live effect or other mutable family.
+
+**Exit:** Action bounds, stale state, tamper, forbidden action, replay, exploration cap, rollback, crash, restart, full-cost, and no-authority tests pass.
+
+**Stop:** Adapter becomes another controller/evaluator, can change its action space, or cannot reproduce the baseline/treatment boundary.
+
+### Packet PE7-HE-R6-COMPARISON-RUN-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R6-OUTER-POLICY-ADAPTER-1
+
+**Class:** `EFFECT`
+
+**Outcome:** Execute the fixed versus evolvable outer-policy comparison under finite authority, equal lifecycle budget, sealed tasks, and unchanged R4/R5 components.
+
+**Allowed delta:** Registered policy effects only.
+
+**Exit:** Complete policy-transition, candidate/checkpoint, failure/reject, cost, stop, contamination, and cleanup evidence.
+
+**Stop:** Action-space/evaluator/budget drift, runaway exploration, curriculum leakage, outcome unknown, or selective transition history.
+
+### Packet PE7-HE-R6-REPLICATION-RUN-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R6-COMPARISON-RUN-1
+
+**Class:** `EFFECT`
+
+**Outcome:** Execute the unchanged outer-policy comparison on a separately sealed replication family.
+
+**Allowed delta:** Registered replication effects only.
+
+**Exit:** Complete replication evidence bound to the same policy identities, action space, outer shell, evaluator, budgets, and claim protocol.
+
+**Stop:** Policy/version drift, leakage, outcome unknown, or replication requires post-result tuning.
+
+### Packet PE7-HE-R6-ANALYSIS-DECISION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-R6-REPLICATION-RUN-1
+
+**Class:** `CLOSEOUT`
+
+**Outcome:** Determine whether one bounded outer-policy family improves the distribution and efficiency of eligible improvements without destabilizing attribution, safety, diversity, or oversight.
+
+**Allowed delta:** Analysis and `OUTER_POLICY_SUPPORTED`, `NOT_SUPPORTED`, `HARM`, or `INSUFFICIENT` disposition only; no next recursive level is implied.
+
+**Exit:** Independent receipt with replication, uncertainty, domain/action limits, prediction calibration, full costs, and explicit maximum supported recursive depth.
+
+**Stop:** Results rely on evaluator/goal adaptation, oversight cannot keep pace, or the claim is widened to autonomous open-ended evolution.
 ## Stage Dashboard last
 
-Presentation work remains last and never becomes an authority owner.
+Presentation work remains the last mandatory product-route surface and never becomes an authority owner. The optional advanced portfolio above does not delay Dashboard once the existing adoption and fixed-operator Meta prerequisites close; if advanced research is started, it remains an independent branch.
 
 ### Packet PE7-DASHBOARD-DISPOSITION-1
 
@@ -1569,7 +1920,7 @@ Presentation work remains last and never becomes an authority owner.
 **Stop:** Unreviewed visual delta, missing canonical check, backend behavior change, or unresolved accessibility objection.
 ## Adoption and claim boundary
 
-candidate generation != experimental parent selection != active-Harness adoption != improvement-operator research
+candidate generation != causal explanation != prediction accuracy != experimental parent selection != active-Harness adoption != improvement-operator research != weight-adapter training
 
 Each authority has its own evidence and decision. A GO authorizes only its named next packet. A NO_GO, DECLINE, DEFER, SATURATED, HARM, or INSUFFICIENT result is valid completion and requires the canonical route to be rewritten before any non-dependent work proceeds.
 
