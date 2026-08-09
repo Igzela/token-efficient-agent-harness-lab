@@ -61,6 +61,7 @@ class WorkflowCapsuleTests(unittest.TestCase):
                 "actions": "read",
                 "checks": "read",
                 "contents": "read",
+                "issues": "read",
                 "pull-requests": "read",
             },
         )

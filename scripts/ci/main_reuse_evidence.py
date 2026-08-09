@@ -227,9 +227,14 @@ def _exact_head_check(observer: GitHubObserver, head_sha: str) -> dict[str, Any]
     return latest
 
 
-def _review_digest(
+def _digest_json(value: dict[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _review_evidence(
     observer: GitHubObserver, pr: dict[str, Any], head_sha: str
-) -> str:
+) -> dict[str, Any]:
     number = pr.get("number")
     if not isinstance(number, int):
         raise ReuseEvidenceError("pull_request_number_invalid")
@@ -255,6 +260,32 @@ def _review_digest(
         comments=comments,
         observation_time="main-reuse-verification",
     )
+    linked_issues = project_context._linked_issue_numbers(
+        str(pr.get("body") or "")
+    )
+    if len(linked_issues) > 1:
+        raise ReuseEvidenceError("linked_issue_binding_not_unique")
+
+    review_state_projection: dict[str, Any] | None = None
+    if linked_issues:
+        review_state_projection = project_context._load_review_state_projection(
+            observer.repository,
+            {"headRefOid": head_sha, "body": pr.get("body") or ""},
+            observer=observer,
+        )
+        availability = review_state_projection.get("availability")
+        if availability in {"unavailable", "conflict"}:
+            reason = str(
+                review_state_projection.get("unavailable_reason")
+                or "review_state_unavailable"
+            )
+            raise ReuseEvidenceError(
+                f"linked_issue_review_state_{availability}:{reason}"
+            )
+        project_context._reconcile_review_state_projection(
+            observation, review_state_projection
+        )
+
     if observation.get("exact_head_review_state") != "confirmed":
         raise ReuseEvidenceError("exact_pass_review_receipt_missing")
     if observation.get("unresolved_objections_state") != "none_observed":
@@ -268,8 +299,39 @@ def _review_digest(
         "axes": receipt.get("axes"),
         "observed_at": receipt.get("observation_time"),
     }
-    encoded = json.dumps(bounded, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    bounded_review_state = None
+    if review_state_projection is not None:
+        bounded_review_state = {
+            "review_protocol_version": review_state_projection.get(
+                "review_protocol_version"
+            ),
+            "review_mode": review_state_projection.get("review_mode"),
+            "review_round": review_state_projection.get("review_round"),
+            "prior_reviewed_head": review_state_projection.get(
+                "prior_reviewed_head"
+            ),
+            "reviewed_head": review_state_projection.get("reviewed_head"),
+            "finding_ledger_digest": review_state_projection.get(
+                "finding_ledger_digest"
+            ),
+            "open_blocker_ids": review_state_projection.get("open_blocker_ids"),
+            "deferred_note_ids": review_state_projection.get("deferred_note_ids"),
+            "autonomous_repairs_remaining": review_state_projection.get(
+                "autonomous_repairs_remaining"
+            ),
+            "stop_reason": review_state_projection.get("stop_reason"),
+            "review_state": review_state_projection.get("review_state"),
+            "availability": review_state_projection.get("availability"),
+        }
+    return {
+        "review_receipt_sha256": _digest_json(bounded),
+        "linked_issue_numbers": linked_issues,
+        "linked_review_state_sha256": (
+            _digest_json(bounded_review_state)
+            if bounded_review_state is not None
+            else None
+        ),
+    }
 
 
 def build_reuse_receipt(
@@ -309,7 +371,7 @@ def build_reuse_receipt(
         raise ReuseEvidenceError("pull_request_number_invalid")
     run, _jobs = _canonical_run(observer, head_sha, number)
     exact_check = _exact_head_check(observer, head_sha)
-    review_digest = _review_digest(observer, pr, head_sha)
+    review_evidence = _review_evidence(observer, pr, head_sha)
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -322,7 +384,11 @@ def build_reuse_receipt(
         "canonical_workflow_run_id": run.get("id"),
         "canonical_required_jobs": list(REQUIRED_CANONICAL_JOBS),
         "exact_head_check_id": exact_check.get("id"),
-        "review_receipt_sha256": review_digest,
+        "review_receipt_sha256": review_evidence["review_receipt_sha256"],
+        "linked_issue_numbers": review_evidence["linked_issue_numbers"],
+        "linked_review_state_sha256": review_evidence[
+            "linked_review_state_sha256"
+        ],
         "changed_path_count": len(paths),
     }
 

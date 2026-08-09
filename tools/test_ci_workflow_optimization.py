@@ -34,6 +34,7 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
                 "actions": "read",
                 "checks": "read",
                 "contents": "read",
+                "issues": "read",
                 "pull-requests": "read",
             },
         )
@@ -253,6 +254,7 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
             "actions": "read",
             "checks": "read",
             "contents": "read",
+            "issues": "read",
             "pull-requests": "read",
         }
         for job_name in ("classify-change-impact", "context-capsule"):
