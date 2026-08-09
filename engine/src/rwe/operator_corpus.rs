@@ -16,9 +16,14 @@
 use std::path::PathBuf;
 
 use super::corpus::{freeze_rwe_corpus_from_root, FirstRweCorpus};
+use super::execution_schedule::freeze_operator_execution_schedule_from_root;
 
-pub const OPERATOR_CORPUS_ID: &str = "rwe-minimum-first-corpus-v2";
-pub const OPERATOR_CORPUS_RELATIVE_ROOT: &str = "rwe/corpora/rwe-minimum-first-corpus/v2";
+pub const OPERATOR_V1_CORPUS_ID: &str = "rwe-minimum-first-corpus-v1";
+pub const OPERATOR_V1_CORPUS_RELATIVE_ROOT: &str = "rwe/corpora/rwe-minimum-first-corpus/v1";
+pub const OPERATOR_V2_CORPUS_ID: &str = "rwe-minimum-first-corpus-v2";
+pub const OPERATOR_V2_CORPUS_RELATIVE_ROOT: &str = "rwe/corpora/rwe-minimum-first-corpus/v2";
+pub const OPERATOR_CORPUS_ID: &str = OPERATOR_V2_CORPUS_ID;
+pub const OPERATOR_CORPUS_RELATIVE_ROOT: &str = OPERATOR_V2_CORPUS_RELATIVE_ROOT;
 pub const OPERATOR_TARGET_REPO: &str = "Igzela/alters-lab";
 pub const OPERATOR_ADMITTED_EXECUTOR: &str = "managed_deepseek";
 pub const OPERATOR_ADMITTED_MODEL: &str = "deepseek-v4-flash";
@@ -34,7 +39,68 @@ pub const OPERATOR_ADMITTED_BINARY_PATH: &str = "in-process:managed_deepseek";
 /// Exact harness `main` SHA at which Board A froze the operator corpus, protocol,
 /// and schedule. Store-owned production issue/admit derives this binding; callers
 /// never supply or override it.
-pub const OPERATOR_ARTIFACTS_FROZEN_AT_MAIN_SHA: &str = "ee43eac853644266614da09de764a3bf19f2d281";
+pub const OPERATOR_V1_ARTIFACTS_FROZEN_AT_MAIN_SHA: &str =
+    "3c6cd00f68f4db2a9eef99598deebc42f95ab62b";
+pub const OPERATOR_V2_ARTIFACTS_FROZEN_AT_MAIN_SHA: &str =
+    "ee43eac853644266614da09de764a3bf19f2d281";
+pub const OPERATOR_ARTIFACTS_FROZEN_AT_MAIN_SHA: &str = OPERATOR_V2_ARTIFACTS_FROZEN_AT_MAIN_SHA;
+
+pub const OPERATOR_V1_CORPUS_SHA256: &str =
+    "81a65fc93fc6b381ce127a7b9b62b0afaa233ec366ed78a5db43f0b53ab2eccc";
+pub const OPERATOR_V1_PROTOCOL_SHA256: &str =
+    "15efbc60d5edf21ae7c79537f76bfb0b9be6030a57f3b83201e51df6e2e9adb9";
+pub const OPERATOR_V1_SCHEDULE_SHA256: &str =
+    "2500bb77d15bc1d9c9a1c2db612ff602abfa9e203747159eafe035fc075dc765";
+pub const OPERATOR_V2_CORPUS_SHA256: &str =
+    "044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20";
+pub const OPERATOR_V2_PROTOCOL_SHA256: &str =
+    "bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db";
+pub const OPERATOR_V2_SCHEDULE_SHA256: &str =
+    "6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorCorpusVersion {
+    V1,
+    V2,
+}
+
+impl OperatorCorpusVersion {
+    fn corpus_id(self) -> &'static str {
+        match self {
+            Self::V1 => OPERATOR_V1_CORPUS_ID,
+            Self::V2 => OPERATOR_V2_CORPUS_ID,
+        }
+    }
+
+    fn relative_root(self) -> &'static str {
+        match self {
+            Self::V1 => OPERATOR_V1_CORPUS_RELATIVE_ROOT,
+            Self::V2 => OPERATOR_V2_CORPUS_RELATIVE_ROOT,
+        }
+    }
+
+    fn freeze_point(self) -> &'static str {
+        match self {
+            Self::V1 => OPERATOR_V1_ARTIFACTS_FROZEN_AT_MAIN_SHA,
+            Self::V2 => OPERATOR_V2_ARTIFACTS_FROZEN_AT_MAIN_SHA,
+        }
+    }
+
+    fn expected_hashes(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::V1 => (
+                OPERATOR_V1_CORPUS_SHA256,
+                OPERATOR_V1_PROTOCOL_SHA256,
+                OPERATOR_V1_SCHEDULE_SHA256,
+            ),
+            Self::V2 => (
+                OPERATOR_V2_CORPUS_SHA256,
+                OPERATOR_V2_PROTOCOL_SHA256,
+                OPERATOR_V2_SCHEDULE_SHA256,
+            ),
+        }
+    }
+}
 
 fn operator_corpus_notes() -> Vec<String> {
     vec![
@@ -46,12 +112,17 @@ fn operator_corpus_notes() -> Vec<String> {
 }
 
 pub fn operator_corpus_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(OPERATOR_CORPUS_RELATIVE_ROOT)
+    operator_corpus_root_for_version(OperatorCorpusVersion::V2)
+}
+
+pub fn operator_corpus_root_for_version(version: OperatorCorpusVersion) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(version.relative_root())
 }
 
 /// The operator-approved frozen contract set: corpus + protocol + schedule +
 /// accepted-main SHA. Everything the authorization v2 body must bind.
 pub struct OperatorFrozenContractSet {
+    pub version: OperatorCorpusVersion,
     pub corpus: FirstRweCorpus,
     pub protocol: crate::rwe::economic_protocol::FrozenEvidenceDocument,
     pub schedule: crate::rwe::execution_schedule::FrozenExecutionSchedule,
@@ -67,11 +138,19 @@ pub struct OperatorFrozenContractSet {
 pub fn freeze_operator_contract_set(
     accepted_main_sha: &str,
 ) -> Result<OperatorFrozenContractSet, String> {
-    if accepted_main_sha != OPERATOR_ARTIFACTS_FROZEN_AT_MAIN_SHA {
+    freeze_operator_contract_set_for_version(OperatorCorpusVersion::V2, accepted_main_sha)
+}
+
+pub fn freeze_operator_contract_set_for_version(
+    version: OperatorCorpusVersion,
+    accepted_main_sha: &str,
+) -> Result<OperatorFrozenContractSet, String> {
+    if accepted_main_sha != version.freeze_point() {
         return Err("operator contract freeze-point SHA mismatch".into());
     }
-    let corpus = freeze_operator_rwe_corpus()?;
-    let raw = std::fs::read(operator_corpus_root().join("protocol/rwe_economic_protocol.v1.json"))
+    let corpus = freeze_operator_rwe_corpus_for_version(version)?;
+    let root = operator_corpus_root_for_version(version);
+    let raw = std::fs::read(root.join("protocol/rwe_economic_protocol.v1.json"))
         .map_err(|e| e.to_string())?;
     let body: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
     let protocol = crate::rwe::economic_protocol::freeze_rwe_economic_protocol(body)?;
@@ -83,14 +162,25 @@ pub fn freeze_operator_contract_set(
     {
         return Err("frozen protocol authority_corpus_sha256 mismatch".into());
     }
-    let schedule =
-        crate::rwe::execution_schedule::freeze_operator_execution_schedule(&corpus, &protocol)?;
+    let schedule = freeze_operator_execution_schedule_from_root(
+        &corpus,
+        &protocol,
+        &root.join("schedule/execution_schedule.v1.json"),
+    )?;
+    let (_, expected_protocol_sha, expected_schedule_sha) = version.expected_hashes();
+    if protocol.body_sha256 != expected_protocol_sha {
+        return Err("operator protocol hash does not match approved version lock".into());
+    }
+    if schedule.schedule_sha256 != expected_schedule_sha {
+        return Err("operator schedule hash does not match approved version lock".into());
+    }
     Ok(OperatorFrozenContractSet {
+        version,
         corpus,
         protocol,
         schedule,
         accepted_main_sha: accepted_main_sha.to_string(),
-        corpus_artifact_path: OPERATOR_CORPUS_RELATIVE_ROOT.to_string(),
+        corpus_artifact_path: version.relative_root().to_string(),
     })
 }
 
@@ -105,14 +195,20 @@ pub fn freeze_current_operator_contract_set() -> Result<OperatorFrozenContractSe
 /// accepted-main. Rejects anything living under the fixture root and any
 /// fixture/placeholder repository identity.
 pub fn freeze_operator_rwe_corpus() -> Result<FirstRweCorpus, String> {
-    let root = operator_corpus_root();
+    freeze_operator_rwe_corpus_for_version(OperatorCorpusVersion::V2)
+}
+
+pub fn freeze_operator_rwe_corpus_for_version(
+    version: OperatorCorpusVersion,
+) -> Result<FirstRweCorpus, String> {
+    let root = operator_corpus_root_for_version(version);
     let fixture_root = super::corpus::default_corpus_fixture_root();
     if root.starts_with(&fixture_root) {
         return Err("operator corpus must not live under the fixture root".into());
     }
     let corpus = freeze_rwe_corpus_from_root(
         &root,
-        OPERATOR_CORPUS_ID,
+        version.corpus_id(),
         OPERATOR_TARGET_REPO,
         OPERATOR_ADMITTED_EXECUTOR,
         OPERATOR_ADMITTED_BINARY_VERSION,
@@ -150,6 +246,10 @@ pub fn freeze_operator_rwe_corpus() -> Result<FirstRweCorpus, String> {
             None => shared_source_commit = Some(task.source_commit.as_str()),
             _ => {}
         }
+    }
+    let (expected_corpus_sha, _, _) = version.expected_hashes();
+    if corpus.corpus_sha256 != expected_corpus_sha {
+        return Err("operator corpus hash does not match approved version lock".into());
     }
     Ok(corpus)
 }
@@ -364,6 +464,34 @@ mod tests {
                 .and_then(Value::as_str),
             Some(EXPECTED_PROTOCOL_SHA)
         );
+    }
+
+    #[test]
+    fn explicit_version_selection_keeps_v1_and_v2_freezes_distinct() {
+        let v1 = freeze_operator_contract_set_for_version(
+            OperatorCorpusVersion::V1,
+            OPERATOR_V1_ARTIFACTS_FROZEN_AT_MAIN_SHA,
+        )
+        .unwrap();
+        let v2 = freeze_operator_contract_set_for_version(
+            OperatorCorpusVersion::V2,
+            OPERATOR_V2_ARTIFACTS_FROZEN_AT_MAIN_SHA,
+        )
+        .unwrap();
+
+        assert_eq!(v1.version, OperatorCorpusVersion::V1);
+        assert_eq!(v2.version, OperatorCorpusVersion::V2);
+        assert_eq!(v1.corpus_artifact_path, OPERATOR_V1_CORPUS_RELATIVE_ROOT);
+        assert_eq!(v2.corpus_artifact_path, OPERATOR_V2_CORPUS_RELATIVE_ROOT);
+        assert_eq!(v1.corpus.corpus_id, OPERATOR_V1_CORPUS_ID);
+        assert_eq!(v2.corpus.corpus_id, OPERATOR_V2_CORPUS_ID);
+        assert_eq!(v1.corpus.corpus_sha256, OPERATOR_V1_CORPUS_SHA256);
+        assert_eq!(v2.corpus.corpus_sha256, OPERATOR_V2_CORPUS_SHA256);
+        assert_ne!(v1.corpus.corpus_sha256, v2.corpus.corpus_sha256);
+        assert_eq!(v1.protocol.body_sha256, OPERATOR_V1_PROTOCOL_SHA256);
+        assert_eq!(v2.protocol.body_sha256, OPERATOR_V2_PROTOCOL_SHA256);
+        assert_eq!(v1.schedule.schedule_sha256, OPERATOR_V1_SCHEDULE_SHA256);
+        assert_eq!(v2.schedule.schedule_sha256, OPERATOR_V2_SCHEDULE_SHA256);
     }
 
     #[test]
