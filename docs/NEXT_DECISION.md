@@ -261,6 +261,7 @@ The following remain identical to v1: target repository and source commit/tree, 
 - `engine/src/rwe/operator_corpus.rs` for explicit version selection, v1/v2 constants, freeze-point and expected hash locks;
 - `engine/tests/test_http_server.rs` for delegating the four duplicated environment-lock helpers to `http_server/common.rs`;
 - `engine/tests/http_server/auth.rs` for the two baseline auth tests to hold the canonical provider environment lock;
+- `tools/test_run_rust_tests.py` for the runner contract test that verifies the complete lock set enables parallel execution while partial or missing locks remain serial;
 - `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md` for exact-head status synchronization after acceptance.
 
 `docs/MODULE_MAP.md` changes only if the real owner path changes; a new version under the same owner is not an owner change. Any need to edit production scheduler, store, authorization, provider, evaluator, schema, migration, SDK, Dashboard, or target-output code is `DECISION_REQUIRED`.

@@ -16,9 +16,9 @@ SPEC.loader.exec_module(run_rust_tests)
 
 
 class RustTestModeTests(unittest.TestCase):
-    def test_current_unrepaired_tree_stays_serial(self) -> None:
+    def test_current_repaired_tree_enables_parallel(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        self.assertFalse(run_rust_tests.parallel_contract_present(root))
+        self.assertTrue(run_rust_tests.parallel_contract_present(root))
 
     def test_complete_canonical_lock_contract_enables_parallel(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
