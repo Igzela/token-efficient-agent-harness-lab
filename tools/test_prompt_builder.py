@@ -184,7 +184,11 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
         )
 
         def run(command, **_kwargs):
-            output = "# Project Context Capsule\n" if "--capsule-json" in command else capsule_json
+            output = (
+                "# Project Context Capsule\n"
+                if "--capsule-json" in command
+                else capsule_json
+            )
             return subprocess.CompletedProcess(command, 0, output, "")
 
         with mock.patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}, clear=False), mock.patch.object(
@@ -195,6 +199,35 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                 required_pr_number=301,
                 required_head_sha="a" * 40,
         )
+        self.assertIn("Project Context Capsule", capsule)
+
+    def test_required_pr_binds_workflow_surface_not_canonical_frontier(self) -> None:
+        sha = "a" * 40
+        capsule_json = json.dumps(
+            {
+                "local_checkout": {"head_sha": sha},
+                "binding": {"pr_exact_head": {"head_sha": sha}},
+                "active_frontier": {
+                    "number": 370,
+                    "availability": "confirmed",
+                },
+                "workflow_frontier": {
+                    "number": 371,
+                    "availability": "confirmed",
+                },
+                "active_packet": {"packet": "PE7-RWE-V2-REFREEZE-1"},
+            }
+        )
+
+        def run(command, **_kwargs):
+            output = "# Project Context Capsule\n" if "--capsule-json" in command else capsule_json
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        with mock.patch.object(prompt_builder.subprocess, "run", side_effect=run):
+            capsule = prompt_builder.generate_fresh_capsule(
+                required_pr_number=371,
+                required_head_sha=sha,
+            )
         self.assertIn("Project Context Capsule", capsule)
 
     def test_ci_repair_prefers_checked_out_head_over_dispatch_sha(self) -> None:

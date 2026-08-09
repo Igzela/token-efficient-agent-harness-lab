@@ -70,7 +70,7 @@ REQUIRED_TEXT = {
         "## Verified Repository State",
         "## Capability Status",
         "## Confirmed Integration Gaps",
-        "Open Work Coordination",
+        "## Maintenance Boundary",
     ],
     "docs/NEXT_DECISION.md": [
         "# Next Decision",
@@ -80,6 +80,13 @@ REQUIRED_TEXT = {
         "READY_FOR_EXECUTION",
         "DECISION_REQUIRED",
         "Hard Stops",
+    ],
+    "docs/FUTURE_ROUTE.md": [
+        "# Future Route",
+        "routing-only",
+        "BLOCKED_PREREQUISITE",
+        "docs/NEXT_DECISION.md",
+        "DECISION_REQUIRED",
     ],
     "docs/MODULE_MAP.md": [
         "# Module Map",
@@ -144,6 +151,7 @@ MODEL_AGNOSTIC_FILES = [
     "AGENTS.md",
     "docs/CURRENT_STATUS.md",
     "docs/NEXT_DECISION.md",
+    "docs/FUTURE_ROUTE.md",
     "docs/MODULE_MAP.md",
     "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
 ]
@@ -231,6 +239,7 @@ def check_entrypoint_roles(failures: list[str]) -> None:
     canonical_paths = [
         "docs/CURRENT_STATUS.md",
         "docs/NEXT_DECISION.md",
+        "docs/FUTURE_ROUTE.md",
         "docs/MODULE_MAP.md",
         "docs/ARCHITECTURE_BOOK.md",
         "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
@@ -322,11 +331,32 @@ def parse_packet_contracts(
     return packets
 
 
-def active_state_failures(status_text: str, next_text: str) -> list[str]:
+def active_state_failures(
+    status_text: str, next_text: str, future_text: str = ""
+) -> list[str]:
     failures: list[str] = []
-    packets = parse_packet_contracts(next_text, failures)
+    current_packets = parse_packet_contracts(next_text, failures)
+    future_packets = parse_packet_contracts(future_text, failures)
+    duplicate_packets = sorted(set(current_packets) & set(future_packets))
+    for packet_id in duplicate_packets:
+        failures.append(
+            f"{packet_id} is duplicated between NEXT_DECISION and FUTURE_ROUTE"
+        )
+    packets = {**future_packets, **current_packets}
 
-    for packet_id, packet in packets.items():
+    if future_text:
+        if len(current_packets) != 1:
+            failures.append(
+                "NEXT_DECISION must contain exactly one expanded current packet; "
+                f"found {len(current_packets)}"
+            )
+        for packet_id, packet in future_packets.items():
+            if packet["state"] != "BLOCKED_PREREQUISITE":
+                failures.append(
+                    f"FUTURE_ROUTE packet {packet_id} must remain BLOCKED_PREREQUISITE"
+                )
+
+    for packet_id, packet in current_packets.items():
         state = str(packet["state"])
         if state not in VALID_PACKET_STATES:
             failures.append(f"{packet_id} has unknown state {state!r}")
@@ -352,6 +382,10 @@ def active_state_failures(status_text: str, next_text: str) -> list[str]:
     for packet_id in routed_packets:
         if packet_id not in packets:
             failures.append(f"Active Routing references unknown packet {packet_id}")
+        elif packet_id not in current_packets:
+            failures.append(
+                f"Active Routing references routing-only FUTURE_ROUTE packet {packet_id}"
+            )
         elif packets[packet_id]["state"] == "COMPLETE" and not terminal_routing:
             failures.append(f"Active Routing points to completed packet {packet_id}")
     if terminal_routing:
@@ -387,7 +421,7 @@ def active_state_failures(status_text: str, next_text: str) -> list[str]:
         for match in STAGE_ROW_RE.finditer(status_text)
     }
     packet_states: dict[str, list[str]] = {}
-    for packet_id, packet in packets.items():
+    for packet_id, packet in current_packets.items():
         packet_states.setdefault(_packet_stage(packet_id), []).append(str(packet["state"]))
 
     for stage, summary in next_stages.items():
@@ -433,7 +467,8 @@ def active_state_failures(status_text: str, next_text: str) -> list[str]:
 def check_active_state_consistency(failures: list[str]) -> None:
     status = read("docs/CURRENT_STATUS.md")
     next_text = read("docs/NEXT_DECISION.md")
-    failures.extend(active_state_failures(status, next_text))
+    future_text = read("docs/FUTURE_ROUTE.md")
+    failures.extend(active_state_failures(status, next_text, future_text))
     if "## Verified Repository State" not in status:
         failures.append("CURRENT_STATUS must preserve the accepted/open/blocked fact boundary")
 

@@ -4,9 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 
-# Keep PostgreSQL coverage explicit. The ordinary Rust lane already runs every
-# default-feature target; this lane reruns the library with PostgreSQL enabled
-# and only the integration targets that contain pg-tests-gated cases.
+# Keep PostgreSQL coverage explicit. Targets remain internally serial, but each
+# target receives a distinct database and may run concurrently with the other
+# targets after one shared compile. This removes cross-target state collisions
+# without hiding any pg-tests-gated target.
 expected_targets=(
   test_pe6_fault_drills
   test_pg_integration
@@ -28,7 +29,63 @@ if [[ "${actual_targets[*]}" != "${expected_targets[*]}" ]]; then
   exit 1
 fi
 
-cargo test -p engine --features pg-tests --lib -- --test-threads=1
-for target in "${expected_targets[@]}"; do
-  cargo test -p engine --features pg-tests --test "${target}" -- --test-threads=1
+if [[ -z "${PG_CONTAINER:-}" ]]; then
+  echo "PG_CONTAINER is required for isolated PostgreSQL target databases." >&2
+  exit 1
+fi
+
+cargo test -p engine --features pg-tests --no-run
+
+targets=(engine_lib "${expected_targets[@]}")
+log_dir="$(mktemp -d -t acp-pg-targets.XXXXXX)"
+pids=()
+
+cleanup() {
+  for pid in "${pids[@]}"; do
+    if kill -0 "${pid}" 2>/dev/null; then
+      kill "${pid}" 2>/dev/null || true
+    fi
+  done
+  wait 2>/dev/null || true
+  rm -rf "${log_dir}"
+}
+trap cleanup EXIT
+
+for target in "${targets[@]}"; do
+  database="ci_${target}"
+  docker exec "${PG_CONTAINER}" psql \
+    --username testuser \
+    --dbname postgres \
+    --set ON_ERROR_STOP=1 \
+    --command "CREATE DATABASE ${database}" >/dev/null
+  database_url="postgres://testuser:testpass@localhost:5432/${database}"
+  if [[ "${target}" == "engine_lib" ]]; then
+    (
+      ACP_TEST_DATABASE_URL="${database_url}" \
+        cargo test -p engine --features pg-tests --lib -- --test-threads=1
+    ) >"${log_dir}/${target}.log" 2>&1 &
+  else
+    (
+      ACP_TEST_DATABASE_URL="${database_url}" \
+        cargo test -p engine --features pg-tests --test "${target}" -- --test-threads=1
+    ) >"${log_dir}/${target}.log" 2>&1 &
+  fi
+  pids+=("$!")
 done
+
+failed=0
+set +e
+for index in "${!targets[@]}"; do
+  wait "${pids[${index}]}"
+  status=$?
+  target="${targets[${index}]}"
+  echo "===== PostgreSQL target: ${target} ====="
+  sed -n '1,2000p' "${log_dir}/${target}.log"
+  if [[ "${status}" -ne 0 ]]; then
+    echo "PostgreSQL target ${target} failed with status ${status}." >&2
+    failed=1
+  fi
+done
+set -e
+
+exit "${failed}"

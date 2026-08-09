@@ -28,7 +28,22 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
 
     def test_trusted_base_owns_ready_diff_classification(self) -> None:
         job = self.parsed["jobs"]["classify-change-impact"]
+        self.assertEqual(
+            job["permissions"],
+            {
+                "actions": "read",
+                "checks": "read",
+                "contents": "read",
+                "issues": "read",
+                "pull-requests": "read",
+            },
+        )
+        self.assertNotIn("actions", self.parsed["permissions"])
+        self.assertNotIn("checks", self.parsed["permissions"])
+        self.assertNotIn("pull-requests", self.parsed["permissions"])
         self.assertEqual(job["outputs"]["docs_only"], "${{ steps.classify.outputs.docs_only }}")
+        self.assertEqual(job["outputs"]["mode"], "${{ steps.classify.outputs.mode }}")
+        self.assertEqual(job["outputs"]["reused_pr"], "${{ steps.classify.outputs.reused_pr }}")
         source = self.job_source("classify-change-impact")
         self.assertIn("path: trusted-base", source)
         self.assertIn("trusted-base/scripts/ci/classify_change_impact.py", source)
@@ -36,6 +51,9 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         self.assertIn("git diff --raw --no-renames", source)
         self.assertIn('allowed_modes = {"000000", "100644"}', source)
         self.assertIn('docs_only={str(docs_only).lower()}', source)
+        self.assertIn("trusted-base/scripts/ci/main_reuse_evidence.py", source)
+        self.assertIn("mode=reused_pr", source)
+        self.assertIn("Upload main CI reuse receipt", source)
 
     def test_required_jobs_keep_exact_head_and_docs_only_n_a_path(self) -> None:
         required = {
@@ -50,22 +68,26 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         for name in required:
             with self.subTest(job=name):
                 source = self.job_source(name)
-                self.assertIn("needs: classify-change-impact", source)
+                needs = self.parsed["jobs"][name]["needs"]
+                if isinstance(needs, str):
+                    needs = [needs]
+                self.assertIn("classify-change-impact", needs)
                 self.assertIn("name: Verify exact requested head", source)
                 self.assertIn("name: Report documentation-only lane", source)
+                self.assertIn("name: Report accepted PR reuse lane", source)
                 self.assertIn("needs.classify-change-impact.outputs.docs_only", source)
         self.assertEqual(self.source.count("name: Verify exact requested head"), 8)
         self.assertEqual(self.source.count("ref: ${{ env.EXPECTED_SHA }}"), 8)
 
     def test_sccache_is_pinned_and_replaces_target_archive(self) -> None:
         action = "mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696"
-        self.assertEqual(self.source.count(action), 4)
-        self.assertEqual(self.source.count('version: "v0.15.0"'), 4)
-        self.assertEqual(self.source.count('SCCACHE_GHA_ENABLED: "true"'), 4)
-        self.assertEqual(self.source.count("RUSTC_WRAPPER: sccache"), 4)
-        self.assertEqual(self.source.count("disable_annotations: true"), 4)
-        self.assertEqual(self.source.count("continue-on-error: true"), 4)
-        self.assertEqual(self.source.count('${SCCACHE_PATH}'), 4)
+        self.assertEqual(self.source.count(action), 3)
+        self.assertEqual(self.source.count('version: "v0.15.0"'), 3)
+        self.assertEqual(self.source.count('SCCACHE_GHA_ENABLED: "true"'), 3)
+        self.assertEqual(self.source.count("RUSTC_WRAPPER: sccache"), 3)
+        self.assertEqual(self.source.count("disable_annotations: true"), 3)
+        self.assertEqual(self.source.count("continue-on-error: true"), 3)
+        self.assertEqual(self.source.count('${SCCACHE_PATH}'), 3)
         self.assertNotIn("Cache Rust target for rust-tests", self.source)
         self.assertNotIn("rust-target-2026-07-10", self.source)
 
@@ -78,9 +100,15 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         )
 
         cutover = self.job_source("rust-typescript-cutover")
+        self.assertIn("needs:\n      - classify-change-impact\n      - native-runtime", cutover)
+        self.assertIn("Download Rust + TypeScript cutover evidence", cutover)
+        self.assertIn("Validate Rust + TypeScript cutover evidence", cutover)
+        self.assertNotIn("Install Rust toolchain", cutover)
+
+        native = self.job_source("native-runtime")
         self.assertIn(
-            "bash scripts/verify_rust_typescript_stack.sh --integration-only",
-            cutover,
+            "bash scripts/verify_rust_typescript_stack.sh --runtime-only --evidence-path",
+            native,
         )
 
         runner = (ROOT / "scripts" / "ci" / "run_postgres_tests.sh").read_text(
@@ -94,7 +122,13 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         ):
             self.assertIn(target, runner)
         self.assertIn("actual_targets", runner)
-        self.assertIn("cargo test -p engine --features pg-tests --lib", runner)
+        self.assertIn("cargo test -p engine --features pg-tests --no-run", runner)
+        self.assertIn("CREATE DATABASE", runner)
+        self.assertIn('pids+=("$!")', runner)
+        self.assertIn("trap cleanup EXIT", runner)
+
+        rust = self.job_source("rust-tests")
+        self.assertIn("run: scripts/ci/run_rust_tests.py", rust)
 
     def test_cargo_audit_install_is_versioned_and_cached(self) -> None:
         rust = self.job_source("rust-tests")
@@ -138,12 +172,23 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
             docker,
         )
         self.assertNotIn("docker compose build", docker)
+        for relative in ("deploy/Dockerfile.engine", "deploy/Dockerfile.combined"):
+            dockerfile = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn("dependency_cache_anchor", dockerfile)
+            self.assertIn("COPY engine/Cargo.toml engine/Cargo.toml", dockerfile)
+            self.assertEqual(
+                dockerfile.count(
+                    "cargo build --release -p engine --bin agent-control-plane"
+                ),
+                2,
+            )
 
     def test_expensive_steps_are_guarded_and_postgres_is_conditional(self) -> None:
         cheap = {
             "Check out repository",
             "Verify exact requested head",
             "Report documentation-only lane",
+            "Report accepted PR reuse lane",
         }
         for name in (
             "rust-tests",
@@ -158,7 +203,7 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
                     if step.get("name") in cheap:
                         continue
                     condition = str(step.get("if", ""))
-                    self.assertIn("docs_only != 'true'", condition, step.get("name"))
+                    self.assertIn("mode == 'full'", condition, step.get("name"))
         pg = self.job_source("pg-integration-tests")
         self.assertNotIn("services:", pg)
         self.assertIn("name: Start PostgreSQL service", pg)
@@ -185,6 +230,8 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         self.assertNotIn("NEEDS_CONTEXT_PATH:", capsule)
         self.assertNotIn("CAPSULE_DIR:", capsule)
         self.assertNotIn('path: context-capsule/', capsule)
+        self.assertIn("Revalidate trusted main CI reuse receipt", capsule)
+        self.assertIn("main-ci-reuse-recomputed.json", capsule)
 
     def test_canonical_identity_and_context_capsule_are_unchanged(self) -> None:
         self.assertIn("name: tests", self.source)
@@ -201,6 +248,18 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         ):
             self.assertIn(f"      - {required}", capsule)
         self.assertIn("--require-success", capsule)
+
+    def test_reuse_verifiers_have_minimal_check_read_permission(self) -> None:
+        expected = {
+            "actions": "read",
+            "checks": "read",
+            "contents": "read",
+            "issues": "read",
+            "pull-requests": "read",
+        }
+        for job_name in ("classify-change-impact", "context-capsule"):
+            with self.subTest(job=job_name):
+                self.assertEqual(self.parsed["jobs"][job_name]["permissions"], expected)
 
 
 if __name__ == "__main__":

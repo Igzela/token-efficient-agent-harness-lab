@@ -1,10 +1,10 @@
 # Module Map
 
-Last updated: 2026-08-08.
+Last updated: 2026-08-09.
 
-This is the concise ownership map for accepted `main`. Current facts are in `docs/CURRENT_STATUS.md`; execution order and gates are in `docs/NEXT_DECISION.md`; architecture invariants are in `docs/ARCHITECTURE_BOOK.md`.
+This is the concise ownership map for accepted `main`. Accepted facts are in `docs/CURRENT_STATUS.md`; the current executable window is in `docs/NEXT_DECISION.md`; the routing-only horizon is in `docs/FUTURE_ROUTE.md`; architecture invariants are in `docs/ARCHITECTURE_BOOK.md`.
 
-Open PR branches are listed separately and are not canonical owners until merged. Accepted owner identities come from remote `main`, not from a branch-local status claim.
+Open PR branches are not canonical owners until merged and are intentionally not listed here. Observe them through a fresh context capsule. Accepted owner identities come from remote `main`, not from a branch-local status claim.
 
 Full Agent Autonomy Mode permits repository-scoped work that is testable, observable, reviewable, verification-gated, compatible, and rollbackable. Provider calls, target output, release, deployment, spend, and authority-critical actions retain separate gates.
 
@@ -12,8 +12,9 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 
 | Area | Canonical owner | Boundary |
 |---|---|---|
-| Repository navigation and context capsule | `START_HERE.md`, `scripts/project_context.py`, `tools/test_project_context.py`, `scripts/check_agent_handoff.py`, `.github/workflows/tests.yml` (context-capsule publisher job), `scripts/agent-control/prompt_builder.py` | One on-demand fail-closed transport view and exact-head workflow publication/session injection derived from accepted owners; not a status database or authority owner |
-| Forward packet routing | `docs/NEXT_DECISION.md` | Sole owner of packet order, class, prerequisites, allowed semantic delta, exit, stop, and consolidation eligibility; planning records never grant runtime, spend, evaluator, output, merge, release, deployment, or adoption authority |
+| Repository navigation and context capsule | `START_HERE.md`, `scripts/project_context.py`, `scripts/github_observer.py`, `tools/test_project_context.py`, `tools/test_github_observer.py`, `scripts/check_agent_handoff.py`, `.github/workflows/tests.yml` (context-capsule publisher job), `scripts/agent-control/prompt_builder.py` | One on-demand fail-closed transport view that separates accepted documents from bounded live GitHub observations; not a status database or authority owner |
+| Current executable packet routing | `docs/NEXT_DECISION.md` | Sole owner of active routing, common execution gates, one expanded current packet, its allowed delta, exit, stop, and consolidation eligibility |
+| Long-horizon packet routing | `docs/FUTURE_ROUTE.md` | Sole routing-only index for blocked successors; cannot authorize implementation or effects, and an eligible packet must be removed and fully refreshed into `NEXT_DECISION.md` before execution |
 | API and composition root | `engine/src/main.rs`, `engine/src/http_server/` | Sole startup/composition surface; runtime modes remain explicitly gated |
 | Dispatch analysis | `engine/src/dispatch_engine.rs`, analyzers, selectors, planners, decomposers | Advisory/default-noop unless an accepted contract admits execution |
 | Workflow runtime | `engine/src/workflow/`, `engine/src/scheduler.rs`, `engine/src/scheduler/`, `engine/src/executor_pool.rs`, `engine/src/node_executor.rs` | Sole persisted run, node, lease, retry, pause/kill, and concurrency path |
@@ -77,22 +78,15 @@ merge/release/deployment
 
 No earlier authority implies a later one. In particular, risk acknowledgement is not spend authority; execution is not artifact approval; approval is not output confirmation; Draft PR creation is not merge authority.
 
-## Open Review Surfaces — Not Canonical Yet
+## Ownership Maintenance
 
-| PR | Proposed modules/scope | Rule |
-|---|---|---|
-| #365 | `START_HERE.md` and `AGENTS.md` review-state clarification | Draft and non-authoritative; no runtime or packet ownership |
-| #225 | Dashboard presentation | Last; may project accepted schemas only |
-
-PR #297/#298 are closed without merge as superseded by accepted PR #299. PR #300 is merged and accepted. PR #301 is merged and accepted (observation-only; no authority import). PR #306 is merged and accepted (context transport only; no authority import). PR #308 is merged and accepted (provider-free workspace preparation/recovery only; no live authority import). PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304.
-
-Managed-coding profiles, DeepSeek protocol adapters, production runner wiring, and delegated autonomous Golden Path authority reuse the owners above. External packet order is owned solely by `docs/NEXT_DECISION.md`; no repository automation may become a second runtime, scheduler, store, budget, approval, output, audit, rollback, merge, release, or deployment owner. PR #225 remains independent and last.
+Managed-coding profiles, Provider protocol adapters, production runner wiring, and delegated autonomous Golden Path authority reuse the owners above. Current packet execution is owned solely by `docs/NEXT_DECISION.md`; longer-term ordering is owned solely by `docs/FUTURE_ROUTE.md`; neither creates runtime authority. No repository automation may become a second runtime, scheduler, store, budget, approval, output, audit, rollback, merge, release, or deployment owner.
 
 Do not copy explanatory labels into file names. Always inspect the actual final branch tree before documenting an owner.
 
 ## Architecture Convergence Map
 
-Architecture Convergence reuses these owners and changes boundaries incrementally. Exact routing, prerequisites, and execution-ready expansion are owned only by `docs/NEXT_DECISION.md`:
+Architecture Convergence reuses these owners and changes boundaries incrementally. Routing-only order is owned by `docs/FUTURE_ROUTE.md`; an exact execution-ready expansion is owned only by `docs/NEXT_DECISION.md` after promotion:
 
 1. AC0 — runtime inventory, data/contract inventory, then trace/order freeze; no ownership move.
 2. AC1 — ProcessSupervisor contract, additive core, then enumerated caller migration.
@@ -135,9 +129,10 @@ Existing disposable fault scenarios, SQLite/PostgreSQL recovery tests, stubs, cl
 
 - `START_HERE.md` — stable navigation, frontier discovery, capsule fields, staleness, and automation boundary.
 - `docs/ARCHITECTURE_BOOK.md` — durable mission, architecture, authority, safety, and evidence invariants.
-- `docs/CURRENT_STATUS.md` — merged truth, open review surfaces, and current blockers.
-- `docs/NEXT_DECISION.md` — authoritative sequence, entry/exit gates, and immediate next action.
-- `docs/MODULE_MAP.md` — real current owners and proposed-but-not-yet-canonical modules.
+- `docs/CURRENT_STATUS.md` — accepted truth and confirmed gaps; never live PR/CI/review state.
+- `docs/NEXT_DECISION.md` — one current executable window, entry/exit gates, and immediate next action.
+- `docs/FUTURE_ROUTE.md` — blocked routing-only horizon; never execution authority.
+- `docs/MODULE_MAP.md` — real current owners; never open-branch ownership claims.
 - `docs/REAL_WORLD_TESTING_PLAYBOOK.md` and `docs/RUNBOOK.md` — operational validation and procedures.
 - `README.md`, `AGENTS.md`, and `CLAUDE.md` — repository entry and contributor/agent instructions.
 

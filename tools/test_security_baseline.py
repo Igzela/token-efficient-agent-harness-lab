@@ -158,6 +158,27 @@ class TestImportScan(unittest.TestCase):
             self.assertEqual(len(findings), 1)
             self.assertIn("socket", findings[0])
 
+    def test_github_observer_allowlist_is_exact_and_bounded(self):
+        """The GET-only observer may use only its three stdlib HTTP modules."""
+        self.assertEqual(
+            csb.ALLOWED_TEST_IMPORTS["scripts/github_observer.py"],
+            {"urllib.error", "urllib.parse", "urllib.request"},
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            script = repo / "scripts" / "github_observer.py"
+            script.parent.mkdir(parents=True)
+            script.write_text(
+                "from urllib.error import HTTPError\n"
+                "from urllib.parse import urlencode\n"
+                "from urllib.request import Request\n"
+                "import requests\n"
+            )
+            findings = csb.check_import_scan(
+                repo, ["scripts/github_observer.py"]
+            )
+        self.assertEqual(findings, ["scripts/github_observer.py: import requests"])
+
 
 class TestActiveRoutingGuard(unittest.TestCase):
     """Tests for the active routing guard check."""
