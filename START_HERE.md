@@ -66,22 +66,23 @@ A new PR head invalidates earlier CI and review conclusions for that PR. A block
 
 ## One-Command Session Bootstrap
 
-Every repository-maintenance session starts here, but no agent should load every maintained document. Run one role route against accepted `main`:
+Every repository-maintenance session starts here, but no agent should load every maintained document. A coding agent, including a fresh successor resuming interrupted work, first runs one accepted-main entry command:
 
 ```bash
-uv run --no-project python scripts/session_context.py route --role coding
+uv run --no-project python scripts/session_context.py enter --role coding
 ```
 
-Replace `coding` with `planning`, `review`, `ci-repair`, `operator`, or `contributor`. The output is an ordered, bounded document manifest; `START_HERE.md` is always first and the default route contains at most six documents. Add `--include architecture`, `--include pr-work`, or another option only when the returned role contract exposes it. `docs/FUTURE_ROUTE.md` is never in a default route; a planning session must explicitly request `--include successor`, then extract exactly one packet with `scripts/session_context.py extract-packet --packet <PACKET_ID>`.
+The digest-bound JSON composes the accepted current packet, its complete weak-agent dispatch capsule, current checkout, and any Git-private checkpoint. `FRESH_PACKET` lists only `targeted_reads`; `RESUME_CHECKPOINT` lists only the checkpoint-owned paths and its exact `next_permitted_action`. Treat `deferred_documents` as already projected startup context: do not reread them unless the entry reports a conflict, a missing fact, or a stop condition. The entry grants no new authority and never turns working-tree planning prose into accepted direction.
 
-After reading the returned manifest, rebuild worktree state before editing:
+Planning, review, CI-repair, operator, and contributor sessions still request their bounded accepted document route:
 
 ```bash
-uv run --no-project python scripts/project_context.py
-uv run --no-project python scripts/session_context.py resume
+uv run --no-project python scripts/session_context.py route --role planning
 ```
 
-Only `RESUME` permits the reported next action. `REPAIR` permits only the bounded reconciliation action in its output. `DECISION_REQUIRED` forbids edits until the branch/WIP/packet owner resolves the conflict. `--source working-tree` exists only to audit proposed navigation; it always removes execution/checkpoint authority and never overrides accepted `main`.
+Replace `planning` with `review`, `ci-repair`, `operator`, or `contributor`. The route contains at most six ordered documents and `START_HERE.md` is always first. Add an include option only when the returned role contract exposes it. `docs/FUTURE_ROUTE.md` is never in a default route; a planning session must explicitly request `--include successor`, then extract exactly one packet with `scripts/session_context.py extract-packet --packet <PACKET_ID>`.
+
+Only an entry with `resume_disposition=RESUME` permits its reported next action. `REPAIR` permits only the bounded reconciliation action in its output. `DECISION_REQUIRED`/`STOP` forbids edits to the affected work; record or park that blocker and continue another independently eligible provider-free packet instead of waiting for chat input. `--source working-tree` exists only to audit proposed navigation; it always removes execution/checkpoint authority and never overrides accepted `main`. Run `scripts/project_context.py` separately only when the entry asks for frontier evidence that its accepted projection could not prove.
 
 <!-- agent-context-routes:v1
 {

@@ -954,6 +954,7 @@ def session_context_route_failures(start_here: str) -> list[str]:
             "VerificationResult",
             "SessionCheckpoint",
             "ResumeDisposition",
+            "SessionEntry",
         ):
             schema = getattr(module, schema_name, None)
             if not dataclasses.is_dataclass(schema) or not schema.__dataclass_params__.frozen:
