@@ -47,11 +47,15 @@ def durable_review_state(
     *,
     open_blocker_ids: list[str] | None = None,
     head_sha: str = HEAD,
+    issue_number: int = 42,
+    pr_number: int = 41,
 ) -> str:
     return json.dumps(
         {
             "kind": "agent-orchestrator-review-state",
             "version": 3,
+            "issue_number": issue_number,
+            "pr_number": pr_number,
             "review_protocol_version": "review-convergence.v1",
             "review_mode": "repair_verification",
             "review_round": 2,
@@ -405,6 +409,15 @@ class MainReuseEvidenceTests(unittest.TestCase):
                     {
                         "user": {"login": "github-actions[bot]"},
                         "body": durable_review_state(head_sha="9" * 40),
+                    }
+                ],
+                "linked_issue_review_state_conflict",
+            ),
+            (
+                [
+                    {
+                        "user": {"login": "github-actions[bot]"},
+                        "body": durable_review_state(pr_number=99),
                     }
                 ],
                 "linked_issue_review_state_conflict",

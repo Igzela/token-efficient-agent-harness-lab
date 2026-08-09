@@ -270,7 +270,11 @@ def _review_evidence(
     if linked_issues:
         review_state_projection = project_context._load_review_state_projection(
             observer.repository,
-            {"headRefOid": head_sha, "body": pr.get("body") or ""},
+            {
+                "number": number,
+                "headRefOid": head_sha,
+                "body": pr.get("body") or "",
+            },
             observer=observer,
         )
         availability = review_state_projection.get("availability")
@@ -282,6 +286,12 @@ def _review_evidence(
             raise ReuseEvidenceError(
                 f"linked_issue_review_state_{availability}:{reason}"
             )
+        if (
+            review_state_projection.get("issue_number") != linked_issues[0]
+            or review_state_projection.get("pr_number") != number
+            or review_state_projection.get("reviewed_head") != head_sha
+        ):
+            raise ReuseEvidenceError("linked_issue_review_state_binding_mismatch")
         project_context._reconcile_review_state_projection(
             observation, review_state_projection
         )
@@ -302,6 +312,8 @@ def _review_evidence(
     bounded_review_state = None
     if review_state_projection is not None:
         bounded_review_state = {
+            "issue_number": review_state_projection.get("issue_number"),
+            "pr_number": review_state_projection.get("pr_number"),
             "review_protocol_version": review_state_projection.get(
                 "review_protocol_version"
             ),

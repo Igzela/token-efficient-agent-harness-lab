@@ -338,6 +338,8 @@ Phase one was accepted through PR #302.
         older = {
             "kind": "agent-orchestrator-review-state",
             "version": 3,
+            "issue_number": 42,
+            "pr_number": 299,
             "head_sha": head,
             "verdict": "PASS",
             "open_blocker_ids": [],
@@ -345,6 +347,8 @@ Phase one was accepted through PR #302.
         newer = {
             "kind": "agent-orchestrator-review-state",
             "version": 3,
+            "issue_number": 42,
+            "pr_number": 299,
             "head_sha": head,
             "verdict": "BLOCKED",
             "open_blocker_ids": ["F-1"],
@@ -363,7 +367,7 @@ Phase one was accepted through PR #302.
         ]
         projection = project_context._load_review_state_projection(
             "owner/repo",
-            {"headRefOid": head, "body": "Closes #42"},
+            {"number": 299, "headRefOid": head, "body": "Closes #42"},
             observer=observer,
         )
         self.assertEqual(projection["availability"], "confirmed")
@@ -380,6 +384,8 @@ Phase one was accepted through PR #302.
                     {
                         "kind": "agent-orchestrator-review-state",
                         "version": 3,
+                        "issue_number": 42,
+                        "pr_number": 299,
                         "head_sha": head,
                         "verdict": "PASS",
                     }
@@ -392,7 +398,7 @@ Phase one was accepted through PR #302.
         ]
         projection = project_context._load_review_state_projection(
             "owner/repo",
-            {"headRefOid": head, "body": "Closes #42"},
+            {"number": 299, "headRefOid": head, "body": "Closes #42"},
             observer=observer,
         )
         self.assertEqual(projection["availability"], "conflict")

@@ -451,6 +451,8 @@ def _review_state_projection_unavailable(reason: str) -> dict[str, Any]:
     return {
         "availability": "unavailable",
         "unavailable_reason": reason,
+        "issue_number": None,
+        "pr_number": None,
         "review_protocol_version": None,
         "review_mode": None,
         "review_round": None,
@@ -564,6 +566,18 @@ def _load_review_state_projection(
             continue
         if state is None:
             continue
+        expected_pr_number = payload.get("number")
+        if (
+            state.get("issue_number") != issue_number
+            or (
+                isinstance(expected_pr_number, int)
+                and state.get("pr_number") != expected_pr_number
+            )
+        ):
+            found[issue_number] = _review_state_projection_conflict(
+                "latest_durable_review_state_binding_mismatch"
+            )
+            continue
         try:
             projection = rc.project_capsule_fields(state, expected_head=head_sha)
         except (rc.ConvergenceError, TypeError, ValueError):
@@ -571,6 +585,13 @@ def _load_review_state_projection(
                 "latest_durable_review_state_projection_failed"
             )
             continue
+        if projection.get("reviewed_head") != head_sha:
+            found[issue_number] = _review_state_projection_conflict(
+                "latest_durable_review_state_head_binding_missing"
+            )
+            continue
+        projection["issue_number"] = issue_number
+        projection["pr_number"] = state.get("pr_number")
         found[issue_number] = projection
 
     if not found:
@@ -583,7 +604,8 @@ def _load_review_state_projection(
                 "availability": "conflict",
                 "unavailable_reason": "multiple_linked_issues_with_conflicting_review_state",
                 **{key: first.get(key) for key in (
-                    "review_protocol_version", "review_mode", "review_round",
+                    "issue_number", "pr_number", "review_protocol_version",
+                    "review_mode", "review_round",
                     "prior_reviewed_head", "reviewed_head", "finding_ledger_digest",
                     "open_blocker_ids", "deferred_note_ids",
                     "autonomous_repairs_remaining", "stop_reason", "review_state",
