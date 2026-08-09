@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -68,6 +69,82 @@ EXECUTABLE_PACKET_STATES = frozenset({"READY_FOR_EXECUTION", "IN_PROGRESS"})
 ENTRY_CONTEXT_MODES = frozenset(
     {"FRESH_PACKET", "RESUME_CHECKPOINT", "REPAIR", "STOP"}
 )
+
+
+def _checkpoint_write_commands(
+    *,
+    role: str,
+    packet_id: str,
+    context_mode: str,
+    checkpoint_allowed: bool,
+    verification_commands: tuple[str, ...],
+) -> dict[str, str | None] | None:
+    """Return fixed checkpoint commands with no caller-controlled text slots."""
+
+    if role != "coding" or not checkpoint_allowed or context_mode == "STOP":
+        return None
+    common = [
+        "uv",
+        "run",
+        "--no-project",
+        "python",
+        "scripts/session_context.py",
+        "checkpoint-auto",
+        "--role",
+        role,
+        "--packet",
+        packet_id,
+    ]
+    stable_available = all(
+        _safe_verification_argv(command) is not None
+        for command in verification_commands
+    )
+    return {
+        "wip": shlex.join([*common, "--work-state", "WIP", "--offline"]),
+        "stable": (
+            shlex.join(
+                [*common, "--work-state", "STABLE", "--verify", "--offline"]
+            )
+            if stable_available
+            else None
+        ),
+    }
+
+
+def _safe_verification_argv(command: str) -> tuple[str, ...] | None:
+    """Parse the narrow provider-free command forms checkpoint-auto may execute."""
+
+    if any(character in command for character in ";&|><\n\r"):
+        return None
+    try:
+        argv = tuple(shlex.split(command))
+    except ValueError:
+        return None
+    if not argv:
+        return None
+    if argv[0] == "cargo" and len(argv) >= 2:
+        if argv[1] in {"build", "check", "clippy", "test"}:
+            return argv
+        if argv[1] == "fmt" and "--check" in argv[2:]:
+            return argv
+    if argv[:4] == ("uv", "run", "--no-project", "python"):
+        python_args = argv[4:]
+        if python_args[:2] == ("-m", "unittest") and len(python_args) >= 3:
+            return argv
+        if python_args in {
+            ("tools/check_security_baseline.py",),
+            ("scripts/check_agent_handoff.py",),
+        }:
+            return argv
+    if argv == ("git", "diff", "--check"):
+        return argv
+    if len(argv) == 2 and argv[0] == "bash":
+        if argv[1] in {
+            "scripts/check_wire_codegen_drift.sh",
+            "scripts/verify_rust_typescript_stack.sh",
+        }:
+            return argv
+    return None
 DISPATCH_CAPSULE_FIELDS = frozenset(
     {
         "accepted_binding_source",
@@ -756,6 +833,7 @@ class SessionEntry:
     dispatch_capsule_json: str
     execution_authorized: bool
     checkpoint_allowed: bool
+    checkpoint_write_commands_json: str | None
     entry_sha256: str
 
     def unsigned_wire(self) -> dict[str, object]:
@@ -788,6 +866,11 @@ class SessionEntry:
             "dispatch_capsule": json.loads(self.dispatch_capsule_json),
             "execution_authorized": self.execution_authorized,
             "checkpoint_allowed": self.checkpoint_allowed,
+            "checkpoint_write_commands": (
+                None
+                if self.checkpoint_write_commands_json is None
+                else json.loads(self.checkpoint_write_commands_json)
+            ),
         }
 
     def to_wire(self) -> dict[str, object]:
@@ -810,12 +893,14 @@ class SessionEntry:
         internal_fields = {
             "checkout_snapshot_json",
             "checkpoint_json",
+            "checkpoint_write_commands_json",
             "dispatch_capsule_json",
         }
         expected_fields = {
             *(field.name for field in dataclass_fields(cls) if field.name not in internal_fields),
             "checkout_snapshot",
             "checkpoint",
+            "checkpoint_write_commands",
             "dispatch_capsule",
         }
         if set(wire) != expected_fields:
@@ -967,6 +1052,34 @@ class SessionEntry:
             checkpoint_allowed, bool
         ):
             raise SessionContextError("session_entry_authority_flags_invalid")
+        raw_checkpoint_commands = wire.get("checkpoint_write_commands")
+        checkpoint_write_commands = None
+        if raw_checkpoint_commands is not None:
+            if not isinstance(raw_checkpoint_commands, Mapping) or set(
+                raw_checkpoint_commands
+            ) != {"wip", "stable"}:
+                raise SessionContextError("session_entry_checkpoint_commands_invalid")
+            checkpoint_write_commands = {
+                "wip": _bounded_text(
+                    raw_checkpoint_commands.get("wip"),
+                    "session_entry_checkpoint_command",
+                ),
+                "stable": (
+                    None
+                    if raw_checkpoint_commands.get("stable") is None
+                    else _bounded_text(
+                        raw_checkpoint_commands.get("stable"),
+                        "session_entry_checkpoint_command",
+                    )
+                ),
+            }
+            if any(
+                character in command
+                for command in checkpoint_write_commands.values()
+                if command is not None
+                for character in "<>\n\r"
+            ):
+                raise SessionContextError("session_entry_checkpoint_commands_invalid")
         expected_disposition = {
             "FRESH_PACKET": "RESUME",
             "RESUME_CHECKPOINT": "RESUME",
@@ -1017,13 +1130,23 @@ class SessionEntry:
         if (
             (document_source == "working-tree" and context_mode != "STOP")
             or (context_mode == "STOP" and (execution_authorized or checkpoint_allowed))
-            or (context_mode != "STOP" and not checkpoint_allowed)
+            or (context_mode != "STOP" and role == "coding" and not checkpoint_allowed)
+            or (role != "coding" and checkpoint_allowed)
             or (
                 execution_authorized
                 and context_mode not in {"FRESH_PACKET", "RESUME_CHECKPOINT"}
             )
         ):
             raise SessionContextError("session_entry_authority_flags_invalid")
+        expected_checkpoint_commands = _checkpoint_write_commands(
+            role=role,
+            packet_id=packet_id,
+            context_mode=context_mode,
+            checkpoint_allowed=checkpoint_allowed,
+            verification_commands=verification_commands,
+        )
+        if checkpoint_write_commands != expected_checkpoint_commands:
+            raise SessionContextError("session_entry_checkpoint_commands_invalid")
         if document_source == "accepted" and context_mode != "STOP":
             packet_projection = PacketBinding.from_wire(
                 {
@@ -1085,6 +1208,11 @@ class SessionEntry:
             dispatch_capsule_json=_canonical_json(capsule),
             execution_authorized=execution_authorized,
             checkpoint_allowed=checkpoint_allowed,
+            checkpoint_write_commands_json=(
+                None
+                if checkpoint_write_commands is None
+                else _canonical_json(checkpoint_write_commands)
+            ),
             entry_sha256=entry_sha256,
         )
         if model.entry_sha256 != _json_sha256(model.unsigned_wire()):
@@ -1435,6 +1563,112 @@ def build_checkpoint(
         forbidden_next_actions=forbidden,
     )
     return SessionCheckpoint.from_wire(receipt.to_wire()).to_wire()
+
+
+def build_auto_checkpoint(
+    *,
+    snapshot: object,
+    packet: object,
+    dispatch_capsule: object,
+    role: str,
+) -> dict[str, object]:
+    """Build a fixed-text WIP checkpoint from accepted packet and checkout facts."""
+
+    snapshot_model = CheckoutSnapshot.from_wire(snapshot)
+    packet_model = PacketBinding.from_wire(packet, require_checkpoint=True)
+    capsule = _bind_dispatch_capsule(dispatch_capsule, packet_model)
+    if role != "coding":
+        raise SessionContextError("checkpoint_auto_role_invalid")
+    return _build_auto_checkpoint(
+        snapshot_model=snapshot_model,
+        packet_model=packet_model,
+        capsule=capsule,
+        role=role,
+        work_state="WIP",
+        verification_results=[
+            {"check": check, "status": "NOT_RUN"}
+            for check in capsule["verification"]
+        ],
+    )
+
+
+def build_stable_auto_checkpoint(
+    *,
+    snapshot: object,
+    packet: object,
+    dispatch_capsule: object,
+    role: str,
+) -> dict[str, object]:
+    """Run every safe declared check and build STABLE only after exact success."""
+
+    snapshot_model = CheckoutSnapshot.from_wire(snapshot)
+    packet_model = PacketBinding.from_wire(packet, require_checkpoint=True)
+    capsule = _bind_dispatch_capsule(dispatch_capsule, packet_model)
+    if role != "coding":
+        raise SessionContextError("checkpoint_auto_role_invalid")
+    parsed = [_safe_verification_argv(check) for check in capsule["verification"]]
+    if any(argv is None for argv in parsed):
+        raise SessionContextError("checkpoint_auto_verification_not_executable")
+    results: list[dict[str, str]] = []
+    for check, argv in zip(capsule["verification"], parsed, strict=True):
+        assert argv is not None
+        completed = subprocess.run(
+            list(argv),
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise SessionContextError("checkpoint_auto_verification_failed")
+        results.append({"check": check, "status": "PASS"})
+    return _build_auto_checkpoint(
+        snapshot_model=snapshot_model,
+        packet_model=packet_model,
+        capsule=capsule,
+        role=role,
+        work_state="STABLE",
+        verification_results=results,
+    )
+
+
+def _build_auto_checkpoint(
+    *,
+    snapshot_model: CheckoutSnapshot,
+    packet_model: PacketBinding,
+    capsule: dict[str, object],
+    role: str,
+    work_state: str,
+    verification_results: list[dict[str, str]],
+) -> dict[str, object]:
+    owned_paths = [
+        path
+        for path in snapshot_model.dirty_paths
+        if _path_is_allowed(path, list(packet_model.allowed_paths))
+    ]
+    if not owned_paths:
+        raise SessionContextError("checkpoint_auto_no_owned_paths")
+    terminal = work_state == "STABLE"
+    return build_checkpoint(
+        snapshot=snapshot_model.to_wire(),
+        packet=packet_model.to_wire(),
+        role=role,
+        work_state=work_state,
+        completed_step=(
+            f"{packet_model.packet_id} implementation complete."
+            if terminal
+            else f"Captured bounded WIP for {packet_model.packet_id}; completion not asserted."
+        ),
+        owned_paths=owned_paths,
+        verification_results=verification_results,
+        next_action=(
+            "No permitted next packet; terminal STABLE checkpoint."
+            if terminal
+            else "Inspect only the checkpoint-owned paths, then continue the earliest "
+            "incomplete ordered step from the bound dispatch capsule."
+        ),
+        forbidden_next_actions=list(packet_model.forbidden_next_actions),
+    )
 
 
 def validate_checkpoint(receipt: object) -> dict[str, object]:
@@ -1869,6 +2103,12 @@ def build_session_entry(
             max_items=50,
         )
     )
+    checkpoint_allowed = (
+        source_accepted
+        and role == "coding"
+        and disposition["disposition"] in {"RESUME", "REPAIR"}
+        and packet_model.checkpoint_allowed
+    )
     entry = SessionEntry.create(
         schema_version=ENTRY_SCHEMA,
         authority=ENTRY_AUTHORITY,
@@ -1911,10 +2151,19 @@ def build_session_entry(
             and disposition["disposition"] == "RESUME"
             and packet_model.execution_authorized
         ),
-        checkpoint_allowed=(
-            source_accepted
-            and disposition["disposition"] in {"RESUME", "REPAIR"}
-            and packet_model.checkpoint_allowed
+        checkpoint_allowed=checkpoint_allowed,
+        checkpoint_write_commands_json=(
+            None
+            if not checkpoint_allowed
+            else _canonical_json(
+                _checkpoint_write_commands(
+                    role=role,
+                    packet_id=packet_model.packet_id,
+                    context_mode=context_mode,
+                    checkpoint_allowed=checkpoint_allowed,
+                    verification_commands=verification_commands,
+                )
+            )
         ),
     )
     return SessionEntry.from_wire(entry.to_wire()).to_wire()
@@ -2183,6 +2432,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     checkpoint.add_argument("--offline", action="store_true")
     checkpoint.add_argument("--no-write", action="store_true")
 
+    checkpoint_auto = subparsers.add_parser(
+        "checkpoint-auto",
+        help="Replace the local handoff from accepted packet and checkout facts.",
+    )
+    checkpoint_auto.add_argument("--role", choices=("coding",), default="coding")
+    checkpoint_auto.add_argument("--packet", required=True)
+    checkpoint_auto.add_argument("--work-state", choices=("WIP", "STABLE"), required=True)
+    checkpoint_auto.add_argument("--verify", action="store_true")
+    checkpoint_auto.add_argument("--offline", action="store_true")
+    checkpoint_auto.add_argument("--no-write", action="store_true")
+
     resume = subparsers.add_parser("resume", help="Rebuild state and classify continuation.")
     resume.add_argument("--offline", action="store_true")
     resume.add_argument("--format", choices=("json",), default="json")
@@ -2285,6 +2545,48 @@ def main(argv: list[str] | None = None) -> int:
                     "owned_path_count": len(receipt["owned_paths"]),
                     "preserve_path_count": len(receipt["preserve_paths"]),
                     "storage": "git_private_projection" if not args.no_write else "not_written",
+                    "authority": CHECKPOINT_AUTHORITY,
+                },
+                "json",
+            )
+            return 0
+
+        if args.command == "checkpoint-auto":
+            if args.packet != packet["packet_id"]:
+                raise SessionContextError("checkpoint_packet_not_current")
+            capsule = current_dispatch_capsule(documents["docs/NEXT_DECISION.md"], packet)
+            if args.work_state == "STABLE":
+                if not args.verify:
+                    raise SessionContextError("checkpoint_auto_stable_without_verification")
+                receipt = build_stable_auto_checkpoint(
+                    snapshot=snapshot,
+                    packet=packet,
+                    dispatch_capsule=capsule,
+                    role=args.role,
+                )
+            else:
+                if args.verify:
+                    raise SessionContextError("checkpoint_auto_wip_verification_invalid")
+                receipt = build_auto_checkpoint(
+                    snapshot=snapshot,
+                    packet=packet,
+                    dispatch_capsule=capsule,
+                    role=args.role,
+                )
+            if not args.no_write:
+                write_checkpoint(receipt)
+            _print(
+                {
+                    "schema_version": CHECKPOINT_SCHEMA,
+                    "checkpoint_id": receipt["checkpoint_id"],
+                    "packet_id": receipt["packet_id"],
+                    "head_sha": receipt["head_sha"],
+                    "work_state": receipt["work_state"],
+                    "owned_path_count": len(receipt["owned_paths"]),
+                    "preserve_path_count": len(receipt["preserve_paths"]),
+                    "storage": (
+                        "git_private_projection" if not args.no_write else "not_written"
+                    ),
                     "authority": CHECKPOINT_AUTHORITY,
                 },
                 "json",

@@ -47,13 +47,19 @@ class CheckAgentHandoffTests(unittest.TestCase):
         )
         self.assertEqual(checker.session_context_route_failures(start_here), [])
 
-    def test_start_here_checkpoint_example_is_safe_for_read_only_and_owned_work(self) -> None:
+    def test_start_here_uses_only_fixed_auto_checkpoint_commands(self) -> None:
         start_here = (Path(__file__).resolve().parents[1] / "START_HERE.md").read_text(
             encoding="utf-8"
         )
-        self.assertNotIn("--owned-path scripts/session_context.py", start_here)
-        self.assertIn("Omit `--owned-path` for a read-only handoff", start_here)
-        self.assertIn("repeat `--owned-path` once for each exact dirty path", start_here)
+        self.assertIn("`checkpoint_write_commands`", start_here)
+        self.assertIn(
+            "stable command is permitted only after every declared verification command "
+            "has actually passed",
+            start_here,
+        )
+        self.assertNotIn("--completed-step", start_here)
+        self.assertNotIn("--next-action", start_here)
+        self.assertNotIn("repeat `--owned-path`", start_here)
 
     def test_next_decision_hygiene_rejects_size_and_append_only_history(self) -> None:
         checker = load_handoff_checker()

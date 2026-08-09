@@ -512,6 +512,14 @@ class CheckpointTests(unittest.TestCase):
             ["scripts/session_context.py", "tests/test_session_context.py"],
         )
         self.assertIn("do not reread", entry["context_policy"].lower())
+        commands = entry["checkpoint_write_commands"]
+        self.assertEqual(set(commands), {"wip", "stable"})
+        self.assertIn("session_context.py checkpoint-auto", commands["wip"])
+        self.assertIn(f"--packet {entry['packet_id']}", commands["wip"])
+        self.assertIn("--work-state WIP", commands["wip"])
+        self.assertIn("--work-state STABLE", commands["stable"])
+        self.assertIn("--verify", commands["stable"])
+        self.assertNotIn("<", json.dumps(commands))
         self.assertNotIn("docs/CURRENT_STATUS.md", entry["targeted_reads"])
         self.assertLessEqual(len(json.dumps(entry).encode("utf-8")), 16 * 1024)
         self.assertEqual(session_context.SessionEntry.from_wire(entry).to_wire(), entry)
@@ -547,6 +555,24 @@ class CheckpointTests(unittest.TestCase):
             entry["targeted_reads"],
             ["scripts/session_context.py"],
         )
+        self.assertIn(
+            "session_context.py checkpoint-auto",
+            entry["checkpoint_write_commands"]["wip"],
+        )
+        forged_template = json.loads(json.dumps(entry))
+        forged_template["checkpoint_write_commands"]["wip"] = "git push --force"
+        forged_template["entry_sha256"] = session_context._json_sha256(
+            {
+                key: item
+                for key, item in forged_template.items()
+                if key != "entry_sha256"
+            }
+        )
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "session_entry_checkpoint_commands_invalid",
+        ):
+            session_context.SessionEntry.from_wire(forged_template)
 
     def test_entry_rejects_capsule_binding_tampering_and_oversize(self):
         arguments = {
@@ -717,6 +743,99 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(entry["resume_disposition"], "DECISION_REQUIRED")
         self.assertFalse(entry["checkpoint_allowed"])
         self.assertFalse(entry["execution_authorized"])
+        self.assertIsNone(entry["checkpoint_write_commands"])
+
+    def test_auto_checkpoint_derives_scope_and_fixed_handoff_text(self):
+        packet = packet_binding(
+            forbidden_next_actions=["Do not start a successor packet."],
+            dispatch_lane="provider_free_local",
+        )
+        capsule = dispatch_capsule()
+        wip = session_context.build_auto_checkpoint(
+            snapshot=checkout_snapshot(),
+            packet=packet,
+            dispatch_capsule=capsule,
+            role="coding",
+        )
+        self.assertEqual(wip["owned_paths"], ["scripts/session_context.py"])
+        self.assertEqual(wip["preserve_paths"], ["engine.pid"])
+        self.assertEqual(
+            wip["next_action"],
+            "Inspect only the checkpoint-owned paths, then continue the earliest "
+            "incomplete ordered step from the bound dispatch capsule.",
+        )
+        self.assertEqual(wip["verification_results"][0]["status"], "NOT_RUN")
+
+        unsafe_checks = (
+            "Manually reconcile an external receipt",
+            "uv run --no-project python -c \"__import__('os').remove('engine.pid')\"",
+            "bash scripts/arbitrary_effect.sh",
+            "cargo fmt --all",
+        )
+        for unsafe_check in unsafe_checks:
+            with self.subTest(unsafe_check=unsafe_check):
+                unsafe = dispatch_capsule(verification=[unsafe_check])
+                with self.assertRaisesRegex(
+                    session_context.SessionContextError,
+                    "checkpoint_auto_verification_not_executable",
+                ), mock.patch.object(session_context.subprocess, "run") as runner:
+                    session_context.build_stable_auto_checkpoint(
+                        snapshot=checkout_snapshot(),
+                        packet=packet,
+                        dispatch_capsule=unsafe,
+                        role="coding",
+                    )
+                runner.assert_not_called()
+
+        self.assertEqual(
+            session_context._safe_verification_argv("cargo fmt --all -- --check"),
+            ("cargo", "fmt", "--all", "--", "--check"),
+        )
+
+        completed = subprocess.CompletedProcess(
+            ["uv", "run", "--no-project", "python", "-m", "unittest"],
+            0,
+            stdout="",
+            stderr="",
+        )
+        with mock.patch.object(
+            session_context.subprocess, "run", return_value=completed
+        ) as runner:
+            stable = session_context.build_stable_auto_checkpoint(
+                snapshot=checkout_snapshot(),
+                packet=packet,
+                dispatch_capsule=capsule,
+                role="coding",
+            )
+        self.assertEqual(stable["verification_results"][0]["status"], "PASS")
+        self.assertNotIn("shell", runner.call_args.kwargs)
+
+    def test_non_coding_entries_never_receive_checkpoint_commands(self):
+        snapshot = checkout_snapshot(
+            head_sha=MAIN,
+            branch="main",
+            dirty_paths=[],
+            path_digests={},
+            worktree_sha256="0" * 64,
+        )
+        for role in ("planning", "review", "operator", "contributor", "ci-repair"):
+            with self.subTest(role=role):
+                entry = session_context.build_session_entry(
+                    contract=session_context.parse_route_contract(route_document()),
+                    role=role,
+                    accepted_main_sha=MAIN,
+                    document_source="accepted",
+                    document_source_binding=MAIN,
+                    packet=packet_binding(
+                        forbidden_next_actions=["Do not start a successor packet."],
+                        dispatch_lane="provider_free_local",
+                    ),
+                    dispatch_capsule=dispatch_capsule(),
+                    snapshot=snapshot,
+                    checkpoint=None,
+                )
+                self.assertFalse(entry["checkpoint_allowed"])
+                self.assertIsNone(entry["checkpoint_write_commands"])
 
     def test_enter_cli_composes_one_fresh_entry_projection(self):
         snapshot = checkout_snapshot(

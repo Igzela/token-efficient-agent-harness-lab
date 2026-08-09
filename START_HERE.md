@@ -74,6 +74,8 @@ uv run --no-project python scripts/session_context.py enter --role coding
 
 The digest-bound JSON composes the accepted current packet, its complete weak-agent dispatch capsule, current checkout, and any Git-private checkpoint. `FRESH_PACKET` lists only `targeted_reads`; `RESUME_CHECKPOINT` lists only the checkpoint-owned paths and its exact `next_permitted_action`. Treat `deferred_documents` as already projected startup context: do not reread them unless the entry reports a conflict, a missing fact, or a stop condition. The entry grants no new authority and never turns working-tree planning prose into accepted direction.
 
+For interruption or completion handoff, a coding entry exposes two digest-bound `checkpoint_write_commands`: `wip` and `stable`. Run exactly one unchanged command; the stable command is permitted only after every declared verification command has actually passed. Do not search this file, the script, or repository history for another coding checkpoint procedure. The commands accept no caller-authored text or paths, grant no authority, and remain gated by `checkpoint_allowed` and the current packet. Planning, review, and operator routes do not receive coding checkpoint commands.
+
 Planning, review, CI-repair, operator, and contributor sessions still request their bounded accepted document route:
 
 ```bash
@@ -218,18 +220,7 @@ This automation is non-authoritative and must preserve these rules:
 
 ## End-of-Work Handoff
 
-Before ending or transferring any session, replace the Git-private local checkpoint. The following command is a runnable read-only handoff; every dirty path is bound as preserve-only work:
-
-```bash
-uv run --no-project python scripts/session_context.py checkpoint \
-  --role coding \
-  --work-state WIP \
-  --completed-step "W3 build" \
-  --verification focused-tests=PASS \
-  --next-action "Run the applicable full provider-free checks"
-```
-
-Omit `--owned-path` for a read-only handoff. After an implementation slice, repeat `--owned-path` once for each exact dirty path that this session intentionally changed and the current packet's machine capsule allows. Never claim a preserved path, a broad directory, or a path absent from that capsule; the command fails closed if ownership and the current worktree disagree.
+Before ending or transferring a coding session, run exactly one unchanged command from the current entry's `checkpoint_write_commands`. Use `wip` after an interrupted implementation slice. Use `stable` only after every `verification_command` in that same entry has actually passed. The command automatically binds exact dirty paths allowed by the accepted packet as owned work and leaves every other dirty path preserve-only; it fails closed when no packet-owned change exists. Other roles leave the compact report below and do not invent a coding checkpoint command.
 
 The checkpoint contains repository-relative paths and content digests, never file content, credentials, prompts, transcripts, or absolute/private paths. It is an atomic, mode-0600, non-authoritative projection in Git's private path. It does not replace GitHub Issue/PR claim, lease, CI, review, or terminal receipts. A controlled worker must still persist through those existing owners; a new local conversation uses this checkpoint only to prove whether the exact WIP is safe to resume.
 
