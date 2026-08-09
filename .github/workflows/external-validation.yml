@@ -20,21 +20,9 @@ on:
       - "tests/test_demo_no_provider.py"
       - "tests/test_exact_head_action.py"
       - ".github/workflows/external-validation.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "engine/Cargo.toml"
-      - "README.md"
-  push:
-    branches: [main]
-    paths:
-      - "scripts/external_validation.py"
-      - "scripts/external_validation.sh"
-      - "scripts/demo.sh"
-      - "scripts/demo_no_provider.py"
-      - "scripts/acp_local_doctor.py"
-      - "actions/exact-head-check/**"
-      - "tests/test_external_validation.py"
-      - ".github/workflows/external-validation.yml"
-      - "engine/Cargo.toml"
-      - "README.md"
   workflow_dispatch:
     inputs:
       expected_sha:

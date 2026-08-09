@@ -175,6 +175,59 @@ class CheckAgentHandoffTests(unittest.TestCase):
         )
         self.assertEqual(checker.active_state_failures(text, text), [])
 
+    def test_future_route_must_remain_blocked(self) -> None:
+        checker = load_handoff_checker()
+        current = """## Active Routing
+1. `PE7-A-1` — `READY_FOR_EXECUTION`.
+## Packet PE7-A-1
+**State:** `READY_FOR_EXECUTION`
+"""
+        future = """# Future Route
+### Packet PE7-B-1
+**State:** `READY_FOR_EXECUTION`
+**Prerequisite:** PE7-A-1
+"""
+        failures = checker.active_state_failures("", current, future)
+        self.assertIn(
+            "FUTURE_ROUTE packet PE7-B-1 must remain BLOCKED_PREREQUISITE",
+            failures,
+        )
+
+    def test_packet_cannot_exist_in_current_and_future_documents(self) -> None:
+        checker = load_handoff_checker()
+        current = """## Active Routing
+1. `PE7-A-1` — `READY_FOR_EXECUTION`.
+## Packet PE7-A-1
+**State:** `READY_FOR_EXECUTION`
+"""
+        future = """# Future Route
+### Packet PE7-A-1
+**State:** `BLOCKED_PREREQUISITE`
+"""
+        failures = checker.active_state_failures("", current, future)
+        self.assertIn(
+            "PE7-A-1 is duplicated between NEXT_DECISION and FUTURE_ROUTE",
+            failures,
+        )
+
+    def test_active_routing_cannot_point_to_future_route(self) -> None:
+        checker = load_handoff_checker()
+        current = """## Active Routing
+1. `PE7-B-1` — `BLOCKED_PREREQUISITE`.
+## Packet PE7-A-1
+**State:** `READY_FOR_EXECUTION`
+"""
+        future = """# Future Route
+### Packet PE7-B-1
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE7-A-1
+"""
+        failures = checker.active_state_failures("", current, future)
+        self.assertIn(
+            "Active Routing references routing-only FUTURE_ROUTE packet PE7-B-1",
+            failures,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

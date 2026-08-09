@@ -22,7 +22,9 @@ Conciseness is a quality-preserving optimization, never a reason to remove requi
 | Question | Canonical source |
 |---|---|
 | What is merged and accepted? | `docs/CURRENT_STATUS.md`, verified against remote `main`, merged history, tests, and CI |
-| What is next, eligible, or blocked? | `docs/NEXT_DECISION.md` |
+| What is the current executable window and next permitted action? | `docs/NEXT_DECISION.md` |
+| What is the accepted long-horizon order but still routing-only? | `docs/FUTURE_ROUTE.md` |
+| What are the current open PR heads, CI results, and review observations? | A fresh `scripts/project_context.py` capsule, verified against GitHub |
 | Who owns a module or responsibility? | `docs/MODULE_MAP.md` |
 | What are the durable architecture, authority, security, and recovery rules? | `docs/ARCHITECTURE_BOOK.md` |
 | How are PRs, CI, review, merge, and rollback handled? | `docs/REAL_WORLD_TESTING_PLAYBOOK.md` |
@@ -64,7 +66,7 @@ A new PR head invalidates earlier CI and review conclusions for that PR. A block
 
 | Role | Reading route |
 |---|---|
-| Planning or architecture model | `START_HERE.md` → `docs/CURRENT_STATUS.md` → `docs/NEXT_DECISION.md` → relevant `docs/ARCHITECTURE_BOOK.md` sections → code/tests |
+| Planning or architecture model | `START_HERE.md` → `docs/CURRENT_STATUS.md` → `docs/NEXT_DECISION.md`; read `docs/FUTURE_ROUTE.md` only when selecting/refreshing a successor → relevant architecture/code/tests |
 | Coding agent | `START_HERE.md` → `AGENTS.md` → current status/next decision → `docs/MODULE_MAP.md` → relevant code/tests |
 | Independent reviewer | `START_HERE.md` → current status/next decision → testing playbook **Review Convergence Protocol** + Exact-Head Review Receipt → complete `base...head` diff → relevant owners/tests; emit exact `PASS` with empty open blockers (deferred notes allowed) or stop with blockers / `DECISION_REQUIRED` |
 | CI repair agent | `START_HERE.md` → `AGENTS.md` → testing playbook → exact failing logs → relevant owners/tests |
@@ -94,14 +96,14 @@ uv run --no-project python scripts/project_context.py --format json
 uv run --no-project python scripts/project_context.py --offline
 ```
 
-The command derives a compact, non-authoritative view from Git, GitHub CLI when available, and the canonical documents. It must mark unavailable facts as unavailable rather than guessing.
+The command derives a compact, non-authoritative view from Git, bounded read-only GitHub REST observations, and canonical documents read from accepted `main`. It requires no token for public repositories, uses an already-configured token when available, and marks unavailable or conflicting facts instead of guessing.
 
 The capsule includes:
 
 - accepted remote-main identity and evidence source;
 - earliest routed packet and state;
 - active PR exact head, CI summary, and review state when discoverable;
-- blocked/open frontiers;
+- other live-observed frontiers and the active binding source;
 - next permitted action;
 - required reading and hard stops.
 
@@ -109,7 +111,7 @@ The generated capsule is a transport view, not a new store or authority owner.
 
 ## Automation Boundary
 
-The repository provides an on-demand generator and a terminal `context-capsule` CI job. After all seven source-test jobs reach terminal state, that job generates a token-free capsule, publishes a sanitized job summary and one-day artifact, and fails unless the complete source-check matrix is successful. Repository-controlled implementation, CI-repair, and review prompt builders regenerate and inject a fresh validated capsule at session start. No capsule is automatically injected into an arbitrary later ChatGPT, Claude Code, Codex, reviewer, or repair session.
+The repository provides an on-demand generator and a terminal `context-capsule` CI job. After all seven source-test jobs reach terminal state, that job generates a token-free capsule, publishes a sanitized job summary and one-day artifact, and fails unless the complete source-check matrix is successful. On an eligible `main` push it also revalidates the deterministic, tree-equivalent accepted-PR reuse receipt; uncertainty or control-plane change forces full CI. Repository-controlled implementation, CI-repair, and review prompt builders regenerate and inject a fresh validated capsule at session start. No capsule is automatically injected into an arbitrary later ChatGPT, Claude Code, Codex, reviewer, or repair session.
 
 This automation is non-authoritative and must preserve these rules:
 
@@ -129,6 +131,8 @@ accepted_main_sha:
 packet:
 working_pr:
 exact_head:
+frontier_observation_source:
+frontier_binding:
 what_changed:
 what_was_verified:
 ci:
@@ -167,4 +171,4 @@ Report unavailable evidence explicitly. Do not claim acceptance, CI success, mer
 
 Prefer complete, accurate, canonical, low-duplication documentation, then make it as short as those qualities permit.
 
-One fact should have one full owner. Other entrypoints should link to that owner instead of copying its contract. Replace stale status rather than appending history; Git already preserves history. Add a document only when no existing canonical owner can hold the information without mixing responsibilities.
+One fact should have one full owner. `CURRENT_STATUS` contains accepted truth and confirmed gaps; `NEXT_DECISION` contains one current executable window; `FUTURE_ROUTE` contains only blocked routing sketches; `MODULE_MAP` contains accepted owners; live PR/CI/review facts stay generated. Other entrypoints link instead of copying contracts. Replace stale status rather than appending history; Git already preserves history. Add a document only when no existing canonical owner can hold the information without mixing responsibilities.

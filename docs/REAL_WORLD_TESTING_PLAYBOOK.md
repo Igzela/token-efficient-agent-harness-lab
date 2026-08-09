@@ -8,7 +8,7 @@ The project validates changes through real repository work. Full Agent Autonomy 
 
 ### Default Ship PR path
 
-The default daily development path is local Agent → focused Draft PR → fast feedback while changing → Ready for review → one canonical exact-head CI run → independent complete-diff review → manual squash merge. Auto-merge stays off. The GitHub Issue / Vader orchestrator is an optional unattended entry and is currently emergency-stopped until its replacement smoke is accepted; both paths meet at the same PR / exact-head CI / review / manual-merge boundary. Do not add a second Ship PR workflow or parallel merge owner.
+The default daily development path is local Agent → focused Draft PR → fast feedback while changing → stable-head independent complete-diff review → Ready for review → one canonical exact-head CI run → manual squash merge. Auto-merge stays off. The GitHub Issue / Vader orchestrator is an optional unattended entry and is currently emergency-stopped until its replacement smoke is accepted; both paths meet at the same Draft / review / Ready / exact-head CI / manual-merge boundary. Do not add a second Ship PR workflow or parallel merge owner.
 
 Execution-ready packets are the default work units:
 
@@ -23,11 +23,13 @@ The coding agent may resolve bounded missing decisions from current code, merged
 Two workflows have different authority:
 
 - `pr-fast-checks` runs on pull-request creation and replacement heads. It cancels obsolete in-progress runs and performs exact-head governance, security, handoff, workflow-contract, classifier, and diff checks. It is non-canonical feedback only and cannot authorize review, merge, release, deployment, or acceptance.
-- `tests` is the sole canonical source-test workflow. For pull requests it starts only on `ready_for_review`; normal pushes to `main` may use the same strict documentation-only mode, while explicit exact-head `workflow_dispatch` fallback runs remain complete-matrix paths. Every required source job must execute its exact-head verification step successfully.
+- `tests` is the sole canonical source-test workflow. For pull requests it starts only on `ready_for_review`; explicit exact-head `workflow_dispatch` fallbacks run the complete matrix. A normal `main` push selects `full`, strict `docs_only`, or the trusted tree-equivalent `reused_pr` mode described below. Every required source job always executes its exact-head verification step successfully.
 
 The terminal `context-capsule` is a required job in every canonical `tests` run. Successful source jobs do not make the run green when that terminal job fails, is cancelled, is skipped, is missing, or has not reached a terminal successful conclusion. Merge eligibility must be checked only after the complete required job set, including the terminal capsule and its artifact publication, has completed successfully for the unchanged exact head.
 
-For a Ready pull request, `tests` checks out the accepted base separately and uses that trusted classifier to inspect the exact `base...head` path and file-mode diff. For a normal `main` push it instead binds the accepted-before commit and classifies the complete `before...after` range. A strictly documentation-only result selects canonical `docs_only` mode: all required jobs still check out and verify the exact head and finish successfully, while compiler, runtime, database-test, TypeScript, Docker-build, and other non-applicable source-test steps report not applicable. Empty, mixed, executable, symlink, submodule, workflow, script, test, configuration, dependency, schema, migration, generated, forced, zero-base, non-ancestor, or otherwise uncertain diffs fail closed to the complete matrix. Candidate-controlled classifier code cannot grant itself documentation-only mode.
+For a Ready pull request, `tests` checks out the accepted base separately and uses that trusted classifier to inspect the exact `base...head` path and file-mode diff. For a normal `main` push it binds the accepted-before commit and classifies the complete `before...after` range. A strictly documentation-only result selects canonical `docs_only` mode: all required jobs still check out and verify the exact head and finish successfully, while non-applicable source steps report not applicable. Empty, mixed, executable, symlink, submodule, workflow, script, test, configuration, dependency, schema, migration, generated, forced, zero-base, non-ancestor, or otherwise uncertain diffs fail closed to the complete matrix. Candidate-controlled classifier code cannot grant itself a cheaper mode.
+
+A normal non-forced `main` push may select `reused_pr` only through `scripts/ci/main_reuse_evidence.py` loaded from the trusted accepted-before tree. It must prove one associated merged PR, exact equality between the PR-head tree and the pushed-main tree, strict exact-head `PASS` with no unresolved objection, successful exact-head proof, and every canonical PR job—including terminal `context-capsule`—successful on that unchanged PR head. CI/review/workflow/security control-plane paths force `full`; missing, stale, conflicting, paginated-beyond-bound, transport-failed, or malformed evidence falls back to `full`. All required main jobs still verify the pushed SHA and finish successfully, while the terminal job downloads and independently recomputes the deterministic `main_ci_reuse.v1` receipt before publishing it. Reuse is equivalence evidence for an already-tested tree, never a new review, cache hit, inferred success, or exception to PR gates.
 
 Keep a changing PR in Draft. `pr-fast-checks` enforces Draft state on `opened`, `synchronize`, and `reopened`; directly opening or updating a Ready PR fails the lane guard. Before marking a PR Ready once, batch all known repairs, run focused and applicable full local checks, and review the complete diff. If a Ready candidate needs another commit, convert it back to Draft before publishing the replacement head, then mark it Ready again after the repair batch stabilizes. A new head invalidates all prior CI and review conclusions.
 
@@ -39,7 +41,9 @@ A successful `pr-fast-checks` run is never a substitute for a missing canonical 
 
 Rust source lanes use a commit-pinned `sccache` setup action, a version-pinned compiler wrapper, and the GitHub Actions cache backend. The cache is a performance optimization only. It may reuse compiler outputs only when the compiler's own cache key matches; it never replaces source checkout, exact-head verification, compilation, tests, lint, dependency audit, fault drills, or review. Cache hits, misses, statistics, and stored objects are not acceptance evidence. A cache or cache-service failure must fail the affected setup/command or fall back to real compilation; it may not convert a required command into success.
 
-The Docker source lane uses commit-pinned Buildx/Bake actions and separately scoped GitHub Actions layer caches for the engine and Dashboard images. BuildKit may reuse only content-addressed layers matching the current Dockerfile, build context, and inputs; both image targets are still built on every applicable exact head. Docker cache contents and cache-service behavior are non-authoritative and never replace a successful build.
+The Docker source lane uses commit-pinned Buildx/Bake actions and separately scoped GitHub Actions layer caches for the engine and Dashboard images. The Rust Dockerfiles compile a manifest-keyed dummy crate before copying real engine sources, so dependency layers survive ordinary source edits; the real exact-head binary is always rebuilt afterward. BuildKit may reuse only content-addressed matching layers; both image targets are still built on every applicable exact head. Docker cache contents and cache-service behavior are non-authoritative and never replace a successful build.
+
+The Rust lane remains serial until the structural canonical environment-lock contract is present, then automatically runs the default-parallel suite. PostgreSQL targets compile once and run concurrently only in distinct databases while each target remains internally serial. Native runtime owns the one Rust+TypeScript runtime smoke over its exact built artifacts and publishes a hash-bound receipt; the required cutover job validates that receipt instead of rebuilding the same engine and Dashboard. These are scheduling and artifact-reuse changes, not reduced coverage.
 
 ## Model Selection
 
@@ -87,7 +91,7 @@ A PR is autonomously merge-eligible only when all are true:
 | packet/slice state | represented truthfully in active docs when state changes |
 | scope | matches goal, owners, decisions, allowed changes, and non-goals |
 | risk | classified with matching focused evidence |
-| CI | every required job, including terminal `context-capsule` and its artifact publication, completed successfully under the complete or trusted documentation-only canonical mode |
+| CI | every required job, including terminal `context-capsule` and its artifact publication, completed successfully under `full`, trusted `docs_only`, or trusted tree-equivalent `reused_pr` mode |
 | handoff guard | pass |
 | review | diff reviewed against architecture, authority, compatibility, security, audit, and rollback |
 | rollback | clear and sufficient |
@@ -110,7 +114,23 @@ A review conclusion only binds the exact head it was produced against. Every mer
    proving it differs from the reviewer session;
 6. the review outcome and any remaining bounded findings, with no unresolved objection.
 
-A replacement head invalidates the prior receipt: the new exact head requires a new complete-diff review before Ready/merge eligibility. A receipt written against an older head is never valid evidence for a newer head. Strictly documentation-only PRs may use a simplified receipt (exact head, complete diff, outcome, rollback by revert) but still need exact-head binding. Review receipts live in the PR review thread; an aggregate approval label alone is not an exact-head independent acceptance unless its commit binding is verified.
+A replacement head invalidates the prior receipt: the new exact head requires a new complete-diff review before Ready/merge eligibility. A receipt written against an older head is never valid evidence for a newer head. Every receipt, including documentation-only review, uses this structured PR-thread record so machines and maintainers observe the same exact-head claim:
+
+```text
+EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: <40-hex PR head>
+Reviewed range: <40-hex accepted base>...<40-hex PR head>
+Reviewer session identity: <independent session identity>
+Reviewer authenticated identity: <GitHub comment author>
+Review transport: direct-github-reviewer | parent-posted-on-behalf-of-independent-session
+Implementation session identity: <required for parent transport>
+Observed at: <ISO-8601 timestamp with timezone>
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+```
+
+The authenticated identity must match the comment author. Parent transport requires different implementation/reviewer sessions and a UUID reviewer-session identity. Only exact `PASS` is accepting; `PASS_WITH_NOTES` remains historical and non-authorizing, while deferred notes are recorded separately. An aggregate approval label alone is not exact-head independent acceptance.
 
 ## Review Convergence Protocol
 
@@ -304,7 +324,7 @@ Do not rebase a focused PR only because `main` advanced with unrelated documenta
 
 ### Exact-head CI evidence
 
-Canonical CI evidence must prove which commit was checked out and tested. The `tests` workflow resolves `EXPECTED_SHA` from `inputs.expected_sha` (required on `workflow_dispatch`), the pull-request head SHA on `ready_for_review`, or `github.sha` on push to `main`; checkout uses that commit; every required job must execute the exact-head verification step successfully. A fast-check run, a required job that skips that step, or a prior-head run is not acceptable exact-head evidence. The accepted-base classifier and raw file-mode diff bind the canonical mode before required jobs execute. The orchestrator fallback `workflow_dispatch` path continues to pass `expected_sha` and `dispatch_nonce`, always runs the complete matrix, and must not be weakened.
+Canonical CI evidence must prove which commit was checked out and tested or, for `reused_pr`, that the pushed tree is exactly the already-tested and accepted PR tree. The `tests` workflow resolves `EXPECTED_SHA` from `inputs.expected_sha` (required on `workflow_dispatch`), the pull-request head SHA on `ready_for_review`, or `github.sha` on push to `main`; checkout uses that commit and every required job executes the exact-head verification step. A fast-check run, a skipped identity step, an unmatched tree, a stale PR run, or a prior-head review is not acceptable. The accepted-base classifier and raw file-mode diff bind the canonical mode before required jobs execute. The orchestrator fallback `workflow_dispatch` path always runs the complete matrix and cannot use reuse.
 
 ### Direct-main documentation coordination
 
@@ -319,13 +339,14 @@ For any PR that is not strictly documentation-only, the complete canonical matri
 Docs maintenance is mandatory but not additive-by-default.
 
 - Update the smallest authoritative surface.
-- Put packet direction in `docs/NEXT_DECISION.md`.
-- Put current facts in `docs/CURRENT_STATUS.md`.
+- Put accepted truth and confirmed gaps in `docs/CURRENT_STATUS.md`; never live PR/CI/review state.
+- Put one current executable window in `docs/NEXT_DECISION.md`.
+- Put blocked long-horizon routing sketches in `docs/FUTURE_ROUTE.md`; promote by removing one and fully refreshing it into `NEXT_DECISION.md`.
 - Put ownership in `docs/MODULE_MAP.md`.
 - Put durable architecture in `docs/ARCHITECTURE_BOOK.md`.
 - Put only proven operator procedures in `docs/RUNBOOK.md`.
 - Keep stale/historical material under `docs/archive/` when retention is useful.
-- Do not create a second roadmap, status, policy, packet, or closeout document.
+- Do not create a second roadmap, status, policy, packet, closeout, or generated-latest document.
 
 ## Completion Report
 

@@ -55,9 +55,14 @@ class WorkflowCapsuleTests(unittest.TestCase):
     def test_context_capsule_minimum_permissions(self) -> None:
         job = self.workflow["jobs"]["context-capsule"]
         perms = job.get("permissions", {})
-        self.assertEqual(perms.get("contents"), "read")
-        self.assertNotIn("actions", perms)
-        self.assertEqual(perms.get("pull-requests"), "read")
+        self.assertEqual(
+            perms,
+            {
+                "actions": "read",
+                "contents": "read",
+                "pull-requests": "read",
+            },
+        )
 
     def test_context_capsule_checks_out_expected_sha(self) -> None:
         job = self.workflow["jobs"]["context-capsule"]

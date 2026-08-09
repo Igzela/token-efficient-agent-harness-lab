@@ -16,6 +16,17 @@ import sys
 from typing import Any
 
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from github_observer import (  # noqa: E402
+    GitHubObservationError,
+    GitHubObserver,
+    token_from_environment,
+)
+
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPOSITORY = "Igzela/token-efficient-agent-harness-lab"
 PACKET_ID = r"(?:PE\d+|PR\d+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+"
@@ -165,6 +176,11 @@ def parse_first_routed_packet(next_text: str) -> dict[str, str | None]:
 
 
 def parse_open_frontiers(status_text: str) -> list[dict[str, Any]]:
+    """Read the legacy status table; new capsules use live observations.
+
+    Kept for backward-compatible tooling/tests while accepted branches move
+    dynamic PR state out of ``CURRENT_STATUS.md``.
+    """
     block = section(status_text, "## Open Review Surfaces")
     frontiers: list[dict[str, Any]] = []
     for line in block.splitlines():
@@ -179,6 +195,147 @@ def parse_open_frontiers(status_text: str) -> list[dict[str, Any]]:
             }
         )
     return frontiers
+
+
+def _packet_body_binding(body: str, packet: str) -> bool:
+    """Return whether a PR body explicitly binds itself to one packet."""
+    return bool(
+        re.search(
+            rf"(?im)^\s*(?:Packet|Packet ID|Packet-ID)\s*:\s*`?{re.escape(packet)}`?\s*$",
+            body,
+        )
+    )
+
+
+def observe_open_frontiers(
+    repository: str,
+    packet: dict[str, Any],
+    *,
+    offline: bool,
+    observer: GitHubObserver | None = None,
+) -> dict[str, Any]:
+    """Discover bounded live PR routing without making it authoritative.
+
+    Canonical ``Owned PR`` wins when present. Otherwise an exact structured
+    packet binding in the PR body is preferred. The exact normalized packet
+    branch is a temporary legacy bridge. Ambiguity fails closed.
+    """
+    unavailable = {
+        "availability": "unavailable",
+        "source": None,
+        "active_pr_number": (
+            int(packet["pr_number"]) if packet.get("pr_number") else None
+        ),
+        "binding": "canonical_owned_pr" if packet.get("pr_number") else None,
+        "warning": "offline_observation_disabled" if offline else None,
+        "open_frontiers": [],
+    }
+    if offline:
+        return unavailable
+
+    observer = observer or GitHubObserver(
+        repository, token=token_from_environment()
+    )
+    try:
+        pulls = observer.list_open_pull_requests(base="main")
+    except (GitHubObservationError, ValueError) as error:
+        unavailable["warning"] = getattr(
+            error, "reason", "github_observation_invalid"
+        )
+        return unavailable
+
+    frontiers = [
+        {
+            "pr": item.get("number"),
+            "purpose": item.get("title"),
+            "head_sha": (item.get("head") or {}).get("sha"),
+            "head_branch": (item.get("head") or {}).get("ref"),
+            "draft": item.get("draft"),
+            "url": item.get("html_url"),
+        }
+        for item in pulls
+        if isinstance(item.get("number"), int)
+    ]
+    canonical = unavailable["active_pr_number"]
+    if canonical is not None:
+        return {
+            **unavailable,
+            "availability": "confirmed",
+            "source": "accepted_next_decision_plus_github_rest",
+            "warning": None,
+            "open_frontiers": frontiers,
+        }
+
+    packet_id = packet.get("packet")
+    if not packet_id:
+        return {
+            **unavailable,
+            "availability": "confirmed",
+            "source": "github_rest",
+            "warning": "canonical_packet_unavailable",
+            "open_frontiers": frontiers,
+        }
+
+    explicit = [
+        item
+        for item in pulls
+        if _packet_body_binding(str(item.get("body") or ""), str(packet_id))
+    ]
+    normalized_branch = str(packet_id).lower()
+    legacy = [
+        item
+        for item in pulls
+        if (item.get("head") or {}).get("ref") == normalized_branch
+    ]
+    explicit_numbers = {
+        int(item["number"])
+        for item in explicit
+        if isinstance(item.get("number"), int)
+    }
+    legacy_numbers = {
+        int(item["number"])
+        for item in legacy
+        if isinstance(item.get("number"), int)
+    }
+    if explicit_numbers and legacy_numbers - explicit_numbers:
+        return {
+            **unavailable,
+            "availability": "conflict",
+            "source": "github_rest",
+            "warning": "structured_and_legacy_packet_bindings_conflict",
+            "open_frontiers": frontiers,
+        }
+    candidates = explicit or legacy
+    distinct = {
+        int(item["number"])
+        for item in candidates
+        if isinstance(item.get("number"), int)
+    }
+    if len(distinct) > 1:
+        return {
+            **unavailable,
+            "availability": "conflict",
+            "source": "github_rest",
+            "warning": "multiple_open_prs_bind_active_packet",
+            "open_frontiers": frontiers,
+        }
+    active = next(iter(distinct), None)
+    return {
+        **unavailable,
+        "availability": "confirmed",
+        "source": "github_rest",
+        "active_pr_number": active,
+        "binding": (
+            "pr_body_packet" if explicit and active is not None
+            else "legacy_exact_packet_branch" if active is not None
+            else None
+        ),
+        "warning": (
+            "legacy_exact_packet_branch_binding" if legacy and not explicit
+            else None
+        ),
+        "open_frontiers": frontiers,
+    }
 
 
 def repository_from_git() -> str:
@@ -317,7 +474,10 @@ def _linked_issue_numbers(pr_body: str) -> list[int]:
 
 
 def _load_review_state_projection(
-    repository: str, payload: dict[str, Any]
+    repository: str,
+    payload: dict[str, Any],
+    *,
+    observer: GitHubObserver | None = None,
 ) -> dict[str, Any]:
     """Project only trusted bounded fields from the durable review state.
 
@@ -342,22 +502,35 @@ def _load_review_state_projection(
 
     found: dict[int, dict[str, Any]] = {}
     for issue_number in candidates:
-        result = run_command(
-            [
-                "gh",
-                "api",
-                f"repos/{repository}/issues/{issue_number}/comments",
-                "--jq",
-                ".[] | select(.body | contains(\"agent-orchestrator-review-state\")) | .body",
-            ],
-            timeout=20,
-        )
-        if not result.ok:
-            continue
-        state: dict[str, Any] | None = None
-        for line in result.stdout.strip().splitlines():
+        comment_bodies: list[str] = []
+        if observer is not None:
             try:
-                candidate = json.loads(line)
+                comment_bodies = [
+                    str(comment.get("body") or "")
+                    for comment in observer.issue_comments(issue_number)
+                    if "agent-orchestrator-review-state"
+                    in str(comment.get("body") or "")
+                ]
+            except GitHubObservationError:
+                continue
+        else:
+            result = run_command(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repository}/issues/{issue_number}/comments",
+                    "--jq",
+                    ".[] | select(.body | contains(\"agent-orchestrator-review-state\")) | .body",
+                ],
+                timeout=20,
+            )
+            if not result.ok:
+                continue
+            comment_bodies = result.stdout.strip().splitlines()
+        state: dict[str, Any] | None = None
+        for body in comment_bodies:
+            try:
+                candidate = json.loads(body)
             except (json.JSONDecodeError, TypeError):
                 continue
             if (
@@ -393,7 +566,13 @@ def _load_review_state_projection(
     return first
 
 
-def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]:
+def load_pr(
+    repository: str,
+    pr_number: int,
+    *,
+    offline: bool,
+    observer: GitHubObserver | None = None,
+) -> dict[str, Any]:
     unavailable = {
         "number": pr_number,
         "availability": "unavailable",
@@ -430,46 +609,43 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
     }
     if offline:
         return unavailable
-    fields = ",".join(
-        [
-            "number",
-            "title",
-            "author",
-            "headRefName",
-            "headRefOid",
-            "baseRefName",
-            "baseRefOid",
-            "isDraft",
-            "mergeStateStatus",
-            "reviewDecision",
-            "statusCheckRollup",
-            "url",
-            "reviews",
-            "comments",
-        ]
+    observer = observer or GitHubObserver(
+        repository, token=token_from_environment()
     )
-    result = run_command(
-        ["gh", "pr", "view", str(pr_number), "--repo", repository, "--json", fields],
-        timeout=20,
-    )
-    if not result.ok:
-        unavailable["unavailable_reason"] = f"gh_pr_view_failed_exit_{result.returncode}"
-        return unavailable
     try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        unavailable["unavailable_reason"] = "gh_pr_view_invalid_json"
+        rest_payload = observer.pull_request(pr_number)
+        head_sha = (rest_payload.get("head") or {}).get("sha")
+        if not isinstance(head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+            raise GitHubObservationError("github_pull_request_head_invalid")
+        reviews = observer.pull_request_reviews(pr_number)
+        comments = (
+            observer.issue_comments(pr_number)
+            + observer.pull_request_comments(pr_number)
+        )
+        checks = observer.check_runs(head_sha)
+    except (GitHubObservationError, ValueError) as error:
+        unavailable["unavailable_reason"] = getattr(
+            error, "reason", "github_pr_observation_invalid"
+        )
         return unavailable
-    aggregate_review = payload.get("reviewDecision") or "REVIEW_REQUIRED"
-    head_sha = payload.get("headRefOid")
+
+    review_states = {str(item.get("state") or "").upper() for item in reviews}
+    if "CHANGES_REQUESTED" in review_states:
+        aggregate_review = "CHANGES_REQUESTED"
+    elif "APPROVED" in review_states:
+        aggregate_review = "APPROVED"
+    else:
+        aggregate_review = "REVIEW_REQUIRED"
+    base_sha = (rest_payload.get("base") or {}).get("sha")
+    author = rest_payload.get("user") or {}
     observation_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     review_observation = _build_review_observation(
         head_sha=head_sha,
-        base_sha=payload.get("baseRefOid"),
-        pr_author_identity=(payload.get("author") or {}).get("login"),
+        base_sha=base_sha,
+        pr_author_identity=author.get("login") if isinstance(author, dict) else None,
         aggregate_review=aggregate_review,
-        reviews=payload.get("reviews") or [],
-        comments=payload.get("comments") or [],
+        reviews=reviews,
+        comments=comments,
         observation_time=observation_time,
     )
     exact_review_state = review_observation.get("exact_head_review_state")
@@ -480,22 +656,29 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
         else review_observation.get("unavailable_reason")
         or "exact_head_review_receipt_not_confirmed",
     }
-    review_state_projection = _load_review_state_projection(repository, payload)
+    projection_payload = {
+        "headRefOid": head_sha,
+        "body": rest_payload.get("body") or "",
+    }
+    review_state_projection = _load_review_state_projection(
+        repository, projection_payload, observer=observer
+    )
+    merge_state = str(rest_payload.get("mergeable_state") or "unknown").upper()
     return {
-        "number": payload.get("number", pr_number),
+        "number": rest_payload.get("number", pr_number),
         "availability": "confirmed",
         "head_sha": head_sha,
-        "head_branch": payload.get("headRefName"),
-        "base_branch": payload.get("baseRefName"),
-        "title": payload.get("title"),
-        "url": payload.get("url"),
-        "draft": payload.get("isDraft"),
-        "merge_state": payload.get("mergeStateStatus"),
+        "head_branch": (rest_payload.get("head") or {}).get("ref"),
+        "base_branch": (rest_payload.get("base") or {}).get("ref"),
+        "title": rest_payload.get("title"),
+        "url": rest_payload.get("html_url"),
+        "draft": rest_payload.get("draft"),
+        "merge_state": merge_state,
         "review_decision": aggregate_review,
         "exact_head_review": exact_head_review,
         "review_observation": review_observation,
         "review_state_projection": review_state_projection,
-        "ci": summarize_checks(payload.get("statusCheckRollup") or []),
+        "ci": summarize_checks(checks),
     }
 
 
@@ -626,8 +809,8 @@ def _parse_review_receipt(
     )
     if missing_axes:
         errors.append("review_axes_missing:" + ",".join(missing_axes))
-    if outcome not in {"PASS", "PASS_WITH_NOTES"}:
-        errors.append("review_outcome_is_not_passing")
+    if outcome != "PASS":
+        errors.append("review_outcome_is_not_exact_pass")
     if unresolved not in {"none", "none observed"}:
         errors.append("unresolved_objections_present_or_unspecified")
 
@@ -1154,17 +1337,26 @@ def next_permitted_action(packet: dict[str, Any], active_pr: dict[str, Any] | No
     ci_state = ci.get("state")
     if ci_state == "failed":
         return f"repair the failing exact-head checks for PR #{number} without weakening guards"
-    if ci_state == "incomplete":
-        missing = ", ".join(ci.get("missing_required") or [])
-        return f"obtain the missing required exact-head checks for PR #{number}: {missing}"
-    if ci_state in {"pending", "unavailable"}:
-        return f"complete or verify all required exact-head CI for PR #{number}, then obtain independent review"
     exact_review = active_pr.get("exact_head_review", {})
+    if active_pr.get("draft") is True:
+        if exact_review.get("state") != "confirmed":
+            return (
+                f"stabilize Draft PR #{number} at exact head {active_pr.get('head_sha')}, "
+                "complete focused checks, and obtain independent exact PASS; keep it Draft"
+            )
+        return (
+            f"mark independently accepted PR #{number} Ready, then run canonical exact-head CI"
+        )
     if exact_review.get("state") != "confirmed":
         return (
             f"obtain independent acceptance for PR #{number} at exact head "
             f"{active_pr.get('head_sha')} and verify unresolved objections"
         )
+    if ci_state == "incomplete":
+        missing = ", ".join(ci.get("missing_required") or [])
+        return f"obtain the missing required exact-head checks for PR #{number}: {missing}"
+    if ci_state in {"pending", "unavailable"}:
+        return f"complete or verify all required exact-head CI for PR #{number}"
     return (
         f"confirm explicit merge authority and full merge eligibility for PR #{number}; "
         "do not merge automatically"
@@ -1185,15 +1377,29 @@ def build_capsule(
     baseline = accepted_baseline(offline=offline)
     documents = canonical_documents(baseline, offline=offline)
     next_text = documents.get("next_decision", "")
-    status_text = documents.get("current_status", "")
     packet = parse_first_routed_packet(next_text)
-    frontiers = parse_open_frontiers(status_text)
+    observer = None if offline else GitHubObserver(
+        repository, token=token_from_environment()
+    )
+    frontier_observation = observe_open_frontiers(
+        repository,
+        packet,
+        offline=offline,
+        observer=observer,
+    )
 
     event_name = event_name or os.environ.get("GITHUB_EVENT_NAME")
     provided_checks = parse_checks_json(checks_json) if checks_json else []
 
     routed_pr_number = int(packet["pr_number"]) if packet.get("pr_number") else None
-    target_pr_number = pr_number if pr_number is not None else routed_pr_number
+    discovered_pr_number = frontier_observation.get("active_pr_number")
+    target_pr_number = (
+        pr_number
+        if pr_number is not None
+        else routed_pr_number
+        if routed_pr_number is not None
+        else discovered_pr_number
+    )
     if exact_head_proof:
         active_pr = load_exact_head_proof(
             exact_head_proof,
@@ -1209,7 +1415,17 @@ def build_capsule(
             }
         )
     else:
-        active_pr = load_pr(repository, target_pr_number, offline=offline) if target_pr_number else None
+        active_pr = (
+            load_pr(
+                repository,
+                target_pr_number,
+                offline=offline,
+                observer=observer,
+            )
+            if target_pr_number
+            else None
+        )
+    frontiers = frontier_observation.get("open_frontiers") or []
     blocked_frontiers = [
         frontier
         for frontier in frontiers
@@ -1290,6 +1506,7 @@ def build_capsule(
             "source_sha": documents.get("source_sha"),
         },
         "canonical_routed_packet": packet,
+        "frontier_observation": frontier_observation,
         "session_binding": session,
         "pr_exact_head": {
             "number": active_pr.get("number") if active_pr else None,
@@ -1336,6 +1553,7 @@ def build_capsule(
         "local_checkout": checkout,
         "active_packet": packet,
         "active_frontier": active_pr,
+        "frontier_observation": frontier_observation,
         "blocked_or_other_frontiers": blocked_frontiers,
         "next_permitted_action": action,
         "required_reading": [
@@ -1359,7 +1577,7 @@ def build_capsule(
         "staleness_conditions": staleness_conditions(),
         "notes": [
             "This capsule is a generated transport view, not an authority owner.",
-            "Current status and routing are read from the accepted baseline, not branch-local prose.",
+            "Accepted truth and routing are read from the accepted baseline; live PR, CI, and review state are queried separately.",
             "Unavailable remote facts are reported as unavailable rather than inferred.",
             "The generator is on-demand; CI may publish a short-lived artifact and job summary.",
         ],
@@ -1374,6 +1592,7 @@ def markdown(capsule: dict[str, Any]) -> str:
     checkout = capsule.get("local_checkout", {})
     packet = capsule["active_packet"]
     frontier = capsule.get("active_frontier")
+    frontier_observation = capsule.get("frontier_observation", {})
     binding = capsule.get("binding", {})
     lines = [
         "# Project Context Capsule",
@@ -1394,6 +1613,12 @@ def markdown(capsule: dict[str, Any]) -> str:
         (
             f"- Active packet: `{packet.get('packet') or 'unavailable'}` "
             f"state=`{packet.get('state') or 'unavailable'}`"
+        ),
+        (
+            f"- Live frontier observation: "
+            f"availability=`{frontier_observation.get('availability') or 'unavailable'}` "
+            f"binding=`{frontier_observation.get('binding') or 'none'}` "
+            f"warning=`{frontier_observation.get('warning') or 'none'}`"
         ),
     ]
     if frontier:
@@ -1461,14 +1686,16 @@ def markdown(capsule: dict[str, Any]) -> str:
             )
     else:
         lines.append("- unavailable")
-    lines.extend(["", "## Other documented frontiers"])
+    lines.extend(["", "## Other live-observed frontiers"])
     if capsule["blocked_or_other_frontiers"]:
         for item in capsule["blocked_or_other_frontiers"]:
             lines.append(
-                f"- PR #{item['pr']}: {item['purpose']} — {item['documented_status']}"
+                f"- PR #{item['pr']}: {item.get('purpose') or 'untitled'} — "
+                f"head=`{item.get('head_sha') or 'unavailable'}` "
+                f"draft=`{item.get('draft')}`"
             )
     else:
-        lines.append("- None discovered in accepted `docs/CURRENT_STATUS.md`.")
+        lines.append("- None observed, or live observation unavailable.")
     lines.extend(["", "*["])
     lines.append(f"schema_version: {capsule['schema_version']}")
     lines.append(f"generated_at: {capsule['generated_at']}")

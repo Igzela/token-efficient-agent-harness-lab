@@ -10,10 +10,17 @@ RUN bun run build:static
 FROM rust:bookworm AS rust-builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
-COPY engine/ engine/
+COPY engine/Cargo.toml engine/Cargo.toml
 ENV CARGO_NET_RETRY=10
 ENV CARGO_HTTP_HTTP2=false
-RUN cargo build --release -p engine
+RUN mkdir -p engine/src \
+  && printf 'pub fn dependency_cache_anchor() {}\n' > engine/src/lib.rs \
+  && printf 'fn main() {}\n' > engine/src/main.rs \
+  && cargo build --release -p engine --bin agent-control-plane \
+  && rm -rf engine/src
+COPY engine/ engine/
+RUN find engine/src -type f -exec touch {} + \
+  && cargo build --release -p engine --bin agent-control-plane
 
 # Stage 3: Runtime
 FROM debian:bookworm-slim

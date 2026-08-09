@@ -48,7 +48,7 @@ During CI, compilation, tests, or audits, do not wait passively. Refresh state, 
 ## Ship PR Path
 
 ```text
-audit → focused branch/PR → focused checks → exact-head CI → complete-diff review → manual squash merge → refresh main
+audit → focused Draft PR → focused checks → stable-head complete-diff review → Ready → canonical exact-head CI → manual squash merge → refresh main
 ```
 
 Use one branch/PR per coherent packet. Auto-merge stays disabled. A new head invalidates prior CI and review. Rebase only for conflict, overlapping assumptions, explicit freshness, or proven integration risk.
@@ -59,7 +59,7 @@ Normal reversible repository work and already-configured local/GitHub services a
 
 Keep an implementation PR in Draft while its diff is changing. The `pr-fast-checks` workflow enforces that `opened`, `synchronize`, and `reopened` heads are Draft; a non-Draft mutating event fails immediately and must be corrected by converting the PR to Draft. Draft pushes provide exact-head governance feedback only and cannot authorize review, merge, release, deployment, or acceptance.
 
-Run focused and applicable full checks locally, finish the complete-diff review, post the exact-head review receipt on the stable head (exact SHA, complete diff, axes, outcome — see `docs/REAL_WORLD_TESTING_PLAYBOOK.md`), collect all known findings into one repair batch, and only then mark the PR Ready once. A replacement head invalidates the prior review receipt; re-receipt the new exact head before Ready. The `ready_for_review` event triggers the single canonical `tests` workflow. Its trusted classifier selects either the complete source-test matrix or strict documentation-only mode. A normal `main` push may use documentation-only mode only from the previous-main `before...after` diff and accepted-before classifier; forced, zero-base, non-ancestor, mixed, or uncertain pushes fail closed to the complete matrix. Explicit exact-head fallback dispatches always use the complete matrix.
+Run focused and applicable full checks locally, finish the complete-diff review, post the exact-head review receipt on the stable head (exact SHA, complete diff, axes, outcome — see `docs/REAL_WORLD_TESTING_PLAYBOOK.md`), collect all known findings into one repair batch, and only then mark the PR Ready once. A replacement head invalidates the prior review receipt; re-receipt the new exact head before Ready. The `ready_for_review` event triggers the single canonical `tests` workflow. Its trusted classifier selects complete source tests or strict documentation-only mode. On a normal `main` push, the accepted-before verifier may instead reuse the tree-identical merged PR's already-successful canonical matrix only when the unique PR, exact tree, strict `PASS`, exact-head check, and every required job are re-proved; control-plane changes and uncertainty force the complete matrix. Explicit fallback dispatches always use the complete matrix.
 
 A documentation-only candidate remains canonical CI, not fast feedback. Classification is computed from the accepted base checkout, not candidate-controlled classifier code. Every required job must still check out and verify the exact head and finish successfully; only compiler, runtime, database-test, TypeScript, Docker-build, and other non-applicable source-test steps are skipped. Empty, mixed, executable, symlink, submodule, workflow, script, test, configuration, dependency, schema, migration, generated, or otherwise uncertain diffs fail closed to the complete matrix.
 
@@ -67,7 +67,7 @@ Rust source lanes use the pinned `sccache` action, and the Docker source lane us
 
 Do not push one repair at a time while CI is running. If a Ready candidate needs code or document changes, convert the PR back to Draft first, batch the repairs, validate locally, publish one replacement head, and mark it Ready again. A new head automatically cancels obsolete in-progress runs. Never restart an unchanged successful job or duplicate a workflow dispatch. Infrastructure-only failures may rerun only the failed job; code or test failures require a repaired head.
 
-A missing canonical `tests` run is not success. A fast-check success, a Draft head, a stale run, a prior-head review, or a skipped required exact-head proof cannot satisfy merge eligibility. Documentation-only exceptions and targeted checks remain governed by `docs/REAL_WORLD_TESTING_PLAYBOOK.md`; they do not turn `pr-fast-checks` into canonical CI evidence.
+A missing canonical PR `tests` run is not success. A fast-check success, a Draft head, a stale run, a prior-head review, or a skipped required exact-head proof cannot satisfy merge eligibility. Documentation-only and post-merge tree-equivalence modes remain governed by `docs/REAL_WORLD_TESTING_PLAYBOOK.md`; neither turns `pr-fast-checks`, a cache, or an unverified prior run into canonical evidence.
 
 ## Execution-Ready Task Packets
 
@@ -103,14 +103,14 @@ A difficult implementation or failed first attempt is not itself a blocker: diag
 
 ## Reading and Verification
 
-After `START_HERE.md`, read the relevant sections of `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/MODULE_MAP.md`. Read `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for PR/CI/merge work, `docs/ARCHITECTURE_BOOK.md` for architecture/authority/security/recovery, and `docs/RUNBOOK.md` only for proven operator procedures. Use targeted reads.
+After `START_HERE.md`, read the relevant sections of `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/MODULE_MAP.md`. Read `docs/FUTURE_ROUTE.md` only when planning or refreshing the successor packet; it never authorizes implementation. Read `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for PR/CI/merge work, `docs/ARCHITECTURE_BOOK.md` for architecture/authority/security/recovery, and `docs/RUNBOOK.md` only for proven operator procedures. Use targeted reads.
 
 Baseline checks:
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy -p engine --all-targets --all-features -- -D warnings
-cargo test -p engine
+scripts/ci/run_rust_tests.py
 cargo test -p engine --features pg-tests -- --test-threads=1
 PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 bash scripts/verify_rust_typescript_stack.sh
@@ -126,6 +126,6 @@ Add migration, recovery, concurrency, browser, evaluator, or external-validation
 
 ## Documentation Maintenance Rule
 
-Keep the set small and role-specific. `START_HERE.md` owns navigation and frontier discovery; `docs/ARCHITECTURE_BOOK.md` durable architecture; `docs/CURRENT_STATUS.md` accepted/open/blocked facts; `docs/NEXT_DECISION.md` the single forward plan; `docs/MODULE_MAP.md` ownership; `docs/REAL_WORLD_TESTING_PLAYBOOK.md` PR/CI/merge; `docs/RUNBOOK.md` proven procedures; `README.md`, `CLAUDE.md`, and this file are entry adapters.
+Keep the set small and role-specific. `START_HERE.md` owns navigation and frontier discovery; `docs/ARCHITECTURE_BOOK.md` durable architecture; `docs/CURRENT_STATUS.md` accepted truth and confirmed gaps; `docs/NEXT_DECISION.md` one current executable window; `docs/FUTURE_ROUTE.md` the blocked routing-only horizon; `docs/MODULE_MAP.md` accepted ownership; `docs/REAL_WORLD_TESTING_PLAYBOOK.md` PR/CI/merge; `docs/RUNBOOK.md` proven procedures; `README.md`, `CLAUDE.md`, and this file are entry adapters. Live PR, CI, review, and mergeability facts belong only in a fresh capsule.
 
 One fact has one full owner. Other documents link rather than copy. Quality outranks brevity, but stale history, duplicate policy, and branch-local status must be pruned. Documentation-only changes may use the playbook's direct-main exception only when the final diff is strictly prose and has handoff/diff checks plus a clear revert.

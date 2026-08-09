@@ -101,6 +101,131 @@ Phase one was accepted through PR #302.
             ],
         )
 
+    def test_live_frontier_prefers_structured_packet_binding(self) -> None:
+        observer = mock.Mock()
+        observer.list_open_pull_requests.return_value = [
+            {
+                "number": 370,
+                "title": "Refreeze",
+                "body": "Packet: `PE7-RWE-V2-REFREEZE-1`",
+                "head": {"ref": "unrelated", "sha": "a" * 40},
+                "draft": True,
+                "html_url": "https://example.invalid/370",
+            },
+            {
+                "number": 225,
+                "title": "Dashboard",
+                "body": "",
+                "head": {"ref": "dashboard", "sha": "b" * 40},
+                "draft": False,
+                "html_url": "https://example.invalid/225",
+            },
+        ]
+        result = project_context.observe_open_frontiers(
+            "owner/repo",
+            {
+                "packet": "PE7-RWE-V2-REFREEZE-1",
+                "state": "READY_FOR_EXECUTION",
+                "pr_number": None,
+            },
+            offline=False,
+            observer=observer,
+        )
+        self.assertEqual(result["active_pr_number"], 370)
+        self.assertEqual(result["binding"], "pr_body_packet")
+        self.assertEqual(len(result["open_frontiers"]), 2)
+
+    def test_live_frontier_supports_exact_legacy_packet_branch(self) -> None:
+        observer = mock.Mock()
+        observer.list_open_pull_requests.return_value = [
+            {
+                "number": 370,
+                "title": "Refreeze",
+                "body": "",
+                "head": {
+                    "ref": "pe7-rwe-v2-refreeze-1",
+                    "sha": "a" * 40,
+                },
+                "draft": True,
+                "html_url": "https://example.invalid/370",
+            }
+        ]
+        result = project_context.observe_open_frontiers(
+            "owner/repo",
+            {
+                "packet": "PE7-RWE-V2-REFREEZE-1",
+                "state": "READY_FOR_EXECUTION",
+                "pr_number": None,
+            },
+            offline=False,
+            observer=observer,
+        )
+        self.assertEqual(result["active_pr_number"], 370)
+        self.assertEqual(result["binding"], "legacy_exact_packet_branch")
+        self.assertEqual(result["warning"], "legacy_exact_packet_branch_binding")
+
+    def test_live_frontier_conflict_fails_closed(self) -> None:
+        observer = mock.Mock()
+        observer.list_open_pull_requests.return_value = [
+            {
+                "number": number,
+                "title": "Conflicting owner",
+                "body": "Packet: PE7-RWE-V2-REFREEZE-1",
+                "head": {"ref": f"candidate-{number}", "sha": str(number)[0] * 40},
+                "draft": True,
+                "html_url": f"https://example.invalid/{number}",
+            }
+            for number in (370, 371)
+        ]
+        result = project_context.observe_open_frontiers(
+            "owner/repo",
+            {
+                "packet": "PE7-RWE-V2-REFREEZE-1",
+                "state": "READY_FOR_EXECUTION",
+                "pr_number": None,
+            },
+            offline=False,
+            observer=observer,
+        )
+        self.assertEqual(result["availability"], "conflict")
+        self.assertIsNone(result["active_pr_number"])
+
+    def test_structured_and_legacy_bindings_cannot_disagree(self) -> None:
+        observer = mock.Mock()
+        observer.list_open_pull_requests.return_value = [
+            {
+                "number": 370,
+                "title": "Legacy owner",
+                "body": "",
+                "head": {"ref": "pe7-rwe-v2-refreeze-1", "sha": "a" * 40},
+                "draft": True,
+                "html_url": "https://example.invalid/370",
+            },
+            {
+                "number": 371,
+                "title": "Structured owner",
+                "body": "Packet: PE7-RWE-V2-REFREEZE-1",
+                "head": {"ref": "candidate", "sha": "b" * 40},
+                "draft": True,
+                "html_url": "https://example.invalid/371",
+            },
+        ]
+        result = project_context.observe_open_frontiers(
+            "owner/repo",
+            {
+                "packet": "PE7-RWE-V2-REFREEZE-1",
+                "state": "READY_FOR_EXECUTION",
+                "pr_number": None,
+            },
+            offline=False,
+            observer=observer,
+        )
+        self.assertEqual(result["availability"], "conflict")
+        self.assertEqual(
+            result["warning"],
+            "structured_and_legacy_packet_bindings_conflict",
+        )
+
     def test_summarize_checks_fails_closed(self) -> None:
         summary = project_context.summarize_checks(
             [
@@ -149,17 +274,17 @@ Phase one was accepted through PR #302.
         self.assertEqual(summary["missing_required"], ["pg-integration-tests"])
 
     def test_unavailable_pr_is_not_inferred(self) -> None:
-        with mock.patch.object(
-            project_context,
-            "run_command",
-            return_value=project_context.CommandResult(False, "", "gh unavailable", 127),
-        ):
-            result = project_context.load_pr("owner/repo", 299, offline=False)
+        observer = mock.Mock()
+        observer.pull_request.side_effect = project_context.GitHubObservationError(
+            "github_transport_unavailable"
+        )
+        result = project_context.load_pr(
+            "owner/repo", 299, offline=False, observer=observer
+        )
         self.assertEqual(result["availability"], "unavailable")
         self.assertIsNone(result["head_sha"])
         self.assertEqual(result["ci"]["state"], "unavailable")
-        self.assertEqual(result["unavailable_reason"], "gh_pr_view_failed_exit_127")
-        self.assertNotIn("gh unavailable", json.dumps(result))
+        self.assertEqual(result["unavailable_reason"], "github_transport_unavailable")
 
     def test_offline_baseline_never_uses_detached_head(self) -> None:
         calls: list[tuple[str, ...]] = []
@@ -212,6 +337,26 @@ Phase one was accepted through PR #302.
         self.assertIn("obtain independent acceptance", action)
         self.assertIn("a" * 40, action)
         self.assertIn("unresolved objections", action)
+
+    def test_draft_routes_to_review_before_canonical_ci(self) -> None:
+        action = project_context.next_permitted_action(
+            {
+                "packet": "PE7-RWE-V2-REFREEZE-1",
+                "state": "IN_PROGRESS",
+                "pr_number": "370",
+            },
+            {
+                "number": 370,
+                "availability": "confirmed",
+                "head_sha": "a" * 40,
+                "draft": True,
+                "ci": {"state": "incomplete", "missing_required": ["rust-tests"]},
+                "exact_head_review": {"state": "unverified"},
+            },
+        )
+        self.assertIn("keep it Draft", action)
+        self.assertIn("independent exact PASS", action)
+        self.assertNotIn("missing required", action)
 
     def test_confirmed_exact_head_review_reaches_merge_authority_gate(self) -> None:
         action = project_context.next_permitted_action(
@@ -277,7 +422,11 @@ PR #299
             )
         self.assertEqual(capsule["active_frontier"]["availability"], "unavailable")
         self.assertEqual(capsule["active_frontier"]["ci"]["state"], "unavailable")
-        self.assertEqual(capsule["blocked_or_other_frontiers"][0]["pr"], 300)
+        self.assertEqual(capsule["blocked_or_other_frontiers"], [])
+        self.assertEqual(
+            capsule["frontier_observation"]["warning"],
+            "offline_observation_disabled",
+        )
         self.assertEqual(capsule["canonical_document_source"]["source_sha"], "b" * 40)
         rendered = project_context.markdown(capsule)
         self.assertIn("unavailable", rendered)
@@ -547,6 +696,36 @@ Unresolved objections: none
         self.assertEqual(observation["review_receipt"]["state"], "valid")
         self.assertEqual(observation["exact_head_review_state"], "confirmed")
         self.assertEqual(observation["unresolved_objections_state"], "none_observed")
+
+    def test_pass_with_notes_is_not_exact_acceptance(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS_WITH_NOTES
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertEqual(observation["review_receipt"]["state"], "invalid")
+        self.assertIn(
+            "review_outcome_is_not_exact_pass",
+            observation["review_receipt"]["errors"],
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
 
     def test_receipt_without_current_head_never_confirms(self) -> None:
         head = "a" * 40

@@ -29,9 +29,9 @@ A green CI check is not enough if it belongs to an older PR head. This lab binds
 - Supervised repository patch/PR output (never silent target-`main` writes)
 - Local dashboard that refuses invented success
 
-> **Boundary:** local / small-team research tool — not multi-tenant SaaS, not a free provider proxy, no container/VM isolation claim. Provider, managed-CLI, adaptive, and autonomous paths remain default-off and use explicit fail-closed authority, identity, budget, lease, audit, and kill controls. Current routing and eligibility are owned by `docs/NEXT_DECISION.md`; historical phase labels do not define the forward plan.
+> **Boundary:** local / small-team research tool — not multi-tenant SaaS, not a free provider proxy, no container/VM isolation claim. Provider, managed-CLI, adaptive, and autonomous paths remain default-off and use explicit fail-closed authority, identity, budget, lease, audit, and kill controls. The current executable window is owned by `docs/NEXT_DECISION.md`; the blocked routing-only horizon is in `docs/FUTURE_ROUTE.md`; historical phase labels do not define the forward plan.
 
-Maintainer and Agent entry: [`START_HERE.md`](START_HERE.md) · architecture: [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) · forward plan: [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md) · implementation rules: [`AGENTS.md`](AGENTS.md) · support: [`SUPPORT.md`](SUPPORT.md).
+Maintainer and Agent entry: [`START_HERE.md`](START_HERE.md) · architecture: [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) · current plan: [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md) · future route: [`docs/FUTURE_ROUTE.md`](docs/FUTURE_ROUTE.md) · implementation rules: [`AGENTS.md`](AGENTS.md) · support: [`SUPPORT.md`](SUPPORT.md).
 
 ## Quick Start
 
@@ -178,7 +178,7 @@ There is **no** verified public `docker run …:latest` image path. For containe
 
 ## What This Project Is Not
 
-This repository is not a cloud production SaaS, hosted multi-tenant service, or direct-deploy tool. Accepted real-repository patch/PR, trusted-local Provider, and bounded autonomous-task capabilities are described in `docs/CURRENT_STATUS.md`; their next eligible work and prerequisites are owned only by `docs/NEXT_DECISION.md`. Historical `V2` and `IAE` labels may remain in compatibility surfaces or Git history, but they are not current routing authorities.
+This repository is not a cloud production SaaS, hosted multi-tenant service, or direct-deploy tool. Accepted real-repository patch/PR, trusted-local Provider, and bounded autonomous-task capabilities are described in `docs/CURRENT_STATUS.md`; the one next executable window is owned by `docs/NEXT_DECISION.md`, while blocked successors remain non-executable in `docs/FUTURE_ROUTE.md`. Historical `V2` and `IAE` labels may remain in compatibility surfaces or Git history, but they are not current routing authorities.
 
 Provider API execution requires explicit endpoint/auth/budget configuration; CI uses stub/mock paths and does not call real provider APIs. A ready trusted-local profile activates bounded provider execution, adaptive routing, experiments, promotion, default routing, and acknowledged task advancement for internal local operation. Managed CLI execution is default-off. Codex retains its existing `workspace-write` adapter. Claude Code registration is currently disabled because provider-independent worktree-only filesystem mediation is unproved; exact identity, model, usage, and process checks alone do not establish read confinement. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
 
@@ -397,8 +397,9 @@ scripts/                 Verification, packaging, and smoke-test scripts
 Daily agent work uses a small active set:
 
 - [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) — architecture and safety boundaries
-- [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — current status, limits, and verification snapshot
-- [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md) — single forward plan
+- [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — accepted truth and confirmed gaps
+- [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md) — one current executable window
+- [`docs/FUTURE_ROUTE.md`](docs/FUTURE_ROUTE.md) — blocked routing-only horizon
 - [`docs/MODULE_MAP.md`](docs/MODULE_MAP.md) — source ownership and verification routing
 - [`docs/REAL_WORLD_TESTING_PLAYBOOK.md`](docs/REAL_WORLD_TESTING_PLAYBOOK.md) — PR/CI/maintenance workflow
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — operator procedures

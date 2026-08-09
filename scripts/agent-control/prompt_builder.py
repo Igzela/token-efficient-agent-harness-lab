@@ -4,6 +4,7 @@
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -277,9 +278,17 @@ def _build_task_context(issue_body, agents_md, current_status, next_decision, mo
     if _detect_task_requires_governance(issue_body):
         parts = []
         if agents_md:
-            parts.append("### Repository governance\n\n```\n" + agents_md[:6000] + "\n```")
+            parts.append(
+                "### Repository governance excerpt\n\n"
+                "Read the full `AGENTS.md` before editing.\n\n```\n"
+                + agents_md[:2500]
+                + "\n```"
+            )
         if current_status:
-            parts.append("### Current capability status\n\n```\n" + current_status[:4000] + "\n```")
+            parts.append("### Accepted status excerpt\n\n```\n" + current_status[:2000] + "\n```")
+        packet_context = _active_packet_context(next_decision)
+        if packet_context:
+            parts.append("### Current packet\n\n```\n" + packet_context + "\n```")
         if module_map:
             parts.append("### Module ownership\n\n```\n" + module_map[:2000] + "\n```")
         return "\n\n".join(parts) if parts else "No additional context."
@@ -290,6 +299,43 @@ def _build_task_context(issue_body, agents_md, current_status, next_decision, mo
     if lines:
         return "\n".join(lines)
     return "No additional context required for this task."
+
+
+def _active_packet_context(next_decision, max_chars=6000):
+    """Return Active Routing plus exactly one expanded packet block."""
+    if not next_decision:
+        return ""
+    routing_start = next_decision.find("## Active Routing")
+    if routing_start < 0:
+        return ""
+    routing_end = next_decision.find("\n## ", routing_start + 3)
+    routing = next_decision[
+        routing_start : routing_end if routing_end >= 0 else len(next_decision)
+    ]
+    packet_match = re.search(
+        r"(?:PE\d+|PR\d+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+", routing
+    )
+    if not packet_match:
+        return routing[:max_chars]
+    packet = packet_match.group(0)
+    heading_match = re.search(
+        rf"^#{{2,3}} Packet {re.escape(packet)}\b.*$",
+        next_decision,
+        re.MULTILINE,
+    )
+    if not heading_match:
+        return routing[:max_chars]
+    next_heading = re.search(
+        r"^#{2,3} Packet ",
+        next_decision[heading_match.end() :],
+        re.MULTILINE,
+    )
+    end = (
+        heading_match.end() + next_heading.start()
+        if next_heading
+        else len(next_decision)
+    )
+    return (routing + "\n\n" + next_decision[heading_match.start() : end])[:max_chars]
 
 
 def _extract_relevant_lines(text, keywords, max_lines=20):

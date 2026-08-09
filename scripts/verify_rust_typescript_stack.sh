@@ -5,12 +5,33 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${ACP_VERIFY_PORT:-18080}"
 TMP_DIR="$(mktemp -d)"
 ENGINE_PID=""
-MODE="${1:-full}"
+MODE="full"
+EVIDENCE_PATH=""
 
-if [[ "${MODE}" != "full" && "${MODE}" != "--integration-only" ]]; then
-  echo "usage: $0 [--integration-only]" >&2
-  exit 2
-fi
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --integration-only|--runtime-only)
+      if [[ "${MODE}" != "full" ]]; then
+        echo "only one verification mode may be selected" >&2
+        exit 2
+      fi
+      MODE="$1"
+      shift
+      ;;
+    --evidence-path)
+      if [[ "$#" -lt 2 || -z "$2" ]]; then
+        echo "--evidence-path requires a path" >&2
+        exit 2
+      fi
+      EVIDENCE_PATH="$2"
+      shift 2
+      ;;
+    *)
+      echo "usage: $0 [--integration-only|--runtime-only] [--evidence-path PATH]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 cleanup() {
   if [[ -n "${ENGINE_PID}" ]] && kill -0 "${ENGINE_PID}" 2>/dev/null; then
@@ -21,23 +42,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Preflight: require bun, cargo, and uv
-if ! command -v bun &>/dev/null; then
-  echo "ERROR: bun is required but not found in PATH." >&2
-  echo "Install: curl -fsSL https://bun.sh/install | bash" >&2
-  exit 1
-fi
-
+# Preflight: runtime-only reuses already-built artifacts from this job.
 if ! command -v cargo &>/dev/null; then
   echo "ERROR: cargo is required but not found in PATH." >&2
   echo "Install: https://rustup.rs/" >&2
   exit 1
 fi
 
-if ! command -v uv &>/dev/null; then
-  echo "ERROR: uv is required but not found in PATH." >&2
-  echo "Install: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
-  exit 1
+if [[ "${MODE}" != "--runtime-only" ]]; then
+  if ! command -v bun &>/dev/null; then
+    echo "ERROR: bun is required but not found in PATH." >&2
+    exit 1
+  fi
+  if ! command -v uv &>/dev/null; then
+    echo "ERROR: uv is required but not found in PATH." >&2
+    exit 1
+  fi
 fi
 
 cd "${ROOT}"
@@ -46,10 +66,7 @@ bash scripts/check_wire_codegen_drift.sh
 if [[ "${MODE}" == "full" ]]; then
   cargo fmt --check
   cargo clippy -p engine -- -D warnings
-  # HTTP integration tests intentionally exercise process-wide environment
-  # gates; serialize the Rust test process so one test cannot observe another
-  # test's temporary configuration.
-  cargo test -p engine -- --test-threads=1
+  scripts/ci/run_rust_tests.py
 
   cd "${ROOT}/sdk/typescript"
   bun install --frozen-lockfile
@@ -61,15 +78,18 @@ if [[ "${MODE}" == "full" ]]; then
   bun run lint
   bun run typecheck
   bun run build
-else
+elif [[ "${MODE}" == "--integration-only" ]]; then
   cd "${ROOT}/dashboard"
   bun install --frozen-lockfile
 fi
 
-bun run build:static
+if [[ "${MODE}" != "--runtime-only" ]]; then
+  cd "${ROOT}/dashboard"
+  bun run build:static
 
-cd "${ROOT}"
-cargo build -p engine
+  cd "${ROOT}"
+  cargo build -p engine
+fi
 
 ENGINE_BIN="$(cargo metadata --no-deps --format-version 1 | python3 -c "import sys,json; print(json.load(sys.stdin)['target_directory'] + '/debug/agent-control-plane')")"
 if [[ ! -x "${ENGINE_BIN}" ]]; then
@@ -117,5 +137,29 @@ grep -q '"status"' "${TMP_DIR}/health.json"
 grep -q 'local_dashboard.v1' "${TMP_DIR}/dashboard.json"
 grep -q 'Agent Control Plane' "${TMP_DIR}/dashboard.html"
 grep -q '"record"' "${TMP_DIR}/dispatch.json"
+
+if [[ -n "${EVIDENCE_PATH}" ]]; then
+  mkdir -p "$(dirname "${EVIDENCE_PATH}")"
+  HEAD_SHA="$(git rev-parse HEAD)" \
+  ENGINE_SHA256="$(sha256sum "${ENGINE_BIN}" | awk '{print $1}')" \
+  DASHBOARD_SHA256="$(sha256sum "${ROOT}/dashboard/out/index.html" | awk '{print $1}')" \
+  EVIDENCE_PATH="${EVIDENCE_PATH}" \
+    python3 - <<'PY'
+import json
+import os
+
+payload = {
+    "schema_version": "rust_typescript_cutover.v1",
+    "head_sha": os.environ["HEAD_SHA"],
+    "engine_sha256": os.environ["ENGINE_SHA256"],
+    "dashboard_index_sha256": os.environ["DASHBOARD_SHA256"],
+    "provider_execution": "disabled",
+    "runtime_smoke": "success",
+}
+with open(os.environ["EVIDENCE_PATH"], "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, sort_keys=True, indent=2)
+    handle.write("\n")
+PY
+fi
 
 echo "Rust + TypeScript stack verification passed."

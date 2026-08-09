@@ -1,14 +1,13 @@
 # Current Status
 
-Last updated: 2026-08-08.
+Last updated: 2026-08-09.
 
-This document separates three states that must not be conflated:
+This document owns accepted repository truth and confirmed capability gaps only. It separates two states that must not be conflated:
 
 1. **Merged and accepted truth** — code and governing documents on remote `main` that passed their required checks.
-2. **Open or local candidate surfaces** — proposed work that is not authoritative until its final exact head is accepted and merged.
-3. **Blocked or deferred work** — future work that remains ineligible because a named evidence, planning, or authority gate is incomplete.
+2. **Confirmed gaps** — capabilities or evidence not yet accepted on `main`.
 
-Historical packet detail remains in Git history and merged PRs; do not append stale chronology here.
+Open PR heads, Draft/Ready state, CI, reviews, mergeability, and the next permitted action are live observations and must come from a fresh context capsule. Current execution routing belongs in `docs/NEXT_DECISION.md`; routing-only successors belong in `docs/FUTURE_ROUTE.md`. Historical packet detail remains in Git history and merged PRs; do not append stale chronology here.
 
 ## Verified Repository State
 
@@ -59,37 +58,11 @@ Two separately authorized one-use runs on 2026-08-07 (`auth-live-003`/`auth-live
 
 These runs established the root cause and fail-closed behavior. They did not establish a viable baseline or architecture/economic improvement.
 
-## Reported Calibration and Local Candidate — Not Yet Accepted
+## Accepted Readiness Boundary
 
-The latest operator/agent handoff reports:
+Accepted `main` contains the provider-free compatibility-calibration mechanism, but it contains no accepted v2 refreeze or viable four-cell RWE baseline. The accepted route may prepare a provider-free refreeze; it does not authorize a calibration rerun, live schedule, target effect, or downstream Architecture Convergence work.
 
-- the armed compatibility calibration selected 8,192 as the first envelope returning parseable implementation content;
-- redacted evidence exists under `/tmp/opencode/rwe-calibration-evidence/`;
-- a local v2 refreeze changes 4,000 → 8,192 output tokens, 16,000 → 20,192 per-cell total tokens, and 64,000 → 80,768 four-cell total tokens, with dependent version/hash/binding changes only;
-- the same candidate repairs a test-only environment race: four duplicate locks in `engine/tests/test_http_server.rs` delegate to the canonical statics in `engine/tests/http_server/common.rs`, while the two affected auth tests hold the same provider lock;
-- `engine/tests/http_server/tick.rs` was confirmed unwired and was not used as a production fix;
-- reported verification is 206 `test_http_server` tests ×4 consecutive runs, full engine 1692 passed/1 ignored, fmt and clippy clean.
-
-This is handoff evidence, not accepted repository truth. At the current observed frontier there is no remote branch or PR containing that candidate, no exact candidate head, no canonical CI, and no exact-head independent review. The temporary calibration bundle is not currently represented by a durable GitHub-bound redacted receipt.
-
-## Active Frontier
-
-`PE7-RWE-V2-REFREEZE-1` is `READY_FOR_EXECUTION` as a provider-free packet.
-
-The accepted forward route is decomposed into 98 structural micro-packets: the current refreeze plus 97 explicitly blocked successors. The successor packets separate contract freeze, bounded implementation, external effect, and evidence/decision closeout so an implementation agent never has to invent an architecture, statistical, evaluator, spend, retention, or adoption decision mid-packet. This decomposition does not make any successor eligible.
-
-The first permitted action is to reconcile the calibration receipt and actual local candidate against accepted `main`. If the candidate is unavailable, reconstruct it from accepted main under the exact allowed delta in `docs/NEXT_DECISION.md`. If 8,192 parseability cannot be independently supported, stop `DECISION_REQUIRED`; do not rerun a paid calibration or choose 16,384 without new authority.
-
-No new live run is authorized. A merged refreeze only makes the separately authorized v2 viability packet eligible.
-
-## Open Review Surfaces
-
-| PR | Exact head | Current evidence | Rule |
-|---|---|---|---|
-| #365 | `fd60c17b511da9e0a61683d874cc26e03b05ba39` | Draft; fast/exact-head checks successful; no independent review observed | Separate documentation clarification; not the active RWE owner |
-| #225 | `899fc24dec671fd092a3311a240529aa119324f6` | Open; earlier canonical workflow `29554170902` successful; no independent review observed | Presentation-only and last |
-
-`Igzela/alters-lab#5` remains an external Draft output from an earlier accepted bounded live Golden Path observation. It grants no merge authority and is not the active Harness-repository frontier.
+Candidate evidence remains non-authoritative until it is bound to one exact PR head, passes the repository review protocol and canonical CI, and is merged. Do not record candidate branches, PR numbers, CI runs, or review claims here; the capsule observes them at handoff time and fails closed when unavailable or conflicting.
 
 ## Capability Status
 
@@ -148,13 +121,9 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 6. No accepted lineage/mutation, evaluator/holdout, lifecycle-budget, diversity/exploration, or Pareto/stop/recovery contract or implementation packet exists.
 7. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or Meta operator-comparison result exists.
 
-## Open Work Coordination
+## Maintenance Boundary
 
-The authoritative next packet is `PE7-RWE-V2-REFREEZE-1`. It may reconcile or reconstruct the reported provider-free candidate, verify v1/v2 hashes and the lock-race root cause, and publish one focused Draft PR. It may not make a Provider call, execute the four-cell schedule, change target content, alter experiment fields beyond the compatibility delta, broaden an authority owner, or begin AC.
-
-After that packet is accepted, `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` may produce a current provider-free preflight and authorization request package. A separate current operator authorization is required only for `PE7-RWE-V2-VIABILITY-RUN-1`; its independently closed result advances to measurement design, not directly to AC.
-
-The full ordered route, 98 structural micro-packets, four packet classes, consolidation limits, progressive execution-readiness rule, acceptance gates, and stop triggers are owned by `docs/NEXT_DECISION.md`. Packet count is not a target: a negative decision may terminate or rewrite a branch, while consolidation is allowed only under the strict same-owner/same-path/same-rollback rule defined there.
+After each accepted merge, update this file only when an accepted capability or confirmed gap changed. Update `docs/NEXT_DECISION.md` only when the current executable window changed, and update `docs/FUTURE_ROUTE.md` only when long-horizon order or a routing-only sketch changed. Never copy live PR, CI, or review state into any of those documents.
 
 ## Safety Boundary
 

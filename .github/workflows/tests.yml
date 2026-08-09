@@ -36,9 +36,14 @@ env:
 jobs:
   classify-change-impact:
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
     outputs:
       docs_only: ${{ steps.classify.outputs.docs_only }}
       mode: ${{ steps.classify.outputs.mode }}
+      reused_pr: ${{ steps.classify.outputs.reused_pr }}
     steps:
       - name: Check out classifier candidate
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -64,11 +69,13 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
           PUSH_FORCED: ${{ github.event.forced || false }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           full_mode() {
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
             echo "mode=full" >> "$GITHUB_OUTPUT"
+            echo "reused_pr=false" >> "$GITHUB_OUTPUT"
           }
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
             full_mode
@@ -89,6 +96,20 @@ jobs:
           if ! git merge-base --is-ancestor "${BASE_SHA}" "${EXPECTED_SHA}"; then
             full_mode
             exit 0
+          fi
+          if [ "${EVENT_NAME}" = "push" ] && [ -f trusted-base/scripts/ci/main_reuse_evidence.py ]; then
+            if python3 trusted-base/scripts/ci/main_reuse_evidence.py \
+              --repository "${GITHUB_REPOSITORY}" \
+              --before "${BASE_SHA}" \
+              --after "${EXPECTED_SHA}" \
+              --repository-root "${GITHUB_WORKSPACE}" \
+              --receipt main-ci-reuse.json; then
+              echo "docs_only=false" >> "$GITHUB_OUTPUT"
+              echo "mode=reused_pr" >> "$GITHUB_OUTPUT"
+              echo "reused_pr=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Trusted PR reuse proof unavailable; continuing with exact diff classification."
           fi
           git diff --name-only "${BASE_SHA}" "${EXPECTED_SHA}" > changed-files.txt
           git diff --raw --no-renames "${BASE_SHA}" "${EXPECTED_SHA}" > changed-raw.txt
@@ -117,7 +138,16 @@ jobs:
                   docs_only = False
           print(f"docs_only={str(docs_only).lower()}")
           print(f"mode={'docs_only' if docs_only else 'full'}")
+          print("reused_pr=false")
           PY
+      - name: Upload main CI reuse receipt
+        if: steps.classify.outputs.reused_pr == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: main-ci-reuse-${{ github.run_id }}-${{ github.run_attempt }}
+          path: main-ci-reuse.json
+          retention-days: 1
+          if-no-files-found: error
 
   python-tests:
     needs: classify-change-impact
@@ -142,6 +172,7 @@ jobs:
             exit 1
           fi
       - name: Set up uv
+        if: needs.classify-change-impact.outputs.mode != 'reused_pr'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.11"
@@ -152,13 +183,20 @@ jobs:
       - name: Report documentation-only lane
         if: needs.classify-change-impact.outputs.docs_only == 'true'
         run: echo "Canonical docs-only lane; runtime and compiler checks are not applicable to this exact head."
+      - name: Report accepted PR reuse lane
+        if: needs.classify-change-impact.outputs.mode == 'reused_pr'
+        run: echo "Heavy checks are reused from the tree-identical, exact-head accepted PR; terminal evidence will revalidate the receipt."
       - name: Check GitHub Action pins
+        if: needs.classify-change-impact.outputs.mode != 'reused_pr'
         run: bash scripts/check_github_action_pins.sh
       - name: Run security baseline checker
+        if: needs.classify-change-impact.outputs.mode != 'reused_pr'
         run: uv run --no-project python tools/check_security_baseline.py
       - name: Check agent handoff
+        if: needs.classify-change-impact.outputs.mode != 'reused_pr'
         run: uv run --no-project python scripts/check_agent_handoff.py
       - name: Check exact-head diff
+        if: needs.classify-change-impact.outputs.mode != 'reused_pr'
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
@@ -169,41 +207,46 @@ jobs:
             git diff --check "${EXPECTED_SHA}^" "${EXPECTED_SHA}"
           fi
       - name: Check public README surface
+        if: needs.classify-change-impact.outputs.mode != 'reused_pr'
         run: uv run --no-project python tools/check_readme_public_surface.py
       - name: Check site OG metadata
+        if: needs.classify-change-impact.outputs.mode != 'reused_pr'
         run: uv run --no-project python tools/check_site_og_metadata.py
       - name: Run CI lane classifier tests
+        if: needs.classify-change-impact.outputs.mode != 'reused_pr'
         run: uv run --no-project python -m unittest tools.test_classify_change_impact
       - name: Run CI workflow optimization contract tests
+        if: needs.classify-change-impact.outputs.mode != 'reused_pr'
         run: uv run --no-project --with pyyaml python -m unittest tools.test_ci_workflow_optimization tools.test_ci_lane_contract
       - name: Parse workflow YAML
+        if: needs.classify-change-impact.outputs.mode != 'reused_pr'
         run: uv run --no-project --with pyyaml python scripts/check_agent_workflow_yaml.py
       - name: Check wire codegen drift
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: bash scripts/check_wire_codegen_drift.sh
       - name: Run relocated utility tests
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: uv run --no-project --with pyyaml python -m unittest discover -s tools -p "test_*.py"
       - name: Run no-provider demo unit tests
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: uv run --no-project python -m unittest tests.test_demo_no_provider
       - name: Run exact-head action contract tests
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: uv run --no-project python -m unittest tests.test_exact_head_action
       - name: Run external validation contract tests
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: uv run --no-project python -m unittest tests.test_external_validation
       - name: Check OpenCode fixture adapter manifest
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: bash scripts/check_opencode_fixture_manifest.sh
       - name: Run OpenCode fixture adapter tests
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: PYTHONPATH=adapters/opencode/src uv run --no-project python -m unittest discover -s adapters/opencode/tests -v
       - name: Verify canonical orchestrator regression suite is wired
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: uv run --no-project python scripts/verify_orchestrator_test_suite.py
       - name: Run orchestrator regression tests
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           PYTHONPATH=scripts/agent-control uv run --no-project python -m unittest \
             tests/test_agent_control_ci.py \
@@ -214,7 +257,7 @@ jobs:
             tests/test_agent_orchestrator_artifacts.py \
             tests/test_agent_review_finalization.py
       - name: Run Python SDK tests
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 
   rust-tests:
@@ -245,8 +288,11 @@ jobs:
       - name: Report documentation-only lane
         if: needs.classify-change-impact.outputs.docs_only == 'true'
         run: echo "rust-tests not applicable to a trusted documentation-only diff"
+      - name: Report accepted PR reuse lane
+        if: needs.classify-change-impact.outputs.mode == 'reused_pr'
+        run: echo "rust-tests reused from the accepted tree-identical PR head"
       - name: Install bubblewrap for Codex mediation isolation probes
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -254,16 +300,16 @@ jobs:
           test -x /usr/bin/bwrap
           /usr/bin/bwrap --version
       - name: Install Rust toolchain
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Set up sccache
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: "v0.15.0"
           disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -276,43 +322,41 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Install pytest for the frozen RWE verifier shape
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --user pytest
           python3 -m pytest --version
       - name: Run cargo test
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
-        # HTTP integration tests use process-wide environment gates; keep the
-        # canonical Rust lane deterministic and aligned with the release lane.
-        run: cargo test -p engine -- --test-threads=1
+        if: needs.classify-change-impact.outputs.mode == 'full'
+        run: scripts/ci/run_rust_tests.py
       - name: Check formatting
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cargo fmt --check
       - name: Run clippy
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cargo clippy -p engine --all-targets --all-features -- -D warnings
       - name: Cache cargo-audit binary
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         id: cache-cargo-audit
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-audit
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2
       - name: Ensure cargo-audit
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           # cargo-audit 0.22.2 intentionally reports this nested command name.
           if ! CARGO_TERM_COLOR=never cargo audit --version 2>/dev/null | grep -Fq 'cargo-audit-audit 0.22.2'; then
             cargo install cargo-audit --version 0.22.2 --locked --force
           fi
       - name: Audit Rust dependencies
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           CARGO_TERM_COLOR=never cargo audit --version | grep -F 'cargo-audit-audit 0.22.2'
           cargo audit --deny warnings
       - name: Report sccache statistics
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         continue-on-error: true
         run: '"${SCCACHE_PATH}" --show-stats'
 
@@ -347,8 +391,11 @@ jobs:
       - name: Report documentation-only lane
         if: needs.classify-change-impact.outputs.docs_only == 'true'
         run: echo "pg-integration-tests not applicable to a trusted documentation-only diff"
+      - name: Report accepted PR reuse lane
+        if: needs.classify-change-impact.outputs.mode == 'reused_pr'
+        run: echo "pg-integration-tests reused from the accepted tree-identical PR head"
       - name: Start PostgreSQL service
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           set -euo pipefail
           docker run --detach --name "${PG_CONTAINER}" \
@@ -366,23 +413,23 @@ jobs:
           docker logs "${PG_CONTAINER}"
           exit 1
       - name: Install bubblewrap for Codex mediation isolation probes
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y bubblewrap
           test -x /usr/bin/bwrap
       - name: Install Rust toolchain
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Set up sccache
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: "v0.15.0"
           disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -395,23 +442,23 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Install pytest for the frozen RWE verifier shape
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --user pytest
           python3 -m pytest --version
       - name: Run PostgreSQL integration tests
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: bash scripts/ci/run_postgres_tests.sh
       - name: Verify PostgreSQL owner evidence through the PE-6 harness
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: PYTHONPATH=. python3 tools/run_fault_drills.py --suite storage --seed 0 --worker 0 --require-supported --output /tmp/acp-pe6-storage.json --format human
       - name: Report sccache statistics
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         continue-on-error: true
         run: '"${SCCACHE_PATH}" --show-stats'
       - name: Stop PostgreSQL service
-        if: always() && needs.classify-change-impact.outputs.docs_only != 'true'
+        if: always() && needs.classify-change-impact.outputs.mode == 'full'
         run: docker rm --force "${PG_CONTAINER}" || true
 
   typescript-tests:
@@ -438,11 +485,14 @@ jobs:
       - name: Report documentation-only lane
         if: needs.classify-change-impact.outputs.docs_only == 'true'
         run: echo "typescript-tests not applicable to a trusted documentation-only diff"
+      - name: Report accepted PR reuse lane
+        if: needs.classify-change-impact.outputs.mode == 'reused_pr'
+        run: echo "typescript-tests reused from the accepted tree-identical PR head"
       - name: Set up Bun
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Cache Bun downloads
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
@@ -450,25 +500,25 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
       - name: Install SDK dependencies
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cd sdk/typescript && bun install --frozen-lockfile
       - name: Run SDK tests
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cd sdk/typescript && bun run test
       - name: Build SDK package
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cd sdk/typescript && bun run build
       - name: Audit SDK dependencies
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cd sdk/typescript && bun audit
       - name: Install dashboard dependencies
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cd dashboard && bun install --frozen-lockfile
       - name: Check dashboard
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cd dashboard && bun run lint && bun run typecheck && bun run build
       - name: Audit dashboard dependencies
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cd dashboard && bun audit
 
   native-runtime:
@@ -499,17 +549,20 @@ jobs:
       - name: Report documentation-only lane
         if: needs.classify-change-impact.outputs.docs_only == 'true'
         run: echo "native-runtime not applicable to a trusted documentation-only diff"
+      - name: Report accepted PR reuse lane
+        if: needs.classify-change-impact.outputs.mode == 'reused_pr'
+        run: echo "native-runtime reused from the accepted tree-identical PR head"
       - name: Install Rust toolchain
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Set up sccache
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: "v0.15.0"
           disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -522,10 +575,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Set up Bun
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Cache Bun downloads
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
@@ -533,7 +586,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
       - name: Set up uv
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.11"
@@ -542,19 +595,19 @@ jobs:
             **/uv.lock
             **/pyproject.toml
       - name: Build static dashboard
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cd dashboard && bun install --frozen-lockfile && bun run build:static
       - name: Build native engine
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cargo build -p engine
       - name: Test LangGraph adapter
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: uv run --frozen --project adapters/langgraph python -m unittest discover -s adapters/langgraph/tests -v
       - name: Test Rust to LangGraph tool bridge
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: cargo test -p engine --lib efficiency_benchmark_runtime::tests::langgraph_tool_bridge_invokes_the_real_adapter -- --ignored --exact
       - name: Smoke canonical fixture benchmark
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           set -euo pipefail
           output_root="$(mktemp -d -t acp-efficiency-fixture.XXXXXX)"
@@ -566,23 +619,32 @@ jobs:
             --output-root "$output_root" \
             --benchmark-run-id ci-fixture-acceptance
       - name: Smoke native runtime
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: uv run --no-project python scripts/smoke_native_runtime.py
       - name: Smoke adaptive stub completion
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         run: bash scripts/smoke_adaptive_stub_completion.sh
+      - name: Verify Rust + TypeScript runtime from built artifacts
+        if: needs.classify-change-impact.outputs.mode == 'full'
+        run: bash scripts/verify_rust_typescript_stack.sh --runtime-only --evidence-path "${RUNNER_TEMP}/rust-typescript-cutover.json"
+      - name: Upload Rust + TypeScript cutover evidence
+        if: needs.classify-change-impact.outputs.mode == 'full'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-typescript-cutover-${{ env.EXPECTED_SHA }}
+          path: ${{ runner.temp }}/rust-typescript-cutover.json
+          retention-days: 1
+          if-no-files-found: error
       - name: Report sccache statistics
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         continue-on-error: true
         run: '"${SCCACHE_PATH}" --show-stats'
 
   rust-typescript-cutover:
-    needs: classify-change-impact
+    needs:
+      - classify-change-impact
+      - native-runtime
     runs-on: ubuntu-latest
-    env:
-      CARGO_INCREMENTAL: "0"
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -604,62 +666,40 @@ jobs:
       - name: Report documentation-only lane
         if: needs.classify-change-impact.outputs.docs_only == 'true'
         run: echo "rust-typescript-cutover not applicable to a trusted documentation-only diff"
-      - name: Install bubblewrap for Codex mediation isolation probes
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+      - name: Report accepted PR reuse lane
+        if: needs.classify-change-impact.outputs.mode == 'reused_pr'
+        run: echo "rust-typescript-cutover reused from the accepted tree-identical PR head"
+      - name: Download Rust + TypeScript cutover evidence
+        if: needs.classify-change-impact.outputs.mode == 'full'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: rust-typescript-cutover-${{ env.EXPECTED_SHA }}
+          path: ${{ runner.temp }}/rust-typescript-cutover
+      - name: Validate Rust + TypeScript cutover evidence
+        if: needs.classify-change-impact.outputs.mode == 'full'
+        env:
+          EVIDENCE_PATH: ${{ runner.temp }}/rust-typescript-cutover/rust-typescript-cutover.json
         run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
-          test -x /usr/bin/bwrap
-      - name: Install Rust toolchain
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
-      - name: Set up sccache
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-        with:
-          version: "v0.15.0"
-          disable_annotations: true
-      - name: Cache Cargo registry and Git dependencies
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/registry/src
-            ~/.cargo/git/db
-            ~/.cargo/git/checkouts
-          key: ${{ runner.os }}-rust-deps-2026-07-10-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-rust-deps-2026-07-10-
-      - name: Set up Bun
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-      - name: Cache Bun downloads
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('sdk/typescript/bun.lock', 'dashboard/bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-      - name: Set up uv
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          python-version: "3.11"
-          enable-cache: true
-          cache-dependency-glob: |
-            **/uv.lock
-            **/pyproject.toml
-      - name: Verify Rust + TypeScript stack
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
-        run: bash scripts/verify_rust_typescript_stack.sh --integration-only
-      - name: Report sccache statistics
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
-        continue-on-error: true
-        run: '"${SCCACHE_PATH}" --show-stats'
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+
+          with open(os.environ["EVIDENCE_PATH"], encoding="utf-8") as handle:
+              evidence = json.load(handle)
+          expected = {
+              "schema_version": "rust_typescript_cutover.v1",
+              "head_sha": os.environ["EXPECTED_SHA"],
+              "provider_execution": "disabled",
+              "runtime_smoke": "success",
+          }
+          for field, value in expected.items():
+              if evidence.get(field) != value:
+                  raise SystemExit(f"cutover evidence {field} mismatch")
+          for field in ("engine_sha256", "dashboard_index_sha256"):
+              if not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get(field) or "")):
+                  raise SystemExit(f"cutover evidence {field} invalid")
+          PY
 
   docker-build:
     needs: classify-change-impact
@@ -685,11 +725,14 @@ jobs:
       - name: Report documentation-only lane
         if: needs.classify-change-impact.outputs.docs_only == 'true'
         run: echo "docker-build not applicable to a trusted documentation-only diff"
+      - name: Report accepted PR reuse lane
+        if: needs.classify-change-impact.outputs.mode == 'reused_pr'
+        run: echo "docker-build reused from the accepted tree-identical PR head"
       - name: Set up Docker Buildx
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - name: Build local Docker services
-        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        if: needs.classify-change-impact.outputs.mode == 'full'
         uses: docker/bake-action@d3418bd7d0e9324001bca92fa8ba175ea7e6dc9b # v7.3.0
         with:
           source: .
@@ -706,6 +749,7 @@ jobs:
   context-capsule:
     name: context-capsule
     needs:
+      - classify-change-impact
       - python-tests
       - rust-tests
       - pg-integration-tests
@@ -716,11 +760,13 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
       GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+      REUSE_MODE: ${{ needs.classify-change-impact.outputs.mode }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -755,6 +801,34 @@ jobs:
           expected-head: ${{ env.EXPECTED_SHA }}
           allow-fork-head: "true"
           proof-path: trusted-exact-head-proof.json
+      - name: Check out trusted main-reuse verifier
+        if: github.event_name == 'push' && env.REUSE_MODE == 'reused_pr'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.before }}
+          path: trusted-reuse
+          persist-credentials: false
+      - name: Download main CI reuse receipt
+        if: github.event_name == 'push' && env.REUSE_MODE == 'reused_pr'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: main-ci-reuse-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/main-ci-reuse
+      - name: Revalidate trusted main CI reuse receipt
+        if: github.event_name == 'push' && env.REUSE_MODE == 'reused_pr'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 trusted-reuse/scripts/ci/main_reuse_evidence.py \
+            --repository "${GITHUB_REPOSITORY}" \
+            --before "${{ github.event.before }}" \
+            --after "${EXPECTED_SHA}" \
+            --repository-root "${GITHUB_WORKSPACE}" \
+            --receipt "${RUNNER_TEMP}/main-ci-reuse-recomputed.json"
+          cmp \
+            "${RUNNER_TEMP}/main-ci-reuse/main-ci-reuse.json" \
+            "${RUNNER_TEMP}/main-ci-reuse-recomputed.json"
       - name: Set up uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -807,6 +881,10 @@ jobs:
             --format markdown \
             --capsule-json context-capsule/context-capsule.json \
             > context-capsule/context-capsule.md
+          if [ "${REUSE_MODE}" = "reused_pr" ]; then
+            cp "${RUNNER_TEMP}/main-ci-reuse-recomputed.json" \
+              context-capsule/main-ci-reuse.json
+          fi
       - name: Publish sanitized job summary
         working-directory: ${{ runner.temp }}
         run: |

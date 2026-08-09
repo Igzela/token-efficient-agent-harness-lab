@@ -1,10 +1,10 @@
 # Architecture Book
 
-Last updated: 2026-08-08.
+Last updated: 2026-08-09.
 
 Current version: v36.
 
-This is the durable architecture and safety baseline for the Token-Efficient Agent Harness Lab. Current facts live in `docs/CURRENT_STATUS.md`; routing and gates live in `docs/NEXT_DECISION.md`; concrete owners live in `docs/MODULE_MAP.md`. Historical packet details remain available in git history.
+This is the durable architecture and safety baseline for the Token-Efficient Agent Harness Lab. Accepted facts live in `docs/CURRENT_STATUS.md`; the current executable window lives in `docs/NEXT_DECISION.md`; routing-only successors live in `docs/FUTURE_ROUTE.md`; concrete owners live in `docs/MODULE_MAP.md`. Historical packet details remain available in git history.
 
 The schema carries **v32** hash-linked decision-transition receipts, **v33** managed-acceptance spend/lease logical authorization, **v34** RWE authority rows, **v35** ProductTask workspace-preparation receipts, and **v36** immutable proposal/final-manifest delegation state plus the durable managed-provider request journal. The repository-agent two-loop control-plane seam described below adds no runtime schema or persisted product state. v36 reuses `LocalProductStore`, ProductTask budget, attempt, approval, output, audit, and rollback owners; it does not create another scheduler, runtime, store, budget, workspace, evaluator, or target-output owner.
 
@@ -34,6 +34,20 @@ The outer loop persists coarse state in GitHub Issue labels, typed/hash-bound ev
 For a public repository, the preferred host interaction is an outbound local worker. One bounded `loopctl poll` may admit a capacity-bounded batch whose declared paths do not overlap active or selected tasks; independent `run-once` processes then claim one task and start one fresh isolated session each. A stateless supervisor may run those processes concurrently, but GitHub remains the queue and lease owner. Repository text and model output are untrusted data: the controller executes only repository-owned commands and never forwards GitHub/API credentials into the model child. Repository active capacity is fixed at canonical K=2, owned solely by `scripts/agent-control/state_manager.py` (`MAX_ACTIVE`); `loopctl poll --max-active` may only throttle that ceiling downward to 1..K.
 
 The local adapter must reuse the existing `state_manager`, dispatcher, worktree, prompt, artifact, PR-binding, CI, review, and merge owners. It may not form a second controller or output authority. Before the self-hosted workflow path can be retired, `run-once` must prove remote serialization/lease recovery, exact accepted-main binding, one worktree per task, process-tree timeout/cancellation, validated patch artifact finalization, Draft-PR-only output, CI/review handoff, bounded repair, and safe restart after every externally visible transition.
+
+## Repository Context Control Plane
+
+Repository handoff separates three identities:
+
+```text
+accepted truth and confirmed gaps  -> CURRENT_STATUS
+one executable window              -> NEXT_DECISION
+blocked long-horizon sketches      -> FUTURE_ROUTE
+```
+
+Live PR heads, CI conclusions, reviews, mergeability, and next-action sequencing are observations, not accepted document state. `scripts/project_context.py` combines canonical documents from accepted `main` with bounded read-only GitHub observations and reports unavailable or conflicting evidence fail-closed. A capsule is short-lived transport context; it never becomes a status database, packet owner, review judge, CI authority, or permission source.
+
+Exactly one blocked successor may be removed from `FUTURE_ROUTE` and expanded into `NEXT_DECISION` only after its accepted prerequisite and any negative/insufficient disposition are reconciled against current `main`. Duplicate packet identities or future-route activation are invalid handoff states.
 
 ## Decision Model
 
@@ -396,14 +410,15 @@ The Dashboard and SDKs project accepted Rust-owned schemas and controls. They ma
 
 The repository does not currently claim full Codex admission, managed Claude/OpenCode admission, accepted live Golden Path completion, accepted live RWE, stable accepted-success probability, realized VDE improvement, completed Architecture Convergence, automatic multi-generation evolution, demonstrated continuous learning, production self-update, or autonomous merge/release/deployment.
 
-Those claims require the evidence and gates in `docs/NEXT_DECISION.md`.
+Those claims require the current gates in `docs/NEXT_DECISION.md` and the separately promoted contracts currently sketched in `docs/FUTURE_ROUTE.md`.
 
 ## Document Roles
 
 - `ARCHITECTURE_BOOK.md` — durable mission, owners, boundaries, and invariants.
-- `CURRENT_STATUS.md` — accepted main truth, open review surfaces, and blockers.
-- `NEXT_DECISION.md` — execution order, entry/exit evidence, and immediate next action.
-- `MODULE_MAP.md` — canonical owners and proposed-but-unmerged surfaces.
+- `CURRENT_STATUS.md` — accepted main truth and confirmed gaps; no live PR/CI/review state.
+- `NEXT_DECISION.md` — one current executable window, entry/exit evidence, and immediate next action.
+- `FUTURE_ROUTE.md` — blocked long-horizon routing sketches; no execution authority.
+- `MODULE_MAP.md` — accepted canonical owners; no proposed branch ownership.
 - `REAL_WORLD_TESTING_PLAYBOOK.md` / `RUNBOOK.md` — operational validation and procedures.
 
 Prefer updating these active documents over adding parallel strategy, status, or policy files.

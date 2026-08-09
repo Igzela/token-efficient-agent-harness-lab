@@ -1436,8 +1436,19 @@ def check_dormant_surface_heuristics(
     def suppressed(rel_path: str, classification: str) -> bool:
         return (rel_path, classification) in allowed
 
+    # Build the production-only view once.  The module-island check used to
+    # re-read, strip, and mask every Rust source once per declared module,
+    # turning this guard into an O(modules * source_size) scan.  Reusing the
+    # same fail-closed lexical projection preserves the findings while making
+    # the guard linear in the tracked Rust surface.
+    production_sources = dict(_iter_rs_lines(repo_root, tracked_files))
+    semantic_sources = {
+        rel_path: _rust_code_mask(content)
+        for rel_path, content in production_sources.items()
+    }
+
     # (a) module-level dead-code blankets
-    for rel_path, content in _iter_rs_lines(repo_root, tracked_files):
+    for rel_path, content in production_sources.items():
         for line_no, line in enumerate(content.splitlines(), 1):
             if line.strip() == "#![allow(dead_code)]":
                 findings.append(
@@ -1446,21 +1457,14 @@ def check_dormant_surface_heuristics(
                 )
 
     # (b) module islands among top-level lib.rs modules
-    lib_path = repo_root / "engine" / "src" / "lib.rs"
-    try:
-        lib_content = lib_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        lib_content = ""
-    lib_content = _strip_cfg_test_regions(lib_content)
+    lib_content = production_sources.get("engine/src/lib.rs", "")
     declared_modules = re.findall(
         r"^\s*(?:pub(?:\(crate\))?\s+)?mod\s+(\w+)\s*;",
         lib_content,
         re.M,
     )
     src_dir = repo_root / "engine" / "src"
-    all_src_files = [
-        f for f in tracked_files if f.startswith("engine/src/") and f.endswith(".rs")
-    ]
+    all_src_files = list(production_sources)
     for module in declared_modules:
         module_file = (
             f"engine/src/{module}.rs"
@@ -1481,13 +1485,7 @@ def check_dormant_surface_heuristics(
         ]
         referenced = False
         for f in consumers:
-            try:
-                content = (repo_root / f).read_text(
-                    encoding="utf-8", errors="replace"
-                )
-            except OSError:
-                continue
-            content = _rust_semantic_content(content)
+            content = semantic_sources[f]
             if re.search(rf"\bcrate::{module}\b|\bengine::{module}\b", content):
                 referenced = True
                 break
@@ -1499,7 +1497,7 @@ def check_dormant_surface_heuristics(
             )
 
     # (c) self-described dormant module headers
-    for rel_path, content in _iter_rs_lines(repo_root, tracked_files):
+    for rel_path, content in production_sources.items():
         header = "\n".join(content.splitlines()[:40])
         for descriptor in DORMANT_SURFACE_SELF_DESCRIPTORS:
             if descriptor.search(header):
@@ -1513,8 +1511,7 @@ def check_dormant_surface_heuristics(
                 )
 
     # (d) executor-named empty functions
-    for rel_path, content in _iter_rs_lines(repo_root, tracked_files):
-        clean = _rust_semantic_content(content)
+    for rel_path, clean in semantic_sources.items():
         for match in DORMANT_EXECUTOR_FN_RE.finditer(clean):
             line_no = clean.count("\n", 0, match.start()) + 1
             brace = clean.find("{", match.end())
@@ -1546,7 +1543,7 @@ def check_dormant_surface_heuristics(
 
     # (e) conflicting sole-owner claims
     claims: dict[str, list[str]] = {}
-    for rel_path, content in _iter_rs_lines(repo_root, tracked_files):
+    for rel_path, content in production_sources.items():
         for match in DORMANT_OWNERSHIP_CLAIM_RE.finditer(content):
             claims.setdefault(match.group(1), []).append(rel_path)
     for claimed, paths in claims.items():

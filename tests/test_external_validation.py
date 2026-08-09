@@ -119,6 +119,9 @@ class TestExternalValidation(unittest.TestCase):
         self.assertIn("macos-latest", workflow)
         self.assertNotIn("windows-latest", workflow)
         self.assertIn("external_validation", workflow)
+        self.assertNotIn("  push:\n", workflow)
+        self.assertNotIn('      - "README.md"', workflow)
+        self.assertIn('      - "Cargo.lock"', workflow)
         # Action pins must be commit SHAs (checked globally by pin script).
         self.assertIn("actions/checkout@", workflow)
 
