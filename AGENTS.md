@@ -53,6 +53,8 @@ audit → focused Draft PR → focused checks → stable-head complete-diff revi
 
 Use one branch/PR per coherent packet. Auto-merge stays disabled. A new head invalidates prior CI and review. Rebase only for conflict, overlapping assumptions, explicit freshness, or proven integration risk.
 
+Review has no `COMPLETE` verdict. Exact `PASS` binds only one reviewed head and satisfies only the independent-review gate. Keep `packet_state` separate from `independent_review`; packet lifecycle `COMPLETE` requires accepted canonical owners to establish merge, verification, review, and documentation.
+
 Normal reversible repository work and already-configured local/GitHub services are pre-authorized. Confirmation is still required for irreversible destruction, production release/deploy, new paid-provider POST, credential creation/rotation/disclosure, protected force-push, or unbounded external effects.
 
 ## CI Lane Discipline
@@ -71,7 +73,7 @@ A missing canonical PR `tests` run is not success. A fast-check success, a Draft
 
 ## Execution-Ready Task Packets
 
-Packet states: `READY_FOR_EXECUTION`, `BLOCKED_PREREQUISITE`, `DECISION_REQUIRED`, `IN_PROGRESS`, `COMPLETE`. Each packet records goal, owner paths, prerequisites, allowed changes, forbidden changes, versioned authority/budget/failure contracts, focused/full verification, compatibility, rollback, evidence, and stop triggers. Prefer the earliest eligible packet; do not begin later behavior before its predecessor is accepted.
+Packet states: `READY_FOR_EXECUTION`, `BLOCKED_PREREQUISITE`, `DECISION_REQUIRED`, `IN_PROGRESS`, `COMPLETE`. These are lifecycle states owned by `docs/NEXT_DECISION.md`, not review verdicts. Each packet records goal, owner paths, prerequisites, allowed changes, forbidden changes, versioned authority/budget/failure contracts, focused/full verification, compatibility, rollback, evidence, and stop triggers. Prefer the earliest eligible packet; do not begin later behavior before its predecessor is accepted.
 
 ## Full Agent Autonomy Mode
 

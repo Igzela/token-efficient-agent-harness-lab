@@ -105,9 +105,10 @@ SECRET_SCAN_EXCLUDE = {
     "tools/test_security_baseline.py",
 }
 
-# Per-file import allowlists for bounded operator HTTP clients and tests. These
-# exceptions are stdlib transports for local harness/API integration or an
-# explicitly gated live-acceptance entry point, not provider SDKs.
+# Per-file import allowlists for bounded operator HTTP clients, read-only
+# repository observation, and tests. These exceptions are stdlib transports
+# for local harness/API integration, an explicitly gated live-acceptance entry
+# point, or the GET-only GitHub observer; they are not provider SDKs.
 # Each key is a file path; the value is the set of imports allowed in that file.
 ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
     "sdk/python/src/agent_control_plane_sdk/client.py": {"urllib.request", "urllib.error"},
@@ -141,6 +142,11 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
     },
     "scripts/efficiency_live_benchmark.py": {
         "urllib.error",
+        "urllib.request",
+    },
+    "scripts/github_observer.py": {
+        "urllib.error",
+        "urllib.parse",
         "urllib.request",
     },
 }

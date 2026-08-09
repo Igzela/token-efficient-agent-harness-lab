@@ -34,11 +34,11 @@ class GitHubObserverTests(unittest.TestCase):
             return github_observer.JsonResponse([])
 
         observer = github_observer.GitHubObserver(
-            "owner/repository", token="secret-token", fetcher=fetcher
+            "owner/repository", token="your-token", fetcher=fetcher
         )
         self.assertEqual(observer.list_open_pull_requests(), [])
-        self.assertNotIn("secret-token", observed[0][0])
-        self.assertEqual(observed[0][1]["Authorization"], "Bearer secret-token")
+        self.assertNotIn("your-token", observed[0][0])
+        self.assertEqual(observed[0][1]["Authorization"], "Bearer your-token")
 
     def test_bounded_pagination_follows_only_next_links(self) -> None:
         calls: list[str] = []
@@ -68,7 +68,7 @@ class GitHubObserverTests(unittest.TestCase):
             return github_observer.JsonResponse([], "https://attacker.invalid/next")
 
         observer = github_observer.GitHubObserver(
-            "owner/repository", token="secret-token", fetcher=fetcher
+            "owner/repository", token="your-token", fetcher=fetcher
         )
         with self.assertRaisesRegex(
             github_observer.GitHubObservationError,
@@ -118,6 +118,12 @@ class GitHubObserverTests(unittest.TestCase):
         )
         self.assertEqual(observer.pull_request_comments(41), [])
         self.assertIn("/pulls/41/comments", observed[0])
+
+    def test_observer_source_exposes_no_http_write_method(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('method="GET"', source)
+        for method in ("POST", "PUT", "PATCH", "DELETE"):
+            self.assertNotIn(f'method="{method}"', source)
 
 
 if __name__ == "__main__":
