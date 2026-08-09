@@ -135,6 +135,33 @@ Phase one was accepted through PR #302.
         self.assertEqual(result["binding"], "pr_body_packet")
         self.assertEqual(len(result["open_frontiers"]), 2)
 
+    def test_canonical_owned_pr_must_still_be_open_against_main(self) -> None:
+        observer = mock.Mock()
+        observer.list_open_pull_requests.return_value = [
+            {
+                "number": 371,
+                "title": "Different work",
+                "body": "",
+                "head": {"ref": "maintenance", "sha": "a" * 40},
+                "draft": True,
+                "html_url": "https://example.invalid/371",
+            }
+        ]
+        result = project_context.observe_open_frontiers(
+            "owner/repo",
+            {
+                "packet": "PE7-RWE-V2-REFREEZE-1",
+                "state": "IN_PROGRESS",
+                "pr_number": "370",
+            },
+            offline=False,
+            observer=observer,
+        )
+        self.assertEqual(result["availability"], "conflict")
+        self.assertEqual(
+            result["warning"], "canonical_owned_pr_is_not_open_against_main"
+        )
+
     def test_live_frontier_supports_exact_legacy_packet_branch(self) -> None:
         observer = mock.Mock()
         observer.list_open_pull_requests.return_value = [
@@ -285,6 +312,94 @@ Phase one was accepted through PR #302.
         self.assertIsNone(result["head_sha"])
         self.assertEqual(result["ci"]["state"], "unavailable")
         self.assertEqual(result["unavailable_reason"], "github_transport_unavailable")
+
+    def test_closed_or_non_main_pull_request_is_not_an_active_frontier(self) -> None:
+        for state, base, reason in (
+            ("closed", "main", "github_pull_request_not_open"),
+            ("open", "release", "github_pull_request_base_not_main"),
+        ):
+            with self.subTest(state=state, base=base):
+                observer = mock.Mock()
+                observer.pull_request.return_value = {
+                    "number": 299,
+                    "state": state,
+                    "head": {"sha": "a" * 40},
+                    "base": {"ref": base, "sha": "b" * 40},
+                }
+                result = project_context.load_pr(
+                    "owner/repo", 299, offline=False, observer=observer
+                )
+                self.assertEqual(result["availability"], "unavailable")
+                self.assertEqual(result["unavailable_reason"], reason)
+                observer.pull_request_reviews.assert_not_called()
+
+    def test_durable_projection_uses_latest_trusted_state_only(self) -> None:
+        head = "a" * 40
+        older = {
+            "kind": "agent-orchestrator-review-state",
+            "version": 3,
+            "head_sha": head,
+            "verdict": "PASS",
+            "open_blocker_ids": [],
+        }
+        newer = {
+            "kind": "agent-orchestrator-review-state",
+            "version": 3,
+            "head_sha": head,
+            "verdict": "BLOCKED",
+            "open_blocker_ids": ["F-1"],
+        }
+        observer = mock.Mock()
+        observer.issue_comments.return_value = [
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": json.dumps(older),
+            },
+            {"user": {"login": "untrusted"}, "body": json.dumps(older)},
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": json.dumps(newer),
+            },
+        ]
+        projection = project_context._load_review_state_projection(
+            "owner/repo",
+            {"headRefOid": head, "body": "Closes #42"},
+            observer=observer,
+        )
+        self.assertEqual(projection["availability"], "confirmed")
+        self.assertEqual(projection["review_state"], "BLOCKED")
+        self.assertEqual(projection["open_blocker_ids"], ["F-1"])
+
+    def test_malformed_latest_trusted_state_is_a_conflict(self) -> None:
+        head = "a" * 40
+        observer = mock.Mock()
+        observer.issue_comments.return_value = [
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": json.dumps(
+                    {
+                        "kind": "agent-orchestrator-review-state",
+                        "version": 3,
+                        "head_sha": head,
+                        "verdict": "PASS",
+                    }
+                ),
+            },
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": '{"kind":"agent-orchestrator-review-state",',
+            },
+        ]
+        projection = project_context._load_review_state_projection(
+            "owner/repo",
+            {"headRefOid": head, "body": "Closes #42"},
+            observer=observer,
+        )
+        self.assertEqual(projection["availability"], "conflict")
+        self.assertEqual(
+            projection["unavailable_reason"],
+            "latest_durable_review_state_is_malformed",
+        )
 
     def test_offline_baseline_never_uses_detached_head(self) -> None:
         calls: list[tuple[str, ...]] = []
@@ -696,6 +811,143 @@ Unresolved objections: none
         self.assertEqual(observation["review_receipt"]["state"], "valid")
         self.assertEqual(observation["exact_head_review_state"], "confirmed")
         self.assertEqual(observation["unresolved_objections_state"], "none_observed")
+
+    def test_duplicate_outcome_field_invalidates_receipt(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Outcome: BLOCKED
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"user": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertEqual(observation["review_receipt"]["state"], "invalid")
+        self.assertIn(
+            "review_field_duplicated:outcome",
+            observation["review_receipt"]["errors"],
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_conflicting_current_head_receipts_never_confirm(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        template = """EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-{suffix}
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: {outcome}
+Unresolved objections: none
+"""
+        comments = [
+            {
+                "user": {"login": "reviewer"},
+                "body": template.format(
+                    head=head, base=base, suffix="blocked", outcome="BLOCKED"
+                ),
+            },
+            {
+                "user": {"login": "reviewer"},
+                "body": template.format(
+                    head=head, base=base, suffix="pass", outcome="PASS"
+                ),
+            },
+        ]
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=comments,
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertEqual(
+            observation["review_receipt"]["errors"],
+            ["multiple_current_head_review_receipts"],
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_structured_open_blocker_never_confirms_receipt(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        receipt = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        blocker = json.dumps(
+            {
+                "findings": [
+                    {
+                        "id": "F-1",
+                        "disposition": "block_current_head",
+                        "status": "open",
+                    }
+                ]
+            }
+        )
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[
+                {"user": {"login": "reviewer"}, "body": receipt},
+                {"user": {"login": "reviewer"}, "body": blocker},
+            ],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertEqual(
+            observation["unresolved_objections_state"],
+            "explicit_blocking_comments_present",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_durable_review_state_contradiction_revokes_receipt_confirmation(self) -> None:
+        observation = {
+            "exact_head_review_state": "confirmed",
+            "unresolved_objections_state": "none_observed",
+            "unavailable_reason": None,
+        }
+        project_context._reconcile_review_state_projection(
+            observation,
+            {
+                "availability": "confirmed",
+                "review_state": "BLOCKED",
+                "open_blocker_ids": ["F-1"],
+            },
+        )
+        self.assertEqual(observation["exact_head_review_state"], "unverified")
+        self.assertEqual(
+            observation["unresolved_objections_state"],
+            "durable_review_state_has_open_blockers",
+        )
 
     def test_pass_with_notes_is_not_exact_acceptance(self) -> None:
         head = "a" * 40
@@ -1370,6 +1622,76 @@ Unresolved objections: none
             capsule["binding"]["source_required_check_matrix"]
         ))
         self.assertTrue(project_context.is_requested_head_matched(capsule))
+
+    def test_workflow_pr_does_not_replace_canonical_packet_frontier(self) -> None:
+        workflow_head = "a" * 40
+        baseline = {
+            "branch": "main",
+            "sha": "b" * 40,
+            "availability": "confirmed",
+            "source": "origin/main",
+        }
+        documents = {
+            "availability": "confirmed",
+            "source_sha": baseline["sha"],
+            "current_status": "",
+            "next_decision": """## Active Routing
+1. `PE7-RWE-V2-REFREEZE-1` — `READY_FOR_EXECUTION`.
+## Packet PE7-RWE-V2-REFREEZE-1
+**State:** `READY_FOR_EXECUTION`
+**Owned PR:** #370
+""",
+        }
+        proof = {
+            "kind": "exact-head-check-proof.v1",
+            "status": "pass",
+            "reason": "exact_head_match",
+            "repository": "owner/repo",
+            "pull_request": 371,
+            "expected_head": workflow_head,
+            "live_head": workflow_head,
+            "pr_state": "open",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "proof.json"
+            path.write_text(json.dumps(proof), encoding="utf-8")
+            with (
+                mock.patch.object(
+                    project_context, "accepted_baseline", return_value=baseline
+                ),
+                mock.patch.object(
+                    project_context, "canonical_documents", return_value=documents
+                ),
+                mock.patch.object(
+                    project_context,
+                    "local_checkout_state",
+                    return_value={
+                        "head_sha": workflow_head,
+                        "branch": "candidate",
+                        "detached": False,
+                        "dirty": False,
+                        "change_count": 0,
+                    },
+                ),
+            ):
+                capsule = project_context.build_capsule(
+                    offline=True,
+                    repository="owner/repo",
+                    event_name="pull_request",
+                    pr_number=371,
+                    expected_head_sha=workflow_head,
+                    exact_head_proof=path,
+                )
+        self.assertEqual(capsule["active_frontier"]["number"], 370)
+        self.assertEqual(capsule["active_frontier"]["availability"], "unavailable")
+        self.assertEqual(capsule["workflow_frontier"]["number"], 371)
+        self.assertEqual(capsule["workflow_frontier"]["head_sha"], workflow_head)
+        self.assertEqual(capsule["binding"]["pr_exact_head"]["number"], 371)
+        self.assertEqual(
+            capsule["binding"]["canonical_active_pr_exact_head"]["number"], 370
+        )
+        self.assertIn("refresh PR #370", capsule["next_permitted_action"])
+        self.assertNotIn("PR #371", capsule["next_permitted_action"])
 
     def test_trusted_exact_head_proof_rejects_unconfirmed_or_mismatched_state(self) -> None:
         proof = {

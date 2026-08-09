@@ -55,15 +55,25 @@ PROTECTED_PREFIXES = (
     ".github/",
     "actions/exact-head-check/",
     "scripts/agent-control/",
+    "scripts/check_",
+    "scripts/ci/",
+    "tools/check_",
 )
 PROTECTED_PATHS = {
     "AGENTS.md",
     "START_HERE.md",
     "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
     "scripts/check_agent_handoff.py",
+    "scripts/check_wire_codegen_drift.sh",
     "scripts/github_observer.py",
     "scripts/project_context.py",
-    "scripts/ci/main_reuse_evidence.py",
+    "scripts/verify_rust_typescript_stack.sh",
+    # These exact locks activate the parallel Rust runner.  Their first
+    # combined main tree must execute the full matrix rather than reuse CI
+    # from a branch that still ran the serial fallback.
+    "engine/tests/test_http_server.rs",
+    "engine/tests/http_server/auth.rs",
+    "engine/tests/http_server/common.rs",
     "tools/check_security_baseline.py",
     "tools/test_ci_workflow_optimization.py",
     "tools/test_github_observer.py",
@@ -74,6 +84,20 @@ PROTECTED_PATHS = {
 
 class ReuseEvidenceError(RuntimeError):
     """Trusted equivalence or acceptance evidence is incomplete."""
+
+
+def _latest_by_id(items: list[dict[str, Any]], label: str) -> dict[str, Any]:
+    """Select one latest GitHub evidence object by its stable numeric id."""
+    if not items:
+        raise ReuseEvidenceError(f"{label}_missing")
+    ids = [item.get("id") for item in items]
+    if any(not isinstance(item_id, int) or item_id <= 0 for item_id in ids):
+        raise ReuseEvidenceError(f"{label}_id_invalid")
+    latest_id = max(ids)
+    latest = [item for item in items if item.get("id") == latest_id]
+    if len(latest) != 1:
+        raise ReuseEvidenceError(f"{label}_latest_not_unique")
+    return latest[0]
 
 
 def _require_sha(value: str, label: str) -> str:
@@ -157,12 +181,12 @@ def _canonical_run(
             and linked_pr.get("number") == pr_number
             for linked_pr in (run.get("pull_requests") or [])
         )
-        and run.get("status") == "completed"
-        and run.get("conclusion") == "success"
     ]
-    if not runs:
-        raise ReuseEvidenceError("canonical_pr_workflow_success_missing")
-    run = max(runs, key=lambda item: int(item.get("id") or 0))
+    if any(run.get("status") != "completed" for run in runs):
+        raise ReuseEvidenceError("canonical_pr_workflow_nonterminal_conflict")
+    run = _latest_by_id(runs, "canonical_pr_workflow")
+    if run.get("status") != "completed" or run.get("conclusion") != "success":
+        raise ReuseEvidenceError("canonical_pr_workflow_latest_not_successful")
     run_id = run.get("id")
     if not isinstance(run_id, int):
         raise ReuseEvidenceError("canonical_pr_workflow_id_invalid")
@@ -172,12 +196,16 @@ def _canonical_run(
             job
             for job in jobs
             if job.get("name") == name
-            and job.get("status") == "completed"
-            and job.get("conclusion") == "success"
         ]
         for name in REQUIRED_CANONICAL_JOBS
     }
-    missing = sorted(name for name, matches in outcomes.items() if not matches)
+    missing = sorted(
+        name
+        for name, matches in outcomes.items()
+        if len(matches) != 1
+        or matches[0].get("status") != "completed"
+        or matches[0].get("conclusion") != "success"
+    )
     if missing:
         raise ReuseEvidenceError(
             "canonical_pr_jobs_missing_or_unsuccessful:" + ",".join(missing)
@@ -190,12 +218,13 @@ def _exact_head_check(observer: GitHubObserver, head_sha: str) -> dict[str, Any]
         check
         for check in observer.check_runs(head_sha)
         if check.get("name") in EXACT_HEAD_CHECK_NAMES
-        and check.get("status") == "completed"
-        and check.get("conclusion") == "success"
     ]
-    if not checks:
-        raise ReuseEvidenceError("exact_head_check_success_missing")
-    return max(checks, key=lambda item: int(item.get("id") or 0))
+    if any(check.get("status") != "completed" for check in checks):
+        raise ReuseEvidenceError("exact_head_check_nonterminal_conflict")
+    latest = _latest_by_id(checks, "exact_head_check")
+    if latest.get("status") != "completed" or latest.get("conclusion") != "success":
+        raise ReuseEvidenceError("exact_head_check_latest_not_successful")
+    return latest
 
 
 def _review_digest(

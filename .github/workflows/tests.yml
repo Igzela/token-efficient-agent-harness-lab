@@ -38,6 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: read
+      checks: read
       contents: read
       pull-requests: read
     outputs:
@@ -761,6 +762,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: read
+      checks: read
       contents: read
       pull-requests: read
     env:

@@ -138,6 +138,47 @@ class GitHubObserver:
             url = self._url(response.next_url)
         raise GitHubObservationError("github_pagination_limit_exceeded")
 
+    def get_all_wrapped(
+        self,
+        path: str,
+        key: str,
+        query: dict[str, str | int] | None = None,
+    ) -> list[Any]:
+        """Read every bounded page from GitHub's object-wrapped list APIs.
+
+        Check runs and Actions endpoints wrap their item arrays in an object,
+        so ``get_all`` cannot safely consume them.  Preserve Link pagination
+        and reject a declared total that does not match the complete result.
+        """
+        url = self._url(path, query)
+        items: list[Any] = []
+        declared_total: int | None = None
+        for _ in range(MAX_PAGES):
+            response = self.fetcher(url, self._headers(), self.timeout)
+            payload = response.payload
+            if not isinstance(payload, dict):
+                raise GitHubObservationError("github_paginated_response_not_object")
+            page = payload.get(key)
+            if not isinstance(page, list):
+                raise GitHubObservationError(f"github_{key}_not_list")
+            total = payload.get("total_count")
+            if total is not None:
+                if not isinstance(total, int) or total < 0:
+                    raise GitHubObservationError("github_total_count_invalid")
+                if declared_total is None:
+                    declared_total = total
+                elif total != declared_total:
+                    raise GitHubObservationError("github_total_count_changed")
+            items.extend(page)
+            if not response.next_url:
+                if declared_total is not None and declared_total != len(items):
+                    raise GitHubObservationError(
+                        "github_paginated_response_incomplete"
+                    )
+                return items
+            url = self._url(response.next_url)
+        raise GitHubObservationError("github_pagination_limit_exceeded")
+
     def list_open_pull_requests(self, *, base: str = "main") -> list[dict[str, Any]]:
         items = self.get_all(
             f"/repos/{self.repository}/pulls",
@@ -185,13 +226,11 @@ class GitHubObserver:
     def check_runs(self, sha: str) -> list[dict[str, Any]]:
         if not SHA_RE.fullmatch(sha):
             raise ValueError("sha must be a full lowercase commit identity")
-        payload = self.get(
+        checks = self.get_all_wrapped(
             f"/repos/{self.repository}/commits/{sha}/check-runs",
+            "check_runs",
             {"per_page": 100},
         )
-        checks = payload.get("check_runs") if isinstance(payload, dict) else None
-        if not isinstance(checks, list):
-            raise GitHubObservationError("github_check_runs_not_list")
         return [item for item in checks if isinstance(item, dict)]
 
     def commit_pull_requests(self, sha: str) -> list[dict[str, Any]]:
@@ -221,26 +260,23 @@ class GitHubObserver:
             raise ValueError("head_sha must be a full lowercase commit identity")
         query: dict[str, str | int] = {
             "head_sha": head_sha,
-            "status": "completed",
             "per_page": 100,
         }
         if event:
             query["event"] = event
-        payload = self.get(
+        runs = self.get_all_wrapped(
             f"/repos/{self.repository}/actions/runs",
+            "workflow_runs",
             query,
         )
-        runs = payload.get("workflow_runs") if isinstance(payload, dict) else None
-        if not isinstance(runs, list):
-            raise GitHubObservationError("github_workflow_runs_not_list")
         return [item for item in runs if isinstance(item, dict)]
 
     def workflow_jobs(self, run_id: int) -> list[dict[str, Any]]:
-        payload = self.get(
+        if not isinstance(run_id, int) or run_id <= 0:
+            raise ValueError("run_id must be a positive integer")
+        jobs = self.get_all_wrapped(
             f"/repos/{self.repository}/actions/runs/{run_id}/jobs",
+            "jobs",
             {"per_page": 100},
         )
-        jobs = payload.get("jobs") if isinstance(payload, dict) else None
-        if not isinstance(jobs, list):
-            raise GitHubObservationError("github_workflow_jobs_not_list")
         return [item for item in jobs if isinstance(item, dict)]

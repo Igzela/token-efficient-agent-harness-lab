@@ -109,15 +109,28 @@ class MainReuseEvidenceTests(unittest.TestCase):
         self.assertNotIn("reviewer", str(receipt))
 
     def test_ci_authority_change_forces_full_matrix(self) -> None:
-        with self.assertRaisesRegex(
-            main_reuse.ReuseEvidenceError, "ci_authority_changed"
+        for path in (
+            ".github/workflows/tests.yml",
+            "scripts/ci/run_rust_tests.py",
+            "scripts/ci/classify_change_impact.py",
+            "scripts/ci/future_control.py",
+            "scripts/check_future_guard.py",
+            "scripts/verify_rust_typescript_stack.sh",
+            "scripts/check_wire_codegen_drift.sh",
+            "tools/check_future_guard.py",
+            "engine/tests/test_http_server.rs",
+            "engine/tests/http_server/auth.rs",
+            "engine/tests/http_server/common.rs",
         ):
-            main_reuse.build_reuse_receipt(
-                accepted_observer(),
-                before=BEFORE,
-                after=AFTER,
-                paths=[".github/workflows/tests.yml"],
-            )
+            with self.subTest(path=path), self.assertRaisesRegex(
+                main_reuse.ReuseEvidenceError, "ci_authority_changed"
+            ):
+                main_reuse.build_reuse_receipt(
+                    accepted_observer(),
+                    before=BEFORE,
+                    after=AFTER,
+                    paths=[path],
+                )
 
     def test_tree_mismatch_forces_full_matrix(self) -> None:
         observer = accepted_observer()
@@ -155,7 +168,98 @@ class MainReuseEvidenceTests(unittest.TestCase):
         observer.workflow_runs.return_value[0]["pull_requests"] = [{"number": 42}]
         with self.assertRaisesRegex(
             main_reuse.ReuseEvidenceError,
-            "canonical_pr_workflow_success_missing",
+            "canonical_pr_workflow_missing",
+        ):
+            main_reuse.build_reuse_receipt(
+                observer,
+                before=BEFORE,
+                after=AFTER,
+                paths=["engine/src/lib.rs"],
+            )
+
+    def test_later_failed_or_pending_canonical_run_forces_full_matrix(self) -> None:
+        for status, conclusion, expected in (
+            ("completed", "failure", "canonical_pr_workflow_latest_not_successful"),
+            ("in_progress", None, "canonical_pr_workflow_nonterminal_conflict"),
+        ):
+            with self.subTest(status=status, conclusion=conclusion):
+                observer = accepted_observer()
+                observer.workflow_runs.return_value.append(
+                    {
+                        "id": 9002,
+                        "path": ".github/workflows/tests.yml",
+                        "head_sha": HEAD,
+                        "pull_requests": [{"number": 41}],
+                        "status": status,
+                        "conclusion": conclusion,
+                    }
+                )
+                with self.assertRaisesRegex(
+                    main_reuse.ReuseEvidenceError,
+                    expected,
+                ):
+                    main_reuse.build_reuse_receipt(
+                        observer,
+                        before=BEFORE,
+                        after=AFTER,
+                        paths=["engine/src/lib.rs"],
+                    )
+
+    def test_duplicate_required_job_forces_full_matrix(self) -> None:
+        observer = accepted_observer()
+        observer.workflow_jobs.return_value.append(
+            {"name": "python-tests", "status": "completed", "conclusion": "success"}
+        )
+        with self.assertRaisesRegex(
+            main_reuse.ReuseEvidenceError,
+            "canonical_pr_jobs_missing_or_unsuccessful:python-tests",
+        ):
+            main_reuse.build_reuse_receipt(
+                observer,
+                before=BEFORE,
+                after=AFTER,
+                paths=["engine/src/lib.rs"],
+            )
+
+    def test_later_failed_or_pending_exact_head_check_forces_full_matrix(self) -> None:
+        for status, conclusion, expected in (
+            ("completed", "failure", "exact_head_check_latest_not_successful"),
+            ("queued", None, "exact_head_check_nonterminal_conflict"),
+        ):
+            with self.subTest(status=status, conclusion=conclusion):
+                observer = accepted_observer()
+                observer.check_runs.return_value.append(
+                    {
+                        "id": 7002,
+                        "name": "exact-head-check",
+                        "status": status,
+                        "conclusion": conclusion,
+                    }
+                )
+                with self.assertRaisesRegex(
+                    main_reuse.ReuseEvidenceError,
+                    expected,
+                ):
+                    main_reuse.build_reuse_receipt(
+                        observer,
+                        before=BEFORE,
+                        after=AFTER,
+                        paths=["engine/src/lib.rs"],
+                    )
+
+    def test_duplicate_latest_exact_head_check_forces_full_matrix(self) -> None:
+        observer = accepted_observer()
+        observer.check_runs.return_value.append(
+            {
+                "id": 7001,
+                "name": "exact-head-check",
+                "status": "completed",
+                "conclusion": "success",
+            }
+        )
+        with self.assertRaisesRegex(
+            main_reuse.ReuseEvidenceError,
+            "exact_head_check_latest_not_unique",
         ):
             main_reuse.build_reuse_receipt(
                 observer,

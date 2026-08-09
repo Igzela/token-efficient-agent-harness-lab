@@ -32,11 +32,13 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
             job["permissions"],
             {
                 "actions": "read",
+                "checks": "read",
                 "contents": "read",
                 "pull-requests": "read",
             },
         )
         self.assertNotIn("actions", self.parsed["permissions"])
+        self.assertNotIn("checks", self.parsed["permissions"])
         self.assertNotIn("pull-requests", self.parsed["permissions"])
         self.assertEqual(job["outputs"]["docs_only"], "${{ steps.classify.outputs.docs_only }}")
         self.assertEqual(job["outputs"]["mode"], "${{ steps.classify.outputs.mode }}")
@@ -245,6 +247,17 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         ):
             self.assertIn(f"      - {required}", capsule)
         self.assertIn("--require-success", capsule)
+
+    def test_reuse_verifiers_have_minimal_check_read_permission(self) -> None:
+        expected = {
+            "actions": "read",
+            "checks": "read",
+            "contents": "read",
+            "pull-requests": "read",
+        }
+        for job_name in ("classify-change-impact", "context-capsule"):
+            with self.subTest(job=job_name):
+                self.assertEqual(self.parsed["jobs"][job_name]["permissions"], expected)
 
 
 if __name__ == "__main__":

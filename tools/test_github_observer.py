@@ -97,6 +97,70 @@ class GitHubObserverTests(unittest.TestCase):
         )
         self.assertEqual(observer.check_runs("a" * 40), [])
 
+    def test_wrapped_endpoints_follow_every_bounded_page(self) -> None:
+        calls: list[str] = []
+
+        def fetcher(url: str, _headers: dict[str, str], _timeout: int):
+            calls.append(url)
+            if len(calls) == 1:
+                return github_observer.JsonResponse(
+                    {"total_count": 101, "check_runs": [{"id": i} for i in range(100)]},
+                    "https://api.github.com/check-runs?page=2",
+                )
+            return github_observer.JsonResponse(
+                {"total_count": 101, "check_runs": [{"id": 100}]}
+            )
+
+        observer = github_observer.GitHubObserver(
+            "owner/repository", fetcher=fetcher
+        )
+        self.assertEqual(len(observer.check_runs("a" * 40)), 101)
+        self.assertEqual(calls[-1], "https://api.github.com/check-runs?page=2")
+
+    def test_wrapped_endpoint_rejects_incomplete_declared_total(self) -> None:
+        observer = github_observer.GitHubObserver(
+            "owner/repository",
+            fetcher=lambda *_args: github_observer.JsonResponse(
+                {"total_count": 101, "workflow_runs": [{"id": 1}]}
+            ),
+        )
+        with self.assertRaisesRegex(
+            github_observer.GitHubObservationError,
+            "github_paginated_response_incomplete",
+        ):
+            observer.workflow_runs(head_sha="a" * 40, event="pull_request")
+
+    def test_wrapped_endpoint_rejects_pagination_beyond_bound(self) -> None:
+        observer = github_observer.GitHubObserver(
+            "owner/repository",
+            fetcher=lambda *_args: github_observer.JsonResponse(
+                {"check_runs": []}, "https://api.github.com/next"
+            ),
+        )
+        with self.assertRaisesRegex(
+            github_observer.GitHubObservationError,
+            "github_pagination_limit_exceeded",
+        ):
+            observer.check_runs("a" * 40)
+
+    def test_workflow_observation_does_not_hide_nonterminal_runs(self) -> None:
+        observed: list[str] = []
+
+        def fetcher(url: str, _headers: dict[str, str], _timeout: int):
+            observed.append(url)
+            return github_observer.JsonResponse(
+                {"total_count": 1, "workflow_runs": [{"id": 1, "status": "queued"}]}
+            )
+
+        observer = github_observer.GitHubObserver(
+            "owner/repository", fetcher=fetcher
+        )
+        self.assertEqual(
+            observer.workflow_runs(head_sha="a" * 40, event="pull_request")[0]["status"],
+            "queued",
+        )
+        self.assertNotIn("status=completed", observed[0])
+
     def test_commit_requires_expected_shape(self) -> None:
         observer = github_observer.GitHubObserver(
             "owner/repository",

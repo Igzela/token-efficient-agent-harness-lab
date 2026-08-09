@@ -104,7 +104,8 @@ The capsule includes:
 
 - accepted remote-main identity and evidence source;
 - earliest routed packet and state;
-- active PR exact head, CI summary, and review state when discoverable;
+- canonical active PR exact head, CI summary, and review state when discoverable;
+- a separate workflow PR exact-head surface when CI is validating a PR that is not the routed packet owner;
 - other live-observed frontiers and the active binding source;
 - next permitted action;
 - required reading and hard stops.

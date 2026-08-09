@@ -59,6 +59,7 @@ class WorkflowCapsuleTests(unittest.TestCase):
             perms,
             {
                 "actions": "read",
+                "checks": "read",
                 "contents": "read",
                 "pull-requests": "read",
             },

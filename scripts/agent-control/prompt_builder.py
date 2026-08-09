@@ -85,14 +85,16 @@ def generate_fresh_capsule(
 
     local_checkout = capsule.get("local_checkout")
     binding = capsule.get("binding")
-    active_frontier = capsule.get("active_frontier")
+    workflow_frontier = capsule.get("workflow_frontier")
     active_packet = capsule.get("active_packet")
     checkout_sha = (local_checkout if isinstance(local_checkout, dict) else {}).get("head_sha")
     pr_exact_head = (binding if isinstance(binding, dict) else {}).get("pr_exact_head")
     pr_head_sha = (pr_exact_head if isinstance(pr_exact_head, dict) else {}).get("head_sha")
     workflow_sha = os.environ.get("GITHUB_SHA")
     workflow_bound_sha = os.environ.get("AGENT_CONTEXT_EXPECTED_HEAD_SHA")
-    active_pr_number = (active_frontier if isinstance(active_frontier, dict) else {}).get("number")
+    workflow_pr_number = (
+        workflow_frontier if isinstance(workflow_frontier, dict) else {}
+    ).get("number")
     canonical_packet = (active_packet if isinstance(active_packet, dict) else {}).get("packet")
 
     if required_head_sha:
@@ -125,16 +127,16 @@ def generate_fresh_capsule(
             )
     if required_pr_number is not None:
         frontier_available = (
-            (active_frontier if isinstance(active_frontier, dict) else {}).get("availability")
+            (workflow_frontier if isinstance(workflow_frontier, dict) else {}).get("availability")
             == "confirmed"
         )
         if (
             frontier_available
-            and active_pr_number is not None
-            and active_pr_number != required_pr_number
+            and workflow_pr_number is not None
+            and workflow_pr_number != required_pr_number
         ):
             raise ValueError(
-                f"Active PR #{active_pr_number} does not match required PR #{required_pr_number}"
+                f"Workflow PR #{workflow_pr_number} does not match required PR #{required_pr_number}"
             )
     if expected_packet:
         if canonical_packet and canonical_packet != expected_packet:

@@ -258,6 +258,14 @@ def observe_open_frontiers(
     ]
     canonical = unavailable["active_pr_number"]
     if canonical is not None:
+        if canonical not in {frontier["pr"] for frontier in frontiers}:
+            return {
+                **unavailable,
+                "availability": "conflict",
+                "source": "accepted_next_decision_plus_github_rest",
+                "warning": "canonical_owned_pr_is_not_open_against_main",
+                "open_frontiers": frontiers,
+            }
         return {
             **unavailable,
             "availability": "confirmed",
@@ -457,6 +465,13 @@ def _review_state_projection_unavailable(reason: str) -> dict[str, Any]:
     }
 
 
+def _review_state_projection_conflict(reason: str) -> dict[str, Any]:
+    projection = _review_state_projection_unavailable(reason)
+    projection["availability"] = "conflict"
+    projection["review_state"] = "conflict"
+    return projection
+
+
 def _linked_issue_numbers(pr_body: str) -> list[int]:
     """Linked packet issue numbers from the PR body binding convention."""
     if not pr_body:
@@ -471,6 +486,11 @@ def _linked_issue_numbers(pr_body: str) -> list[int]:
         if number not in numbers:
             numbers.append(number)
     return numbers
+
+
+def _comment_author_identity(comment: dict[str, Any]) -> str | None:
+    author = comment.get("user") or comment.get("author") or {}
+    return author.get("login") if isinstance(author, dict) else None
 
 
 def _load_review_state_projection(
@@ -493,6 +513,10 @@ def _load_review_state_projection(
     candidates = _linked_issue_numbers(str(payload.get("body") or ""))
     if not candidates:
         return _review_state_projection_unavailable("linked_issue_not_found")
+    if observer is None:
+        return _review_state_projection_unavailable(
+            "trusted_review_state_observer_required"
+        )
 
     sys.path.insert(0, str(ROOT / "scripts" / "agent-control"))
     try:
@@ -502,48 +526,50 @@ def _load_review_state_projection(
 
     found: dict[int, dict[str, Any]] = {}
     for issue_number in candidates:
-        comment_bodies: list[str] = []
-        if observer is not None:
-            try:
-                comment_bodies = [
-                    str(comment.get("body") or "")
-                    for comment in observer.issue_comments(issue_number)
-                    if "agent-orchestrator-review-state"
-                    in str(comment.get("body") or "")
-                ]
-            except GitHubObservationError:
-                continue
-        else:
-            result = run_command(
-                [
-                    "gh",
-                    "api",
-                    f"repos/{repository}/issues/{issue_number}/comments",
-                    "--jq",
-                    ".[] | select(.body | contains(\"agent-orchestrator-review-state\")) | .body",
-                ],
-                timeout=20,
-            )
-            if not result.ok:
-                continue
-            comment_bodies = result.stdout.strip().splitlines()
+        try:
+            comments = observer.issue_comments(issue_number)
+        except GitHubObservationError:
+            continue
+        trusted_comments = [
+            comment
+            for comment in comments
+            if _comment_author_identity(comment) in TRUSTED_REVIEW_STATE_AUTHORS
+            and "agent-orchestrator-review-state"
+            in str(comment.get("body") or "")
+        ]
         state: dict[str, Any] | None = None
-        for body in comment_bodies:
+        # GitHub's issue-comments endpoint is oldest-first.  Only the newest
+        # trusted state is authoritative; never fall back to an older PASS if
+        # the latest state is malformed or blocking.
+        for comment in reversed(trusted_comments):
+            body = str(comment.get("body") or "")
             try:
                 candidate = json.loads(body)
             except (json.JSONDecodeError, TypeError):
-                continue
+                found[issue_number] = _review_state_projection_conflict(
+                    "latest_durable_review_state_is_malformed"
+                )
+                break
             if (
                 isinstance(candidate, dict)
                 and candidate.get("kind") == "agent-orchestrator-review-state"
-                and state is None
             ):
                 state = candidate
+            else:
+                found[issue_number] = _review_state_projection_conflict(
+                    "latest_durable_review_state_kind_is_invalid"
+                )
+            break
+        if issue_number in found:
+            continue
         if state is None:
             continue
         try:
             projection = rc.project_capsule_fields(state, expected_head=head_sha)
         except (rc.ConvergenceError, TypeError, ValueError):
+            found[issue_number] = _review_state_projection_conflict(
+                "latest_durable_review_state_projection_failed"
+            )
             continue
         found[issue_number] = projection
 
@@ -614,6 +640,10 @@ def load_pr(
     )
     try:
         rest_payload = observer.pull_request(pr_number)
+        if rest_payload.get("state") != "open":
+            raise GitHubObservationError("github_pull_request_not_open")
+        if (rest_payload.get("base") or {}).get("ref") != "main":
+            raise GitHubObservationError("github_pull_request_base_not_main")
         head_sha = (rest_payload.get("head") or {}).get("sha")
         if not isinstance(head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
             raise GitHubObservationError("github_pull_request_head_invalid")
@@ -648,6 +678,16 @@ def load_pr(
         comments=comments,
         observation_time=observation_time,
     )
+    projection_payload = {
+        "headRefOid": head_sha,
+        "body": rest_payload.get("body") or "",
+    }
+    review_state_projection = _load_review_state_projection(
+        repository, projection_payload, observer=observer
+    )
+    _reconcile_review_state_projection(
+        review_observation, review_state_projection
+    )
     exact_review_state = review_observation.get("exact_head_review_state")
     exact_head_review = {
         "state": "confirmed" if exact_review_state == "confirmed" else "unverified",
@@ -656,13 +696,6 @@ def load_pr(
         else review_observation.get("unavailable_reason")
         or "exact_head_review_receipt_not_confirmed",
     }
-    projection_payload = {
-        "headRefOid": head_sha,
-        "body": rest_payload.get("body") or "",
-    }
-    review_state_projection = _load_review_state_projection(
-        repository, projection_payload, observer=observer
-    )
     merge_state = str(rest_payload.get("mergeable_state") or "unknown").upper()
     return {
         "number": rest_payload.get("number", pr_number),
@@ -696,13 +729,21 @@ REVIEW_SESSION_ID_PATTERN = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
     re.IGNORECASE,
 )
+TRUSTED_REVIEW_STATE_AUTHORS = frozenset({"github-actions", "github-actions[bot]"})
 
 
-def _receipt_field(body: str, label: str) -> str | None:
-    match = re.search(
+def _receipt_field(
+    body: str, label: str, errors: list[str] | None = None
+) -> str | None:
+    matches = re.findall(
         rf"(?im)^\s*{re.escape(label)}\s*:\s*(.*?)\s*$", body
     )
-    value = match.group(1).strip() if match else ""
+    if len(matches) > 1 and errors is not None:
+        errors.append(
+            "review_field_duplicated:"
+            + re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+        )
+    value = matches[0].strip() if len(matches) == 1 else ""
     return value or None
 
 
@@ -719,17 +760,25 @@ def _parse_review_receipt(
         if isinstance(author, dict)
         else None
     )
-    reviewer_identity = _receipt_field(body, "Reviewer session identity")
-    authenticated_identity = _receipt_field(body, "Reviewer authenticated identity")
-    transport = _receipt_field(body, "Review transport")
-    implementation_identity = _receipt_field(body, "Implementation session identity")
-    reviewed_sha = _receipt_field(body, "Reviewed SHA")
-    reviewed_range = _receipt_field(body, "Reviewed range")
-    observed_at = _receipt_field(body, "Observed at")
-    axes_value = _receipt_field(body, "Axes")
-    outcome = (_receipt_field(body, "Outcome") or "").upper()
-    unresolved = (_receipt_field(body, "Unresolved objections") or "").lower()
     errors: list[str] = []
+    if body.count(REVIEW_RECEIPT_MARKER) != 1:
+        errors.append("review_receipt_marker_count_invalid")
+    reviewer_identity = _receipt_field(body, "Reviewer session identity", errors)
+    authenticated_identity = _receipt_field(
+        body, "Reviewer authenticated identity", errors
+    )
+    transport = _receipt_field(body, "Review transport", errors)
+    implementation_identity = _receipt_field(
+        body, "Implementation session identity", errors
+    )
+    reviewed_sha = _receipt_field(body, "Reviewed SHA", errors)
+    reviewed_range = _receipt_field(body, "Reviewed range", errors)
+    observed_at = _receipt_field(body, "Observed at", errors)
+    axes_value = _receipt_field(body, "Axes", errors)
+    outcome = (_receipt_field(body, "Outcome", errors) or "").upper()
+    unresolved = (
+        _receipt_field(body, "Unresolved objections", errors) or ""
+    ).lower()
 
     if not author_identity:
         errors.append("reviewer_author_identity_missing")
@@ -869,11 +918,51 @@ def _build_review_observation(
         if REVIEW_RECEIPT_MARKER in str(comment.get("body") or "")
     ]
     if receipt_comments:
-        receipt = receipt_comments[-1]
-        parsed_receipt = _parse_review_receipt(
-            receipt, head_sha, base_sha, pr_author_identity
-        )
-        observation["review_receipt"] = parsed_receipt
+        parsed_receipts = [
+            _parse_review_receipt(
+                receipt, head_sha, base_sha, pr_author_identity
+            )
+            for receipt in receipt_comments
+        ]
+        current_receipts = [
+            receipt
+            for receipt in parsed_receipts
+            if receipt.get("observed_head_sha") == head_sha
+        ]
+        unbound_receipts = [
+            receipt
+            for receipt in parsed_receipts
+            if not re.fullmatch(
+                r"[0-9a-f]{40}", str(receipt.get("observed_head_sha") or "")
+            )
+        ]
+        if len(current_receipts) == 1 and not unbound_receipts:
+            parsed_receipt = current_receipts[0]
+            observation["review_receipt"] = parsed_receipt
+        elif len(current_receipts) > 1:
+            parsed_receipt = {
+                "state": "invalid",
+                "observed_head_sha": head_sha,
+                "outcome": None,
+                "errors": ["multiple_current_head_review_receipts"],
+            }
+            observation["review_receipt"] = parsed_receipt
+        elif unbound_receipts:
+            parsed_receipt = {
+                "state": "invalid",
+                "observed_head_sha": head_sha,
+                "outcome": None,
+                "errors": ["unbound_review_receipt_present"],
+            }
+            observation["review_receipt"] = parsed_receipt
+        else:
+            parsed_receipt = {
+                "state": "stale",
+                "observed_head_sha": None,
+                "outcome": None,
+                "errors": ["review_receipt_not_for_current_head"],
+            }
+            observation["review_receipt"] = parsed_receipt
         if parsed_receipt["state"] == "valid":
             observation["exact_head_review_state"] = "receipt_observed"
         else:
@@ -895,15 +984,24 @@ def _build_review_observation(
         return observation
 
     # Comments from the GitHub REST API do not expose resolved/unresolved state
-    # reliably. We only flag explicit BLOCKING mentions so we do not hide them.
+    # reliably. Recognize both the legacy literal and the convergence protocol's
+    # structured open-blocker vocabulary so neither surface can hide objections.
+    structured_block = re.compile(
+        r"(?is)(?:disposition[\"']?\s*[:=]\s*[\"'`]?block_current_head[\"'`]?"
+        r".*?status[\"']?\s*[:=]\s*[\"'`]?open[\"'`]?|"
+        r"status[\"']?\s*[:=]\s*[\"'`]?open[\"'`]?.*?"
+        r"disposition[\"']?\s*[:=]\s*[\"'`]?block_current_head[\"'`]?)"
+    )
     explicit_blocking = [
         review
         for review in reviews
         if "BLOCKING" in str(review.get("body") or "").upper()
+        or structured_block.search(str(review.get("body") or ""))
     ] + [
         comment
         for comment in comments
         if "BLOCKING" in str(comment.get("body") or "").upper()
+        or structured_block.search(str(comment.get("body") or ""))
     ]
     if explicit_blocking:
         observation["unresolved_objections_state"] = "explicit_blocking_comments_present"
@@ -926,6 +1024,28 @@ def _build_review_observation(
         if observation["unavailable_reason"] is None:
             observation["unavailable_reason"] = "insufficient_review_evidence"
     return observation
+
+
+def _reconcile_review_state_projection(
+    observation: dict[str, Any], projection: dict[str, Any]
+) -> None:
+    """Fail closed when trusted durable state contradicts a PASS receipt."""
+    availability = projection.get("availability")
+    if availability == "unavailable":
+        return
+    open_blockers = projection.get("open_blocker_ids") or []
+    review_state = str(projection.get("review_state") or "").upper()
+    if availability == "conflict":
+        reason = "durable_review_state_conflict"
+    elif open_blockers:
+        reason = "durable_review_state_has_open_blockers"
+    elif review_state != "PASS":
+        reason = "durable_review_state_is_not_pass"
+    else:
+        return
+    observation["exact_head_review_state"] = "unverified"
+    observation["unresolved_objections_state"] = reason
+    observation["unavailable_reason"] = reason
 
 
 def summarize_checks(checks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1275,7 +1395,7 @@ def session_binding() -> dict[str, Any]:
 def staleness_conditions() -> list[str]:
     return [
         "accepted `main` SHA changes",
-        "active PR exact head changes",
+        "canonical active PR or workflow PR exact head changes",
         "any required CI check conclusion changes",
         "canonical documents change",
         "review state or unresolved objections change",
@@ -1296,6 +1416,7 @@ def compute_fingerprint(capsule: dict[str, Any]) -> str:
     canonical = binding.get("canonical_document_source", {})
     routed = binding.get("canonical_routed_packet", {})
     pr = binding.get("pr_exact_head", {})
+    canonical_pr = binding.get("canonical_active_pr_exact_head", {})
     requested_pr = binding.get("requested_pr_exact_head", {})
     run = binding.get("workflow_run_identity", {})
     fingerprint_input = {
@@ -1305,6 +1426,8 @@ def compute_fingerprint(capsule: dict[str, Any]) -> str:
         "canonical_routed_packet": routed.get("packet"),
         "pr_number": pr.get("number"),
         "pr_exact_head_sha": pr.get("head_sha"),
+        "canonical_active_pr_number": canonical_pr.get("number"),
+        "canonical_active_pr_exact_head_sha": canonical_pr.get("head_sha"),
         "requested_pr_number": requested_pr.get("number"),
         "requested_pr_exact_head_sha": requested_pr.get("head_sha"),
         "checked_out_sha": binding.get("checked_out_sha"),
@@ -1393,18 +1516,17 @@ def build_capsule(
 
     routed_pr_number = int(packet["pr_number"]) if packet.get("pr_number") else None
     discovered_pr_number = frontier_observation.get("active_pr_number")
-    target_pr_number = (
-        pr_number
-        if pr_number is not None
-        else routed_pr_number
+    canonical_pr_number = (
+        routed_pr_number
         if routed_pr_number is not None
         else discovered_pr_number
     )
+    workflow_pr_number = pr_number if pr_number is not None else canonical_pr_number
     if exact_head_proof:
-        active_pr = load_exact_head_proof(
+        workflow_pr = load_exact_head_proof(
             exact_head_proof,
             repository=repository,
-            pr_number=target_pr_number,
+            pr_number=workflow_pr_number,
             expected_head_sha=expected_head_sha,
         )
         provided_checks.append(
@@ -1414,22 +1536,51 @@ def build_capsule(
                 "conclusion": "SUCCESS",
             }
         )
+        active_pr = (
+            workflow_pr
+            if canonical_pr_number == workflow_pr_number
+            else load_pr(
+                repository,
+                canonical_pr_number,
+                offline=offline,
+                observer=observer,
+            )
+            if canonical_pr_number
+            else None
+        )
     else:
         active_pr = (
             load_pr(
                 repository,
-                target_pr_number,
+                canonical_pr_number,
                 offline=offline,
                 observer=observer,
             )
-            if target_pr_number
+            if canonical_pr_number
+            else None
+        )
+        workflow_pr = (
+            active_pr
+            if workflow_pr_number == canonical_pr_number
+            else load_pr(
+                repository,
+                workflow_pr_number,
+                offline=offline,
+                observer=observer,
+            )
+            if workflow_pr_number
             else None
         )
     frontiers = frontier_observation.get("open_frontiers") or []
+    represented_numbers = {
+        number
+        for number in (canonical_pr_number, workflow_pr_number)
+        if number is not None
+    }
     blocked_frontiers = [
         frontier
         for frontier in frontiers
-        if target_pr_number is None or frontier["pr"] != target_pr_number
+        if frontier["pr"] not in represented_numbers
     ]
     checkout = local_checkout_state()
     if (
@@ -1449,9 +1600,15 @@ def build_capsule(
         and active_pr.get("head_sha")
         and checkout.get("head_sha") == active_pr.get("head_sha")
     )
+    checkout["matches_workflow_frontier"] = bool(
+        checkout.get("head_sha")
+        and workflow_pr
+        and workflow_pr.get("head_sha")
+        and checkout.get("head_sha") == workflow_pr.get("head_sha")
+    )
 
-    if active_pr and active_pr.get("availability") == "confirmed":
-        pr_ci_summary = active_pr.get("ci", {})
+    if workflow_pr and workflow_pr.get("availability") == "confirmed":
+        pr_ci_summary = workflow_pr.get("ci", {})
         pr_check_items = [
             {"name": name, "status": "COMPLETED", "conclusion": outcome.upper()}
             for outcome in ("successful", "failed", "pending")
@@ -1464,11 +1621,11 @@ def build_capsule(
             ci_summary = summarize_checks(provided_checks + pr_check_items)
         else:
             ci_summary = pr_ci_summary
-        active_pr["ci"] = ci_summary
+        workflow_pr["ci"] = ci_summary
     elif provided_checks:
         ci_summary = summarize_checks(provided_checks)
-        if active_pr:
-            active_pr["ci"] = ci_summary
+        if workflow_pr:
+            workflow_pr["ci"] = ci_summary
     else:
         ci_summary = {
             "state": "unavailable",
@@ -1482,16 +1639,16 @@ def build_capsule(
     session = session_binding()
 
     review_observation = (
-        active_pr.get("review_observation")
-        if isinstance(active_pr, dict)
-        and isinstance(active_pr.get("review_observation"), dict)
+        workflow_pr.get("review_observation")
+        if isinstance(workflow_pr, dict)
+        and isinstance(workflow_pr.get("review_observation"), dict)
         else {
             "observed_head_sha": None,
             "observation_time": None,
             "aggregate_review_state": None,
             "exact_head_review_state": "unavailable",
             "unresolved_objections_state": "unavailable",
-            "unavailable_reason": "no_active_pr_review_observation",
+            "unavailable_reason": "no_workflow_pr_review_observation",
             "review_receipt": {
                 "state": "unavailable",
                 "observed_head_sha": None,
@@ -1509,6 +1666,13 @@ def build_capsule(
         "frontier_observation": frontier_observation,
         "session_binding": session,
         "pr_exact_head": {
+            "number": workflow_pr.get("number") if workflow_pr else None,
+            "head_sha": workflow_pr.get("head_sha") if workflow_pr else None,
+            "head_branch": workflow_pr.get("head_branch") if workflow_pr else None,
+            "base_branch": workflow_pr.get("base_branch") if workflow_pr else None,
+            "availability": workflow_pr.get("availability") if workflow_pr else "unavailable",
+        },
+        "canonical_active_pr_exact_head": {
             "number": active_pr.get("number") if active_pr else None,
             "head_sha": active_pr.get("head_sha") if active_pr else None,
             "head_branch": active_pr.get("head_branch") if active_pr else None,
@@ -1528,10 +1692,10 @@ def build_capsule(
             "unresolved_objections_state"
         ],
         "review_state_projection": (
-            active_pr.get("review_state_projection")
-            if isinstance(active_pr, dict)
-            and isinstance(active_pr.get("review_state_projection"), dict)
-            else _review_state_projection_unavailable("no_active_pr_review_state")
+            workflow_pr.get("review_state_projection")
+            if isinstance(workflow_pr, dict)
+            and isinstance(workflow_pr.get("review_state_projection"), dict)
+            else _review_state_projection_unavailable("no_workflow_pr_review_state")
         ),
     }
 
@@ -1553,6 +1717,7 @@ def build_capsule(
         "local_checkout": checkout,
         "active_packet": packet,
         "active_frontier": active_pr,
+        "workflow_frontier": workflow_pr,
         "frontier_observation": frontier_observation,
         "blocked_or_other_frontiers": blocked_frontiers,
         "next_permitted_action": action,
@@ -1578,6 +1743,7 @@ def build_capsule(
         "notes": [
             "This capsule is a generated transport view, not an authority owner.",
             "Accepted truth and routing are read from the accepted baseline; live PR, CI, and review state are queried separately.",
+            "The canonical active frontier remains packet-routed; an explicit workflow PR is a separate exact-head validation surface.",
             "Unavailable remote facts are reported as unavailable rather than inferred.",
             "The generator is on-demand; CI may publish a short-lived artifact and job summary.",
         ],
@@ -1592,6 +1758,7 @@ def markdown(capsule: dict[str, Any]) -> str:
     checkout = capsule.get("local_checkout", {})
     packet = capsule["active_packet"]
     frontier = capsule.get("active_frontier")
+    workflow_frontier = capsule.get("workflow_frontier")
     frontier_observation = capsule.get("frontier_observation", {})
     binding = capsule.get("binding", {})
     lines = [
@@ -1644,6 +1811,28 @@ def markdown(capsule: dict[str, Any]) -> str:
     else:
         lines.append("- Active PR: `unavailable`")
 
+    if (
+        workflow_frontier
+        and (
+            not frontier
+            or workflow_frontier.get("number") != frontier.get("number")
+        )
+    ):
+        workflow_ci = workflow_frontier.get("ci", {})
+        lines.extend(
+            [
+                (
+                    f"- Workflow PR: `#{workflow_frontier.get('number')}` "
+                    f"head=`{workflow_frontier.get('head_sha') or 'unavailable'}` "
+                    f"availability=`{workflow_frontier.get('availability')}`"
+                ),
+                (
+                    f"- Workflow PR CI: `{workflow_ci.get('state', 'unavailable')}`; "
+                    f"missing_required=`{','.join(workflow_ci.get('missing_required') or []) or 'none'}`"
+                ),
+            ]
+        )
+
     pr_exact = binding.get("pr_exact_head", {})
     run_identity = binding.get("workflow_run_identity", {})
     review_obs = binding.get("review_observation", {})
@@ -1659,7 +1848,7 @@ def markdown(capsule: dict[str, Any]) -> str:
             f"- Fingerprint: `{capsule.get('fingerprint') or 'unavailable'}`",
             f"- Workflow run: `{run_identity.get('run_id') or 'unavailable'}` "
             f"(event=`{run_identity.get('event_name') or 'unavailable'}`)",
-            f"- PR exact head binding: `{pr_exact.get('head_sha') or 'unavailable'}`",
+            f"- Workflow PR exact head binding: `{pr_exact.get('head_sha') or 'unavailable'}`",
             (
                 f"- Unresolved objections: "
                 f"`{review_obs.get('unresolved_objections_state') or 'unavailable'}`"
