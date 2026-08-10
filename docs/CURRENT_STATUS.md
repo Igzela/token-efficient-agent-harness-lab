@@ -29,6 +29,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 |---|---|---|
 | `PE7-RWE-V2-REFREEZE-1` | `COMPLETE` | PR #370 exact head `36c92b93975366c3f85471f247a3afb128e5351c`; merge `3b4afb3e5ab4254904aa5a63473ab6ae0eac1e82`; exact-head `PASS`; canonical workflow `31312135471`; redacted calibration and restricted-bundle digests bound in the PR evidence |
 | `PE7-CTRL-ROUTE-CONTRACT-1` | `COMPLETE` | PR #380 exact head `e905cf6ec7a989b54e60f913657ca306f33ebf49`; merge `546cabc1ceb98b49b543d0bd90a62fc228e67338`; exact-head `PASS`; canonical workflow `31386777810`; route-contract receipt bound to the accepted main merge |
+| `PE7-PLAN-LANE-ACTIVATION-1` | `COMPLETE` | PR #382 exact head `dde26f884ce8a85b776b5933c84c4e6cfd73cb19`; merge `e55e19f1b7c353b4baa2b40ee7b5b16af8918a6c`; exact-head `PASS`; canonical workflow `31395404498` (native-runtime rerun after a confirmed infra-only OpenSSL linker flake); Plan lane active behind real terminal-owner readiness; Plan Execution Ledger Issue #383 provisioned |
 
 ## Accepted Product and Control-Plane State
 
@@ -40,6 +41,7 @@ Accepted `main` contains:
 - delegated Golden Path authority with separate risk, spend, attempt, artifact approval, output confirmation, and terminal-evidence owners;
 - exact-head CI, bounded review convergence, context-capsule transport, and the outbound local engineering loop;
 - the repository-maintenance route contract with one existing queue/lease/controller boundary and no Plan-lane admission yet;
+- an activated Plan lane behind real terminal-owner readiness checks, consuming the accepted weak-agent dispatch capsule and the provisioned Plan Execution Ledger Issue #383;
 - provider-free RWE/VDE contracts, production RWE v2 issue/admit/one-use spend, the first-live-baseline composition seam, store cell fence, and artifact validation;
 - a transport whose authorized finite request timeout is no longer silently capped by the former 20-second body-read ceiling;
 - an operator-gated, maximum-two-request compatibility calibration that requires parseable implementation content and is skipped by CI;
@@ -87,6 +89,8 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Compatibility calibration mechanism | `COMPLETE` | PR #369 accepted; mechanism only |
 | V2 refreeze + bounded test-race repair | `COMPLETE` | PR #370 accepted; exact v2 freeze and canonical lock repair are on main |
 | Repository-maintenance route contract | `COMPLETE` | PR #380 accepted; Plan-lane admission remains a separate packet |
+| Plan-lane activation | `COMPLETE` | PR #382 accepted; Plan lane active behind terminal-owner readiness; ledger Issue #383 provisioned |
+| Plan-packet lifecycle controller | `BLOCKED_PREREQUISITE` | Next promoted packet; wires CI/review/merge/closeout receipts through existing owners |
 | V2 provider-free viability preflight | `BLOCKED_PREREQUISITE` | Repository-maintenance route transition first; then authoritative B1 timestamp, store-owned B2 issuance expiry, and Golden Path test-tooling provenance disposition must be accepted before re-expansion |
 | V2 four-cell run and closeout | `BLOCKED_PREREQUISITE` | Preflight acceptance, then one separately authorized run and independent closeout |
 | Measurement readiness | `BLOCKED_PREREQUISITE` | 4 packets: estimands, corpus/sample, operations/evidence, protocol freeze |
@@ -140,7 +144,8 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 5. No accepted causal-mutation, lineage/mutation, evaluator/holdout, lifecycle-budget, diversity/exploration, or Pareto/stop/recovery contract or implementation packet exists.
 6. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or fixed Meta operator-comparison result exists.
 7. No accepted metacognitive-operator, parameter-efficient training adapter, weight/harness factorial, co-evolution, or outer-policy research contract exists; full-weight and model-architecture evolution remain unrouted.
-8. Plan-lane admission and its subject-aware terminal-owner integration are not yet implemented; `PE7-PLAN-LANE-ACTIVATION-1` is the sole promoted next packet and must reuse the existing ledger, local outer loop, CI, review, merge, and closeout owners without parallel ownership.
+8. Plan-lane admission and subject-aware terminal-owner readiness are accepted (PR #382); the next promoted packet wires plan-packet CI/review/merge/closeout receipt transitions through the existing owners without parallel ownership.
+9. The plan-packet lifecycle controller (CI/review/merge/closeout receipt transitions for plan subjects through existing owners) is the next promoted packet; successor promotion, EFFECT execution, and automatic T3 handling remain explicitly inactive.
 
 ## Maintenance Boundary
 
