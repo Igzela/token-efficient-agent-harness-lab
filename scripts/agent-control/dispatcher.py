@@ -13,6 +13,7 @@ import ci_verifier
 import control_state
 import local_loop
 import plan_lane
+import plan_lifecycle
 import pr_binding
 import state_manager as sm
 
@@ -20,6 +21,7 @@ import state_manager as sm
 MONITOR_WORKFLOW = "agent-ci-monitor.yml"
 MONITOR_RECEIPT_ACTION = "ci-monitor"
 LOCAL_UNKNOWN_OUTPUT_REASON = "local_unknown_output"
+PLAN_LIFECYCLE_STAGES = frozenset({"ci", "review", "merge", "closeout"})
 
 
 def _repo() -> str:
@@ -867,6 +869,157 @@ def handoff_plan(
         "ci_run_id": run_id,
         "dispatch_id": dispatch_id,
     }
+
+
+def _verified_plan_pr(pr_number: int, head_sha: str, packet_id: str, repo: str) -> bool:
+    """Verify one plan PR binding by number against authoritative GitHub state.
+
+    Unlike the open-PR list in ``pr_binding.find_plan_pr``, this read also
+    works after the maintainer merge: the PR must target ``main``, its head
+    must equal the exact expected plan head, and its binding marker must
+    carry the plan subject identity.  Any other state returns ``False``.
+    """
+
+    try:
+        value = pr_binding._gh_json(
+            "pr", "view", str(pr_number), "--repo", repo,
+            "--json", "state,headRefOid,baseRefName,body",
+        )
+    except pr_binding.PRBindingError:
+        return False
+    if not isinstance(value, dict):
+        return False
+    if value.get("headRefOid") != head_sha or value.get("baseRefName") != "main":
+        return False
+    marker = sm.parse_binding_marker(str(value.get("body", "")))
+    return (
+        isinstance(marker, dict)
+        and marker.get("subject_kind") == "plan-packet"
+        and marker.get("subject_id") == packet_id
+    )
+
+
+def _authoritative_plan_merge(pr_number: int, head_sha: str, repo: str) -> str | None:
+    """Return the merge commit SHA only for a provably merged exact plan head.
+
+    Reads authoritative GitHub PR state by number: the PR must be merged, its
+    head must equal the exact expected plan head, and the merge commit SHA
+    must be well formed.  Any other state (not merged, wrong head, unreadable
+    or malformed evidence) returns ``None``.
+    """
+
+    try:
+        value = pr_binding._gh_json(
+            "pr", "view", str(pr_number), "--repo", repo,
+            "--json", "state,merged,headRefOid,mergeCommit",
+        )
+    except pr_binding.PRBindingError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    if str(value.get("state", "")).upper() != "MERGED" or value.get("merged") is not True:
+        return None
+    if value.get("headRefOid") != head_sha:
+        return None
+    merge_commit = value.get("mergeCommit")
+    if not isinstance(merge_commit, dict):
+        return None
+    oid = merge_commit.get("oid")
+    if not isinstance(oid, str) or local_loop.HEX40.fullmatch(oid) is None:
+        return None
+    return oid
+
+
+def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[str, object]:
+    """Record one controller-owned plan lifecycle transition on the ledger.
+
+    The ``ci`` and ``review`` stages are verified readback gates over the
+    existing CI monitor's and review owner's own ledger recordings for the
+    exact plan head; they never write.  The ``merge`` stage verifies the
+    maintainer merge against authoritative GitHub PR state and then records
+    the merge receipt through the existing merge-state owner.  The
+    ``closeout`` stage requires the CI, review, and merge receipts on the
+    ledger and then records the canonical closeout receipt plus terminal
+    packet state through the existing dispatch-state owner.  Every stage
+    validates the exact subject binding (packet id, attempt, dispatch id, PR
+    number, exact head SHA) against the durable ledger claim; no model
+    self-report advances state, and every write is idempotent.
+    """
+
+    attempt = _normalized_attempt_id(attempt_id)
+    if attempt is None:
+        return {"recorded": False, "stage": stage, "reason": "invalid_attempt_id"}
+    if not plan_lane.PACKET_ID.fullmatch(packet_id):
+        return {"recorded": False, "stage": stage, "reason": "plan_packet_id_invalid"}
+    if stage not in PLAN_LIFECYCLE_STAGES:
+        return {"recorded": False, "stage": stage, "reason": "stage_invalid"}
+    repo = _repo()
+    try:
+        control_state.require_live(repo or None)
+    except control_state.ControlStateError:
+        return {"recorded": False, "stage": stage, "reason": "disabled_or_emergency_stopped"}
+    if not repo:
+        return {"recorded": False, "stage": stage, "reason": "repository_unavailable"}
+    candidate, ledger_issue, error = _read_live_plan(packet_id, repo)
+    if candidate is None or ledger_issue is None:
+        return {"recorded": False, "stage": stage, "reason": error or "plan_source_unavailable"}
+    dispatch_id = _plan_dispatch_id(packet_id, candidate.source_main_sha, attempt)
+    claim = plan_lifecycle._plan_claim(ledger_issue, dispatch_id, repo)
+    if claim is None:
+        return {"recorded": False, "stage": stage, "reason": "plan_claim_not_found"}
+    if claim.get("status") == "closed_out":
+        return {"recorded": True, "stage": stage, "reason": "already_closed_out"}
+    if claim.get("status") != "dispatched":
+        return {"recorded": False, "stage": stage, "reason": "plan_claim_state_unexpected"}
+    details = claim.get("details")
+    token = local_loop.plan_execution_token(repo, packet_id, candidate.source_main_sha, attempt)
+    valid, reason = sm.plan_claim_binding_valid(
+        ledger_issue, details, packet_id, attempt, token,
+        candidate.source_main_sha, candidate.task_spec_sha256,
+    )
+    if not valid:
+        return {"recorded": False, "stage": stage, "reason": reason}
+    if not isinstance(details, dict):
+        return {"recorded": False, "stage": stage, "reason": "plan_claim_details_invalid"}
+    try:
+        worker = sm.read_worker_state(ledger_issue, repo)
+    except sm.StateUnavailableError:
+        worker = None
+    if not isinstance(worker, dict) or worker.get("worker_type") != "plan-run":
+        return {"recorded": False, "stage": stage, "reason": "worker_state_unavailable"}
+    pr_number = worker.get("pr_number")
+    head_sha = worker.get("head_sha")
+    if (
+        type(pr_number) is not int or pr_number <= 0
+        or not isinstance(head_sha, str) or local_loop.HEX40.fullmatch(head_sha) is None
+    ):
+        return {"recorded": False, "stage": stage, "reason": "worker_binding_invalid"}
+    if not _verified_plan_pr(pr_number, head_sha, packet_id, repo):
+        return {"recorded": False, "stage": stage, "reason": "plan_pr_binding_unverified"}
+    if stage == "ci":
+        receipt = plan_lifecycle.plan_ci_receipt(ledger_issue, pr_number, head_sha, repo)
+        if receipt is None:
+            return {"recorded": False, "stage": stage, "reason": "ci_receipt_pending"}
+        return {"recorded": True, "stage": stage, "reason": "verified", "ci_run_id": receipt.get("workflow_run_id")}
+    if stage == "review":
+        receipt = plan_lifecycle.plan_review_receipt(ledger_issue, pr_number, head_sha, repo)
+        if receipt is None:
+            return {"recorded": False, "stage": stage, "reason": "review_receipt_pending"}
+        return {"recorded": True, "stage": stage, "reason": "verified", "review_workflow_run_id": receipt.get("review_workflow_run_id")}
+    if stage == "merge":
+        merge_commit_sha = _authoritative_plan_merge(pr_number, head_sha, repo)
+        if merge_commit_sha is None:
+            return {"recorded": False, "stage": stage, "reason": "merge_evidence_unavailable"}
+        outcome = plan_lifecycle.record_plan_merge_receipt(
+            ledger_issue, packet_id, attempt, candidate.source_main_sha,
+            pr_number, head_sha, merge_commit_sha, repo,
+        )
+        return {**outcome, "stage": stage, "merge_commit_sha": merge_commit_sha}
+    outcome = plan_lifecycle.record_plan_closeout_receipt(
+        ledger_issue, packet_id, attempt, candidate.source_main_sha,
+        pr_number, head_sha, "closed_out", f"PR #{pr_number}", repo,
+    )
+    return {**outcome, "stage": stage}
 
 
 def _terminal_plan(
@@ -1765,7 +1918,8 @@ def main() -> None:
         raise SystemExit(
             "Usage: dispatcher.py <dispatch-ready|dispatch-repair|dispatch-review|"
             "retry-review|dispatch-merge|dispatch-next|claim-local|handoff-local|"
-            "release-local|block-local|claim-plan|handoff-plan|release-plan|block-plan> ..."
+            "release-local|block-local|claim-plan|handoff-plan|lifecycle-plan|"
+            "release-plan|block-plan> ..."
         )
     command = sys.argv[1]
     if command == "dispatch-ready" and len(sys.argv) in {3, 4}:
@@ -1782,6 +1936,8 @@ def main() -> None:
         result = claim_plan(sys.argv[2], sys.argv[3])
     elif command == "handoff-plan" and len(sys.argv) == 6:
         result = handoff_plan(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+    elif command == "lifecycle-plan" and len(sys.argv) == 5:
+        result = record_plan_lifecycle(sys.argv[2], sys.argv[3], sys.argv[4])
     elif command == "release-plan" and len(sys.argv) == 7:
         result = release_plan(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])
     elif command == "block-plan" and len(sys.argv) == 6:

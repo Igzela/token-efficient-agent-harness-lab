@@ -834,7 +834,7 @@ def read_exact_ci_state(issue_number, pr_number, head_sha, ci_run_id, repo=""):
 
 WORKER_SCOPE_ACTIONS = frozenset({"worker", "local-run", "plan-run"})
 WORKER_SCOPE_STATUSES = frozenset({"claimed", "dispatched"})
-WORKER_SCOPE_TERMINAL_STATUSES = frozenset({"failed", "failed_unknown_output"})
+WORKER_SCOPE_TERMINAL_STATUSES = frozenset({"failed", "failed_unknown_output", "closed_out"})
 CLAIM_NONCE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 HEX40_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 PLAN_DISPATCH_ID_PATTERN = re.compile(

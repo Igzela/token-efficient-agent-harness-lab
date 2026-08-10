@@ -16,6 +16,7 @@ import artifact_contract
 import local_loop
 import local_verification
 import plan_lane
+import plan_lifecycle
 import pr_binding
 import prompt_builder
 import state_manager
@@ -324,6 +325,7 @@ class LocalRunOnce:
         claim_timeout_seconds: int = 120,
         command_timeout_seconds: int = 1800,
         poll_interval_seconds: float = 1.0,
+        lifecycle_timeout_seconds: int = 3600,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         if not local_loop.REPOSITORY.fullmatch(repository):
@@ -334,6 +336,8 @@ class LocalRunOnce:
             raise ValueError("command_timeout_seconds is outside the bounded range")
         if poll_interval_seconds < 0 or poll_interval_seconds > 30:
             raise ValueError("poll_interval_seconds is outside the bounded range")
+        if lifecycle_timeout_seconds < 0 or lifecycle_timeout_seconds > 86400:
+            raise ValueError("lifecycle_timeout_seconds is outside the bounded range")
         self.github = github or local_loop.GitHubAdapter(repository)
         self.git = git or local_loop.GitAdapter()
         self.repository = repository
@@ -341,6 +345,7 @@ class LocalRunOnce:
         self.claim_timeout_seconds = claim_timeout_seconds
         self.command_timeout_seconds = command_timeout_seconds
         self.poll_interval_seconds = poll_interval_seconds
+        self.lifecycle_timeout_seconds = lifecycle_timeout_seconds
         self.sleeper = sleeper
 
     def _result(self, status: str, issue: int, attempt: str, **details: Any):
@@ -653,6 +658,64 @@ class LocalRunOnce:
             ledger_issue, packet_id, attempt, claim_nonce, pr_number, head_sha
         )
 
+    def _wait_for_plan_terminal_receipts(
+        self,
+        ledger_issue: int,
+        packet_id: str,
+        attempt: str,
+        pr_number: int,
+        head_sha: str,
+    ) -> local_loop.LocalRunOnceResult:
+        """Wait for the controller-owned terminal receipts on the ledger.
+
+        CI and review are read back from the existing owners' own ledger
+        recordings; merge and closeout are requested through the controller,
+        which verifies authoritative GitHub/PR state before recording.  This
+        wait never writes ledger state itself, never runs the model again,
+        and never treats a timeout as success.
+        """
+
+        deadline = time.monotonic() + self.lifecycle_timeout_seconds
+        dispatched_stages: set[str] = set()
+        while True:
+            lifecycle = plan_lifecycle.read_plan_lifecycle(
+                ledger_issue, packet_id, attempt, self.repository
+            )
+            stages = lifecycle.get("stages") if isinstance(lifecycle, dict) else None
+            if isinstance(stages, dict) and all(stages.get(name) for name in ("ci", "review", "merge", "closeout")):
+                transitions = lifecycle.get("transitions") or {}
+                merge = transitions.get("merge") or {}
+                closeout = transitions.get("closeout") or {}
+                return self._plan_result(
+                    "closed_out", packet_id, attempt,
+                    ledger_issue=ledger_issue,
+                    pr_number=pr_number, head_sha=head_sha,
+                    merge_commit_sha=merge.get("merge_commit_sha"),
+                    terminal_packet_state=closeout.get("terminal_packet_state"),
+                    closeout_reference=closeout.get("closeout_reference"),
+                )
+            pending = next(
+                (name for name in ("ci", "review", "merge", "closeout")
+                 if not (isinstance(stages, dict) and stages.get(name))),
+                "closeout",
+            )
+            if pending in {"merge", "closeout"} and pending not in dispatched_stages:
+                try:
+                    self.github.dispatch_controller(
+                        "lifecycle-plan",
+                        {"packet_id": packet_id, "attempt_id": attempt, "stage": pending},
+                    )
+                    dispatched_stages.add(pending)
+                except local_loop.LoopUnavailable:
+                    pass
+            if time.monotonic() >= deadline:
+                return self._plan_result(
+                    "outcome_unknown", packet_id, attempt,
+                    reason="lifecycle_timeout", stage=pending,
+                    pr_number=pr_number, head_sha=head_sha,
+                )
+            self.sleeper(self.poll_interval_seconds)
+
     def _unknown_plan_output(
         self, packet_id: str, attempt: str, source_main_sha: str, claim_nonce: str, reason: str
     ) -> local_loop.LocalRunOnceResult:
@@ -744,6 +807,17 @@ class LocalRunOnce:
                 packet_id, attempt, candidate, ledger_issue
             )
             if recovered is not None:
+                if recovered.get("status") == "handed_off":
+                    pr_number = recovered.get("pr_number")
+                    head_sha = recovered.get("head_sha")
+                    if (
+                        type(pr_number) is int and pr_number > 0
+                        and isinstance(head_sha, str)
+                        and local_loop.HEX40.fullmatch(head_sha) is not None
+                    ):
+                        return self._wait_for_plan_terminal_receipts(
+                            ledger_issue, packet_id, attempt, pr_number, head_sha
+                        )
                 return recovered
             return self._run_plan_once_authorized(packet_id, attempt)
         except (local_loop.LoopUnavailable, plan_lane.PlanLaneError) as exc:
@@ -800,9 +874,15 @@ class LocalRunOnce:
         status = existing.get("status")
         details = existing.get("details")
         if not isinstance(details, dict):
-            if status in {"failed", "failed_unknown_output", "rejected", "outcome_unknown"}:
+            if status in {"failed", "failed_unknown_output", "closed_out", "rejected", "outcome_unknown"}:
                 return self._plan_result("terminal", packet_id, attempt, claim_status=status)
             return None
+        if status == "closed_out":
+            return self._plan_result(
+                "terminal", packet_id, attempt, claim_status=status,
+                terminal_packet_state=details.get("terminal_packet_state"),
+                closeout_reference=details.get("closeout_reference"),
+            )
         if status == "dispatched":
             # A dispatched generation may never fall through to a second
             # execution.  If its binding cannot be proven (stale lease,
@@ -1086,9 +1166,8 @@ class LocalRunOnce:
                 if not handed_off:
                     unknown_output = True
                     return self._unknown_plan_output(packet_id, attempt, candidate.source_main_sha, claim_nonce, handoff_reason)
-                return self._plan_result(
-                    "handed_off", packet_id, attempt, pr_number=pr_number,
-                    head_sha=head_sha, branch=candidate.branch, accepted_main_sha=accepted_main,
+                return self._wait_for_plan_terminal_receipts(
+                    ledger_issue, packet_id, attempt, pr_number, head_sha
                 )
         except (local_loop.LoopUnavailable, artifact_contract.ArtifactContractError, pr_binding.PRBindingError, OSError, ValueError) as exc:
             if pushed and candidate is not None and claim_nonce:
