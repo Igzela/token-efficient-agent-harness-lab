@@ -223,13 +223,26 @@ Replace stale status in place.
 """
         self.assertEqual(checker.active_state_failures(text, text), [])
 
+    def test_structural_guard_rejects_inline_route_state_mismatch(self) -> None:
+        checker = load_handoff_checker()
+        text = """## Packet PE3-A-1
+**State:** `READY_FOR_EXECUTION`
+## Active Routing
+1. `PE3-A-1` — `BLOCKED_PREREQUISITE`.
+"""
+        failures = checker.active_state_failures(text, text)
+        self.assertIn(
+            "Active Routing says PE3-A-1 is BLOCKED_PREREQUISITE but its structural State is READY_FOR_EXECUTION",
+            failures,
+        )
+
     def test_historical_packet_can_satisfy_a_future_dependency_without_becoming_current(self) -> None:
         checker = load_handoff_checker()
         current = """## Packet PE7-A-1
 **State:** `BLOCKED_PREREQUISITE`
 ## Retained Contract (historical: PE7-HIST-1)
 **Historical state:** `BLOCKED_PREREQUISITE`
-**Historical source:** accepted main aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+**Historical source:** accepted main c3e58576cbba40dbcad666c39eefb6bbdc372434
 ## Active Routing
 1. `PE7-A-1` — `BLOCKED_PREREQUISITE`.
 """
@@ -250,6 +263,15 @@ Replace stale status in place.
 """
         future = with_future_inventory(checker, future)
         self.assertEqual(checker.active_state_failures("", current, future), [])
+
+        invalid = current.replace(
+            "c3e58576cbba40dbcad666c39eefb6bbdc372434", "b" * 40
+        )
+        failures = checker.active_state_failures("", invalid, future)
+        self.assertTrue(
+            any("source is not a repository commit" in failure for failure in failures),
+            failures,
+        )
 
     def test_structural_guard_parses_current_level_packet_headings(self) -> None:
         checker = load_handoff_checker()

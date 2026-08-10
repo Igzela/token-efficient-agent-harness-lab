@@ -211,8 +211,13 @@ HISTORICAL_PACKET_STATE_RE = re.compile(
 )
 HISTORICAL_PACKET_SOURCE_RE = re.compile(
     r"^\*\*Historical source:\*\*.*(?<![0-9a-f])"
-    r"(?:[0-9a-f]{40}|[0-9a-f]{64})(?![0-9a-f]).*$",
+    r"(?P<source>[0-9a-f]{40})(?![0-9a-f]).*$",
     re.MULTILINE | re.IGNORECASE,
+)
+ROUTED_PACKET_STATE_RE = re.compile(
+    rf"`(?P<packet>{PACKET_ID_PATTERN})`\s*(?:\u2014|-)\s*"
+    r"`(?P<state>[A-Z_]+)`",
+    re.MULTILINE,
 )
 PACKET_STATE_RE = re.compile(
     r"^\*\*State:\*\* `(?P<state>[A-Z_]+)`(?:[ \t]+.*)?$", re.MULTILINE
@@ -519,14 +524,39 @@ def historical_packet_ids(next_text: str, failures: list[str]) -> set[str]:
         )
         block = next_text[heading.start() : end]
         packet_id = heading.group("packet")
+        if packet_id in historical:
+            failures.append(f"historical packet {packet_id} is duplicated")
+            continue
         if not HISTORICAL_PACKET_STATE_RE.search(block):
             failures.append(
                 f"historical packet {packet_id} must declare BLOCKED_PREREQUISITE state"
             )
             continue
-        if not HISTORICAL_PACKET_SOURCE_RE.search(block):
+        source = HISTORICAL_PACKET_SOURCE_RE.search(block)
+        if not source:
             failures.append(
-                f"historical packet {packet_id} must bind a 40- or 64-character source digest"
+                f"historical packet {packet_id} must bind a 40-character source digest"
+            )
+            continue
+        source_sha = source.group("source")
+        if subprocess.run(
+            ["git", "cat-file", "-e", f"{source_sha}^{{commit}}"],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        ).returncode != 0:
+            failures.append(
+                f"historical packet {packet_id} source is not a repository commit"
+            )
+            continue
+        if subprocess.run(
+            ["git", "merge-base", "--is-ancestor", source_sha, "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        ).returncode != 0:
+            failures.append(
+                f"historical packet {packet_id} source is not an ancestor of HEAD"
             )
             continue
         historical.add(packet_id)
@@ -888,6 +918,11 @@ def active_state_failures(
     current_packets = parse_packet_contracts(next_text, failures)
     future_packets = parse_packet_contracts(future_text, failures)
     historical_packets = historical_packet_ids(next_text, failures)
+    collisions = historical_packets & (set(current_packets) | set(future_packets))
+    for packet_id in sorted(collisions):
+        failures.append(
+            f"historical packet {packet_id} collides with a current or future packet"
+        )
     duplicate_packets = sorted(set(current_packets) & set(future_packets))
     for packet_id in duplicate_packets:
         failures.append(
@@ -970,6 +1005,16 @@ def active_state_failures(
             )
         elif packets[packet_id]["state"] == "COMPLETE" and not terminal_routing:
             failures.append(f"Active Routing points to completed packet {packet_id}")
+    for routed in ROUTED_PACKET_STATE_RE.finditer(routing):
+        packet_id = routed.group("packet")
+        if packet_id in current_packets:
+            declared_state = routed.group("state")
+            actual_state = str(current_packets[packet_id]["state"])
+            if declared_state != actual_state:
+                failures.append(
+                    f"Active Routing says {packet_id} is {declared_state} "
+                    f"but its structural State is {actual_state}"
+                )
     if terminal_routing:
         incomplete = [
             packet_id
