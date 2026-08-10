@@ -202,6 +202,10 @@ PACKET_ID_PATTERN = r"(?:PE\d+|PR\d+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+"
 PACKET_HEADING_RE = re.compile(
     rf"^#{{2,3}} Packet (?P<packet>{PACKET_ID_PATTERN})\b.*$", re.MULTILINE
 )
+HISTORICAL_PACKET_RE = re.compile(
+    rf"^## Retained .*?\(historical:\s*(?P<packet>{PACKET_ID_PATTERN})\)\s*$",
+    re.MULTILINE,
+)
 PACKET_STATE_RE = re.compile(
     r"^\*\*State:\*\* `(?P<state>[A-Z_]+)`(?:[ \t]+.*)?$", re.MULTILINE
 )
@@ -847,6 +851,9 @@ def active_state_failures(
     failures: list[str] = []
     current_packets = parse_packet_contracts(next_text, failures)
     future_packets = parse_packet_contracts(future_text, failures)
+    historical_packets = {
+        match.group("packet") for match in HISTORICAL_PACKET_RE.finditer(next_text)
+    }
     duplicate_packets = sorted(set(current_packets) & set(future_packets))
     for packet_id in duplicate_packets:
         failures.append(
@@ -880,7 +887,11 @@ def active_state_failures(
             unknown = [
                 prerequisite
                 for prerequisite in packet["prerequisites"]
-                if prerequisite not in packets and prerequisite not in accepted_packets
+                if (
+                    prerequisite not in packets
+                    and prerequisite not in historical_packets
+                    and prerequisite not in accepted_packets
+                )
             ]
             if unknown:
                 failures.append(

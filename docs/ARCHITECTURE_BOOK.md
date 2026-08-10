@@ -35,6 +35,33 @@ For a public repository, the preferred host interaction is an outbound local wor
 
 The local adapter must reuse the existing `state_manager`, dispatcher, worktree, prompt, artifact, PR-binding, CI, review, and merge owners. It may not form a second controller or output authority. Before the self-hosted workflow path can be retired, `run-once` must prove remote serialization/lease recovery, exact accepted-main binding, one worktree per task, process-tree timeout/cancellation, validated patch artifact finalization, Draft-PR-only output, CI/review handoff, bounded repair, and safe restart after every externally visible transition.
 
+### Repository-maintenance route transition
+
+The repository-maintenance route controller is an extension of the existing
+engineering outer loop, not a second orchestrator. Its durable queue and lease
+remain GitHub Issue/PR state; accepted direction remains `NEXT_DECISION`,
+routing-only successors remain `FUTURE_ROUTE`, and `CURRENT_STATUS` remains the
+accepted receipt owner. `local_loop.py` remains the controller entrypoint;
+`loopctl.py` is only its CLI transport. `state_manager.py` remains the sole
+GitHub state/lease owner, `plan_lane.py` remains the packet compiler, and the
+existing worktree, artifact, CI, review, merge, and closeout owners are reused.
+
+Every route transition is bound to accepted-main SHA, packet digest, dispatch
+digest, subject identity, branch, PR, exact head, CI run/check set, review
+receipt, merge commit, and closeout receipt. A changed head invalidates CI and
+review; main drift forces reconciliation; an unavailable or conflicting
+external observation is `OUTCOME_UNKNOWN` or `DECISION_REQUIRED`, never a
+successful self-report. A weak worker may produce only an untrusted patch or
+proposal. It receives one compiled packet capsule and no GitHub merge token,
+provider credential, T3 authority, or arbitrary command execution capability.
+
+The route controller may request a repository-maintenance merge only through
+the existing exact-head merge owner after canonical CI, independent exact
+`PASS`, no unresolved blocking objection, accepted-base freshness, and tested
+rollback are revalidated. This transition cannot merge target repositories,
+release, deploy, consume Provider authority, or adopt product state. T3 and
+human decision receipts remain outside model delegation.
+
 ## Repository Context Control Plane
 
 Repository handoff separates three identities:

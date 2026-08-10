@@ -223,6 +223,33 @@ Replace stale status in place.
 """
         self.assertEqual(checker.active_state_failures(text, text), [])
 
+    def test_historical_packet_can_satisfy_a_future_dependency_without_becoming_current(self) -> None:
+        checker = load_handoff_checker()
+        current = """## Packet PE7-A-1
+**State:** `BLOCKED_PREREQUISITE`
+## Retained Contract (historical: PE7-HIST-1)
+**Historical state:** `BLOCKED_PREREQUISITE`
+## Active Routing
+1. `PE7-A-1` — `READY_FOR_EXECUTION`.
+"""
+        future = """# Future Route
+## Worker Tiers
+## Known Planned-Seam Gaps
+## Promotion Profile Contract
+## Stop and Resume Protocol
+## Portfolio Inventory Manifest
+### Packet PE7-B-1
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE7-HIST-1
+**Class:** `CONTRACT`
+**Outcome:** Preserve a historical prerequisite identity.
+**Allowed delta:** No implementation.
+**Exit:** The successor is re-expanded later.
+**Stop:** Stop on missing identity.
+"""
+        future = with_future_inventory(checker, future)
+        self.assertEqual(checker.active_state_failures("", current, future), [])
+
     def test_structural_guard_parses_current_level_packet_headings(self) -> None:
         checker = load_handoff_checker()
         text = """| Stage | Priority | Goal | Status |

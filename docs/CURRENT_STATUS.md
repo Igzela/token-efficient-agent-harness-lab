@@ -136,6 +136,7 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 5. No accepted causal-mutation, lineage/mutation, evaluator/holdout, lifecycle-budget, diversity/exploration, or Pareto/stop/recovery contract or implementation packet exists.
 6. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or fixed Meta operator-comparison result exists.
 7. No accepted metacognitive-operator, parameter-efficient training adapter, weight/harness factorial, co-evolution, or outer-policy research contract exists; full-weight and model-architecture evolution remain unrouted.
+8. The repository-maintenance route controller is not yet implemented; the accepted contract deliberately leaves Plan-lane admission deferred until the existing CI, review, merge, closeout, and successor owners are integrated without parallel ownership.
 
 ## Maintenance Boundary
 
