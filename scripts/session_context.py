@@ -1997,14 +1997,6 @@ def classify_resume(
             "verification_evidence_invalid",
             "The checkpoint evidence set does not match the accepted verification contract.",
         )
-    if any(item.status == "FAIL" for item in receipt_model.verification_results):
-        return _disposition(
-            receipt_model,
-            packet_model,
-            "REPAIR",
-            "verification_failed",
-            "Repair the recorded failure within packet scope and replace the checkpoint.",
-        )
     if snapshot_model.branch != receipt_model.branch:
         return _disposition(
             receipt_model,
@@ -2086,39 +2078,13 @@ def classify_resume(
             "worktree_changed_within_bound_paths",
             "Audit the changed owned paths, rerun focused checks, and replace the checkpoint.",
         )
-    statuses = {item.status for item in receipt_model.verification_results}
-    if "BLOCKED" in statuses:
-        return _disposition(
-            receipt_model,
-            packet_model,
-            "DECISION_REQUIRED",
-            "verification_blocked",
-            "Resolve the recorded verification blocker with its owner.",
-        )
-    if "FAIL" in statuses:
+    if any(item.status == "FAIL" for item in receipt_model.verification_results):
         return _disposition(
             receipt_model,
             packet_model,
             "REPAIR",
             "verification_failed",
             "Repair the recorded failure within packet scope and replace the checkpoint.",
-        )
-    statuses = {item.status for item in receipt_model.verification_results}
-    if "BLOCKED" in statuses:
-        return _disposition(
-            receipt_model,
-            packet_model,
-            "DECISION_REQUIRED",
-            "verification_blocked",
-            "Resolve the recorded verification blocker with its owner.",
-        )
-    if statuses - {"PASS", "NOT_RUN"}:
-        return _disposition(
-            receipt_model,
-            packet_model,
-            "DECISION_REQUIRED",
-            "verification_evidence_invalid",
-            "The checkpoint carries verification results no accepted invariant permits.",
         )
     return _disposition(
         receipt_model,

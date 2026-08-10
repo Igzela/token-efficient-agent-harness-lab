@@ -159,6 +159,8 @@ Only an entry with `resume_disposition=RESUME` permits its reported next action.
 
 ## Role Routes
 
+The machine-readable `agent-context-routes:v1` marker above is the enforced route contract for `scripts/session_context.py` and `scripts/check_agent_handoff.py`; the human table below is its readable projection. When they disagree, the marker wins and the table must be corrected.
+
 | Role | Reading route |
 |---|---|
 | Planning or architecture model | `START_HERE.md` → `docs/CURRENT_STATUS.md` → `docs/NEXT_DECISION.md`; read `docs/FUTURE_ROUTE.md` only when selecting/refreshing a successor → relevant architecture/code/tests |
