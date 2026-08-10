@@ -17,6 +17,7 @@ Open PR heads, Draft/Ready state, CI, reviews, mergeability, and the next permit
 - PR #369 accepted the operator-gated compatibility-calibration mechanism from exact head `b571c95a75a7c8eacda99a8f586d8f2360868ab7`; canonical exact-head workflow `31172449577` completed successfully and the exact-head review receipt reports `PASS` with no open findings.
 - PR #370 accepted the versioned v2 RWE refreeze from exact head `36c92b93975366c3f85471f247a3afb128e5351c`; exact-head review reports `PASS` with no open objections, canonical workflow `31312135471` completed every required job successfully, and the merged v2 corpus/protocol/schedule hashes are `044fcd7b…`, `bc68bfb3…`, and `6a729f12…`.
 - PR #375 accepted the weak-agent executable session routing and fail-closed recovery repair (superseding rejected #374) from exact head `2aea374e2ff26b798a104884658e3af5c6a378e4`; merge `63fbc4e264d2a1f2250299e25dcf168d71376aef`; exact-head `PASS` receipts on both review axes with no open objections; canonical exact-head workflow completed every required job including `pg-integration-tests` and the terminal context capsule. The same PR carried a bounded repair de-rotting 16 hard-coded `2026-07` timestamps in `engine/tests/test_pg_integration.rs` that crossed the strict 30-day operator-decision freshness bound on 2026-08-10 (pre-existing `main` calendar rot, reproduced on a pristine `origin/main` worktree before the PR was touched); test-data only, zero production code.
+- PR #380 accepted the repository-maintenance route contract from exact head `e905cf6ec7a989b54e60f913657ca306f33ebf49`; merge `546cabc1ceb98b49b543d0bd90a62fc228e67338`; exact-head `PASS` receipts on both review axes with no open objections; canonical workflow `31386777810` completed every required job successfully. It established the single route-controller boundary without activating Plan execution.
 - The PR #370 evidence binds the external calibration to accepted checkout `ee43eac…`, first-viable 8,192 output tokens, one of at most two requests, and SHA-256 digests for both the restricted raw bundle and redacted receipt. Those digests are evidence references, not permission to expose or commit the restricted bundle.
 - A new `main`, PR head, CI result, review receipt, or canonical-document change invalidates older context capsules and branch-local status prose.
 
@@ -27,6 +28,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | Packet | State | Accepted evidence |
 |---|---|---|
 | `PE7-RWE-V2-REFREEZE-1` | `COMPLETE` | PR #370 exact head `36c92b93975366c3f85471f247a3afb128e5351c`; merge `3b4afb3e5ab4254904aa5a63473ab6ae0eac1e82`; exact-head `PASS`; canonical workflow `31312135471`; redacted calibration and restricted-bundle digests bound in the PR evidence |
+| `PE7-CTRL-ROUTE-CONTRACT-1` | `COMPLETE` | PR #380 exact head `e905cf6ec7a989b54e60f913657ca306f33ebf49`; merge `546cabc1ceb98b49b543d0bd90a62fc228e67338`; exact-head `PASS`; canonical workflow `31386777810`; route-contract receipt bound to the accepted main merge |
 
 ## Accepted Product and Control-Plane State
 
@@ -37,6 +39,7 @@ Accepted `main` contains:
 - managed-coding runtime profiles and provider-free DeepSeek protocol/runtime wiring;
 - delegated Golden Path authority with separate risk, spend, attempt, artifact approval, output confirmation, and terminal-evidence owners;
 - exact-head CI, bounded review convergence, context-capsule transport, and the outbound local engineering loop;
+- the repository-maintenance route contract with one existing queue/lease/controller boundary and no Plan-lane admission yet;
 - provider-free RWE/VDE contracts, production RWE v2 issue/admit/one-use spend, the first-live-baseline composition seam, store cell fence, and artifact validation;
 - a transport whose authorized finite request timeout is no longer silently capped by the former 20-second body-read ceiling;
 - an operator-gated, maximum-two-request compatibility calibration that requires parseable implementation content and is skipped by CI;
@@ -71,7 +74,7 @@ These runs established the root cause and fail-closed behavior. They did not est
 
 ## Accepted Readiness Boundary
 
-Accepted `main` contains the provider-free compatibility-calibration mechanism and the distinct, versioned v2 refreeze. It contains **no accepted v2 preflight receipt** and **no v2 four-cell viability result**. `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` is retained as a blocked historical contract while the repository-maintenance route transition is established; its B1/B2 policy values remain packet-local and its timestamp/expiry enforcement and provenance disposition are not accepted. Current execution state and routing belong to `docs/NEXT_DECISION.md`. The packet's provider-free preflight and operator-readable authorization request package must not issue or consume authority, call a Provider, write a target, run the schedule, or authorize downstream measurement/Architecture Convergence work.
+Accepted `main` contains the provider-free compatibility-calibration mechanism, the distinct versioned v2 refreeze, and the accepted repository-maintenance route contract. It contains **no accepted v2 preflight receipt** and **no v2 four-cell viability result**. `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` is retained as a blocked historical contract; its B1/B2 policy values remain packet-local and its timestamp/expiry enforcement and provenance disposition are not accepted. The next executable window is the separately promoted Plan-lane activation packet; it must preserve the same provider-free and zero-external-effect boundary. Current execution state and routing belong to `docs/NEXT_DECISION.md`. The packet's provider-free preflight and operator-readable authorization request package must not issue or consume authority, call a Provider, write a target, run the schedule, or authorize downstream measurement/Architecture Convergence work.
 
 Candidate evidence remains non-authoritative until it is bound to one exact PR head, passes the repository review protocol and canonical CI, and is merged. Do not record candidate branches, PR numbers, CI runs, or review claims here; the capsule observes them at handoff time and fails closed when unavailable or conflicting.
 
@@ -83,6 +86,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Timeout ownership repair | `COMPLETE` | PR #368 accepted |
 | Compatibility calibration mechanism | `COMPLETE` | PR #369 accepted; mechanism only |
 | V2 refreeze + bounded test-race repair | `COMPLETE` | PR #370 accepted; exact v2 freeze and canonical lock repair are on main |
+| Repository-maintenance route contract | `COMPLETE` | PR #380 accepted; Plan-lane admission remains a separate packet |
 | V2 provider-free viability preflight | `BLOCKED_PREREQUISITE` | Repository-maintenance route transition first; then authoritative B1 timestamp, store-owned B2 issuance expiry, and Golden Path test-tooling provenance disposition must be accepted before re-expansion |
 | V2 four-cell run and closeout | `BLOCKED_PREREQUISITE` | Preflight acceptance, then one separately authorized run and independent closeout |
 | Measurement readiness | `BLOCKED_PREREQUISITE` | 4 packets: estimands, corpus/sample, operations/evidence, protocol freeze |
@@ -136,7 +140,7 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 5. No accepted causal-mutation, lineage/mutation, evaluator/holdout, lifecycle-budget, diversity/exploration, or Pareto/stop/recovery contract or implementation packet exists.
 6. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or fixed Meta operator-comparison result exists.
 7. No accepted metacognitive-operator, parameter-efficient training adapter, weight/harness factorial, co-evolution, or outer-policy research contract exists; full-weight and model-architecture evolution remain unrouted.
-8. The repository-maintenance route controller is not yet implemented; the accepted contract deliberately leaves Plan-lane admission deferred until the existing CI, review, merge, closeout, and successor owners are integrated without parallel ownership.
+8. Plan-lane admission and its subject-aware terminal-owner integration are not yet implemented; `PE7-PLAN-LANE-ACTIVATION-1` is the sole promoted next packet and must reuse the existing ledger, local outer loop, CI, review, merge, and closeout owners without parallel ownership.
 
 ## Maintenance Boundary
 
