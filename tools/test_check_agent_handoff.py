@@ -102,6 +102,17 @@ Replace stale status in place.
 
         def fake_run(command, **_kwargs):
             commands.append([str(part) for part in command])
+            if commands[-1][:3] == ["git", "rev-parse", "origin/main"]:
+                return completed(commands[-1], stdout="c3e58576cbba40dbcad666c39eefb6bbdc372434\n")
+            if commands[-1][:2] == ["git", "cat-file"]:
+                return completed(commands[-1])
+            if commands[-1][:3] == ["git", "merge-base", "--is-ancestor"]:
+                return completed(commands[-1])
+            if commands[-1][:2] == ["git", "show"]:
+                return completed(
+                    commands[-1],
+                    stdout="## Packet PE7-RWE-V2-VIABILITY-PREFLIGHT-1\n",
+                )
             return completed(commands[-1])
 
         with patch.object(checker.subprocess, "run", side_effect=fake_run):
@@ -240,7 +251,7 @@ Replace stale status in place.
         checker = load_handoff_checker()
         current = """## Packet PE7-A-1
 **State:** `BLOCKED_PREREQUISITE`
-## Retained Contract (historical: PE7-HIST-1)
+## Retained Contract (historical: PE7-RWE-V2-VIABILITY-PREFLIGHT-1)
 **Historical state:** `BLOCKED_PREREQUISITE`
 **Historical source:** accepted main c3e58576cbba40dbcad666c39eefb6bbdc372434
 ## Active Routing
@@ -254,7 +265,7 @@ Replace stale status in place.
 ## Portfolio Inventory Manifest
 ### Packet PE7-B-1
 **State:** `BLOCKED_PREREQUISITE`
-**Prerequisite:** PE7-HIST-1
+**Prerequisite:** PE7-RWE-V2-VIABILITY-PREFLIGHT-1
 **Class:** `CONTRACT`
 **Outcome:** Preserve a historical prerequisite identity.
 **Allowed delta:** No implementation.

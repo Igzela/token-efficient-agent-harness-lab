@@ -515,6 +515,19 @@ def historical_packet_ids(next_text: str, failures: list[str]) -> set[str]:
 
     headings = list(HISTORICAL_PACKET_RE.finditer(next_text))
     historical: set[str] = set()
+    accepted_main_result = subprocess.run(
+        ["git", "rev-parse", "origin/main"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    accepted_main_sha = accepted_main_result.stdout.strip()
+    if accepted_main_result.returncode != 0 or not re.fullmatch(
+        r"[0-9a-f]{40}", accepted_main_sha, re.IGNORECASE
+    ):
+        failures.append("historical packet provenance requires origin/main")
+        return historical
     for index, heading in enumerate(headings):
         next_heading = re.search(r"^## ", next_text[heading.end() :], re.MULTILINE)
         end = (
@@ -550,13 +563,29 @@ def historical_packet_ids(next_text: str, failures: list[str]) -> set[str]:
             )
             continue
         if subprocess.run(
-            ["git", "merge-base", "--is-ancestor", source_sha, "HEAD"],
+            ["git", "merge-base", "--is-ancestor", source_sha, accepted_main_sha],
             cwd=ROOT,
             capture_output=True,
             check=False,
         ).returncode != 0:
             failures.append(
                 f"historical packet {packet_id} source is not an ancestor of HEAD"
+            )
+            continue
+        source_document = subprocess.run(
+            ["git", "show", f"{source_sha}:docs/NEXT_DECISION.md"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        if not re.search(
+            rf"^#{{2,3}} Packet {re.escape(packet_id)}\b",
+            source_document,
+            re.MULTILINE,
+        ):
+            failures.append(
+                f"historical packet {packet_id} is absent from its source commit"
             )
             continue
         historical.add(packet_id)
