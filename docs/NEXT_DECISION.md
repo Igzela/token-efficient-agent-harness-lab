@@ -1,8 +1,8 @@
 # Next Decision
 
-Last updated: 2026-08-09.
+Last updated: 2026-08-10.
 
-This document owns only the current executable window: active routing, the common execution contract, and one fully expanded current packet. Accepted truth belongs in `docs/CURRENT_STATUS.md`; long-horizon routing-only packet sketches belong in `docs/FUTURE_ROUTE.md`; durable invariants belong in `docs/ARCHITECTURE_BOOK.md`; current owners belong in `docs/MODULE_MAP.md`. Live PR heads, CI, and reviews belong only in a fresh context capsule.
+This document owns only the current executable window: active routing, the common execution contract, and one fully expanded current packet. Accepted truth belongs in `docs/CURRENT_STATUS.md`; long-horizon routing-only packet sketches and promotion profiles belong in `docs/FUTURE_ROUTE.md`; durable invariants belong in `docs/ARCHITECTURE_BOOK.md`; current owners belong in `docs/MODULE_MAP.md`. Live PR heads, CI, and reviews belong only in a fresh context capsule.
 
 ## Current Direction
 
@@ -23,17 +23,17 @@ The following refinements are accepted as of 2026-08-08:
 - Harness-Evolution experiment-control hardening keeps five control families but separates each family's contract from implementation and closeout;
 - Level-1 first runs without memory or skill projection; memory-only and skill-only tests are optional factor experiments and do not block the core route;
 - production adoption and Meta Improver research fork after final transfer evidence and neither authorizes the other;
-- a future route label is not implementation authority. Only a packet satisfying the execution-ready contract below may enter `READY_FOR_EXECUTION`.
+- a future route label, issue, chat handoff, or promotion profile is not implementation authority. Only a packet satisfying the execution-ready contract below may enter `READY_FOR_EXECUTION`.
 
 This decision changes routing and acceptance gates. It does not authorize a provider call, live experiment, target effect, merge, release, deployment, production adoption, Level-2 controller, or Meta Improver.
 
 ## Authoritative Forward Order
 
-The route is stage-ordered. The current packet is expanded below; blocked successors are indexed without execution authority in `docs/FUTURE_ROUTE.md`:
+The route is stage-ordered. The current window is declared below; blocked successors are indexed without execution authority in `docs/FUTURE_ROUTE.md`:
 
 ```text
-RWE v2 refreeze
-→ viability preflight → authorized run → evidence closeout
+[window: viability preflight — DECISION_REQUIRED, planning must expand its contract]
+→ separately authorized viability run → evidence closeout
 → measurement estimands → corpus/sample → operations/evidence → protocol freeze
 → decision-baseline snapshot → preflight → run → analysis
 → AC0 runtime inventory → data/contract inventory → trace/order freeze
@@ -58,15 +58,15 @@ No downstream micro-packet starts automatically. Every micro-packet must satisfy
 
 ## Active Routing
 
-1. `PE7-RWE-V2-REFREEZE-1` — `READY_FOR_EXECUTION`; this is the only packet that may start now.
-2. Every later packet in `docs/FUTURE_ROUTE.md` — `BLOCKED_PREREQUISITE` on its explicit predecessor and, for `EFFECT` packets, separate current operator authority.
+1. `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` — `DECISION_REQUIRED`. Its prerequisite is accepted (PR #370; see the accepted receipts in `docs/CURRENT_STATUS.md`), but its complete execution-ready contract has not been expanded here by the planning owner, so **no packet may start coding now**. Coding session entry fails closed until this window is filled.
+2. Every other packet in `docs/FUTURE_ROUTE.md` — `BLOCKED_PREREQUISITE`; every `EFFECT` additionally needs a separate fresh finite T3 operator authority.
 3. Dashboard PR #225 — `DEFERRED_LAST`; it is not a shortcut around the route.
 
 ## Packet States
 
 - `READY_FOR_EXECUTION` — accepted prerequisites and a complete packet contract permit provider-free implementation.
 - `BLOCKED_PREREQUISITE` — a named earlier evidence, implementation, or authority condition is incomplete.
-- `DECISION_REQUIRED` — safe direction or authority cannot be derived from accepted owners.
+- `DECISION_REQUIRED` — safe direction or authority cannot be derived from accepted owners; no coding entry may consume the window.
 - `IN_PROGRESS` — one current branch/PR owns the packet.
 - `COMPLETE` — merged, verified, independently reviewed, and synchronized into accepted documents.
 
@@ -74,7 +74,7 @@ Review `PASS`, PR merge, and packet `COMPLETE` are different states. Exact-head 
 
 ## Execution-Readiness Contract
 
-A route label, boundary table, issue, chat handoff, or model-generated implementation plan is not enough to start code. Before a blocked packet becomes `READY_FOR_EXECUTION`, this document must contain, for that exact accepted-main frontier:
+A route label, boundary table, issue, chat handoff, promotion profile, or model-generated implementation plan is not enough to start code. Before a blocked packet becomes `READY_FOR_EXECUTION`, this document must contain, for that exact accepted-main frontier:
 
 1. one outcome and explicit non-goals;
 2. accepted prerequisites and exact evidence identities;
@@ -95,7 +95,7 @@ Execution readiness is progressive:
 - **planning-ready** — the goal and boundary are accepted, but current-main inventory or a value decision is still required;
 - **routing-only** — ordering is accepted, but implementation details would be premature.
 
-Only `PE7-RWE-V2-REFREEZE-1` is execution-ready now. Every packet in `docs/FUTURE_ROUTE.md` is routing-only until its exact predecessor is accepted and its complete contract is moved here and refreshed against then-current `main`. An implementation agent must stop `DECISION_REQUIRED` rather than fill a missing architecture, authority, statistical, evaluator, retention, spend, recovery, or adoption decision.
+No packet is execution-ready now. `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` is planning-ready below; every packet in `docs/FUTURE_ROUTE.md` is routing-only until its exact predecessor is accepted and its complete contract is moved here and refreshed against then-current `main`. An implementation agent must stop `DECISION_REQUIRED` rather than fill a missing architecture, authority, statistical, evaluator, retention, spend, recovery, or adoption decision.
 
 ## Micro-Packet Classes and Consolidation Rule
 
@@ -137,7 +137,7 @@ The default is one focused branch/PR per packet. Adjacent provider-free packets 
 
 An execution session should not load `docs/FUTURE_ROUTE.md` unless it is selecting or refreshing the next packet. It reads `START_HERE.md`, the current status, the common contracts/hard stops in this document, the one active packet block, its accepted predecessor receipt, the relevant owner map/architecture sections, and the exact code/tests.
 
-A predecessor becoming `COMPLETE` does not mechanically make its successor executable. Before changing a successor to `READY_FOR_EXECUTION`, the planning owner must refresh that block against accepted current `main` and replace every routing-level abstraction with exact evidence identities, owner/allowed paths, frozen interfaces/fields, tests, rollback, and any required human or operator gate. If the accepted predecessor ended `NO_GO`, `DECLINE`, `DEFER`, `SATURATED`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT`, synchronize and rewrite the route before selecting any successor. Do not walk the nominal GO path merely because a prerequisite packet closed.
+A predecessor becoming `COMPLETE` does not mechanically make its successor executable. Before changing a successor to `READY_FOR_EXECUTION`, the planning owner must refresh that block against accepted current `main` and replace every routing-level abstraction with exact evidence identities, owner/allowed paths, frozen interfaces/fields, tests, rollback, and any required human or operator gate. The `docs/FUTURE_ROUTE.md` promotion profile supplies bounded promotion-time candidates; facts marked `REFRESH_AT_PROMOTION` must be re-derived from then-current `main`, not guessed. If the accepted predecessor ended `NO_GO`, `DECLINE`, `DEFER`, `SATURATED`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT`, synchronize and rewrite the route before selecting any successor. Do not walk the nominal GO path merely because a prerequisite packet closed.
 
 ## Common Evidence and Cost Contract
 
@@ -195,6 +195,7 @@ Architecture effects require a reconstructable pre-AC Harness and a contemporary
 - Keep the PR Draft while the diff changes. Fast checks are feedback only.
 - Complete focused checks, applicable full checks, handoff/security checks, stable-head complete-diff independent review, Ready transition, canonical exact-head CI, and rollback review before merge.
 - A new head invalidates prior CI and review evidence.
+- A coding session enters through `uv run --no-project python scripts/session_context.py enter --role coding` and receives one digest-bound compiled context; it does not re-read the whole planning universe.
 
 ## Hard Stops
 
@@ -209,104 +210,24 @@ Stop before any of the following:
 - reporting only the best candidate while hiding rejected candidates, diversity collapse, contamination, evaluator gaming, or full consumed cost;
 - changing corpus, reviewer policy, budget, verifier, seeds, stop rules, margins, or statistical method after observing comparison results;
 - using memory, skills, summaries, novelty scores, forecasts, or scalar VDE indices as authority;
-- beginning a routing-only packet from its summary boundary without an accepted execution-ready expansion;
+- beginning a routing-only packet from its summary boundary or promotion profile without an accepted execution-ready expansion;
+- executing a packet whose dispatch capsule, verification contract, or checkpoint evidence was changed, rehashed, or substituted after acceptance;
 - claiming learning, open-ended evolution, or recursive self-improvement without the separately required evidence.
 
-## Packet PE7-RWE-V2-REFREEZE-1
+## Packet PE7-RWE-V2-VIABILITY-PREFLIGHT-1
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `DECISION_REQUIRED`
 
-**Prerequisite:** active runtime/code baseline `ee43eac853644266614da09de764a3bf19f2d281` from accepted PR #369, plus the current accepted documentation head descending from it without relevant code changes; accepted Decision A timeout repair (#368); accepted Decision C calibration mechanism (#369); operator-reported 8192 calibration and local candidate must be independently reconciled before acceptance.
+**Prerequisite:** `PE7-RWE-V2-REFREEZE-1` is `COMPLETE`; accepted evidence is in the `## Accepted Packet Receipts` table of `docs/CURRENT_STATUS.md` (PR #370 exact head `36c92b93975366c3f85471f247a3afb128e5351c`, merge `3b4afb3e5ab4254904aa5a63473ab6ae0eac1e82`, exact-head `PASS`, canonical workflow `31312135471`, bound calibration digests).
 
-**Execution class:** bounded mechanical contract migration plus deterministic test-race repair.
+**Class:** `CONTRACT`
 
-### Outcome
+**Why this window is open:** the routing-only sketch in `docs/FUTURE_ROUTE.md` accepts the outcome, allowed delta, exit, and stop conditions of the provider-free preflight and the operator-readable one-use authorization request package for the exact accepted v2 freeze, but the twelve execution-readiness fields above are not yet concrete here: canonical owners and allowed paths, ordered implementation slices, failure taxonomy, verification commands, compatibility/rollback detail, and the machine-bound dispatch capsule are all missing. This document does not invent them; a coding agent must not either.
 
-Land a versioned v2 frozen RWE contract whose only experimental change is the compatibility-required output envelope, and eliminate the independently reproduced HTTP-server test environment race by making every writer of the same environment families serialize on the existing canonical locks.
+**Who owns the next step:** the planning owner must expand the complete twelve-field contract into this window (the packet already moved here from the future route when its prerequisite closed, and remains parked under this document's unresolved-value rule), refresh every `REFRESH_AT_PROMOTION` profile fact against then-current `main`, author the `weak-agent-dispatch:v1` capsule inside this packet block, and mark the packet `READY_FOR_EXECUTION` (or `IN_PROGRESS` once claimed). Until then, `session_context.py enter --role coding` reports `DECISION_REQUIRED` (`packet_not_executable`) and issues no checkpoint commands. The promotion itself is an independently reviewed routing change.
 
-This packet authorizes no provider request, live 4-cell run, target effect, schema migration, or new authority owner.
-
-### Evidence-reconciliation slice
-
-Treat the current handoff as a claim until bound evidence is observed:
-
-- calibration reportedly selected 8192 as the first viable parseable envelope;
-- the reported redacted bundle is under `/tmp/opencode/rwe-calibration-evidence/`;
-- a reported local candidate contains the v2 refreeze and canonical-lock repair;
-- reported checks are `test_http_server` 206 passed ×4, full engine 1692 passed/1 ignored, fmt and clippy clean.
-
-Before accepting the candidate:
-
-1. verify the redacted calibration record binds accepted main, `deepseek-v4-flash`, candidates 8192 then 16384, first-viable semantics, no more than two requests, authorized timeout, token/latency/cost/finish-reason fields, request IDs, parseable content, and canonical external provenance;
-2. verify the record contains no prompt, output text, credential, private path, or unredacted repository content;
-3. record a SHA-256 for the restricted raw bundle and a redacted summary in the PR evidence; do not commit sensitive raw evidence;
-4. inspect the actual candidate diff. If it is unavailable, reconstruct from accepted main; never infer file contents from the handoff;
-5. if 8192 is not independently supported, stop `DECISION_REQUIRED`. Do not silently choose 16384 or run another paid calibration.
-
-### Allowed semantic delta
-
-The v2 contract changes exactly:
-
-| Field | v1 | v2 |
-|---|---:|---:|
-| `per_task_max_output_tokens` | 4,000 | 8,192 |
-| `per_task_max_total_tokens` | 16,000 | 20,192 |
-| four-cell run token ceiling | 64,000 | 80,768 |
-
-Version identifiers, dependent per-cell/run totals, corpus/protocol/schedule hashes, freeze-point binding, and authorization bindings must change only where mechanically implied by that delta.
-
-The following remain identical to v1: target repository and source commit/tree, two task objectives and task bodies, allowed paths, verifier, reviewer policy, repetitions, seeds, budget-point count, request count, task wall time, implementer model, planner/reviewer model, stop rules, statistical method, non-inferiority margins, monetary ceilings, Draft-PR-only output, and no-auto-merge policy.
-
-### Allowed paths
-
-- new `engine/rwe/corpora/rwe-minimum-first-corpus/v2/**` artifacts;
-- `engine/src/rwe/operator_corpus.rs` for explicit version selection, v1/v2 constants, freeze-point and expected hash locks;
-- `engine/tests/test_http_server.rs` for delegating the four duplicated environment-lock helpers to `http_server/common.rs`;
-- `engine/tests/http_server/auth.rs` for the two baseline auth tests to hold the canonical provider environment lock;
-- `tools/test_run_rust_tests.py` for the runner contract test that verifies the complete lock set enables parallel execution while partial or missing locks remain serial;
-- `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md` for exact-head status synchronization after acceptance.
-
-`docs/MODULE_MAP.md` changes only if the real owner path changes; a new version under the same owner is not an owner change. Any need to edit production scheduler, store, authorization, provider, evaluator, schema, migration, SDK, Dashboard, or target-output code is `DECISION_REQUIRED`.
-
-### Test-race repair boundary
-
-- `provider_cli_env_lock`, `auto_adjustment_env_lock`, `adaptive_operator_env_lock`, and `target_repo_output_env_lock` in `test_http_server.rs` delegate to the existing `http_server/common.rs` statics; they must not retain independent `OnceLock<Mutex<()>>` instances.
-- `product_golden_path_env_lock` remains local because it has no canonical twin.
-- The two auth baseline tests hold the same canonical provider lock before reading or writing related environment state.
-- Remove diagnostics added solely for root-cause discovery and restore the original dispatch behavior.
-- `engine/tests/http_server/tick.rs` is currently unwired dead code. Do not edit or delete it in this packet.
-- Do not introduce a process-global test-serialization mechanism or force all tests single-threaded.
-
-### Ordered implementation slices
-
-1. Reconcile the calibration receipt and candidate against accepted main.
-2. Copy v1 artifacts to a distinct v2 root; prove v1 bytes are unchanged.
-3. Apply the three numeric budget changes and only mechanically dependent version/hash/binding changes.
-4. Add deterministic v1 and v2 load/freeze/hash tests and a whitelist test for the semantic delta.
-5. Canonicalize the four duplicated HTTP-server test locks and retain the two auth lock acquisitions.
-6. Remove diagnostics, run the verification matrix, then synchronize only the two canonical documents.
-
-### Verification and exit gate
-
-Required local evidence:
-
-- byte-for-byte v1 tree equality against accepted main;
-- recomputation of v2 corpus, protocol, and schedule hashes from canonical bodies;
-- a machine-readable whitelist diff proving no non-compatibility experiment field changed;
-- focused v1/v2 freeze, tamper, schedule-total, authorization-binding, and replay-determinism tests;
-- `cargo test -p engine --test test_http_server` green in four consecutive default-parallel runs;
-- `cargo test -p engine`;
-- `cargo fmt --all -- --check`;
-- `cargo clippy -p engine --all-targets --all-features -- -D warnings`;
-- applicable PostgreSQL parity tests if any store/authorization path changed; otherwise the diff must prove those owners were untouched;
-- `uv run --no-project python tools/check_security_baseline.py`;
-- `uv run --no-project python scripts/check_agent_handoff.py`;
-- `git diff --check`.
-
-Exit requires one stable exact head, complete-diff independent `PASS`, canonical exact-head CI success, no open blockers, v1 unchanged, verified redacted calibration evidence, and a rollback statement. Rollback reverts the packet and returns the active freeze to v1; prior failed v1 evidence remains valid.
-
-After merge, the planning owner may refresh `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` from `docs/FUTURE_ROUTE.md` into this current window. Merge does not mechanically activate it and does not authorize a live run; `PE7-RWE-V2-VIABILITY-RUN-1` remains separately blocked.
+**Forbidden while the window stays open:** promoting or executing from the future-route profile alone; inventing owners, allowed paths, ordered steps, or verification commands; issuing or admitting RWE authority; calling a Provider; running a schedule cell; writing a target repository; repairing the accepted v2 freeze; rerunning calibration; activating any successor; or changing measurement/AC/adoption/Meta/Dashboard routing.
 
 ## Future Route Boundary
 
-`docs/FUTURE_ROUTE.md` preserves the accepted long-horizon order and routing-only packet sketches. It cannot authorize implementation, Provider effects, promotion, merge, release, or deployment. Promotion requires removing exactly one eligible packet from that document, expanding it here against accepted current `main`, and independently reviewing the resulting routing change.
+`docs/FUTURE_ROUTE.md` preserves the accepted long-horizon order, routing-only packet sketches, and bounded promotion profiles. It cannot authorize implementation, Provider effects, promotion, merge, release, or deployment. Promotion requires removing exactly one eligible packet from that document, expanding it here against accepted current `main`, and independently reviewing the resulting routing change; the profile facts marked `REFRESH_AT_PROMOTION` are candidates, not accepted contract.
