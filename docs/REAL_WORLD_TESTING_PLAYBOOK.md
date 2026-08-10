@@ -18,6 +18,33 @@ Observe → Select or repair packet → Decide → Implement → Verify → Revi
 
 The coding agent may resolve bounded missing decisions from current code, merged history, tests, and authoritative documents. Material architecture, authority, schema, migration, security, release, or recovery decisions must be recorded before dependent behavior is merged.
 
+### Repository-maintenance route lifecycle
+
+The repository-owned route controller is permitted to advance only
+repository-maintenance packets through the existing Issue/PR lifecycle:
+
+```text
+reconcile accepted packet → bounded weak worker → local verification
+→ Draft PR → exact-head CI → independent exact PASS
+→ bounded repair if required → strict maintenance merge owner
+→ post-merge closeout → predecessor disposition → successor promotion
+```
+
+This is not product runtime auto-merge. The route controller cannot merge a
+target repository, release, deploy, adopt a Harness, call a Provider, consume
+T3 authority, or change a protected-branch policy. A maintenance merge request
+must revalidate accepted main, packet and dispatch digests, subject lease,
+branch and exact head, complete canonical CI including `context-capsule`, exact
+independent `PASS`, no unresolved blocking objection, clean base relationship,
+and a reversible rollback. A new head or main drift invalidates prior evidence.
+
+The controller may recover ordinary CI failures, review blockers, worker
+crashes, stale checkpoints, and restart gaps through the existing bounded
+repair and reconciliation owners. It must stop with a typed escalation when a
+schema, authority, evaluator, retention, spend, statistical, T3, or human
+GO/NO-GO value cannot be derived from accepted owners. Local journals and
+checkpoints are rebuildable projections, never lifecycle authority.
+
 ### Fast feedback and canonical CI
 
 Two workflows have different authority:

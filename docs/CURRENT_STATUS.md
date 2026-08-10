@@ -71,7 +71,7 @@ These runs established the root cause and fail-closed behavior. They did not est
 
 ## Accepted Readiness Boundary
 
-Accepted `main` contains the provider-free compatibility-calibration mechanism and the distinct, versioned v2 refreeze. It contains **no accepted v2 preflight receipt** and **no v2 four-cell viability result**. `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` is the current window in `docs/NEXT_DECISION.md`, `READY_FOR_EXECUTION` since the two contract values are accepted as packet-local operator policy on 2026-08-10 (B1 preflight-receipt maximum age = 15 minutes with no grace period; B2 one-use authorization request-package validity window = 2 hours from issuance, no renewal/extension; owner: the packet block in `docs/NEXT_DECISION.md` plus this gap truth). Current execution state and routing belong to `docs/NEXT_DECISION.md`. The packet's provider-free preflight and operator-readable authorization request package must not issue or consume authority, call a Provider, write a target, run the schedule, or authorize downstream measurement/Architecture Convergence work.
+Accepted `main` contains the provider-free compatibility-calibration mechanism and the distinct, versioned v2 refreeze. It contains **no accepted v2 preflight receipt** and **no v2 four-cell viability result**. `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` is retained as a blocked historical contract while the repository-maintenance route transition is established; its B1/B2 policy values remain packet-local and its timestamp/expiry enforcement and provenance disposition are not accepted. Current execution state and routing belong to `docs/NEXT_DECISION.md`. The packet's provider-free preflight and operator-readable authorization request package must not issue or consume authority, call a Provider, write a target, run the schedule, or authorize downstream measurement/Architecture Convergence work.
 
 Candidate evidence remains non-authoritative until it is bound to one exact PR head, passes the repository review protocol and canonical CI, and is merged. Do not record candidate branches, PR numbers, CI runs, or review claims here; the capsule observes them at handoff time and fails closed when unavailable or conflicting.
 
@@ -83,7 +83,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Timeout ownership repair | `COMPLETE` | PR #368 accepted |
 | Compatibility calibration mechanism | `COMPLETE` | PR #369 accepted; mechanism only |
 | V2 refreeze + bounded test-race repair | `COMPLETE` | PR #370 accepted; exact v2 freeze and canonical lock repair are on main |
-| V2 provider-free viability preflight | `READY_FOR_EXECUTION` | Prerequisite accepted (#370); packet block expanded in `docs/NEXT_DECISION.md` against current `main`; B1 (15-minute receipt maximum age) and B2 (2-hour one-use validity window from issuance) accepted as packet-local operator policy on 2026-08-10; weak-agent dispatch capsule authored; a coding entry may now run the provider-free preflight (S1–S5) |
+| V2 provider-free viability preflight | `BLOCKED_PREREQUISITE` | Repository-maintenance route transition first; then authoritative B1 timestamp, store-owned B2 issuance expiry, and Golden Path test-tooling provenance disposition must be accepted before re-expansion |
 | V2 four-cell run and closeout | `BLOCKED_PREREQUISITE` | Preflight acceptance, then one separately authorized run and independent closeout |
 | Measurement readiness | `BLOCKED_PREREQUISITE` | 4 packets: estimands, corpus/sample, operations/evidence, protocol freeze |
 | Decision-grade pre-AC baseline | `BLOCKED_PREREQUISITE` | 4 packets: snapshot/corpus, preflight, run, analysis |
@@ -136,6 +136,7 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 5. No accepted causal-mutation, lineage/mutation, evaluator/holdout, lifecycle-budget, diversity/exploration, or Pareto/stop/recovery contract or implementation packet exists.
 6. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or fixed Meta operator-comparison result exists.
 7. No accepted metacognitive-operator, parameter-efficient training adapter, weight/harness factorial, co-evolution, or outer-policy research contract exists; full-weight and model-architecture evolution remain unrouted.
+8. The repository-maintenance route controller is not yet implemented; the accepted contract deliberately leaves Plan-lane admission deferred until the existing CI, review, merge, closeout, and successor owners are integrated without parallel ownership.
 
 ## Maintenance Boundary
 
