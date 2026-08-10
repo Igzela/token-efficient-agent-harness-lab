@@ -658,6 +658,29 @@ class LocalRunOnce:
             ledger_issue, packet_id, attempt, claim_nonce, pr_number, head_sha
         )
 
+    def _read_plan_promotion(
+        self, ledger_issue: int, packet_id: str, attempt: str
+    ) -> dict[str, Any] | None:
+        """Read the promotion or escalation receipt for one closed-out subject."""
+
+        for receipt_id in (
+            f"plan-promote:{packet_id}:{attempt}",
+            f"plan-escalate:{packet_id}:{attempt}",
+        ):
+            try:
+                state = state_manager.read_dispatch_state(
+                    ledger_issue, receipt_id, self.repository
+                )
+            except state_manager.StateUnavailableError:
+                return None
+            if isinstance(state, dict):
+                return {
+                    "kind": state.get("action"),
+                    "status": state.get("status"),
+                    "details": state.get("details"),
+                }
+        return None
+
     def _wait_for_plan_terminal_receipts(
         self,
         ledger_issue: int,
@@ -670,13 +693,17 @@ class LocalRunOnce:
 
         CI and review are read back from the existing owners' own ledger
         recordings; merge and closeout are requested through the controller,
-        which verifies authoritative GitHub/PR state before recording.  This
-        wait never writes ledger state itself, never runs the model again,
-        and never treats a timeout as success.
+        which verifies authoritative GitHub/PR state before recording.  After
+        the four terminal receipts, exactly one successor-promotion or
+        bounded escalation receipt is requested through the controller and
+        read back.  This wait never writes ledger state itself, never runs
+        the model again, and never treats a timeout as success for the
+        terminal stages.
         """
 
         deadline = time.monotonic() + self.lifecycle_timeout_seconds
         dispatched_stages: set[str] = set()
+        promotion_dispatched = False
         while True:
             lifecycle = plan_lifecycle.read_plan_lifecycle(
                 ledger_issue, packet_id, attempt, self.repository
@@ -686,34 +713,48 @@ class LocalRunOnce:
                 transitions = lifecycle.get("transitions") or {}
                 merge = transitions.get("merge") or {}
                 closeout = transitions.get("closeout") or {}
-                return self._plan_result(
-                    "closed_out", packet_id, attempt,
-                    ledger_issue=ledger_issue,
-                    pr_number=pr_number, head_sha=head_sha,
-                    merge_commit_sha=merge.get("merge_commit_sha"),
-                    terminal_packet_state=closeout.get("terminal_packet_state"),
-                    closeout_reference=closeout.get("closeout_reference"),
-                )
-            pending = next(
-                (name for name in ("ci", "review", "merge", "closeout")
-                 if not (isinstance(stages, dict) and stages.get(name))),
-                "closeout",
-            )
-            if pending in {"merge", "closeout"} and pending not in dispatched_stages:
-                try:
-                    self.github.dispatch_controller(
-                        "lifecycle-plan",
-                        {"packet_id": packet_id, "attempt_id": attempt, "stage": pending},
+                promotion = self._read_plan_promotion(ledger_issue, packet_id, attempt)
+                if promotion is None and not promotion_dispatched:
+                    try:
+                        self.github.dispatch_controller(
+                            "promote-plan",
+                            {"packet_id": packet_id, "attempt_id": attempt},
+                        )
+                        promotion_dispatched = True
+                    except local_loop.LoopUnavailable:
+                        pass
+                if promotion is not None or time.monotonic() >= deadline:
+                    return self._plan_result(
+                        "closed_out", packet_id, attempt,
+                        ledger_issue=ledger_issue,
+                        pr_number=pr_number, head_sha=head_sha,
+                        merge_commit_sha=merge.get("merge_commit_sha"),
+                        terminal_packet_state=closeout.get("terminal_packet_state"),
+                        closeout_reference=closeout.get("closeout_reference"),
+                        promotion=promotion or {},
+                        promotion_pending=promotion is None,
                     )
-                    dispatched_stages.add(pending)
-                except local_loop.LoopUnavailable:
-                    pass
-            if time.monotonic() >= deadline:
-                return self._plan_result(
-                    "outcome_unknown", packet_id, attempt,
-                    reason="lifecycle_timeout", stage=pending,
-                    pr_number=pr_number, head_sha=head_sha,
+            else:
+                pending = next(
+                    (name for name in ("ci", "review", "merge", "closeout")
+                     if not (isinstance(stages, dict) and stages.get(name))),
+                    "closeout",
                 )
+                if pending in {"merge", "closeout"} and pending not in dispatched_stages:
+                    try:
+                        self.github.dispatch_controller(
+                            "lifecycle-plan",
+                            {"packet_id": packet_id, "attempt_id": attempt, "stage": pending},
+                        )
+                        dispatched_stages.add(pending)
+                    except local_loop.LoopUnavailable:
+                        pass
+                if time.monotonic() >= deadline:
+                    return self._plan_result(
+                        "outcome_unknown", packet_id, attempt,
+                        reason="lifecycle_timeout", stage=pending,
+                        pr_number=pr_number, head_sha=head_sha,
+                    )
             self.sleeper(self.poll_interval_seconds)
 
     def _unknown_plan_output(

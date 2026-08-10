@@ -1022,6 +1022,130 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
     return {**outcome, "stage": stage}
 
 
+def _live_routing_document(repo: str) -> tuple[str, str] | None:
+    """Return ``(accepted_main, plan_document)`` from authoritative live routing."""
+
+    try:
+        adapter = local_loop.GitHubAdapter(repo)
+        metadata = adapter.repository_metadata()
+        branch = metadata.get("default_branch")
+        if not isinstance(branch, str) or local_loop.BRANCH.fullmatch(branch) is None:
+            return None
+        accepted_main = adapter.accepted_main_sha(branch)
+        if local_loop.HEX40.fullmatch(accepted_main) is None:
+            return None
+        document = adapter.accepted_plan_document(accepted_main)
+    except local_loop.LoopUnavailable:
+        return None
+    return accepted_main, document
+
+
+def promote_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
+    """Record exactly-one successor-promotion or bounded escalation receipt.
+
+    After an accepted plan closeout, reads the live accepted routing on the
+    current accepted main and records either the bounded promotion receipt
+    (successor packet id + capsule digest) or a bounded escalation pause
+    receipt when the routing does not yet name exactly one eligible
+    successor.  The successor is never executed; every write is idempotent,
+    conflicts fail closed, and no model self-report advances routing.
+    """
+
+    attempt = _normalized_attempt_id(attempt_id)
+    if attempt is None:
+        return {"promoted": False, "reason": "invalid_attempt_id"}
+    if not plan_lane.PACKET_ID.fullmatch(packet_id):
+        return {"promoted": False, "reason": "plan_packet_id_invalid"}
+    repo = _repo()
+    try:
+        control_state.require_live(repo or None)
+    except control_state.ControlStateError:
+        return {"promoted": False, "reason": "disabled_or_emergency_stopped"}
+    if not repo:
+        return {"promoted": False, "reason": "repository_unavailable"}
+    try:
+        ledger = control_state.read_plan_ledger(repo)
+    except control_state.ControlStateError:
+        return {"promoted": False, "reason": "plan_ledger_unavailable"}
+    ledger_issue = ledger.get("number")
+    if type(ledger_issue) is not int or ledger_issue <= 0:
+        return {"promoted": False, "reason": "plan_execution_ledger_invalid"}
+    claim = plan_lifecycle._exact_plan_claim(ledger_issue, packet_id, attempt, repo)
+    if claim is None:
+        return {"promoted": False, "reason": "plan_claim_not_found"}
+    if claim.get("status") != "closed_out":
+        return {"promoted": False, "reason": "plan_claim_not_closed_out"}
+    details = claim.get("details")
+    if not isinstance(details, dict) or not isinstance(details.get("source_main_sha"), str) or local_loop.HEX40.fullmatch(details["source_main_sha"]) is None:
+        return {"promoted": False, "reason": "plan_claim_binding_invalid"}
+    source_main_sha = details["source_main_sha"]
+    routing = _live_routing_document(repo)
+    if routing is None:
+        return {"promoted": False, "reason": "routing_unavailable"}
+    accepted_main, document = routing
+    try:
+        successor_id, capsule_digest = plan_lane.successor_binding(
+            document, packet_id, accepted_main
+        )
+    except plan_lane.PlanLaneError as exc:
+        if exc.reason in {"plan_packet_absent", "successor_still_current", "multiple_plan_packets"}:
+            return _record_plan_escalation(
+                ledger_issue, packet_id, attempt, exc.reason, repo
+            )
+        return {"promoted": False, "reason": f"routing_invalid:{exc.reason}"}
+    receipt_id = f"plan-promote:{packet_id}:{attempt}"
+    receipt_details = {
+        "subject_kind": "plan-packet",
+        "subject_id": packet_id,
+        "attempt_id": attempt,
+        "source_main_sha": source_main_sha,
+        "routing_main_sha": accepted_main,
+        "successor_id": successor_id,
+        "capsule_digest": capsule_digest,
+    }
+    try:
+        previous = sm.read_dispatch_state(ledger_issue, receipt_id, repo)
+    except sm.StateUnavailableError:
+        return {"promoted": False, "reason": "promotion_receipt_unavailable"}
+    if isinstance(previous, dict) and previous.get("status") == "promoted":
+        if previous.get("details") == receipt_details:
+            return {"promoted": True, "reason": "already_promoted", **receipt_details}
+        return {"promoted": False, "reason": "conflicting_promotion_receipt"}
+    if not sm.record_dispatch_state(
+        ledger_issue, receipt_id, "plan-promote", "promoted", receipt_details, repo
+    ):
+        return {"promoted": False, "reason": "promotion_receipt_write_failed"}
+    return {"promoted": True, "reason": "promoted", **receipt_details}
+
+
+def _record_plan_escalation(
+    ledger_issue: int, packet_id: str, attempt: str, reason: str, repo: str
+) -> dict[str, object]:
+    """Record a bounded escalation pause receipt for the planning owner."""
+
+    receipt_id = f"plan-escalate:{packet_id}:{attempt}"
+    receipt_details = {
+        "subject_kind": "plan-packet",
+        "subject_id": packet_id,
+        "attempt_id": attempt,
+        "reason": reason,
+        "pause_owner": "planning",
+    }
+    try:
+        previous = sm.read_dispatch_state(ledger_issue, receipt_id, repo)
+    except sm.StateUnavailableError:
+        return {"promoted": False, "reason": "escalation_receipt_unavailable"}
+    if isinstance(previous, dict) and previous.get("status") == "escalated":
+        if previous.get("details") == receipt_details:
+            return {"promoted": False, "escalated": True, **receipt_details}
+        return {"promoted": False, "reason": "conflicting_escalation_receipt"}
+    if not sm.record_dispatch_state(
+        ledger_issue, receipt_id, "plan-escalate", "escalated", receipt_details, repo
+    ):
+        return {"promoted": False, "reason": "escalation_receipt_write_failed"}
+    return {"promoted": False, "escalated": True, **receipt_details}
+
+
 def _terminal_plan(
     packet_id: str,
     attempt_id: str,
@@ -1919,7 +2043,7 @@ def main() -> None:
             "Usage: dispatcher.py <dispatch-ready|dispatch-repair|dispatch-review|"
             "retry-review|dispatch-merge|dispatch-next|claim-local|handoff-local|"
             "release-local|block-local|claim-plan|handoff-plan|lifecycle-plan|"
-            "release-plan|block-plan> ..."
+            "promote-plan|release-plan|block-plan> ..."
         )
     command = sys.argv[1]
     if command == "dispatch-ready" and len(sys.argv) in {3, 4}:
@@ -1938,6 +2062,8 @@ def main() -> None:
         result = handoff_plan(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
     elif command == "lifecycle-plan" and len(sys.argv) == 5:
         result = record_plan_lifecycle(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif command == "promote-plan" and len(sys.argv) == 4:
+        result = promote_plan(sys.argv[2], sys.argv[3])
     elif command == "release-plan" and len(sys.argv) == 7:
         result = release_plan(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])
     elif command == "block-plan" and len(sys.argv) == 6:

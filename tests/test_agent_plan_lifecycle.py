@@ -677,13 +677,21 @@ class TestPlanLifecycleWait(unittest.TestCase):
                 "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
             },
         }
+        promotion = {
+            "kind": "plan-promote", "status": "promoted",
+            "details": {"successor_id": "PE7-SUCCESSOR-PROMOTION-ESCALATION-1"},
+        }
         with mock.patch.object(
             plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle
+        ), mock.patch.object(
+            runner, "_read_plan_promotion", return_value=promotion
         ):
             result = runner._wait_for_plan_terminal_receipts(LEDGER, PACKET, ATTEMPT, PR, HEAD)
         self.assertEqual(result.status, "closed_out")
         self.assertEqual(result.details.get("merge_commit_sha"), MERGE)
         self.assertEqual(result.details.get("terminal_packet_state"), "closed_out")
+        self.assertEqual(result.details["promotion"]["status"], "promoted")
+        self.assertFalse(result.details["promotion_pending"])
         github.dispatch_controller.assert_not_called()
 
     def test_wait_dispatches_controller_for_merge_and_closeout_stages(self):
@@ -712,16 +720,19 @@ class TestPlanLifecycleWait(unittest.TestCase):
         with mock.patch.object(
             plan_lifecycle, "read_plan_lifecycle", side_effect=readbacks
         ), mock.patch.object(
+            runner, "_read_plan_promotion", return_value=None
+        ), mock.patch.object(
             local_run_once.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 11.0]
         ):
             result = runner._wait_for_plan_terminal_receipts(LEDGER, PACKET, ATTEMPT, PR, HEAD)
         self.assertEqual(result.status, "closed_out")
-        self.assertEqual(result.details.get("merge_commit_sha"), MERGE)
+        self.assertTrue(result.details["promotion_pending"])
         github.dispatch_controller.assert_has_calls([
             mock.call("lifecycle-plan", {"packet_id": PACKET, "attempt_id": ATTEMPT, "stage": "merge"}),
             mock.call("lifecycle-plan", {"packet_id": PACKET, "attempt_id": ATTEMPT, "stage": "closeout"}),
+            mock.call("promote-plan", {"packet_id": PACKET, "attempt_id": ATTEMPT}),
         ])
-        self.assertEqual(github.dispatch_controller.call_count, 2)
+        self.assertEqual(github.dispatch_controller.call_count, 3)
 
     def test_wait_timeout_never_treats_missing_receipts_as_success(self):
         github = mock.Mock()

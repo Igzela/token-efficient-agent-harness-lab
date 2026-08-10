@@ -1,0 +1,387 @@
+"""Provider-free tests for plan-lane successor promotion and escalation."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+import unittest
+from unittest import mock
+
+CONTROL = Path(__file__).resolve().parents[1] / "scripts" / "agent-control"
+sys.path.insert(0, str(CONTROL))
+
+import dispatcher  # noqa: E402
+import local_loop  # noqa: E402
+import local_run_once  # noqa: E402
+import plan_lane  # noqa: E402
+import plan_lifecycle  # noqa: E402
+import state_manager  # noqa: E402
+
+LEDGER = 900
+MAIN = "a" * 40
+ATTEMPT = "123e4567-e89b-12d3-a456-426614174000"
+CLOSED = "PE7-LIFECYCLE-CONTROLLER-1"
+SUCCESSOR = "PE7-SUCCESSOR-PROMOTION-ESCALATION-1"
+DISPATCH_ID = f"plan-run:{CLOSED}:{MAIN}:{ATTEMPT}"
+
+CLOSED_DETAILS = {
+    "ledger_issue_number": LEDGER,
+    "subject_kind": "plan-packet",
+    "subject_id": CLOSED,
+    "source_main_sha": MAIN,
+    "task_spec_sha256": "d" * 64,
+    "allowed_paths": ["scripts/agent-control/", "tests/"],
+    "canonical_branch": "agent/packet-pe7-lifecycle-controller-1",
+    "attempt_id": ATTEMPT,
+    "execution_token": "b" * 32,
+    "claim_nonce": "c" * 32,
+    "target_label": state_manager.LABEL_RUNNING,
+    "terminal_packet_state": "closed_out",
+    "closeout_reference": "PR #42",
+}
+
+
+def closed_claim(status="closed_out"):
+    return {
+        "kind": "agent-orchestrator-dispatch-state",
+        "version": 1,
+        "issue_number": LEDGER,
+        "dispatch_id": DISPATCH_ID,
+        "action": "plan-run",
+        "status": status,
+        "details": dict(CLOSED_DETAILS),
+    }
+
+
+def packet_payload(packet_id=SUCCESSOR, state="READY_FOR_EXECUTION", lane=plan_lane.PLAN_LANE_ACTIVE):
+    return {
+        "schema_version": "weak_agent_dispatch.v1",
+        "packet_id": packet_id,
+        "packet_state": state,
+        "dispatch_lane": "provider_free_repository_maintenance",
+        "external_effect_limit": 0,
+        "authority_consumption_allowed": False,
+        "secret_values_allowed": False,
+        "private_paths_allowed": False,
+        "plan_lane_state": lane,
+        "goal": "Promote exactly one successor.",
+        "allowed_paths": ["scripts/agent-control/", "tests/"],
+        "prerequisites": [],
+        "forbidden_changes": ["default branch", "provider calls"],
+        "verification": ["focused provider-free tests"],
+        "rollback": "disable the adapter and revert the packet",
+    }
+
+
+def routing_document(closed=CLOSED, successor=SUCCESSOR, closed_historical=True):
+    """Build a NEXT_DECISION-shaped routing document with one current packet."""
+
+    blocks = []
+    if closed_historical:
+        blocks.append(
+            "## Completed (PE7-LIFECYCLE-CONTROLLER-1)\n\n"
+            "**Historical state:** `COMPLETE`\n"
+        )
+    blocks.append(
+        f"## Packet {successor}\n\n**State:** `READY_FOR_EXECUTION`\n\n"
+        f"<!-- weak-agent-dispatch:v1 {json.dumps(packet_payload(successor), sort_keys=True)} -->\n"
+    )
+    return "\n\n".join([
+        "## Active Routing",
+        f"1. `{successor}`",
+        *blocks,
+    ])
+
+
+def derived_spec_digest(packet_id=SUCCESSOR):
+    return plan_lane._canonical_spec({
+        "schema_version": plan_lane.SCHEMA_VERSION,
+        "packet_id": packet_id,
+        "state": "READY_FOR_EXECUTION",
+        "source_main_sha": MAIN,
+        "goal": "Promote exactly one successor.",
+        "allowed_paths": ["scripts/agent-control/", "tests/"],
+        "prerequisites": [],
+        "forbidden_changes": ["default branch", "provider calls"],
+        "verification": ["focused provider-free tests"],
+        "rollback": ["disable the adapter and revert the packet"],
+    })
+
+
+class TestSuccessorBinding(unittest.TestCase):
+    def test_exactly_one_eligible_successor_binds_packet_and_digest(self):
+        document = routing_document()
+        packet_id, digest = plan_lane.successor_binding(document, CLOSED, MAIN)
+        self.assertEqual(packet_id, SUCCESSOR)
+        self.assertEqual(digest, derived_spec_digest())
+
+    def test_closed_packet_still_current_fails_closed(self):
+        document = routing_document(successor=CLOSED, closed_historical=False)
+        with self.assertRaises(plan_lane.PlanLaneError) as ctx:
+            plan_lane.successor_binding(document, CLOSED, MAIN)
+        self.assertEqual(ctx.exception.reason, "successor_still_current")
+
+    def test_absent_successor_fails_closed(self):
+        document = "\n\n".join([
+            "## Active Routing",
+            "1. `" + CLOSED + "`",
+            "## Completed (PE7-LIFECYCLE-CONTROLLER-1)\n\n"
+            "**Historical state:** `COMPLETE`\n",
+        ])
+        with self.assertRaises(plan_lane.PlanLaneError) as ctx:
+            plan_lane.successor_binding(document, CLOSED, MAIN)
+        self.assertEqual(ctx.exception.reason, "plan_packet_absent")
+
+    def test_multiple_candidates_fail_closed(self):
+        document = "\n\n".join([
+            "## Active Routing",
+            "1. `" + SUCCESSOR + "`",
+            f"## Packet {SUCCESSOR}\n\n**State:** `READY_FOR_EXECUTION`\n\n"
+            f"<!-- weak-agent-dispatch:v1 {json.dumps(packet_payload(SUCCESSOR), sort_keys=True)} -->\n",
+            f"## Packet TOOL-OTHER-1\n\n**State:** `READY_FOR_EXECUTION`\n\n"
+            f"<!-- weak-agent-dispatch:v1 {json.dumps(packet_payload('TOOL-OTHER-1'), sort_keys=True)} -->\n",
+        ])
+        with self.assertRaises(plan_lane.PlanLaneError) as ctx:
+            plan_lane.successor_binding(document, CLOSED, MAIN)
+        self.assertEqual(ctx.exception.reason, "multiple_plan_packets")
+
+    def test_invalid_closed_packet_id_fails_closed(self):
+        with self.assertRaises(plan_lane.PlanLaneError) as ctx:
+            plan_lane.successor_binding(routing_document(), "bad id", MAIN)
+        self.assertEqual(ctx.exception.reason, "successor_closed_packet_invalid")
+
+
+class TestPromotePlanDispatcher(unittest.TestCase):
+    def _patch(self, claim=None, routing=None, routing_error=None):
+        patches = [
+            mock.patch.object(dispatcher, "_repo", return_value="acme/repo"),
+            mock.patch.object(dispatcher.control_state, "require_live", return_value=None),
+            mock.patch.object(
+                dispatcher.control_state, "read_plan_ledger",
+                return_value={"number": LEDGER},
+            ),
+            mock.patch.object(
+                plan_lifecycle, "_exact_plan_claim",
+                return_value=claim if claim is not None else closed_claim(),
+            ),
+            mock.patch.object(
+                dispatcher, "_live_routing_document",
+                return_value=routing or (MAIN, routing_document()),
+            ),
+        ]
+        if routing_error is not None:
+            def _raise(_document, _closed, _main):
+                raise plan_lane.PlanLaneError(routing_error)
+
+            patches.append(mock.patch.object(
+                plan_lane, "successor_binding", side_effect=_raise
+            ))
+        return patches
+
+    def _run(self, patches):
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        return dispatcher.promote_plan(CLOSED, ATTEMPT)
+
+    def test_invalid_inputs_fail_closed(self):
+        with mock.patch.object(state_manager, "read_dispatch_state") as read:
+            self.assertFalse(dispatcher.promote_plan("bad id", ATTEMPT)["promoted"])
+            self.assertEqual(dispatcher.promote_plan(CLOSED, "bad")["reason"], "invalid_attempt_id")
+        read.assert_not_called()
+
+    def test_claim_must_be_closed_out(self):
+        result = self._run(self._patch(claim=closed_claim("dispatched")))
+        self.assertFalse(result["promoted"])
+        self.assertEqual(result["reason"], "plan_claim_not_closed_out")
+
+    def test_promotes_exactly_one_successor(self):
+        patches = self._patch()
+        for patch in patches:
+            patch.start()
+        try:
+            with mock.patch.object(state_manager, "read_dispatch_state", return_value=None), \
+                 mock.patch.object(state_manager, "record_dispatch_state", return_value=True) as write:
+                result = dispatcher.promote_plan(CLOSED, ATTEMPT)
+            write.assert_called_once()
+            self.assertEqual(write.call_args.args[1], f"plan-promote:{CLOSED}:{ATTEMPT}")
+            self.assertEqual(write.call_args.args[2], "plan-promote")
+            self.assertEqual(write.call_args.args[3], "promoted")
+        finally:
+            for patch in patches:
+                patch.stop()
+        self.assertTrue(result["promoted"], result)
+        self.assertEqual(result["successor_id"], SUCCESSOR)
+        self.assertEqual(result["routing_main_sha"], MAIN)
+        self.assertEqual(result["capsule_digest"], derived_spec_digest())
+
+    def test_promote_is_idempotent(self):
+        receipt = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": LEDGER,
+            "dispatch_id": f"plan-promote:{CLOSED}:{ATTEMPT}",
+            "action": "plan-promote",
+            "status": "promoted",
+            "details": {
+                "subject_kind": "plan-packet",
+                "subject_id": CLOSED,
+                "attempt_id": ATTEMPT,
+                "source_main_sha": MAIN,
+                "routing_main_sha": MAIN,
+                "successor_id": SUCCESSOR,
+                "capsule_digest": derived_spec_digest(),
+            },
+        }
+        patches = self._patch()
+        for patch in patches:
+            patch.start()
+        try:
+            with mock.patch.object(state_manager, "read_dispatch_state", return_value=receipt), \
+                 mock.patch.object(state_manager, "record_dispatch_state") as write:
+                result = dispatcher.promote_plan(CLOSED, ATTEMPT)
+                write.assert_not_called()
+        finally:
+            for patch in patches:
+                patch.stop()
+        self.assertTrue(result["promoted"])
+        self.assertEqual(result["reason"], "already_promoted")
+
+    def test_conflicting_promotion_receipt_fails_closed(self):
+        receipt = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": LEDGER,
+            "dispatch_id": f"plan-promote:{CLOSED}:{ATTEMPT}",
+            "action": "plan-promote",
+            "status": "promoted",
+            "details": {"successor_id": "TOOL-OTHER-1"},
+        }
+        patches = self._patch()
+        for patch in patches:
+            patch.start()
+        try:
+            with mock.patch.object(state_manager, "read_dispatch_state", return_value=receipt):
+                result = dispatcher.promote_plan(CLOSED, ATTEMPT)
+        finally:
+            for patch in patches:
+                patch.stop()
+        self.assertFalse(result["promoted"])
+        self.assertEqual(result["reason"], "conflicting_promotion_receipt")
+
+    def test_absent_successor_escalates_with_pause_receipt(self):
+        with mock.patch.object(state_manager, "read_dispatch_state", return_value=None), \
+             mock.patch.object(state_manager, "record_dispatch_state", return_value=True) as write:
+            result = self._run(self._patch(routing_error="plan_packet_absent"))
+        self.assertFalse(result["promoted"])
+        self.assertTrue(result.get("escalated"))
+        self.assertEqual(result["reason"], "plan_packet_absent")
+        self.assertEqual(result["pause_owner"], "planning")
+        self.assertEqual(write.call_args.args[1], f"plan-escalate:{CLOSED}:{ATTEMPT}")
+        self.assertEqual(write.call_args.args[2], "plan-escalate")
+        self.assertEqual(write.call_args.args[3], "escalated")
+
+    def test_successor_still_current_escalates(self):
+        with mock.patch.object(state_manager, "read_dispatch_state", return_value=None), \
+             mock.patch.object(state_manager, "record_dispatch_state", return_value=True):
+            result = self._run(self._patch(routing_error="successor_still_current"))
+        self.assertTrue(result.get("escalated"))
+        self.assertEqual(result["reason"], "successor_still_current")
+
+    def test_invalid_routing_fails_closed_without_receipt(self):
+        patches = self._patch(routing_error="plan_packet_fields_invalid")
+        for patch in patches:
+            patch.start()
+        try:
+            with mock.patch.object(state_manager, "record_dispatch_state") as write:
+                result = dispatcher.promote_plan(CLOSED, ATTEMPT)
+                write.assert_not_called()
+        finally:
+            for patch in patches:
+                patch.stop()
+        self.assertFalse(result["promoted"])
+        self.assertTrue(result["reason"].startswith("routing_invalid:"))
+
+
+class TestPromotionWait(unittest.TestCase):
+    def test_wait_reads_promotion_and_returns_closed_out(self):
+        github = mock.Mock()
+        runner = local_run_once.LocalRunOnce(
+            github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
+            lifecycle_timeout_seconds=10, sleeper=lambda _: None,
+        )
+        lifecycle = {
+            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
+            "transitions": {
+                "merge": {"merge_commit_sha": "c" * 40},
+                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": "PR #42"},
+            },
+        }
+        promotion = {"kind": "plan-promote", "status": "promoted", "details": {"successor_id": SUCCESSOR}}
+        with mock.patch.object(
+            plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle
+        ), mock.patch.object(
+            runner, "_read_plan_promotion", return_value=promotion
+        ):
+            result = runner._wait_for_plan_terminal_receipts(LEDGER, CLOSED, ATTEMPT, 42, "b" * 40)
+        self.assertEqual(result.status, "closed_out")
+        self.assertEqual(result.details["promotion"]["status"], "promoted")
+        self.assertFalse(result.details["promotion_pending"])
+        github.dispatch_controller.assert_not_called()
+
+    def test_wait_dispatches_promote_once_and_reports_pending_on_timeout(self):
+        github = mock.Mock()
+        runner = local_run_once.LocalRunOnce(
+            github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
+            lifecycle_timeout_seconds=10, sleeper=lambda _: None,
+        )
+        lifecycle = {
+            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
+            "transitions": {
+                "merge": {"merge_commit_sha": "c" * 40},
+                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": "PR #42"},
+            },
+        }
+        with mock.patch.object(
+            plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle
+        ), mock.patch.object(
+            runner, "_read_plan_promotion", return_value=None
+        ), mock.patch.object(
+            local_run_once.time, "monotonic", side_effect=[0.0, 11.0]
+        ):
+            result = runner._wait_for_plan_terminal_receipts(LEDGER, CLOSED, ATTEMPT, 42, "b" * 40)
+        self.assertEqual(result.status, "closed_out")
+        self.assertTrue(result.details["promotion_pending"])
+        github.dispatch_controller.assert_called_once_with(
+            "promote-plan", {"packet_id": CLOSED, "attempt_id": ATTEMPT}
+        )
+
+    def test_promotion_read_prefers_promotion_then_escalation(self):
+        github = mock.Mock()
+        runner = local_run_once.LocalRunOnce(
+            github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
+        )
+        with mock.patch.object(
+            state_manager, "read_dispatch_state", return_value=None
+        ):
+            self.assertIsNone(runner._read_plan_promotion(LEDGER, CLOSED, ATTEMPT))
+        receipt = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": LEDGER,
+            "dispatch_id": f"plan-escalate:{CLOSED}:{ATTEMPT}",
+            "action": "plan-escalate",
+            "status": "escalated",
+            "details": {"reason": "plan_packet_absent", "pause_owner": "planning"},
+        }
+        with mock.patch.object(
+            state_manager, "read_dispatch_state", return_value=receipt
+        ):
+            read = runner._read_plan_promotion(LEDGER, CLOSED, ATTEMPT)
+        self.assertEqual(read["kind"], "plan-escalate")
+        self.assertEqual(read["status"], "escalated")
+
+
+if __name__ == "__main__":
+    unittest.main()

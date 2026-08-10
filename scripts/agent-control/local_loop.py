@@ -638,7 +638,7 @@ class GitHubAdapter:
 
         if command not in {
             "claim-local", "handoff-local", "release-local", "block-local", "claim-plan",
-            "handoff-plan", "lifecycle-plan", "release-plan", "block-plan",
+            "handoff-plan", "lifecycle-plan", "promote-plan", "release-plan", "block-plan",
         }:
             raise LoopUnavailable("controller command is not allowed")
         allowed = {
@@ -655,6 +655,7 @@ class GitHubAdapter:
             "claim-plan": {"packet_id", "attempt_id"},
             "handoff-plan": {"packet_id", "attempt_id", "head_sha", "claim_nonce"},
             "lifecycle-plan": {"packet_id", "attempt_id", "stage"},
+            "promote-plan": {"packet_id", "attempt_id"},
             "release-plan": {
                 "packet_id", "attempt_id", "source_main_sha", "reason_code", "claim_nonce",
             },

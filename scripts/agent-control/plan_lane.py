@@ -287,3 +287,21 @@ def parse_optional(document: str, accepted_main_sha: str) -> PlanCandidate | Non
         if exc.reason == "plan_packet_absent":
             return None
         raise
+
+
+def successor_binding(document: str, closed_packet_id: str, accepted_main_sha: str) -> tuple[str, str]:
+    """Return ``(packet_id, capsule_digest)`` of exactly one eligible successor.
+
+    After a plan packet closes out, the live accepted routing must name
+    exactly one current ``READY_FOR_EXECUTION`` packet different from the
+    closed packet, with a parseable dispatch capsule; the canonical capsule
+    digest is the promotion binding.  The closed packet still being current,
+    zero candidates, or multiple candidates all fail closed.
+    """
+
+    if not isinstance(closed_packet_id, str) or PACKET_ID.fullmatch(closed_packet_id) is None:
+        raise PlanLaneError("successor_closed_packet_invalid")
+    candidate = parse(document, accepted_main_sha)
+    if candidate.packet_id == closed_packet_id:
+        raise PlanLaneError("successor_still_current")
+    return candidate.packet_id, candidate.task_spec_sha256
