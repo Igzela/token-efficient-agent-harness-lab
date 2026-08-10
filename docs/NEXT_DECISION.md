@@ -32,7 +32,7 @@ This decision changes routing and acceptance gates. It does not authorize a prov
 The route is stage-ordered. The current window is declared below; blocked successors are indexed without execution authority in `docs/FUTURE_ROUTE.md`:
 
 ```text
-[window: viability preflight — DECISION_REQUIRED, planning must expand its contract]
+[window: viability preflight — READY_FOR_EXECUTION, provider-free S1–S5 only]
 → separately authorized viability run → evidence closeout
 → measurement estimands → corpus/sample → operations/evidence → protocol freeze
 → decision-baseline snapshot → preflight → run → analysis

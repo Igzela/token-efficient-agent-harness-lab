@@ -517,6 +517,41 @@ This document is routing-only.
         packets = checker.parse_packet_contracts(current, [])
         self.assertEqual(checker.weak_agent_dispatch_failures(current, packets), [])
 
+    def test_forward_order_window_mismatch_is_rejected(self) -> None:
+        checker = load_handoff_checker()
+        next_text = """## Authoritative Forward Order
+
+```text
+[window: viability preflight — DECISION_REQUIRED, planning must expand its contract]
+→ separately authorized viability run
+```
+
+## Packet PE7-RWE-V2-VIABILITY-PREFLIGHT-1
+**State:** `READY_FOR_EXECUTION`
+## Active Routing
+1. Execute PE7-RWE-V2-VIABILITY-PREFLIGHT-1.
+"""
+        failures = checker.active_state_failures(next_text, next_text)
+        self.assertTrue(
+            any("window projection" in failure for failure in failures), failures
+        )
+
+    def test_forward_order_window_match_is_accepted(self) -> None:
+        checker = load_handoff_checker()
+        next_text = """## Authoritative Forward Order
+
+```text
+[window: viability preflight — READY_FOR_EXECUTION, provider-free S1–S5 only]
+→ separately authorized viability run
+```
+
+## Packet PE7-RWE-V2-VIABILITY-PREFLIGHT-1
+**State:** `READY_FOR_EXECUTION`
+## Active Routing
+1. Execute PE7-RWE-V2-VIABILITY-PREFLIGHT-1.
+"""
+        self.assertEqual(checker.active_state_failures(next_text, next_text), [])
+
     def test_future_route_requires_promotion_profile_contract_section(self) -> None:
         checker = load_handoff_checker()
         future = """# Future Route
