@@ -886,14 +886,29 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_planning_parked_window_fails_closed(self):
+    def test_current_repository_execution_ready_window_binds_dispatch_capsule(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         packet = session_context.current_packet_binding(next_document, MAIN)
         self.assertEqual(packet["packet_id"], "PE7-RWE-V2-VIABILITY-PREFLIGHT-1")
-        self.assertEqual(packet["state"], "DECISION_REQUIRED")
-        self.assertFalse(packet["checkpoint_allowed"])
+        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
+        self.assertTrue(packet["checkpoint_allowed"])
+        capsule = session_context.current_dispatch_capsule(next_document, packet)
+        self.assertEqual(capsule["packet_id"], "PE7-RWE-V2-VIABILITY-PREFLIGHT-1")
+        self.assertEqual(capsule["packet_state"], "READY_FOR_EXECUTION")
+        self.assertEqual(capsule["dispatch_lane"], "provider_free_local")
+        self.assertEqual(capsule["external_effect_limit"], 0)
+        self.assertIs(capsule["authority_consumption_allowed"], False)
+        self.assertIs(capsule["secret_values_allowed"], False)
+        self.assertIs(capsule["private_paths_allowed"], False)
+        self.assertEqual(
+            capsule["plan_lane_state"], "plan_lane_deferred_until_terminal_owners"
+        )
+        self.assertEqual(capsule["allowed_paths"], packet["allowed_paths"])
+        self.assertEqual(
+            capsule["forbidden_next_actions"], packet["forbidden_next_actions"]
+        )
         snapshot = checkout_snapshot(
             head_sha=MAIN,
             branch="main",
@@ -908,18 +923,24 @@ class CheckpointTests(unittest.TestCase):
             document_source="accepted",
             document_source_binding=MAIN,
             packet=packet,
-            dispatch_capsule=None,
+            dispatch_capsule=capsule,
             snapshot=snapshot,
             checkpoint=None,
         )
-        self.assertEqual(entry["context_mode"], "STOP")
-        self.assertEqual(entry["resume_disposition"], "DECISION_REQUIRED")
-        self.assertEqual(entry["resume_reason"], "packet_not_executable")
-        self.assertIsNone(entry["dispatch_capsule"])
+        self.assertEqual(entry["context_mode"], "FRESH_PACKET")
+        self.assertEqual(entry["resume_disposition"], "RESUME")
+        self.assertEqual(entry["resume_reason"], "clean_accepted_baseline")
+        self.assertIsNotNone(entry["dispatch_capsule"])
+        self.assertEqual(
+            entry["dispatch_capsule"]["packet_id"], "PE7-RWE-V2-VIABILITY-PREFLIGHT-1"
+        )
         self.assertFalse(entry["execution_authorized"])
-        self.assertFalse(entry["checkpoint_allowed"])
-        self.assertIsNone(entry["checkpoint_write_commands"])
-        self.assertIsNone(entry["verification_contract_sha256"])
+        self.assertTrue(entry["checkpoint_allowed"])
+        self.assertIsNotNone(entry["checkpoint_write_commands"])
+        self.assertIsNotNone(entry["verification_contract_sha256"])
+        self.assertEqual(
+            entry["verification_commands"], list(capsule["verification"])
+        )
         self.assertLessEqual(len(json.dumps(entry).encode("utf-8")), 16 * 1024)
         self.assertEqual(session_context.SessionEntry.from_wire(entry).to_wire(), entry)
 
