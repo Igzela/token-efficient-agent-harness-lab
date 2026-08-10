@@ -144,7 +144,7 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 5. No accepted causal-mutation, lineage/mutation, evaluator/holdout, lifecycle-budget, diversity/exploration, or Pareto/stop/recovery contract or implementation packet exists.
 6. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or fixed Meta operator-comparison result exists.
 7. No accepted metacognitive-operator, parameter-efficient training adapter, weight/harness factorial, co-evolution, or outer-policy research contract exists; full-weight and model-architecture evolution remain unrouted.
-8. Plan-lane admission and its subject-aware terminal-owner integration are not yet implemented; `PE7-PLAN-LANE-ACTIVATION-1` is the sole promoted next packet and must reuse the existing ledger, local outer loop, CI, review, merge, and closeout owners without parallel ownership.
+8. Plan-lane admission and subject-aware terminal-owner readiness are accepted (PR #382); the next promoted packet wires plan-packet CI/review/merge/closeout receipt transitions through the existing owners without parallel ownership.
 9. The plan-packet lifecycle controller (CI/review/merge/closeout receipt transitions for plan subjects through existing owners) is the next promoted packet; successor promotion, EFFECT execution, and automatic T3 handling remain explicitly inactive.
 
 ## Maintenance Boundary
