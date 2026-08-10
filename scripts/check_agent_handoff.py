@@ -206,6 +206,14 @@ HISTORICAL_PACKET_RE = re.compile(
     rf"^## Retained .*?\(historical:\s*(?P<packet>{PACKET_ID_PATTERN})\)\s*$",
     re.MULTILINE,
 )
+HISTORICAL_PACKET_STATE_RE = re.compile(
+    r"^\*\*Historical state:\*\* `BLOCKED_PREREQUISITE`\s*$", re.MULTILINE
+)
+HISTORICAL_PACKET_SOURCE_RE = re.compile(
+    r"^\*\*Historical source:\*\*.*(?<![0-9a-f])"
+    r"(?:[0-9a-f]{40}|[0-9a-f]{64})(?![0-9a-f]).*$",
+    re.MULTILINE | re.IGNORECASE,
+)
 PACKET_STATE_RE = re.compile(
     r"^\*\*State:\*\* `(?P<state>[A-Z_]+)`(?:[ \t]+.*)?$", re.MULTILINE
 )
@@ -495,6 +503,34 @@ def _packet_profile_row(block: str, packet_id: str) -> list[object] | None:
         CLASS_DEFAULT_RISK.get(packet_class, "none"),
         CLASS_DEFAULT_VERIFICATION[packet_class],
     ]
+
+
+def historical_packet_ids(next_text: str, failures: list[str]) -> set[str]:
+    """Return retained packet identities only when their provenance is explicit."""
+
+    headings = list(HISTORICAL_PACKET_RE.finditer(next_text))
+    historical: set[str] = set()
+    for index, heading in enumerate(headings):
+        next_heading = re.search(r"^## ", next_text[heading.end() :], re.MULTILINE)
+        end = (
+            heading.end() + next_heading.start()
+            if next_heading
+            else len(next_text)
+        )
+        block = next_text[heading.start() : end]
+        packet_id = heading.group("packet")
+        if not HISTORICAL_PACKET_STATE_RE.search(block):
+            failures.append(
+                f"historical packet {packet_id} must declare BLOCKED_PREREQUISITE state"
+            )
+            continue
+        if not HISTORICAL_PACKET_SOURCE_RE.search(block):
+            failures.append(
+                f"historical packet {packet_id} must bind a 40- or 64-character source digest"
+            )
+            continue
+        historical.add(packet_id)
+    return historical
 
 
 def future_route_inventory_payload(future_text: str) -> dict[str, object]:
@@ -851,9 +887,7 @@ def active_state_failures(
     failures: list[str] = []
     current_packets = parse_packet_contracts(next_text, failures)
     future_packets = parse_packet_contracts(future_text, failures)
-    historical_packets = {
-        match.group("packet") for match in HISTORICAL_PACKET_RE.finditer(next_text)
-    }
+    historical_packets = historical_packet_ids(next_text, failures)
     duplicate_packets = sorted(set(current_packets) & set(future_packets))
     for packet_id in duplicate_packets:
         failures.append(

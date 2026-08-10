@@ -229,8 +229,9 @@ Replace stale status in place.
 **State:** `BLOCKED_PREREQUISITE`
 ## Retained Contract (historical: PE7-HIST-1)
 **Historical state:** `BLOCKED_PREREQUISITE`
+**Historical source:** accepted main aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ## Active Routing
-1. `PE7-A-1` — `READY_FOR_EXECUTION`.
+1. `PE7-A-1` — `BLOCKED_PREREQUISITE`.
 """
         future = """# Future Route
 ## Worker Tiers
