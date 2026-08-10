@@ -71,7 +71,7 @@ These runs established the root cause and fail-closed behavior. They did not est
 
 ## Accepted Readiness Boundary
 
-Accepted `main` contains the provider-free compatibility-calibration mechanism and the distinct, versioned v2 refreeze. It contains no v2 four-cell viability result and no execution-ready successor packet: `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` remains a routing-only sketch until the planning owner expands its complete execution-ready contract. Its eventual provider-free preflight and operator-readable authorization request package must not issue or consume authority, call a Provider, write a target, run the schedule, or authorize downstream measurement/Architecture Convergence work.
+Accepted `main` contains the provider-free compatibility-calibration mechanism and the distinct, versioned v2 refreeze. It contains **no accepted v2 preflight receipt** and **no v2 four-cell viability result**. `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` is no longer a future-route sketch: it is the current window in `docs/NEXT_DECISION.md`, parked `DECISION_REQUIRED` because two contract values (preflight-receipt maximum age; one-use authorization request-package expiry policy) have no accepted owner on current `main`. Current execution state and routing belong to `docs/NEXT_DECISION.md`. The packet's provider-free preflight and operator-readable authorization request package must not issue or consume authority, call a Provider, write a target, run the schedule, or authorize downstream measurement/Architecture Convergence work.
 
 Candidate evidence remains non-authoritative until it is bound to one exact PR head, passes the repository review protocol and canonical CI, and is merged. Do not record candidate branches, PR numbers, CI runs, or review claims here; the capsule observes them at handoff time and fails closed when unavailable or conflicting.
 
@@ -83,7 +83,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Timeout ownership repair | `COMPLETE` | PR #368 accepted |
 | Compatibility calibration mechanism | `COMPLETE` | PR #369 accepted; mechanism only |
 | V2 refreeze + bounded test-race repair | `COMPLETE` | PR #370 accepted; exact v2 freeze and canonical lock repair are on main |
-| V2 provider-free viability preflight | `DECISION_REQUIRED` | Prerequisite accepted (#370); the planning owner must expand its complete execution-ready contract (owners, allowed paths, ordered steps, verification, dispatch capsule) before any coding entry |
+| V2 provider-free viability preflight | `DECISION_REQUIRED` | Prerequisite accepted (#370); packet block expanded in `docs/NEXT_DECISION.md` against current `main` with two unresolvable-from-`main` contract values (preflight-receipt maximum age B1; one-use authorization request-package expiry policy B2); the planning owner or operator must accept those values before any coding entry |
 | V2 four-cell run and closeout | `BLOCKED_PREREQUISITE` | Preflight acceptance, then one separately authorized run and independent closeout |
 | Measurement readiness | `BLOCKED_PREREQUISITE` | 4 packets: estimands, corpus/sample, operations/evidence, protocol freeze |
 | Decision-grade pre-AC baseline | `BLOCKED_PREREQUISITE` | 4 packets: snapshot/corpus, preflight, run, analysis |
