@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import re
@@ -13,14 +16,25 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 
+NEXT_DECISION_MAX_BYTES = 64 * 1024
+NEXT_DECISION_MAX_LINES = 600
+NEXT_DECISION_APPEND_ONLY_HEADING_RE = re.compile(
+    r"^#{2,6}\s+(?:change(?:log| history)|progress log|session notes|"
+    r"handoff history|work log|status history)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 REQUIRED_TEXT = {
     "START_HERE.md": [
         "# Start Here",
         "## Quality Order",
         "## Source-of-Truth Hierarchy",
         "## Establish the Leading Valid Frontier",
+        "## One-Command Session Bootstrap",
         "## Role Routes",
+        "agent-context-routes:v1",
         "scripts/project_context.py",
+        "scripts/session_context.py",
         "## Automation Boundary",
         "## End-of-Work Handoff",
         "## Documentation Discipline",
@@ -118,6 +132,15 @@ REQUIRED_TEXT = {
         "--offline",
         "review_state_projection",
     ],
+    "scripts/session_context.py": [
+        "agent_context_routes.v1",
+        "agent_session_handoff.v1",
+        "def parse_route_contract",
+        "def extract_packet",
+        "def _build_checkpoint",
+        "def classify_resume",
+        "DECISION_REQUIRED",
+    ],
     "scripts/agent-control/review_convergence.py": [
         "REVIEW_PROTOCOL_VERSION",
         "MAX_SUBSTANTIVE_REVIEW_ROUNDS = 2",
@@ -154,6 +177,7 @@ MODEL_AGNOSTIC_FILES = [
     "docs/FUTURE_ROUTE.md",
     "docs/MODULE_MAP.md",
     "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+    "scripts/session_context.py",
 ]
 
 FORBIDDEN_MODEL_LOCK_MARKERS = [
@@ -191,6 +215,75 @@ VALID_PACKET_STATES = {
     "DECISION_REQUIRED",
     "IN_PROGRESS",
     "COMPLETE",
+}
+
+ACCEPTED_PACKET_RECEIPT_RE = re.compile(
+    rf"^\|\s*`?(?P<packet>{PACKET_ID_PATTERN})`?\s*\|\s*`?COMPLETE`?\s*\|"
+    r"\s*(?P<evidence>[^|]+?)\s*\|\s*$",
+    re.MULTILINE,
+)
+FUTURE_ROUTE_INVENTORY_RE = re.compile(
+    r"<!-- future-route-inventory:v1\s*(?P<payload>\{.*?\})\s*-->", re.DOTALL
+)
+WEAK_AGENT_DISPATCH_RE = re.compile(
+    r"<!-- weak-agent-dispatch:v1\s*(?P<payload>\{.*?\})\s*-->", re.DOTALL
+)
+FUTURE_ROUTE_REQUIRED_SECTIONS = (
+    "## Worker Tiers",
+    "## Known Planned-Seam Gaps",
+    "## Promotion Profile Contract",
+    "## Stop and Resume Protocol",
+    "## Portfolio Inventory Manifest",
+)
+FUTURE_PACKET_BASE_FIELDS = (
+    "Prerequisite",
+    "Class",
+    "Outcome",
+    "Allowed delta",
+    "Exit",
+    "Stop",
+)
+WEAK_AGENT_DISPATCH_LIST_FIELDS = (
+    "allowed_paths",
+    "read_paths",
+    "allowed_outputs",
+    "prerequisites",
+    "prerequisite_receipts",
+    "forbidden_changes",
+    "ordered_steps",
+    "verification",
+    "pause_gates",
+    "expected_artifacts",
+    "forbidden_next_actions",
+)
+PROFILE_WORKER_TIERS = frozenset({"T0", "T1", "T2", "T3"})
+PROFILE_RISK_CLASSES = frozenset(
+    {"none", "store_mutation", "authority", "external_effect", "evaluator"}
+)
+PROFILE_VERIFICATION_FAMILIES = frozenset(
+    {
+        "docs_evidence_review",
+        "source_focused_full",
+        "external_effect_evidence",
+        "evidence_review",
+        "REFRESH_AT_PROMOTION",
+    }
+)
+PROFILE_PACKET_CLASSES = frozenset({"CONTRACT", "IMPLEMENT", "EFFECT", "CLOSEOUT"})
+CLASS_DEFAULT_TIER = {"CONTRACT": "T2", "IMPLEMENT": "T1", "EFFECT": "T3", "CLOSEOUT": "T2"}
+CLASS_DEFAULT_RISK = {"EFFECT": "external_effect"}
+CLASS_DEFAULT_VERIFICATION = {
+    "CONTRACT": "docs_evidence_review",
+    "IMPLEMENT": "source_focused_full",
+    "EFFECT": "external_effect_evidence",
+    "CLOSEOUT": "evidence_review",
+}
+PROFILE_ROW_INDEX = {
+    "packet_id": 0,
+    "class": 1,
+    "worker_tier": 2,
+    "risk_class": 3,
+    "verification_family": 4,
 }
 
 
@@ -331,6 +424,387 @@ def parse_packet_contracts(
     return packets
 
 
+def accepted_packet_receipts(
+    status_text: str, failures: list[str] | None = None
+) -> set[str]:
+    """Return durable completion identities from their sole owning status section."""
+
+    receipt_section = section(status_text, "## Accepted Packet Receipts")
+    if not receipt_section:
+        return set()
+    accepted: set[str] = set()
+    for match in ACCEPTED_PACKET_RECEIPT_RE.finditer(receipt_section):
+        packet_id = match.group("packet")
+        evidence = match.group("evidence")
+        if not re.search(
+            r"(?<![0-9a-f])(?:[0-9a-f]{64}|[0-9a-f]{40})(?![0-9a-f])",
+            evidence,
+            re.IGNORECASE,
+        ):
+            if failures is not None:
+                failures.append(
+                    f"accepted packet receipt {packet_id} lacks a durable evidence identity"
+                )
+            continue
+        if packet_id in accepted and failures is not None:
+            failures.append(f"accepted packet receipt {packet_id} is duplicated")
+        accepted.add(packet_id)
+    return accepted
+
+
+def _json_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _packet_field_values(block: str, label: str) -> list[str]:
+    return [
+        value.strip()
+        for value in re.findall(
+            rf"^\*\*{re.escape(label)}:\*\*\s*(?P<value>\S.*)$",
+            block,
+            re.MULTILINE,
+        )
+    ]
+
+
+def _packet_class(block: str) -> str | None:
+    match = re.search(
+        r"^\*\*Class:\*\*\s*`?(?P<value>[A-Z]+)`?\s*$",
+        block,
+        re.MULTILINE,
+    )
+    return match.group("value") if match else None
+
+
+def _packet_profile_row(block: str, packet_id: str) -> list[object] | None:
+    """Derive the canonical manifest row for one packet from its prose fields.
+
+    The row is ``[packet_id, class, worker_tier, risk_class, verification_family]``.
+    ``class`` must come from the packet's prose ``Class`` field; tier, risk, and
+    verification family are promotion-time candidates validated only against the
+    profile vocabularies and the ``EFFECT`` constraint, never treated as prose.
+    """
+
+    packet_class = _packet_class(block)
+    if packet_class is None or packet_class not in PROFILE_PACKET_CLASSES:
+        return None
+    return [
+        packet_id,
+        packet_class,
+        CLASS_DEFAULT_TIER[packet_class],
+        CLASS_DEFAULT_RISK.get(packet_class, "none"),
+        CLASS_DEFAULT_VERIFICATION[packet_class],
+    ]
+
+
+def future_route_inventory_payload(future_text: str) -> dict[str, object]:
+    """Build the canonical inventory bound by FUTURE_ROUTE's checked manifest."""
+
+    headings = list(PACKET_HEADING_RE.finditer(future_text))
+    ordered_packet_ids: list[str] = []
+    dependency_graph: list[dict[str, object]] = []
+    profile_rows: list[list[object]] = []
+    for index, match in enumerate(headings):
+        packet_id = match.group("packet")
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(future_text)
+        block = future_text[match.start() : end]
+        prerequisite = re.search(
+            r"^\*\*Prerequisite:\*\*\s*(?P<value>.+)$", block, re.MULTILINE
+        )
+        prerequisites = (
+            re.findall(PACKET_ID_PATTERN, prerequisite.group("value"))
+            if prerequisite
+            else []
+        )
+        prerequisites = list(
+            dict.fromkeys(item for item in prerequisites if item != packet_id)
+        )
+        ordered_packet_ids.append(packet_id)
+        dependency_graph.append(
+            {"packet_id": packet_id, "prerequisites": prerequisites}
+        )
+        row = _packet_profile_row(block, packet_id)
+        if row is not None:
+            profile_rows.append(row)
+
+    return {
+        "schema_version": "future_route_inventory.v1",
+        "packet_count": len(ordered_packet_ids),
+        "ordered_packet_ids": ordered_packet_ids,
+        "ordered_packet_ids_sha256": _json_sha256(ordered_packet_ids),
+        "dependency_graph_sha256": _json_sha256(dependency_graph),
+        "profiles_sha256": _json_sha256(profile_rows),
+        "profiles": profile_rows,
+    }
+
+
+def future_route_profile_failures(future_text: str) -> list[str]:
+    """Validate the bounded promotion-profile dossier for every future packet."""
+
+    failures: list[str] = []
+    for heading in FUTURE_ROUTE_REQUIRED_SECTIONS:
+        if heading not in future_text:
+            failures.append(f"FUTURE_ROUTE is missing future-route section {heading!r}")
+
+    headings = list(PACKET_HEADING_RE.finditer(future_text))
+    for index, match in enumerate(headings):
+        packet_id = match.group("packet")
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(future_text)
+        block = future_text[match.start() : end]
+        for label in FUTURE_PACKET_BASE_FIELDS:
+            values = _packet_field_values(block, label)
+            if not values:
+                failures.append(f"{packet_id} is missing {label}")
+            elif len(values) != 1:
+                failures.append(f"{packet_id} must have exactly one {label} field")
+            else:
+                value = values[0].strip()
+                normalized = value.strip("` .").upper()
+                if label in {"Prerequisite", "Class"} and normalized in {
+                    "TBD",
+                    "TODO",
+                    "FIXME",
+                    "UNKNOWN",
+                    "N/A",
+                    "TO BE DETERMINED",
+                }:
+                    failures.append(f"{packet_id} has placeholder {label}: {value!r}")
+        packet_class = _packet_class(block)
+        if packet_class is None:
+            failures.append(f"{packet_id} is missing or has invalid Class")
+        elif packet_class not in PROFILE_PACKET_CLASSES:
+            failures.append(f"{packet_id} has unsupported Class {packet_class!r}")
+        states = PACKET_STATE_RE.findall(block)
+        if len(states) != 1 or states[0] != "BLOCKED_PREREQUISITE":
+            failures.append(f"{packet_id} must remain BLOCKED_PREREQUISITE")
+    failures.extend(_future_route_inventory_failures(future_text))
+    return failures
+
+
+def _future_route_inventory_failures(future_text: str) -> list[str]:
+    markers = list(FUTURE_ROUTE_INVENTORY_RE.finditer(future_text))
+    if not markers:
+        return ["FUTURE_ROUTE is missing future-route-inventory:v1 marker"]
+    if len(markers) != 1:
+        return [
+            "FUTURE_ROUTE must contain exactly one future-route-inventory:v1 marker"
+        ]
+    try:
+        observed = json.loads(markers[0].group("payload"))
+    except json.JSONDecodeError as exc:
+        return [f"FUTURE_ROUTE inventory manifest is invalid JSON: {exc.msg}"]
+    if not isinstance(observed, dict):
+        return ["FUTURE_ROUTE inventory manifest must be a JSON object"]
+    if observed.get("schema_version") != "future_route_inventory.v1":
+        return ["FUTURE_ROUTE inventory manifest has wrong schema_version"]
+
+    headings = list(PACKET_HEADING_RE.finditer(future_text))
+    ordered_packet_ids: list[str] = []
+    dependency_graph: list[dict[str, object]] = []
+    for index, match in enumerate(headings):
+        packet_id = match.group("packet")
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(future_text)
+        block = future_text[match.start() : end]
+        prerequisite = re.search(
+            r"^\*\*Prerequisite:\*\*\s*(?P<value>.+)$", block, re.MULTILINE
+        )
+        prerequisites = (
+            re.findall(PACKET_ID_PATTERN, prerequisite.group("value"))
+            if prerequisite
+            else []
+        )
+        prerequisites = list(
+            dict.fromkeys(item for item in prerequisites if item != packet_id)
+        )
+        ordered_packet_ids.append(packet_id)
+        dependency_graph.append(
+            {"packet_id": packet_id, "prerequisites": prerequisites}
+        )
+
+    failures: list[str] = []
+    if observed.get("packet_count") != len(ordered_packet_ids):
+        failures.append("FUTURE_ROUTE inventory packet_count is stale")
+    if observed.get("ordered_packet_ids") != ordered_packet_ids:
+        failures.append(
+            "FUTURE_ROUTE inventory ordered_packet_ids must equal the prose packet order"
+        )
+    if observed.get("ordered_packet_ids_sha256") != _json_sha256(ordered_packet_ids):
+        failures.append("FUTURE_ROUTE inventory ordered_packet_ids_sha256 is stale")
+    if observed.get("dependency_graph_sha256") != _json_sha256(dependency_graph):
+        failures.append("FUTURE_ROUTE inventory dependency_graph_sha256 is stale")
+
+    rows = observed.get("profiles")
+    if not isinstance(rows, list) or len(rows) != len(ordered_packet_ids):
+        failures.append(
+            "FUTURE_ROUTE inventory profiles must contain exactly one row per packet"
+        )
+        return failures
+    for index, row in enumerate(rows):
+        packet_id = ordered_packet_ids[index]
+        if (
+            not isinstance(row, list)
+            or len(row) != 5
+            or row[0] != packet_id
+            or not all(isinstance(item, str) for item in row)
+        ):
+            failures.append(f"FUTURE_ROUTE inventory profile row {index} is malformed")
+            continue
+        _packet, packet_class, tier, risk, family = row
+        if packet_class not in PROFILE_PACKET_CLASSES:
+            failures.append(
+                f"{packet_id} profile has unsupported Class {packet_class!r}"
+            )
+        if tier not in PROFILE_WORKER_TIERS:
+            failures.append(f"{packet_id} profile has invalid Worker tier {tier!r}")
+        if risk not in PROFILE_RISK_CLASSES:
+            failures.append(f"{packet_id} profile has invalid risk class {risk!r}")
+        if family not in PROFILE_VERIFICATION_FAMILIES:
+            failures.append(
+                f"{packet_id} profile has invalid verification family {family!r}"
+            )
+        if packet_class == "EFFECT":
+            if tier != "T3":
+                failures.append(f"{packet_id} EFFECT profile must use Worker tier T3")
+            if risk != "external_effect":
+                failures.append(
+                    f"{packet_id} EFFECT profile must use risk class external_effect"
+                )
+    if observed.get("profiles_sha256") != _json_sha256(rows):
+        failures.append("FUTURE_ROUTE inventory profiles_sha256 is stale")
+    return failures
+
+
+def weak_agent_dispatch_failures(
+    next_text: str, current_packets: dict[str, dict[str, object]]
+) -> list[str]:
+    """Validate the bounded direct/Issue-lane dispatch capsule for the current packet.
+
+    The capsule is required only while exactly one execution-ready or in-progress
+    current packet exists. A planning-parked window (`DECISION_REQUIRED`) carries
+    no capsule; requiring one there would force the packet's contract to be
+    invented rather than expanded by the planning owner.
+    """
+
+    failures: list[str] = []
+    executable = {
+        packet_id: packet
+        for packet_id, packet in current_packets.items()
+        if packet["state"] in {"READY_FOR_EXECUTION", "IN_PROGRESS"}
+    }
+    if not executable:
+        return failures
+    if len(executable) != 1:
+        failures.append("NEXT_DECISION must expose at most one executable current packet")
+        return failures
+    current_packet_id = next(iter(executable))
+    if not re.search(
+        r"^### 11\. Weak-Agent Dispatch Capsule$", next_text, re.MULTILINE
+    ):
+        failures.append("NEXT_DECISION is missing Weak-Agent Dispatch Capsule section")
+    markers = list(WEAK_AGENT_DISPATCH_RE.finditer(next_text))
+    if not markers:
+        failures.append("NEXT_DECISION is missing weak-agent-dispatch:v1 marker")
+        return failures
+    if len(markers) != 1:
+        failures.append(
+            "NEXT_DECISION must contain exactly one weak-agent-dispatch:v1 marker"
+        )
+        return failures
+    try:
+        payload = json.loads(markers[0].group("payload"))
+    except json.JSONDecodeError as exc:
+        failures.append(f"weak-agent dispatch capsule is invalid JSON: {exc.msg}")
+        return failures
+    if not isinstance(payload, dict):
+        failures.append("weak-agent dispatch capsule must be a JSON object")
+        return failures
+
+    if payload.get("schema_version") != "weak_agent_dispatch.v1":
+        failures.append("weak-agent dispatch capsule has wrong schema_version")
+    if payload.get("packet_id") != current_packet_id:
+        failures.append(
+            f"weak-agent dispatch packet_id must equal {current_packet_id!r}"
+        )
+    if not isinstance(payload.get("dispatch_lane"), str) or not payload.get(
+        "dispatch_lane"
+    ):
+        failures.append("weak-agent dispatch must declare a bounded dispatch lane")
+    if payload.get("plan_lane_state") != "plan_lane_deferred_until_terminal_owners":
+        failures.append("weak-agent dispatch must preserve the deferred plan lane")
+    if payload.get("external_effect_limit") != 0:
+        failures.append("weak-agent dispatch must set external_effect_limit=0")
+    if payload.get("authority_consumption_allowed") is not False:
+        failures.append("weak-agent dispatch must forbid authority consumption")
+    if payload.get("secret_values_allowed") is not False:
+        failures.append("weak-agent dispatch must forbid secret values")
+    if payload.get("private_paths_allowed") is not False:
+        failures.append("weak-agent dispatch must forbid private paths")
+
+    goal = payload.get("goal")
+    rollback = payload.get("rollback")
+    if not isinstance(goal, str) or len(goal.strip()) < 20:
+        failures.append("weak-agent dispatch goal must be a concrete narrative")
+    if not isinstance(rollback, str) or len(rollback.strip()) < 20:
+        failures.append("weak-agent dispatch rollback must be a concrete narrative")
+    for field in WEAK_AGENT_DISPATCH_LIST_FIELDS:
+        value = payload.get(field)
+        if not isinstance(value, list) or not value or not all(
+            isinstance(item, str) and item.strip() for item in value
+        ):
+            failures.append(f"weak-agent dispatch {field} must be a non-empty string list")
+    known_store_mutations = payload.get("known_store_mutations")
+    if known_store_mutations is not None and (
+        not isinstance(known_store_mutations, list)
+        or not all(isinstance(item, str) and item.strip() for item in known_store_mutations)
+    ):
+        failures.append(
+            "weak-agent dispatch known_store_mutations must be a string list"
+        )
+    return failures
+
+
+def _packet_dependency_cycle(
+    packets: dict[str, dict[str, object]],
+) -> list[str] | None:
+    graph = {
+        packet_id: [
+            prerequisite
+            for prerequisite in packet["prerequisites"]
+            if prerequisite in packets
+        ]
+        for packet_id, packet in packets.items()
+    }
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    path: list[str] = []
+
+    def visit(packet_id: str) -> list[str] | None:
+        if packet_id in visiting:
+            start = path.index(packet_id)
+            return path[start:] + [packet_id]
+        if packet_id in visited:
+            return None
+        visiting.add(packet_id)
+        path.append(packet_id)
+        for prerequisite in graph[packet_id]:
+            cycle = visit(prerequisite)
+            if cycle:
+                return cycle
+        path.pop()
+        visiting.remove(packet_id)
+        visited.add(packet_id)
+        return None
+
+    for packet_id in sorted(graph):
+        cycle = visit(packet_id)
+        if cycle:
+            return cycle
+    return None
+
+
 def active_state_failures(
     status_text: str, next_text: str, future_text: str = ""
 ) -> list[str]:
@@ -343,8 +817,18 @@ def active_state_failures(
             f"{packet_id} is duplicated between NEXT_DECISION and FUTURE_ROUTE"
         )
     packets = {**future_packets, **current_packets}
+    accepted_packets = accepted_packet_receipts(status_text, failures)
+
+    for packet_id in sorted(accepted_packets & set(packets)):
+        if packets[packet_id]["state"] != "COMPLETE":
+            failures.append(
+                f"{packet_id} is COMPLETE in accepted receipts but active as "
+                f"{packets[packet_id]['state']}"
+            )
 
     if future_text:
+        failures.extend(future_route_profile_failures(future_text))
+        failures.extend(weak_agent_dispatch_failures(next_text, current_packets))
         if len(current_packets) != 1:
             failures.append(
                 "NEXT_DECISION must contain exactly one expanded current packet; "
@@ -355,6 +839,19 @@ def active_state_failures(
                 failures.append(
                     f"FUTURE_ROUTE packet {packet_id} must remain BLOCKED_PREREQUISITE"
                 )
+        for packet_id, packet in future_packets.items():
+            unknown = [
+                prerequisite
+                for prerequisite in packet["prerequisites"]
+                if prerequisite not in packets and prerequisite not in accepted_packets
+            ]
+            if unknown:
+                failures.append(
+                    f"{packet_id} references unknown prerequisites: {unknown}"
+                )
+        cycle = _packet_dependency_cycle(packets)
+        if cycle:
+            failures.append("packet dependency cycle: " + " -> ".join(cycle))
 
     for packet_id, packet in current_packets.items():
         state = str(packet["state"])
@@ -364,8 +861,11 @@ def active_state_failures(
             incomplete = [
                 prerequisite
                 for prerequisite in packet["prerequisites"]
-                if prerequisite not in packets
-                or packets[prerequisite]["state"] != "COMPLETE"
+                if prerequisite not in accepted_packets
+                and (
+                    prerequisite not in packets
+                    or packets[prerequisite]["state"] != "COMPLETE"
+                )
             ]
             if incomplete:
                 failures.append(
@@ -404,8 +904,11 @@ def active_state_failures(
         incomplete = [
             prerequisite
             for prerequisite in first["prerequisites"]
-            if prerequisite not in packets
-            or packets[prerequisite]["state"] != "COMPLETE"
+            if prerequisite not in accepted_packets
+            and (
+                prerequisite not in packets
+                or packets[prerequisite]["state"] != "COMPLETE"
+            )
         ]
         if incomplete:
             failures.append(
@@ -464,13 +967,97 @@ def active_state_failures(
     return failures
 
 
+def next_decision_hygiene_failures(next_text: str) -> list[str]:
+    """Keep the executable window bounded and replace-only."""
+
+    failures: list[str] = []
+    byte_count = len(next_text.encode("utf-8"))
+    line_count = len(next_text.splitlines())
+    if byte_count > NEXT_DECISION_MAX_BYTES:
+        failures.append(
+            "NEXT_DECISION exceeds byte budget: "
+            f"{byte_count} > {NEXT_DECISION_MAX_BYTES}"
+        )
+    if line_count > NEXT_DECISION_MAX_LINES:
+        failures.append(
+            "NEXT_DECISION exceeds line budget: "
+            f"{line_count} > {NEXT_DECISION_MAX_LINES}"
+        )
+    headings = NEXT_DECISION_APPEND_ONLY_HEADING_RE.findall(next_text)
+    if headings:
+        failures.append(
+            "NEXT_DECISION contains append-only history; replace stale state in place "
+            "and rely on Git history"
+        )
+    return failures
+
+
+def session_context_route_failures(start_here: str) -> list[str]:
+    """Verify every agent role has one bounded machine-readable route."""
+
+    script = ROOT / "scripts" / "session_context.py"
+    spec = importlib.util.spec_from_file_location("session_context_handoff_check", script)
+    if spec is None or spec.loader is None:
+        return ["cannot import scripts/session_context.py"]
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+        for schema_name in (
+            "RouteContract",
+            "ContextRoute",
+            "PacketExtract",
+            "PacketBinding",
+            "CheckoutSnapshot",
+            "VerificationResult",
+            "SessionCheckpoint",
+            "ResumeDisposition",
+            "SessionEntry",
+        ):
+            schema = getattr(module, schema_name, None)
+            if not dataclasses.is_dataclass(schema) or not schema.__dataclass_params__.frozen:
+                return [f"session context schema {schema_name} must be a frozen dataclass"]
+        contract = module.parse_route_contract(start_here)
+        packet = {
+            "packet_id": "TOOL-ROUTE-CHECK-1",
+            "state": "READY_FOR_EXECUTION",
+            "source_path": "docs/NEXT_DECISION.md",
+            "packet_sha256": "0" * 64,
+            "allowed_paths": ["scripts/"],
+            "execution_authorized": False,
+            "checkpoint_allowed": True,
+        }
+        for role in sorted(module.ROLES):
+            route = module.build_route(
+                contract,
+                role=role,
+                accepted_main_sha="0" * 40,
+                packet=packet,
+            )
+            if route["documents"][0] != "START_HERE.md":
+                return [f"session context route for {role} does not start at START_HERE.md"]
+            if len(route["documents"]) > contract.max_required_documents:
+                return [f"session context route for {role} exceeds the required-document budget"]
+            if route["execution_authorized"] or route["checkpoint_allowed"]:
+                return [f"session context route for {role} grants execution authority"]
+    except Exception as error:
+        reason = getattr(error, "reason", str(error))
+        return [f"START_HERE session context route contract invalid: {reason}"]
+    return []
+
+
 def check_active_state_consistency(failures: list[str]) -> None:
     status = read("docs/CURRENT_STATUS.md")
     next_text = read("docs/NEXT_DECISION.md")
     future_text = read("docs/FUTURE_ROUTE.md")
+    failures.extend(next_decision_hygiene_failures(next_text))
     failures.extend(active_state_failures(status, next_text, future_text))
     if "## Verified Repository State" not in status:
         failures.append("CURRENT_STATUS must preserve the accepted/open/blocked fact boundary")
+
+
+def check_session_context_routes(failures: list[str]) -> None:
+    failures.extend(session_context_route_failures(read("START_HERE.md")))
 
 
 def check_project_context(failures: list[str]) -> None:
@@ -543,6 +1130,7 @@ def main() -> int:
     check_model_agnostic_governance(failures)
     check_schema_document_drift(failures)
     check_active_state_consistency(failures)
+    check_session_context_routes(failures)
     check_project_context(failures)
 
     wire_guard = ROOT / "scripts" / "check_wire_codegen_drift.sh"
