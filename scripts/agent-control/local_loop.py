@@ -233,26 +233,25 @@ class LoopController:
 
             rejected: list[dict[str, Any]] = []
             eligible: list[dict[str, Any]] = []
-            # Plan-derived candidates are not admitted on this packet.  Plan
-            # Draft PRs cannot complete the existing Issue-bound CI/review
-            # terminal owners, and accepted main does not authorize a parallel
-            # Plan lifecycle.  Active plan capacity still counts toward K so a
-            # leftover ledger claim cannot be ignored when sizing Issue work.
+            # Plan-derived candidates are admitted only when every terminal
+            # owner can provably bind the plan subject.  Active plan capacity
+            # still counts toward K so a leftover ledger claim cannot be
+            # ignored when sizing Issue work.
             try:
                 plan_document = self.github.accepted_plan_document(accepted_main)
             except AttributeError:
                 plan_document = None
             except LoopUnavailable:
-                # Plan lane is deferred; an unreadable plan document must not
-                # prevent Issue admission.  Issues still fail closed on their
-                # own markers and capacity checks.
+                # An unreadable plan document must not prevent Issue admission.
+                # Issues still fail closed on their own markers and capacity
+                # checks; the plan candidate is rejected with its reason.
                 plan_document = None
             if plan_document is not None:
                 try:
                     plan = plan_lane.parse_optional(plan_document, accepted_main)
                 except plan_lane.PlanLaneError as exc:
-                    # Deferred Plan lane: structural plan parse failures are
-                    # non-admission signals, not Issue-path blockers.
+                    # Structural plan parse failures are non-admission signals,
+                    # not Issue-path blockers.
                     plan = None
                     rejected.append(
                         {
@@ -261,13 +260,17 @@ class LoopController:
                         }
                     )
                 if plan is not None:
-                    rejected.append(
-                        {
-                            "candidate_kind": "plan",
-                            "subject_id": plan.packet_id,
-                            "reason": "plan_lane_deferred_until_terminal_owners",
-                        }
-                    )
+                    ready, missing = self._plan_terminal_owner_readiness()
+                    if ready:
+                        eligible.append(plan.to_wire())
+                    else:
+                        rejected.append(
+                            {
+                                "candidate_kind": "plan",
+                                "subject_id": plan.packet_id,
+                                "reason": f"plan_lane_not_ready:{','.join(missing)}",
+                            }
+                        )
             for issue in sorted(
                 (_normalized_issue(item) for item in self.github.list_ready_issues()),
                 key=lambda item: item["number"],
@@ -387,6 +390,39 @@ class LoopController:
         if self.github.has_open_issue_pr(issue["number"]):
             return {"reason": "open_pr_exists"}
         return None
+
+    def _plan_terminal_owner_readiness(self) -> tuple[bool, list[str]]:
+        """Prove the terminal owners can bind a plan subject before admission.
+
+        Each owner is verified from authoritative repository state; a missing
+        or unverifiable owner rejects the candidate.  The checks are read-only
+        and provider-free: the ledger Issue resolves, the canonical CI
+        workflow and CI monitor workflow exist in the accepted checkout, the
+        review owner accepts PR-bound subjects, the repository-maintenance
+        merge owner is documented, and the canonical closeout owner accepts
+        the packet.  The current accepted-main checkout is the sole evidence
+        source; no owner may be inferred.
+        """
+
+        workflow_dir = Path(self.repo_path) / ".github" / "workflows"
+        canonical_tests = workflow_dir / "tests.yml"
+        ci_monitor = workflow_dir / "agent-ci-monitor.yml"
+        review_owner = Path(self.repo_path) / "scripts" / "agent-control" / "review_loop_cli.py"
+        merge_owner = Path(self.repo_path) / "docs" / "REAL_WORLD_TESTING_PLAYBOOK.md"
+        closeout_owner = Path(self.repo_path) / "docs" / "CURRENT_STATUS.md"
+        ledger_issue = 0
+        try:
+            ledger_issue = self.github.plan_ledger_issue()
+        except LoopUnavailable:
+            ledger_issue = 0
+        return plan_lane.terminal_owner_readiness(
+            ledger_issue=ledger_issue,
+            canonical_tests_workflow_present=canonical_tests.is_file(),
+            ci_monitor_workflow_present=ci_monitor.is_file(),
+            review_owner_present=review_owner.is_file(),
+            merge_owner_present=merge_owner.is_file(),
+            closeout_owner_present=closeout_owner.is_file(),
+        )
 
 
 class GitHubAdapter:

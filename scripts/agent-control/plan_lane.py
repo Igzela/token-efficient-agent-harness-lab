@@ -2,7 +2,9 @@
 
 The canonical document is the only source of plan authority.  A poll result is
 bounded transport only; callers must re-read the accepted-main document before
-claiming or mutating anything.
+claiming or mutating anything.  Plan subjects consume the accepted
+``weak-agent-dispatch:v1`` / session-context representation; no second semantic
+plan contract may be invented.
 """
 
 from __future__ import annotations
@@ -19,16 +21,28 @@ import artifact_contract
 SCHEMA_VERSION = 1
 MAX_DOCUMENT_BYTES = 512 * 1024
 MAX_FIELD_CHARS = 8 * 1024
+PLAN_LANE_ACTIVE = "plan_lane_active"
+PLAN_LANE_DEFERRED = "plan_lane_deferred_until_terminal_owners"
+KNOWN_PLAN_LANE_STATES = frozenset({PLAN_LANE_ACTIVE, PLAN_LANE_DEFERRED})
 PACKET_ID = re.compile(r"^(?:PE[0-9]+|PR[0-9]+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+$")
+PACKET_TOKEN = r"(?:PE[0-9]+|PR[0-9]+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
-PLAN_MARKER = re.compile(
-    r"<!--\s*agent-orchestrator-plan:v1\s*(\{.*?\})\s*-->", re.DOTALL
+WEAK_DISPATCH_MARKER = re.compile(
+    r"<!--\s*weak-agent-dispatch:v1\s*(\{.*?\})\s*-->", re.DOTALL
 )
 PACKET_HEADING = re.compile(
-    r"^#{2,3} Packet (?P<packet>[A-Za-z0-9-]+)\b.*$", re.MULTILINE
+    rf"^#{{2,3}} Packet (?P<packet>(?:PE[0-9]+|PR[0-9]+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+)\b.*$",
+    re.MULTILINE,
+)
+PACKET_HISTORICAL_HEADING = re.compile(
+    rf"^#{{2,3}} (?:Completed|Retained) .*?\((?P<packet>{PACKET_TOKEN})\)\s*$",
+    re.MULTILINE,
 )
 PACKET_STATE = re.compile(r"^\*\*State:\*\* `(?P<state>[A-Z_]+)`", re.MULTILINE)
+PACKET_HISTORICAL_STATE = re.compile(
+    r"^\*\*Historical state:\*\* `(?P<state>[A-Z_]+)`", re.MULTILINE
+)
 ACTIVE_ROUTING = re.compile(r"^\s*\d+\.\s+`(?P<packet>[A-Za-z0-9-]+)`", re.MULTILINE)
 
 
@@ -105,12 +119,18 @@ def _bounded_strings(value: Any, field: str, *, allow_empty: bool = False) -> li
 
 
 def _packet_blocks(document: str) -> list[tuple[str, str, int, int, str]]:
-    headings = list(PACKET_HEADING.finditer(document))
+    headings = sorted(
+        list(PACKET_HEADING.finditer(document))
+        + list(PACKET_HISTORICAL_HEADING.finditer(document)),
+        key=lambda match: match.start(),
+    )
     blocks: list[tuple[str, str, int, int, str]] = []
     for index, heading in enumerate(headings):
         end = headings[index + 1].start() if index + 1 < len(headings) else len(document)
         block = document[heading.start() : end]
         states = PACKET_STATE.findall(block)
+        if not states:
+            states = PACKET_HISTORICAL_STATE.findall(block)
         if len(states) != 1:
             raise PlanLaneError("plan_packet_state_missing_or_ambiguous")
         blocks.append((heading.group("packet"), states[0], heading.start(), end, block))
@@ -124,7 +144,14 @@ def _canonical_spec(payload: dict[str, Any]) -> str:
 
 
 def parse(document: str, accepted_main_sha: str) -> PlanCandidate:
-    """Parse exactly one explicit READY packet from accepted canonical prose."""
+    """Parse exactly one explicit READY packet from accepted canonical prose.
+
+    The candidate is derived from the accepted ``weak-agent-dispatch:v1``
+    capsule inside the current packet block — the same representation the
+    session entry and handoff checker consume.  ``task_spec_sha256`` remains
+    the canonical digest of the derived spec so a mutated capsule can never
+    mint a new binding.
+    """
 
     if not isinstance(document, str) or len(document.encode("utf-8")) > MAX_DOCUMENT_BYTES:
         raise PlanLaneError("plan_document_unavailable_or_too_large")
@@ -138,7 +165,7 @@ def parse(document: str, accepted_main_sha: str) -> PlanCandidate:
         raise PlanLaneError("plan_packet_absent")
     if len(ready) != 1:
         raise PlanLaneError("multiple_plan_packets")
-    marker_matches = list(PLAN_MARKER.finditer(document))
+    marker_matches = list(WEAK_DISPATCH_MARKER.finditer(document))
     if not marker_matches:
         raise PlanLaneError("plan_packet_fields_missing")
     if len(marker_matches) != 1:
@@ -155,22 +182,24 @@ def parse(document: str, accepted_main_sha: str) -> PlanCandidate:
         raise PlanLaneError("plan_packet_fields_invalid") from exc
     if not isinstance(payload, dict):
         raise PlanLaneError("plan_packet_fields_invalid")
-    required = {
-        "schema_version", "packet_id", "state", "source_main_sha", "goal",
-        "allowed_paths", "prerequisites", "forbidden_changes", "verification",
-        "rollback", "task_spec_sha256",
-    }
-    if set(payload) != required:
-        raise PlanLaneError("plan_packet_fields_missing_or_unsupported")
-    if payload["schema_version"] != SCHEMA_VERSION:
+    if payload.get("schema_version") != "weak_agent_dispatch.v1":
         raise PlanLaneError("plan_packet_version_unsupported")
-    if payload["packet_id"] != packet_id or not PACKET_ID.fullmatch(packet_id):
+    if payload.get("packet_id") != packet_id or not PACKET_ID.fullmatch(packet_id):
         raise PlanLaneError("plan_packet_id_invalid")
-    if payload["state"] != structural_state or payload["state"] != "READY_FOR_EXECUTION":
+    if payload.get("packet_state") != structural_state or structural_state != "READY_FOR_EXECUTION":
         raise PlanLaneError("plan_packet_state_invalid")
-    if payload["source_main_sha"] != accepted_main_sha:
-        raise PlanLaneError("plan_accepted_main_mismatch")
+    lane_state = payload.get("plan_lane_state")
+    if lane_state not in KNOWN_PLAN_LANE_STATES:
+        raise PlanLaneError("plan_lane_state_invalid")
+    if lane_state != PLAN_LANE_ACTIVE:
+        raise PlanLaneError("plan_lane_deferred_until_terminal_owners")
+    if type(payload.get("external_effect_limit")) is not int or payload.get("external_effect_limit") != 0:
+        raise PlanLaneError("plan_external_effect_not_zero")
+    if "goal" not in payload:
+        raise PlanLaneError("plan_goal_missing_or_invalid")
     goal = _bounded_string(payload["goal"], "goal")
+    if "allowed_paths" not in payload:
+        raise PlanLaneError("plan_allowed_paths_missing_or_invalid")
     allowed_paths = _bounded_strings(payload["allowed_paths"], "allowed_paths")
     try:
         allowed_paths = artifact_contract.validate_allowed_paths(allowed_paths)
@@ -185,7 +214,7 @@ def parse(document: str, accepted_main_sha: str) -> PlanCandidate:
         raise PlanLaneError("plan_dependencies_not_ready")
     forbidden_changes = _bounded_strings(payload["forbidden_changes"], "forbidden_changes")
     verification = _bounded_strings(payload["verification"], "verification")
-    rollback = _bounded_strings(payload["rollback"], "rollback")
+    rollback = [_bounded_string(payload["rollback"], "rollback")]
     spec = {
         "schema_version": SCHEMA_VERSION,
         "packet_id": packet_id,
@@ -198,17 +227,13 @@ def parse(document: str, accepted_main_sha: str) -> PlanCandidate:
         "verification": verification,
         "rollback": rollback,
     }
-    if payload["task_spec_sha256"] != _canonical_spec(spec) or not SHA256.fullmatch(
-        payload["task_spec_sha256"]
-    ):
-        raise PlanLaneError("plan_task_spec_digest_mismatch")
     routed = list(ACTIVE_ROUTING.finditer(document))
     if not routed or routed[0].group("packet") != packet_id:
         raise PlanLaneError("plan_packet_is_not_current_route")
     return PlanCandidate(
         packet_id=packet_id,
         source_main_sha=accepted_main_sha,
-        task_spec_sha256=payload["task_spec_sha256"],
+        task_spec_sha256=_canonical_spec(spec),
         goal=goal,
         allowed_paths=allowed_paths,
         prerequisites=prerequisites,
@@ -216,6 +241,41 @@ def parse(document: str, accepted_main_sha: str) -> PlanCandidate:
         verification=verification,
         rollback=rollback,
     )
+
+
+def terminal_owner_readiness(
+    *,
+    ledger_issue: object,
+    canonical_tests_workflow_present: bool,
+    ci_monitor_workflow_present: bool,
+    review_owner_present: bool,
+    merge_owner_present: bool,
+    closeout_owner_present: bool,
+) -> tuple[bool, list[str]]:
+    """Prove, fail-closed, that each terminal owner can bind a plan subject.
+
+    A plan subject is admitted only when every terminal owner is provably
+    usable for that exact packet: the Plan Execution Ledger Issue resolves,
+    the canonical CI workflow and CI monitor workflow exist, the review owner
+    accepts PR-bound subjects, the repository-maintenance merge owner exists,
+    and the canonical closeout owner accepts the packet.  Missing or
+    unverifiable owners reject the candidate; no owner may be inferred.
+    """
+
+    missing: list[str] = []
+    if not isinstance(ledger_issue, int) or ledger_issue <= 0:
+        missing.append("plan_execution_ledger")
+    if not canonical_tests_workflow_present:
+        missing.append("canonical_tests_workflow")
+    if not ci_monitor_workflow_present:
+        missing.append("ci_monitor_workflow")
+    if not review_owner_present:
+        missing.append("review_owner")
+    if not merge_owner_present:
+        missing.append("merge_owner")
+    if not closeout_owner_present:
+        missing.append("closeout_owner")
+    return (not missing, missing)
 
 
 def parse_optional(document: str, accepted_main_sha: str) -> PlanCandidate | None:

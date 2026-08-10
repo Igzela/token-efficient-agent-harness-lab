@@ -2131,8 +2131,10 @@ def _canonical_dispatch_capsule(value: object) -> dict[str, object]:
         or capsule.get("authority_consumption_allowed") is not False
         or capsule.get("secret_values_allowed") is not False
         or capsule.get("private_paths_allowed") is not False
-        or capsule.get("plan_lane_state")
-        != "plan_lane_deferred_until_terminal_owners"
+        or capsule.get("plan_lane_state") not in {
+            "plan_lane_deferred_until_terminal_owners",
+            "plan_lane_active",
+        }
     ):
         raise SessionContextError("dispatch_safety_contract_invalid")
     packet_id = capsule.get("packet_id")

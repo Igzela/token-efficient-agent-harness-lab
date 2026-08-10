@@ -636,11 +636,42 @@ def claim_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
             return {"dispatched": False, "reason": "plan_claim_unverifiable"}
         if details.get("execution_token") != execution_token:
             return {"dispatched": False, "reason": "plan_claim_binding_unverified"}
+        if previous.get("status") == "dispatched":
+            return {
+                "dispatched": True,
+                "ledger_issue": ledger_issue,
+                "dispatch_id": dispatch_id,
+                "reason": "already_dispatched",
+            }
+        # Resume a claim that was durable-written before label/dispatch
+        # promotion completed.  Only the exact attempt/token binding may
+        # finish the claim; a mismatched or stale generation fails closed.
+        valid, reason = sm.plan_claim_binding_valid(
+            ledger_issue, details, packet_id, attempt, execution_token,
+            candidate.source_main_sha, candidate.task_spec_sha256,
+        )
+        if not valid:
+            return {"dispatched": False, "reason": reason}
+        labels = sm.get_issue_labels_checked(ledger_issue, repo)
+        if labels is None:
+            return {"dispatched": False, "reason": "plan_ledger_state_unavailable"}
+        if sm.LABEL_RUNNING not in labels:
+            if not sm.set_labels(ledger_issue, sm.LABEL_RUNNING, repo=repo):
+                return {"dispatched": False, "reason": "claim_label_failed"}
+        recheck = sm.get_active_capacity(repo)
+        if recheck is None or len(recheck["issues"]) + len(recheck["plans"]) > sm.MAX_ACTIVE:
+            reason = "capacity_recheck_unavailable" if recheck is None else "capacity_recheck_exceeded"
+            return {"dispatched": False, "reason": reason}
+        if not sm.record_dispatch_state(
+            ledger_issue, dispatch_id, "plan-run", "dispatched",
+            {**details, "workflow": "plan-local-run"}, repo,
+        ):
+            return {"dispatched": False, "reason": "dispatch_state_failed_capacity_retained"}
         return {
-            "dispatched": previous.get("status") == "dispatched",
+            "dispatched": True,
             "ledger_issue": ledger_issue,
             "dispatch_id": dispatch_id,
-            "reason": "already_dispatched" if previous.get("status") == "dispatched" else "dispatch_in_flight",
+            "reason": "claimed_resumed",
         }
     capacity = sm.get_active_capacity(repo)
     if capacity is None:

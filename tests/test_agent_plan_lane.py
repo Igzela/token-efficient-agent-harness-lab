@@ -24,22 +24,24 @@ MAIN = "a" * 40
 
 def packet_payload(**overrides):
     value = {
-        "schema_version": 1,
+        "schema_version": "weak_agent_dispatch.v1",
         "packet_id": "TOOL-PLAN-LANE-1",
-        "state": "READY_FOR_EXECUTION",
-        "source_main_sha": MAIN,
+        "packet_state": "READY_FOR_EXECUTION",
+        "dispatch_lane": "provider_free_repository_maintenance",
+        "external_effect_limit": 0,
+        "authority_consumption_allowed": False,
+        "secret_values_allowed": False,
+        "private_paths_allowed": False,
+        "plan_lane_state": plan_lane.PLAN_LANE_ACTIVE,
         "goal": "Implement one bounded plan lane.",
         "allowed_paths": ["scripts/agent-control/", "tests/"],
         "prerequisites": [],
         "forbidden_changes": ["default branch", "provider calls"],
         "verification": ["focused provider-free tests"],
-        "rollback": ["disable the adapter and revert the packet"],
+        "rollback": "disable the adapter and revert the packet",
     }
     value.update(overrides)
-    digest = hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    return {**value, "task_spec_sha256": digest}
+    return value
 
 
 def document(*, packets=None, marker=True, route="TOOL-PLAN-LANE-1", marker_payload=None):
@@ -49,12 +51,31 @@ def document(*, packets=None, marker=True, route="TOOL-PLAN-LANE-1", marker_payl
         block = [f"## Packet {packet_id}", f"**State:** `{state}`"]
         if marker and packet_id == "TOOL-PLAN-LANE-1":
             block.append(
-                "<!-- agent-orchestrator-plan:v1 "
+                "<!-- weak-agent-dispatch:v1 "
                 + json.dumps(marker_payload or packet_payload(), sort_keys=True)
                 + " -->"
             )
         blocks.append("\n".join(block))
     return "\n\n".join(["## Active Routing", f"1. `{route}`", *blocks])
+
+
+def expected_task_spec_sha256() -> str:
+    payload = packet_payload()
+    spec = {
+        "schema_version": plan_lane.SCHEMA_VERSION,
+        "packet_id": payload["packet_id"],
+        "state": "READY_FOR_EXECUTION",
+        "source_main_sha": MAIN,
+        "goal": payload["goal"],
+        "allowed_paths": payload["allowed_paths"],
+        "prerequisites": payload["prerequisites"],
+        "forbidden_changes": payload["forbidden_changes"],
+        "verification": payload["verification"],
+        "rollback": [payload["rollback"]],
+    }
+    return hashlib.sha256(
+        json.dumps(spec, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 class TestPlanLane(unittest.TestCase):
@@ -85,28 +106,151 @@ class TestPlanLane(unittest.TestCase):
                 MAIN,
             )
 
-    def test_missing_fields_and_digest_mismatch_fail_closed(self):
+    def test_completed_historical_predecessor_satisfies_prerequisite(self):
+        payload = packet_payload(prerequisites=["TOOL-PREREQUISITE-1"])
+        text = (
+            "## Active Routing\n"
+            "1. `TOOL-PLAN-LANE-1`\n"
+            "## Completed Route Contract (TOOL-PREREQUISITE-1)\n"
+            "**Historical state:** `COMPLETE`\n"
+            "## Packet TOOL-PLAN-LANE-1\n"
+            "**State:** `READY_FOR_EXECUTION`\n"
+            "<!-- weak-agent-dispatch:v1 "
+            + json.dumps(payload, sort_keys=True)
+            + " -->"
+        )
+        candidate = plan_lane.parse(text, MAIN)
+        self.assertEqual(candidate.packet_id, "TOOL-PLAN-LANE-1")
+        self.assertEqual(candidate.prerequisites, ["TOOL-PREREQUISITE-1"])
+
+    def test_incomplete_historical_predecessor_blocks_prerequisite(self):
+        payload = packet_payload(prerequisites=["TOOL-PREREQUISITE-1"])
+        text = (
+            "## Active Routing\n"
+            "1. `TOOL-PLAN-LANE-1`\n"
+            "## Completed Route Contract (TOOL-PREREQUISITE-1)\n"
+            "**Historical state:** `BLOCKED_PREREQUISITE`\n"
+            "## Packet TOOL-PLAN-LANE-1\n"
+            "**State:** `READY_FOR_EXECUTION`\n"
+            "<!-- weak-agent-dispatch:v1 "
+            + json.dumps(payload, sort_keys=True)
+            + " -->"
+        )
+        with self.assertRaisesRegex(plan_lane.PlanLaneError, "dependencies_not_ready"):
+            plan_lane.parse(text, MAIN)
+
+    def test_missing_fields_and_invalid_digest_fail_closed(self):
         payload = packet_payload()
         del payload["allowed_paths"]
-        with self.assertRaisesRegex(plan_lane.PlanLaneError, "fields_missing"):
+        with self.assertRaisesRegex(plan_lane.PlanLaneError, "allowed_paths"):
             plan_lane.parse(document(marker_payload=payload), MAIN)
-        payload = packet_payload(task_spec_sha256="0" * 64)
-        with self.assertRaisesRegex(plan_lane.PlanLaneError, "digest_mismatch"):
+        payload = packet_payload(plan_lane_state="plan_lane_unknown")
+        with self.assertRaisesRegex(plan_lane.PlanLaneError, "lane_state"):
             plan_lane.parse(document(marker_payload=payload), MAIN)
 
-    def test_unmet_prerequisite_and_main_mismatch_fail_closed(self):
+    def test_deferred_lane_and_nonzero_effect_fail_closed(self):
+        payload = packet_payload(plan_lane_state=plan_lane.PLAN_LANE_DEFERRED)
+        with self.assertRaisesRegex(
+            plan_lane.PlanLaneError, "plan_lane_deferred_until_terminal_owners"
+        ):
+            plan_lane.parse(document(marker_payload=payload), MAIN)
+        payload = packet_payload(external_effect_limit=1)
+        with self.assertRaisesRegex(plan_lane.PlanLaneError, "external_effect"):
+            plan_lane.parse(document(marker_payload=payload), MAIN)
+
+    def test_unmet_prerequisite_fails_closed(self):
         payload = packet_payload(prerequisites=["TOOL-PREREQUISITE-1"])
         with self.assertRaisesRegex(plan_lane.PlanLaneError, "dependencies_not_ready"):
-            plan_lane.parse(document(marker_payload=payload), MAIN)
-        payload = packet_payload(source_main_sha="b" * 40)
-        with self.assertRaisesRegex(plan_lane.PlanLaneError, "accepted_main_mismatch"):
             plan_lane.parse(document(marker_payload=payload), MAIN)
 
     def test_plan_marker_in_non_current_packet_is_rejected(self):
         with self.assertRaisesRegex(plan_lane.PlanLaneError, "current_route"):
             plan_lane.parse(document(route="TOOL-OTHER-1"), MAIN)
 
-    def test_poll_defers_plan_candidates_until_terminal_owners_exist(self):
+    def test_terminal_owner_readiness_fails_closed_on_missing_owners(self):
+        ready, missing = plan_lane.terminal_owner_readiness(
+            ledger_issue=0,
+            canonical_tests_workflow_present=False,
+            ci_monitor_workflow_present=False,
+            review_owner_present=False,
+            merge_owner_present=False,
+            closeout_owner_present=False,
+        )
+        self.assertFalse(ready)
+        self.assertEqual(
+            missing,
+            [
+                "plan_execution_ledger",
+                "canonical_tests_workflow",
+                "ci_monitor_workflow",
+                "review_owner",
+                "merge_owner",
+                "closeout_owner",
+            ],
+        )
+
+    def test_terminal_owner_readiness_passes_only_when_all_owners_ready(self):
+        ready, missing = plan_lane.terminal_owner_readiness(
+            ledger_issue=900,
+            canonical_tests_workflow_present=True,
+            ci_monitor_workflow_present=True,
+            review_owner_present=True,
+            merge_owner_present=True,
+            closeout_owner_present=True,
+        )
+        self.assertTrue(ready)
+        self.assertEqual(missing, [])
+
+    def test_poll_rejects_plan_candidates_until_terminal_owners_exist(self):
+        class Git:
+            def origin_main_sha(self, _repo_path, _branch):
+                return MAIN
+
+        class GitHub:
+            def read_control_state(self):
+                return {"orchestrator_enabled": True, "emergency_stop": False}
+
+            def repository_metadata(self):
+                return {"name_with_owner": "acme/repo", "owner": "acme", "default_branch": "main"}
+
+            def current_user(self):
+                return "acme"
+
+            def accepted_main_sha(self, _branch):
+                return MAIN
+
+            def active_execution_scopes(self):
+                return {"issue_numbers": set(), "plans": [], "scopes": {}}
+
+            def accepted_plan_document(self, _sha):
+                return document()
+
+            def plan_ledger_issue(self):
+                raise local_loop.LoopUnavailable("plan execution ledger is unavailable")
+
+            def list_ready_issues(self):
+                return []
+
+        decision = local_loop.LoopController(
+            GitHub(), Git(), repository="acme/repo", repo_path=Path("/tmp")
+        ).poll()
+        self.assertEqual(decision["status"], "no_eligible_task")
+        rejected = decision.get("rejected") or []
+        self.assertTrue(
+            any(
+                item.get("candidate_kind") == "plan"
+                and item.get("subject_id") == "TOOL-PLAN-LANE-1"
+                and item.get("reason") == (
+                    "plan_lane_not_ready:plan_execution_ledger,"
+                    "canonical_tests_workflow,ci_monitor_workflow,"
+                    "review_owner,merge_owner,closeout_owner"
+                )
+                for item in rejected
+            ),
+            rejected,
+        )
+
+    def test_poll_admits_plan_candidate_when_terminal_owners_ready(self):
         class Git:
             def origin_main_sha(self, _repo_path, _branch):
                 return MAIN
@@ -136,20 +280,43 @@ class TestPlanLane(unittest.TestCase):
             def list_ready_issues(self):
                 return []
 
-        decision = local_loop.LoopController(
-            GitHub(), Git(), repository="acme/repo", repo_path=Path("/tmp")
-        ).poll()
-        self.assertEqual(decision["status"], "no_eligible_task")
-        rejected = decision.get("rejected") or []
-        self.assertTrue(
-            any(
-                item.get("candidate_kind") == "plan"
-                and item.get("subject_id") == "TOOL-PLAN-LANE-1"
-                and item.get("reason") == "plan_lane_deferred_until_terminal_owners"
-                for item in rejected
-            ),
-            rejected,
-        )
+        worktree = Path("/tmp")
+        for name in (
+            ".github/workflows/tests.yml",
+            ".github/workflows/agent-ci-monitor.yml",
+            "scripts/agent-control/review_loop_cli.py",
+            "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+            "docs/CURRENT_STATUS.md",
+        ):
+            path = worktree / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text("", encoding="utf-8")
+        try:
+            decision = local_loop.LoopController(
+                GitHub(), Git(), repository="acme/repo", repo_path=worktree
+            ).poll()
+            self.assertEqual(decision["status"], "ready")
+            selected = decision.get("selected") or []
+            self.assertTrue(
+                any(
+                    item.get("candidate_kind") == "plan"
+                    and item.get("subject_id") == "TOOL-PLAN-LANE-1"
+                    for item in selected
+                ),
+                decision,
+            )
+        finally:
+            for name in (
+                ".github/workflows/tests.yml",
+                ".github/workflows/agent-ci-monitor.yml",
+                "scripts/agent-control/review_loop_cli.py",
+                "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+                "docs/CURRENT_STATUS.md",
+            ):
+                path = worktree / name
+                if path.exists():
+                    path.unlink()
 
     def test_active_plan_capacity_deduplicates_claim_generations(self):
         ledger_issue = 900
@@ -159,7 +326,7 @@ class TestPlanLane(unittest.TestCase):
             "subject_kind": "plan-packet",
             "subject_id": "TOOL-PLAN-LANE-1",
             "source_main_sha": MAIN,
-            "task_spec_sha256": packet_payload()["task_spec_sha256"],
+            "task_spec_sha256": expected_task_spec_sha256(),
             "allowed_paths": ["scripts/agent-control/", "tests/"],
             "canonical_branch": "agent/packet-tool-plan-lane-1",
             "attempt_id": "123e4567-e89b-12d3-a456-426614174000",
@@ -198,7 +365,7 @@ class TestPlanLane(unittest.TestCase):
             "subject_kind": "plan-packet",
             "subject_id": "TOOL-PLAN-LANE-1",
             "source_main_sha": MAIN,
-            "task_spec_sha256": packet_payload()["task_spec_sha256"],
+            "task_spec_sha256": expected_task_spec_sha256(),
             "allowed_paths": ["scripts/agent-control/", "tests/"],
             "canonical_branch": "agent/packet-tool-plan-lane-1",
             "attempt_id": "123e4567-e89b-12d3-a456-426614174000",
@@ -249,7 +416,7 @@ class TestPlanLane(unittest.TestCase):
                 "subject_kind": "plan-packet",
                 "subject_id": "TOOL-PLAN-LANE-1",
                 "source_main_sha": MAIN,
-                "task_spec_sha256": packet_payload()["task_spec_sha256"],
+                "task_spec_sha256": expected_task_spec_sha256(),
                 "allowed_paths": ["scripts/agent-control/", "tests/"],
                 "canonical_branch": "agent/packet-tool-plan-lane-1",
                 "attempt_id": attempt,
