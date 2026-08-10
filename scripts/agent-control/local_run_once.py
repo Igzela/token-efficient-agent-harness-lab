@@ -628,6 +628,31 @@ class LocalRunOnce:
                 return False, "handoff_state_unproven"
             self.sleeper(self.poll_interval_seconds)
 
+    def _request_plan_handoff(
+        self,
+        ledger_issue: int,
+        packet_id: str,
+        attempt: str,
+        claim_nonce: str,
+        pr_number: int,
+        head_sha: str,
+    ) -> tuple[bool, str]:
+        try:
+            self.github.dispatch_controller(
+                "handoff-plan",
+                {
+                    "packet_id": packet_id,
+                    "attempt_id": attempt,
+                    "head_sha": head_sha,
+                    "claim_nonce": claim_nonce,
+                },
+            )
+        except local_loop.LoopUnavailable:
+            return False, "handoff_dispatch_outcome_unknown"
+        return self._wait_for_plan_handoff(
+            ledger_issue, packet_id, attempt, claim_nonce, pr_number, head_sha
+        )
+
     def _unknown_plan_output(
         self, packet_id: str, attempt: str, source_main_sha: str, claim_nonce: str, reason: str
     ) -> local_loop.LocalRunOnceResult:
@@ -674,21 +699,219 @@ class LocalRunOnce:
             self.sleeper(self.poll_interval_seconds)
 
     def run_plan_once(self, packet_id: str, attempt_id: str) -> local_loop.LocalRunOnceResult:
-        """Plan execution is deferred until CI/review/terminal owners are plan-aware.
+        """Execute one exact plan subject only when terminal owners are ready.
 
-        The independent review established that Plan Draft PRs cannot enter the
-        existing Issue-bound CI/monitor lifecycle, and accepted main does not
-        authorize expanding this packet with a parallel Plan terminal owner.
-        Keep the parser and tests for a later authorized packet; fail closed
-        here so capacity cannot be claimed by an unclosable lane.
+        The blanket deferral is replaced by real fail-closed readiness checks:
+        the Plan Execution Ledger, canonical CI workflow, CI monitor workflow,
+        review owner, repository-maintenance merge owner, and canonical
+        closeout owner must all be provably usable for the plan subject before
+        any claim or mutation is attempted.  A missing owner rejects the
+        attempt with the specific owner list; an already-dispatched generation
+        is recovered idempotently from the ledger plus authoritative
+        GitHub/PR/CI/review state, never re-executed.
         """
 
         attempt = _canonical_attempt_id(attempt_id)
+        if not isinstance(packet_id, str) or not plan_lane.PACKET_ID.fullmatch(packet_id):
+            return self._plan_result("rejected", str(packet_id), str(attempt_id), reason="invalid_plan_id")
+        if attempt is None:
+            return self._plan_result("rejected", packet_id, str(attempt_id), reason="invalid_attempt_id")
+        try:
+            control = self.github.read_control_state()
+            if control.get("emergency_stop") or not control.get("orchestrator_enabled"):
+                return self._plan_result("control_stopped", packet_id, attempt)
+            metadata = self.github.repository_metadata()
+            if str(metadata.get("name_with_owner", "")).casefold() != self.repository.casefold():
+                return self._plan_result("identity_rejected", packet_id, attempt, reason="repository_identity_mismatch")
+            default_branch = metadata.get("default_branch")
+            if not isinstance(default_branch, str) or not local_loop.BRANCH.fullmatch(default_branch):
+                return self._plan_result("unavailable", packet_id, attempt, reason="default_branch_unavailable")
+            accepted_main = self.github.accepted_main_sha(default_branch)
+            local_main = self.git.origin_main_sha(self.repo_path, default_branch)
+            if not local_loop.HEX40.fullmatch(accepted_main) or accepted_main != local_main:
+                return self._plan_result(
+                    "stale_checkout", packet_id, attempt,
+                    accepted_main_sha=accepted_main, local_origin_main_sha=local_main,
+                )
+            ready, missing = self._plan_terminal_owner_readiness()
+            if not ready:
+                return self._plan_result(
+                    "rejected", packet_id, attempt,
+                    reason=f"plan_lane_not_ready:{','.join(missing)}",
+                )
+            candidate, ledger_issue = self._live_plan(packet_id)
+            recovered = self._recover_existing_plan_claim(
+                packet_id, attempt, candidate, ledger_issue
+            )
+            if recovered is not None:
+                return recovered
+            return self._run_plan_once_authorized(packet_id, attempt)
+        except (local_loop.LoopUnavailable, plan_lane.PlanLaneError) as exc:
+            return self._plan_result("unavailable", packet_id, attempt, reason=str(exc)[:200])
+
+    def _plan_terminal_owner_readiness(self) -> tuple[bool, list[str]]:
+        """Read-only provider-free proof of terminal-owner readiness."""
+
+        workflow_dir = Path(self.repo_path) / ".github" / "workflows"
+        canonical_tests = workflow_dir / "tests.yml"
+        ci_monitor = workflow_dir / "agent-ci-monitor.yml"
+        review_owner = Path(self.repo_path) / "scripts" / "agent-control" / "review_loop_cli.py"
+        merge_owner = Path(self.repo_path) / "docs" / "REAL_WORLD_TESTING_PLAYBOOK.md"
+        closeout_owner = Path(self.repo_path) / "docs" / "CURRENT_STATUS.md"
+        ledger_issue = 0
+        try:
+            ledger_issue = self.github.plan_ledger_issue()
+        except (AttributeError, local_loop.LoopUnavailable):
+            ledger_issue = 0
+        return plan_lane.terminal_owner_readiness(
+            ledger_issue=ledger_issue,
+            canonical_tests_workflow_present=canonical_tests.is_file(),
+            ci_monitor_workflow_present=ci_monitor.is_file(),
+            review_owner_present=review_owner.is_file(),
+            merge_owner_present=merge_owner.is_file(),
+            closeout_owner_present=closeout_owner.is_file(),
+        )
+
+    def _recover_existing_plan_claim(
+        self,
+        packet_id: str,
+        attempt: str,
+        candidate: plan_lane.PlanCandidate,
+        ledger_issue: int,
+    ) -> local_loop.LocalRunOnceResult | None:
+        """Reconstruct a provable exact-head plan handoff; never recreate output.
+
+        Returns a result only when an existing dispatched plan-run generation
+        can be repaired from the ledger plus authoritative GitHub/PR/CI state.
+        A claimed-but-not-dispatched generation is re-entered through the
+        controller; a terminal generation is reported as terminal; any
+        unprovable state returns ``None`` so the caller executes fresh.
+        """
+
+        dispatch_id = f"plan-run:{packet_id}:{candidate.source_main_sha}:{attempt}"
+        try:
+            existing = state_manager.read_dispatch_state(
+                ledger_issue, dispatch_id, self.repository
+            )
+        except state_manager.StateUnavailableError:
+            return None
+        if not isinstance(existing, dict):
+            return None
+        status = existing.get("status")
+        details = existing.get("details")
+        if not isinstance(details, dict):
+            if status in {"failed", "failed_unknown_output", "rejected", "outcome_unknown"}:
+                return self._plan_result("terminal", packet_id, attempt, claim_status=status)
+            return None
+        if status == "dispatched":
+            # A dispatched generation may never fall through to a second
+            # execution.  If its binding cannot be proven (stale lease,
+            # mismatched attempt, missing nonce), the generation stays in
+            # flight and fail-closed reconciliation owns the ledger state.
+            valid, _reason = state_manager.plan_claim_binding_valid(
+                ledger_issue,
+                details,
+                packet_id,
+                attempt,
+                local_loop.plan_execution_token(
+                    self.repository, packet_id, candidate.source_main_sha, attempt
+                ),
+                candidate.source_main_sha,
+                candidate.task_spec_sha256,
+            )
+            if not valid:
+                return self._plan_result(
+                    "in_flight", packet_id, attempt, dispatch_id=dispatch_id,
+                    reason="dispatched_generation_unverifiable",
+                )
+            repaired = self._repair_plan_handoff(
+                packet_id, attempt, candidate, ledger_issue, details
+            )
+            if repaired is not None:
+                return repaired
+            return self._plan_result(
+                "in_flight", packet_id, attempt, dispatch_id=dispatch_id,
+                reason="dispatched_generation_unrepairable",
+            )
+        if status == "claimed":
+            # Claim persisted but dispatch promotion may have crashed.  Re-enter
+            # the authorized path: claim-plan resumes claimed→dispatched and the
+            # same exact generation continues, never a second execution after a
+            # provable handoff.
+            return None
+        if status in {"failed", "failed_unknown_output", "rejected", "outcome_unknown"}:
+            return self._plan_result("terminal", packet_id, attempt, claim_status=status)
+        return None
+
+    def _repair_plan_handoff(
+        self,
+        packet_id: str,
+        attempt: str,
+        candidate: plan_lane.PlanCandidate,
+        ledger_issue: int,
+        details: dict[str, Any],
+    ) -> local_loop.LocalRunOnceResult | None:
+        """Repair only a provable exact-head plan handoff; never recreate output."""
+
+        branch = details.get("canonical_branch")
+        if branch != candidate.branch:
+            return None
+        try:
+            remote = self._git_checked(
+                self.repo_path, "ls-remote", "origin", f"refs/heads/{branch}"
+            )
+        except local_loop.LoopUnavailable:
+            return self._plan_result("outcome_unknown", packet_id, attempt, reason="remote_head_unavailable")
+        remote_parts = remote.split()
+        if remote_parts and (
+            len(remote_parts) != 2 or remote_parts[1] != f"refs/heads/{branch}"
+        ):
+            return self._plan_result("outcome_unknown", packet_id, attempt, reason="remote_head_ambiguous")
+        head_sha = remote_parts[0] if remote_parts else ""
+        if head_sha and not local_loop.HEX40.fullmatch(head_sha):
+            return self._plan_result("outcome_unknown", packet_id, attempt, reason="remote_head_invalid")
+        if not local_loop.HEX40.fullmatch(head_sha) or head_sha == candidate.source_main_sha:
+            return None
+        try:
+            pr = pr_binding.find_plan_pr(
+                packet_id, branch, head_sha, candidate.source_main_sha,
+                candidate.task_spec_sha256, self.repository,
+            )
+        except pr_binding.PRBindingError:
+            try:
+                marker = json.dumps({
+                    "subject_kind": "plan-packet", "subject_id": packet_id,
+                    "source_main_sha": candidate.source_main_sha,
+                    "task_spec_sha256": candidate.task_spec_sha256,
+                    "branch": branch,
+                }, sort_keys=True)
+                pr = pr_binding.create_or_update_plan_pr(
+                    packet_id, branch, head_sha, candidate.source_main_sha,
+                    candidate.task_spec_sha256, candidate.goal[:200],
+                    f"<!-- agent-orchestrator-binding: {marker} -->\n\nPlan packet `{packet_id}`.",
+                    self.repository,
+                )
+                pr_binding.verify_post_push_plan_binding(
+                    packet_id, pr.get("number") or 0, branch, head_sha,
+                    candidate.source_main_sha, candidate.task_spec_sha256, self.repository,
+                )
+            except (local_loop.LoopUnavailable, pr_binding.PRBindingError, KeyError, TypeError):
+                return None
+        pr_number = pr.get("number")
+        if type(pr_number) is not int:
+            return None
+        claim_nonce = details.get("claim_nonce")
+        if not isinstance(claim_nonce, str) or state_manager.CLAIM_NONCE_PATTERN.fullmatch(claim_nonce) is None:
+            return None
+        handed_off, handoff_reason = self._request_plan_handoff(
+            ledger_issue, packet_id, attempt, claim_nonce, pr_number, head_sha
+        )
+        if not handed_off:
+            return self._plan_result("outcome_unknown", packet_id, attempt, reason=handoff_reason)
         return self._plan_result(
-            "rejected",
-            str(packet_id),
-            attempt if attempt is not None else str(attempt_id),
-            reason="plan_lane_deferred_until_terminal_owners",
+            "handed_off", packet_id, attempt,
+            pr_number=pr_number, head_sha=head_sha, branch=branch,
+            accepted_main_sha=candidate.source_main_sha,
         )
 
     def _run_plan_once_authorized(self, packet_id: str, attempt_id: str) -> local_loop.LocalRunOnceResult:

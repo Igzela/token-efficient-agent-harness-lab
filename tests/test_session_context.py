@@ -606,7 +606,7 @@ class CheckpointTests(unittest.TestCase):
             dispatch_capsule(authority_consumption_allowed=True),
             dispatch_capsule(secret_values_allowed=True),
             dispatch_capsule(private_paths_allowed=True),
-            dispatch_capsule(plan_lane_state="plan_lane_active"),
+            dispatch_capsule(plan_lane_state="plan_lane_unknown"),
         )
         for capsule in unsafe_capsules:
             with self.subTest(capsule=capsule):
@@ -903,7 +903,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertIs(capsule["secret_values_allowed"], False)
         self.assertIs(capsule["private_paths_allowed"], False)
         self.assertEqual(
-            capsule["plan_lane_state"], "plan_lane_deferred_until_terminal_owners"
+            capsule["plan_lane_state"], "plan_lane_active"
         )
         self.assertEqual(capsule["allowed_paths"], packet["allowed_paths"])
         self.assertEqual(

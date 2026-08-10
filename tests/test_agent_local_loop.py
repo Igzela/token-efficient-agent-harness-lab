@@ -30,6 +30,22 @@ SCOPE = '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["src/"]} -->'
 TASK = f'<!-- repo-agent-task:v1 {{"accepted_main_sha":"{MAIN_SHA}"}} -->'
 
 
+def plan_lane_fixture():
+    import plan_lane
+
+    return plan_lane.PlanCandidate(
+        packet_id=PLAN_ID,
+        source_main_sha=MAIN_SHA,
+        task_spec_sha256="c" * 64,
+        goal="Implement one bounded plan lane.",
+        allowed_paths=["scripts/agent-control/", "tests/"],
+        prerequisites=[],
+        forbidden_changes=["default branch", "provider calls"],
+        verification=["focused provider-free tests"],
+        rollback=["disable the adapter and revert the packet"],
+    )
+
+
 def scope(*paths):
     return '<!-- agent-orchestrator-scope:v1 ' + __import__("json").dumps(
         {"allowed_paths": list(paths)}, separators=(",", ":")
@@ -704,19 +720,63 @@ class TestLocalRunOnce(unittest.TestCase):
         ]
         self.assertEqual(len(release_calls), 1)
 
-    def test_plan_run_once_is_deferred_closed(self):
+    def test_plan_run_once_rejects_when_terminal_owners_not_ready(self):
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN_SHA
+        github.plan_ledger_issue.side_effect = local_loop.LoopUnavailable(
+            "plan execution ledger is unavailable"
+        )
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN_SHA
         result = local_run_once.LocalRunOnce(
+            github,
+            git,
             repository="Igzela/example",
             repo_path=Path("/tmp"),
         ).run_plan_once(PLAN_ID, ATTEMPT)
         self.assertEqual(result.status, "rejected")
-        self.assertEqual(
-            result.details.get("reason"),
-            "plan_lane_deferred_until_terminal_owners",
-        )
-        # Deferred path must never dispatch claim-plan or touch GitHub.
-        # (No github adapter was provided; construction uses real adapters only
-        # if methods are invoked — rejection is pre-claim.)
+        reason = result.details.get("reason")
+        self.assertTrue(reason.startswith("plan_lane_not_ready:"), reason)
+        self.assertIn("plan_execution_ledger", reason)
+        self.assertIn("canonical_tests_workflow", reason)
+        self.assertIn("ci_monitor_workflow", reason)
+        # Readiness rejection must never dispatch claim-plan or write state.
+        github.dispatch_controller.assert_not_called()
+
+    def test_plan_run_once_rejects_when_workflows_missing(self):
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN_SHA
+        github.plan_ledger_issue.return_value = 99
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN_SHA
+        result = local_run_once.LocalRunOnce(
+            github,
+            git,
+            repository="Igzela/example",
+            repo_path=Path("/tmp"),
+        ).run_plan_once(PLAN_ID, ATTEMPT)
+        self.assertEqual(result.status, "rejected")
+        reason = result.details.get("reason")
+        self.assertTrue(reason.startswith("plan_lane_not_ready:"), reason)
+        self.assertIn("canonical_tests_workflow", reason)
+        self.assertIn("ci_monitor_workflow", reason)
+        github.dispatch_controller.assert_not_called()
 
     def test_stale_token_on_claimed_state_does_not_release_capacity(self):
         github = mock.Mock()
@@ -795,6 +855,84 @@ class TestLocalRunOnce(unittest.TestCase):
         self.assertIn(7001, killed)
         self.assertIn(7002, killed)
         self.assertIn(7000, killed)
+
+    def test_dispatched_plan_claim_is_repaired_idempotently_not_reexecuted(self):
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN_SHA
+        github.plan_ledger_issue.return_value = 99
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN_SHA
+        candidate = plan_lane_fixture()
+        dispatched = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": 99,
+            "dispatch_id": f"plan-run:{PLAN_ID}:{MAIN_SHA}:{ATTEMPT}",
+            "action": "plan-run",
+            "status": "dispatched",
+            "details": {
+                "ledger_issue_number": 99,
+                "subject_kind": "plan-packet",
+                "subject_id": PLAN_ID,
+                "source_main_sha": MAIN_SHA,
+                "task_spec_sha256": candidate.task_spec_sha256,
+                "allowed_paths": ["scripts/agent-control/", "tests/"],
+                "canonical_branch": candidate.branch,
+                "attempt_id": ATTEMPT,
+                "execution_token": local_loop.plan_execution_token(
+                    "Igzela/example", PLAN_ID, MAIN_SHA, ATTEMPT
+                ),
+                "claim_nonce": NONCE,
+                "target_label": state_manager.LABEL_RUNNING,
+                "lease_deadline": "2099-01-01T00:00:00Z",
+            },
+        }
+        remote_head = "b" * 40
+
+        class GitChecked:
+            def __call__(self, _worktree, *args):
+                self.args = args
+                return f"{remote_head}\trefs/heads/{candidate.branch}"
+
+        git_checked = GitChecked()
+        runner = local_run_once.LocalRunOnce(
+            github,
+            git,
+            repository="Igzela/example",
+            repo_path=Path("/tmp"),
+            claim_timeout_seconds=0,
+            sleeper=lambda _: None,
+        )
+        with mock.patch.object(
+            state_manager, "read_dispatch_state", return_value=dispatched
+        ), mock.patch.object(
+            runner, "_git_checked", side_effect=git_checked
+        ), mock.patch.object(
+            local_run_once.pr_binding,
+            "find_plan_pr",
+            return_value={"number": 4001},
+        ), mock.patch.object(
+            runner,
+            "_request_plan_handoff",
+            new=mock.Mock(return_value=(True, "handoff_proven")),
+        ) as request_handoff:
+            result = runner._recover_existing_plan_claim(
+                PLAN_ID, ATTEMPT, candidate, 99
+            )
+        self.assertEqual(result.status, "handed_off")
+        self.assertEqual(result.details.get("pr_number"), 4001)
+        self.assertEqual(result.details.get("head_sha"), remote_head)
+        request_handoff.assert_called_once_with(
+            99, PLAN_ID, ATTEMPT, NONCE, 4001, remote_head
+        )
 
     def test_unknown_plan_output_requires_durable_ledger_terminal_readback(self):
         github = mock.Mock()

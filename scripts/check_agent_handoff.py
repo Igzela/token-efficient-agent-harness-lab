@@ -824,8 +824,13 @@ def weak_agent_dispatch_failures(
         "dispatch_lane"
     ):
         failures.append("weak-agent dispatch must declare a bounded dispatch lane")
-    if payload.get("plan_lane_state") != "plan_lane_deferred_until_terminal_owners":
-        failures.append("weak-agent dispatch must preserve the deferred plan lane")
+    if payload.get("plan_lane_state") not in {
+        "plan_lane_deferred_until_terminal_owners",
+        "plan_lane_active",
+    }:
+        failures.append(
+            "weak-agent dispatch must declare a known plan_lane_state"
+        )
     if payload.get("external_effect_limit") != 0:
         failures.append("weak-agent dispatch must set external_effect_limit=0")
     if payload.get("authority_consumption_allowed") is not False:
