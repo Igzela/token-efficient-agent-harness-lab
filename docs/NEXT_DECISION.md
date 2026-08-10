@@ -34,7 +34,6 @@ The route is stage-ordered. The current window is declared below; blocked succes
 ```text
 [window: Plan-lane activation — READY_FOR_EXECUTION, provider-free control-plane implementation only]
 → execute/recover/review/merge/closeout through existing maintenance owners
-→ execute/recover/review/merge/closeout through existing maintenance owners
 → select and promote exactly one successor at a time
 → return to the blocked PREFLIGHT repair/reconciliation window
 → [window: viability preflight — provider-free S1–S5 only]
