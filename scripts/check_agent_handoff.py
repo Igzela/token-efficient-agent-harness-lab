@@ -798,6 +798,49 @@ def _packet_dependency_cycle(
     return None
 
 
+FORWARD_ORDER_WINDOW_RE = re.compile(
+    r"\[window:\s*(?P<label>[^\]]*?)\s*—\s*(?P<state>[A-Z_]+)\s*,\s*(?P<detail>[^\]]*)\]",
+    re.MULTILINE,
+)
+
+
+def forward_order_window_failures(
+    next_text: str, current_packets: dict[str, dict[str, object]]
+) -> list[str]:
+    """The Authoritative Forward Order window projection must not contradict
+    the actual current packet state (docs/NEXT_DECISION.md self-conflict guard).
+
+    The guard applies only while exactly one current packet exists; when the
+    forward order carries a window projection, its declared state must equal
+    the current packet's structural State, and an unparseable projection is a
+    fail-closed failure rather than a silently skipped check.
+    """
+
+    failures: list[str] = []
+    if len(current_packets) != 1:
+        return failures
+    window_section = section(next_text, "## Authoritative Forward Order")
+    if "window:" not in window_section:
+        return failures
+    projections = list(FORWARD_ORDER_WINDOW_RE.finditer(window_section))
+    if not projections:
+        failures.append(
+            "Authoritative Forward Order window projection is unparseable; "
+            "expected [window: <label> — <STATE>, <detail>]"
+        )
+        return failures
+    packet_id = next(iter(current_packets))
+    packet_state = str(current_packets[packet_id]["state"])
+    for match in projections:
+        projected_state = match.group("state")
+        if projected_state != packet_state:
+            failures.append(
+                f"Authoritative Forward Order window projection says "
+                f"{projected_state} but current packet {packet_id} is {packet_state}"
+            )
+    return failures
+
+
 def active_state_failures(
     status_text: str, next_text: str, future_text: str = ""
 ) -> list[str]:
@@ -811,6 +854,7 @@ def active_state_failures(
         )
     packets = {**future_packets, **current_packets}
     accepted_packets = accepted_packet_receipts(status_text, failures)
+    failures.extend(forward_order_window_failures(next_text, current_packets))
 
     for packet_id in sorted(accepted_packets & set(packets)):
         if packets[packet_id]["state"] != "COMPLETE":
