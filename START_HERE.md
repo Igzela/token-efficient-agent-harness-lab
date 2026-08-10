@@ -64,7 +64,102 @@ refresh remote main
 
 A new PR head invalidates earlier CI and review conclusions for that PR. A blocked downstream PR never becomes the baseline for its prerequisite. Branch-local status or routing prose is proposed content until merged and must not override accepted-main navigation.
 
+## One-Command Session Bootstrap
+
+Every repository-maintenance session starts here, but no agent should load every maintained document. A coding agent, including a fresh successor resuming interrupted work, first runs one accepted-main entry command:
+
+```bash
+uv run --no-project python scripts/session_context.py enter --role coding
+```
+
+The digest-bound JSON composes the accepted current packet, its complete weak-agent dispatch capsule, current checkout, and any Git-private checkpoint. `FRESH_PACKET` lists only `targeted_reads`; `RESUME_CHECKPOINT` lists only the checkpoint-owned paths and its exact `next_permitted_action`. Treat `deferred_documents` as already projected startup context: do not reread them unless the entry reports a conflict, a missing fact, or a stop condition. The entry grants no new authority and never turns working-tree planning prose into accepted direction. If no packet is execution-ready (for example a planning-parked window), the entry is `DECISION_REQUIRED` and issues no checkpoint commands.
+
+For interruption or completion handoff, a coding entry exposes two digest-bound `checkpoint_write_commands`: `wip` and `stable`. Run exactly one unchanged command; the stable command is permitted only after every declared verification command has actually passed and the checkout stayed unchanged while they ran. Do not search this file, the script, or repository history for another coding checkpoint procedure. The commands accept no caller-authored text or paths, grant no authority, and remain gated by `checkpoint_allowed` and the current packet. Checkpoint verification evidence is bound to the accepted dispatch capsule's exact ordered verification contract; a rehashed checkpoint with a substituted evidence set, a caller-asserted `PASS`, or an inconsistent work-state/verification-state pairing is rejected, never resumed. Planning, review, and operator routes do not receive coding checkpoint commands.
+
+Planning, review, CI-repair, operator, and contributor sessions still request their bounded accepted document route:
+
+```bash
+uv run --no-project python scripts/session_context.py route --role planning
+```
+
+Replace `planning` with `review`, `ci-repair`, `operator`, or `contributor`. The route contains at most six ordered documents and `START_HERE.md` is always first. Add an include option only when the returned role contract exposes it. `docs/FUTURE_ROUTE.md` is never in a default route; a planning session must explicitly request `--include successor`, then extract exactly one packet with `scripts/session_context.py extract-packet --packet <PACKET_ID>`.
+
+Only an entry with `resume_disposition=RESUME` permits its reported next action. `REPAIR` permits only the bounded reconciliation action in its output. `DECISION_REQUIRED`/`STOP` forbids edits to the affected work; record or park that blocker and continue another independently eligible provider-free packet instead of waiting for chat input. `--source working-tree` exists only to audit proposed navigation; it always removes execution/checkpoint authority and never overrides accepted `main`. Run `scripts/project_context.py` separately only when the entry asks for frontier evidence that its accepted projection could not prove.
+
+<!-- agent-context-routes:v1
+{
+  "max_required_documents": 6,
+  "roles": {
+    "ci-repair": {
+      "optional": {
+        "owners": "docs/MODULE_MAP.md"
+      },
+      "required": [
+        "START_HERE.md",
+        "AGENTS.md",
+        "docs/REAL_WORLD_TESTING_PLAYBOOK.md"
+      ]
+    },
+    "coding": {
+      "optional": {
+        "architecture": "docs/ARCHITECTURE_BOOK.md",
+        "pr-work": "docs/REAL_WORLD_TESTING_PLAYBOOK.md"
+      },
+      "required": [
+        "START_HERE.md",
+        "AGENTS.md",
+        "docs/CURRENT_STATUS.md",
+        "docs/NEXT_DECISION.md",
+        "docs/MODULE_MAP.md"
+      ]
+    },
+    "contributor": {
+      "optional": {
+        "implementation": "AGENTS.md"
+      },
+      "required": [
+        "START_HERE.md",
+        "README.md"
+      ]
+    },
+    "operator": {
+      "optional": {},
+      "required": [
+        "START_HERE.md",
+        "docs/CURRENT_STATUS.md",
+        "docs/RUNBOOK.md"
+      ]
+    },
+    "planning": {
+      "optional": {
+        "architecture": "docs/ARCHITECTURE_BOOK.md",
+        "successor": "docs/FUTURE_ROUTE.md"
+      },
+      "required": [
+        "START_HERE.md",
+        "docs/CURRENT_STATUS.md",
+        "docs/NEXT_DECISION.md"
+      ]
+    },
+    "review": {
+      "optional": {
+        "architecture": "docs/ARCHITECTURE_BOOK.md"
+      },
+      "required": [
+        "START_HERE.md",
+        "docs/CURRENT_STATUS.md",
+        "docs/NEXT_DECISION.md",
+        "docs/REAL_WORLD_TESTING_PLAYBOOK.md"
+      ]
+    }
+  },
+  "schema_version": "agent_context_routes.v1"
+}
+-->
+
 ## Role Routes
+
+The machine-readable `agent-context-routes:v1` marker above is the enforced route contract for `scripts/session_context.py` and `scripts/check_agent_handoff.py`; the human table below is its readable projection. When they disagree, the marker wins and the table must be corrected.
 
 | Role | Reading route |
 |---|---|
@@ -127,6 +222,10 @@ This automation is non-authoritative and must preserve these rules:
 
 ## End-of-Work Handoff
 
+Before ending or transferring a coding session, run exactly one unchanged command from the current entry's `checkpoint_write_commands`. Use `wip` after an interrupted implementation slice. Use `stable` only after every `verification_command` in that same entry has actually passed. The command automatically binds exact dirty paths allowed by the accepted packet as owned work and leaves every other dirty path preserve-only; it fails closed when no packet-owned change exists. The stable command proves the checkout is unchanged while the verification commands ran and binds the results to the accepted verification contract; a changed subject, a changed contract, or a caller-asserted result never produces a stable checkpoint. Other roles leave the compact report below and do not invent a coding checkpoint command.
+
+The checkpoint contains repository-relative paths and content digests, never file content, credentials, prompts, transcripts, or absolute/private paths. It is an atomic, mode-0600, non-authoritative projection in Git's private path. It does not replace GitHub Issue/PR claim, lease, CI, review, or terminal receipts. A controlled worker must still persist through those existing owners; a new local conversation uses this checkpoint only to prove whether the exact WIP is safe to resume.
+
 Every implementation or review board should leave a compact report containing:
 
 ```yaml
@@ -166,6 +265,7 @@ Report unavailable evidence explicitly. Do not claim acceptance, CI success, mer
 ## Staleness and Conflict Rules
 
 - Chat summaries and generated capsules expire when `main`, a PR head, CI, review, or active documents change.
+- A local session checkpoint expires when accepted `main`, the packet digest, branch, exact head, dirty-path set, or any bound path digest changes; `session_context.py resume` classifies the replacement action.
 - Branch-local documents do not overwrite accepted-main facts before merge.
 - When documents disagree, stop and reconcile the smallest canonical owner instead of creating another summary document.
 - When code and prose disagree, treat the discrepancy as a defect; do not silently choose the more convenient claim.
@@ -175,4 +275,4 @@ Report unavailable evidence explicitly. Do not claim acceptance, CI success, mer
 
 Prefer complete, accurate, canonical, low-duplication documentation, then make it as short as those qualities permit.
 
-One fact should have one full owner. `CURRENT_STATUS` contains accepted truth and confirmed gaps; `NEXT_DECISION` contains one current executable window; `FUTURE_ROUTE` contains only blocked routing sketches; `MODULE_MAP` contains accepted owners; live PR/CI/review facts stay generated. Other entrypoints link instead of copying contracts. Replace stale status rather than appending history; Git already preserves history. Add a document only when no existing canonical owner can hold the information without mixing responsibilities.
+One fact should have one full owner. `CURRENT_STATUS` contains accepted truth and confirmed gaps; `NEXT_DECISION` contains one current executable window; `FUTURE_ROUTE` contains only blocked routing sketches; `MODULE_MAP` contains accepted owners; live PR/CI/review facts stay generated. Other entrypoints link instead of copying contracts. Replace stale status rather than appending history; Git already preserves history. `NEXT_DECISION.md` is capped at 64 KiB and 600 lines and may not contain changelog, progress-log, session-note, handoff-history, work-log, or status-history sections; `scripts/check_agent_handoff.py` enforces this replace-only window. Add a document only when no existing canonical owner can hold the information without mixing responsibilities.

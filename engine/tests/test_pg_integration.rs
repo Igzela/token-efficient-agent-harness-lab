@@ -107,6 +107,24 @@ fn utc_now_string() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+/// Calendar-safe test date: the operator-decision freshness contract bound is
+/// thirty days, so fixed historical literals rot whenever that calendar gap
+/// passes. Test evidence timestamps stay a few days in the past instead.
+#[cfg(feature = "pg-tests")]
+fn recent_day(days_ago: i64) -> String {
+    (chrono::Utc::now() - chrono::Duration::days(days_ago))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+/// A fixed clock that never crosses the freshness bound: compute the stamp
+/// once so every store call returns the identical value during one test.
+#[cfg(feature = "pg-tests")]
+fn fixed_recent_clock(days_ago: i64, wall_time: &str) -> impl Fn() -> String + Clone {
+    let stamp = format!("{}T{wall_time}", recent_day(days_ago));
+    move || stamp.clone()
+}
+
 #[cfg(feature = "pg-tests")]
 struct PgCountingEmbeddingTransport {
     posts: AtomicUsize,
@@ -3600,7 +3618,7 @@ fn pg_budget_forecast(tag: &str) -> engine::budget_manager::BudgetForecastEviden
             evidence_type: "provider_audit_event".to_string(),
             evidence_id: format!("pg-budget-{tag}-{index}"),
             content_sha256: Some(format!("{:064x}", index)),
-            occurred_at: format!("2026-07-10T00:{:02}:00Z", 10 + index),
+            occurred_at: format!("{}T00:{:02}:00Z", recent_day(2), 10 + index),
             run_id: None,
             workspace_id: None,
             provider_id: Some("provider-a".to_string()),
@@ -3618,9 +3636,9 @@ fn pg_budget_forecast(tag: &str) -> engine::budget_manager::BudgetForecastEviden
                 provider_id: Some("provider-a".to_string()),
                 ..Default::default()
             },
-            start_inclusive: "2026-07-10T00:00:00Z".to_string(),
-            end_exclusive: "2026-07-10T01:00:00Z".to_string(),
-            generated_at: "2026-07-10T01:01:00Z".to_string(),
+            start_inclusive: format!("{}T00:00:00Z", recent_day(2)),
+            end_exclusive: format!("{}T01:00:00Z", recent_day(2)),
+            generated_at: format!("{}T01:01:00Z", recent_day(2)),
             horizon_seconds: 60,
             remaining_tokens: Some(100),
             remaining_cost_usd: Some(1.0),
@@ -3645,9 +3663,9 @@ fn pg_budget_anomaly(run_id: &str, tag: &str) -> BudgetAnomalyFinding {
         },
         outcome: BudgetEvidenceOutcome::Supported,
         window: BudgetEvidenceWindow {
-            start_inclusive: "2026-07-11T00:00:00Z".to_string(),
-            end_exclusive: "2026-07-11T00:10:00Z".to_string(),
-            generated_at: "2026-07-11T00:10:10Z".to_string(),
+            start_inclusive: format!("{}T00:00:00Z", recent_day(2)),
+            end_exclusive: format!("{}T00:10:00Z", recent_day(2)),
+            generated_at: format!("{}T00:10:10Z", recent_day(2)),
             freshness_seconds: 10,
             sample_count: 3,
         },
@@ -3924,8 +3942,8 @@ fn pg_managed_acceptance_transition_restart_uses_hash_chain_when_timestamps_tie(
     let Ok(database_url) = std::env::var("ACP_TEST_DATABASE_URL") else {
         return;
     };
-    let fixed_clock = || "2026-07-26T00:00:00Z".to_string();
-    let store = LocalProductStore::new_postgres(&database_url, fixed_clock).unwrap();
+    let fixed_clock = fixed_recent_clock(2, "00:00:00Z");
+    let store = LocalProductStore::new_postgres(&database_url, fixed_clock.clone()).unwrap();
     let tag = "same-second-restart-00";
     let (principal, risk, request) = pg_seed_managed_acceptance(&store, tag, "same-second-restart");
     store
@@ -3952,7 +3970,7 @@ fn pg_managed_acceptance_transition_restart_uses_hash_chain_when_timestamps_tie(
     );
     drop(store);
 
-    let restarted = LocalProductStore::new_postgres(&database_url, fixed_clock).unwrap();
+    let restarted = LocalProductStore::new_postgres(&database_url, fixed_clock.clone()).unwrap();
     let after = restarted
         .list_managed_acceptance_decision_transition_receipts(&decision_id)
         .unwrap();
@@ -4064,7 +4082,7 @@ fn pg_active_spend_logical_identity_constraints_reject_null_and_duplicate_writes
     let duplicate_body_sha256 = "d3".repeat(32);
     let mut duplicate_body = first["body_json"].clone();
     duplicate_body["spend_authorization_id"] = json!(duplicate_id);
-    duplicate_body["created_at"] = json!("2026-07-25T12:00:01Z");
+    duplicate_body["created_at"] = json!(format!("{}T12:00:01Z", recent_day(2)));
     let duplicate_body = duplicate_body.to_string();
     let duplicate_error = client
         .execute(
@@ -5444,8 +5462,8 @@ fn pg_stale_lease_recovery_rolls_back_when_audit_fails() {
             return;
         }
     };
-    let store =
-        LocalProductStore::new_postgres(&url, || "2026-07-14T00:00:02Z".to_string()).unwrap();
+    let stale_lease_day = recent_day(3);
+    let store = LocalProductStore::new_postgres(&url, fixed_recent_clock(3, "00:00:02Z")).unwrap();
     let tag = uuid_tag();
     let node_id = format!("audit-rollback-node-{tag}");
     let plan = store
@@ -5495,7 +5513,7 @@ fn pg_stale_lease_recovery_rolls_back_when_audit_fails() {
                 "UPDATE workflow_run_nodes
                  SET status = 'running', leased_at = $1
                  WHERE run_id = $2 AND node_id = $3 AND status = 'pending'",
-                &[&"2026-07-14T00:00:00Z", &run_id, &node_id],
+                &[&format!("{stale_lease_day}T00:00:00Z"), &run_id, &node_id,],
             )
             .unwrap(),
         1
@@ -5539,7 +5557,7 @@ fn pg_stale_lease_recovery_rolls_back_when_audit_fails() {
     assert_eq!(row.get::<_, String>(0), "running");
     assert_eq!(
         row.get::<_, Option<String>>(1).as_deref(),
-        Some("2026-07-14T00:00:00Z")
+        Some(format!("{stale_lease_day}T00:00:00Z")).as_deref()
     );
     assert_eq!(
         store
@@ -6509,8 +6527,7 @@ fn pg_budget_auto_pause_and_recovery_are_atomic_and_idempotent() {
         eprintln!("ACP_TEST_DATABASE_URL not set; skipping pg-tests");
         return;
     };
-    let store =
-        LocalProductStore::new_postgres(&url, || "2026-07-11T00:10:20Z".to_string()).unwrap();
+    let store = LocalProductStore::new_postgres(&url, fixed_recent_clock(2, "00:10:20Z")).unwrap();
     let tag = uuid_tag();
     let plan = store.create_workflow_plan(&format!("pause {tag}"), "pg-test", "pg-test", |ids, _| Ok(json!({"status":"planned_read_only","graph":{"nodes":[],"edges":[],"workflow_id":ids.workflow_id,"dispatch_id":ids.dispatch_id},"analysis":{},"boundaries":{"execution_authority":"disabled"}}))).unwrap();
     let run = store
@@ -8864,7 +8881,7 @@ fn pg_rwe_v2_production_issue_admit_one_use_parity() {
             }
         },
         "audit_reference": {"audit_id": 900_001i64, "action": "product_task.terminal_evidence_committed"},
-        "created_at": "2026-07-25T12:00:00Z",
+        "created_at": format!("{}T12:00:00Z", recent_day(2)),
         "created_by": "test",
         "content_sha256": Value::Null,
     });
@@ -9068,7 +9085,7 @@ fn pg_rwe_live_baseline_coordinator_four_cell_injected_parity() {
             }
         },
         "audit_reference": {"audit_id": 910_001i64, "action": "product_task.terminal_evidence_committed"},
-        "created_at": "2026-07-25T12:00:00Z",
+        "created_at": format!("{}T12:00:00Z", recent_day(2)),
         "created_by": "test",
         "content_sha256": Value::Null,
     });
@@ -9215,7 +9232,7 @@ fn pg_rwe_concurrent_cell_dispatch_fence_is_single_effect() {
             }
         },
         "audit_reference": {"audit_id": 910_101i64, "action": "product_task.terminal_evidence_committed"},
-        "created_at": "2026-07-25T12:00:00Z",
+        "created_at": format!("{}T12:00:00Z", recent_day(2)),
         "created_by": "test",
         "content_sha256": Value::Null,
     });

@@ -135,6 +135,36 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
             prompt_builder.build_implementation_prompt(2)
         self.assertEqual(gen.call_count, 2)
 
+    def test_plan_prompt_carries_every_claim_bound_contract_field(self) -> None:
+        prompt = prompt_builder.build_claim_bound_plan_implementation_prompt(
+            "PE7-RWE-PREFLIGHT-1",
+            "Prepare the provider-free preflight.",
+            ["engine/src/rwe/**", "docs/NEXT_DECISION.md"],
+            "a" * 40,
+            "agent/packet-pe7-rwe-preflight-1",
+            prerequisites=["PE7-RWE-REFREEZE-1"],
+            forbidden_changes=["No provider request", "No schema change"],
+            verification=["cargo test -p engine rwe", "git diff --check"],
+            rollback=["Revert the packet", "Preserve accepted evidence"],
+            repo_root=Path(__file__).resolve().parents[1],
+        )
+
+        self.assertIn(
+            '- prerequisites: `["PE7-RWE-REFREEZE-1"]`', prompt
+        )
+        self.assertIn(
+            '- forbidden_changes: `["No provider request","No schema change"]`',
+            prompt,
+        )
+        self.assertIn(
+            '- verification: `["cargo test -p engine rwe","git diff --check"]`',
+            prompt,
+        )
+        self.assertIn(
+            '- rollback: `["Revert the packet","Preserve accepted evidence"]`',
+            prompt,
+        )
+
     def test_copied_prompt_builder_uses_invoking_working_tree(self) -> None:
         """A copied control script must not derive the repository from __file__."""
         with tempfile.TemporaryDirectory() as temp_dir:

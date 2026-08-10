@@ -15,7 +15,7 @@ correctness, safety, evidence, recovery, and rollback
 → low duplication and low context cost
 ```
 
-Conciseness must preserve quality. At session start, establish the leading valid frontier: remote accepted `main`, the latest exact head of the earliest eligible packet’s owned PR, and any blocked future frontiers. Never continue from a stale local branch, stale review head, or blocked downstream PR. Use `uv run --no-project python scripts/project_context.py` as an on-demand generated view, then verify its claims against Git/GitHub and canonical documents. Repository-controlled implementation, CI-repair, and review prompts regenerate and inject a fresh validated capsule at session start; arbitrary later sessions still require explicit regeneration.
+Conciseness must preserve quality. At session start, establish the leading valid frontier: remote accepted `main`, the latest exact head of the earliest eligible packet’s owned PR, and any blocked future frontiers. Never continue from a stale local branch, stale review head, or blocked downstream PR. Enter through the `START_HERE.md` one-command bootstrap (`scripts/session_context.py enter --role <role>` for the digest-bound route, or `route` for non-coding roles), and use `uv run --no-project python scripts/project_context.py` as an on-demand frontier-evidence view only when the entry asks for it; verify its claims against Git/GitHub and canonical documents. Repository-controlled implementation, CI-repair, and review prompts regenerate and inject a fresh validated capsule at session start; arbitrary later sessions still require explicit regeneration.
 
 ## Current Guardrails
 
