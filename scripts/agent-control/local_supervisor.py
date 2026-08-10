@@ -113,7 +113,7 @@ class LocalSupervisor:
                     and details.get("subject_kind") == "plan-packet"
                     and details.get("subject_id") == plan_id
                     and details.get("attempt_id") == attempt
-                    and state.get("status") in {"claimed", "dispatched", "failed_unknown_output"}
+                    and state.get("status") in {"claimed", "dispatched", "failed_unknown_output", "closed_out"}
                 ):
                     matches.append(state)
             if len(matches) != 1:
@@ -138,6 +138,10 @@ class LocalSupervisor:
             if claim.get("status") == "failed_unknown_output":
                 return {**subject, "status": "failed_unknown_output", "details": {
                     "reason": "timeout_reconciled",
+                }}
+            if claim.get("status") == "closed_out":
+                return {**subject, "status": "closed_out", "details": {
+                    "reason": "closed_out",
                 }}
             try:
                 github.dispatch_controller(
@@ -256,7 +260,7 @@ class LocalSupervisor:
         except json.JSONDecodeError:
             receipt = None
         valid_statuses = {
-            "handed_off", "failed", "failed_unknown_output", "outcome_unknown",
+            "handed_off", "failed", "failed_unknown_output", "closed_out", "outcome_unknown",
             "rejected", "control_stopped", "stale_checkout", "claim_unavailable",
             "claim_rejected", "in_flight", "terminal", "identity_rejected", "unavailable",
         }

@@ -1125,6 +1125,45 @@ class TestLocalSupervisor(unittest.TestCase):
             },
         )
 
+    def test_plan_closed_out_claim_is_reported_terminal_not_blocked(self):
+        controller = mock.Mock()
+        controller.github.plan_ledger_issue.return_value = 99
+        dispatch_id = f"plan-run:{PLAN_ID}:{MAIN_SHA}:{ATTEMPT}"
+        claim = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": 99,
+            "dispatch_id": dispatch_id,
+            "action": "plan-run",
+            "status": "closed_out",
+            "details": {
+                "ledger_issue_number": 99,
+                "subject_kind": "plan-packet",
+                "subject_id": PLAN_ID,
+                "attempt_id": ATTEMPT,
+                "source_main_sha": MAIN_SHA,
+                "claim_nonce": NONCE,
+                "allowed_paths": ["src/"],
+                "canonical_branch": f"agent/packet-{PLAN_ID.lower()}",
+                "terminal_packet_state": "closed_out",
+                "closeout_reference": "PR #42",
+            },
+        }
+        comments = [{
+            "author": {"login": "github-actions[bot]"},
+            "body": json.dumps(claim),
+        }]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            result = local_supervisor.LocalSupervisor(
+                controller,
+                repository="Igzela/example",
+                repo_path=Path("/tmp"),
+                sleeper=lambda _: None,
+            )._reconcile_unknown(None, ATTEMPT, PLAN_ID)
+        self.assertEqual(result["status"], "closed_out")
+        self.assertEqual(result["subject_id"], PLAN_ID)
+        controller.github.dispatch_controller.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
