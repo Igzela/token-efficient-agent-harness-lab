@@ -278,13 +278,6 @@ CLASS_DEFAULT_VERIFICATION = {
     "EFFECT": "external_effect_evidence",
     "CLOSEOUT": "evidence_review",
 }
-PROFILE_ROW_INDEX = {
-    "packet_id": 0,
-    "class": 1,
-    "worker_tier": 2,
-    "risk_class": 3,
-    "verification_family": 4,
-}
 
 
 def read(relative_path: str) -> str:
