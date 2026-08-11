@@ -51,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_subject = run_once.add_mutually_exclusive_group(required=True)
     run_subject.add_argument("--issue", type=int)
     run_subject.add_argument("--plan-id")
+    run_subject.add_argument("--route-drive", metavar="PACKET_ID", help="drive the closeout/promotion PR lifecycle for one closed packet")
     run_once.add_argument("--attempt-id", required=True)
     batch = subparsers.add_parser(
         "run-batch", help="poll and launch up to the repository K local workers"
@@ -102,6 +103,8 @@ def main(
             runner = factory(repository=args.repo, repo_path=args.repo_path)
             if args.plan_id is not None:
                 result = runner.run_plan_once(args.plan_id, args.attempt_id)
+            elif args.route_drive:
+                result = runner.run_route_once(args.route_drive, args.attempt_id)
             else:
                 result = runner.run_once(args.issue, args.attempt_id)
             wire = result.to_wire() if hasattr(result, "to_wire") else result

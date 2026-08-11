@@ -42,6 +42,8 @@ class GitHubReader(Protocol):
     def has_open_issue_pr(self, issue_number: int) -> bool: ...
     def active_issue_scopes(self) -> dict[int, list[str]]: ...
     def accepted_plan_document(self, source_main_sha: str) -> str: ...
+    def accepted_route_document(self, source_main_sha: str) -> str: ...
+    def accepted_status_document(self, source_main_sha: str) -> str: ...
     def plan_ledger_issue(self) -> int: ...
 
     def issue_snapshot(self, issue_number: int) -> dict[str, str]: ...
@@ -557,18 +559,37 @@ class GitHubAdapter:
     def accepted_plan_document(self, source_main_sha: str) -> str:
         """Read the canonical plan document at the already-verified SHA."""
 
+        return self._accepted_document(
+            "docs/NEXT_DECISION.md", source_main_sha, plan_lane.MAX_DOCUMENT_BYTES
+        )
+
+    def accepted_route_document(self, source_main_sha: str) -> str:
+        """Read the canonical route index at the already-verified SHA."""
+
+        return self._accepted_document(
+            "docs/FUTURE_ROUTE.md", source_main_sha, plan_lane.MAX_DOCUMENT_BYTES
+        )
+
+    def accepted_status_document(self, source_main_sha: str) -> str:
+        """Read the canonical accepted-status document at the verified SHA."""
+
+        return self._accepted_document(
+            "docs/CURRENT_STATUS.md", source_main_sha, plan_lane.MAX_DOCUMENT_BYTES
+        )
+
+    def _accepted_document(self, path: str, source_main_sha: str, max_bytes: int) -> str:
         import base64
 
         if not HEX40.fullmatch(source_main_sha):
-            raise LoopUnavailable("accepted plan SHA is invalid")
+            raise LoopUnavailable("accepted SHA is invalid")
         value = self._gh_json(
-            "api", f"repos/{self.repository}/contents/docs/NEXT_DECISION.md?ref={source_main_sha}"
+            "api", f"repos/{self.repository}/contents/{path}?ref={source_main_sha}"
         )
         if not isinstance(value, dict) or value.get("encoding") != "base64":
-            raise LoopUnavailable("canonical plan document is unavailable")
+            raise LoopUnavailable(f"canonical document {path} is unavailable")
         content = value.get("content")
         if not isinstance(content, str):
-            raise LoopUnavailable("canonical plan document is malformed")
+            raise LoopUnavailable(f"canonical document {path} is malformed")
         try:
             # GitHub content API returns base64 with newlines; strip whitespace
             # before decode so a valid UTF-8 document is not fail-closed as
@@ -576,9 +597,9 @@ class GitHubAdapter:
             cleaned = "".join(content.split())
             decoded = base64.b64decode(cleaned, validate=True).decode("utf-8")
         except (ValueError, UnicodeDecodeError) as exc:
-            raise LoopUnavailable("canonical plan document is not valid UTF-8") from exc
-        if len(decoded.encode("utf-8")) > plan_lane.MAX_DOCUMENT_BYTES:
-            raise LoopUnavailable("canonical plan document exceeds the bounded contract")
+            raise LoopUnavailable(f"canonical document {path} is not valid UTF-8") from exc
+        if len(decoded.encode("utf-8")) > max_bytes:
+            raise LoopUnavailable(f"canonical document {path} exceeds the bounded contract")
         return decoded
 
     def plan_ledger_issue(self) -> int:

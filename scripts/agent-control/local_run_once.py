@@ -13,12 +13,14 @@ import uuid
 from typing import Any, Callable
 
 import artifact_contract
+import dispatcher
 import local_loop
 import local_verification
 import plan_lane
 import plan_lifecycle
 import pr_binding
 import prompt_builder
+import route_driver
 import state_manager
 import worktree_manager
 
@@ -1232,6 +1234,242 @@ class LocalRunOnce:
                     )
                 except local_loop.LoopUnavailable:
                     pass
+
+    def run_route_once(self, packet_id: str, attempt_id: str) -> local_loop.LocalRunOnceResult:
+        """Drive the canonical closeout/promotion PR lifecycle for one closed packet.
+
+        After an accepted plan closeout, the driver compiles exactly one
+        eligible successor from the checked ``docs/FUTURE_ROUTE.md`` inventory
+        on the accepted main (or pauses with a bounded escalation receipt when
+        the routing is genuinely blocked), writes the compiled replace-only
+        routing diff (NEXT_DECISION, FUTURE_ROUTE, CURRENT_STATUS) into a
+        docs-only branch, and opens exactly one Draft closeout/promotion PR
+        bound to the successor.  On resume it recompiles deterministically to
+        the same head, verifies the exact-head PR, waits for the eligible
+        merge, dispatches the existing ``promote-plan`` controller receipt
+        owner, and reads the promotion receipt back.  The driver never
+        executes the successor, never merges, never re-opens a duplicate PR,
+        and treats any timeout or missing receipt as a bounded pause.
+        """
+
+        attempt = _canonical_attempt_id(attempt_id)
+        if not isinstance(packet_id, str) or not plan_lane.PACKET_ID.fullmatch(packet_id):
+            return self._plan_result("rejected", str(packet_id), str(attempt_id), reason="invalid_plan_id")
+        if attempt is None:
+            return self._plan_result("rejected", packet_id, str(attempt_id), reason="invalid_attempt_id")
+        try:
+            control = self.github.read_control_state()
+            if control.get("emergency_stop") or not control.get("orchestrator_enabled"):
+                return self._plan_result("control_stopped", packet_id, attempt)
+            metadata = self.github.repository_metadata()
+            if str(metadata.get("name_with_owner", "")).casefold() != self.repository.casefold():
+                return self._plan_result("identity_rejected", packet_id, attempt, reason="repository_identity_mismatch")
+            default_branch = metadata.get("default_branch")
+            if not isinstance(default_branch, str) or not local_loop.BRANCH.fullmatch(default_branch):
+                return self._plan_result("unavailable", packet_id, attempt, reason="default_branch_unavailable")
+            accepted_main = self.github.accepted_main_sha(default_branch)
+            local_main = self.git.origin_main_sha(self.repo_path, default_branch)
+            if not local_loop.HEX40.fullmatch(accepted_main) or accepted_main != local_main:
+                return self._plan_result(
+                    "stale_checkout", packet_id, attempt,
+                    accepted_main_sha=accepted_main, local_origin_main_sha=local_main,
+                )
+        except (local_loop.LoopUnavailable, AttributeError):
+            return self._plan_result("unavailable", packet_id, attempt, reason="control_state_unavailable")
+        try:
+            ledger_issue = self.github.plan_ledger_issue()
+        except local_loop.LoopUnavailable:
+            return self._plan_result("unavailable", packet_id, attempt, reason="plan_ledger_unavailable")
+        claim = plan_lifecycle._exact_plan_claim(ledger_issue, packet_id, attempt, self.repository)
+        if claim is None:
+            return self._plan_result("rejected", packet_id, attempt, reason="plan_claim_not_found")
+        if claim.get("status") != "closed_out":
+            return self._plan_result("rejected", packet_id, attempt, reason="plan_claim_not_closed_out")
+        details = claim.get("details")
+        if not isinstance(details, dict) or not isinstance(details.get("closeout_reference"), str):
+            closeout_reference = f"merge on accepted main `{accepted_main}`"
+        else:
+            closeout_reference = details["closeout_reference"].strip()
+        try:
+            next_document = self.github.accepted_plan_document(accepted_main)
+            future_document = self.github.accepted_route_document(accepted_main)
+            status_document = self.github.accepted_status_document(accepted_main)
+        except local_loop.LoopUnavailable:
+            return self._plan_result("unavailable", packet_id, attempt, reason="routing_documents_unavailable")
+        try:
+            _successor_id, _digest = plan_lane.successor_binding(next_document, packet_id, accepted_main)
+            return self._plan_result(
+                "successor_current", packet_id, attempt,
+                accepted_main_sha=accepted_main, successor_id=_successor_id,
+            )
+        except plan_lane.PlanLaneError as exc:
+            if exc.reason not in {"plan_packet_absent", "successor_still_current", "multiple_plan_packets"}:
+                return self._plan_result("rejected", packet_id, attempt, reason=f"routing_invalid:{exc.reason}")
+        try:
+            compiled = route_driver.compile_successor(
+                future_document, next_document, status_document,
+                packet_id, closeout_reference, accepted_main,
+            )
+        except route_driver.RouteDriverError as exc:
+            return self._dispatch_bounded_pause(packet_id, attempt, exc.reason)
+        return self._drive_promotion_pr(packet_id, attempt, accepted_main, ledger_issue, compiled, details)
+
+    def _dispatch_bounded_pause(
+        self, packet_id: str, attempt: str, reason: str
+    ) -> local_loop.LocalRunOnceResult:
+        try:
+            self.github.dispatch_controller(
+                "promote-plan", {"packet_id": packet_id, "attempt_id": attempt}
+            )
+        except local_loop.LoopUnavailable:
+            return self._plan_result("bounded_pause", packet_id, attempt, reason=reason)
+        return self._plan_result("bounded_pause", packet_id, attempt, reason=reason)
+
+    def _drive_promotion_pr(
+        self,
+        packet_id: str,
+        attempt: str,
+        accepted_main: str,
+        ledger_issue: int,
+        compiled: route_driver.CompiledSuccessor,
+        claim_details: dict[str, Any],
+    ) -> local_loop.LocalRunOnceResult:
+        successor_id = compiled.packet_id
+        branch = compiled.branch
+        try:
+            existing = pr_binding.find_plan_pr(
+                successor_id, branch, compiled.spec_digest, accepted_main,
+                compiled.spec_digest, self.repository,
+            )
+        except pr_binding.PRBindingError:
+            existing = None
+        if existing is not None:
+            pr_number = existing.get("number")
+            if type(pr_number) is not int:
+                return self._plan_result("promotion_pr", packet_id, attempt, reason="pr_number_unavailable")
+            try:
+                merge_commit_sha = dispatcher._authoritative_plan_merge(
+                    pr_number, existing.get("head_sha", ""), self.repository
+                )
+            except (local_loop.LoopUnavailable, AttributeError):
+                merge_commit_sha = None
+            if merge_commit_sha:
+                return self._settle_promotion(
+                    packet_id, attempt, ledger_issue, successor_id,
+                    pr_number, existing.get("head_sha", ""), merge_commit_sha,
+                )
+            return self._plan_result(
+                "promotion_pr", packet_id, attempt,
+                pr_number=pr_number, head_sha=existing.get("head_sha", ""),
+                branch=branch, successor_id=successor_id,
+            )
+        worktree_path: Path | None = None
+        try:
+            created = worktree_manager.create_plan_worktree(
+                successor_id, branch, str(self.repo_path), accepted_main
+            )
+            if not created:
+                return self._plan_result("failed", packet_id, attempt, reason="worktree_failed")
+            worktree_path = Path(created[0])
+            base_sha, expected_remote_sha = created[2], created[3]
+            for relative, content in (
+                ("docs/NEXT_DECISION.md", compiled.next_document),
+                ("docs/FUTURE_ROUTE.md", compiled.future_document),
+                ("docs/CURRENT_STATUS.md", compiled.status_document),
+            ):
+                target = worktree_path / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+            checks = [
+                ["python3", "scripts/check_agent_handoff.py"],
+                ["git", "diff", "--check"],
+            ]
+            for command in checks:
+                exit_code, _stdout, _stderr = _bounded_process(
+                    command, cwd=str(worktree_path), timeout_seconds=self.command_timeout_seconds
+                )
+                if exit_code != 0:
+                    return self._plan_result("failed", packet_id, attempt, reason="promotion_docs_checks_failed")
+            self._git_checked(worktree_path, "diff", "--check")
+            self._git_checked(
+                worktree_path, "commit", "-am",
+                f"docs: compile and promote {successor_id} after closeout of {packet_id}",
+            )
+            head_sha = self._git_checked(worktree_path, "rev-parse", "HEAD")
+            if not local_loop.HEX40.fullmatch(head_sha):
+                return self._plan_result("failed", packet_id, attempt, reason="commit_sha_invalid")
+            push_args = ["push"]
+            if expected_remote_sha:
+                push_args.append(f"--force-with-lease=refs/heads/{branch}:{expected_remote_sha}")
+            push_args.extend(["origin", f"HEAD:refs/heads/{branch}"])
+            push_code, _stdout, _stderr = _bounded_process(
+                ["git", *push_args], cwd=str(worktree_path), timeout_seconds=120
+            )
+            remote = self._git_checked(self.repo_path, "ls-remote", "origin", f"refs/heads/{branch}")
+            parts = remote.split()
+            remote_head = parts[0] if parts and len(parts) == 2 else None
+            if remote_head == head_sha:
+                pushed = True
+            else:
+                return self._plan_result("failed", packet_id, attempt, reason="push_not_applied")
+            if push_code != 0 and not pushed:
+                return self._plan_result("failed", packet_id, attempt, reason="push_not_applied")
+            marker = json.dumps({
+                "subject_kind": "plan-packet", "subject_id": successor_id,
+                "source_main_sha": accepted_main,
+                "task_spec_sha256": compiled.spec_digest,
+                "branch": branch,
+            }, sort_keys=True)
+            pr = pr_binding.create_or_update_plan_pr(
+                successor_id, branch, head_sha, accepted_main,
+                compiled.spec_digest, compiled.capsule["goal"][:200],
+                f"<!-- agent-orchestrator-binding: {marker} -->\n\n"
+                f"Compiled promotion of plan packet `{successor_id}` after "
+                f"closeout of `{packet_id}`.",
+                self.repository,
+            )
+            pr_number = pr.get("number")
+            if type(pr_number) is not int:
+                return self._plan_result("failed", packet_id, attempt, reason="pr_number_unavailable")
+            pr_binding.verify_post_push_plan_binding(
+                successor_id, pr_number, branch, head_sha,
+                accepted_main, compiled.spec_digest, self.repository,
+            )
+            return self._plan_result(
+                "promotion_pr", packet_id, attempt,
+                pr_number=pr_number, head_sha=head_sha, branch=branch,
+                successor_id=successor_id, accepted_main_sha=accepted_main,
+            )
+        except (local_loop.LoopUnavailable, pr_binding.PRBindingError, OSError, ValueError) as exc:
+            return self._plan_result("failed", packet_id, attempt, reason=str(exc)[:200])
+        finally:
+            if worktree_path is not None:
+                worktree_manager.remove_plan_worktree(successor_id, str(self.repo_path), branch)
+
+    def _settle_promotion(
+        self,
+        packet_id: str,
+        attempt: str,
+        ledger_issue: int,
+        successor_id: str,
+        pr_number: int,
+        head_sha: str,
+        merge_commit_sha: str,
+    ) -> local_loop.LocalRunOnceResult:
+        try:
+            self.github.dispatch_controller(
+                "promote-plan", {"packet_id": packet_id, "attempt_id": attempt}
+            )
+        except local_loop.LoopUnavailable:
+            return self._plan_result("promotion_pending", packet_id, attempt, reason="promote_dispatch_unavailable")
+        promotion = self._read_plan_promotion(ledger_issue, packet_id, attempt)
+        return self._plan_result(
+            "promoted" if promotion is not None else "promotion_pending",
+            packet_id, attempt,
+            successor_id=successor_id, pr_number=pr_number, head_sha=head_sha,
+            merge_commit_sha=merge_commit_sha,
+            promotion=promotion or {},
+        )
 
     def _recover_existing_claim(
         self,

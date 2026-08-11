@@ -15,6 +15,7 @@ import local_loop
 import plan_lane
 import plan_lifecycle
 import pr_binding
+import route_driver
 import state_manager as sm
 
 
@@ -1047,8 +1048,13 @@ def promote_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
     current accepted main and records either the bounded promotion receipt
     (successor packet id + capsule digest) or a bounded escalation pause
     receipt when the routing does not yet name exactly one eligible
-    successor.  The successor is never executed; every write is idempotent,
-    conflicts fail closed, and no model self-report advances routing.
+    successor.  When the successor is absent or still current, the promotion
+    compiler derives exactly one eligible successor from the checked
+    ``docs/FUTURE_ROUTE.md`` inventory and the promotion receipt carries the
+    compiled successor binding; escalation remains only for genuinely
+    blocked routing.  The successor is never executed; every write is
+    idempotent, conflicts fail closed, and no model self-report advances
+    routing.
     """
 
     attempt = _normalized_attempt_id(attempt_id)
@@ -1083,16 +1089,23 @@ def promote_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
     if routing is None:
         return {"promoted": False, "reason": "routing_unavailable"}
     accepted_main, document = routing
+    compiled: dict[str, object] | None = None
     try:
         successor_id, capsule_digest = plan_lane.successor_binding(
             document, packet_id, accepted_main
         )
     except plan_lane.PlanLaneError as exc:
-        if exc.reason in {"plan_packet_absent", "successor_still_current", "multiple_plan_packets"}:
-            return _record_plan_escalation(
-                ledger_issue, packet_id, attempt, exc.reason, repo
-            )
-        return {"promoted": False, "reason": f"routing_invalid:{exc.reason}"}
+        if exc.reason not in {"plan_packet_absent", "successor_still_current", "multiple_plan_packets"}:
+            return {"promoted": False, "reason": f"routing_invalid:{exc.reason}"}
+        compiled = _compile_promotion(
+            repo, packet_id, attempt, accepted_main, details
+        )
+        if compiled is None:
+            return {"promoted": False, "reason": "route_compile_unavailable"}
+        if "escalated" in compiled:
+            return compiled
+        successor_id = compiled["successor_id"]
+        capsule_digest = compiled["capsule_digest"]
     receipt_id = f"plan-promote:{packet_id}:{attempt}"
     receipt_details = {
         "subject_kind": "plan-packet",
@@ -1103,6 +1116,8 @@ def promote_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
         "successor_id": successor_id,
         "capsule_digest": capsule_digest,
     }
+    if compiled is not None:
+        receipt_details["compiled"] = True
     try:
         previous = sm.read_dispatch_state(ledger_issue, receipt_id, repo)
     except sm.StateUnavailableError:
@@ -1144,6 +1159,64 @@ def _record_plan_escalation(
     ):
         return {"promoted": False, "reason": "escalation_receipt_write_failed"}
     return {"promoted": False, "escalated": True, **receipt_details}
+
+
+def _compile_promotion(
+    repo: str,
+    packet_id: str,
+    attempt: str,
+    accepted_main: str,
+    claim_details: dict[str, object],
+) -> dict[str, object] | None:
+    """Compile the eligible successor when the live routing names none.
+
+    Reads the checked ``docs/FUTURE_ROUTE.md`` inventory on the accepted main
+    and compiles exactly one eligible successor's refreshed twelve-field
+    contract and capsule.  A provable compile returns the successor binding
+    facts for the promotion receipt; a genuine block (no eligible successor,
+    manifest mismatch, unbounded compile, or unreadable route index) records
+    a bounded escalation pause receipt instead.  ``None`` is returned only
+    when even the escalation receipt cannot be recorded.
+    """
+
+    try:
+        ledger = control_state.read_plan_ledger(repo)
+    except control_state.ControlStateError:
+        return None
+    ledger_issue = ledger.get("number")
+    if type(ledger_issue) is not int or ledger_issue <= 0:
+        return None
+
+    def escalate(reason: str) -> dict[str, object]:
+        return _record_plan_escalation(ledger_issue, packet_id, attempt, reason, repo)
+
+    try:
+        adapter = local_loop.GitHubAdapter(repo)
+        future_document = adapter.accepted_route_document(accepted_main)
+        next_document = adapter.accepted_plan_document(accepted_main)
+        status_document = adapter.accepted_status_document(accepted_main)
+    except local_loop.LoopUnavailable:
+        return escalate("route_source_unavailable")
+    closeout_reference = claim_details.get("closeout_reference")
+    if not isinstance(closeout_reference, str) or not closeout_reference.strip():
+        closeout_reference = f"merge on accepted main `{accepted_main}`"
+    try:
+        compiled = route_driver.compile_successor(
+            future_document,
+            next_document,
+            status_document,
+            packet_id,
+            closeout_reference.strip(),
+            accepted_main,
+        )
+    except route_driver.RouteDriverError as exc:
+        return escalate(exc.reason)
+    return {
+        "successor_id": compiled.packet_id,
+        "capsule_digest": compiled.spec_digest,
+        "routing_main_sha": accepted_main,
+        "compiled": True,
+    }
 
 
 def _terminal_plan(

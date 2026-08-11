@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 import unittest
 from unittest import mock
@@ -83,6 +84,11 @@ def routing_document(closed=CLOSED, successor=SUCCESSOR, closed_historical=True)
             "## Completed (PE7-LIFECYCLE-CONTROLLER-1)\n\n"
             "**Historical state:** `COMPLETE`\n"
         )
+    else:
+        blocks.append(
+            "## Completed (PE7-PLAN-LANE-ACTIVATION-1)\n\n"
+            "**Historical state:** `COMPLETE`\n"
+        )
     blocks.append(
         f"## Packet {successor}\n\n**State:** `READY_FOR_EXECUTION`\n\n"
         f"<!-- weak-agent-dispatch:v1 {json.dumps(packet_payload(successor), sort_keys=True)} -->\n"
@@ -92,6 +98,117 @@ def routing_document(closed=CLOSED, successor=SUCCESSOR, closed_historical=True)
         f"1. `{successor}`",
         *blocks,
     ])
+
+
+def _inventory_payload(future_text):
+    import hashlib as _hashlib
+    import route_driver
+
+    ordered = []
+    graph = []
+    rows = []
+    headings = list(plan_lane.PACKET_HEADING.finditer(future_text))
+    for index, match in enumerate(headings):
+        packet_id = match.group("packet")
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(future_text)
+        block = future_text[match.start() : end]
+        ordered.append(packet_id)
+        prerequisite = re.search(r"^\*\*Prerequisite:\*\*\s*(?P<value>.+)$", block, re.MULTILINE)
+        prerequisites = (
+            re.findall(plan_lane.PACKET_TOKEN, prerequisite.group("value"))
+            if prerequisite
+            else []
+        )
+        graph.append({
+            "packet_id": packet_id,
+            "prerequisites": [item for item in dict.fromkeys(prerequisites) if item != packet_id],
+        })
+        packet_class = re.search(
+            r"^\*\*Class:\*\*\s*`?(?P<value>[A-Z]+)`?\s*$", block, re.MULTILINE
+        ).group("value")
+        rows.append([
+            packet_id,
+            packet_class,
+            route_driver.CLASS_DEFAULT_TIER[packet_class],
+            route_driver.CLASS_DEFAULT_RISK.get(packet_class, "none"),
+            route_driver.CLASS_DEFAULT_VERIFICATION[packet_class],
+        ])
+
+    def digest(value):
+        return _hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    return {
+        "schema_version": "future_route_inventory.v1",
+        "packet_count": len(ordered),
+        "ordered_packet_ids": ordered,
+        "ordered_packet_ids_sha256": digest(ordered),
+        "dependency_graph_sha256": digest(graph),
+        "profiles_sha256": digest(rows),
+        "profiles": rows,
+    }
+
+
+FUTURE_SKETCHES = {
+    SUCCESSOR: """### Packet PE7-SUCCESSOR-PROMOTION-ESCALATION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-PLAN-LANE-ACTIVATION-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Wire plan-lane successor promotion and escalation through the existing owners with exactly-one promotion receipts and bounded pause escalation.
+
+**Allowed delta:** scripts/agent-control/dispatcher.py, scripts/agent-control/local_run_once.py, scripts/agent-control/route_driver.py, scripts/session_context.py, tests/test_agent_plan_promotion.py.
+
+**Exit:** The lane records exactly-one successor-promotion receipts and bounded pause escalation, controller-owned and idempotent.
+
+**Stop:** Any second ledger/controller/store/state/routing owner, promotion of zero or multiple successors, stale or unprovable routing, or child authority.
+""",
+    "TOOL-OTHER-1": """### Packet TOOL-OTHER-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-SUCCESSOR-PROMOTION-ESCALATION-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Document the route contract only, with no product authority change.
+
+**Allowed delta:** docs/ only.
+
+**Exit:** Accepted documentation records the single route-controller owner and the current blocker truth.
+
+**Stop:** Any second owner, unbound merge path, or requirement to choose a schema value.
+""",
+}
+
+
+def future_route_document(promoted=SUCCESSOR, only_blocked=False):
+    """Build a FUTURE_ROUTE-shaped index whose manifest matches its prose."""
+
+    text = "## Portfolio Inventory Manifest\n\n"
+    if only_blocked:
+        sketches = [FUTURE_SKETCHES["TOOL-OTHER-1"]]
+    else:
+        sketches = [FUTURE_SKETCHES[promoted]]
+        for packet_id in sorted(set(FUTURE_SKETCHES) - {promoted}):
+            sketches.append(FUTURE_SKETCHES[packet_id])
+    text += "\n".join(sketches)
+    payload = _inventory_payload(text)
+    marker = "<!-- future-route-inventory:v1\n" + json.dumps(payload, sort_keys=True) + "\n-->"
+    return marker + "\n\n" + text
+
+
+def status_document():
+    return (
+        "## Accepted Readiness Boundary\n\n"
+        "| Capability | State | Entry or exit condition |\n"
+        "|---|---|---|\n"
+        "| Repository-maintenance route contract | `COMPLETE` | PR #380 accepted |\n"
+    )
 
 
 def derived_spec_digest(packet_id=SUCCESSOR):
@@ -270,24 +387,68 @@ class TestPromotePlanDispatcher(unittest.TestCase):
         self.assertFalse(result["promoted"])
         self.assertEqual(result["reason"], "conflicting_promotion_receipt")
 
-    def test_absent_successor_escalates_with_pause_receipt(self):
+    def test_absent_successor_escalates_when_compile_source_unavailable(self):
         with mock.patch.object(state_manager, "read_dispatch_state", return_value=None), \
              mock.patch.object(state_manager, "record_dispatch_state", return_value=True) as write:
             result = self._run(self._patch(routing_error="plan_packet_absent"))
         self.assertFalse(result["promoted"])
         self.assertTrue(result.get("escalated"))
-        self.assertEqual(result["reason"], "plan_packet_absent")
+        self.assertEqual(result["reason"], "route_source_unavailable")
         self.assertEqual(result["pause_owner"], "planning")
         self.assertEqual(write.call_args.args[1], f"plan-escalate:{CLOSED}:{ATTEMPT}")
         self.assertEqual(write.call_args.args[2], "plan-escalate")
         self.assertEqual(write.call_args.args[3], "escalated")
 
-    def test_successor_still_current_escalates(self):
+    def test_successor_still_current_escalates_when_compile_source_unavailable(self):
         with mock.patch.object(state_manager, "read_dispatch_state", return_value=None), \
              mock.patch.object(state_manager, "record_dispatch_state", return_value=True):
             result = self._run(self._patch(routing_error="successor_still_current"))
         self.assertTrue(result.get("escalated"))
-        self.assertEqual(result["reason"], "successor_still_current")
+        self.assertEqual(result["reason"], "route_source_unavailable")
+
+    def _compile_documents(self, only_blocked=False):
+        """Adapter documents for compile tests: CLOSED is the current packet."""
+
+        import route_driver
+        adapter = mock.Mock()
+        next_doc = routing_document(successor=CLOSED, closed_historical=False)
+        adapter.accepted_route_document.return_value = future_route_document(only_blocked=only_blocked)
+        adapter.accepted_plan_document.return_value = next_doc
+        adapter.accepted_status_document.return_value = status_document()
+        return adapter, next_doc
+
+    def test_no_eligible_successor_escalates_with_pause_receipt(self):
+        import route_driver
+        with mock.patch.object(dispatcher.local_loop, "GitHubAdapter") as adapter_cls:
+            adapter, _next_doc = self._compile_documents(only_blocked=True)
+            adapter_cls.return_value = adapter
+            with mock.patch.object(state_manager, "read_dispatch_state", return_value=None), \
+                 mock.patch.object(state_manager, "record_dispatch_state", return_value=True) as write:
+                result = self._run(self._patch(routing_error="plan_packet_absent"))
+        self.assertFalse(result["promoted"])
+        self.assertTrue(result.get("escalated"))
+        self.assertEqual(result["reason"], "no_eligible_successor")
+        self.assertEqual(result["pause_owner"], "planning")
+        self.assertEqual(write.call_args.args[1], f"plan-escalate:{CLOSED}:{ATTEMPT}")
+        self.assertEqual(write.call_args.args[2], "plan-escalate")
+        self.assertEqual(write.call_args.args[3], "escalated")
+
+    def test_absent_successor_compiles_and_promotes_exactly_one(self):
+        import route_driver
+        with mock.patch.object(dispatcher.local_loop, "GitHubAdapter") as adapter_cls:
+            adapter, _next_doc = self._compile_documents()
+            adapter_cls.return_value = adapter
+            with mock.patch.object(state_manager, "read_dispatch_state", return_value=None), \
+                 mock.patch.object(state_manager, "record_dispatch_state", return_value=True) as write:
+                result = self._run(self._patch(routing_error="successor_still_current"))
+            write.assert_called_once()
+            self.assertEqual(write.call_args.args[1], f"plan-promote:{CLOSED}:{ATTEMPT}")
+            self.assertEqual(write.call_args.args[2], "plan-promote")
+            self.assertEqual(write.call_args.args[3], "promoted")
+        self.assertTrue(result["promoted"], result)
+        self.assertTrue(result.get("compiled"))
+        self.assertEqual(result["successor_id"], SUCCESSOR)
+        self.assertEqual(result["routing_main_sha"], MAIN)
 
     def test_invalid_routing_fails_closed_without_receipt(self):
         patches = self._patch(routing_error="plan_packet_fields_invalid")
