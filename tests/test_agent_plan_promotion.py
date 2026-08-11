@@ -1163,6 +1163,79 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
         self.assertEqual(result.details["reason"], "route_effect_owner_outcome_unproved")
         drive.assert_not_called()
 
+    def test_closeout_marker_removal_cannot_bypass_owner_outcome_proof(self):
+        request, _receipt, raw = self._request_and_receipt()
+        source_main = "c" * 40
+        current_main = "d" * 40
+        request = route_driver.T3Request(
+            packet_id=request.packet_id,
+            accepted_main_sha=source_main,
+            candidate_digest=request.candidate_digest,
+            action_digest=request.action_digest,
+            scope_digest=request.scope_digest,
+            authority_owner_digest=request.authority_owner_digest,
+            requested_action=request.requested_action,
+        )
+        raw = {**raw, "accepted_main_sha": source_main}
+        raw["decision_digest"] = route_driver.t3_decision_digest(
+            request,
+            raw["decision_source"],
+            raw["decision_evidence_digest"],
+            raw["disposition"],
+        )
+        receipt, reason = route_driver.validate_t3_receipt(
+            raw, request, now=datetime.fromisoformat(raw["issued_at"])
+        )
+        self.assertEqual(reason, "t3_receipt_valid")
+        closeout = "PE7-EFFECT-CLOSEOUT-1"
+        source_document = route_driver.compact_next_window(
+            f"## Active Routing\n\n1. `{closeout}` — `READY_FOR_EXECUTION`\n\n"
+            "## Common Execution Protocol\n\n- retained\n",
+            closed_packet_id=request.packet_id,
+            predecessor_receipt=route_driver.t3_closeout_reference(receipt),
+            active_packet_block=(
+                f"## Packet {closeout}\n\n**State:** `READY_FOR_EXECUTION`\n\n"
+                f"**Prerequisite:** {request.packet_id} — IN_PROGRESS.\n\n"
+                "**Class:** `CLOSEOUT`\n"
+            ),
+            closed_packet_state="IN_PROGRESS",
+            retained_marker=route_driver._t3_request_marker(request),
+        )
+        current_document = source_document.replace("## Retained", "## Historical", 1)
+        runner, github, state = self._runner(request, raw)
+        github.accepted_main_sha.return_value = current_main
+        runner.git.origin_main_sha.return_value = current_main
+        github.accepted_plan_document.side_effect = (
+            lambda sha: source_document if sha == source_main else current_document
+        )
+        canonical = (
+            "PR #42 exact head `" + "b" * 40 + "`; merge `" + current_main
+            + "`; exact-head `PASS`; canonical workflow `31467821767`"
+        )
+        with mock.patch.object(
+            plan_lifecycle,
+            "_exact_plan_claim",
+            return_value={
+                "status": "closed_out",
+                "details": {
+                    "closeout_reference": canonical,
+                    "source_main_sha": source_main,
+                },
+            },
+        ), mock.patch.object(
+            plan_lifecycle,
+            "reconcile_legacy_closeout_reference",
+            return_value=canonical,
+        ), mock.patch.object(
+            state_manager,
+            "read_dispatch_state",
+            return_value=state,
+        ), mock.patch.object(runner, "_drive_promotion_pr") as drive:
+            result = runner.run_route_once(closeout, ATTEMPT)
+        self.assertEqual(result.status, "outcome_unknown")
+        self.assertEqual(result.details["reason"], "route_effect_owner_outcome_unproved")
+        drive.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

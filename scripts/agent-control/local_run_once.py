@@ -1456,6 +1456,7 @@ class LocalRunOnce:
             ledger_issue = self.github.plan_ledger_issue()
         except local_loop.LoopUnavailable:
             return self._plan_result("unavailable", packet_id, attempt, reason="plan_ledger_unavailable")
+        source_main_sha = ""
         if bootstrap_receipt is None:
             claim = plan_lifecycle._exact_plan_claim(ledger_issue, packet_id, attempt, self.repository)
             if claim is None:
@@ -1463,6 +1464,8 @@ class LocalRunOnce:
             if claim.get("status") != "closed_out":
                 return self._plan_result("rejected", packet_id, attempt, reason="plan_claim_not_closed_out")
             details = claim.get("details")
+            if isinstance(details, dict) and isinstance(details.get("source_main_sha"), str):
+                source_main_sha = details["source_main_sha"]
             if not isinstance(details, dict) or not isinstance(details.get("closeout_reference"), str):
                 closeout_reference = f"merge on accepted main `{accepted_main}`"
             else:
@@ -1516,6 +1519,29 @@ class LocalRunOnce:
             return self._plan_result("unavailable", packet_id, attempt, reason="routing_documents_unavailable")
         try:
             retained_request = route_driver.retained_t3_request(next_document)
+            if source_main_sha:
+                try:
+                    source_request = route_driver.direct_effect_closeout_request(
+                        self.github.accepted_plan_document(source_main_sha),
+                        packet_id,
+                        source_main_sha,
+                    )
+                except (local_loop.LoopUnavailable, route_driver.RouteDriverError):
+                    return self._plan_result(
+                        "outcome_unknown",
+                        packet_id,
+                        attempt,
+                        reason="route_effect_closeout_source_unproved",
+                    )
+                if source_request is not None:
+                    if retained_request is not None and retained_request != source_request:
+                        return self._plan_result(
+                            "outcome_unknown",
+                            packet_id,
+                            attempt,
+                            reason="route_effect_closeout_request_mismatch",
+                        )
+                    retained_request = source_request
             if retained_request is not None:
                 try:
                     retained_state = state_manager.read_dispatch_state(

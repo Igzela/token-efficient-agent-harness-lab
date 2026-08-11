@@ -914,6 +914,35 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         self.assertIn(request.candidate_digest, document)
         self.assertNotIn("## Completed (PE7-EFFECT-1)", document)
 
+    def test_direct_effect_closeout_source_recovers_the_retained_request(self):
+        request = route_driver.T3Request(
+            packet_id="PE7-EFFECT-1", accepted_main_sha=MAIN,
+            candidate_digest="b" * 64, action_digest="c" * 64,
+            scope_digest="d" * 64, authority_owner_digest="e" * 64,
+            requested_action="one bounded effect",
+        )
+        closeout = "PE7-EFFECT-CLOSEOUT-1"
+        document = route_driver.compact_next_window(
+            f"## Active Routing\n\n1. `{closeout}` — `READY_FOR_EXECUTION`\n\n"
+            "## Common Execution Protocol\n\n- retained\n",
+            closed_packet_id=request.packet_id,
+            predecessor_receipt="T3 receipt " + "f" * 64,
+            active_packet_block=(
+                f"## Packet {closeout}\n\n**State:** `READY_FOR_EXECUTION`\n\n"
+                f"**Prerequisite:** {request.packet_id} — IN_PROGRESS.\n\n"
+                "**Class:** `CLOSEOUT`\n"
+            ),
+            closed_packet_state="IN_PROGRESS",
+            retained_marker=route_driver._t3_request_marker(request),
+        )
+        self.assertEqual(
+            route_driver.direct_effect_closeout_request(document, closeout, MAIN),
+            request,
+        )
+        self.assertIsNone(route_driver.direct_effect_closeout_request(
+            document.replace("## Retained", "## Historical", 1), closeout, MAIN
+        ))
+
     def test_owner_outcome_proof_requires_an_accepted_digest_bound_receipt(self):
         now = datetime.now(timezone.utc)
         request = route_driver.T3Request(

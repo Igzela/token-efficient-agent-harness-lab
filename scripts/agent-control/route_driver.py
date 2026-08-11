@@ -1085,6 +1085,66 @@ def retained_t3_request(document: str) -> T3Request | None:
     return current_t3_request(synthetic, accepted_main_sha)
 
 
+def direct_effect_closeout_request(
+    document: str,
+    closeout_packet_id: str,
+    source_main_sha: str,
+) -> T3Request | None:
+    """Recover the immutable EFFECT binding for its direct CLOSEOUT packet.
+
+    The closeout's plan claim binds ``source_main_sha`` before its PR can
+    change the current window.  Re-reading that source prevents a completed
+    closeout from deleting its retained marker and thereby bypassing the
+    independent existing-owner outcome proof required before later promotion.
+    """
+
+    if (
+        not isinstance(closeout_packet_id, str)
+        or plan_lane.PACKET_ID.fullmatch(closeout_packet_id) is None
+        or not isinstance(source_main_sha, str)
+        or plan_lane.SHA40.fullmatch(source_main_sha) is None
+    ):
+        raise RouteDriverError("route_effect_closeout_source_invalid")
+    request = retained_t3_request(document)
+    if request is None:
+        return None
+    if request.accepted_main_sha != source_main_sha:
+        raise RouteDriverError("route_effect_closeout_source_invalid")
+    active = re.search(
+        r"^## Active Routing\s*(?P<body>.*?)(?=^## |\Z)",
+        document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if active is None or len(re.findall(
+        rf"^1\. `{re.escape(closeout_packet_id)}` — `READY_FOR_EXECUTION`\s*$",
+        active.group("body"),
+        re.MULTILINE,
+    )) != 1:
+        raise RouteDriverError("route_effect_closeout_source_invalid")
+    block = re.search(
+        rf"^## Packet {re.escape(closeout_packet_id)}\s*(?P<body>.*?)(?=^## |\Z)",
+        document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if block is None or not re.search(
+        r"^\*\*Class:\*\*\s*`CLOSEOUT`\s*$", block.group("body"), re.MULTILINE
+    ):
+        raise RouteDriverError("route_effect_closeout_source_invalid")
+    prerequisite = re.search(
+        r"^\*\*Prerequisite:\*\*\s*(?P<value>.+)$",
+        block.group("body"),
+        re.MULTILINE,
+    )
+    packet_ids = (
+        tuple(dict.fromkeys(re.findall(plan_lane.PACKET_TOKEN, prerequisite.group("value"))))
+        if prerequisite is not None
+        else ()
+    )
+    if packet_ids != (request.packet_id,):
+        raise RouteDriverError("route_effect_closeout_source_invalid")
+    return request
+
+
 def validate_recorded_t3_receipt(
     raw: object, request: T3Request
 ) -> tuple[T3Receipt | None, str]:
