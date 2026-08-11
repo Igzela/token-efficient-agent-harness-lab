@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import os
+import hashlib
 import json
+import os
 from pathlib import Path
 import signal
 import sys
 import time
 import unittest
+import uuid
 from contextlib import redirect_stdout
 from io import StringIO
 from unittest import mock
@@ -576,6 +578,26 @@ class TestPlanDocumentDecode(unittest.TestCase):
 
 
 class TestLocalRunOnce(unittest.TestCase):
+    def test_bootstrap_route_binds_receipt_to_deterministic_attempt(self):
+        runner = local_run_once.LocalRunOnce(
+            mock.Mock(), mock.Mock(), repository="Igzela/example", repo_path=Path("/tmp")
+        )
+        receipt = "  merge-backed COMPLETE receipt  "
+        digest = hashlib.sha256(receipt.strip().encode("utf-8")).hexdigest()
+        expected_attempt = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"route-bootstrap:v1:Igzela/example:{PLAN_ID}:{digest}",
+        ))
+        expected = mock.Mock()
+
+        with mock.patch.object(runner, "run_route_once", return_value=expected) as run:
+            result = runner.bootstrap_route_once(PLAN_ID, receipt)
+
+        self.assertIs(result, expected)
+        run.assert_called_once_with(
+            PLAN_ID, expected_attempt, bootstrap_receipt=receipt.strip()
+        )
+
     def test_run_once_child_uses_isolated_session_not_caller_group(self):
         process = mock.Mock(pid=1234, returncode=0)
         process.communicate.return_value = ("stdout", "stderr")

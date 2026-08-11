@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -1393,6 +1394,7 @@ class LocalRunOnce:
             return self._plan_result("rejected", str(packet_id), "", reason="route_bootstrap_packet_invalid")
         if not isinstance(accepted_receipt, str) or not accepted_receipt.strip():
             return self._plan_result("rejected", packet_id, "", reason="route_bootstrap_receipt_invalid")
+        accepted_receipt = accepted_receipt.strip()
         receipt_digest = hashlib.sha256(accepted_receipt.encode("utf-8")).hexdigest()
         attempt = str(uuid.uuid5(
             uuid.NAMESPACE_URL,
@@ -1401,7 +1403,7 @@ class LocalRunOnce:
         return self.run_route_once(
             packet_id,
             attempt,
-            bootstrap_receipt=accepted_receipt.strip(),
+            bootstrap_receipt=accepted_receipt,
         )
 
     def run_route_once(
