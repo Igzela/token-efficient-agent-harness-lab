@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -22,7 +23,10 @@ import route_driver  # noqa: E402
 MAIN = "a" * 40
 CLOSED = "PE7-LIFECYCLE-CONTROLLER-1"
 SUCCESSOR = "PE7-SUCCESSOR-PROMOTION-ESCALATION-1"
-EVIDENCE = "PR #389 exact head " + "b" * 40 + "; merge " + "c" * 40
+EVIDENCE = (
+    "PR #389 exact head `" + "b" * 40 + "`; merge `" + MAIN + "`; "
+    "exact-head `PASS`; canonical workflow `31467821766`"
+)
 MANIFEST = "d" * 64
 ATTEMPT = "123e4567-e89b-12d3-a456-426614174000"
 
@@ -371,10 +375,14 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         )
         return route_driver.EligibleSuccessor(sketch.packet_id, sketch, profile)
 
-    def _evidence(self, *, packet_id="PE7-EXACT-PROMOTION-1"):
+    def _evidence(self, *, packet_id="PE7-EXACT-PROMOTION-1", status_text=None):
+        status_text = status_document() if status_text is None else status_text
         return route_driver.CurrentMainEvidence(
             packet_id=packet_id,
             accepted_main_sha=MAIN,
+            status_document_sha256=hashlib.sha256(
+                status_text.encode("utf-8")
+            ).hexdigest(),
             owner_paths=("scripts/agent-control/plan_lifecycle.py",),
             caller_paths=("scripts/agent-control/local_run_once.py",),
             test_paths=("tests/test_agent_plan_lifecycle.py",),
@@ -442,6 +450,7 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         short_rollback = route_driver.CurrentMainEvidence(
             packet_id=evidence.packet_id,
             accepted_main_sha=evidence.accepted_main_sha,
+            status_document_sha256=evidence.status_document_sha256,
             owner_paths=evidence.owner_paths,
             caller_paths=evidence.caller_paths,
             test_paths=evidence.test_paths,
@@ -476,6 +485,10 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             f"PR #401 exact head `{'d' * 40}`; merge `{'e' * 40}`; "
             "exact-head `PASS`; canonical workflow `31467821768`"
         )
+        closed_receipt = (
+            f"PR #400 exact head `{'b' * 40}`; merge `{MAIN}`; "
+            "exact-head `PASS`; canonical workflow `31467821767`"
+        )
         status = status_document().replace(
             "|---|---|---|\n\n",
             f"|---|---|---|\n| `PE7-OTHER-1` | `COMPLETE` | {second_receipt} |\n\n",
@@ -484,8 +497,8 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         complete = route_driver.RoutePromotionPlanner().plan(
             successor,
             MAIN,
-            EVIDENCE,
-            self._evidence(),
+            closed_receipt,
+            self._evidence(status_text=status),
             MANIFEST,
             closed_packet_id=CLOSED,
             status_document=status,
@@ -494,7 +507,7 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         assert complete.candidate is not None
         self.assertEqual(
             complete.candidate.capsule["prerequisite_receipts"],
-            [EVIDENCE, second_receipt],
+            [closed_receipt, second_receipt],
         )
 
     def test_prerequisite_receipts_use_current_status_for_every_prior_packet(self):
@@ -503,6 +516,10 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             f"PR #401 exact head `{'d' * 40}`; merge `{'e' * 40}`; "
             "exact-head `PASS`; canonical workflow `31467821768`"
         )
+        closed_receipt = (
+            f"PR #400 exact head `{'b' * 40}`; merge `{MAIN}`; "
+            "exact-head `PASS`; canonical workflow `31467821767`"
+        )
         status = status_document().replace(
             "|---|---|---|\n\n",
             f"|---|---|---|\n| `PE7-OTHER-1` | `COMPLETE` | {second_receipt} |\n\n",
@@ -510,9 +527,39 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         )
         self.assertEqual(
             route_driver.bound_prerequisite_receipts(
-                successor, CLOSED, EVIDENCE, status
+                successor, CLOSED, closed_receipt, status, MAIN
             ),
-            (EVIDENCE, second_receipt),
+            (closed_receipt, second_receipt),
+        )
+
+    def test_predecessor_and_status_bindings_fail_closed(self):
+        successor = self._successor()
+        unproved = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            "unproved predecessor receipt",
+            self._evidence(),
+            MANIFEST,
+        )
+        self.assertEqual(unproved.state, "DECISION_REQUIRED")
+        self.assertEqual(unproved.reason, "promotion_predecessor_receipt_unproved")
+
+        receipt = (
+            f"PR #400 exact head `{'b' * 40}`; merge `{MAIN}`; "
+            "exact-head `PASS`; canonical workflow `31467821767`"
+        )
+        mismatched_status = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            receipt,
+            self._evidence(),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status_document() + "\nchanged",
+        )
+        self.assertEqual(mismatched_status.state, "DECISION_REQUIRED")
+        self.assertEqual(
+            mismatched_status.reason, "promotion_status_document_binding_invalid"
         )
 
     def test_serialized_promoted_capsule_round_trips_through_plan_and_handoff_validation(self):
@@ -790,6 +837,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.repo = Path(self.temporary.name)
         for relative, content in {
             "docs/MODULE_MAP.md": "| Route | `scripts/agent-control/route_driver.py` | `route_driver.py` is the route promotion owner |\n",
+            "docs/CURRENT_STATUS.md": status_document(),
             "docs/NEXT_DECISION.md": (
                 "rollback-marker cleanup-marker retention-marker evidence-marker "
                 "schema-marker evaluator-marker authority-marker recovery-marker\n"
@@ -825,6 +873,12 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
                 stop="Any unproved fact is a decision.",
             ),
             ("PE7-EXACT-PROMOTION-1", "IMPLEMENT", "T1", "none", "source_focused_full"),
+        )
+
+    def _predecessor_receipt(self):
+        return (
+            f"PR #389 exact head `{'b' * 40}`; merge `{self.main}`; "
+            "exact-head `PASS`; canonical workflow `31467821766`"
         )
 
     def tearDown(self):
@@ -885,7 +939,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
 
     def test_exact_tree_proves_all_refreshed_fields(self):
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
-            json.dumps(self._proposal()), self.successor, EVIDENCE
+            json.dumps(self._proposal()), self.successor, self._predecessor_receipt()
         )
         self.assertEqual(result.state, "READY_FOR_EXECUTION")
         self.assertIsNotNone(result.evidence)
@@ -904,7 +958,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "docs/MODULE_MAP.md"
         ] * (route_driver._MAX_PROMOTION_LIST_ITEMS + 1)
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
-            json.dumps(proposal), self.successor, EVIDENCE
+            json.dumps(proposal), self.successor, self._predecessor_receipt()
         )
         self.assertEqual(result.state, "DECISION_REQUIRED")
         self.assertEqual(result.reason, "promotion_allowed_paths_invalid")
@@ -913,7 +967,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         proposal = self._proposal()
         proposal["caller_evidence"][0]["symbol"] = "ImaginaryCaller"
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
-            json.dumps(proposal), self.successor, EVIDENCE
+            json.dumps(proposal), self.successor, self._predecessor_receipt()
         )
         self.assertEqual(result.state, "DECISION_REQUIRED")
         self.assertEqual(result.reason, "promotion_caller_not_proved")
@@ -922,7 +976,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         proposal = self._proposal()
         proposal["owner_evidence"][0]["path"] = "scripts/agent-control/local_run_once.py"
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
-            json.dumps(proposal), self.successor, EVIDENCE
+            json.dumps(proposal), self.successor, self._predecessor_receipt()
         )
         self.assertEqual(result.state, "DECISION_REQUIRED")
         self.assertEqual(result.reason, "promotion_owner_not_proved")
@@ -935,7 +989,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
                 "reason": "owner_ambiguous",
             }),
             self.successor,
-            EVIDENCE,
+            self._predecessor_receipt(),
         )
         self.assertEqual(result.state, "DECISION_REQUIRED")
         self.assertEqual(result.reason, "promotion_planner:owner_ambiguous")

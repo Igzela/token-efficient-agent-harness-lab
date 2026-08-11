@@ -47,6 +47,10 @@ MAX_CURRENT_MAIN_SOURCE_BYTES = 512 * 1024
 _MAX_PROMOTION_LIST_ITEMS = 50
 MAX_T3_RECEIPT_WINDOW = timedelta(minutes=15)
 _ROUTE_EVIDENCE_SCHEMA = "route_promotion_evidence.v1"
+_MERGE_BACKED_RECEIPT = re.compile(
+    r"^PR #[1-9][0-9]* exact head `[0-9a-f]{40}`; merge "
+    r"`(?P<merge>[0-9a-f]{40})`; exact-head `PASS`; canonical workflow `[1-9][0-9]*`$"
+)
 _DECISION_KINDS = frozenset({"schema", "evaluator", "authority", "recovery"})
 _SAFE_PROPOSAL_TOKEN = re.compile(r"^[A-Za-z0-9_./:-]{3,160}$")
 _CODE_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
@@ -404,12 +408,37 @@ def accepted_complete_receipt(status_document: str, packet_id: str) -> str:
     if receipt_match is None:
         raise RouteDriverError("route_bootstrap_receipt_invalid")
     receipt = receipt_match.group("evidence").strip()
-    if len(receipt.encode("utf-8")) > 2 * 1024 or re.search(
-        r"PR #[1-9][0-9]* exact head `[0-9a-f]{40}`; merge `[0-9a-f]{40}`; "
-        r"exact-head `PASS`; canonical workflow `[1-9][0-9]*`",
-        receipt,
-    ) is None:
+    if len(receipt.encode("utf-8")) > 2 * 1024 or _MERGE_BACKED_RECEIPT.fullmatch(receipt) is None:
         raise RouteDriverError("route_bootstrap_receipt_not_merge_backed")
+    return receipt
+
+
+def verified_predecessor_receipt(
+    status_document: str,
+    closed_packet_id: str,
+    predecessor_receipt: str,
+    accepted_main_sha: str,
+) -> str:
+    """Prove the just-closed prerequisite before it enters a candidate."""
+
+    if not isinstance(predecessor_receipt, str) or not predecessor_receipt.strip():
+        raise RouteDriverError("promotion_predecessor_receipt_missing")
+    if plan_lane.SHA40.fullmatch(accepted_main_sha) is None:
+        raise RouteDriverError("promotion_accepted_main_invalid")
+    receipt = predecessor_receipt.strip()
+    if isinstance(status_document, str) and status_document:
+        try:
+            accepted = accepted_complete_receipt(status_document, closed_packet_id)
+        except RouteDriverError as exc:
+            if exc.reason != "route_bootstrap_receipt_missing_or_ambiguous":
+                raise
+        else:
+            if accepted != receipt:
+                raise RouteDriverError("promotion_predecessor_receipt_mismatch")
+            return receipt
+    match = _MERGE_BACKED_RECEIPT.fullmatch(receipt)
+    if match is None or match.group("merge") != accepted_main_sha:
+        raise RouteDriverError("promotion_predecessor_receipt_unproved")
     return receipt
 
 
@@ -418,6 +447,7 @@ def bound_prerequisite_receipts(
     closed_packet_id: str,
     predecessor_receipt: str,
     status_document: str,
+    accepted_main_sha: str,
 ) -> tuple[str, ...]:
     """Bind every prerequisite to its exact accepted receipt.
 
@@ -441,7 +471,14 @@ def bound_prerequisite_receipts(
     receipts: list[str] = []
     for prerequisite in successor.sketch.prerequisites:
         if prerequisite == closed_packet_id:
-            receipts.append(predecessor_receipt.strip())
+            receipts.append(
+                verified_predecessor_receipt(
+                    status_document,
+                    closed_packet_id,
+                    predecessor_receipt,
+                    accepted_main_sha,
+                )
+            )
         else:
             receipts.append(accepted_complete_receipt(status_document, prerequisite))
     return tuple(receipts)
@@ -657,6 +694,7 @@ class CurrentMainEvidence:
 
     packet_id: str
     accepted_main_sha: str
+    status_document_sha256: str
     owner_paths: tuple[str, ...]
     caller_paths: tuple[str, ...]
     test_paths: tuple[str, ...]
@@ -1036,6 +1074,7 @@ def _evidence_payload(evidence: CurrentMainEvidence) -> dict[str, object]:
     return {
         "packet_id": evidence.packet_id,
         "accepted_main_sha": evidence.accepted_main_sha,
+        "status_document_sha256": evidence.status_document_sha256,
         "owner_paths": list(evidence.owner_paths),
         "caller_paths": list(evidence.caller_paths),
         "test_paths": list(evidence.test_paths),
@@ -1063,6 +1102,8 @@ def _evidence_problem(
         return "promotion_evidence_main_mismatch"
     if not plan_lane.SHA40.fullmatch(accepted_main_sha):
         return "promotion_accepted_main_invalid"
+    if plan_lane.SHA256.fullmatch(evidence.status_document_sha256) is None:
+        return "promotion_status_document_binding_invalid"
     fields = (
         evidence.owner_paths,
         evidence.caller_paths,
@@ -1469,9 +1510,13 @@ class CurrentMainEvidenceVerifier:
             decision_proofs[kind] = entry
         provenance["decisions"] = decision_proofs
 
+        status_document = self._source("docs/CURRENT_STATUS.md")
         evidence = CurrentMainEvidence(
             packet_id=successor.packet_id,
             accepted_main_sha=self.accepted_main_sha,
+            status_document_sha256=hashlib.sha256(
+                status_document.encode("utf-8")
+            ).hexdigest(),
             owner_paths=tuple(owner_paths),
             caller_paths=tuple(caller_paths),
             test_paths=tuple(test_paths),
@@ -1489,14 +1534,6 @@ class CurrentMainEvidenceVerifier:
             if len(successor.sketch.prerequisites) != 1:
                 raise RouteDriverError("promotion_prerequisite_receipts_missing_or_invalid")
             closed_packet_id = successor.sketch.prerequisites[0]
-        status_document = (
-            self._source("docs/CURRENT_STATUS.md")
-            if any(
-                prerequisite != closed_packet_id
-                for prerequisite in successor.sketch.prerequisites
-            )
-            else ""
-        )
         return RoutePromotionPlanner().plan(
             successor,
             self.accepted_main_sha,
@@ -1536,6 +1573,12 @@ class RoutePromotionPlanner:
         if problem is not None:
             return PromotionPlanResult("DECISION_REQUIRED", problem)
         assert evidence is not None
+        if status_document is not None and evidence.status_document_sha256 != hashlib.sha256(
+            status_document.encode("utf-8")
+        ).hexdigest():
+            return PromotionPlanResult(
+                "DECISION_REQUIRED", "promotion_status_document_binding_invalid"
+            )
         if len(successor.sketch.outcome.strip()) < 20:
             return PromotionPlanResult("DECISION_REQUIRED", "promotion_goal_too_short")
         if len(evidence.rollback.strip()) < 20:
@@ -1548,7 +1591,17 @@ class RoutePromotionPlanner:
                     "DECISION_REQUIRED",
                     "promotion_prerequisite_receipts_missing_or_invalid",
                 )
-            prerequisite_receipts = (predecessor_receipt.strip(),)
+            try:
+                prerequisite_receipts = (
+                    verified_predecessor_receipt(
+                        status_document or "",
+                        successor.sketch.prerequisites[0],
+                        predecessor_receipt,
+                        accepted_main_sha,
+                    ),
+                )
+            except RouteDriverError as exc:
+                return PromotionPlanResult("DECISION_REQUIRED", exc.reason)
         else:
             try:
                 prerequisite_receipts = bound_prerequisite_receipts(
@@ -1556,9 +1609,13 @@ class RoutePromotionPlanner:
                     closed_packet_id,
                     predecessor_receipt,
                     status_document,
+                    accepted_main_sha,
                 )
             except RouteDriverError as exc:
-                if len(successor.sketch.prerequisites) > 1:
+                if len(successor.sketch.prerequisites) > 1 or exc.reason in {
+                    "promotion_predecessor_receipt_unproved",
+                    "promotion_predecessor_receipt_mismatch",
+                }:
                     return PromotionPlanResult(
                         "DECISION_REQUIRED",
                         "promotion_prerequisite_receipts_missing_or_invalid",
