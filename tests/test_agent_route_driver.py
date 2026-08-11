@@ -648,6 +648,21 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         self.assertEqual(forged_result.state, "DECISION_REQUIRED")
         self.assertEqual(forged_result.reason, "promotion_t3_closeout_receipt_invalid")
 
+        non_go = dataclasses.replace(receipt, disposition="NO_GO")
+        non_go_result = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            route_driver.t3_closeout_reference(non_go),
+            self._evidence(),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status_document(),
+            retained_t3_request=request,
+            retained_t3_receipt=non_go,
+        )
+        self.assertEqual(non_go_result.state, "DECISION_REQUIRED")
+        self.assertEqual(non_go_result.reason, "promotion_t3_closeout_receipt_invalid")
+
     def test_serialized_promoted_capsule_round_trips_through_plan_and_handoff_validation(self):
         successor = self._successor()
         evidence = self._evidence()

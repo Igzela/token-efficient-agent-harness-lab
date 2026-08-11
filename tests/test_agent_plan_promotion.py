@@ -588,6 +588,10 @@ class TestBootstrapPromotionFallback(unittest.TestCase):
                 "details": {"closeout_reference": "PR #42"},
             },
         ), mock.patch.object(
+            plan_lifecycle,
+            "reconcile_legacy_closeout_reference",
+            return_value="PR #42",
+        ), mock.patch.object(
             route_driver, "retained_t3_request", return_value=None
         ), mock.patch.object(
             plan_lane,
@@ -1151,6 +1155,10 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             plan_lifecycle,
             "_exact_plan_claim",
             return_value={"status": "closed_out", "details": {"closeout_reference": "PR #42"}},
+        ), mock.patch.object(
+            plan_lifecycle,
+            "reconcile_legacy_closeout_reference",
+            return_value="PR #42",
         ), mock.patch.object(runner, "_drive_promotion_pr") as drive:
             result = runner.run_route_once(closeout, ATTEMPT)
         self.assertEqual(result.status, "outcome_unknown")

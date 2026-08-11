@@ -1057,15 +1057,20 @@ def validate_recorded_t3_receipt(
     """
 
     issued_at = raw.get("issued_at") if isinstance(raw, dict) else None
-    if not isinstance(issued_at, str):
+    expires_at = raw.get("expires_at") if isinstance(raw, dict) else None
+    if not isinstance(issued_at, str) or not isinstance(expires_at, str):
         return None, "t3_receipt_time_invalid"
     try:
         issued = datetime.fromisoformat(issued_at.replace("Z", "+00:00"))
+        expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
     except ValueError:
         return None, "t3_receipt_time_invalid"
-    if issued.tzinfo is None:
+    if issued.tzinfo is None or expires.tzinfo is None:
         return None, "t3_receipt_time_invalid"
-    return validate_t3_receipt(raw, request, now=issued)
+    observed = datetime.now(timezone.utc)
+    if issued > observed:
+        return None, "t3_receipt_issued_in_future"
+    return validate_t3_receipt(raw, request, now=min(observed, expires))
 
 
 def owner_outcome_receipt_proved(
@@ -1648,6 +1653,7 @@ class RoutePromotionPlanner:
                 or retained_t3_request is None
                 or retained_t3_receipt is None
                 or validated_t3_receipt != retained_t3_receipt
+                or retained_t3_receipt.disposition != "GO"
                 or successor.sketch.prerequisites != (closed_packet_id,)
                 or retained_t3_request.packet_id != closed_packet_id
                 or retained_t3_receipt.packet_id != closed_packet_id

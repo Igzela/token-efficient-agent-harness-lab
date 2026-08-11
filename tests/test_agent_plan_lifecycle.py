@@ -445,6 +445,35 @@ class TestRecordPlanCloseoutReceipt(unittest.TestCase):
         self.assertEqual(result["reason"], "closeout_reference_binding_invalid")
         state_manager.record_dispatch_state.assert_not_called()
 
+    def test_legacy_closeout_reference_reconciles_only_with_all_bound_receipts(self):
+        lifecycle = {
+            "claim_status": "closed_out",
+            "pr_number": PR,
+            "head_sha": HEAD,
+            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
+            "transitions": {
+                "ci": ci_wire(),
+                "review": review_wire(),
+                "merge": merge_wire(),
+                "closeout": {"closeout_reference": f"PR #{PR}"},
+            },
+        }
+        with mock.patch.object(plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle):
+            reconciled = plan_lifecycle.reconcile_legacy_closeout_reference(
+                LEDGER, PACKET, ATTEMPT, f"PR #{PR}"
+            )
+        self.assertEqual(reconciled, CLOSEOUT_REFERENCE)
+        lifecycle["stages"]["review"] = False
+        with mock.patch.object(plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle):
+            self.assertIsNone(plan_lifecycle.reconcile_legacy_closeout_reference(
+                LEDGER, PACKET, ATTEMPT, f"PR #{PR}"
+            ))
+        lifecycle["stages"] = []
+        with mock.patch.object(plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle):
+            self.assertIsNone(plan_lifecycle.reconcile_legacy_closeout_reference(
+                LEDGER, PACKET, ATTEMPT, f"PR #{PR}"
+            ))
+
 
 class TestReadPlanLifecycle(unittest.TestCase):
     def _comments(self, states):

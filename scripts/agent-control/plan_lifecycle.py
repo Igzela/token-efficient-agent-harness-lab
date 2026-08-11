@@ -35,6 +35,7 @@ _CLOSEOUT_REFERENCE_PATTERN = re.compile(
     r"`(?P<merge>[0-9a-f]{40})`; exact-head `PASS`; canonical workflow "
     r"`(?P<workflow>[1-9][0-9]*)`)(?:; (?P<detail>[^\r\n]{1,1800}))?$"
 )
+_LEGACY_CLOSEOUT_REFERENCE_PATTERN = re.compile(r"^PR #(?P<pr>[1-9][0-9]*)$")
 _TERMINAL_PACKET_STATE_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
@@ -81,6 +82,58 @@ def canonical_closeout_reference_match(value: object) -> re.Match[str] | None:
     if not isinstance(value, str) or len(value.encode("utf-8")) > 2 * 1024:
         return None
     return _CLOSEOUT_REFERENCE_PATTERN.fullmatch(value)
+
+
+def reconcile_legacy_closeout_reference(
+    ledger_issue: int,
+    packet_id: str,
+    attempt_id: str,
+    closeout_reference: object,
+    repo: str = "",
+) -> str | None:
+    """Rebuild one pre-canonical ``PR #n`` receipt from trusted ledger state.
+
+    The function is read-only.  It accepts no generic legacy prose: the legacy
+    PR number must match the exact subject's current worker binding, and all
+    CI/review/merge/closeout transitions must be independently readable before
+    it returns a canonical reference for the route compiler.
+    """
+
+    canonical = canonical_closeout_reference_match(closeout_reference)
+    if canonical is not None:
+        return canonical.group("canonical")
+    legacy = (
+        _LEGACY_CLOSEOUT_REFERENCE_PATTERN.fullmatch(closeout_reference)
+        if isinstance(closeout_reference, str)
+        else None
+    )
+    if legacy is None:
+        return None
+    lifecycle = read_plan_lifecycle(ledger_issue, packet_id, attempt_id, repo)
+    if not isinstance(lifecycle, dict):
+        return None
+    stages = lifecycle.get("stages")
+    if (
+        lifecycle.get("claim_status") != "closed_out"
+        or lifecycle.get("pr_number") != int(legacy.group("pr"))
+        or not isinstance(stages, dict)
+        or not all(stages.get(stage) is True for stage in ("ci", "review", "merge", "closeout"))
+    ):
+        return None
+    transitions = lifecycle.get("transitions")
+    if not isinstance(transitions, dict):
+        return None
+    ci = transitions.get("ci")
+    merge = transitions.get("merge")
+    head_sha = lifecycle.get("head_sha")
+    if not isinstance(ci, dict) or not isinstance(merge, dict):
+        return None
+    return canonical_closeout_reference(
+        lifecycle.get("pr_number"),
+        head_sha,
+        merge.get("merge_commit_sha"),
+        ci.get("workflow_run_id"),
+    )
 
 
 def _plan_claim(ledger_issue: int, dispatch_id: str, repo: str) -> dict[str, Any] | None:

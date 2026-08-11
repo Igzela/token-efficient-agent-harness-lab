@@ -1467,6 +1467,20 @@ class LocalRunOnce:
                 closeout_reference = f"merge on accepted main `{accepted_main}`"
             else:
                 closeout_reference = details["closeout_reference"].strip()
+            closeout_reference = plan_lifecycle.reconcile_legacy_closeout_reference(
+                ledger_issue,
+                packet_id,
+                attempt,
+                closeout_reference,
+                self.repository,
+            )
+            if closeout_reference is None:
+                return self._plan_result(
+                    "bounded_pause",
+                    packet_id,
+                    attempt,
+                    reason="route_closeout_receipt_unproved",
+                )
         else:
             try:
                 status_for_receipt = self.github.accepted_status_document(accepted_main)
