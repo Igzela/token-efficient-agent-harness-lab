@@ -1558,7 +1558,21 @@ class LocalRunOnce:
                 promotion=promotion or {},
             )
         except plan_lane.PlanLaneError as exc:
-            if exc.reason not in {"plan_packet_absent", "successor_still_current", "multiple_plan_packets"}:
+            # The sole merge-backed pre-ledger bridge has already proved its
+            # receipt above.  Its historical workflow path is read-only and
+            # intentionally outside the ordinary artifact contract, so it
+            # must enter the existing evidence-backed promotion fallback
+            # rather than be mistaken for an invalid current packet.  No
+            # ordinary packet, other parser failure, or unproved receipt gets
+            # this exception.
+            bootstrap_scope_bridge = (
+                bootstrap_receipt is not None
+                and exc.reason == "plan_allowed_paths_invalid"
+            )
+            if (
+                not bootstrap_scope_bridge
+                and exc.reason not in {"plan_packet_absent", "successor_still_current", "multiple_plan_packets"}
+            ):
                 return self._plan_result("rejected", packet_id, attempt, reason=f"routing_invalid:{exc.reason}")
         try:
             successor = route_driver.eligible_successor(
