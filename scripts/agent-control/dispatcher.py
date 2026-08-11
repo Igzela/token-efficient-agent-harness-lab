@@ -1118,6 +1118,8 @@ def promote_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
     }
     if compiled is not None:
         receipt_details["compiled"] = True
+        if isinstance(compiled.get("manifest_sha256"), str):
+            receipt_details["manifest_sha256"] = compiled["manifest_sha256"]
     try:
         previous = sm.read_dispatch_state(ledger_issue, receipt_id, repo)
     except sm.StateUnavailableError:
@@ -1215,6 +1217,7 @@ def _compile_promotion(
         "successor_id": compiled.packet_id,
         "capsule_digest": compiled.spec_digest,
         "routing_main_sha": accepted_main,
+        "manifest_sha256": compiled.manifest_sha256,
         "compiled": True,
     }
 

@@ -780,5 +780,57 @@ class TestPlanLifecycleWait(unittest.TestCase):
         github.dispatch_controller.assert_not_called()
 
 
+class TestCloseoutEvidenceToPromotionCompiler(unittest.TestCase):
+    """The closed-out claim's closeout reference is the promotion evidence."""
+
+    def test_promote_plan_passes_closeout_reference_to_compiler(self):
+        import route_driver
+
+        claim = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": LEDGER,
+            "dispatch_id": DISPATCH_ID,
+            "action": "plan-run",
+            "status": "closed_out",
+            "details": {**dict(DETAILS), "closeout_reference": f"PR #{PR}"},
+        }
+        compiled = mock.Mock()
+        compiled.packet_id = "PE7-SUCCESSOR-PROMOTION-ESCALATION-1"
+        compiled.spec_digest = "d" * 64
+        compiled.manifest_sha256 = "e" * 64
+        with mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.control_state, "require_live", return_value=None), \
+             mock.patch.object(
+                 dispatcher.control_state, "read_plan_ledger",
+                 return_value={"number": LEDGER},
+             ), \
+             mock.patch.object(plan_lifecycle, "_exact_plan_claim", return_value=claim), \
+             mock.patch.object(
+                 dispatcher, "_live_routing_document",
+                 return_value=(MAIN, "## Active Routing\n1. `PLACEHOLDER`"),
+             ), \
+             mock.patch.object(
+                 plan_lane, "successor_binding",
+                 side_effect=plan_lane.PlanLaneError("plan_packet_absent"),
+             ), \
+             mock.patch.object(
+                 dispatcher.local_loop, "GitHubAdapter", return_value=mock.Mock(),
+             ) as adapter_cls, \
+             mock.patch.object(
+                 route_driver, "compile_successor", return_value=compiled,
+             ) as compile_mock, \
+             mock.patch.object(state_manager, "read_dispatch_state", return_value=None), \
+             mock.patch.object(state_manager, "record_dispatch_state", return_value=True):
+            result = dispatcher.promote_plan(PACKET, ATTEMPT)
+        self.assertTrue(result["promoted"], result)
+        self.assertTrue(result.get("compiled"))
+        adapter_cls.return_value.accepted_route_document.return_value = ""
+        adapter_cls.return_value.accepted_plan_document.return_value = ""
+        adapter_cls.return_value.accepted_status_document.return_value = ""
+        self.assertEqual(compile_mock.call_args.args[4], f"PR #{PR}")
+        self.assertEqual(result["manifest_sha256"], "e" * 64)
+
+
 if __name__ == "__main__":
     unittest.main()

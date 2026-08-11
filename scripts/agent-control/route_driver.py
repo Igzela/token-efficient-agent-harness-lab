@@ -99,11 +99,11 @@ class CompiledSuccessor:
     packet_id: str
     capsule: dict[str, Any]
     spec_digest: str
+    manifest_sha256: str
     branch: str
     next_document: str
     future_document: str
     status_document: str
-    packet_block: str
 
 
 def _json_sha256(value: object) -> str:
@@ -157,6 +157,30 @@ def inventory_manifest(future_document: str) -> dict[str, Any]:
         raise RouteDriverError("route_inventory_manifest_invalid")
     if observed.get("schema_version") != "future_route_inventory.v1":
         raise RouteDriverError("route_inventory_schema_unsupported")
+    derived = _derive_inventory_payload(future_document)
+    if observed.get("packet_count") != derived["packet_count"]:
+        raise RouteDriverError("route_inventory_count_stale")
+    if observed.get("ordered_packet_ids") != derived["ordered_packet_ids"]:
+        raise RouteDriverError("route_inventory_order_stale")
+    if observed.get("ordered_packet_ids_sha256") != derived["ordered_packet_ids_sha256"]:
+        raise RouteDriverError("route_inventory_ids_sha_stale")
+    if observed.get("dependency_graph_sha256") != derived["dependency_graph_sha256"]:
+        raise RouteDriverError("route_inventory_graph_sha_stale")
+    if observed.get("profiles") != derived["profiles"]:
+        raise RouteDriverError("route_inventory_profiles_stale")
+    if observed.get("profiles_sha256") != derived["profiles_sha256"]:
+        raise RouteDriverError("route_inventory_profiles_sha_stale")
+    return dict(observed)
+
+
+def _derive_inventory_payload(future_document: str) -> dict[str, object]:
+    """Derive the canonical inventory payload from the prose packet order.
+
+    Shared by the manifest validator and the promotion compiler's manifest
+    refresh so both agree on exactly one derivation of the ordered packet
+    ids, dependency graph, and profile rows.
+    """
+
     ordered: list[str] = []
     dependency_graph: list[dict[str, object]] = []
     profile_rows: list[list[object]] = []
@@ -178,20 +202,15 @@ def inventory_manifest(future_document: str) -> dict[str, Any]:
         if row is None:
             raise RouteDriverError("route_profile_row_missing")
         profile_rows.append(row)
-    if observed.get("packet_count") != len(ordered):
-        raise RouteDriverError("route_inventory_count_stale")
-    if observed.get("ordered_packet_ids") != ordered:
-        raise RouteDriverError("route_inventory_order_stale")
-    if observed.get("ordered_packet_ids_sha256") != _json_sha256(ordered):
-        raise RouteDriverError("route_inventory_ids_sha_stale")
-    if observed.get("dependency_graph_sha256") != _json_sha256(dependency_graph):
-        raise RouteDriverError("route_inventory_graph_sha_stale")
-    rows = observed.get("profiles")
-    if not isinstance(rows, list) or rows != profile_rows:
-        raise RouteDriverError("route_inventory_profiles_stale")
-    if observed.get("profiles_sha256") != _json_sha256(profile_rows):
-        raise RouteDriverError("route_inventory_profiles_sha_stale")
-    return dict(observed)
+    return {
+        "schema_version": "future_route_inventory.v1",
+        "packet_count": len(ordered),
+        "ordered_packet_ids": ordered,
+        "ordered_packet_ids_sha256": _json_sha256(ordered),
+        "dependency_graph_sha256": _json_sha256(dependency_graph),
+        "profiles_sha256": _json_sha256(profile_rows),
+        "profiles": profile_rows,
+    }
 
 
 def _sketch_end(future_document: str, heading: re.Match[str]) -> int:
@@ -273,12 +292,17 @@ def _packet_states(next_document: str) -> dict[str, str]:
 
 
 def eligible_successor(
-    future_document: str, next_document: str, closed_packet_id: str
+    future_document: str,
+    next_document: str,
+    closed_packet_id: str,
+    *,
+    completed_ids: frozenset[str] = frozenset(),
 ) -> EligibleSuccessor:
     """Return exactly one eligible successor from the checked inventory.
 
     The successor is the first ordered packet whose prerequisites are all
-    COMPLETE on the current accepted routing and whose class is not ``EFFECT``
+    COMPLETE on the current accepted routing (structural ``COMPLETE`` packet
+    states or durable accepted receipts) and whose class is not ``EFFECT``
     (external-effect packets need a separate fresh T3 operator authority and
     are never auto-promoted by the driver).  The closed packet itself, zero
     eligible successors, an inconsistent manifest, or an ambiguous sketch
@@ -312,12 +336,36 @@ def eligible_successor(
         incomplete = [
             prerequisite
             for prerequisite in sketch.prerequisites
-            if states.get(prerequisite) != "COMPLETE"
+            if states.get(prerequisite) != "COMPLETE" and prerequisite not in completed_ids
         ]
         if incomplete:
             continue
         return EligibleSuccessor(packet_id=packet_id, sketch=sketch, profile=profile)
     raise RouteDriverError("no_eligible_successor")
+
+
+_ACCEPTED_RECEIPT_ROW = re.compile(
+    rf"^\|\s*`?(?P<packet>{plan_lane.PACKET_TOKEN})`?\s*\|\s*`?COMPLETE`?\s*\|"
+    r"\s*(?P<evidence>[^|]+?)\s*\|\s*$",
+    re.MULTILINE,
+)
+
+
+def _accepted_completed_ids(status_document: str) -> frozenset[str]:
+    """Return durable accepted-receipt identities from CURRENT_STATUS."""
+
+    receipt_section = re.search(
+        r"## Accepted Packet Receipts\s*(?P<body>.*?)(?=^## |\Z)",
+        status_document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if receipt_section is None:
+        return frozenset()
+    ids = {
+        match.group("packet")
+        for match in _ACCEPTED_RECEIPT_ROW.finditer(receipt_section.group("body"))
+    }
+    return frozenset(ids)
 
 
 def _delta_paths(allowed_delta: str) -> list[str]:
@@ -496,6 +544,7 @@ def _packet_block(
     capsule: dict[str, Any],
     accepted_main_sha: str,
     predecessor_evidence: str,
+    manifest_sha256: str,
 ) -> str:
     packet_id = successor.packet_id
     sketch = successor.sketch
@@ -516,12 +565,15 @@ def _packet_block(
         f"2. **Prerequisites and evidence.** {prerequisites} COMPLETE on accepted "
         f"main `{accepted_main_sha}` ({predecessor_evidence}).\n"
         f"3. **Owners and paths.** {sketch.allowed_delta}\n"
-        f"4. **Frozen subject identity and invariants.** Exactly one successor is "
-        f"compiled and promoted at a time; the compiled successor is never "
-        f"executed; the manifest is never silently edited; no model self-report "
-        f"advances routing; no child receives merge credentials, GitHub "
-        f"authority, Provider credentials, or T3 authority; a closeout/promotion "
-        f"PR never auto-merges.\n"
+        f"4. **Frozen subject identity and invariants.** The compiled successor "
+        f"binds `{packet_id}`, the checked inventory manifest SHA "
+        f"`{manifest_sha256}`, accepted main `{accepted_main_sha}`, and the "
+        f"closed-out predecessor evidence ({predecessor_evidence}). Exactly one "
+        f"successor is compiled and promoted at a time; the compiled successor "
+        f"is never executed; the manifest is never silently edited; no model "
+        f"self-report advances routing; no child receives merge credentials, "
+        f"GitHub authority, Provider credentials, or T3 authority; a "
+        f"closeout/promotion PR never auto-merges.\n"
         f"5. **Only semantic delta.** {sketch.exit_statement}\n"
         f"6. **Forbidden changes.** {sketch.stop}\n"
         f"7. **Ordered implementation slices.** {sketch.allowed_delta}\n"
@@ -592,40 +644,7 @@ def _refresh_future_document(future_document: str, promoted_id: str) -> str:
     block_start = match.start()
     block_end = _sketch_end(future_document, match)
     remainder = future_document[:block_start] + future_document[block_end:]
-    ordered: list[str] = []
-    dependency_graph: list[dict[str, object]] = []
-    profile_rows: list[list[object]] = []
-    for heading in plan_lane.PACKET_HEADING.finditer(remainder):
-        packet_id = heading.group("packet")
-        block = remainder[heading.start() : _sketch_end(remainder, heading)]
-        ordered.append(packet_id)
-        prerequisite = re.search(
-            r"^\*\*Prerequisite:\*\*\s*(?P<value>.+)$", block, re.MULTILINE
-        )
-        prerequisites = (
-            re.findall(plan_lane.PACKET_TOKEN, prerequisite.group("value"))
-            if prerequisite
-            else []
-        )
-        prerequisites = list(
-            dict.fromkeys(item for item in prerequisites if item != packet_id)
-        )
-        dependency_graph.append(
-            {"packet_id": packet_id, "prerequisites": prerequisites}
-        )
-        row = _profile_row(block, packet_id)
-        if row is None:
-            raise RouteDriverError("route_profile_row_missing")
-        profile_rows.append(row)
-    payload = {
-        "schema_version": "future_route_inventory.v1",
-        "packet_count": len(ordered),
-        "ordered_packet_ids": ordered,
-        "ordered_packet_ids_sha256": _json_sha256(ordered),
-        "dependency_graph_sha256": _json_sha256(dependency_graph),
-        "profiles_sha256": _json_sha256(profile_rows),
-        "profiles": profile_rows,
-    }
+    payload = _derive_inventory_payload(remainder)
     manifest_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     marker = INVENTORY_MARKER.search(remainder)
     if marker is None:
@@ -681,14 +700,21 @@ def compile_successor(
     closed so a promotion PR is never opened on an unbounded contract.
     """
 
-    successor = eligible_successor(future_document, next_document, closed_packet_id)
+    successor = eligible_successor(
+        future_document, next_document, closed_packet_id,
+        completed_ids=_accepted_completed_ids(status_document),
+    )
     if not isinstance(accepted_main_sha, str) or not plan_lane.SHA40.fullmatch(accepted_main_sha):
         raise RouteDriverError("route_accepted_main_invalid")
     if not isinstance(predecessor_evidence, str) or not predecessor_evidence.strip():
         raise RouteDriverError("route_predecessor_evidence_missing")
+    manifest = inventory_manifest(future_document)
+    manifest_sha256 = _json_sha256(manifest)
     capsule = _compile_capsule(successor, accepted_main_sha)
     spec_digest = _canonical_spec_digest(capsule, accepted_main_sha)
-    packet_block = _packet_block(successor, capsule, accepted_main_sha, predecessor_evidence)
+    packet_block = _packet_block(
+        successor, capsule, accepted_main_sha, predecessor_evidence, manifest_sha256
+    )
     completed_block = _completed_block(closed_packet_id, predecessor_evidence)
     next_document = _replace_packet_block(
         next_document, closed_packet_id, completed_block + packet_block
@@ -707,9 +733,9 @@ def compile_successor(
         packet_id=successor.packet_id,
         capsule=capsule,
         spec_digest=spec_digest,
+        manifest_sha256=manifest_sha256,
         branch=f"agent/packet-{successor.packet_id.lower()}",
         next_document=next_document,
         future_document=future_document,
         status_document=status_document,
-        packet_block=packet_block,
     )

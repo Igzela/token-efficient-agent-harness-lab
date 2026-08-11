@@ -13,6 +13,7 @@ import uuid
 from typing import Any, Callable
 
 import artifact_contract
+import ci_verifier
 import dispatcher
 import local_loop
 import local_verification
@@ -1298,9 +1299,21 @@ class LocalRunOnce:
             return self._plan_result("unavailable", packet_id, attempt, reason="routing_documents_unavailable")
         try:
             _successor_id, _digest = plan_lane.successor_binding(next_document, packet_id, accepted_main)
+            try:
+                self.github.dispatch_controller(
+                    "promote-plan", {"packet_id": packet_id, "attempt_id": attempt}
+                )
+            except local_loop.LoopUnavailable:
+                return self._plan_result(
+                    "successor_current", packet_id, attempt,
+                    accepted_main_sha=accepted_main, successor_id=_successor_id,
+                )
+            promotion = self._read_plan_promotion(ledger_issue, packet_id, attempt)
             return self._plan_result(
-                "successor_current", packet_id, attempt,
+                "promoted" if promotion is not None else "promotion_pending",
+                packet_id, attempt,
                 accepted_main_sha=accepted_main, successor_id=_successor_id,
+                promotion=promotion or {},
             )
         except plan_lane.PlanLaneError as exc:
             if exc.reason not in {"plan_packet_absent", "successor_still_current", "multiple_plan_packets"}:
@@ -1336,32 +1349,10 @@ class LocalRunOnce:
     ) -> local_loop.LocalRunOnceResult:
         successor_id = compiled.packet_id
         branch = compiled.branch
-        try:
-            existing = pr_binding.find_plan_pr(
-                successor_id, branch, compiled.spec_digest, accepted_main,
-                compiled.spec_digest, self.repository,
-            )
-        except pr_binding.PRBindingError:
-            existing = None
-        if existing is not None:
-            pr_number = existing.get("number")
-            if type(pr_number) is not int:
-                return self._plan_result("promotion_pr", packet_id, attempt, reason="pr_number_unavailable")
-            try:
-                merge_commit_sha = dispatcher._authoritative_plan_merge(
-                    pr_number, existing.get("head_sha", ""), self.repository
-                )
-            except (local_loop.LoopUnavailable, AttributeError):
-                merge_commit_sha = None
-            if merge_commit_sha:
-                return self._settle_promotion(
-                    packet_id, attempt, ledger_issue, successor_id,
-                    pr_number, existing.get("head_sha", ""), merge_commit_sha,
-                )
-            return self._plan_result(
-                "promotion_pr", packet_id, attempt,
-                pr_number=pr_number, head_sha=existing.get("head_sha", ""),
-                branch=branch, successor_id=successor_id,
+        remote_head = self._remote_branch_head(branch)
+        if remote_head is not None:
+            return self._resume_promotion_pr(
+                packet_id, attempt, accepted_main, ledger_issue, compiled, remote_head
             )
         worktree_path: Path | None = None
         try:
@@ -1408,11 +1399,9 @@ class LocalRunOnce:
             remote = self._git_checked(self.repo_path, "ls-remote", "origin", f"refs/heads/{branch}")
             parts = remote.split()
             remote_head = parts[0] if parts and len(parts) == 2 else None
-            if remote_head == head_sha:
-                pushed = True
-            else:
+            if remote_head != head_sha:
                 return self._plan_result("failed", packet_id, attempt, reason="push_not_applied")
-            if push_code != 0 and not pushed:
+            if push_code != 0:
                 return self._plan_result("failed", packet_id, attempt, reason="push_not_applied")
             marker = json.dumps({
                 "subject_kind": "plan-packet", "subject_id": successor_id,
@@ -1445,6 +1434,104 @@ class LocalRunOnce:
         finally:
             if worktree_path is not None:
                 worktree_manager.remove_plan_worktree(successor_id, str(self.repo_path), branch)
+
+    def _remote_branch_head(self, branch: str) -> str | None:
+        try:
+            remote = self._git_checked(
+                self.repo_path, "ls-remote", "origin", f"refs/heads/{branch}"
+            )
+        except local_loop.LoopUnavailable:
+            return None
+        parts = remote.split()
+        if parts and len(parts) == 2 and local_loop.HEX40.fullmatch(parts[0]):
+            return parts[0]
+        return None
+
+    def _resume_promotion_pr(
+        self,
+        packet_id: str,
+        attempt: str,
+        accepted_main: str,
+        ledger_issue: int,
+        compiled: route_driver.CompiledSuccessor,
+        remote_head: str,
+    ) -> local_loop.LocalRunOnceResult:
+        """Resume one promotion PR idempotently against its existing remote head.
+
+        The compile is deterministic, so the first drive publishes the branch
+        once; every resume verifies the existing exact-head Draft PR binding
+        against the remote head and never re-commits or re-opens a duplicate
+        PR.  Promotion proceeds only after the exact-head review receipt and
+        the exact-head canonical CI success are provable, and the eligible
+        merge is verified through the authoritative merge owner.
+        """
+
+        successor_id = compiled.packet_id
+        branch = compiled.branch
+        try:
+            existing = pr_binding.find_plan_pr(
+                successor_id, branch, remote_head, accepted_main,
+                compiled.spec_digest, self.repository,
+            )
+        except pr_binding.PRBindingError:
+            return self._plan_result(
+                "promotion_pr", packet_id, attempt,
+                branch=branch, successor_id=successor_id,
+                reason="promotion_pr_binding_unverified",
+            )
+        pr_number = existing.get("number")
+        head_sha = existing.get("head_sha", "")
+        if type(pr_number) is not int or not local_loop.HEX40.fullmatch(head_sha):
+            return self._plan_result("failed", packet_id, attempt, reason="pr_binding_invalid")
+        review = plan_lifecycle.plan_review_receipt(
+            ledger_issue, pr_number, head_sha, self.repository
+        )
+        if review is None:
+            return self._plan_result(
+                "bounded_pause", packet_id, attempt,
+                pr_number=pr_number, head_sha=head_sha, branch=branch,
+                successor_id=successor_id, reason="review_receipt_pending",
+            )
+        ci_ok = self._exact_head_canonical_ci(pr_number, branch, head_sha)
+        if not ci_ok:
+            return self._plan_result(
+                "bounded_pause", packet_id, attempt,
+                pr_number=pr_number, head_sha=head_sha, branch=branch,
+                successor_id=successor_id, reason="canonical_ci_pending",
+            )
+        try:
+            subprocess.run(
+                ["gh", "pr", "ready", str(pr_number), "--repo", self.repository],
+                capture_output=True, text=True, timeout=self.command_timeout_seconds,
+                check=False,
+            )
+        except OSError:
+            pass
+        merge_commit_sha = dispatcher._authoritative_plan_merge(
+            pr_number, head_sha, self.repository
+        )
+        if merge_commit_sha:
+            return self._settle_promotion(
+                packet_id, attempt, ledger_issue, successor_id,
+                pr_number, head_sha, merge_commit_sha,
+            )
+        return self._plan_result(
+            "promotion_pr", packet_id, attempt,
+            pr_number=pr_number, head_sha=head_sha, branch=branch,
+            successor_id=successor_id,
+        )
+
+    def _exact_head_canonical_ci(self, pr_number: int, branch: str, head_sha: str) -> bool:
+        try:
+            runs = ci_verifier.find_exact_runs(branch, head_sha, pr_number)
+            selected = ci_verifier.select_canonical_run(runs)
+        except (local_loop.LoopUnavailable, ValueError):
+            return False
+        return (
+            selected is not None
+            and str(selected.get("conclusion", "")).lower() == "success"
+            and selected.get("headSha") == head_sha
+        )
 
     def _settle_promotion(
         self,

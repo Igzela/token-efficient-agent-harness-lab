@@ -480,15 +480,28 @@ class TestRunRouteOnce(unittest.TestCase):
         self.assertEqual(result.status, "rejected")
         self.assertEqual(result.details["reason"], "plan_claim_not_closed_out")
 
-    def test_successor_already_current_returns_without_compile(self):
+    def test_successor_already_current_settles_promotion_receipt(self):
         import plan_lifecycle
+        import state_manager
 
         github = self._github()
         github.accepted_plan_document.return_value = next_document(current=SUCCESSOR)
-        with mock.patch.object(plan_lifecycle, "_exact_plan_claim", return_value=_closed_claim()):
+        with mock.patch.object(plan_lifecycle, "_exact_plan_claim", return_value=_closed_claim()), \
+             mock.patch.object(state_manager, "read_dispatch_state", return_value={
+                 "kind": "agent-orchestrator-dispatch-state",
+                 "version": 1,
+                 "issue_number": LEDGER,
+                 "dispatch_id": f"plan-promote:{CLOSED}:{ATTEMPT}",
+                 "action": "plan-promote",
+                 "status": "promoted",
+                 "details": {"successor_id": SUCCESSOR},
+             }):
             result = self._runner(github).run_route_once(CLOSED, ATTEMPT)
-        self.assertEqual(result.status, "successor_current")
+        self.assertEqual(result.status, "promoted")
         self.assertEqual(result.details["successor_id"], SUCCESSOR)
+        github.dispatch_controller.assert_called_once_with(
+            "promote-plan", {"packet_id": CLOSED, "attempt_id": ATTEMPT}
+        )
 
     def test_no_eligible_successor_dispatches_bounded_pause(self):
         import plan_lifecycle
@@ -509,6 +522,21 @@ class TestRunRouteOnce(unittest.TestCase):
         import worktree_manager
         import local_run_once
 
+        remote_ref = f"refs/heads/agent/packet-{SUCCESSOR.lower()}"
+        ls_remote_calls = {"count": 0}
+
+        def fake_git(_wt, *args):
+            if args[0] == "commit":
+                return ""
+            if args[0] == "rev-parse":
+                return "d" * 40
+            if args[0] == "ls-remote":
+                ls_remote_calls["count"] += 1
+                if ls_remote_calls["count"] == 1:
+                    return ""
+                return f"{'d'*40}\t{remote_ref}"
+            return ""
+
         github = self._github()
         with mock.patch.object(plan_lifecycle, "_exact_plan_claim", return_value=_closed_claim()), \
              mock.patch.object(
@@ -522,8 +550,7 @@ class TestRunRouteOnce(unittest.TestCase):
                  local_run_once, "_bounded_process", return_value=(0, "", ""),
              ), \
              mock.patch.object(
-                 local_run_once.LocalRunOnce, "_git_checked",
-                 side_effect=lambda _wt, *args: {"commit": None, "rev-parse": "d" * 40, "ls-remote": f"{'d'*40}\trefs/heads/agent/packet-pe7-successor-promotion-escalation-1"}.get(args[0], ""),
+                 local_run_once.LocalRunOnce, "_git_checked", side_effect=fake_git,
              ), \
              mock.patch.object(
                  pr_binding, "create_or_update_plan_pr",
@@ -542,34 +569,78 @@ class TestRunRouteOnce(unittest.TestCase):
         self.assertIn("agent-orchestrator-binding", marker_args[6])
         self.assertIn(SUCCESSOR, marker_args[6])
 
-    def test_resume_settles_after_eligible_merge(self):
+    def test_resume_pauses_when_review_receipt_pending(self):
         import plan_lifecycle
         import pr_binding
-        import dispatcher
         import local_run_once
 
+        remote_ref = f"refs/heads/agent/packet-{SUCCESSOR.lower()}"
         github = self._github()
+
+        def fake_git(_wt, *args):
+            if args[0] == "ls-remote":
+                return f"{'d'*40}\t{remote_ref}"
+            return ""
+
         with mock.patch.object(plan_lifecycle, "_exact_plan_claim", return_value=_closed_claim()), \
+             mock.patch.object(
+                 local_run_once.LocalRunOnce, "_git_checked", side_effect=fake_git,
+             ), \
              mock.patch.object(
                  pr_binding, "find_plan_pr",
                  return_value={"number": 7, "head_sha": "d" * 40},
              ), \
+             mock.patch.object(plan_lifecycle, "plan_review_receipt", return_value=None):
+            result = self._runner(github).run_route_once(CLOSED, ATTEMPT)
+        self.assertEqual(result.status, "bounded_pause")
+        self.assertEqual(result.details["reason"], "review_receipt_pending")
+
+    def test_resume_settles_after_eligible_merge(self):
+        import plan_lifecycle
+        import pr_binding
+        import dispatcher
+        import ci_verifier
+        import state_manager
+        import local_run_once
+
+        remote_ref = f"refs/heads/agent/packet-{SUCCESSOR.lower()}"
+        github = self._github()
+
+        def fake_git(_wt, *args):
+            if args[0] == "ls-remote":
+                return f"{'d'*40}\t{remote_ref}"
+            return ""
+
+        pr = {"number": 7, "head_sha": "d" * 40}
+        review = {"kind": "agent-orchestrator-review-state", "verdict": "PASS"}
+        run = {"databaseId": 11, "conclusion": "success", "headSha": "d" * 40}
+        with mock.patch.object(plan_lifecycle, "_exact_plan_claim", return_value=_closed_claim()), \
+             mock.patch.object(
+                 local_run_once.LocalRunOnce, "_git_checked", side_effect=fake_git,
+             ), \
+             mock.patch.object(pr_binding, "find_plan_pr", return_value=pr), \
+             mock.patch.object(plan_lifecycle, "plan_review_receipt", return_value=review), \
+             mock.patch.object(ci_verifier, "find_exact_runs", return_value=[run]), \
+             mock.patch.object(ci_verifier, "select_canonical_run", return_value=run), \
              mock.patch.object(
                  dispatcher, "_authoritative_plan_merge", return_value="c" * 40,
              ), \
-             mock.patch.object(local_run_once, "state_manager") as sm_mock:
-            sm_mock.read_dispatch_state.return_value = {
-                "kind": "agent-orchestrator-dispatch-state",
-                "version": 1,
-                "issue_number": LEDGER,
-                "dispatch_id": f"plan-promote:{CLOSED}:{ATTEMPT}",
-                "action": "plan-promote",
-                "status": "promoted",
-                "details": {"successor_id": SUCCESSOR},
-            }
+             mock.patch.object(
+                 state_manager, "read_dispatch_state",
+                 return_value={
+                     "kind": "agent-orchestrator-dispatch-state",
+                     "version": 1,
+                     "issue_number": LEDGER,
+                     "dispatch_id": f"plan-promote:{CLOSED}:{ATTEMPT}",
+                     "action": "plan-promote",
+                     "status": "promoted",
+                     "details": {"successor_id": SUCCESSOR},
+                 },
+             ):
             result = self._runner(github).run_route_once(CLOSED, ATTEMPT)
         self.assertEqual(result.status, "promoted")
         self.assertEqual(result.details["successor_id"], SUCCESSOR)
+        self.assertEqual(result.details["merge_commit_sha"], "c" * 40)
         github.dispatch_controller.assert_called_once_with(
             "promote-plan", {"packet_id": CLOSED, "attempt_id": ATTEMPT}
         )
