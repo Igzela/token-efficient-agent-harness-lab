@@ -1584,6 +1584,10 @@ class LocalRunOnce:
             planned = self._plan_current_main_evidence(
                 successor, accepted_main, closeout_reference
             )
+            if planned.reason == "promotion_planner_unavailable":
+                return self._plan_result(
+                    "unavailable", packet_id, attempt, reason=planned.reason
+                )
             if planned.state not in {"READY_FOR_EXECUTION", "T3_REQUIRED"} or planned.evidence is None:
                 return self._dispatch_bounded_pause(packet_id, attempt, planned.reason)
             compiled = route_driver.compile_successor(
@@ -1719,6 +1723,10 @@ class LocalRunOnce:
             planned = self._plan_current_main_evidence(
                 successor, accepted_main, closeout_reference
             )
+            if planned.reason == "promotion_planner_unavailable":
+                return self._plan_result(
+                    "unavailable", request.packet_id, attempt, reason=planned.reason
+                )
             if planned.state not in {"READY_FOR_EXECUTION", "T3_REQUIRED"} or planned.evidence is None:
                 return self._plan_result(
                     "bounded_pause", request.packet_id, attempt, reason=planned.reason
