@@ -44,6 +44,10 @@ PACKET_HISTORICAL_STATE = re.compile(
     r"^\*\*Historical state:\*\* `(?P<state>[A-Z_]+)`", re.MULTILINE
 )
 ACTIVE_ROUTING = re.compile(r"^\s*\d+\.\s+`(?P<packet>[A-Za-z0-9-]+)`", re.MULTILINE)
+_ACCEPTED_RECEIPT_ROW = re.compile(
+    rf"^\|\s*`?(?P<packet>{PACKET_TOKEN})`?\s*\|\s*`?COMPLETE`?\s*\|\s*[^|]+?\s*\|\s*$",
+    re.MULTILINE,
+)
 
 
 class PlanLaneError(ValueError):
@@ -65,13 +69,14 @@ class PlanCandidate:
     forbidden_changes: list[str]
     verification: list[str]
     rollback: list[str]
+    route_manifest_sha256: str | None = None
 
     @property
     def branch(self) -> str:
         return f"agent/packet-{self.packet_id.lower()}"
 
     def spec_wire(self) -> dict[str, Any]:
-        return {
+        wire = {
             "schema_version": SCHEMA_VERSION,
             "packet_id": self.packet_id,
             "state": "READY_FOR_EXECUTION",
@@ -83,9 +88,12 @@ class PlanCandidate:
             "verification": self.verification,
             "rollback": self.rollback,
         }
+        if self.route_manifest_sha256 is not None:
+            wire["route_manifest_sha256"] = self.route_manifest_sha256
+        return wire
 
     def to_wire(self) -> dict[str, Any]:
-        return {
+        wire = {
             "candidate_kind": "plan",
             "subject_kind": "plan-packet",
             "subject_id": self.packet_id,
@@ -99,6 +107,9 @@ class PlanCandidate:
             "rollback": list(self.rollback),
             "branch": self.branch,
         }
+        if self.route_manifest_sha256 is not None:
+            wire["route_manifest_sha256"] = self.route_manifest_sha256
+        return wire
 
 
 def _bounded_string(value: Any, field: str) -> str:
@@ -116,6 +127,34 @@ def _bounded_strings(value: Any, field: str, *, allow_empty: bool = False) -> li
     if len(result) != len(set(result)):
         raise PlanLaneError(f"plan_{field}_duplicated")
     return result
+
+
+def accepted_completed_packet_ids(status_document: str) -> frozenset[str]:
+    """Read durable COMPLETE packet receipts from canonical CURRENT_STATUS.
+
+    ``NEXT_DECISION`` deliberately retains one active packet and at most one
+    immediate historical binding.  Older prerequisite truth therefore stays
+    with CURRENT_STATUS, which is already the accepted receipt owner.  This
+    function is read-only and rejects an absent or oversized receipt index
+    instead of inferring completion from route prose.
+    """
+
+    if not isinstance(status_document, str) or len(status_document.encode("utf-8")) > MAX_DOCUMENT_BYTES:
+        raise PlanLaneError("plan_status_document_unavailable_or_too_large")
+    section = re.search(
+        r"^## Accepted Packet Receipts\s*(?P<body>.*?)(?=^## |\Z)",
+        status_document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if section is None:
+        raise PlanLaneError("plan_status_receipt_index_missing")
+    return frozenset(match.group("packet") for match in _ACCEPTED_RECEIPT_ROW.finditer(section.group("body")))
+
+
+def _completed_packet_ids(value: frozenset[str]) -> frozenset[str]:
+    if not isinstance(value, frozenset) or any(PACKET_ID.fullmatch(item) is None for item in value):
+        raise PlanLaneError("plan_completed_receipts_invalid")
+    return value
 
 
 def _packet_blocks(document: str) -> list[tuple[str, str, int, int, str]]:
@@ -137,13 +176,56 @@ def _packet_blocks(document: str) -> list[tuple[str, str, int, int, str]]:
     return blocks
 
 
+def _is_retained_effect_closeout_bridge(
+    document: str,
+    packet_block: str,
+    payload: dict[str, Any],
+    prerequisites: list[str],
+    missing: list[str],
+    states: dict[str, str],
+) -> bool:
+    """Allow exactly one provider-free evidence CLOSEOUT after an EFFECT.
+
+    An EFFECT remains ``IN_PROGRESS`` until its existing product owner proves
+    outcome evidence.  The direct CLOSEOUT may run solely to make that proof;
+    no generic incomplete prerequisite is admitted and no EFFECT is treated as
+    complete here.
+    """
+
+    if (
+        len(prerequisites) != 1
+        or missing != prerequisites
+        or states.get(prerequisites[0]) != "IN_PROGRESS"
+        or not re.search(r"^\*\*Class:\*\* `CLOSEOUT`\s*$", packet_block, re.MULTILINE)
+        or payload.get("external_effect_limit") != 0
+        or payload.get("authority_consumption_allowed") is not False
+        or payload.get("secret_values_allowed") is not False
+        or payload.get("private_paths_allowed") is not False
+    ):
+        return False
+    retained = re.search(
+        rf"^#{{2,3}} Retained .*?\({re.escape(prerequisites[0])}\)\s*$"
+        r"(?P<body>.*?)(?=^#{2,3} |\Z)",
+        document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if retained is None or len(re.findall(r"<!--\s*route-t3-request:v1\s*\{.*?\}\s*-->", retained.group("body"), re.DOTALL)) != 1:
+        return False
+    return True
+
+
 def _canonical_spec(payload: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
 
 
-def parse(document: str, accepted_main_sha: str) -> PlanCandidate:
+def parse(
+    document: str,
+    accepted_main_sha: str,
+    *,
+    completed_packet_ids: frozenset[str] = frozenset(),
+) -> PlanCandidate:
     """Parse exactly one explicit READY packet from accepted canonical prose.
 
     The candidate is derived from the accepted ``weak-agent-dispatch:v1``
@@ -157,6 +239,7 @@ def parse(document: str, accepted_main_sha: str) -> PlanCandidate:
         raise PlanLaneError("plan_document_unavailable_or_too_large")
     if not SHA40.fullmatch(accepted_main_sha or ""):
         raise PlanLaneError("plan_accepted_main_invalid")
+    completed_packet_ids = _completed_packet_ids(completed_packet_ids)
     blocks = _packet_blocks(document)
     if not blocks:
         raise PlanLaneError("plan_packet_absent")
@@ -171,7 +254,7 @@ def parse(document: str, accepted_main_sha: str) -> PlanCandidate:
     if len(marker_matches) != 1:
         raise PlanLaneError("multiple_plan_packets")
     marker = marker_matches[0]
-    packet_id, structural_state, block_start, block_end, _block = next(
+    packet_id, structural_state, block_start, block_end, packet_block = next(
         (item for item in blocks if item[0] == ready[0]), ("", "", -1, -1, "")
     )
     if marker.start() < block_start or marker.end() > block_end:
@@ -209,12 +292,23 @@ def parse(document: str, accepted_main_sha: str) -> PlanCandidate:
     if any(not PACKET_ID.fullmatch(item) for item in prerequisites):
         raise PlanLaneError("plan_prerequisites_invalid")
     states = {item[0]: item[1] for item in blocks}
-    missing = [item for item in prerequisites if states.get(item) != "COMPLETE"]
-    if missing:
+    missing = [
+        item for item in prerequisites
+        if states.get(item) != "COMPLETE" and item not in completed_packet_ids
+    ]
+    if missing and not _is_retained_effect_closeout_bridge(
+        document, packet_block, payload, prerequisites, missing, states
+    ):
         raise PlanLaneError("plan_dependencies_not_ready")
     forbidden_changes = _bounded_strings(payload["forbidden_changes"], "forbidden_changes")
     verification = _bounded_strings(payload["verification"], "verification")
     rollback = [_bounded_string(payload["rollback"], "rollback")]
+    route_manifest_sha256: str | None = None
+    if "route_manifest_sha256" in payload:
+        value = payload["route_manifest_sha256"]
+        if not isinstance(value, str) or SHA256.fullmatch(value) is None:
+            raise PlanLaneError("plan_route_manifest_sha256_invalid")
+        route_manifest_sha256 = value
     spec = {
         "schema_version": SCHEMA_VERSION,
         "packet_id": packet_id,
@@ -227,6 +321,8 @@ def parse(document: str, accepted_main_sha: str) -> PlanCandidate:
         "verification": verification,
         "rollback": rollback,
     }
+    if route_manifest_sha256 is not None:
+        spec["route_manifest_sha256"] = route_manifest_sha256
     routed = list(ACTIVE_ROUTING.finditer(document))
     if not routed or routed[0].group("packet") != packet_id:
         raise PlanLaneError("plan_packet_is_not_current_route")
@@ -240,6 +336,7 @@ def parse(document: str, accepted_main_sha: str) -> PlanCandidate:
         forbidden_changes=forbidden_changes,
         verification=verification,
         rollback=rollback,
+        route_manifest_sha256=route_manifest_sha256,
     )
 
 
@@ -278,18 +375,29 @@ def terminal_owner_readiness(
     return (not missing, missing)
 
 
-def parse_optional(document: str, accepted_main_sha: str) -> PlanCandidate | None:
+def parse_optional(
+    document: str,
+    accepted_main_sha: str,
+    *,
+    completed_packet_ids: frozenset[str] = frozenset(),
+) -> PlanCandidate | None:
     """Return no candidate only for an actually absent plan lane."""
 
     try:
-        return parse(document, accepted_main_sha)
+        return parse(document, accepted_main_sha, completed_packet_ids=completed_packet_ids)
     except PlanLaneError as exc:
         if exc.reason == "plan_packet_absent":
             return None
         raise
 
 
-def successor_binding(document: str, closed_packet_id: str, accepted_main_sha: str) -> tuple[str, str]:
+def successor_binding(
+    document: str,
+    closed_packet_id: str,
+    accepted_main_sha: str,
+    *,
+    completed_packet_ids: frozenset[str] = frozenset(),
+) -> tuple[str, str]:
     """Return ``(packet_id, capsule_digest)`` of exactly one eligible successor.
 
     After a plan packet closes out, the live accepted routing must name
@@ -301,7 +409,7 @@ def successor_binding(document: str, closed_packet_id: str, accepted_main_sha: s
 
     if not isinstance(closed_packet_id, str) or PACKET_ID.fullmatch(closed_packet_id) is None:
         raise PlanLaneError("successor_closed_packet_invalid")
-    candidate = parse(document, accepted_main_sha)
+    candidate = parse(document, accepted_main_sha, completed_packet_ids=completed_packet_ids)
     if candidate.packet_id == closed_packet_id:
         raise PlanLaneError("successor_still_current")
     return candidate.packet_id, candidate.task_spec_sha256

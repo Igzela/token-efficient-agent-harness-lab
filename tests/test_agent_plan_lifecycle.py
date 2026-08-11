@@ -694,6 +694,62 @@ class TestPlanLifecycleWait(unittest.TestCase):
         self.assertFalse(result.details["promotion_pending"])
         github.dispatch_controller.assert_not_called()
 
+    def test_evidence_missing_controller_escalation_returns_closeout_to_route_run(self):
+        github = mock.Mock()
+        runner = local_run_once.LocalRunOnce(
+            github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
+            lifecycle_timeout_seconds=60, sleeper=lambda _: None,
+        )
+        lifecycle = {
+            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
+            "transitions": {
+                "merge": {"merge_commit_sha": MERGE},
+                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
+            },
+        }
+        escalation = {
+            "kind": "plan-escalate", "status": "escalated",
+            "details": {"reason": "promotion_current_main_evidence_missing"},
+        }
+        with mock.patch.object(
+            plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle
+        ), mock.patch.object(
+            runner, "_read_plan_promotion", return_value=escalation
+        ):
+            result = runner._wait_for_plan_terminal_receipts(LEDGER, PACKET, ATTEMPT, PR, HEAD)
+        self.assertEqual(result.status, "closed_out")
+        self.assertTrue(result.details["promotion_escalated"])
+        self.assertTrue(result.details["promotion_pending"])
+        self.assertEqual(result.details["promotion"], escalation)
+        github.dispatch_controller.assert_not_called()
+
+    def test_other_controller_escalation_remains_a_bounded_pause(self):
+        github = mock.Mock()
+        runner = local_run_once.LocalRunOnce(
+            github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
+            lifecycle_timeout_seconds=60, sleeper=lambda _: None,
+        )
+        lifecycle = {
+            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
+            "transitions": {
+                "merge": {"merge_commit_sha": MERGE},
+                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
+            },
+        }
+        escalation = {
+            "kind": "plan-escalate", "status": "escalated",
+            "details": {"reason": "promotion_owner_ambiguous"},
+        }
+        with mock.patch.object(
+            plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle
+        ), mock.patch.object(
+            runner, "_read_plan_promotion", return_value=escalation
+        ):
+            result = runner._wait_for_plan_terminal_receipts(LEDGER, PACKET, ATTEMPT, PR, HEAD)
+        self.assertEqual(result.status, "bounded_pause")
+        self.assertEqual(result.details["reason"], "promotion_owner_ambiguous")
+        github.dispatch_controller.assert_not_called()
+
     def test_wait_dispatches_controller_for_merge_and_closeout_stages(self):
         github = mock.Mock()
         runner = local_run_once.LocalRunOnce(
@@ -778,6 +834,36 @@ class TestPlanLifecycleWait(unittest.TestCase):
         self.assertEqual(result.details.get("claim_status"), "closed_out")
         self.assertEqual(result.details.get("terminal_packet_state"), "closed_out")
         github.dispatch_controller.assert_not_called()
+
+
+class TestPlanLifecycleWorkflowTransport(unittest.TestCase):
+    def test_existing_controller_exposes_lifecycle_and_promotion_with_bounded_inputs(self):
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github"
+            / "workflows"
+            / "agent-controller.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("          - lifecycle-plan\n", workflow)
+        self.assertIn("          - promote-plan\n", workflow)
+        self.assertIn("      stage:\n", workflow)
+        self.assertIn("      INPUT_STAGE: ${{ inputs.stage }}\n", workflow)
+        self.assertIn("dispatcher.py lifecycle-plan", workflow)
+        self.assertIn('"$INPUT_PACKET_ID" "$INPUT_ATTEMPT_ID" "$INPUT_STAGE"', workflow)
+        self.assertIn("dispatcher.py promote-plan", workflow)
+        self.assertIn("          - record-route-t3-receipt\n", workflow)
+        self.assertIn("      INPUT_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}\n", workflow)
+        self.assertIn("      INPUT_OUTCOME_RECEIPT_DIGEST: ${{ inputs.outcome_receipt_digest }}\n", workflow)
+        self.assertIn("      INPUT_DECISION_SOURCE: ${{ inputs.decision_source }}\n", workflow)
+        self.assertIn(
+            "      INPUT_DECISION_EVIDENCE_DIGEST: ${{ inputs.decision_evidence_digest }}\n",
+            workflow,
+        )
+        self.assertIn("dispatcher.py record-route-t3-receipt", workflow)
+        self.assertIn(
+            '"$INPUT_DECISION_SOURCE" "$INPUT_DECISION_EVIDENCE_DIGEST" "$INPUT_ISSUED_AT"',
+            workflow,
+        )
 
 
 if __name__ == "__main__":

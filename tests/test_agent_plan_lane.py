@@ -86,6 +86,18 @@ class TestPlanLane(unittest.TestCase):
         self.assertEqual(candidate.branch, "agent/packet-tool-plan-lane-1")
         self.assertEqual(candidate.to_wire()["candidate_kind"], "plan")
 
+    def test_route_manifest_hash_is_bound_into_the_execution_candidate(self):
+        payload = packet_payload(route_manifest_sha256="b" * 64)
+        candidate = plan_lane.parse(document(marker_payload=payload), MAIN)
+        self.assertEqual(candidate.route_manifest_sha256, "b" * 64)
+        self.assertEqual(candidate.to_wire()["route_manifest_sha256"], "b" * 64)
+        changed = plan_lane.parse(
+            document(marker_payload=packet_payload(route_manifest_sha256="c" * 64)), MAIN
+        )
+        self.assertNotEqual(candidate.task_spec_sha256, changed.task_spec_sha256)
+        with self.assertRaisesRegex(plan_lane.PlanLaneError, "route_manifest_sha256"):
+            plan_lane.parse(document(marker_payload=packet_payload(route_manifest_sha256="not-a-digest")), MAIN)
+
     def test_absent_plan_marker_is_not_a_candidate(self):
         self.assertIsNone(
             plan_lane.parse_optional(
@@ -123,6 +135,24 @@ class TestPlanLane(unittest.TestCase):
         self.assertEqual(candidate.packet_id, "TOOL-PLAN-LANE-1")
         self.assertEqual(candidate.prerequisites, ["TOOL-PREREQUISITE-1"])
 
+    def test_durable_current_status_receipt_satisfies_prerequisite_without_history_growth(self):
+        payload = packet_payload(prerequisites=["TOOL-PREREQUISITE-1"])
+        status = (
+            "## Accepted Packet Receipts\n\n"
+            "| Packet | State | Accepted evidence |\n|---|---|---|\n"
+            "| `TOOL-PREREQUISITE-1` | `COMPLETE` | exact accepted receipt |\n"
+        )
+        completed = plan_lane.accepted_completed_packet_ids(status)
+        candidate = plan_lane.parse(
+            document(marker_payload=payload), MAIN, completed_packet_ids=completed
+        )
+        self.assertEqual(candidate.prerequisites, ["TOOL-PREREQUISITE-1"])
+        self.assertEqual(completed, frozenset({"TOOL-PREREQUISITE-1"}))
+
+    def test_status_receipt_index_fails_closed_when_missing(self):
+        with self.assertRaisesRegex(plan_lane.PlanLaneError, "status_receipt_index_missing"):
+            plan_lane.accepted_completed_packet_ids("## Capability Status\n")
+
     def test_incomplete_historical_predecessor_blocks_prerequisite(self):
         payload = packet_payload(prerequisites=["TOOL-PREREQUISITE-1"])
         text = (
@@ -138,6 +168,36 @@ class TestPlanLane(unittest.TestCase):
         )
         with self.assertRaisesRegex(plan_lane.PlanLaneError, "dependencies_not_ready"):
             plan_lane.parse(text, MAIN)
+
+    def test_retained_in_progress_effect_admits_only_its_direct_provider_free_closeout(self):
+        effect = "PE7-EFFECT-1"
+        payload = packet_payload(
+            packet_id="PE7-EFFECT-CLOSEOUT-1",
+            prerequisites=[effect],
+        )
+        request = {
+            "schema_version": "route_t3_request.v1",
+            "packet_id": effect,
+            "accepted_main_sha": MAIN,
+            "candidate_digest": "b" * 64,
+            "action_digest": "c" * 64,
+            "scope_digest": "d" * 64,
+            "authority_owner_digest": "e" * 64,
+            "requested_action": "one bounded effect",
+        }
+        text = (
+            "## Active Routing\n1. `PE7-EFFECT-CLOSEOUT-1`\n"
+            f"## Retained ({effect})\n**Historical state:** `IN_PROGRESS`\n"
+            "<!-- route-t3-request:v1\n" + json.dumps(request, sort_keys=True) + "\n-->\n"
+            "## Packet PE7-EFFECT-CLOSEOUT-1\n**State:** `READY_FOR_EXECUTION`\n"
+            "**Class:** `CLOSEOUT`\n"
+            "<!-- weak-agent-dispatch:v1 " + json.dumps(payload, sort_keys=True) + " -->"
+        )
+        candidate = plan_lane.parse(text, MAIN)
+        self.assertEqual(candidate.packet_id, "PE7-EFFECT-CLOSEOUT-1")
+        blocked = text.replace("**Class:** `CLOSEOUT`", "**Class:** `IMPLEMENT`")
+        with self.assertRaisesRegex(plan_lane.PlanLaneError, "dependencies_not_ready"):
+            plan_lane.parse(blocked, MAIN)
 
     def test_missing_fields_and_invalid_digest_fail_closed(self):
         payload = packet_payload()
@@ -225,6 +285,12 @@ class TestPlanLane(unittest.TestCase):
             def accepted_plan_document(self, _sha):
                 return document()
 
+            def accepted_status_document(self, _sha):
+                return (
+                    "## Accepted Packet Receipts\n\n"
+                    "| Packet | State | Accepted evidence |\n|---|---|---|\n"
+                )
+
             def plan_ledger_issue(self):
                 raise local_loop.LoopUnavailable("plan execution ledger is unavailable")
 
@@ -273,6 +339,12 @@ class TestPlanLane(unittest.TestCase):
 
             def accepted_plan_document(self, _sha):
                 return document()
+
+            def accepted_status_document(self, _sha):
+                return (
+                    "## Accepted Packet Receipts\n\n"
+                    "| Packet | State | Accepted evidence |\n|---|---|---|\n"
+                )
 
             def plan_ledger_issue(self):
                 return 900

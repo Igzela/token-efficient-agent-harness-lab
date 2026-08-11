@@ -129,6 +129,19 @@ class FakeGit:
 
 
 class TestLoopControllerPoll(unittest.TestCase):
+    def test_git_adapter_refreshes_only_the_named_origin_branch(self):
+        result = mock.Mock(returncode=0)
+        with mock.patch.object(local_loop.subprocess, "run", return_value=result) as run:
+            local_loop.GitAdapter().refresh_origin_main(Path("/tmp"), "main")
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "git", "fetch", "--no-tags", "origin",
+                "+refs/heads/main:refs/remotes/origin/main",
+            ],
+        )
+        self.assertEqual(run.call_args.kwargs["cwd"], Path("/tmp"))
+
     def controller(self, github=None, git=None, *, max_active=state_manager.MAX_ACTIVE):
         return local_loop.LoopController(
             github or FakeGitHub(),
@@ -508,7 +521,44 @@ class TestLoopctl(unittest.TestCase):
                         "--issue", "7", "--attempt-id", "123e4567-e89b-12d3-a456-426614174000",
                         forbidden, "value",
                     ])
+    def test_route_run_cli_has_no_packet_selector_and_returns_typed_terminal_state(self):
+        captured = {}
 
+        class RouteRunner:
+            def run(self):
+                return {
+                    "kind": "repo-agent-route-run.v1",
+                    "state": "ROUTE_EXHAUSTED",
+                    "reason": "no_routed_packet_remains",
+                }
+
+        def factory(*args, **kwargs):
+            captured.update(kwargs)
+            return RouteRunner()
+
+        output = StringIO()
+        with redirect_stdout(output):
+            code = loopctl.main(
+                [
+                    "route-run",
+                    "--repo", "Igzela/example",
+                    "--repo-path", "/workspace/example",
+                    "--max-transitions", "7",
+                ],
+                route_run_factory=factory,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["max_transitions"], 7)
+        self.assertNotIn("packet_id", captured)
+        self.assertEqual(__import__("json").loads(output.getvalue())["state"], "ROUTE_EXHAUSTED")
+
+    def test_route_run_transition_limit_is_bounded_before_runner_construction(self):
+        for value in ("0", "257", "not-a-number"):
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                loopctl.main([
+                    "route-run", "--repo", "Igzela/example", "--repo-path", "/workspace/example",
+                    "--max-transitions", value,
+                ])
 
 
 class TestPlanDocumentDecode(unittest.TestCase):
