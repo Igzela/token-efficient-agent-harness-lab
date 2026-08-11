@@ -98,7 +98,7 @@ on:
       decision_source:
         required: false
         type: string
-      decision_digest:
+      decision_evidence_digest:
         required: false
         type: string
       issued_at:
@@ -145,7 +145,7 @@ jobs:
       INPUT_OUTCOME_RECEIPT_DIGEST: ${{ inputs.outcome_receipt_digest }}
       INPUT_AUTHORITY_OWNER_DIGEST: ${{ inputs.authority_owner_digest }}
       INPUT_DECISION_SOURCE: ${{ inputs.decision_source }}
-      INPUT_DECISION_DIGEST: ${{ inputs.decision_digest }}
+      INPUT_DECISION_EVIDENCE_DIGEST: ${{ inputs.decision_evidence_digest }}
       INPUT_ISSUED_AT: ${{ inputs.issued_at }}
       INPUT_EXPIRES_AT: ${{ inputs.expires_at }}
       INPUT_DISPOSITION: ${{ inputs.disposition }}
@@ -238,7 +238,7 @@ jobs:
                 "$INPUT_PACKET_ID" "$INPUT_ACCEPTED_MAIN_SHA" "$INPUT_CANDIDATE_DIGEST" \
                 "$INPUT_ACTION_DIGEST" "$INPUT_SCOPE_DIGEST" "$INPUT_AUTHORITY_RECEIPT_DIGEST" \
                 "$INPUT_OUTCOME_RECEIPT_DIGEST" "$INPUT_AUTHORITY_OWNER_DIGEST" "$GITHUB_ACTOR" \
-                "$INPUT_DECISION_SOURCE" "$INPUT_DECISION_DIGEST" "$INPUT_ISSUED_AT" \
+                "$INPUT_DECISION_SOURCE" "$INPUT_DECISION_EVIDENCE_DIGEST" "$INPUT_ISSUED_AT" \
                 "$INPUT_EXPIRES_AT" "$INPUT_DISPOSITION"
               ;;
             release-plan)

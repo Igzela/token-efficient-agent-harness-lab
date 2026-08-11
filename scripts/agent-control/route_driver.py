@@ -588,7 +588,7 @@ class PromotionCandidate:
 
 @dataclass(frozen=True)
 class T3Request:
-    """The minimum typed human/operator request for a prepared EFFECT node."""
+    """The minimum typed source-authoritative request for a prepared EFFECT node."""
 
     packet_id: str
     accepted_main_sha: str
@@ -597,6 +597,33 @@ class T3Request:
     scope_digest: str
     authority_owner_digest: str
     requested_action: str
+
+
+def t3_decision_digest(
+    request: T3Request,
+    decision_source: str,
+    decision_evidence_digest: str,
+    disposition: str,
+) -> str:
+    """Hash the redacted decision evidence into one exact finite disposition.
+
+    The evidence digest is the retention-safe commitment to the source's
+    conclusion; this binding prevents a transport from reusing it for another
+    packet, scope, source, or disposition. It is not an effect grant.
+    """
+
+    return _json_sha256({
+        "schema_version": "route_t3_decision.v1",
+        "packet_id": request.packet_id,
+        "accepted_main_sha": request.accepted_main_sha,
+        "candidate_digest": request.candidate_digest,
+        "action_digest": request.action_digest,
+        "scope_digest": request.scope_digest,
+        "authority_owner_digest": request.authority_owner_digest,
+        "decision_source": decision_source,
+        "decision_evidence_digest": decision_evidence_digest,
+        "disposition": disposition,
+    })
 
 
 def _t3_request_marker(request: T3Request) -> str:
@@ -644,6 +671,7 @@ class T3Receipt:
     authority_owner_digest: str
     operator: str
     decision_source: str
+    decision_evidence_digest: str
     decision_digest: str
     issued_at: str
     expires_at: str
@@ -669,7 +697,8 @@ def validate_t3_receipt(
     required = {
         "schema_version", "packet_id", "accepted_main_sha", "candidate_digest",
         "action_digest", "scope_digest", "authority_receipt_digest", "outcome_receipt_digest",
-        "authority_owner_digest", "operator", "decision_source", "decision_digest",
+        "authority_owner_digest", "operator", "decision_source", "decision_evidence_digest",
+        "decision_digest",
         "issued_at", "expires_at", "disposition",
     }
     if not isinstance(raw, dict) or set(raw) != required:
@@ -697,12 +726,23 @@ def validate_t3_receipt(
     ):
         return None, "t3_receipt_operator_invalid"
     decision_source = raw.get("decision_source")
+    decision_evidence_digest = raw.get("decision_evidence_digest")
     decision_digest = raw.get("decision_digest")
-    if decision_source not in T3_DECISION_SOURCES or not isinstance(decision_digest, str) or plan_lane.SHA256.fullmatch(decision_digest) is None:
+    if (
+        decision_source not in T3_DECISION_SOURCES
+        or not isinstance(decision_evidence_digest, str)
+        or plan_lane.SHA256.fullmatch(decision_evidence_digest) is None
+        or not isinstance(decision_digest, str)
+        or plan_lane.SHA256.fullmatch(decision_digest) is None
+    ):
         return None, "t3_receipt_decision_source_invalid"
     disposition = raw.get("disposition")
     if disposition not in {"GO", "NO_GO", "DEFER"}:
         return None, "t3_receipt_disposition_invalid"
+    if decision_digest != t3_decision_digest(
+        request, decision_source, decision_evidence_digest, disposition
+    ):
+        return None, "t3_receipt_decision_binding_invalid"
     try:
         issued = datetime.fromisoformat(str(raw["issued_at"]).replace("Z", "+00:00"))
         expires = datetime.fromisoformat(str(raw["expires_at"]).replace("Z", "+00:00"))
@@ -730,6 +770,7 @@ def validate_t3_receipt(
         authority_owner_digest=raw["authority_owner_digest"],
         operator=operator,
         decision_source=decision_source,
+        decision_evidence_digest=decision_evidence_digest,
         decision_digest=decision_digest,
         issued_at=raw["issued_at"],
         expires_at=raw["expires_at"],
@@ -1535,7 +1576,7 @@ class RepositoryRouteRunner:
         "review_repair_pending", "claim_unavailable", "claim_rejected",
         "stale_checkout", "promotion_pr", "promotion_pending", "handed_off",
         "promotion_review_pending", "promotion_ready_pending", "promotion_ci_pending",
-        "in_flight", "successor_current",
+        "in_flight", "successor_current", "unavailable",
     })
 
     def __init__(
@@ -1580,11 +1621,11 @@ class RepositoryRouteRunner:
             self._sleeper(self._poll_interval_seconds)
 
     def _read_t3_receipt(self, request: T3Request) -> object | None:
-        """Read only an existing ledger-backed operator receipt, if supplied.
+        """Read only an existing ledger-backed source-authoritative receipt.
 
         The concrete GitHub ledger adapter is deliberately injected by the
-        existing controller/authority transport.  The route driver never
-        writes this record and cannot synthesize a human authorization.
+        existing controller transport. The route driver never writes this
+        record and cannot synthesize a decision source conclusion.
         """
 
         if self._t3_receipt_reader is not None:
@@ -1805,6 +1846,33 @@ class RepositoryRouteRunner:
             details = getattr(result, "details", {})
             if status == "outcome_unknown":
                 return RouteRunResult("OUTCOME_UNKNOWN", str(details.get("reason", "outcome_unknown")), packet_id, transitions).to_wire()
+            if status == "failed_unknown_output":
+                return RouteRunResult(
+                    "OUTCOME_UNKNOWN",
+                    str(details.get("reason", "failed_unknown_output")),
+                    packet_id,
+                    transitions,
+                ).to_wire()
+            if status == "terminal":
+                claim_status = details.get("claim_status") if isinstance(details, dict) else None
+                if claim_status in {"failed_unknown_output", "outcome_unknown"}:
+                    return RouteRunResult(
+                        "OUTCOME_UNKNOWN",
+                        str(details.get("reason", "plan_terminal_outcome_unknown")),
+                        packet_id,
+                        transitions,
+                    ).to_wire()
+                if claim_status == "closed_out":
+                    status = "closed_out"
+                elif claim_status == "failed":
+                    status = "failed"
+                else:
+                    return RouteRunResult(
+                        "DECISION_REQUIRED",
+                        str(details.get("reason", "plan_terminal_unproved")),
+                        packet_id,
+                        transitions,
+                    ).to_wire()
             if status in {"control_stopped", "rejected"}:
                 return RouteRunResult("DECISION_REQUIRED", str(details.get("reason", status)), packet_id, transitions).to_wire()
             if status == "closed_out":

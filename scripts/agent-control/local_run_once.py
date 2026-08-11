@@ -1591,6 +1591,7 @@ class LocalRunOnce:
             "authority_owner_digest": receipt.authority_owner_digest,
             "operator": receipt.operator,
             "decision_source": receipt.decision_source,
+            "decision_evidence_digest": receipt.decision_evidence_digest,
             "decision_digest": receipt.decision_digest,
             "issued_at": receipt.issued_at,
             "expires_at": receipt.expires_at,

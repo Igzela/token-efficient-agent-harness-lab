@@ -727,6 +727,23 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
         self.assertTrue(result["authorized"])
         self.assertEqual(write.call_args.args[2:4], ("route-t3-receipt", "authorized"))
         self.assertEqual(write.call_args.args[1], f"route-t3:{CLOSED}:" + "b" * 64)
+        self.assertEqual(
+            write.call_args.args[4]["decision_digest"],
+            route_driver.t3_decision_digest(
+                route_driver.T3Request(
+                    packet_id=CLOSED,
+                    accepted_main_sha=MAIN,
+                    candidate_digest="b" * 64,
+                    action_digest="c" * 64,
+                    scope_digest="d" * 64,
+                    authority_owner_digest="a" * 64,
+                    requested_action="one finite action",
+                ),
+                "local_sol_5_6_max",
+                "1" * 64,
+                "GO",
+            ),
+        )
 
     def test_conflicting_existing_t3_receipt_fails_closed(self):
         adapter = self._adapter()
@@ -802,6 +819,19 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
         self.assertEqual(result["reason"], "t3_receipt_decision_source_invalid")
         write.assert_not_called()
 
+    def test_malformed_decision_evidence_is_rejected_before_ledger_write(self):
+        adapter = self._adapter()
+        arguments = list(self._arguments())
+        arguments[10] = "not-a-sha256"
+        with mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.control_state, "require_live", return_value=None), \
+             mock.patch.object(local_loop, "GitHubAdapter", return_value=adapter), \
+             mock.patch.object(state_manager, "record_dispatch_state") as write:
+            result = dispatcher.record_route_t3_receipt(*arguments)
+        self.assertFalse(result["authorized"])
+        self.assertEqual(result["reason"], "t3_receipt_decision_source_invalid")
+        write.assert_not_called()
+
 
 class TestOperatorEffectRouteResume(unittest.TestCase):
     def _request_and_receipt(self):
@@ -827,11 +857,18 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             "authority_owner_digest": request.authority_owner_digest,
             "operator": "authorized-operator",
             "decision_source": "local_sol_5_6_max",
-            "decision_digest": "1" * 64,
+            "decision_evidence_digest": "1" * 64,
+            "decision_digest": "",
             "issued_at": now.isoformat(),
             "expires_at": (now + timedelta(minutes=5)).isoformat(),
             "disposition": "GO",
         }
+        raw["decision_digest"] = route_driver.t3_decision_digest(
+            request,
+            raw["decision_source"],
+            raw["decision_evidence_digest"],
+            raw["disposition"],
+        )
         receipt, reason = route_driver.validate_t3_receipt(raw, request, now=now)
         self.assertEqual(reason, "t3_receipt_valid")
         return request, receipt, raw

@@ -1105,9 +1105,7 @@ def promote_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
     except plan_lane.PlanLaneError as exc:
         if exc.reason not in {"plan_packet_absent", "successor_still_current", "multiple_plan_packets"}:
             return {"promoted": False, "reason": f"routing_invalid:{exc.reason}"}
-        compiled = _compile_promotion(
-            repo, packet_id, attempt, accepted_main, details
-        )
+        compiled = _compile_promotion(repo, packet_id, attempt)
         if compiled is None:
             return {"promoted": False, "reason": "route_compile_unavailable"}
         if "escalated" in compiled:
@@ -1154,7 +1152,7 @@ def record_route_t3_receipt(
     authority_owner_digest: str,
     operator: str,
     decision_source: str,
-    decision_digest: str,
+    decision_evidence_digest: str,
     issued_at: str,
     expires_at: str,
     disposition: str,
@@ -1221,6 +1219,12 @@ def record_route_t3_receipt(
         or request.authority_owner_digest != authority_owner_digest
     ):
         return {"authorized": False, "reason": "route_t3_request_binding_mismatch"}
+    decision_digest = route_driver.t3_decision_digest(
+        request,
+        decision_source,
+        decision_evidence_digest,
+        disposition,
+    )
     receipt = {
         "schema_version": "route_t3_receipt.v1",
         "packet_id": packet_id,
@@ -1233,6 +1237,7 @@ def record_route_t3_receipt(
         "authority_owner_digest": authority_owner_digest,
         "operator": operator,
         "decision_source": decision_source,
+        "decision_evidence_digest": decision_evidence_digest,
         "decision_digest": decision_digest,
         "issued_at": issued_at,
         "expires_at": expires_at,
@@ -1300,8 +1305,6 @@ def _compile_promotion(
     repo: str,
     packet_id: str,
     attempt: str,
-    accepted_main: str,
-    claim_details: dict[str, object],
 ) -> dict[str, object] | None:
     """Record a typed pause until the evidence-backed planner supplies a candidate.
 

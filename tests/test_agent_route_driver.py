@@ -461,19 +461,41 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             "authority_owner_digest": "a" * 64,
             "operator": "authorized-operator",
             "decision_source": "local_sol_5_6_max",
-            "decision_digest": "1" * 64,
+            "decision_evidence_digest": "1" * 64,
+            "decision_digest": "",
             "issued_at": now.isoformat(),
             "expires_at": (now + timedelta(minutes=5)).isoformat(),
             "disposition": "GO",
         }
+        receipt["decision_digest"] = route_driver.t3_decision_digest(
+            request,
+            receipt["decision_source"],
+            receipt["decision_evidence_digest"],
+            receipt["disposition"],
+        )
         validated, reason = route_driver.validate_t3_receipt(receipt, request, now=now)
         self.assertEqual(reason, "t3_receipt_valid")
         self.assertEqual(validated.disposition, "GO")
         receipt["decision_source"] = "gpt_web"
-        receipt["decision_digest"] = "2" * 64
+        receipt["decision_digest"] = route_driver.t3_decision_digest(
+            request,
+            receipt["decision_source"],
+            receipt["decision_evidence_digest"],
+            receipt["disposition"],
+        )
         validated, reason = route_driver.validate_t3_receipt(receipt, request, now=now)
         self.assertEqual(reason, "t3_receipt_valid")
         self.assertEqual(validated.decision_source, "gpt_web")
+        receipt["decision_digest"] = "0" * 64
+        validated, reason = route_driver.validate_t3_receipt(receipt, request, now=now)
+        self.assertIsNone(validated)
+        self.assertEqual(reason, "t3_receipt_decision_binding_invalid")
+        receipt["decision_digest"] = route_driver.t3_decision_digest(
+            request,
+            receipt["decision_source"],
+            receipt["decision_evidence_digest"],
+            receipt["disposition"],
+        )
         receipt["candidate_digest"] = "f" * 64
         validated, reason = route_driver.validate_t3_receipt(receipt, request, now=now)
         self.assertIsNone(validated)
@@ -556,10 +578,17 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             "authority_owner_digest": request.authority_owner_digest,
             "operator": "approved-model-decision-transport",
             "decision_source": "local_sol_5_6_max",
-            "decision_digest": "2" * 64,
+            "decision_evidence_digest": "2" * 64,
+            "decision_digest": "",
             "issued_at": now.isoformat(), "expires_at": (now + timedelta(minutes=5)).isoformat(),
             "disposition": "GO",
         }
+        raw["decision_digest"] = route_driver.t3_decision_digest(
+            request,
+            raw["decision_source"],
+            raw["decision_evidence_digest"],
+            raw["disposition"],
+        )
         receipt, reason = route_driver.validate_recorded_t3_receipt(raw, request)
         self.assertEqual(reason, "t3_receipt_valid")
         status = (
@@ -841,6 +870,61 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         self.assertEqual(result["state"], "OUTCOME_UNKNOWN")
         runner.run_plan_once.assert_called_once()
 
+    def test_failed_unknown_output_is_outcome_unknown_not_a_decision_pause(self):
+        runner = mock.Mock()
+        runner.run_plan_once.return_value = self.Result(
+            "failed_unknown_output", reason="worker_output_unproved"
+        )
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo",
+            repo_path=Path("/tmp"),
+            runner=runner,
+            attempt_factory=lambda: ATTEMPT,
+        )
+        with mock.patch.object(route, "_current_packet", return_value=(CLOSED, MAIN)):
+            result = route.run()
+        self.assertEqual(result["state"], "OUTCOME_UNKNOWN")
+        self.assertEqual(result["reason"], "worker_output_unproved")
+        runner.run_plan_once.assert_called_once()
+
+    def test_unavailable_controller_state_retries_without_a_decision_pause(self):
+        runner = mock.Mock()
+        runner.run_plan_once.side_effect = [
+            self.Result("unavailable", reason="temporary_github_failure"),
+            self.Result("control_stopped", reason="operator_pause"),
+        ]
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo",
+            repo_path=Path("/tmp"),
+            runner=runner,
+            attempt_factory=lambda: ATTEMPT,
+        )
+        with mock.patch.object(route, "_current_packet", return_value=(CLOSED, MAIN)):
+            result = route.run()
+        self.assertEqual(result["state"], "DECISION_REQUIRED")
+        self.assertEqual(result["reason"], "operator_pause")
+        self.assertEqual(runner.run_plan_once.call_count, 2)
+
+    def test_terminal_closed_out_claim_resumes_its_existing_promotion(self):
+        runner = mock.Mock()
+        runner.run_plan_once.return_value = self.Result(
+            "terminal", claim_status="closed_out"
+        )
+        runner.run_route_once.return_value = self.Result("promoted")
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo",
+            repo_path=Path("/tmp"),
+            runner=runner,
+            max_transitions=2,
+            attempt_factory=lambda: ATTEMPT,
+        )
+        with mock.patch.object(
+            route, "_current_packet", side_effect=[(CLOSED, MAIN), (None, MAIN)]
+        ):
+            result = route.run()
+        self.assertEqual(result["state"], "ROUTE_EXHAUSTED")
+        runner.run_route_once.assert_called_once_with(CLOSED, ATTEMPT)
+
     def test_unproved_promotion_is_decision_required_not_a_retry_loop(self):
         runner = mock.Mock()
         runner.run_plan_once.return_value = self.Result("closed_out")
@@ -950,10 +1034,17 @@ class TestRepositoryRouteRunner(unittest.TestCase):
             "outcome_receipt_digest": "f" * 64,
             "operator": "authorized-operator",
             "decision_source": "local_sol_5_6_max",
-            "decision_digest": "1" * 64,
+            "decision_evidence_digest": "1" * 64,
+            "decision_digest": "",
             "issued_at": now.isoformat(), "expires_at": (now + timedelta(minutes=5)).isoformat(),
             "disposition": "GO",
         }
+        receipt["decision_digest"] = route_driver.t3_decision_digest(
+            request,
+            receipt["decision_source"],
+            receipt["decision_evidence_digest"],
+            receipt["disposition"],
+        )
         runner = mock.Mock()
         runner.run_effect_route_once.return_value = self.Result("promoted")
         route = route_driver.RepositoryRouteRunner(
