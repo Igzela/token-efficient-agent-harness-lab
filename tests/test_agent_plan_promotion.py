@@ -450,6 +450,26 @@ class TestPromotePlanDispatcher(unittest.TestCase):
         self.assertEqual(result["successor_id"], SUCCESSOR)
         self.assertEqual(result["routing_main_sha"], MAIN)
 
+    def test_closeout_reference_binds_into_compiled_contract(self):
+        import route_driver
+        with mock.patch.object(dispatcher.local_loop, "GitHubAdapter") as adapter_cls:
+            adapter, _next_doc = self._compile_documents()
+            adapter_cls.return_value = adapter
+            compiled = mock.Mock()
+            compiled.packet_id = SUCCESSOR
+            compiled.spec_digest = "d" * 64
+            compiled.manifest_sha256 = "e" * 64
+            with mock.patch.object(state_manager, "read_dispatch_state", return_value=None), \
+                 mock.patch.object(state_manager, "record_dispatch_state", return_value=True), \
+                 mock.patch.object(
+                     route_driver, "compile_successor", return_value=compiled,
+                 ) as compile_mock:
+                result = self._run(self._patch(routing_error="successor_still_current"))
+        self.assertTrue(result["promoted"], result)
+        self.assertEqual(compile_mock.call_args.args[4], "PR #42")
+        self.assertEqual(result["manifest_sha256"], "e" * 64)
+        self.assertEqual(result["capsule_digest"], "d" * 64)
+
     def test_invalid_routing_fails_closed_without_receipt(self):
         patches = self._patch(routing_error="plan_packet_fields_invalid")
         for patch in patches:
