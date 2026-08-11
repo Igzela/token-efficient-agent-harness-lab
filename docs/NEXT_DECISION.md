@@ -1,380 +1,113 @@
 # Next Decision
 
-Last updated: 2026-08-10.
+Last updated: 2026-08-11.
 
-This document owns only the current executable window: active routing, the common execution contract, and one current planning/execution window — a single packet block that is either planning-parked (`DECISION_REQUIRED` with a complete, expandable contract) or execution-ready (`READY_FOR_EXECUTION`/`IN_PROGRESS` with its weak-agent dispatch capsule). Accepted truth belongs in `docs/CURRENT_STATUS.md`; long-horizon routing-only packet sketches and promotion profiles belong in `docs/FUTURE_ROUTE.md`; durable invariants belong in `docs/ARCHITECTURE_BOOK.md`; current owners belong in `docs/MODULE_MAP.md`. Live PR heads, CI, and reviews belong only in a fresh context capsule.
+This document owns one current execution or planning window only. Accepted receipts belong in `docs/CURRENT_STATUS.md`; routing-only packet sketches belong in `docs/FUTURE_ROUTE.md`; the Plan Execution Ledger and merged history retain detailed lifecycle evidence. Live PR, CI, review, and mergeability facts come only from a fresh context capsule.
 
 ## Current Direction
 
-The repository optimizes one outcome:
+The repository improves verifiable task delivery only under hard quality, safety, evidence, compatibility, recovery, rollback, and authority gates. A route label, future-route sketch, model response, or candidate PR does not authorize implementation or an external effect.
 
-> Under non-negotiable quality, safety, traceability, compatibility, recovery, and rollback constraints, increase verifiable and reusable task delivery per unit of total lifecycle cost.
-
-Quality, authority, evidence integrity, compatibility, recovery, and rollback are hard gates. Token use, monetary cost, latency, accepted delivery, engineering effort, maintenance surface, and reuse are optimization evidence only after those gates pass.
-
-The accepted route is **bounded recursive Harness optimization**, not open-ended evolution or general recursive self-improvement. Candidate generation, experimental-parent selection, production adoption, and improvement-operator research remain separate authorities. The accepted repository-maintenance route contract now hardens the control plane that executes these packets; the next packet activates only the existing Plan subject path and changes no product authority or external-effect boundary.
-
-The following refinements are accepted as of 2026-08-08:
-
-- the repaired 4-cell RWE run is a **viability baseline**, not decision-grade evidence of architecture improvement;
-- task-level measurement design and a larger pre-convergence decision baseline precede Architecture Convergence;
-- Architecture Convergence begins with three AC0 inventory/freeze packets; AC1–AC6 then separate current-main contract, additive core, and caller/consumer migration, while AC7 separates removal manifest, deletion, and closeout;
-- the causal comparison is a contemporary randomized/interleaved old/new replay, not an unqualified historical before/after comparison;
-- Harness-Evolution experiment-control hardening keeps five control families but separates each family's contract from implementation and closeout;
-- Level-1 first runs without memory or skill projection; memory-only and skill-only tests are optional factor experiments and do not block the core route;
-- production adoption and Meta Improver research fork after final transfer evidence and neither authorizes the other;
-- a future route label, issue, chat handoff, or promotion profile is not implementation authority. Only a packet satisfying the execution-ready contract below may enter `READY_FOR_EXECUTION`.
-
-This decision changes routing and acceptance gates. It does not authorize a provider call, live experiment, target effect, merge, release, deployment, production adoption, Level-2 controller, or Meta Improver.
+The repository-maintenance route is continuous only through the existing Plan Execution Ledger, dispatcher, worktree, PR, CI, review, merge, closeout, and context owners. It does not create product-runtime authority, auto-merge, a Provider call, target write, release, deployment, EFFECT execution, or T3 authority.
 
 ## Authoritative Forward Order
 
-The route is stage-ordered. The current window is declared below; blocked successors are indexed without execution authority in `docs/FUTURE_ROUTE.md`:
-
 ```text
-[window: Plan-lane successor promotion and escalation — READY_FOR_EXECUTION, provider-free control-plane implementation only]
-→ select and promote exactly one successor at a time
-→ return to the blocked PREFLIGHT repair/reconciliation window
-→ [window: viability preflight — provider-free S1–S5 only]
-→ separately authorized viability run → evidence closeout
-→ measurement estimands → corpus/sample → operations/evidence → protocol freeze
-→ decision-baseline snapshot → preflight → run → analysis
-→ AC0 runtime inventory → data/contract inventory → trace/order freeze
-→ AC1–AC6 contract → bounded implementation → migration/closeout
-→ AC7 removal manifest → cleanup/closeout
-→ contemporary replay reconstruction → freeze/preflight → run → analysis
-→ EC1–EC5 contract → implementation/closeout
-→ Level-1 preflight/generation → evaluation/closeout
-→ Level-1 transfer protocol → run/analysis
-→ Level-2 evidence audit → human GO/NO-GO receipt
-→ bounded Level-2 controller slices only on GO
-→ final-transfer protocol → run → analysis
-→ independent adoption and Meta-Improver branches
-→ optional R4 metacognitive and R5 weight-adapter research only after supported Meta + separate human GO
-→ optional R6 single outer-policy family only after explicit R4/R5 dispositions + separate human GO
-→ Dashboard disposition and presentation refresh last
+[window: Route automation — READY_FOR_EXECUTION, provider-free control-plane implementation]
+→ [route-autopilot adversarial soak — provider-free]
+→ [PREFLIGHT B1/B2/provenance contract → bounded repair → provider-free PREFLIGHT]
+→ [viability RUN — typed T3 pause]
+→ remaining ordered FUTURE_ROUTE packets
 ```
 
-The memory/skill factor experiment is an optional branch after Level-1 evaluation. It is not a Level-2 prerequisite. Adoption and Meta Improver remain independent after final transfer; both must reach an explicit completion disposition before the deferred Dashboard refresh becomes eligible. The optional R4-R6 research portfolio does not block adoption or Dashboard, never starts mechanically, and cannot expand evaluator, goal, safety, authority, budget, adoption, release, or deployment mutability.
-
-No downstream micro-packet starts automatically. Every micro-packet must satisfy its named prerequisite on accepted `main` and its class contract below.
+Every successor remains routing-only until its accepted predecessor closes and the promotion planner proves a bounded current-main contract. A negative, insufficient, unknown, or authority-required disposition rewrites or pauses the route; it never silently follows the nominal order.
 
 ## Active Routing
 
-1. `PE7-SUCCESSOR-PROMOTION-ESCALATION-1` — `READY_FOR_EXECUTION`. It is the sole current packet and wires plan-lane successor promotion and escalation through the existing owners, ledger-anchored and controller-owned, with exactly-one promotion receipts and bounded pause escalation. It creates no Provider, target, or T3 effect.
-2. The provider-free viability PREFLIGHT remains blocked until the control-plane transition and its B1/B2 enforcement/provenance disposition are reconciled. Its previously authored execution contract is retained below as historical packet material and is not an execution surface while blocked.
-3. Every other packet in `docs/FUTURE_ROUTE.md` — `BLOCKED_PREREQUISITE`; every `EFFECT` additionally needs a separate fresh finite T3 operator authority.
-4. Dashboard PR #225 — `DEFERRED_LAST`; it is not a shortcut around the route.
+1. `PE7-ROUTE-AUTOMATION-1` — `READY_FOR_EXECUTION`. Sole current packet: turn the accepted receipt/promotion primitives into a continuously recoverable, caller-independent repository route. It creates no Provider, target, EFFECT, or T3 effect.
+2. The first canonical provider-free soak and every later packet remain routing-only in `docs/FUTURE_ROUTE.md` until their predecessor is accepted and a current-main candidate contract is independently reviewed.
+3. Any later external-effect packet pauses for an exact finite T3 receipt; it is neither skipped nor executed automatically.
 
 ## Packet States
 
-- `READY_FOR_EXECUTION` — accepted prerequisites and a complete packet contract permit provider-free implementation.
-- `BLOCKED_PREREQUISITE` — a named earlier evidence, implementation, or authority condition is incomplete.
-- `DECISION_REQUIRED` — safe direction or authority cannot be derived from accepted owners; no coding entry may consume the window.
-- `IN_PROGRESS` — one current branch/PR owns the packet.
-- `COMPLETE` — merged, verified, independently reviewed, and synchronized into accepted documents.
+- `READY_FOR_EXECUTION` — an accepted, complete twelve-field contract permits only its stated provider-free work.
+- `BLOCKED_PREREQUISITE` — a named receipt, contract, or authority is missing.
+- `DECISION_REQUIRED` — current-main evidence cannot prove the required owner, path, decision, or recovery fact.
+- `T3_REQUIRED` — the route has completed bounded provider-free preparation and waits for one exact human/operator authority receipt; no effect occurred.
+- `OUTCOME_UNKNOWN` — an external effect may have occurred and the route must not retry or infer success.
+- `ROUTE_EXHAUSTED` — the canonical inventory has no remaining successor after a proved closeout.
+- `IN_PROGRESS` — the existing ledger/PR lifecycle owns a current attempt.
+- `COMPLETE` — merged, exact-head verified, independently reviewed, and synchronized into accepted documents.
 
-Review `PASS`, PR merge, and packet `COMPLETE` are different states. Exact-head review `PASS` satisfies only the independent-review gate.
+Exact-head review `PASS`, a PR merge, and packet `COMPLETE` are different facts.
 
-## Execution-Readiness Contract
+## Promotion and Continuous-Route Invariants
 
-A route label, boundary table, issue, chat handoff, promotion profile, or model-generated implementation plan is not enough to start code. Before a blocked packet becomes `READY_FOR_EXECUTION`, this document must contain, for that exact accepted-main frontier:
+The deterministic promotion compiler owns only stable route facts: packet identity, prerequisite graph, class, tier, risk profile, checked manifest integrity, and the accepted predecessor receipt/disposition. `docs/FUTURE_ROUTE.md` paths and prose are hints only; they are never current-main edit authority.
 
-1. one outcome and explicit non-goals;
-2. accepted prerequisites and exact evidence identities;
-3. current canonical owners and a bounded allowed-path set;
-4. invariants and fields that must remain byte-, value-, or behavior-identical;
-5. the only allowed semantic delta;
-6. forbidden authority, schema, persistence, evaluator, provider, target, release, and adoption changes;
-7. ordered implementation slices small enough for independent review;
-8. failure taxonomy, restart/idempotency/concurrency obligations, and stop triggers;
-9. focused tests, applicable full tests, exact-head canonical CI, and independent-review requirements;
-10. compatibility, migration, rollback, cleanup, and evidence-retention behavior;
-11. the exact exit artifact or decision receipt;
-12. a next permitted action and forbidden next actions.
+The `RoutePromotionPlanner` module resolves `REFRESH_AT_PROMOTION` from the actual accepted main before a candidate can be compiled: exact owner and caller/consumer evidence, allowed-path closure, ordered slices, precise allowlisted verification, rollback/cleanup/retention/evidence destinations, and relevant schema/evaluator/authority/recovery decisions. It emits a bounded candidate with hashes for every observation or a typed `DECISION_REQUIRED`; it may not emit a plausible generic contract. Deterministic validators reject a candidate with missing, stale, contradictory, out-of-closure, or unverified facts.
 
-Execution readiness is progressive:
+`NEXT_DECISION.md` retains only this current packet and, during a transition, one short completed-predecessor binding. Promotion replaces that binding rather than accumulating history. The driver must prove a bounded document size and stable one-current-window shape across the 116-packet inventory and the canonical route-control additions.
 
-- **execution-ready** — all twelve fields are concrete; an implementation agent may work within them;
-- **planning-ready** — the goal and boundary are accepted, but current-main inventory or a value decision is still required;
-- **routing-only** — ordering is accepted, but implementation details would be premature.
+## Completed PE7-SUCCESSOR-PROMOTION-ESCALATION-1
 
-No packet other than the current one is execution-ready. `PE7-SUCCESSOR-PROMOTION-ESCALATION-1` is execution-ready below; `PE7-PLAN-LANE-ACTIVATION-1` and `PE7-LIFECYCLE-CONTROLLER-1` are complete; `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` is blocked pending the control-plane transition's later B1/B2/provenance reconciliation; every packet in `docs/FUTURE_ROUTE.md` is routing-only until its exact predecessor is accepted and its complete contract is moved here and refreshed against then-current `main`. An implementation agent must stop `DECISION_REQUIRED` rather than fill a missing architecture, authority, statistical, evaluator, retention, spend, recovery, or adoption decision.
+**Historical state:** `COMPLETE`.
 
-## Micro-Packet Classes and Consolidation Rule
+**Historical evidence:** PR #387 exact head `5fe3d55af19aa7a081115637f8f8a7aa63b581af`; merge `597f90282fb6ca72472b890b825684bf54486709`; exact-head `PASS`; canonical workflow `31403849100`. Its controller-owned promotion and bounded pause receipts remain on the Plan Execution Ledger.
 
-Every later packet declares one class. The class supplies the repeated contract; the packet supplies only its unique delta, prerequisite, exit, and stop conditions.
-
-### `CONTRACT`
-
-- Provider-free planning/inventory only; production behavior, schema, persistence, authority, evaluator, Provider, target, and output remain unchanged.
-- Inspect current owners and callers, freeze exact allowed/forbidden paths, interfaces, invariants, compatibility, migration order, tests, rollback, evidence retention, and unresolved decisions.
-- Exit with a versioned, hash-bound contract or manifest accepted by independent review. Do not implement the design in the same packet unless this document explicitly says the delta is purely mechanical.
-- Any unresolved value that changes authority, risk, spend, inference, retention, schema, recovery, or adoption exits `DECISION_REQUIRED`.
-
-### `IMPLEMENT`
-
-- Implement exactly one accepted contract and one coherent semantic delta. No new planning choice, owner, authority, external effect, experiment result, or adoption claim.
-- Preserve compatibility first. Additive core work precedes caller migration; deletion waits for an explicit cleanup packet.
-- Exit with focused negative tests, applicable full tests, parity/restart/concurrency evidence where touched, exact-head CI, independent `PASS`, implementation-cost receipt, and a revert path.
-- If the accepted contract does not identify the required file, owner, API, failure mapping, or rollback behavior, stop `DECISION_REQUIRED` instead of guessing.
-
-### `EFFECT`
-
-- Execute one pre-registered external experiment or paid Provider run. It changes no code, contract, evaluator, corpus, budget, seed, reviewer rule, or statistical method.
-- Requires an immediately current provider-free preflight plus a distinct finite one-use operator authorization bound to exact accepted-main, artifacts, principal, Provider/model, budgets, expiry, run identity, evidence destinations, and stop rules.
-- Record every attempt and consumed lifecycle cost, including failure and outcome unknown. No retuning, selective rerun, hidden rejection, or protocol repair occurs inside the run.
-- Exit with restricted raw evidence, a redacted hash-bound receipt, terminal cleanup, and no claim beyond the packet's registered estimand.
-
-### `CLOSEOUT`
-
-- Validate, reconcile, analyze, migrate a mechanically enumerated caller set, or issue a decision receipt from already frozen evidence. No new external effect and no post-result protocol change.
-- Recompute identities and statistics independently; preserve missingness, failures, rejected candidates, drift, and unavailable evidence.
-- Exit with exact evidence bindings, independent review, explicit PASS/NO-GO/INSUFFICIENT disposition, rollback or next decision, and canonical status synchronization.
-- A favorable result cannot waive a failed hard gate; an unfavorable or insufficient result is valid completion.
-
-### Consolidation rule
-
-The default is one focused branch/PR per packet. Adjacent provider-free packets may share one PR only when their accepted parent contract explicitly proves all of the following: same canonical owner, same allowed paths, no intermediate schema/authority/evaluator decision, one rollback point, one reviewable semantic delta, and no loss of an independently useful stop point. `EFFECT` packets, human decision receipts, schema/authority changes, and packets spanning different owners never consolidate. Difficulty or CI cost alone is not justification for consolidation.
-
-### Packet-local reading and activation
-
-An execution session should not load `docs/FUTURE_ROUTE.md` unless it is selecting or refreshing the next packet. It reads `START_HERE.md`, the current status, the common contracts/hard stops in this document, the one active packet block, its accepted predecessor receipt, the relevant owner map/architecture sections, and the exact code/tests.
-
-A predecessor becoming `COMPLETE` does not mechanically make its successor executable. Before changing a successor to `READY_FOR_EXECUTION`, the planning owner must refresh that block against accepted current `main` and replace every routing-level abstraction with exact evidence identities, owner/allowed paths, frozen interfaces/fields, tests, rollback, and any required human or operator gate. The `docs/FUTURE_ROUTE.md` promotion profile supplies bounded promotion-time candidates; facts marked `REFRESH_AT_PROMOTION` must be re-derived from then-current `main`, not guessed. If the accepted predecessor ended `NO_GO`, `DECLINE`, `DEFER`, `SATURATED`, `HARM`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT`, synchronize and rewrite the route before selecting any successor. Do not walk the nominal GO path merely because a prerequisite packet closed.
-
-## Common Evidence and Cost Contract
-
-Every engineering or experimental packet returns a bounded `implementation_cost_receipt` with available realized evidence:
-
-```text
-agent_sessions
-review_cycles
-repair_iterations
-ci_runs
-ci_compute_minutes
-files_changed
-schema_migrations
-compatibility_adapters_added
-authority_boundaries_touched
-external_dependencies_added
-rollback_complexity
-known_maintenance_surface
-human_preparation_minutes
-review_minutes
-material_rework_minutes
-recovery_minutes
-observed_reuse_count
-cost_or_measurement_unavailable_fields
-```
-
-Keep realized facts separate from forecasts. Failed, rejected, cancelled, timed-out, killed, recovered, and outcome-unknown attempts retain their consumed cost. Successful-run-only costing is prohibited.
-
-## Comparison and Claim Discipline
-
-```text
-chain viability
-!= decision-grade baseline
-!= architecture-caused improvement
-!= Harness improvement on a frozen comparison
-!= transfer to unseen tasks
-!= improvement-operator improvement
-!= production adoption
-!= open-ended evolution
-```
-
-The inferential unit for cross-task claims is the task or pre-registered task family. Repetitions estimate within-task variability; they do not turn two tasks into a larger independent sample.
-
-Architecture effects require a reconstructable pre-AC Harness and a contemporary randomized/interleaved old/new replay in the same controlled time window. Historical pre/post evidence is compatibility and incident evidence only unless drift is independently ruled out.
-
-## Common Execution Protocol
-
-- Refresh remote `main`, open PR exact heads, dependencies, CI, reviews, canonical documents, and overlapping ownership before work.
-- Generate a fresh context capsule and treat it as stale when `main`, a PR head, CI, review, or a canonical document changes.
-- Select only the earliest eligible packet. One focused branch/PR owns it.
-- Reuse the existing scheduler, executor, ProductTask, worktree, verification, artifact, approval, output, replay, scorecard, audit, cleanup, terminal-evidence, and `LocalProductStore` owners.
-- Bind authority from persisted current owners, never caller assertions, model text, branch-local summaries, or memory projections.
-- Preserve SQLite/PostgreSQL parity, atomicity, restart, concurrency, idempotency, cancellation, lease ownership, late-write refusal, compensation, and rollback wherever the touched owner requires them.
-- Keep provider execution off in CI, target `main` unchanged, Draft-PR-only output, and auto-merge disabled.
-- Keep the PR Draft while the diff changes. Fast checks are feedback only.
-- Complete focused checks, applicable full checks, handoff/security checks, stable-head complete-diff independent review, Ready transition, canonical exact-head CI, and rollback review before merge.
-- A new head invalidates prior CI and review evidence.
-- A coding session enters through `uv run --no-project python scripts/session_context.py enter --role coding` and receives one digest-bound compiled context; it does not re-read the whole planning universe.
-
-## Hard Stops
-
-Stop before any of the following:
-
-- secret, credential, raw prompt/output/transcript, private path, or unredacted repository-content exposure;
-- a second runtime, scheduler, store, evaluator, budget, approval, output, audit, rollback, VDE, memory-authority, or context-authority owner;
-- caller-asserted authority, stale identity, duplicate effect, missing lease, late write, or outcome-unknown treated as success;
-- provider call in CI or a paid-provider call without separate current authorization;
-- runtime-, candidate-, or experiment-controlled target-default-branch write, auto-merge, repository merge, release, deployment, installation, or automatic production adoption; normal repository-maintainer merge remains governed only by `docs/REAL_WORLD_TESTING_PLAYBOOK.md`;
-- candidate modification of evaluator rules, scanner scope, ignore/baseline, sealed holdout, budget accounting, statistical method, reviewer rubric, or immutable safety policy;
-- reporting only the best candidate while hiding rejected candidates, diversity collapse, contamination, evaluator gaming, or full consumed cost;
-- changing corpus, reviewer policy, budget, verifier, seeds, stop rules, margins, or statistical method after observing comparison results;
-- using memory, skills, summaries, novelty scores, forecasts, or scalar VDE indices as authority;
-- beginning a routing-only packet from its summary boundary or promotion profile without an accepted execution-ready expansion;
-- executing a packet whose dispatch capsule, verification contract, or checkpoint evidence was changed, rehashed, or substituted after acceptance;
-- claiming learning, open-ended evolution, or recursive self-improvement without the separately required evidence.
-
-## Completed Route Contract (PE7-CTRL-ROUTE-CONTRACT-1)
-
-**Historical state:** `COMPLETE`
-
-**Prerequisite:** accepted `main` has the existing Issue-based engineering outer loop, weak-agent session entry, exact-head CI, bounded review convergence, and the Plan-lane parser/ledger scaffolding; no new scheduler, queue, lease, state database, review owner, merge owner, or product authority may be introduced.
-
-**Class:** `CONTRACT`
-
-**Outcome:** Synchronize the repository-maintenance route contract and current-state reconciliation boundary so later weak workers can operate from accepted documents and durable GitHub state rather than chat memory.
-
-**Allowed delta:** Canonical documentation, the handoff checker's historical-packet projection, and focused session-entry/handoff contract tests only. This packet does not activate Plan execution, create a PR, request CI/review/merge, call a Provider, read a credential, write a target, consume T3 authority, or repair the RWE product contract.
-
-**Exit:** Accepted documentation records the single route-controller owner, queue/lease/state/review/merge/closeout owners, exact-head invalidation rule, bounded repair/escalation boundary, current PREFLIGHT blocker truth, and the next admitted Plan-lane packet.
-
-**Stop:** Any second owner, unbound merge path, self-reported acceptance, stale current-main identity, unresolved B1/B2 authority/expiry enforcement, or requirement to choose a schema, evaluator, retention, spend, statistical, or T3 value.
-
-### Twelve-field contract
-
-1. **Outcome and non-goals.** Establish the repository-maintenance route contract only; no product runtime, target repository, Provider, release, deployment, adoption, T3, or protected-branch policy change.
-2. **Prerequisites.** Accepted main `c3e58576cbba40dbcad666c39eefb6bbdc372434`; current control-plane owners in `docs/MODULE_MAP.md`; existing exact-head CI/review/merge rules in `docs/REAL_WORLD_TESTING_PLAYBOOK.md`.
-3. **Owners and paths.** Navigation/context: `START_HERE.md`, `scripts/session_context.py`, `scripts/project_context.py`; packet owner: `docs/NEXT_DECISION.md`; successor owner: `docs/FUTURE_ROUTE.md`; durable GitHub state/lease: `scripts/agent-control/state_manager.py`; controller/CLI: `scripts/agent-control/local_loop.py` and `loopctl.py`; plan compiler: `plan_lane.py`; lifecycle owners: existing dispatcher, worktree, artifact, CI, review, merge, and closeout workflows.
-4. **Frozen invariants.** GitHub remains the durable queue/lease/effect-state owner; local files remain rebuildable projections; accepted main and exact head bind every transition; no child receives credentials or merge authority; no target/release/Provider/T3 effect is implied.
-5. **Semantic delta.** Replace the permanent “Plan lane deferred” design direction with a staged admitted-lane transition, beginning with this contract and later replacing the deferred readiness check with real readiness checks.
-6. **Forbidden changes.** No second controller, scheduler, queue, lease, state database, CI owner, review owner, merge owner, product runtime, authority, evaluator, schema, migration, release, deploy, target output, Provider call, T3 minting, or branch-protection change.
-7. **Ordered slices.** (a) synchronize accepted route/current blocker truth; (b) activate unified weak-agent dispatch consumption; (c) add lifecycle/recovery transition integration; (d) add successor/promotion/escalation/T3 pause/resume; (e) run provider-free soak and current-PREFLIGHT smoke.
-8. **Failure/recovery.** Ordinary CI/review/worker/checkpoint/main-drift failures use existing bounded repair/reconcile transitions; duplicate dispatch/PR/merge/promotion and outcome-unknown stop fail closed; unprovable architecture/authority/T3 values emit a bounded decision artifact.
-9. **Verification.** Focused session-entry and handoff tests; all applicable Python/control-plane tests; exact-head canonical CI; independent complete-diff exact `PASS`; `scripts/check_agent_handoff.py`; `git diff --check`.
-10. **Compatibility/rollback.** Existing Issue lane remains unchanged; Plan lane remains non-admitted until its own packet; docs revert cleanly; no runtime or schema migration occurs in this packet.
-11. **Exit artifact.** Accepted contract receipt in this packet, current PREFLIGHT blocker disposition, and a digest-bound `weak-agent-dispatch:v1` capsule whose effect limit is zero.
-12. **Next action.** After merge, the planning owner must author and promote the next bounded Plan-lane activation packet against the refreshed accepted main; do not run PREFLIGHT or any successor effect from this packet.
-
-### Retired Weak-Agent Dispatch Capsule
-
-The active capsule below binds this documentation-only contract packet. It grants
-no execution authority beyond the listed repository paths and zero external
-effect; later lifecycle packets must replace it with their own exact capsule.
-
-<!-- retired-weak-agent-dispatch:v1
-{"allowed_outputs":["Redacted canonical route-contract documentation changes only","Focused session-context and handoff contract test results with no external effect"],"allowed_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","docs/REAL_WORLD_TESTING_PLAYBOOK.md","scripts/check_agent_handoff.py","tests/test_session_context.py","tools/test_check_agent_handoff.py"],"authority_consumption_allowed":false,"dispatch_lane":"provider_free_repository_maintenance","expected_artifacts":["One reviewed documentation contract for the repository-maintenance route","One focused session-context and handoff test result proving the active packet and historical dependency projection bind consistently"],"external_effect_limit":0,"forbidden_changes":["Do not activate the Plan lane from this contract packet.","Do not create or merge a PR through worker output.","Do not call a Provider, read credentials, write a target, or consume T3 authority.","Do not change branch protection or create a second lifecycle owner.","Do not change product runtime, schema, evaluator, authority, release, deployment, or target behavior."],"forbidden_next_actions":["Do not activate the next Plan-lane packet from this contract.","Do not run PREFLIGHT S1-S5 or any successor effect.","Do not issue, admit, consume, or mint authority.","Do not call a Provider, read credentials, or write a target repository."],"goal":"Synchronize the repository-maintenance route contract and current blocker truth without external effects.","known_store_mutations":[],"ordered_steps":["Reconcile accepted-main, packet, owner, and blocker facts against the canonical documents.","Update only the listed documentation, handoff checker, and focused contract-test paths.","Run the focused test, handoff checker, and diff hygiene checks.","Stop for exact-head review and canonical CI; do not self-report acceptance."],"packet_id":"PE7-CTRL-ROUTE-CONTRACT-1","packet_state":"READY_FOR_EXECUTION","pause_gates":["Stop on stale accepted-main or conflicting current documents.","Stop on any unprovable authority, schema, evaluator, retention, spend, statistical, or T3 value.","Stop if any requested change requires a second lifecycle owner or an external effect."],"plan_lane_state":"plan_lane_deferred_until_terminal_owners","prerequisite_receipts":["Accepted main c3e58576cbba40dbcad666c39eefb6bbdc372434","Existing exact-head CI, review, merge, and local-loop owner contracts"],"prerequisites":["Accepted main contains the existing Issue-based engineering outer loop and weak-agent session entry","Existing canonical documents identify the reusable CI, review, merge, and closeout owners"],"private_paths_allowed":false,"read_paths":["START_HERE.md","AGENTS.md","docs/CURRENT_STATUS.md","docs/NEXT_DECISION.md","docs/MODULE_MAP.md","docs/ARCHITECTURE_BOOK.md","docs/REAL_WORLD_TESTING_PLAYBOOK.md","scripts/session_context.py","scripts/project_context.py","scripts/agent-control/"],"rollback":"Revert the documentation and focused test changes on this branch; no GitHub state, provider, credential, target, authority, or product effect is created by this packet.","schema_version":"weak_agent_dispatch.v1","secret_values_allowed":false,"verification":["PYTHONPATH=src uv run --no-project python -m unittest tests.test_session_context","uv run --no-project python -m unittest tools.test_check_agent_handoff","uv run --no-project python scripts/check_agent_handoff.py","git diff --check"]}
--->
-
-## Completed Plan-Lane Activation (PE7-PLAN-LANE-ACTIVATION-1)
-
-**Historical state:** `COMPLETE`
-
-**Historical evidence:** PR #382 exact head `dde26f884ce8a85b776b5933c84c4e6cfd73cb19`, merge `e55e19f1b7c353b4baa2b40ee7b5b16af8918a6c`, exact-head `PASS`, canonical workflow `31395404498`; accepted receipt is in `docs/CURRENT_STATUS.md`. The Plan lane is active behind real terminal-owner readiness checks; the Plan Execution Ledger Issue #383 is provisioned. The full twelve-field contract and retired dispatch capsule are preserved in the merged PR #382 and git history; this packet must not be executed again.
-
-## Completed Plan-Packet Lifecycle Controller (PE7-LIFECYCLE-CONTROLLER-1)
-
-**Historical state:** `COMPLETE`
-
-**Historical evidence:** PR #385 exact head `5867eb9e35151c8252cda26bb6a956dfe80252b0`, merge `ca7e4585c594a5c9820c8d1267858780c28503ac`, exact-head `PASS`, canonical workflow `31401184171`; accepted receipt is in `docs/CURRENT_STATUS.md`. Plan-packet CI/review/merge/closeout receipts are now recorded on the Plan Execution Ledger as controller-owned transitions with idempotent lifecycle readback and recovery. The full twelve-field contract and retired dispatch capsule are preserved in the merged PR #385 and git history; this packet must not be executed again.
-
-## Packet PE7-SUCCESSOR-PROMOTION-ESCALATION-1
+## Packet PE7-ROUTE-AUTOMATION-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-LIFECYCLE-CONTROLLER-1` is COMPLETE on accepted main `ca7e4585c594a5c9820c8d1267858780c28503ac`, with PR #385 exact head `5867eb9e35151c8252cda26bb6a956dfe80252b0`, exact-head `PASS`, canonical workflow `31401184171`, and merge receipt `ca7e4585c594a5c9820c8d1267858780c28503ac`; the Plan Execution Ledger Issue #383 is provisioned and the lane is active.
+**Prerequisite:** `PE7-SUCCESSOR-PROMOTION-ESCALATION-1` is COMPLETE on accepted main `597f90282fb6ca72472b890b825684bf54486709`, with the exact receipt above; the Plan Execution Ledger Issue #383 and its existing lifecycle owners remain active.
 
 **Class:** `IMPLEMENT`
 
-**Outcome:** Wire plan-lane successor promotion and escalation through the existing owners so that, after an accepted `closed_out` plan closeout, the lane verifies the live accepted routing and records exactly-one bounded successor-promotion receipt on the ledger, and any `BLOCKED_PREREQUISITE` or `DECISION_REQUIRED` blocker is escalated to the planning owner with a bounded pause receipt — all controller-owned, idempotent, with no automatic EFFECT/T3 authority and no self-promotion.
+**Outcome:** Deliver a repository-owned `loopctl route-run` command that starts from accepted current routing without a caller-selected packet ID and repeatedly refreshes, reconciles, dispatches, verifies, governs PR/CI/review/repair/merge/closeout, refreshes the next successor contract, and continues until `ROUTE_EXHAUSTED`, genuine `DECISION_REQUIRED`, `T3_REQUIRED`, `OUTCOME_UNKNOWN`, or unrecoverable infrastructure failure. A verified finite T3 receipt resumes the same bounded route automatically; it never permits a model to mint, widen, or substitute that receipt.
 
-**Allowed delta:** `scripts/agent-control/dispatcher.py`, `local_run_once.py`, `local_loop.py`, `local_supervisor.py`, `plan_lane.py`, `state_manager.py`, `control_state.py`, `loopctl.py`, `scripts/session_context.py`, `scripts/check_agent_handoff.py`, their focused control-plane tests, and the smallest canonical-document capsule/status synchronization required by this packet.
+**Allowed delta:** `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, `docs/MODULE_MAP.md`, this file; `.github/workflows/agent-controller.yml`; `scripts/agent-control/{ci_verifier,control_state,dispatcher,local_loop,local_run_once,local_supervisor,loopctl,plan_lane,plan_lifecycle,pr_binding,route_driver,state_manager,worktree_manager}.py`; `scripts/check_agent_handoff.py`; `scripts/session_context.py`; and focused route/controller/workflow/session/handoff tests only.
 
-**Exit:** After a plan subject's accepted closeout, exactly-one successor-promotion receipt (packet id, accepted-main SHA, capsule digest) and, when applicable, a bounded escalation receipt are bound on the ledger from authoritative routing and read back idempotently on restart; no successor executes, no child gains merge/GitHub/Provider/T3 authority; EFFECT execution and automatic T3 handling remain inactive; the blocked PREFLIGHT stays blocked.
+**Exit:** The accepted command crosses multiple provider-free packet boundaries with a weak worker and no planning agent manually authoring each successor; the planner proves each promoted candidate from current-main evidence; all specified soak failures recover or yield their required typed terminal state; the route preserves bounded `NEXT_DECISION.md`; and the first real route then reaches the viability RUN's exact T3 gate without executing it.
 
-**Stop:** Any second ledger/controller/store/state/routing owner, promotion of zero or multiple successors, self-promotion, caller- or model-asserted promotion, unprovable or stale accepted routing, missing or conflicting closeout receipt, child authority, Provider/target effect, automatic successor/EFFECT/T3 path, or requirement to choose a new schema, evaluator, retention, spend, statistical, or T3 value.
+**Stop:** A second controller, ledger, queue, lease, workflow owner, store, scheduler, evaluator, authority, or persistence owner; static future-route prose treated as authority; an unproved current-main owner/caller/path/decision; a Provider/credential/target action; automatic EFFECT/T3 execution; automatic merge; an unresolved schema/evaluator/authority/recovery decision; a missing/conflicting receipt; or an unknown external outcome treated as success.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Wire plan-lane successor promotion and escalation receipts through the existing owners. Do not create a second controller, ledger, store, state, or routing owner; do not execute a successor, activate EFFECT execution or automatic T3 handling, change product runtime, write targets, call Providers, release, deploy, adopt, or change branch protection.
-2. **Prerequisites and evidence.** Accepted main `ca7e4585c594a5c9820c8d1267858780c28503ac`; predecessor receipt is PR #385 exact head `5867eb9e35151c8252cda26bb6a956dfe80252b0`, exact-head `PASS`, canonical workflow `31401184171`, merge `ca7e4585c594a5c9820c8d1267858780c28503ac`; Plan Execution Ledger Issue #383 provisioned and the lane active.
-3. **Owners and paths.** Sole plan lifecycle anchor: Plan Execution Ledger via `scripts/agent-control/control_state.py`; controller transitions: `dispatcher.py`, `state_manager.py`; outer loop: `local_loop.py`, `local_supervisor.py`, `loopctl.py`; plan compiler/executor: `plan_lane.py`, `local_run_once.py`; routing authority: `docs/NEXT_DECISION.md` and `docs/FUTURE_ROUTE.md`; escalation owner: planning process via canonical documents and the ledger pause receipt.
-4. **Frozen subject identity and invariants.** Every promotion receipt binds `packet_id`, accepted-main SHA, the closed-out predecessor's dispatch/closeout identity, and the promoted successor capsule digest. The GitHub Plan Execution Ledger remains the sole durable plan-packet lifecycle anchor; local state is rebuildable; no model self-report advances routing; exactly one successor is promoted at a time; no child receives merge credentials, GitHub authority, Provider credentials, or T3 authority.
-5. **Only semantic delta.** Add controller-owned successor-promotion and escalation receipt recording/readback for closed-out plan subjects through existing owners; no new semantic plan contract, no second representation.
-6. **Forbidden changes.** No second Issue, ledger, store, scheduler, controller, queue, lease, routing owner, evaluator, schema migration, authority boundary, Provider call, credential read, target write, automatic merge, release, deployment, successor execution, EFFECT, or automatic T3 handling.
-7. **Ordered implementation slices.** (a) after an accepted plan closeout, read the live accepted routing and compute exactly one eligible successor, failing closed on zero or multiple; (b) record the bounded successor-promotion receipt on the ledger (packet id, accepted-main SHA, capsule digest) without executing the successor; (c) escalate any `BLOCKED_PREREQUISITE` or `DECISION_REQUIRED` blocker with a bounded pause receipt to the planning owner; (d) add idempotent promotion/escalation readback and recovery from ledger plus authoritative routing state; (e) focused/full verification.
-8. **Failure, recovery, and stop taxonomy.** Fail closed on unprovable or stale routing, missing or conflicting closeout receipt, duplicate or ambiguous successor eligibility, promotion of zero or multiple successors, unknown external outcome, or unavailable owner. Restart reconstructs promotion/escalation receipts idempotently from the ledger plus authoritative routing and never re-promotes or executes after a provable receipt.
-9. **Verification.** Focused promotion/escalation readback/recovery tests; session-context and handoff tests; applicable Python/control-plane suite; security baseline; `scripts/check_agent_handoff.py`; `git diff --check`; exact-head canonical CI; complete-diff independent `PASS`.
-10. **Compatibility, rollback, and retention.** Existing Issue lane, activation, and lifecycle behavior unchanged. Revert only this packet's code/docs; retain ledger closeout and routing receipts; do not delete failed, rejected, or outcome-unknown transitions; no schema migration or new persistence owner.
-11. **Exit artifact.** Exact-head accepted successor-promotion/escalation receipt binding the promotion identity (packet id, accepted-main SHA, capsule digest, predecessor closeout), escalation pause receipts, focused/full verification, and implementation-cost receipt; successor execution/EFFECT/T3 paths remain explicitly inactive.
-12. **Next action.** After this packet is accepted, promote exactly one adversarial-soak packet against refreshed accepted main. Do not activate successor execution, EFFECT execution, automatic T3 handling, or PREFLIGHT from this packet.
+1. **Outcome and non-goals.** Implement the continuous repository-maintenance route only. Non-goals: product runtime or schema changes, a second lifecycle owner, branch-protection change, auto-merge, release, deployment, Provider call, credential access, target write, automatic successor execution, EFFECT execution, T3 issuance, or T3 execution.
+2. **Prerequisites and evidence.** Bind every route action to accepted main `597f90282fb6ca72472b890b825684bf54486709`, the #387 receipt above, the current exact manifest hash, the Plan Execution Ledger's authoritative subject state, the current exact PR head where a PR exists, and the existing exact-head CI/review/merge owners. Revalidate after main drift, a replacement head, restart, or a changed receipt.
+3. **Owners and paths.** `docs/NEXT_DECISION.md` is the sole current-window owner; `docs/FUTURE_ROUTE.md` is the routing-only index; `docs/CURRENT_STATUS.md` owns accepted receipts; `docs/MODULE_MAP.md` owns accepted module ownership. `route_driver.py` is the deep RoutePromotionPlanner/validator and route-state interpretation module; `local_run_once.py` and `local_loop.py` remain adapters to existing claim, worktree, PR, CI, review, merge, and closeout owners; `loopctl.py` is the sole human-facing route command; `agent-controller.yml` only transports validated existing controller commands.
+4. **Frozen invariants.** GitHub and the existing Plan Execution Ledger remain the sole durable lifecycle anchor; local state/checkpoints are rebuildable projections. Every candidate binds accepted-main SHA, manifest hash, predecessor receipt, evidence hashes, and its exact allowed-path closure. One successor is current at a time. Children never receive merge/GitHub/Provider/T3 credentials or authority. `NEXT_DECISION.md` keeps exactly one active packet and at most one short historical binding.
+5. **Only semantic delta.** Replace the one-step proof-of-concept compiler with an evidence-backed two-layer promotion planner and replace caller-selected route driving with a bounded continuous route command. Route state adds typed pause/resume handling only through the existing ledger/controller interfaces.
+6. **Forbidden changes.** No static allowed-delta path extraction, generic verification/rollback template, self-authored execution authority, silent EFFECT skip, model-authored authority, new workflow/controller/store/queue/lease/scheduler/evaluator owner, code-generated current-main evidence, provider effect, target effect, release/deploy, or automatic merge.
+7. **Ordered implementation slices.** (a) preserve and refactor useful #388 primitives behind the evidence-first planner interface; (b) add deterministic candidate validation and bounded current-main owner/caller/test inventory adapters; (c) add typed route states, including EFFECT preparation, a minimal T3 request, strict receipt ingestion, verified automatic resume, route exhaustion, and outcome unknown; (d) implement `loopctl route-run` atop existing lifecycle adapters; (e) wire `lifecycle-plan` and `promote-plan` through the existing workflow dispatcher; (f) synchronize accepted ownership; (g) add a canonical multi-packet adversarial soak and 116-packet bounded-document proof.
+8. **Failure, restart, idempotency, concurrency, and stop taxonomy.** CI failure, review feedback, ordinary code/test failure, worker crash, stale checkpoint, main drift, duplicate dispatch/PR, merge-before-closeout crash, and promotion crash return the candidate to the existing bounded Draft → repair → reverify lifecycle; they are never reasons to return to a human planner. Conflicting evidence, duplicate ownership, ambiguous promotion, a verified unrecoverable infrastructure capability failure, `NO_GO`, and `OUTCOME_UNKNOWN` are typed pauses or terminal states, never success. A T3 receipt is hostile external input until its ledger-backed binding proves the named packet and candidate digest, accepted-main SHA, exact finite action/scope, operator identity, issue/expiry bounds, and no conflicting/disposed outcome; only then does `route-run` automatically re-enter at that receipt's named next action. No route action retries an outcome-unknown external effect.
+9. **Verification.** Focused tests cover planner evidence rejection, stale/hint-only paths, current owner/caller closure, exact validation, route-run command shape, controller workflow inputs, idempotent recovery, T3 pause/resume, `NO_GO`, route exhaustion, and no-growth traversal of the 116-packet inventory. Run applicable Python/control-plane tests, `uv run --no-project python tools/test_check_agent_handoff.py`, `uv run --no-project python scripts/check_agent_handoff.py`, `uv run --no-project python tools/check_security_baseline.py`, and `git diff --check`; then exact-head canonical CI and a complete-diff independent `PASS`.
+10. **Compatibility, rollback, cleanup, and retention.** Keep `run-once --route-drive` as an internal compatibility primitive while callers migrate to `route-run`; do not change existing Issue-lane semantics. Revert this packet's code/docs to disable the new command; retain all existing ledger, review, CI, closeout, pause, failure, and outcome-unknown receipts. No schema migration or retention-policy change occurs. Every failed candidate retains bounded diagnostic hashes, never raw prompts, credentials, private paths, or restricted evidence.
+11. **Exit artifact.** An exact-head reviewed implementation, canonical CI, controller-owned receipts for each exercised transition, a bounded adversarial soak report, a 116-packet traversal-size proof, an implementation-cost receipt, and a documented revert path. The first real route creates only provider-free maintenance PRs until its named T3 gate.
+12. **Next permitted action and forbidden next actions.** Reconstruct the implementation from accepted main plus #388's reusable primitives, then run the canonical soak. After the soak, route the B1/B2/provenance contract and repair, provider-free PREFLIGHT, and stop at the viability RUN's exact human/operator T3 request. After a valid finite receipt is recorded on the existing ledger, automatically resume only its named next action and continue the route; otherwise do not execute an EFFECT, mint or consume authority, call a Provider, read credentials, write a target, auto-merge, or skip a route node.
 
 ### 11. Weak-Agent Dispatch Capsule
 
-The active capsule below binds this successor-promotion/escalation packet. Its
-effect limit is zero; it grants no Provider, target, merge, GitHub,
-credential, authority, or T3 access.
-
 <!-- weak-agent-dispatch:v1
-{"allowed_outputs":["Controller-owned successor-promotion and escalation receipt bindings with readback evidence only","Focused provider-free promotion, escalation, recovery, and subject-identity verification evidence"],"allowed_paths":["docs/CURRENT_STATUS.md","docs/NEXT_DECISION.md","scripts/agent-control/control_state.py","scripts/agent-control/dispatcher.py","scripts/agent-control/local_loop.py","scripts/agent-control/local_run_once.py","scripts/agent-control/local_supervisor.py","scripts/agent-control/loopctl.py","scripts/agent-control/plan_lane.py","scripts/agent-control/state_manager.py","scripts/check_agent_handoff.py","scripts/session_context.py","tests/test_agent_local_loop.py","tests/test_agent_plan_lane.py","tests/test_session_context.py","tools/test_check_agent_handoff.py"],"authority_consumption_allowed":false,"dispatch_lane":"provider_free_repository_maintenance","expected_artifacts":["One exact-head reviewed successor-promotion/escalation implementation","Controller-owned exactly-one promotion and bounded escalation receipts bound to the ledger with zero Provider target merge credential authority or T3 effect","Focused and applicable full verification results"],"external_effect_limit":0,"forbidden_changes":["Do not create a second Plan Execution Ledger, Issue, store, controller, scheduler, queue, lease, or routing owner.","Do not give a child merge credentials, GitHub authority, Provider credentials, or T3 authority.","Do not call a Provider, read credentials, write a target, auto-merge, release, deploy, execute an EFFECT, or handle T3 automatically.","Do not promote or execute a successor from this packet; do not let model text or self-report advance routing state.","Do not change product runtime, schema, evaluator, budget, authority, or branch protection."],"forbidden_next_actions":["Do not activate successor execution, EFFECT execution, automatic T3 handling, or PREFLIGHT from this packet.","Do not treat missing, conflicting, stale, or outcome-unknown routing or receipts as success."],"goal":"Wire plan-lane successor promotion and escalation so an accepted plan closeout records exactly one bounded successor-promotion receipt and any blocker escalates with a bounded pause receipt, all controller-owned and idempotent.","known_store_mutations":[],"ordered_steps":["After an accepted plan closeout, read the live accepted routing and compute exactly one eligible successor, failing closed on zero or multiple.","Record the bounded successor-promotion receipt on the ledger with packet id accepted-main SHA and capsule digest; never execute the successor.","Escalate any BLOCKED_PREREQUISITE or DECISION_REQUIRED blocker with a bounded pause receipt to the planning owner.","Add idempotent promotion and escalation readback and recovery from ledger plus authoritative routing state.","Run focused applicable full handoff security exact-head review and canonical CI checks; stop before later route packets."],"packet_id":"PE7-SUCCESSOR-PROMOTION-ESCALATION-1","packet_state":"READY_FOR_EXECUTION","pause_gates":["Stop on unprovable routing, missing or conflicting closeout receipt, or promotion of zero or multiple successors.","Stop on any Provider, target, credential, authority, successor execution, EFFECT, or T3 path."],"plan_lane_state":"plan_lane_active","private_paths_allowed":false,"prerequisite_receipts":["PE7-LIFECYCLE-CONTROLLER-1 COMPLETE: PR #385 exact head 5867eb9e35151c8252cda26bb6a956dfe80252b0; merge ca7e4585c594a5c9820c8d1267858780c28503ac; canonical workflow 31401184171"],"prerequisites":["PE7-LIFECYCLE-CONTROLLER-1"],"read_paths":["START_HERE.md","AGENTS.md","docs/CURRENT_STATUS.md","docs/NEXT_DECISION.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/ARCHITECTURE_BOOK.md","docs/REAL_WORLD_TESTING_PLAYBOOK.md","scripts/session_context.py","scripts/agent-control/"],"rollback":"Revert the successor-promotion/escalation implementation and capsule synchronization; retain authoritative ledger closeout and routing receipts; no external effect is created by this packet.","schema_version":"weak_agent_dispatch.v1","secret_values_allowed":false,"verification":["PYTHONPATH=src uv run --no-project python -m unittest tests.test_agent_plan_lane tests.test_agent_local_loop tests.test_session_context","PYTHONPATH=src uv run --no-project python -m unittest tools.test_check_agent_handoff","uv run --no-project python scripts/check_agent_handoff.py","uv run --no-project python tools/check_security_baseline.py","git diff --check"]}
+{"allowed_outputs":["Evidence-backed promotion candidates or typed bounded pauses","Controller-owned lifecycle and route receipts with readback evidence","Provider-free adversarial-soak and bounded-document traversal evidence"],"allowed_paths":[".github/workflows/agent-controller.yml","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","scripts/agent-control/ci_verifier.py","scripts/agent-control/control_state.py","scripts/agent-control/dispatcher.py","scripts/agent-control/local_loop.py","scripts/agent-control/local_run_once.py","scripts/agent-control/local_supervisor.py","scripts/agent-control/loopctl.py","scripts/agent-control/plan_lane.py","scripts/agent-control/plan_lifecycle.py","scripts/agent-control/pr_binding.py","scripts/agent-control/route_driver.py","scripts/agent-control/state_manager.py","scripts/agent-control/worktree_manager.py","scripts/check_agent_handoff.py","scripts/session_context.py","tests/test_agent_local_loop.py","tests/test_agent_plan_lifecycle.py","tests/test_agent_plan_promotion.py","tests/test_agent_route_driver.py","tests/test_session_context.py","tools/test_check_agent_handoff.py"],"authority_consumption_allowed":false,"dispatch_lane":"provider_free_repository_maintenance","expected_artifacts":["One exact-head reviewed route-automation implementation","One real provider-free multi-packet route-run crossing without manual successor authoring","One adversarial soak report and 116-packet bounded-document traversal proof"],"external_effect_limit":0,"forbidden_changes":["Do not create a second Plan Execution Ledger, Issue, store, controller, scheduler, queue, lease, workflow owner, or routing owner.","Do not use FUTURE_ROUTE prose or paths as accepted current-main authority.","Do not give a child merge credentials, GitHub authority, Provider credentials, or T3 authority.","Do not call a Provider, read credentials, write a target, auto-merge, release, deploy, or execute an EFFECT without the exact valid finite T3 receipt.","Do not let model text or self-report advance routing state.","Do not change product runtime, schema, evaluator, budget, authority, or branch protection."],"forbidden_next_actions":["Do not skip EFFECT nodes or execute an EFFECT/T3 path without its exact valid finite receipt.","Do not treat missing, conflicting, stale, or outcome-unknown routing or receipts as success.","Do not start a successor whose promotion candidate has not been independently accepted."],"goal":"Implement a continuous evidence-backed repository route that promotes one validated successor at a time, recovers ordinary lifecycle failures, and pauses exactly at human/operator authority gates.","known_store_mutations":[],"ordered_steps":["Refresh accepted main and verify the accepted predecessor receipt plus inventory manifest.","Build and validate a current-main evidence candidate or emit a typed pause.","Use the existing ledger/controller/PR/CI/review/merge/closeout owners to drive one bounded transition.","After a ledger-verified finite T3 receipt, automatically resume only the receipt-named bounded action.","Repeat through the repository-owned route-run command while the next action is provider-free and fully authorized.","Stop at route exhaustion, DECISION_REQUIRED, T3_REQUIRED, OUTCOME_UNKNOWN, or unrecoverable infrastructure failure."],"packet_id":"PE7-ROUTE-AUTOMATION-1","packet_state":"READY_FOR_EXECUTION","pause_gates":["Stop on an unproved owner, caller, path, verification, rollback, cleanup, retention, evidence destination, schema, evaluator, authority, or recovery decision.","Stop before any Provider, target, credential, external-effect, automatic merge, or T3 action without its exact valid finite receipt.","Stop when exact-head review or canonical CI is missing, stale, failed, or conflicting."],"plan_lane_state":"plan_lane_active","private_paths_allowed":false,"prerequisite_receipts":["PE7-SUCCESSOR-PROMOTION-ESCALATION-1 COMPLETE: PR #387 exact head 5fe3d55af19aa7a081115637f8f8a7aa63b581af; merge 597f90282fb6ca72472b890b825684bf54486709; canonical workflow 31403849100"],"prerequisites":["PE7-SUCCESSOR-PROMOTION-ESCALATION-1"],"read_paths":["START_HERE.md","AGENTS.md","docs/CURRENT_STATUS.md","docs/NEXT_DECISION.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/ARCHITECTURE_BOOK.md","docs/REAL_WORLD_TESTING_PLAYBOOK.md","scripts/session_context.py","scripts/agent-control/"],"rollback":"Revert the route-automation implementation and its canonical document synchronization; retain authoritative lifecycle and typed-pause receipts; no external effect is created by this packet.","schema_version":"weak_agent_dispatch.v1","secret_values_allowed":false,"verification":["PYTHONPATH=src uv run --no-project python -m unittest tests.test_agent_route_driver tests.test_agent_plan_promotion tests.test_agent_plan_lifecycle tests.test_agent_local_loop tests.test_session_context","PYTHONPATH=src uv run --no-project python -m unittest tools.test_check_agent_handoff","uv run --no-project python scripts/check_agent_handoff.py","uv run --no-project python tools/check_security_baseline.py","git diff --check"]}
 -->
 
-## Retained PREFLIGHT Contract (historical: PE7-RWE-V2-VIABILITY-PREFLIGHT-1)
+## Common Execution Protocol
 
-**Historical state:** `BLOCKED_PREREQUISITE`
+- Refresh accepted main, the current packet, exact PR heads, CI, review, and ledger receipts before every transition.
+- Derive a route action only from the accepted current window, the checked inventory, current-main evidence, and existing durable owners.
+- Keep changing PRs Draft; require stable-head independent review and canonical exact-head CI before governed manual merge.
+- Treat ordinary worker, CI, review, checkpoint, duplicate, restart, and main-drift failures as bounded recovery transitions through their existing owners.
+- Preserve exact receipt bindings and failed/unknown evidence; never convert absence, stale evidence, or an unproven external outcome to success.
 
-**Historical source:** accepted main `0a7fde6888e6533f180f9d2dbf76eebdb0899d9d`
+## Hard Stops
 
-**Prerequisite:** `PE7-RWE-V2-REFREEZE-1` is `COMPLETE`; accepted evidence is in the `## Accepted Packet Receipts` table of `docs/CURRENT_STATUS.md` (PR #370 exact head `36c92b93975366c3f85471f247a3afb128e5351c`, merge `3b4afb3e5ab4254904aa5a63473ab6ae0eac1e82`, exact-head `PASS`, canonical workflow `31312135471`, bound calibration digests).
-
-**Class:** `CONTRACT`
-
-**Why this packet is retained:** this packet was promoted out of `docs/FUTURE_ROUTE.md` when its prerequisite closed; its contract refresh was bound to accepted `main` `0a7fde6888e6533f180f9d2dbf76eebdb0899d9d`. The current audit found that B1 freshness and B2 issuance-window enforcement are not implemented. The twelve-field contract remains preserved for later re-expansion; it is not executable until the control-plane transition and the minimal canonical repair/provenance disposition are accepted.
-
-### Accepted Routing Facts (preserved from `9d2e9458:docs/FUTURE_ROUTE.md`, the last accepted main containing the sketch)
-
-- **Outcome:** Produce a fresh provider-free preflight and an operator-readable one-use authorization request package for the exact accepted v2 freeze.
-- **Allowed delta:** No code, Provider request, spend consumption, target effect, or authorization issuance. Bind main SHA, all freeze hashes, target, principal/scopes, executor, Provider/model, ceilings, expiry, run ID, evidence locations, and stop rules.
-- **Exit:** A time-bounded preflight receipt with zero mismatch and a separately reviewable authorization envelope; rerun preflight if its accepted maximum age expires.
-- **Stop:** Any stale/missing binding, live lease, non-disposable target state, unknown evidence destination, or unresolved Provider/model drift.
-
-### Twelve-Field Execution-Readiness Contract (derived from accepted `main` `2ee6571e`, re-verified against current `main` `0a7fde68`)
-
-1. **Outcome and explicit non-goals.** Outcome: produce one fresh `rwe_operator_preflight.v1` receipt with `ready=true`, zero blockers, and `provider_call_performed=false` / `target_write_performed=false` / `authority_consumed=false`, plus one operator-readable one-use authorization *request* package (envelope shaped after the store-owned `rwe_run_authorization.v2` body). Non-goals: no code change to `engine/`, `scripts/`, or tooling; no Provider request; no spend; no target effect; no authorization issuance or consumption; no schedule run; no re-freeze or calibration rerun; no measurement/AC/adoption/Meta/Dashboard routing change.
-
-2. **Accepted prerequisites and exact evidence identities.** (a) `PE7-RWE-V2-REFREEZE-1` remains COMPLETE as in the `Prerequisite` line above; freeze-point main `ee43eac853644266614da09de764a3bf19f2d281` remains the code-bound freeze identity. (b) Binding main at this packet's contract refresh was `0a7fde6888e6533f180f9d2dbf76eebdb0899d9d`; the current accepted main for any future re-expansion is `c3e58576cbba40dbcad666c39eefb6bbdc372434`. (c) Frozen target bindings (`engine/src/rwe/frozen_rwe_bindings.rs`): target main `6240768506320a324d68787b9eaa86971c8c930c`, tree `137e912f416a3a8d5be307e91bb2580154fc8fc34c6de52c2441ef3e3f93a064`, verifier `PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q`, verifier identity `deterministic_rwe_pytest_v1`, risk class `rwe`. (d) Operator admitted consts (`engine/src/rwe/operator_corpus.rs`): target repo `Igzela/alters-lab`, executor `managed_deepseek`, model `deepseek-v4-flash`, binary version `0.1.0`, binary path `in-process:managed_deepseek`. (e) Provider consts (`engine/src/provider/managed_deepseek.rs`): kind `deepseek`, base URL `https://api.deepseek.com`, path `/chat/completions`, credential symbol `DEEPSEEK_API_KEY` (symbol presence only, never read). (f) Operator-input evidence identities to be bound only after the repair/provenance gate: same-tenant completed Golden Path `product_task_id` with terminal evidence (`task_status=completed`), optional existing `authorization_id` for drift re-check, run ID, and operator key id/tenant.
-
-3. **Canonical owners and bounded allowed/read paths.** Owners (read-only use, no modification): `engine/src/rwe/live_baseline_coordinator.rs::operator_preflight` (sole preflight-evidence producer, schema `rwe_operator_preflight.v1`); `engine/src/rwe/operator_corpus.rs` and `engine/src/rwe/frozen_rwe_bindings.rs` (sole freeze/hash verification); `engine/src/rwe/runner.rs` and `engine/src/storage/local_product_store/rwe_authority.rs` (envelope shapes and store authority tables, read-only); CLI `engine/src/bin/rwe_live_baseline.rs` (`preflight` subcommand). Read paths: `engine/rwe/corpora/rwe-minimum-first-corpus/v2/{protocol,schedule,tasks}` frozen artifacts; `docs/CURRENT_STATUS.md` accepted receipts; this block. Allowed write paths at execution time: none in the repository — the preflight and request package are operator-side evidence bound by digests (PR #370 precedent); the packet closeout syncs only `docs/CURRENT_STATUS.md` gap truth. A future dispatch capsule may not widen these paths.
-
-4. **Invariants that must remain byte-, value-, or behavior-identical.** Freeze hashes `044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20` (corpus), `bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db` (protocol), `6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38` (schedule); all frozen artifacts under `engine/rwe/corpora/rwe-minimum-first-corpus/v2/`; the four-cell schedule (2 tasks × 2 repetitions) with its per-cell ceilings (max cost 0.2, max output 8,192 tokens, 3 provider requests) and run-level budget (max total cost 0.8, 12 requests, 80,768 tokens, 3,600,000 ms); protocol stop rules `["stop_on_authority_failure","stop_on_budget_exhaustion"]`; the `FROZEN_RWE_*` and `OPERATOR_ADMITTED_*` consts; store-owned `rwe_run_authorization.v2` body shape and evidence schemas; the accepted `main` SHA bound into the receipt.
-
-5. **Only allowed semantic delta.** Produce the preflight receipt and the one-use authorization *request* package as described in field 1; nothing else. Both artifacts are documents; neither issues nor consumes authority.
-
-6. **Forbidden authority, schema, persistence, evaluator, provider, target, release, and adoption changes.** Issuing or consuming RWE authority (`issue_and_admit_v2`, admit, spend); any store schema/table/migration change; any new persistence owner or evidence destination outside the established store + digest-bound operator evidence pattern; any Provider call or credential read; any read/write against target repo `Igzela/alters-lab`; any change to `engine/`, `scripts/`, workflow, or tooling code; any evaluator/reviewer/budget/verifier/seed/stop-rule change; release, deployment, installation, or adoption; repairing or rerunning the v2 freeze or calibration; activating `PE7-RWE-V2-VIABILITY-RUN-1` or any successor; changing measurement/AC/adoption/Meta/Dashboard routing.
-
-7. **Ordered implementation slices.** S1 freeze verification: confirm the composition seam and freeze path (`freeze_current_operator_contract_set`) still bind the evidence identities of field 2 with zero mismatch. S2 operator-environment preflight: outside CI, with `DEEPSEEK_API_KEY` symbol present (never read), run `rwe-live-baseline preflight` against the store with the accepted principal, the accepted completed Golden Path `product_task_id`, and (for drift re-check) the prior `authorization_id`; require `ready=true`, zero blockers, and all three negative-effect flags `false`. S3 authorization request package: assemble the one-use envelope from the preflight frozen block, schedule/protocol ceilings and stop rules, and the operator-supplied run ID/evidence locations, with `expires_at` exactly derived from the authenticated issuance time plus the accepted B2 window (2 hours), mirroring the `rwe_run_authorization.v2` body shape; no issue/admit call. S4 receipt validation: re-run the preflight within the accepted B1 maximum age (15 minutes) and confirm zero mismatch; hash-bind receipt and package. S5 closeout: record redacted digest bindings and gap truth in `docs/CURRENT_STATUS.md`; independent review; canonical CI.
-
-8. **Failure taxonomy, restart/idempotency/concurrency obligations, and stop triggers.** Failure taxonomy (each is a blocker, matching `operator_preflight` codes): `ci_environment`; `missing_credential_symbol`; `composition_seam_not_ready`; `missing_golden_path_prerequisite_id`, `golden_path_prerequisite_not_ready/not_found/tenant_mismatch/missing`; `authorization_tenant_mismatch/not_active/not_v2`; `frozen_target_sha_mismatch`; `frozen_target_repo_mismatch`; plus zero-mismatch verification failure and evidence-binding failure. Restart/idempotency: the preflight is read-only and idempotent — re-running yields identical bindings and no state to recover; the receipt's freshness is governed by the accepted B1 maximum age (15 minutes, no grace period: a receipt older than 15 minutes is stale, MUST be discarded and re-run, and the re-run must again reach `ready=true`, zero blockers, exact frozen bindings, and all negative-effect flags `false`). Concurrency: exactly one preflight per run identity; no concurrent preflight, issue, admit, or run. Stop triggers: the preserved Stop list above verbatim; any blocker preventing `ready=true`; any unresolved Provider/model drift; any expiry-policy violation under the accepted B2 validity window (2 hours from issuance, no renewal/extension).
-
-9. **Focused tests, applicable full tests, exact-head canonical CI, and independent-review requirements.** Focused: engine RWE preflight/freeze tests (`preflight_fails_closed_without_gp_and_without_consuming`, `frozen_bindings_load_and_match_pytest`, `four_cell_injected_orchestration_maps_identities_and_receipts` in `engine/src/rwe/live_baseline_coordinator.rs` / `frozen_rwe_bindings.rs`) and `tests/test_session_context.py::test_current_repository_execution_ready_window_binds_dispatch_capsule`. Applicable full: `cargo fmt --all -- --check`, `cargo clippy -p engine --all-targets --all-features -- -D warnings`, `scripts/ci/run_rust_tests.py`, the Python unittest suite, `scripts/verify_rust_typescript_stack.sh`, `scripts/check_wire_codegen_drift.sh`, `tools/check_security_baseline.py`, `scripts/check_agent_handoff.py`. Canonical CI: the canonical `tests` workflow on the exact PR head. The promotion PR that accepts B1/B2 and promotes this packet carries the live-window test sync (`tests/test_session_context.py`) and therefore runs the complete matrix, not the documentation-only lane; the later S5 closeout sync to `docs/CURRENT_STATUS.md` is documentation-only prose governed by the accepted-base classifier. Independent review: complete `base...head` diff with an exact-head receipt on the final head; a new head invalidates prior CI and review.
-
-10. **Compatibility, migration, rollback, cleanup, and evidence-retention behavior.** Compatibility: no code, schema, or behavior change — zero compatibility surface. Migration: none. Rollback: no external effect exists to roll back (provider-free); a failing or stale preflight is discarded and re-run; the request package is a non-authoritative document whose disposal is deletion. Cleanup: evidence hygiene only — never commit restricted raw content; commit redacted digests. Retention: restricted raw evidence stays operator-side with SHA-256 digest bindings in the closeout (PR #370 precedent); the redacted receipt is durable; no retention-policy change.
-
-### 11. Historical Weak-Agent Dispatch Capsule
-
-The retired `weak-agent-dispatch:v1` capsule below records the former PREFLIGHT execution projection for audit only. It is not an execution surface while this packet is blocked; the active capsule belongs to `PE7-CTRL-ROUTE-CONTRACT-1` above.
-
-<!-- retired-weak-agent-dispatch:v1
-{"allowed_outputs":["Operator-side rwe_operator_preflight.v1 receipt bound by SHA-256 (never committed)","Operator-side one-use authorization request package bound by SHA-256 (never committed)","docs/CURRENT_STATUS.md gap-truth sync at S5 closeout (committed)"],"allowed_paths":["docs/CURRENT_STATUS.md"],"authority_consumption_allowed":false,"dispatch_lane":"provider_free_local","expected_artifacts":["One rwe_operator_preflight.v1 receipt with ready=true, zero blockers, and provider_call_performed=false, target_write_performed=false, authority_consumed=false","One operator-readable one-use authorization request package mirroring the store-owned rwe_run_authorization.v2 body shape with expires_at = authenticated issuance time + 2 hours (canonical UTC/RFC3339)","docs/CURRENT_STATUS.md closeout recording redacted digest bindings and confirmed gap truth"],"external_effect_limit":0,"forbidden_changes":["No code change to engine/, scripts/, workflow, or tooling","No store schema, table, migration, persistence, or evidence-destination change","No authority, evaluator, reviewer, budget, verifier, seed, or stop-rule change","No Provider call or credential read; DEEPSEEK_API_KEY symbol presence check only","No read or write against target repository Igzela/alters-lab","No repair or rerun of the v2 freeze or calibration","No change to v2 corpus, protocol, schedule, budgets, model, verifier, seeds, or stop rules","No measurement, AC, adoption, Meta, or Dashboard routing change","No activation of PE7-RWE-V2-VIABILITY-RUN-1 or any successor"],"forbidden_next_actions":["Do not issue, admit, or consume RWE authority (issue_and_admit_v2, admit, spend)","Do not call a Provider or read credentials","Do not write the target repository Igzela/alters-lab","Do not run the four-cell schedule or activate PE7-RWE-V2-VIABILITY-RUN-1 or any successor","Do not repair or rerun the v2 freeze or calibration","Do not change v2 corpus, protocol, schedule, budgets, model, verifier, seeds, or stop rules","Do not change production code, schema, store, or persistence authority","Do not start a later packet or broaden scope"],"goal":"Produce one fresh provider-free rwe_operator_preflight.v1 receipt with ready=true, zero blockers, and all negative-effect flags false, plus one operator-readable one-use authorization request package bound to the exact accepted v2 freeze, without issuing or consuming authority.","known_store_mutations":[],"ordered_steps":["S1 freeze verification: confirm the composition seam and freeze path (freeze_current_operator_contract_set) still bind the field-2 evidence identities with zero mismatch","S2 operator-environment preflight: outside CI, with DEEPSEEK_API_KEY symbol present but never read, run rwe-live-baseline preflight against the store with the accepted principal, the accepted completed Golden Path product_task_id, and the prior authorization_id for drift re-check; require ready=true, zero blockers, and all three negative-effect flags false","S3 authorization request package: assemble the one-use envelope from the preflight frozen block, schedule/protocol ceilings and stop rules, and the operator-supplied run ID and evidence locations, with expires_at exactly derived from the authenticated issuance time plus the accepted 2-hour B2 window; no issue/admit call","S4 receipt validation: re-run the preflight within the accepted 15-minute B1 maximum age and confirm zero mismatch; discard and re-run any receipt older than 15 minutes (no grace period); hash-bind receipt and package","S5 closeout: record redacted digest bindings and gap truth in docs/CURRENT_STATUS.md; independent review; canonical CI"],"packet_id":"PE7-RWE-V2-VIABILITY-PREFLIGHT-1","packet_state":"READY_FOR_EXECUTION","pause_gates":["Stop on any blocker preventing ready=true or on any negative-effect flag true","Stop on any stale or missing binding, live lease, non-disposable target state, unknown evidence destination, or unresolved Provider/model drift","Stop if the receipt is older than the accepted 15-minute B1 maximum age before consumption; discard and rerun","Stop before issuing or consuming RWE authority, calling a Provider, reading credentials, writing the target, or running the four-cell schedule","Stop on any expiry-policy violation under the accepted 2-hour B2 validity window"],"plan_lane_state":"plan_lane_deferred_until_terminal_owners","prerequisite_receipts":["PR #370 exact head 36c92b93975366c3f85471f247a3afb128e5351c, merge 3b4afb3e5ab4254904aa5a63473ab6ae0eac1e82, exact-head PASS, canonical workflow 31312135471","Frozen v2 hashes: corpus 044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20, protocol bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db, schedule 6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38"],"prerequisites":["PE7-RWE-V2-REFREEZE-1 is COMPLETE"],"private_paths_allowed":false,"read_paths":["engine/src/rwe/live_baseline_coordinator.rs","engine/src/rwe/operator_corpus.rs","engine/src/rwe/frozen_rwe_bindings.rs","engine/src/rwe/runner.rs","engine/src/storage/local_product_store/rwe_authority.rs","engine/src/bin/rwe_live_baseline.rs","engine/rwe/corpora/rwe-minimum-first-corpus/v2/","docs/CURRENT_STATUS.md"],"rollback":"Provider-free execution has no external effect to roll back: a failing or stale receipt is discarded and re-run; the request package is a non-authoritative document whose disposal is deletion; the S5 closeout is a prose-only docs/CURRENT_STATUS.md sync reverted by git; restricted raw evidence stays operator-side and is never committed.","schema_version":"weak_agent_dispatch.v1","secret_values_allowed":false,"verification":["cargo fmt --all -- --check","cargo clippy -p engine --all-targets --all-features -- -D warnings","scripts/ci/run_rust_tests.py","uv run --no-project python -m unittest discover -s tests","bash scripts/verify_rust_typescript_stack.sh","bash scripts/check_wire_codegen_drift.sh","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py","git diff --check"]}
--->
-
-
-12. **Retained next-action note.** No coding entry may run S1–S5 from this historical block. After the control-plane transition, a new planning/repair packet must re-expand this contract against accepted `main` and bind authoritative B1 freshness, store-owned B2 expiry, and the provenance disposition before any PREFLIGHT execution. Until then, issuing or consuming authority, calling a Provider, reading credentials, writing a target, running the four-cell schedule, or activating any successor remains forbidden.
-
-### Retained Policy Values (enforcement not accepted)
-
-Both values below remain **packet-local** operator policy for `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` (operator decision accepted 2026-08-10). Their policy owner is this packet block plus the confirmed-gap truth in `docs/CURRENT_STATUS.md`, but enforcement is not accepted because the current receipt has no authoritative B1 timestamp and production v2 issuance still accepts caller-controlled B2 expiry. They must not be generalized to unrelated authorization classes.
-
-- **B1 — accepted maximum age of the preflight receipt: 15 minutes.** Policy: a preflight receipt may be consumed only within 15 minutes of its recorded creation/completion time; once older than 15 minutes it is stale and MUST be discarded and re-run; no grace period; a re-run must again reach `ready=true`, zero blockers, exact frozen bindings, and all required negative-effect flags `false`; the preflight remains provider-free and read-only and creates no authority.
-- **B2 — one-use authorization request-package validity window: 2 hours from authorization issuance.** Policy: `expires_at` must be exactly derived from the authenticated issuance time + 2 hours; it must be canonical UTC/RFC3339; no caller-supplied arbitrary longer expiry; no renewal or extension of an issued authorization; once expired, discard it and require a fresh preflight plus a newly reviewed/issued one-use authorization; this is intentionally bounded relative to the frozen v2 schedule, whose maximum run wall-time is 1 hour; one-use semantics, exact run identity, spend ceilings, and target/freeze/provider/model bindings and all existing stop rules remain unchanged.
-
-**Blocked next step:** after the control-plane transition completes, a new planning/repair packet must bind authoritative B1 timestamp evidence, store-owned B2 issuance expiry, and the Golden Path test-tooling provenance disposition before a coding entry may run S1–S5 provider-free.
-
-**Forbidden while the window stays open:** executing from the preserved routing facts or a future-route profile alone (the capsule is the only execution surface); inventing, re-deriving, or widening the B1/B2 values, owners, allowed paths, ordered steps, or verification commands; issuing or admitting RWE authority; calling a Provider; reading credentials; running a schedule cell; writing a target repository; repairing the accepted v2 freeze; rerunning calibration; activating any successor; or changing measurement/AC/adoption/Meta/Dashboard routing.
+- no Provider call, credential read, target write, release, deployment, automatic merge, EFFECT execution, or T3 action without its separate exact authority;
+- no second controller, ledger, queue, lease, workflow owner, store, scheduler, evaluator, authority, or persistence owner;
+- no future-route path/prose, model output, local checkpoint, or candidate PR accepted as current-main authority;
+- no stale/ambiguous owner, caller, path, verification, rollback, cleanup, retention, evidence, schema, evaluator, authority, or recovery fact treated as proved;
+- no retry of an outcome-unknown effect and no deletion or concealment of failure, pause, repair, or recovery evidence.
 
 ## Future Route Boundary
 
-`docs/FUTURE_ROUTE.md` preserves the accepted long-horizon order, routing-only packet sketches, and bounded promotion profiles. It cannot authorize implementation, Provider effects, promotion, merge, release, or deployment. Promotion requires removing exactly one eligible packet from that document, expanding it here against accepted current `main`, and independently reviewing the resulting routing change; the profile facts marked `REFRESH_AT_PROMOTION` are candidates, not accepted contract.
+`docs/FUTURE_ROUTE.md` is the sole routing-only index. Promotion removes exactly one eligible packet, re-derives every `REFRESH_AT_PROMOTION` field from accepted main, validates the resulting candidate, and independently reviews the routing change. No future sketch, static path, or profile alone authorizes code or an effect.
