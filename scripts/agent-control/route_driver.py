@@ -34,6 +34,7 @@ import uuid
 
 import artifact_contract
 import plan_lane
+import plan_lifecycle
 
 
 INVENTORY_MARKER = re.compile(
@@ -47,10 +48,6 @@ MAX_CURRENT_MAIN_SOURCE_BYTES = 512 * 1024
 _MAX_PROMOTION_LIST_ITEMS = 50
 MAX_T3_RECEIPT_WINDOW = timedelta(minutes=15)
 _ROUTE_EVIDENCE_SCHEMA = "route_promotion_evidence.v1"
-_MERGE_BACKED_RECEIPT = re.compile(
-    r"^PR #[1-9][0-9]* exact head `[0-9a-f]{40}`; merge "
-    r"`(?P<merge>[0-9a-f]{40})`; exact-head `PASS`; canonical workflow `[1-9][0-9]*`$"
-)
 _DECISION_KINDS = frozenset({"schema", "evaluator", "authority", "recovery"})
 _SAFE_PROPOSAL_TOKEN = re.compile(r"^[A-Za-z0-9_./:-]{3,160}$")
 _CODE_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
@@ -408,7 +405,7 @@ def accepted_complete_receipt(status_document: str, packet_id: str) -> str:
     if receipt_match is None:
         raise RouteDriverError("route_bootstrap_receipt_invalid")
     receipt = receipt_match.group("evidence").strip()
-    if len(receipt.encode("utf-8")) > 2 * 1024 or _MERGE_BACKED_RECEIPT.fullmatch(receipt) is None:
+    if plan_lifecycle.canonical_closeout_reference_match(receipt) is None:
         raise RouteDriverError("route_bootstrap_receipt_not_merge_backed")
     return receipt
 
@@ -436,7 +433,7 @@ def verified_predecessor_receipt(
             if accepted != receipt:
                 raise RouteDriverError("promotion_predecessor_receipt_mismatch")
             return receipt
-    match = _MERGE_BACKED_RECEIPT.fullmatch(receipt)
+    match = plan_lifecycle.canonical_closeout_reference_match(receipt)
     if match is None or match.group("merge") != accepted_main_sha:
         raise RouteDriverError("promotion_predecessor_receipt_unproved")
     return receipt

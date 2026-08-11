@@ -957,6 +957,15 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
 
 
 class TestOperatorEffectRouteResume(unittest.TestCase):
+    @staticmethod
+    def _owner_validated_status(request, receipt):
+        return (
+            "## Accepted Packet Receipts\n\n"
+            "| Packet | State | Accepted evidence |\n"
+            "|---|---|---|\n"
+            f"| `{request.packet_id}` | `COMPLETE` | owner-validated existing product evidence for `{receipt.outcome_receipt_digest}` |\n"
+        )
+
     def _request_and_receipt(self):
         now = datetime.now(timezone.utc)
         request = route_driver.T3Request(
@@ -1033,7 +1042,8 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
 
     def test_valid_operator_completion_promotes_only_the_provider_free_closeout(self):
         request, receipt, raw = self._request_and_receipt()
-        runner, _github, state = self._runner(request, raw)
+        runner, github, state = self._runner(request, raw)
+        github.accepted_status_document.return_value = self._owner_validated_status(request, receipt)
         successor = mock.Mock(
             profile=("PE7-EFFECT-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"),
         )
@@ -1055,6 +1065,9 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             self.assertEqual(
                 compile_successor.call_args.kwargs["retained_t3_request"], request
             )
+            self.assertEqual(
+                compile_successor.call_args.kwargs["retained_t3_receipt"], receipt
+            )
         self.assertEqual(result.status, "promotion_pr")
         self.assertEqual(drive.call_args.args[0], CLOSED)
         self.assertEqual(drive.call_args.args[2], MAIN)
@@ -1062,7 +1075,8 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
 
     def test_effect_closeout_planner_transport_unavailability_is_recoverable(self):
         request, receipt, raw = self._request_and_receipt()
-        runner, _github, state = self._runner(request, raw)
+        runner, github, state = self._runner(request, raw)
+        github.accepted_status_document.return_value = self._owner_validated_status(request, receipt)
         successor = mock.Mock(
             profile=("PE7-EFFECT-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"),
         )
@@ -1083,7 +1097,8 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
 
     def test_receipt_without_a_direct_closeout_stops_outcome_unknown(self):
         request, receipt, raw = self._request_and_receipt()
-        runner, _github, state = self._runner(request, raw)
+        runner, github, state = self._runner(request, raw)
+        github.accepted_status_document.return_value = self._owner_validated_status(request, receipt)
         successor = mock.Mock(
             profile=("PE7-WRONG-SUCCESSOR-1", "IMPLEMENT", "T1", "none", "source_focused_full"),
         )
@@ -1104,6 +1119,16 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             result = runner.run_effect_route_once(request, receipt)
         self.assertEqual(result.status, "rejected")
         self.assertEqual(result.details["reason"], "route_effect_receipt_unproved")
+        drive.assert_not_called()
+
+    def test_unproved_owner_outcome_never_opens_a_t3_closeout_promotion_pr(self):
+        request, receipt, raw = self._request_and_receipt()
+        runner, _github, state = self._runner(request, raw)
+        with mock.patch.object(state_manager, "read_dispatch_state", return_value=state), \
+             mock.patch.object(runner, "_drive_promotion_pr") as drive:
+            result = runner.run_effect_route_once(request, receipt)
+        self.assertEqual(result.status, "outcome_unknown")
+        self.assertEqual(result.details["reason"], "route_effect_owner_outcome_unproved")
         drive.assert_not_called()
 
     def test_closeout_cannot_promote_after_effect_without_owner_validated_outcome_receipt(self):

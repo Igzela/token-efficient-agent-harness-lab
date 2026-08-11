@@ -1022,9 +1022,19 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
             pr_number, head_sha, merge_commit_sha, repo,
         )
         return {**outcome, "stage": stage, "merge_commit_sha": merge_commit_sha}
+    ci_receipt = plan_lifecycle.plan_ci_receipt(ledger_issue, pr_number, head_sha, repo)
+    merge_receipt = plan_lifecycle.plan_merge_receipt(ledger_issue, pr_number, head_sha, repo)
+    closeout_reference = plan_lifecycle.canonical_closeout_reference(
+        pr_number,
+        head_sha,
+        merge_receipt.get("merge_commit_sha") if merge_receipt is not None else None,
+        ci_receipt.get("workflow_run_id") if ci_receipt is not None else None,
+    )
+    if closeout_reference is None:
+        return {"recorded": False, "stage": stage, "reason": "closeout_receipt_pending"}
     outcome = plan_lifecycle.record_plan_closeout_receipt(
         ledger_issue, packet_id, attempt, candidate.source_main_sha,
-        pr_number, head_sha, "closed_out", f"PR #{pr_number}", repo,
+        pr_number, head_sha, "closed_out", closeout_reference, repo,
     )
     return {**outcome, "stage": stage}
 

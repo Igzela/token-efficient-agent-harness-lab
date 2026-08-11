@@ -30,7 +30,10 @@ import state_manager as sm
 _ATTEMPT_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
-_CLOSEOUT_REFERENCE_PATTERN = re.compile(r"^[a-zA-Z0-9_ ./:#-]{1,200}$")
+_CLOSEOUT_REFERENCE_PATTERN = re.compile(
+    r"^PR #[1-9][0-9]* exact head `[0-9a-f]{40}`; merge "
+    r"`(?P<merge>[0-9a-f]{40})`; exact-head `PASS`; canonical workflow `[1-9][0-9]*`$"
+)
 _TERMINAL_PACKET_STATE_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
@@ -44,6 +47,39 @@ def _normalized_attempt_id(value: object) -> str | None:
     except ValueError:
         return None
     return value if value == str(parsed) else None
+
+
+def canonical_closeout_reference(
+    pr_number: object,
+    head_sha: object,
+    merge_commit_sha: object,
+    workflow_run_id: object,
+) -> str | None:
+    """Render the one closeout reference accepted by routing and status rows."""
+
+    if (
+        type(pr_number) is not int
+        or pr_number < 1
+        or not isinstance(head_sha, str)
+        or local_loop.HEX40.fullmatch(head_sha) is None
+        or not isinstance(merge_commit_sha, str)
+        or local_loop.HEX40.fullmatch(merge_commit_sha) is None
+        or type(workflow_run_id) is not int
+        or workflow_run_id < 1
+    ):
+        return None
+    return (
+        f"PR #{pr_number} exact head `{head_sha}`; merge `{merge_commit_sha}`; "
+        f"exact-head `PASS`; canonical workflow `{workflow_run_id}`"
+    )
+
+
+def canonical_closeout_reference_match(value: object) -> re.Match[str] | None:
+    """Parse a bounded closeout reference written by the lifecycle owner."""
+
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 2 * 1024:
+        return None
+    return _CLOSEOUT_REFERENCE_PATTERN.fullmatch(value)
 
 
 def _plan_claim(ledger_issue: int, dispatch_id: str, repo: str) -> dict[str, Any] | None:
@@ -123,8 +159,7 @@ def plan_ci_receipt(ledger_issue: int, pr_number: int, head_sha: str, repo: str 
         return None
     if state.get("pr_number") != int(pr_number) or state.get("head_sha") != head_sha:
         return None
-    status = state.get("status")
-    if not isinstance(status, str) or not status.startswith("terminal_"):
+    if state.get("status") != "terminal_success":
         return None
     return state
 
