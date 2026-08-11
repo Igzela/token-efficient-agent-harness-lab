@@ -392,19 +392,32 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         self.assertEqual(result.reason, "promotion_current_main_evidence_missing")
 
     def test_current_main_evidence_owns_every_refreshed_contract_field(self):
+        evidence = self._evidence()
         result = route_driver.RoutePromotionPlanner().plan(
-            self._successor(), MAIN, EVIDENCE, self._evidence(), MANIFEST
+            self._successor(), MAIN, EVIDENCE, evidence, MANIFEST
         )
         self.assertEqual(result.state, "READY_FOR_EXECUTION")
         self.assertIsNotNone(result.candidate)
+        assert result.candidate is not None
+        capsule = result.candidate.capsule
         self.assertEqual(
-            result.candidate.capsule["allowed_paths"],
-            list(self._evidence().allowed_paths),
+            capsule["allowed_paths"], list(evidence.allowed_paths),
         )
-        self.assertNotIn("docs/", result.candidate.capsule["allowed_paths"])
+        self.assertEqual(capsule["read_paths"], list(evidence.allowed_paths))
+        self.assertEqual(capsule["prerequisite_receipts"], [EVIDENCE])
+        self.assertEqual(capsule["ordered_steps"], list(evidence.ordered_slices))
+        self.assertEqual(capsule["expected_artifacts"], list(evidence.evidence_destinations))
+        for field in (
+            "allowed_outputs",
+            "forbidden_changes",
+            "pause_gates",
+            "forbidden_next_actions",
+        ):
+            self.assertTrue(capsule[field])
+        self.assertNotIn("docs/", capsule["allowed_paths"])
         self.assertEqual(
             result.candidate.contract["cleanup"],
-            self._evidence().cleanup,
+            evidence.cleanup,
         )
         self.assertEqual(result.candidate.manifest_sha256, MANIFEST)
         self.assertEqual(result.candidate.capsule["route_manifest_sha256"], MANIFEST)
