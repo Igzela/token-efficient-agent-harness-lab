@@ -328,6 +328,22 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         self.assertIn("`route_driver.py` is the deep promotion boundary", module_map)
         self.assertIn("cannot use FUTURE_ROUTE paths as authority", module_map)
 
+    def test_bootstrap_receipt_reuses_its_existing_status_row_idempotently(self):
+        evidence = (
+            f"PR #390 exact head `{'b' * 40}`; merge `{'c' * 40}`; "
+            "exact-head `PASS`; canonical workflow `31467821768`"
+        )
+        closed_row = f"| `{CLOSED}` | `COMPLETE` | {evidence} |\n"
+        status = status_document().replace(
+            "|---|---|---|\n\n",
+            "|---|---|---|\n" + closed_row + "\n",
+            1,
+        )
+        self.assertEqual(
+            route_driver._with_status_rows(status, closed_row, ""),
+            status,
+        )
+
     def _successor(self, packet_class="IMPLEMENT"):
         sketch = route_driver.PacketSketch(
             packet_id="PE7-EXACT-PROMOTION-1",
@@ -803,8 +819,8 @@ class TestRepositoryRouteRunner(unittest.TestCase):
             repository="acme/repo", repo_path=Path("/tmp"), runner=runner,
         )
         receipt = (
-            f"| `{CLOSED}` | `COMPLETE` | PR #390 exact head `{'b' * 40}`; "
-            f"merge `{'c' * 40}`; exact-head `PASS`; canonical workflow `31467821768` |"
+            f"PR #390 exact head `{'b' * 40}`; merge `{'c' * 40}`; "
+            "exact-head `PASS`; canonical workflow `31467821768`"
         )
         route._current_complete_receipt = receipt
         with mock.patch.object(route, "_current_packet", return_value=(CLOSED, MAIN)):
@@ -1011,10 +1027,11 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         github.accepted_plan_document.assert_called_once_with(MAIN)
 
     def test_current_packet_accepts_only_one_merge_backed_completed_receipt(self):
-        receipt = (
-            f"| `{CLOSED}` | `COMPLETE` | PR #390 exact head `{'b' * 40}`; "
-            f"merge `{'c' * 40}`; exact-head `PASS`; canonical workflow `31467821768` |"
+        evidence = (
+            f"PR #390 exact head `{'b' * 40}`; merge `{'c' * 40}`; "
+            "exact-head `PASS`; canonical workflow `31467821768`"
         )
+        receipt = f"| `{CLOSED}` | `COMPLETE` | {evidence} |"
         status = status_document().replace(
             "|---|---|---|\n\n",
             "|---|---|---|\n" + receipt + "\n\n",
@@ -1033,7 +1050,7 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         import local_loop
         with mock.patch.object(local_loop, "GitAdapter"):
             self.assertEqual(route._current_packet(), (CLOSED, MAIN))
-        self.assertEqual(route._current_complete_receipt, receipt)
+        self.assertEqual(route._current_complete_receipt, evidence)
 
     def test_current_packet_rejects_a_completed_receipt_without_merge_evidence(self):
         receipt = f"| `{CLOSED}` | `COMPLETE` | PR #390 accepted |"

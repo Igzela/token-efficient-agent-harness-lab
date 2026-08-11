@@ -389,14 +389,20 @@ def accepted_complete_receipt(status_document: str, packet_id: str) -> str:
     )
     if section is None:
         raise RouteDriverError("route_status_receipt_index_invalid:plan_status_receipt_index_missing")
-    receipts = [
+    receipt_rows = [
         match.group(0).strip()
         for match in plan_lane._ACCEPTED_RECEIPT_ROW.finditer(section.group("body"))
         if match.group("packet") == packet_id
     ]
-    if len(receipts) != 1:
+    if len(receipt_rows) != 1:
         raise RouteDriverError("route_bootstrap_receipt_missing_or_ambiguous")
-    receipt = receipts[0]
+    receipt_match = re.fullmatch(
+        rf"\|\s*`?{re.escape(packet_id)}`?\s*\|\s*`?COMPLETE`?\s*\|\s*(?P<evidence>[^|]+?)\s*\|",
+        receipt_rows[0],
+    )
+    if receipt_match is None:
+        raise RouteDriverError("route_bootstrap_receipt_invalid")
+    receipt = receipt_match.group("evidence").strip()
     if len(receipt.encode("utf-8")) > 2 * 1024 or re.search(
         r"PR #[1-9][0-9]* exact head `[0-9a-f]{40}`; merge `[0-9a-f]{40}`; "
         r"exact-head `PASS`; canonical workflow `[1-9][0-9]*`",
