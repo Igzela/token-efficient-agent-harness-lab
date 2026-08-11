@@ -732,12 +732,13 @@ class LocalRunOnce:
 
         CI and review are read back from the existing owners' own ledger
         recordings; merge and closeout are requested through the controller,
-        which verifies authoritative GitHub/PR state before recording.  After
-        the four terminal receipts, exactly one successor-promotion or
-        bounded escalation receipt is requested through the controller and
-        read back.  This wait never writes ledger state itself, never runs
-        the model again, and never treats a timeout as success for the
-        terminal stages.
+        which verifies authoritative GitHub/PR state before recording. After
+        the four terminal receipts, the controller may record a promotion
+        receipt or an evidence-missing escalation. The latter is not a user
+        pause: it returns the proved closeout to ``route-run``, whose existing
+        route adapter performs the current-main evidence planning. This wait
+        never writes ledger state itself, never runs the model again, and
+        never treats a timeout as success for the terminal stages.
         """
 
         deadline = time.monotonic() + self.lifecycle_timeout_seconds
@@ -755,9 +756,17 @@ class LocalRunOnce:
                 promotion = self._read_plan_promotion(ledger_issue, packet_id, attempt)
                 promotion_classification = self._promotion_receipt_classification(promotion)
                 if promotion_classification == "escalated":
-                    return self._promotion_escalation_pause(
-                        packet_id, attempt, promotion,
-                        ledger_issue=ledger_issue, pr_number=pr_number, head_sha=head_sha,
+                    return self._plan_result(
+                        "closed_out", packet_id, attempt,
+                        ledger_issue=ledger_issue,
+                        pr_number=pr_number,
+                        head_sha=head_sha,
+                        merge_commit_sha=merge.get("merge_commit_sha"),
+                        terminal_packet_state=closeout.get("terminal_packet_state"),
+                        closeout_reference=closeout.get("closeout_reference"),
+                        promotion=promotion,
+                        promotion_pending=True,
+                        promotion_escalated=True,
                     )
                 if promotion_classification == "invalid":
                     return self._plan_result(

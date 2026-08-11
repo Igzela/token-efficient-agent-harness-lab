@@ -1590,7 +1590,9 @@ class RepositoryRouteRunner:
         attempt_factory: Any = uuid.uuid4,
         t3_receipt_reader: Any = None,
         poll_interval_seconds: float = 5.0,
+        recovery_timeout_seconds: int = 900,
         sleeper: Any = time.sleep,
+        clock: Any = time.monotonic,
     ) -> None:
         if not isinstance(max_transitions, int) or max_transitions < 1 or max_transitions > 256:
             raise ValueError("route max_transitions must be between 1 and 256")
@@ -1599,8 +1601,12 @@ class RepositoryRouteRunner:
             or not isinstance(poll_interval_seconds, (int, float))
             or not 1 <= float(poll_interval_seconds) <= 60
             or not callable(sleeper)
+            or not isinstance(recovery_timeout_seconds, int)
+            or isinstance(recovery_timeout_seconds, bool)
+            or not 60 <= recovery_timeout_seconds <= 3600
+            or not callable(clock)
         ):
-            raise ValueError("route poll interval must be between 1 and 60 seconds")
+            raise ValueError("route recovery configuration is invalid")
         self.repository = repository
         self.repo_path = Path(repo_path)
         self.max_transitions = max_transitions
@@ -1614,7 +1620,9 @@ class RepositoryRouteRunner:
         # bounded transition budget in a tight loop while CI/review advances.
         self._poll_recoverable = runner is None
         self._poll_interval_seconds = float(poll_interval_seconds)
+        self._recovery_timeout_seconds = recovery_timeout_seconds
         self._sleeper = sleeper
+        self._clock = clock
 
     def _wait_for_recovery(self) -> None:
         if self._poll_recoverable:
@@ -1718,6 +1726,8 @@ class RepositoryRouteRunner:
         transitions = 0
         last_packet: str | None = None
         last_recovery_marker: tuple[str, str, str] | None = None
+        unavailable_since: float | None = None
+        recovery_stop_reason = "route_transition_limit_exhausted"
 
         def recover(
             packet_id: str,
@@ -1735,13 +1745,22 @@ class RepositoryRouteRunner:
             deterministic fake cannot spin indefinitely.
             """
 
-            nonlocal transitions, last_recovery_marker
+            nonlocal transitions, last_recovery_marker, unavailable_since, recovery_stop_reason
             reason = (
                 str(details.get("reason", ""))
                 if isinstance(details, dict)
                 else ""
             )
             marker = (packet_id, str(status), reason)
+            if status == "unavailable" and self._poll_recoverable:
+                observed = float(self._clock())
+                if unavailable_since is None:
+                    unavailable_since = observed
+                elif observed - unavailable_since >= self._recovery_timeout_seconds:
+                    recovery_stop_reason = "route_controller_unavailable_timeout"
+                    return False
+            else:
+                unavailable_since = None
             if (
                 not self._poll_recoverable
                 or not stable_poll
@@ -1750,6 +1769,8 @@ class RepositoryRouteRunner:
                 transitions += 1
                 last_recovery_marker = marker
             self._wait_for_recovery()
+            if transitions >= self.max_transitions:
+                recovery_stop_reason = "route_transition_limit_exhausted"
             return transitions < self.max_transitions
 
         while transitions < self.max_transitions:
@@ -1799,7 +1820,12 @@ class RepositoryRouteRunner:
                             ).to_wire()
                         if effect_status in self.RECOVERABLE:
                             if not recover(packet_id, effect_status, effect_details):
-                                break
+                                return RouteRunResult(
+                                    "UNRECOVERABLE_INFRASTRUCTURE_FAILURE",
+                                    recovery_stop_reason,
+                                    packet_id,
+                                    transitions,
+                                ).to_wire()
                             continue
                         resumed = "RESUMED" if effect_status in {
                             "promoted", "successor_current", "t3_required",
@@ -1919,12 +1945,22 @@ class RepositoryRouteRunner:
                     ).to_wire()
                 if promotion_status in self.RECOVERABLE:
                     if not recover(packet_id, promotion_status, promotion_details):
-                        break
+                        return RouteRunResult(
+                            "UNRECOVERABLE_INFRASTRUCTURE_FAILURE",
+                            recovery_stop_reason,
+                            packet_id,
+                            transitions,
+                        ).to_wire()
                     continue
                 return RouteRunResult("DECISION_REQUIRED", str(promotion_details.get("reason", promotion_status)), packet_id, transitions).to_wire()
             if status in self.RECOVERABLE:
                 if not recover(packet_id, status, details):
-                    break
+                    return RouteRunResult(
+                        "UNRECOVERABLE_INFRASTRUCTURE_FAILURE",
+                        recovery_stop_reason,
+                        packet_id,
+                        transitions,
+                    ).to_wire()
                 continue
             return RouteRunResult("DECISION_REQUIRED", str(details.get("reason", status or "route_state_unknown")), packet_id, transitions).to_wire()
         return RouteRunResult(

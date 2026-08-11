@@ -905,6 +905,31 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         self.assertEqual(result["reason"], "operator_pause")
         self.assertEqual(runner.run_plan_once.call_count, 2)
 
+    def test_persistent_controller_unavailability_becomes_typed_infrastructure_failure(self):
+        runner = mock.Mock()
+        runner.run_plan_once.side_effect = [
+            self.Result("unavailable", reason="github_unavailable"),
+            self.Result("unavailable", reason="github_unavailable"),
+        ]
+        waits = []
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo",
+            repo_path=Path("/tmp"),
+            max_transitions=2,
+            poll_interval_seconds=3,
+            recovery_timeout_seconds=60,
+            sleeper=waits.append,
+            clock=mock.Mock(side_effect=[0.0, 61.0]),
+        )
+        route._runner = runner
+        with mock.patch.object(route, "_current_packet", return_value=(CLOSED, MAIN)):
+            result = route.run()
+        self.assertEqual(result["state"], "UNRECOVERABLE_INFRASTRUCTURE_FAILURE")
+        self.assertEqual(result["reason"], "route_controller_unavailable_timeout")
+        self.assertEqual(result["transitions"], 1)
+        self.assertEqual(waits, [3.0])
+        self.assertEqual(runner.run_plan_once.call_count, 2)
+
     def test_terminal_closed_out_claim_resumes_its_existing_promotion(self):
         runner = mock.Mock()
         runner.run_plan_once.return_value = self.Result(
