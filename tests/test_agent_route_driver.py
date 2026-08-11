@@ -794,6 +794,25 @@ class TestRepositoryRouteRunner(unittest.TestCase):
             self.details = details
             self.attempt_id = ATTEMPT
 
+    def test_merge_backed_current_window_uses_bootstrap_not_a_duplicate_worker(self):
+        runner = mock.Mock()
+        runner.bootstrap_route_once.return_value = self.Result(
+            "control_stopped", reason="operator_pause"
+        )
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo", repo_path=Path("/tmp"), runner=runner,
+        )
+        receipt = (
+            f"| `{CLOSED}` | `COMPLETE` | PR #390 exact head `{'b' * 40}`; "
+            f"merge `{'c' * 40}`; exact-head `PASS`; canonical workflow `31467821768` |"
+        )
+        route._current_complete_receipt = receipt
+        with mock.patch.object(route, "_current_packet", return_value=(CLOSED, MAIN)):
+            result = route.run()
+        self.assertEqual(result["state"], "DECISION_REQUIRED")
+        runner.bootstrap_route_once.assert_called_once_with(CLOSED, receipt)
+        runner.run_plan_once.assert_not_called()
+
     def test_ordinary_worker_failure_retries_without_a_packet_selector(self):
         runner = mock.Mock()
         runner.run_plan_once.side_effect = [
@@ -990,6 +1009,54 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         self.assertEqual((packet_id, accepted_main), (CLOSED, MAIN))
         adapter.return_value.refresh_origin_main.assert_called_once_with(Path("/tmp"), "main")
         github.accepted_plan_document.assert_called_once_with(MAIN)
+
+    def test_current_packet_accepts_only_one_merge_backed_completed_receipt(self):
+        receipt = (
+            f"| `{CLOSED}` | `COMPLETE` | PR #390 exact head `{'b' * 40}`; "
+            f"merge `{'c' * 40}`; exact-head `PASS`; canonical workflow `31467821768` |"
+        )
+        status = status_document().replace(
+            "|---|---|---|\n\n",
+            "|---|---|---|\n" + receipt + "\n\n",
+            1,
+        )
+        github = mock.Mock()
+        github.repository_metadata.return_value = {"default_branch": "main"}
+        github.accepted_main_sha.return_value = MAIN
+        github.accepted_plan_document.return_value = (
+            next_document() + f"\n<!-- route-bootstrap-reconcile:v1 packet_id={CLOSED} -->\n"
+        )
+        github.accepted_status_document.return_value = status
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo", repo_path=Path("/tmp"), runner=mock.Mock(), github=github,
+        )
+        import local_loop
+        with mock.patch.object(local_loop, "GitAdapter"):
+            self.assertEqual(route._current_packet(), (CLOSED, MAIN))
+        self.assertEqual(route._current_complete_receipt, receipt)
+
+    def test_current_packet_rejects_a_completed_receipt_without_merge_evidence(self):
+        receipt = f"| `{CLOSED}` | `COMPLETE` | PR #390 accepted |"
+        status = status_document().replace(
+            "|---|---|---|\n\n",
+            "|---|---|---|\n" + receipt + "\n\n",
+            1,
+        )
+        github = mock.Mock()
+        github.repository_metadata.return_value = {"default_branch": "main"}
+        github.accepted_main_sha.return_value = MAIN
+        github.accepted_plan_document.return_value = (
+            next_document() + f"\n<!-- route-bootstrap-reconcile:v1 packet_id={CLOSED} -->\n"
+        )
+        github.accepted_status_document.return_value = status
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo", repo_path=Path("/tmp"), runner=mock.Mock(), github=github,
+        )
+        import local_loop
+        with mock.patch.object(local_loop, "GitAdapter"):
+            with self.assertRaises(route_driver.RouteDriverError) as ctx:
+                route._current_packet()
+        self.assertEqual(ctx.exception.reason, "route_bootstrap_receipt_not_merge_backed")
 
     def test_current_packet_recognizes_a_compiled_t3_window_before_plan_dispatch(self):
         request = {

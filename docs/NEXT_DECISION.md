@@ -25,6 +25,8 @@ Every successor remains routing-only until its accepted predecessor closes and t
 ## Active Routing
 
 1. `PE7-ROUTE-AUTOMATION-1` — `READY_FOR_EXECUTION`. Sole current packet: turn the accepted receipt/promotion primitives into a continuously recoverable, caller-independent repository route. It creates no Provider, target, EFFECT, or T3 effect.
+
+<!-- route-bootstrap-reconcile:v1 packet_id=PE7-ROUTE-AUTOMATION-1 -->
 2. The first canonical provider-free soak and every later packet remain routing-only in `docs/FUTURE_ROUTE.md` until their predecessor is accepted and a current-main candidate contract is independently reviewed.
 3. Any later external-effect packet pauses for an exact finite T3 receipt; it is neither skipped nor executed automatically.
 

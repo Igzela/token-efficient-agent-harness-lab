@@ -245,6 +245,9 @@ FUTURE_ROUTE_INVENTORY_RE = re.compile(
 WEAK_AGENT_DISPATCH_RE = re.compile(
     r"<!-- weak-agent-dispatch:v1\s*(?P<payload>\{.*?\})\s*-->", re.DOTALL
 )
+ROUTE_BOOTSTRAP_RECONCILE_RE = re.compile(
+    rf"<!-- route-bootstrap-reconcile:v1 packet_id=(?P<packet>{PACKET_ID_PATTERN}) -->"
+)
 FUTURE_ROUTE_REQUIRED_SECTIONS = (
     "## Worker Tiers",
     "## Known Planned-Seam Gaps",
@@ -965,13 +968,31 @@ def active_state_failures(
     packets = {**future_packets, **current_packets}
     accepted_packets = accepted_packet_receipts(status_text, failures)
     failures.extend(forward_order_window_failures(next_text, current_packets))
+    bootstrap_packets = ROUTE_BOOTSTRAP_RECONCILE_RE.findall(next_text)
+    if len(bootstrap_packets) > 1:
+        failures.append("NEXT_DECISION must contain at most one route-bootstrap-reconcile marker")
+    elif bootstrap_packets:
+        bootstrap_packet = bootstrap_packets[0]
+        if (
+            bootstrap_packet not in current_packets
+            or bootstrap_packet not in accepted_packets
+            or current_packets[bootstrap_packet]["state"] != "READY_FOR_EXECUTION"
+        ):
+            failures.append(
+                "route-bootstrap-reconcile marker must name one accepted READY_FOR_EXECUTION current packet"
+            )
 
     for packet_id in sorted(accepted_packets & set(packets)):
         if packets[packet_id]["state"] != "COMPLETE":
-            failures.append(
-                f"{packet_id} is COMPLETE in accepted receipts but active as "
-                f"{packets[packet_id]['state']}"
+            bootstrap_allowed = (
+                packets[packet_id]["state"] == "READY_FOR_EXECUTION"
+                and bootstrap_packets == [packet_id]
             )
+            if not bootstrap_allowed:
+                failures.append(
+                    f"{packet_id} is COMPLETE in accepted receipts but active as "
+                    f"{packets[packet_id]['state']}"
+                )
 
     if future_text:
         failures.extend(future_route_profile_failures(future_text))
