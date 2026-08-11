@@ -1697,11 +1697,7 @@ class LocalRunOnce:
                 "rejected", request.packet_id, attempt,
                 reason="route_effect_receipt_unproved",
             )
-        closeout_reference = (
-            "T3 operator authority "
-            f"`{receipt.authority_receipt_digest}`; redacted effect outcome "
-            f"`{receipt.outcome_receipt_digest}`"
-        )
+        closeout_reference = route_driver.t3_closeout_reference(receipt)
         try:
             next_document = self.github.accepted_plan_document(accepted_main)
             future_document = self.github.accepted_route_document(accepted_main)
