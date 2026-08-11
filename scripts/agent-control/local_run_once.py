@@ -689,6 +689,32 @@ class LocalRunOnce:
                 }
         return None
 
+    @staticmethod
+    def _promotion_receipt_classification(receipt: dict[str, Any] | None) -> str:
+        """Classify one exact terminal route receipt without widening it."""
+
+        if receipt is None:
+            return "pending"
+        if receipt.get("kind") == "plan-promote" and receipt.get("status") == "promoted":
+            return "promoted"
+        if receipt.get("kind") == "plan-escalate" and receipt.get("status") == "escalated":
+            return "escalated"
+        return "invalid"
+
+    def _promotion_escalation_pause(
+        self,
+        packet_id: str,
+        attempt: str,
+        promotion: dict[str, Any],
+        **details: object,
+    ) -> local_loop.LocalRunOnceResult:
+        receipt_details = promotion.get("details")
+        reason = receipt_details.get("reason") if isinstance(receipt_details, dict) else None
+        return self._plan_result(
+            "bounded_pause", packet_id, attempt,
+            reason=str(reason or "promotion_escalated"), promotion=promotion, **details,
+        )
+
     def _wait_for_plan_terminal_receipts(
         self,
         ledger_issue: int,
@@ -722,6 +748,17 @@ class LocalRunOnce:
                 merge = transitions.get("merge") or {}
                 closeout = transitions.get("closeout") or {}
                 promotion = self._read_plan_promotion(ledger_issue, packet_id, attempt)
+                promotion_classification = self._promotion_receipt_classification(promotion)
+                if promotion_classification == "escalated":
+                    return self._promotion_escalation_pause(
+                        packet_id, attempt, promotion,
+                        ledger_issue=ledger_issue, pr_number=pr_number, head_sha=head_sha,
+                    )
+                if promotion_classification == "invalid":
+                    return self._plan_result(
+                        "rejected", packet_id, attempt,
+                        reason="promotion_receipt_invalid", promotion=promotion,
+                    )
                 if promotion is None and not promotion_dispatched:
                     try:
                         self.github.dispatch_controller(
@@ -731,7 +768,7 @@ class LocalRunOnce:
                         promotion_dispatched = True
                     except local_loop.LoopUnavailable:
                         pass
-                if promotion is not None or time.monotonic() >= deadline:
+                if promotion_classification == "promoted" or time.monotonic() >= deadline:
                     return self._plan_result(
                         "closed_out", packet_id, attempt,
                         ledger_issue=ledger_issue,
@@ -740,7 +777,7 @@ class LocalRunOnce:
                         terminal_packet_state=closeout.get("terminal_packet_state"),
                         closeout_reference=closeout.get("closeout_reference"),
                         promotion=promotion or {},
-                        promotion_pending=promotion is None,
+                        promotion_pending=promotion_classification == "pending",
                     )
             else:
                 pending = next(
@@ -1387,8 +1424,20 @@ class LocalRunOnce:
                     accepted_main_sha=accepted_main, successor_id=_successor_id,
                 )
             promotion = self._read_plan_promotion(ledger_issue, packet_id, attempt)
+            promotion_classification = self._promotion_receipt_classification(promotion)
+            if promotion_classification == "escalated":
+                return self._promotion_escalation_pause(
+                    packet_id, attempt, promotion,
+                    accepted_main_sha=accepted_main, successor_id=_successor_id,
+                )
+            if promotion_classification == "invalid":
+                return self._plan_result(
+                    "rejected", packet_id, attempt,
+                    accepted_main_sha=accepted_main, successor_id=_successor_id,
+                    reason="promotion_receipt_invalid", promotion=promotion,
+                )
             return self._plan_result(
-                "promoted" if promotion is not None else "promotion_pending",
+                "promoted" if promotion_classification == "promoted" else "promotion_pending",
                 packet_id, attempt,
                 accepted_main_sha=accepted_main, successor_id=_successor_id,
                 promotion=promotion or {},
@@ -1527,6 +1576,14 @@ class LocalRunOnce:
                 request.packet_id,
                 completed_ids=route_driver._accepted_completed_ids(status_document),
             )
+            if (
+                successor.profile[1] != "CLOSEOUT"
+                or request.packet_id not in successor.sketch.prerequisites
+            ):
+                return self._plan_result(
+                    "outcome_unknown", request.packet_id, attempt,
+                    reason="route_effect_closeout_not_proved",
+                )
             planned = self._plan_current_main_evidence(
                 successor, accepted_main, closeout_reference
             )
@@ -1542,6 +1599,7 @@ class LocalRunOnce:
                 closeout_reference,
                 accepted_main,
                 planned.evidence,
+                closed_packet_state="IN_PROGRESS",
             )
         except (local_loop.LoopUnavailable, route_driver.RouteDriverError):
             return self._plan_result(
@@ -1900,8 +1958,20 @@ class LocalRunOnce:
         except local_loop.LoopUnavailable:
             return self._plan_result("promotion_pending", packet_id, attempt, reason="promote_dispatch_unavailable")
         promotion = self._read_plan_promotion(ledger_issue, packet_id, attempt)
+        promotion_classification = self._promotion_receipt_classification(promotion)
+        if promotion_classification == "escalated":
+            return self._promotion_escalation_pause(
+                packet_id, attempt, promotion,
+                successor_id=successor_id, pr_number=pr_number, head_sha=head_sha,
+                merge_commit_sha=merge_commit_sha,
+            )
+        if promotion_classification == "invalid":
+            return self._plan_result(
+                "rejected", packet_id, attempt,
+                reason="promotion_receipt_invalid", promotion=promotion,
+            )
         return self._plan_result(
-            "promoted" if promotion is not None else "promotion_pending",
+            "promoted" if promotion_classification == "promoted" else "promotion_pending",
             packet_id, attempt,
             successor_id=successor_id, pr_number=pr_number, head_sha=head_sha,
             merge_commit_sha=merge_commit_sha,

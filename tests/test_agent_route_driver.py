@@ -451,6 +451,19 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         self.assertIsNone(validated)
         self.assertEqual(reason, "t3_receipt_binding_mismatch")
 
+        receipt["candidate_digest"] = request.candidate_digest
+        receipt["issued_at"] = (now + timedelta(seconds=1)).isoformat()
+        receipt["expires_at"] = (now + timedelta(minutes=2)).isoformat()
+        validated, reason = route_driver.validate_t3_receipt(receipt, request, now=now)
+        self.assertIsNone(validated)
+        self.assertEqual(reason, "t3_receipt_issued_in_future")
+
+        receipt["issued_at"] = now.isoformat()
+        receipt["expires_at"] = (now + timedelta(minutes=16)).isoformat()
+        validated, reason = route_driver.validate_t3_receipt(receipt, request, now=now)
+        self.assertIsNone(validated)
+        self.assertEqual(reason, "t3_receipt_window_exceeded")
+
     def test_compaction_keeps_one_current_window_for_116_crossings(self):
         document = "# Next\n\n## Common Execution Protocol\n\n- retained\n"
         for number in range(116):
@@ -466,6 +479,14 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         self.assertEqual(document.count("## Packet "), 1)
         self.assertEqual(document.count("## Completed"), 1)
         self.assertLess(len(document.encode("utf-8")), route_driver.NEXT_DECISION_MAX_BYTES)
+
+    def test_effect_closeout_transition_keeps_the_effect_in_progress(self):
+        effect_row, closeout_row = route_driver._status_readiness_rows(
+            "PE7-EFFECT-1", "PE7-EFFECT-CLOSEOUT-1", "T3 outcome pending", "READY_FOR_EXECUTION",
+            closed_packet_state="IN_PROGRESS",
+        )
+        self.assertIn("| PE7-EFFECT-1 | `IN_PROGRESS` |", effect_row)
+        self.assertIn("| PE7-EFFECT-CLOSEOUT-1 | `READY_FOR_EXECUTION` |", closeout_row)
 
     def test_compaction_traverses_the_current_canonical_portfolio_without_growth(self):
         """Use the accepted inventory, not a synthetic count, for the soak proof."""

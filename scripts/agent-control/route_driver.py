@@ -27,7 +27,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 import uuid
@@ -44,6 +44,7 @@ MAX_SKETCH_FIELD_CHARS = 8 * 1024
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_PROMOTION_EVIDENCE_BYTES = 64 * 1024
 MAX_CURRENT_MAIN_SOURCE_BYTES = 512 * 1024
+MAX_T3_RECEIPT_WINDOW = timedelta(minutes=15)
 _ROUTE_EVIDENCE_SCHEMA = "route_promotion_evidence.v1"
 _DECISION_KINDS = frozenset({"schema", "evaluator", "authority", "recovery"})
 _SAFE_PROPOSAL_TOKEN = re.compile(r"^[A-Za-z0-9_./:-]{3,160}$")
@@ -403,10 +404,17 @@ def _refresh_future_document(future_document: str, promoted_id: str) -> str:
 
 
 def _status_readiness_rows(
-    closed_packet_id: str, successor_id: str, predecessor_evidence: str, state: str
+    closed_packet_id: str,
+    successor_id: str,
+    predecessor_evidence: str,
+    state: str,
+    *,
+    closed_packet_state: str = "COMPLETE",
 ) -> tuple[str, str]:
+    if closed_packet_state not in {"COMPLETE", "IN_PROGRESS"}:
+        raise RouteDriverError("route_closed_packet_state_invalid")
     closed_row = (
-        f"| {closed_packet_id} | `COMPLETE` | "
+        f"| {closed_packet_id} | `{closed_packet_state}` | "
         f"{predecessor_evidence} |\n"
     )
     successor_row = (
@@ -435,6 +443,8 @@ def compile_successor(
     predecessor_evidence: str,
     accepted_main_sha: str,
     evidence: CurrentMainEvidence | None = None,
+    *,
+    closed_packet_state: str = "COMPLETE",
 ) -> CompiledSuccessor:
     """Compile one evidence-backed non-EFFECT successor into document updates.
 
@@ -482,11 +492,15 @@ def compile_successor(
             )
             + "\n-->\n"
         )
+    predecessor_state = (
+        "COMPLETE" if closed_packet_state == "COMPLETE"
+        else "IN_PROGRESS pending this packet's independent outcome validation"
+    )
     packet_block = (
         f"## Packet {successor.packet_id}\n\n"
         f"**State:** `{packet_state}`\n\n"
         f"**Prerequisite:** {', '.join(successor.sketch.prerequisites) or 'none'} — "
-        f"COMPLETE on accepted main `{accepted_main_sha}` ({predecessor_evidence.strip()}).\n\n"
+        f"{predecessor_state} on accepted main `{accepted_main_sha}` ({predecessor_evidence.strip()}).\n\n"
         f"**Class:** `{successor.sketch.packet_class}`\n\n"
         f"**Outcome:** {successor.sketch.outcome}\n\n"
         f"**Allowed delta:** {', '.join(contract['allowed_paths'])}.\n\n"
@@ -517,7 +531,8 @@ def compile_successor(
     )
     future_document = _refresh_future_document(future_document, successor.packet_id)
     closed_row, successor_row = _status_readiness_rows(
-        closed_packet_id, successor.packet_id, predecessor_evidence, packet_state
+        closed_packet_id, successor.packet_id, predecessor_evidence, packet_state,
+        closed_packet_state=closed_packet_state,
     )
     status_document = _with_status_rows(
         status_document, closed_row, successor_row
@@ -669,6 +684,10 @@ def validate_t3_receipt(
     observed = now or datetime.now(timezone.utc)
     if observed.tzinfo is None:
         observed = observed.replace(tzinfo=timezone.utc)
+    if issued > observed:
+        return None, "t3_receipt_issued_in_future"
+    if expires - issued > MAX_T3_RECEIPT_WINDOW:
+        return None, "t3_receipt_window_exceeded"
     if observed > expires:
         return None, "t3_receipt_expired"
     receipt = T3Receipt(

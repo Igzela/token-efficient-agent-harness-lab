@@ -657,6 +657,21 @@ class TestPromotionResume(unittest.TestCase):
             result = self._resume(runner)
         self.assertEqual(result.status, "promotion_ci_pending")
 
+    def test_escalation_receipt_is_a_bounded_pause_not_a_promotion(self):
+        runner = self._runner()
+        promotion = {
+            "kind": "plan-escalate",
+            "status": "escalated",
+            "details": {"reason": "promotion_current_main_evidence_missing"},
+        }
+        with mock.patch.object(runner.github, "dispatch_controller"), \
+             mock.patch.object(runner, "_read_plan_promotion", return_value=promotion):
+            result = runner._settle_promotion(
+                CLOSED, ATTEMPT, LEDGER, SUCCESSOR, 42, "b" * 40, "c" * 40,
+            )
+        self.assertEqual(result.status, "bounded_pause")
+        self.assertEqual(result.details["reason"], "promotion_current_main_evidence_missing")
+
 
 class TestRouteT3ReceiptTransport(unittest.TestCase):
     def setUp(self):
@@ -841,20 +856,43 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
     def test_valid_operator_completion_promotes_only_the_provider_free_closeout(self):
         request, receipt, raw = self._request_and_receipt()
         runner, _github, state = self._runner(request, raw)
+        successor = mock.Mock(
+            profile=("PE7-EFFECT-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"),
+        )
+        successor.sketch.prerequisites = (CLOSED,)
         planned = route_driver.PromotionPlanResult(
             "READY_FOR_EXECUTION", "proved", evidence=mock.Mock()
         )
         compiled = mock.Mock()
         with mock.patch.object(state_manager, "read_dispatch_state", return_value=state), \
-             mock.patch.object(route_driver, "eligible_successor", return_value=mock.Mock()), \
+             mock.patch.object(route_driver, "eligible_successor", return_value=successor), \
              mock.patch.object(runner, "_plan_current_main_evidence", return_value=planned), \
-             mock.patch.object(route_driver, "compile_successor", return_value=compiled), \
+             mock.patch.object(route_driver, "compile_successor", return_value=compiled) as compile_successor, \
              mock.patch.object(runner, "_drive_promotion_pr", return_value=mock.Mock(status="promotion_pr")) as drive:
             result = runner.run_effect_route_once(request, receipt)
+            self.assertEqual(
+                compile_successor.call_args.kwargs["closed_packet_state"],
+                "IN_PROGRESS",
+            )
         self.assertEqual(result.status, "promotion_pr")
         self.assertEqual(drive.call_args.args[0], CLOSED)
         self.assertEqual(drive.call_args.args[2], MAIN)
         self.assertEqual(drive.call_args.args[4], compiled)
+
+    def test_receipt_without_a_direct_closeout_stops_outcome_unknown(self):
+        request, receipt, raw = self._request_and_receipt()
+        runner, _github, state = self._runner(request, raw)
+        successor = mock.Mock(
+            profile=("PE7-WRONG-SUCCESSOR-1", "IMPLEMENT", "T1", "none", "source_focused_full"),
+        )
+        successor.sketch.prerequisites = (CLOSED,)
+        with mock.patch.object(state_manager, "read_dispatch_state", return_value=state), \
+             mock.patch.object(route_driver, "eligible_successor", return_value=successor), \
+             mock.patch.object(runner, "_drive_promotion_pr") as drive:
+            result = runner.run_effect_route_once(request, receipt)
+        self.assertEqual(result.status, "outcome_unknown")
+        self.assertEqual(result.details["reason"], "route_effect_closeout_not_proved")
+        drive.assert_not_called()
 
     def test_unproved_operator_completion_never_opens_a_promotion_pr(self):
         request, receipt, raw = self._request_and_receipt()
