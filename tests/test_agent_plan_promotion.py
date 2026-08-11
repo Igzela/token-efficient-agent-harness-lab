@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
@@ -18,6 +19,8 @@ import local_loop  # noqa: E402
 import local_run_once  # noqa: E402
 import plan_lane  # noqa: E402
 import plan_lifecycle  # noqa: E402
+import pr_binding  # noqa: E402
+import route_driver  # noqa: E402
 import state_manager  # noqa: E402
 
 LEDGER = 900
@@ -476,6 +479,31 @@ class TestPromotePlanDispatcher(unittest.TestCase):
 
 
 class TestPromotionWait(unittest.TestCase):
+    def test_reconcile_unknown_generation_never_mints_a_fresh_attempt(self):
+        github = mock.Mock()
+        runner = local_run_once.LocalRunOnce(
+            github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
+        )
+        candidate = mock.Mock(source_main_sha=MAIN)
+        comment = {
+            "author": {"login": "github-actions[bot]"},
+            "body": json.dumps({
+                "action": "plan-run",
+                "dispatch_id": DISPATCH_ID,
+                "status": "failed_unknown_output",
+                "details": {
+                    "subject_kind": "plan-packet",
+                    "subject_id": CLOSED,
+                    "source_main_sha": MAIN,
+                },
+            }),
+        }
+        with mock.patch.object(runner, "_live_plan", return_value=(candidate, LEDGER)), \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=[comment]):
+            result = runner.reconcile_plan(CLOSED)
+        self.assertEqual(result.status, "outcome_unknown")
+        self.assertEqual(result.details["reason"], "plan_reconcile_outcome_unknown")
+
     def test_reconcile_closed_claim_reuses_exact_attempt_for_promotion(self):
         """A restart resumes promotion; it never recliams the closed packet."""
 
@@ -577,12 +605,73 @@ class TestPromotionWait(unittest.TestCase):
         self.assertEqual(read["status"], "escalated")
 
 
+class TestPromotionResume(unittest.TestCase):
+    def _compiled(self):
+        return mock.Mock(
+            packet_id=SUCCESSOR,
+            branch="agent/packet-pe7-successor-promotion-escalation-1",
+            spec_digest="d" * 64,
+            packet_state="READY_FOR_EXECUTION",
+            t3_request=None,
+        )
+
+    def _runner(self):
+        return local_run_once.LocalRunOnce(
+            mock.Mock(), mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
+        )
+
+    def _resume(self, runner):
+        return runner._resume_promotion_pr(
+            CLOSED, ATTEMPT, MAIN, LEDGER, self._compiled(), "b" * 40
+        )
+
+    def test_missing_review_is_a_recoverable_wait_not_a_decision(self):
+        runner = self._runner()
+        existing = {"number": 42, "head_sha": "b" * 40, "isDraft": True}
+        with mock.patch.object(pr_binding, "find_plan_pr", return_value=existing), \
+             mock.patch.object(plan_lifecycle, "plan_review_receipt", return_value=None), \
+             mock.patch.object(local_run_once.subprocess, "run") as ready:
+            result = self._resume(runner)
+        self.assertEqual(result.status, "promotion_review_pending")
+        ready.assert_not_called()
+
+    def test_ready_failure_is_visible_and_never_proceeds_to_ci(self):
+        runner = self._runner()
+        existing = {"number": 42, "head_sha": "b" * 40, "isDraft": True}
+        with mock.patch.object(pr_binding, "find_plan_pr", return_value=existing), \
+             mock.patch.object(plan_lifecycle, "plan_review_receipt", return_value={"verdict": "PASS"}), \
+             mock.patch.object(local_run_once.subprocess, "run", return_value=mock.Mock(returncode=1)), \
+             mock.patch.object(runner, "_exact_head_canonical_ci") as ci:
+            result = self._resume(runner)
+        self.assertEqual(result.status, "promotion_ready_pending")
+        self.assertEqual(result.details["reason"], "ready_transition_failed")
+        ci.assert_not_called()
+
+    def test_canonical_ci_wait_is_recoverable_after_a_successful_ready_transition(self):
+        runner = self._runner()
+        existing = {"number": 42, "head_sha": "b" * 40, "isDraft": True}
+        with mock.patch.object(pr_binding, "find_plan_pr", return_value=existing), \
+             mock.patch.object(plan_lifecycle, "plan_review_receipt", return_value={"verdict": "PASS"}), \
+             mock.patch.object(local_run_once.subprocess, "run", return_value=mock.Mock(returncode=0)), \
+             mock.patch.object(runner, "_exact_head_canonical_ci", return_value=False):
+            result = self._resume(runner)
+        self.assertEqual(result.status, "promotion_ci_pending")
+
+
 class TestRouteT3ReceiptTransport(unittest.TestCase):
+    def setUp(self):
+        self._actions_environment = mock.patch.dict(os.environ, {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_ACTOR": "authorized-operator",
+        })
+        self._actions_environment.start()
+        self.addCleanup(self._actions_environment.stop)
+
     def _arguments(self):
         now = datetime.now(timezone.utc)
         return (
             CLOSED, MAIN, "b" * 64, "c" * 64, "d" * 64, "e" * 64,
-            "existing-authority-owner", "authorized-operator", now.isoformat(),
+            "f" * 64, "a" * 64, "authorized-operator", now.isoformat(),
             (now + timedelta(minutes=5)).isoformat(), "GO",
         )
 
@@ -592,6 +681,7 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
             "schema_version": "route_t3_request.v1", "packet_id": CLOSED,
             "accepted_main_sha": MAIN, "candidate_digest": "b" * 64,
             "action_digest": "c" * 64, "scope_digest": "d" * 64,
+            "authority_owner_digest": "a" * 64,
             "requested_action": "one finite action",
         }
         return (
@@ -651,6 +741,130 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
         self.assertFalse(result["authorized"])
         self.assertEqual(result["reason"], "route_t3_request_binding_mismatch")
         write.assert_not_called()
+
+    def test_untrusted_or_bot_actor_is_rejected_before_ledger_write(self):
+        adapter = self._adapter()
+        with mock.patch.dict(os.environ, {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_ACTOR": "github-actions[bot]",
+        }), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.control_state, "require_live", return_value=None), \
+             mock.patch.object(local_loop, "GitHubAdapter", return_value=adapter) as adapter_cls, \
+             mock.patch.object(state_manager, "record_dispatch_state") as write:
+            result = dispatcher.record_route_t3_receipt(*self._arguments())
+        self.assertFalse(result["authorized"])
+        self.assertEqual(result["reason"], "route_t3_operator_unproved")
+        adapter_cls.assert_not_called()
+        write.assert_not_called()
+
+    def test_owner_digest_must_match_the_current_t3_request_before_ledger_write(self):
+        adapter = self._adapter()
+        arguments = list(self._arguments())
+        arguments[7] = "9" * 64
+        with mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.control_state, "require_live", return_value=None), \
+             mock.patch.object(local_loop, "GitHubAdapter", return_value=adapter), \
+             mock.patch.object(state_manager, "record_dispatch_state") as write:
+            result = dispatcher.record_route_t3_receipt(*arguments)
+        self.assertFalse(result["authorized"])
+        self.assertEqual(result["reason"], "route_t3_request_binding_mismatch")
+        write.assert_not_called()
+
+
+class TestOperatorEffectRouteResume(unittest.TestCase):
+    def _request_and_receipt(self):
+        now = datetime.now(timezone.utc)
+        request = route_driver.T3Request(
+            packet_id=CLOSED,
+            accepted_main_sha=MAIN,
+            candidate_digest="b" * 64,
+            action_digest="c" * 64,
+            scope_digest="d" * 64,
+            authority_owner_digest="a" * 64,
+            requested_action="one finite external action",
+        )
+        raw = {
+            "schema_version": "route_t3_receipt.v1",
+            "packet_id": request.packet_id,
+            "accepted_main_sha": request.accepted_main_sha,
+            "candidate_digest": request.candidate_digest,
+            "action_digest": request.action_digest,
+            "scope_digest": request.scope_digest,
+            "authority_receipt_digest": "e" * 64,
+            "outcome_receipt_digest": "f" * 64,
+            "authority_owner_digest": request.authority_owner_digest,
+            "operator": "authorized-operator",
+            "issued_at": now.isoformat(),
+            "expires_at": (now + timedelta(minutes=5)).isoformat(),
+            "disposition": "GO",
+        }
+        receipt, reason = route_driver.validate_t3_receipt(raw, request, now=now)
+        self.assertEqual(reason, "t3_receipt_valid")
+        return request, receipt, raw
+
+    @staticmethod
+    def _t3_document(request):
+        marker = {
+            "schema_version": "route_t3_request.v1",
+            "packet_id": request.packet_id,
+            "accepted_main_sha": request.accepted_main_sha,
+            "candidate_digest": request.candidate_digest,
+            "action_digest": request.action_digest,
+            "scope_digest": request.scope_digest,
+            "authority_owner_digest": request.authority_owner_digest,
+            "requested_action": request.requested_action,
+        }
+        return (
+            f"## Active Routing\n\n1. `{request.packet_id}` — `T3_REQUIRED`\n\n"
+            f"## Packet {request.packet_id}\n\n**State:** `T3_REQUIRED`\n\n"
+            "<!-- route-t3-request:v1\n" + json.dumps(marker) + "\n-->\n"
+        )
+
+    def _runner(self, request, raw):
+        github = mock.Mock()
+        github.read_control_state.return_value = {"emergency_stop": False, "orchestrator_enabled": True}
+        github.repository_metadata.return_value = {"name_with_owner": "acme/repo", "default_branch": "main"}
+        github.accepted_main_sha.return_value = MAIN
+        github.accepted_plan_document.return_value = self._t3_document(request)
+        github.accepted_route_document.return_value = "future"
+        github.accepted_status_document.return_value = "status"
+        github.plan_ledger_issue.return_value = LEDGER
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN
+        runner = local_run_once.LocalRunOnce(
+            github, git, repository="acme/repo", repo_path=Path("/tmp"),
+        )
+        state = {"action": "route-t3-receipt", "status": "authorized", "details": raw}
+        return runner, github, state
+
+    def test_valid_operator_completion_promotes_only_the_provider_free_closeout(self):
+        request, receipt, raw = self._request_and_receipt()
+        runner, _github, state = self._runner(request, raw)
+        planned = route_driver.PromotionPlanResult(
+            "READY_FOR_EXECUTION", "proved", evidence=mock.Mock()
+        )
+        compiled = mock.Mock()
+        with mock.patch.object(state_manager, "read_dispatch_state", return_value=state), \
+             mock.patch.object(route_driver, "eligible_successor", return_value=mock.Mock()), \
+             mock.patch.object(runner, "_plan_current_main_evidence", return_value=planned), \
+             mock.patch.object(route_driver, "compile_successor", return_value=compiled), \
+             mock.patch.object(runner, "_drive_promotion_pr", return_value=mock.Mock(status="promotion_pr")) as drive:
+            result = runner.run_effect_route_once(request, receipt)
+        self.assertEqual(result.status, "promotion_pr")
+        self.assertEqual(drive.call_args.args[0], CLOSED)
+        self.assertEqual(drive.call_args.args[2], MAIN)
+        self.assertEqual(drive.call_args.args[4], compiled)
+
+    def test_unproved_operator_completion_never_opens_a_promotion_pr(self):
+        request, receipt, raw = self._request_and_receipt()
+        runner, _github, _state = self._runner(request, raw)
+        with mock.patch.object(state_manager, "read_dispatch_state", return_value=None), \
+             mock.patch.object(runner, "_drive_promotion_pr") as drive:
+            result = runner.run_effect_route_once(request, receipt)
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.details["reason"], "route_effect_receipt_unproved")
+        drive.assert_not_called()
 
 
 if __name__ == "__main__":

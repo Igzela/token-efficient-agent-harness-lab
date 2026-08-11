@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,7 @@ MONITOR_WORKFLOW = "agent-ci-monitor.yml"
 MONITOR_RECEIPT_ACTION = "ci-monitor"
 LOCAL_UNKNOWN_OUTPUT_REASON = "local_unknown_output"
 PLAN_LIFECYCLE_STAGES = frozenset({"ci", "review", "merge", "closeout"})
+_SAFE_GITHUB_OPERATOR = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37})$")
 
 
 def _repo() -> str:
@@ -1139,7 +1141,8 @@ def record_route_t3_receipt(
     action_digest: str,
     scope_digest: str,
     authority_receipt_digest: str,
-    authority_owner: str,
+    outcome_receipt_digest: str,
+    authority_owner_digest: str,
     operator: str,
     issued_at: str,
     expires_at: str,
@@ -1148,10 +1151,15 @@ def record_route_t3_receipt(
     """Record a human-dispatched finite T3 receipt on the existing ledger.
 
     This command is intentionally absent from every worker-facing route path.
-    The GitHub workflow dispatch itself is the finite operator act; this
-    transport records its typed hash binding under the existing Plan Execution
-    Ledger.  It does not issue product authority, invoke an effect, or allow a
-    model to manufacture a receipt.
+    The GitHub workflow dispatch records the finite operator handoff under the
+    existing Plan Execution Ledger.  Its operator identity is derived from
+    the authenticated Actions actor, while the existing authority owner is
+    bound by the accepted current-main T3 request rather than supplied by the
+    caller. The operator uses that established product effect owner outside
+    this controller, then supplies only its redacted outcome digest here; the
+    routed CLOSEOUT packet independently validates that owner-held evidence.
+    This command does not issue product authority, invoke an effect, or allow
+    a model to manufacture a receipt.
     """
 
     import route_driver
@@ -1165,6 +1173,15 @@ def record_route_t3_receipt(
         return {"authorized": False, "reason": "route_t3_identity_invalid"}
     if local_loop.HEX40.fullmatch(accepted_main_sha) is None:
         return {"authorized": False, "reason": "route_t3_identity_invalid"}
+    authenticated_actor = os.environ.get("GITHUB_ACTOR")
+    if (
+        os.environ.get("GITHUB_ACTIONS") != "true"
+        or not isinstance(authenticated_actor, str)
+        or authenticated_actor != operator
+        or _SAFE_GITHUB_OPERATOR.fullmatch(authenticated_actor) is None
+        or authenticated_actor.endswith("[bot]")
+    ):
+        return {"authorized": False, "reason": "route_t3_operator_unproved"}
     # A receipt is meaningful only for the one currently accepted typed T3
     # pause.  Never let a workflow input create an orphan authority binding or
     # substitute hashes for the request that the accepted route actually
@@ -1189,6 +1206,7 @@ def record_route_t3_receipt(
         or request.candidate_digest != candidate_digest
         or request.action_digest != action_digest
         or request.scope_digest != scope_digest
+        or request.authority_owner_digest != authority_owner_digest
     ):
         return {"authorized": False, "reason": "route_t3_request_binding_mismatch"}
     receipt = {
@@ -1199,7 +1217,8 @@ def record_route_t3_receipt(
         "action_digest": action_digest,
         "scope_digest": scope_digest,
         "authority_receipt_digest": authority_receipt_digest,
-        "authority_owner": authority_owner,
+        "outcome_receipt_digest": outcome_receipt_digest,
+        "authority_owner_digest": authority_owner_digest,
         "operator": operator,
         "issued_at": issued_at,
         "expires_at": expires_at,
@@ -2210,11 +2229,11 @@ def main() -> None:
         result = record_plan_lifecycle(sys.argv[2], sys.argv[3], sys.argv[4])
     elif command == "promote-plan" and len(sys.argv) == 4:
         result = promote_plan(sys.argv[2], sys.argv[3])
-    elif command == "record-route-t3-receipt" and len(sys.argv) == 13:
+    elif command == "record-route-t3-receipt" and len(sys.argv) == 14:
         result = record_route_t3_receipt(
             sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6],
             sys.argv[7], sys.argv[8], sys.argv[9], sys.argv[10], sys.argv[11],
-            sys.argv[12],
+            sys.argv[12], sys.argv[13],
         )
     elif command == "release-plan" and len(sys.argv) == 7:
         result = release_plan(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])

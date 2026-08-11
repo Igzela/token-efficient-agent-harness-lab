@@ -797,6 +797,7 @@ class TestPlanLifecycleWorkflowTransport(unittest.TestCase):
         self.assertIn("dispatcher.py promote-plan", workflow)
         self.assertIn("          - record-route-t3-receipt\n", workflow)
         self.assertIn("      INPUT_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}\n", workflow)
+        self.assertIn("      INPUT_OUTCOME_RECEIPT_DIGEST: ${{ inputs.outcome_receipt_digest }}\n", workflow)
         self.assertIn("dispatcher.py record-route-t3-receipt", workflow)
 
 

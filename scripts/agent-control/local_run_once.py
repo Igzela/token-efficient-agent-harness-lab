@@ -909,12 +909,22 @@ class LocalRunOnce:
                 continue
             seen_dispatches.add(dispatch_id)
             if (
-                state.get("status") not in {"claimed", "dispatched", "closed_out"}
-                or not isinstance(details, dict)
+                not isinstance(details, dict)
                 or details.get("subject_kind") != "plan-packet"
                 or details.get("subject_id") != packet_id
                 or details.get("source_main_sha") != candidate.source_main_sha
             ):
+                continue
+            if state.get("status") in {"failed_unknown_output", "outcome_unknown"}:
+                return self._plan_result(
+                    "outcome_unknown", packet_id, "",
+                    reason="plan_reconcile_outcome_unknown",
+                )
+            if state.get("status") not in {"claimed", "dispatched", "closed_out"}:
+                # A terminal provider-free worker failure is released by the
+                # existing controller and permits one fresh generation.  It is
+                # intentionally distinct from the non-retryable unknown case
+                # above.
                 continue
             attempt = details.get("attempt_id")
             if _canonical_attempt_id(attempt) is None:
@@ -1406,6 +1416,146 @@ class LocalRunOnce:
             return self._dispatch_bounded_pause(packet_id, attempt, exc.reason)
         return self._drive_promotion_pr(packet_id, attempt, accepted_main, ledger_issue, compiled, details)
 
+    def run_effect_route_once(
+        self,
+        request: route_driver.T3Request,
+        receipt: route_driver.T3Receipt,
+    ) -> local_loop.LocalRunOnceResult:
+        """Resume a completed operator-owned EFFECT through its closeout PR.
+
+        This is deliberately not an effect executor.  The operator invokes the
+        already-owned product runtime under the finite T3 authority, then
+        records only redacted authority/outcome digests through the controller.
+        Here we independently re-read that ledger record and compile the next
+        provider-free CLOSEOUT contract.  A crash before such a record leaves
+        the T3 node paused; a malformed or changed record never advances it.
+        """
+
+        if not isinstance(request, route_driver.T3Request) or not isinstance(
+            receipt, route_driver.T3Receipt
+        ):
+            return self._plan_result("rejected", "", "", reason="route_effect_receipt_invalid")
+        attempt = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"route-effect:{self.repository}:{request.packet_id}:{request.candidate_digest}",
+        ))
+        try:
+            control = self.github.read_control_state()
+            if control.get("emergency_stop") or not control.get("orchestrator_enabled"):
+                return self._plan_result("control_stopped", request.packet_id, attempt)
+            metadata = self.github.repository_metadata()
+            if str(metadata.get("name_with_owner", "")).casefold() != self.repository.casefold():
+                return self._plan_result(
+                    "identity_rejected", request.packet_id, attempt,
+                    reason="repository_identity_mismatch",
+                )
+            default_branch = metadata.get("default_branch")
+            if not isinstance(default_branch, str) or not local_loop.BRANCH.fullmatch(default_branch):
+                return self._plan_result(
+                    "unavailable", request.packet_id, attempt,
+                    reason="default_branch_unavailable",
+                )
+            accepted_main = self.github.accepted_main_sha(default_branch)
+            local_main = self.git.origin_main_sha(self.repo_path, default_branch)
+            if accepted_main != request.accepted_main_sha or accepted_main != local_main:
+                return self._plan_result(
+                    "stale_checkout", request.packet_id, attempt,
+                    accepted_main_sha=accepted_main,
+                    receipt_main_sha=request.accepted_main_sha,
+                    local_origin_main_sha=local_main,
+                )
+            current_request = route_driver.current_t3_request(
+                self.github.accepted_plan_document(accepted_main), accepted_main
+            )
+            if current_request != request:
+                return self._plan_result(
+                    "rejected", request.packet_id, attempt,
+                    reason="route_effect_request_not_current",
+                )
+            ledger_issue = self.github.plan_ledger_issue()
+            state = state_manager.read_dispatch_state(
+                ledger_issue,
+                f"route-t3:{request.packet_id}:{request.candidate_digest}",
+                self.repository,
+            )
+        except (
+            local_loop.LoopUnavailable,
+            route_driver.RouteDriverError,
+            state_manager.StateUnavailableError,
+        ):
+            return self._plan_result(
+                "unavailable", request.packet_id, attempt,
+                reason="route_effect_receipt_unavailable",
+            )
+        expected_receipt = {
+            "schema_version": "route_t3_receipt.v1",
+            "packet_id": receipt.packet_id,
+            "accepted_main_sha": receipt.accepted_main_sha,
+            "candidate_digest": receipt.candidate_digest,
+            "action_digest": receipt.action_digest,
+            "scope_digest": receipt.scope_digest,
+            "authority_receipt_digest": receipt.authority_receipt_digest,
+            "outcome_receipt_digest": receipt.outcome_receipt_digest,
+            "authority_owner_digest": receipt.authority_owner_digest,
+            "operator": receipt.operator,
+            "issued_at": receipt.issued_at,
+            "expires_at": receipt.expires_at,
+            "disposition": receipt.disposition,
+        }
+        if not (
+            isinstance(state, dict)
+            and state.get("action") == "route-t3-receipt"
+            and state.get("status") == "authorized"
+            and state.get("details") == expected_receipt
+        ):
+            return self._plan_result(
+                "rejected", request.packet_id, attempt,
+                reason="route_effect_receipt_unproved",
+            )
+        closeout_reference = (
+            "T3 operator authority "
+            f"`{receipt.authority_receipt_digest}`; redacted effect outcome "
+            f"`{receipt.outcome_receipt_digest}`"
+        )
+        try:
+            next_document = self.github.accepted_plan_document(accepted_main)
+            future_document = self.github.accepted_route_document(accepted_main)
+            status_document = self.github.accepted_status_document(accepted_main)
+            successor = route_driver.eligible_successor(
+                future_document,
+                next_document,
+                request.packet_id,
+                completed_ids=route_driver._accepted_completed_ids(status_document),
+            )
+            planned = self._plan_current_main_evidence(
+                successor, accepted_main, closeout_reference
+            )
+            if planned.state not in {"READY_FOR_EXECUTION", "T3_REQUIRED"} or planned.evidence is None:
+                return self._plan_result(
+                    "bounded_pause", request.packet_id, attempt, reason=planned.reason
+                )
+            compiled = route_driver.compile_successor(
+                future_document,
+                next_document,
+                status_document,
+                request.packet_id,
+                closeout_reference,
+                accepted_main,
+                planned.evidence,
+            )
+        except (local_loop.LoopUnavailable, route_driver.RouteDriverError):
+            return self._plan_result(
+                "bounded_pause", request.packet_id, attempt,
+                reason="route_effect_closeout_evidence_unproved",
+            )
+        # The promotion PR itself is the canonical durable closeout transition
+        # for this operator-owned effect.  There was intentionally no weak
+        # plan claim for the EFFECT, so do not fabricate one merely to reuse a
+        # ledger receipt shape.
+        return self._drive_promotion_pr(
+            request.packet_id, attempt, accepted_main, ledger_issue, compiled, {}
+        )
+
     def _plan_current_main_evidence(
         self,
         successor: route_driver.EligibleSuccessor,
@@ -1631,22 +1781,33 @@ class LocalRunOnce:
         )
         if review is None:
             return self._plan_result(
-                "bounded_pause", packet_id, attempt,
+                "promotion_review_pending", packet_id, attempt,
                 pr_number=pr_number, head_sha=head_sha, branch=branch,
                 successor_id=successor_id, reason="review_receipt_pending",
             )
-        try:
-            subprocess.run(
-                ["gh", "pr", "ready", str(pr_number), "--repo", self.repository],
-                capture_output=True, text=True, timeout=self.command_timeout_seconds,
-                check=False,
-            )
-        except OSError:
-            pass
+        if existing.get("isDraft") is True:
+            try:
+                ready = subprocess.run(
+                    ["gh", "pr", "ready", str(pr_number), "--repo", self.repository],
+                    capture_output=True, text=True, timeout=self.command_timeout_seconds,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return self._plan_result(
+                    "promotion_ready_pending", packet_id, attempt,
+                    pr_number=pr_number, head_sha=head_sha, branch=branch,
+                    successor_id=successor_id, reason="ready_transition_unavailable",
+                )
+            if ready.returncode != 0:
+                return self._plan_result(
+                    "promotion_ready_pending", packet_id, attempt,
+                    pr_number=pr_number, head_sha=head_sha, branch=branch,
+                    successor_id=successor_id, reason="ready_transition_failed",
+                )
         ci_ok = self._exact_head_canonical_ci(pr_number, branch, head_sha)
         if not ci_ok:
             return self._plan_result(
-                "bounded_pause", packet_id, attempt,
+                "promotion_ci_pending", packet_id, attempt,
                 pr_number=pr_number, head_sha=head_sha, branch=branch,
                 successor_id=successor_id, reason="canonical_ci_pending",
             )

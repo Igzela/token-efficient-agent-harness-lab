@@ -89,10 +89,10 @@ on:
       authority_receipt_digest:
         required: false
         type: string
-      authority_owner:
+      outcome_receipt_digest:
         required: false
         type: string
-      operator:
+      authority_owner_digest:
         required: false
         type: string
       issued_at:
@@ -136,8 +136,8 @@ jobs:
       INPUT_ACTION_DIGEST: ${{ inputs.action_digest }}
       INPUT_SCOPE_DIGEST: ${{ inputs.scope_digest }}
       INPUT_AUTHORITY_RECEIPT_DIGEST: ${{ inputs.authority_receipt_digest }}
-      INPUT_AUTHORITY_OWNER: ${{ inputs.authority_owner }}
-      INPUT_OPERATOR: ${{ inputs.operator }}
+      INPUT_OUTCOME_RECEIPT_DIGEST: ${{ inputs.outcome_receipt_digest }}
+      INPUT_AUTHORITY_OWNER_DIGEST: ${{ inputs.authority_owner_digest }}
       INPUT_ISSUED_AT: ${{ inputs.issued_at }}
       INPUT_EXPIRES_AT: ${{ inputs.expires_at }}
       INPUT_DISPOSITION: ${{ inputs.disposition }}
@@ -229,7 +229,7 @@ jobs:
               python3 scripts/agent-control/dispatcher.py record-route-t3-receipt \
                 "$INPUT_PACKET_ID" "$INPUT_ACCEPTED_MAIN_SHA" "$INPUT_CANDIDATE_DIGEST" \
                 "$INPUT_ACTION_DIGEST" "$INPUT_SCOPE_DIGEST" "$INPUT_AUTHORITY_RECEIPT_DIGEST" \
-                "$INPUT_AUTHORITY_OWNER" "$INPUT_OPERATOR" "$INPUT_ISSUED_AT" \
+                "$INPUT_OUTCOME_RECEIPT_DIGEST" "$INPUT_AUTHORITY_OWNER_DIGEST" "$GITHUB_ACTOR" "$INPUT_ISSUED_AT" \
                 "$INPUT_EXPIRES_AT" "$INPUT_DISPOSITION"
               ;;
             release-plan)

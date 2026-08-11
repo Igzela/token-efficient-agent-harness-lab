@@ -25,6 +25,7 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -342,7 +343,11 @@ def eligible_successor(
         incomplete = [
             prerequisite
             for prerequisite in sketch.prerequisites
-            if states.get(prerequisite) != "COMPLETE" and prerequisite not in completed_ids
+            if (
+                prerequisite != closed_packet_id
+                and states.get(prerequisite) != "COMPLETE"
+                and prerequisite not in completed_ids
+            )
         ]
         if incomplete:
             continue
@@ -469,6 +474,7 @@ def compile_successor(
                     "candidate_digest": planned.t3_request.candidate_digest,
                     "action_digest": planned.t3_request.action_digest,
                     "scope_digest": planned.t3_request.scope_digest,
+                    "authority_owner_digest": planned.t3_request.authority_owner_digest,
                     "requested_action": planned.t3_request.requested_action,
                 },
                 ensure_ascii=False,
@@ -576,12 +582,20 @@ class T3Request:
     candidate_digest: str
     action_digest: str
     scope_digest: str
+    authority_owner_digest: str
     requested_action: str
 
 
 @dataclass(frozen=True)
 class T3Receipt:
-    """A hostile-input-validated finite operator authorization receipt."""
+    """A hostile-input-validated finite operator completion receipt.
+
+    The operator obtains the finite authority and uses the existing product
+    effect owner outside this repository-maintenance controller.  The redacted
+    outcome digest is only a handoff binding: the routed CLOSEOUT packet must
+    independently validate the owner-held evidence before it can make a
+    stronger claim.
+    """
 
     packet_id: str
     accepted_main_sha: str
@@ -589,7 +603,8 @@ class T3Receipt:
     action_digest: str
     scope_digest: str
     authority_receipt_digest: str
-    authority_owner: str
+    outcome_receipt_digest: str
+    authority_owner_digest: str
     operator: str
     issued_at: str
     expires_at: str
@@ -606,13 +621,15 @@ def validate_t3_receipt(
 
     The route never writes these receipts.  An existing operator/authority
     owner must put a typed, hash-bound record on the authoritative ledger;
-    this function only rejects malformed, stale, conflicting, or non-GO
-    values before a separately registered existing effect adapter may resume.
+    this function only rejects malformed, stale, or conflicting values.  A
+    valid GO permits the route to compile the next provider-free CLOSEOUT
+    packet; it never causes this controller to execute an EFFECT.
     """
 
     required = {
         "schema_version", "packet_id", "accepted_main_sha", "candidate_digest",
-        "action_digest", "scope_digest", "authority_receipt_digest", "authority_owner", "operator",
+        "action_digest", "scope_digest", "authority_receipt_digest", "outcome_receipt_digest",
+        "authority_owner_digest", "operator",
         "issued_at", "expires_at", "disposition",
     }
     if not isinstance(raw, dict) or set(raw) != required:
@@ -624,18 +641,19 @@ def validate_t3_receipt(
         or raw.get("candidate_digest") != request.candidate_digest
         or raw.get("action_digest") != request.action_digest
         or raw.get("scope_digest") != request.scope_digest
+        or raw.get("authority_owner_digest") != request.authority_owner_digest
     ):
         return None, "t3_receipt_binding_mismatch"
-    digest_fields = ("action_digest", "scope_digest", "authority_receipt_digest")
+    digest_fields = (
+        "action_digest", "scope_digest", "authority_receipt_digest",
+        "outcome_receipt_digest", "authority_owner_digest",
+    )
     if any(not isinstance(raw.get(field), str) or plan_lane.SHA256.fullmatch(raw[field]) is None for field in digest_fields):
         return None, "t3_receipt_digest_invalid"
     operator = raw.get("operator")
-    authority_owner = raw.get("authority_owner")
     if (
         not isinstance(operator, str)
         or _SAFE_PROPOSAL_TOKEN.fullmatch(operator) is None
-        or not isinstance(authority_owner, str)
-        or _SAFE_PROPOSAL_TOKEN.fullmatch(authority_owner) is None
     ):
         return None, "t3_receipt_operator_invalid"
     disposition = raw.get("disposition")
@@ -660,7 +678,8 @@ def validate_t3_receipt(
         action_digest=raw["action_digest"],
         scope_digest=raw["scope_digest"],
         authority_receipt_digest=raw["authority_receipt_digest"],
-        authority_owner=authority_owner,
+        outcome_receipt_digest=raw["outcome_receipt_digest"],
+        authority_owner_digest=raw["authority_owner_digest"],
         operator=operator,
         issued_at=raw["issued_at"],
         expires_at=raw["expires_at"],
@@ -696,7 +715,7 @@ def current_t3_request(document: str, accepted_main_sha: str) -> T3Request | Non
         raise RouteDriverError("route_t3_request_invalid") from exc
     required = {
         "schema_version", "packet_id", "accepted_main_sha", "candidate_digest", "action_digest",
-        "scope_digest", "requested_action"
+        "scope_digest", "authority_owner_digest", "requested_action"
     }
     if (
         not isinstance(payload, dict)
@@ -710,6 +729,8 @@ def current_t3_request(document: str, accepted_main_sha: str) -> T3Request | Non
         or plan_lane.SHA256.fullmatch(payload["action_digest"]) is None
         or not isinstance(payload.get("scope_digest"), str)
         or plan_lane.SHA256.fullmatch(payload["scope_digest"]) is None
+        or not isinstance(payload.get("authority_owner_digest"), str)
+        or plan_lane.SHA256.fullmatch(payload["authority_owner_digest"]) is None
         or not isinstance(payload.get("requested_action"), str)
         or not payload["requested_action"].strip()
         or len(payload["requested_action"]) > MAX_SKETCH_FIELD_CHARS
@@ -721,6 +742,7 @@ def current_t3_request(document: str, accepted_main_sha: str) -> T3Request | Non
         candidate_digest=payload["candidate_digest"],
         action_digest=payload["action_digest"],
         scope_digest=payload["scope_digest"],
+        authority_owner_digest=payload["authority_owner_digest"],
         requested_action=payload["requested_action"].strip(),
     )
 
@@ -1260,6 +1282,9 @@ class RoutePromotionPlanner:
                         "ordered_slices": contract["ordered_slices"],
                         "verification": contract["verification"],
                     }),
+                    authority_owner_digest=_json_sha256({
+                        "owner_paths": list(evidence.owner_paths),
+                    }),
                     requested_action=successor.sketch.outcome,
                 ),
                 evidence=evidence,
@@ -1355,6 +1380,7 @@ class RepositoryRouteRunner:
         "failed", "worker_failed", "canonical_ci_repair_pending",
         "review_repair_pending", "claim_unavailable", "claim_rejected",
         "stale_checkout", "promotion_pr", "promotion_pending", "handed_off",
+        "promotion_review_pending", "promotion_ready_pending", "promotion_ci_pending",
         "in_flight", "successor_current",
     })
 
@@ -1368,10 +1394,18 @@ class RepositoryRouteRunner:
         runner: object | None = None,
         attempt_factory: Any = uuid.uuid4,
         t3_receipt_reader: Any = None,
-        effect_resumer: Any = None,
+        poll_interval_seconds: float = 5.0,
+        sleeper: Any = time.sleep,
     ) -> None:
         if not isinstance(max_transitions, int) or max_transitions < 1 or max_transitions > 256:
             raise ValueError("route max_transitions must be between 1 and 256")
+        if (
+            isinstance(poll_interval_seconds, bool)
+            or not isinstance(poll_interval_seconds, (int, float))
+            or not 1 <= float(poll_interval_seconds) <= 60
+            or not callable(sleeper)
+        ):
+            raise ValueError("route poll interval must be between 1 and 60 seconds")
         self.repository = repository
         self.repo_path = Path(repo_path)
         self.max_transitions = max_transitions
@@ -1380,7 +1414,16 @@ class RepositoryRouteRunner:
         self._attempt_factory = attempt_factory
         self._current_t3_request: T3Request | None = None
         self._t3_receipt_reader = t3_receipt_reader
-        self._effect_resumer = effect_resumer
+        # Tests inject a runner and must remain deterministic.  A real route
+        # process polls recoverable controller state instead of burning its
+        # bounded transition budget in a tight loop while CI/review advances.
+        self._poll_recoverable = runner is None
+        self._poll_interval_seconds = float(poll_interval_seconds)
+        self._sleeper = sleeper
+
+    def _wait_for_recovery(self) -> None:
+        if self._poll_recoverable:
+            self._sleeper(self._poll_interval_seconds)
 
     def _read_t3_receipt(self, request: T3Request) -> object | None:
         """Read only an existing ledger-backed operator receipt, if supplied.
@@ -1501,13 +1544,31 @@ class RepositoryRouteRunner:
                             "DECISION_REQUIRED", "route_t3_non_go_requires_canonical_rewrite",
                             packet_id, transitions,
                         ).to_wire()
-                    if self._effect_resumer is None:
-                        return RouteRunResult(
-                            "DECISION_REQUIRED", "route_effect_resume_owner_unavailable",
-                            packet_id, transitions,
-                        ).to_wire()
                     try:
-                        resumed = self._effect_resumer(self._current_t3_request, receipt)
+                        route_runner = self._runner_instance()
+                        resume = getattr(route_runner, "run_effect_route_once", None)
+                        if not callable(resume):
+                            return RouteRunResult(
+                                "DECISION_REQUIRED", "route_effect_resume_owner_unavailable",
+                                packet_id, transitions,
+                            ).to_wire()
+                        effect_result = resume(self._current_t3_request, receipt)
+                        effect_status = getattr(effect_result, "status", None)
+                        effect_details = getattr(effect_result, "details", {})
+                        if effect_status == "outcome_unknown":
+                            return RouteRunResult(
+                                "OUTCOME_UNKNOWN",
+                                str(effect_details.get("reason", "route_effect_outcome_unknown")),
+                                packet_id,
+                                transitions,
+                            ).to_wire()
+                        if effect_status in self.RECOVERABLE:
+                            transitions += 1
+                            self._wait_for_recovery()
+                            continue
+                        resumed = "RESUMED" if effect_status in {
+                            "promoted", "successor_current", "t3_required",
+                        } else "UNPROVED"
                     except (OSError, ValueError):
                         resumed = "UNRECOVERABLE_INFRASTRUCTURE_FAILURE"
                     if resumed == "OUTCOME_UNKNOWN":
@@ -1537,6 +1598,7 @@ class RepositoryRouteRunner:
                     return RouteRunResult(
                         "UNRECOVERABLE_INFRASTRUCTURE_FAILURE", str(exc)[:200], packet_id, transitions
                     ).to_wire()
+                self._wait_for_recovery()
                 continue
             status = getattr(result, "status", None)
             details = getattr(result, "details", {})
@@ -1587,10 +1649,12 @@ class RepositoryRouteRunner:
                     ).to_wire()
                 if promotion_status in self.RECOVERABLE:
                     transitions += 1
+                    self._wait_for_recovery()
                     continue
                 return RouteRunResult("DECISION_REQUIRED", str(promotion_details.get("reason", promotion_status)), packet_id, transitions).to_wire()
             if status in self.RECOVERABLE:
                 transitions += 1
+                self._wait_for_recovery()
                 continue
             return RouteRunResult("DECISION_REQUIRED", str(details.get("reason", status or "route_state_unknown")), packet_id, transitions).to_wire()
         return RouteRunResult(

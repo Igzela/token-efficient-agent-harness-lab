@@ -405,6 +405,7 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             "candidate_digest": "b" * 64,
             "action_digest": "c" * 64,
             "scope_digest": "d" * 64,
+            "authority_owner_digest": "a" * 64,
             "requested_action": "Run exactly the accepted bounded effect once.",
         }
         document = (
@@ -423,7 +424,8 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         request = route_driver.T3Request(
             packet_id="PE7-EXACT-PROMOTION-1", accepted_main_sha=MAIN,
             candidate_digest="b" * 64, action_digest="c" * 64,
-            scope_digest="d" * 64, requested_action="one finite action",
+            scope_digest="d" * 64, authority_owner_digest="a" * 64,
+            requested_action="one finite action",
         )
         now = datetime(2026, 8, 11, tzinfo=timezone.utc)
         receipt = {
@@ -434,7 +436,8 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             "action_digest": "c" * 64,
             "scope_digest": "d" * 64,
             "authority_receipt_digest": "e" * 64,
-            "authority_owner": "existing-authority-owner",
+            "outcome_receipt_digest": "f" * 64,
+            "authority_owner_digest": "a" * 64,
             "operator": "authorized-operator",
             "issued_at": now.isoformat(),
             "expires_at": (now + timedelta(minutes=5)).isoformat(),
@@ -673,6 +676,25 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         self.assertEqual(runner.run_plan_once.call_count, 2)
         self.assertTrue(all(call.args[0] == CLOSED for call in runner.run_plan_once.call_args_list))
 
+    def test_production_route_polls_recoverable_controller_state(self):
+        runner = mock.Mock()
+        runner.run_plan_once.side_effect = [
+            self.Result("failed", reason="worker_failed"),
+            self.Result("control_stopped", reason="operator_pause"),
+        ]
+        waits = []
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo",
+            repo_path=Path("/tmp"),
+            sleeper=waits.append,
+            poll_interval_seconds=3,
+        )
+        route._runner = runner
+        with mock.patch.object(route, "_current_packet", return_value=(CLOSED, MAIN)):
+            result = route.run()
+        self.assertEqual(result["state"], "DECISION_REQUIRED")
+        self.assertEqual(waits, [3.0])
+
     def test_outcome_unknown_is_terminal_and_never_retried(self):
         runner = mock.Mock()
         runner.run_plan_once.return_value = self.Result(
@@ -734,6 +756,7 @@ class TestRepositoryRouteRunner(unittest.TestCase):
             "schema_version": "route_t3_request.v1", "packet_id": CLOSED,
             "accepted_main_sha": MAIN, "candidate_digest": "b" * 64,
             "action_digest": "c" * 64, "scope_digest": "d" * 64,
+            "authority_owner_digest": "a" * 64,
             "requested_action": "one finite action",
         }
         document = (
@@ -760,7 +783,8 @@ class TestRepositoryRouteRunner(unittest.TestCase):
             route_driver.T3Request(
                 packet_id=CLOSED, accepted_main_sha=MAIN,
                 candidate_digest="b" * 64, action_digest="c" * 64,
-                scope_digest="d" * 64, requested_action="one finite action",
+                scope_digest="d" * 64, authority_owner_digest="a" * 64,
+                requested_action="one finite action",
             ),
         )
 
@@ -771,40 +795,43 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         route._current_t3_request = route_driver.T3Request(
             packet_id=CLOSED, accepted_main_sha=MAIN,
             candidate_digest="b" * 64, action_digest="c" * 64,
-            scope_digest="d" * 64, requested_action="one finite action",
+            scope_digest="d" * 64, authority_owner_digest="a" * 64,
+            requested_action="one finite action",
         )
         with mock.patch.object(route, "_current_packet", return_value=(CLOSED, MAIN)):
             result = route.run()
         self.assertEqual(result["state"], "T3_REQUIRED")
         route._runner.run_plan_once.assert_not_called()
 
-    def test_valid_t3_receipt_resumes_only_through_the_injected_existing_owner(self):
+    def test_valid_t3_receipt_resumes_through_the_production_closeout_owner(self):
         now = datetime.now(timezone.utc)
         request = route_driver.T3Request(
             packet_id=CLOSED, accepted_main_sha=MAIN,
             candidate_digest="b" * 64, action_digest="c" * 64,
-            scope_digest="d" * 64, requested_action="one finite action",
+            scope_digest="d" * 64, authority_owner_digest="a" * 64,
+            requested_action="one finite action",
         )
         receipt = {
             "schema_version": "route_t3_receipt.v1", "packet_id": CLOSED,
             "accepted_main_sha": MAIN, "candidate_digest": "b" * 64,
             "action_digest": "c" * 64, "scope_digest": "d" * 64,
-            "authority_receipt_digest": "e" * 64, "authority_owner": "existing-authority-owner",
+            "authority_receipt_digest": "e" * 64, "authority_owner_digest": "a" * 64,
+            "outcome_receipt_digest": "f" * 64,
             "operator": "authorized-operator",
             "issued_at": now.isoformat(), "expires_at": (now + timedelta(minutes=5)).isoformat(),
             "disposition": "GO",
         }
-        resumer = mock.Mock(return_value="RESUMED")
+        runner = mock.Mock()
+        runner.run_effect_route_once.return_value = self.Result("promoted")
         route = route_driver.RepositoryRouteRunner(
-            repository="acme/repo", repo_path=Path("/tmp"), runner=mock.Mock(),
+            repository="acme/repo", repo_path=Path("/tmp"), runner=runner,
             max_transitions=2, t3_receipt_reader=lambda _request: receipt,
-            effect_resumer=resumer,
         )
         route._current_t3_request = request
         with mock.patch.object(route, "_current_packet", side_effect=[(CLOSED, MAIN), (None, MAIN)]):
             result = route.run()
         self.assertEqual(result["state"], "ROUTE_EXHAUSTED")
-        resumer.assert_called_once()
+        runner.run_effect_route_once.assert_called_once()
 
     def test_clean_multi_packet_crossing_uses_each_closed_attempt_for_promotion(self):
         runner = mock.Mock()
@@ -887,6 +914,9 @@ class TestRepositoryRouteRunner(unittest.TestCase):
             "duplicate_dispatch_pr_prevention": "promotion_pr",
             "merge_before_closeout_crash": "promotion_pending",
             "promotion_crash": "failed",
+            "review_wait": "promotion_review_pending",
+            "ready_retry": "promotion_ready_pending",
+            "canonical_ci_wait": "promotion_ci_pending",
         }.items():
             with self.subTest(case=case):
                 runner = mock.Mock()
