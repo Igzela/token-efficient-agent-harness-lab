@@ -595,12 +595,52 @@ class TestRunRouteOnce(unittest.TestCase):
         self.assertEqual(result.status, "bounded_pause")
         self.assertEqual(result.details["reason"], "review_receipt_pending")
 
-    def test_resume_settles_after_eligible_merge(self):
+    def test_resume_marks_ready_before_canonical_ci_gate(self):
+        import plan_lifecycle
+        import pr_binding
+        import ci_verifier
+        import subprocess
+        import local_run_once
+
+        remote_ref = f"refs/heads/agent/packet-{SUCCESSOR.lower()}"
+        github = self._github()
+        ready_calls = []
+
+        def fake_git(_wt, *args):
+            if args[0] == "ls-remote":
+                return f"{'d'*40}\t{remote_ref}"
+            return ""
+
+        def fake_run(*args, **kwargs):
+            if args[0][:3] == ["gh", "pr", "ready"]:
+                ready_calls.append(args[0])
+            return subprocess.CompletedProcess(args[0], 0, "", "")
+
+        with mock.patch.object(plan_lifecycle, "_exact_plan_claim", return_value=_closed_claim()), \
+             mock.patch.object(
+                 local_run_once.LocalRunOnce, "_git_checked", side_effect=fake_git,
+             ), \
+             mock.patch.object(
+                 pr_binding, "find_plan_pr",
+                 return_value={"number": 7, "head_sha": "d" * 40},
+             ), \
+             mock.patch.object(
+                 plan_lifecycle, "plan_review_receipt",
+                 return_value={"kind": "agent-orchestrator-review-state", "verdict": "PASS"},
+             ), \
+             mock.patch("subprocess.run", side_effect=fake_run), \
+             mock.patch.object(ci_verifier, "find_exact_runs", return_value=[]):
+            result = self._runner(github).run_route_once(CLOSED, ATTEMPT)
+        self.assertEqual(result.status, "bounded_pause")
+        self.assertEqual(result.details["reason"], "canonical_ci_pending")
+        self.assertEqual(ready_calls, [["gh", "pr", "ready", "7", "--repo", "acme/repo"]])
+
+    def test_resume_resolves_non_draft_pr_fallback(self):
         import plan_lifecycle
         import pr_binding
         import dispatcher
         import ci_verifier
-        import state_manager
+        import subprocess
         import local_run_once
 
         remote_ref = f"refs/heads/agent/packet-{SUCCESSOR.lower()}"
@@ -611,6 +651,55 @@ class TestRunRouteOnce(unittest.TestCase):
                 return f"{'d'*40}\t{remote_ref}"
             return ""
 
+        def fake_run(*args, **kwargs):
+            argv = args[0]
+            if argv[:3] == ["gh", "pr", "list"]:
+                payload = [{"number": 7, "headRefOid": "d" * 40, "isDraft": False}]
+                return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with mock.patch.object(plan_lifecycle, "_exact_plan_claim", return_value=_closed_claim()), \
+             mock.patch.object(
+                 local_run_once.LocalRunOnce, "_git_checked", side_effect=fake_git,
+             ), \
+             mock.patch.object(
+                 pr_binding, "find_plan_pr", side_effect=pr_binding.PRBindingError("draft only"),
+             ), \
+             mock.patch.object(
+                 dispatcher, "_verified_plan_pr", return_value=True,
+             ), \
+             mock.patch.object(
+                 plan_lifecycle, "plan_review_receipt",
+                 return_value={"kind": "agent-orchestrator-review-state", "verdict": "PASS"},
+             ), \
+             mock.patch("subprocess.run", side_effect=fake_run), \
+             mock.patch.object(ci_verifier, "find_exact_runs", return_value=[]):
+            result = self._runner(github).run_route_once(CLOSED, ATTEMPT)
+        self.assertEqual(result.status, "bounded_pause")
+        self.assertEqual(result.details["reason"], "canonical_ci_pending")
+        self.assertEqual(result.details["pr_number"], 7)
+        self.assertEqual(result.details["head_sha"], "d" * 40)
+
+    def test_resume_settles_after_eligible_merge(self):
+        import plan_lifecycle
+        import pr_binding
+        import dispatcher
+        import ci_verifier
+        import state_manager
+        import subprocess
+        import local_run_once
+
+        remote_ref = f"refs/heads/agent/packet-{SUCCESSOR.lower()}"
+        github = self._github()
+
+        def fake_git(_wt, *args):
+            if args[0] == "ls-remote":
+                return f"{'d'*40}\t{remote_ref}"
+            return ""
+
+        def fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(args[0], 0, "", "")
+
         pr = {"number": 7, "head_sha": "d" * 40}
         review = {"kind": "agent-orchestrator-review-state", "verdict": "PASS"}
         run = {"databaseId": 11, "conclusion": "success", "headSha": "d" * 40}
@@ -620,6 +709,7 @@ class TestRunRouteOnce(unittest.TestCase):
              ), \
              mock.patch.object(pr_binding, "find_plan_pr", return_value=pr), \
              mock.patch.object(plan_lifecycle, "plan_review_receipt", return_value=review), \
+             mock.patch("subprocess.run", side_effect=fake_run), \
              mock.patch.object(ci_verifier, "find_exact_runs", return_value=[run]), \
              mock.patch.object(ci_verifier, "select_canonical_run", return_value=run), \
              mock.patch.object(

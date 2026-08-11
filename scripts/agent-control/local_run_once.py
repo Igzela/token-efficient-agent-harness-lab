@@ -1459,11 +1459,17 @@ class LocalRunOnce:
         """Resume one promotion PR idempotently against its existing remote head.
 
         The compile is deterministic, so the first drive publishes the branch
-        once; every resume verifies the existing exact-head Draft PR binding
-        against the remote head and never re-commits or re-opens a duplicate
-        PR.  Promotion proceeds only after the exact-head review receipt and
-        the exact-head canonical CI success are provable, and the eligible
-        merge is verified through the authoritative merge owner.
+        once; every resume verifies the existing exact-head promotion PR
+        binding against the remote head and never re-commits or re-opens a
+        duplicate PR.  While the PR is a Draft, the Draft-only plan-PR binding
+        verifies it; after the driver has marked it Ready (or the merge
+        owner merged it), the exact-head plan binding from the authoritative
+        merge owner verifies it instead.  Promotion proceeds only after the
+        exact-head review receipt, the Ready transition, and the exact-head
+        canonical CI success are provable, and the eligible merge is verified
+        through the authoritative merge owner.  The canonical ``tests``
+        workflow triggers on ``ready_for_review``, so Ready must precede the
+        canonical CI gate.
         """
 
         successor_id = compiled.packet_id
@@ -1474,6 +1480,8 @@ class LocalRunOnce:
                 compiled.spec_digest, self.repository,
             )
         except pr_binding.PRBindingError:
+            existing = self._resolve_non_draft_pr(branch, remote_head, successor_id)
+        if existing is None:
             return self._plan_result(
                 "promotion_pr", packet_id, attempt,
                 branch=branch, successor_id=successor_id,
@@ -1492,13 +1500,6 @@ class LocalRunOnce:
                 pr_number=pr_number, head_sha=head_sha, branch=branch,
                 successor_id=successor_id, reason="review_receipt_pending",
             )
-        ci_ok = self._exact_head_canonical_ci(pr_number, branch, head_sha)
-        if not ci_ok:
-            return self._plan_result(
-                "bounded_pause", packet_id, attempt,
-                pr_number=pr_number, head_sha=head_sha, branch=branch,
-                successor_id=successor_id, reason="canonical_ci_pending",
-            )
         try:
             subprocess.run(
                 ["gh", "pr", "ready", str(pr_number), "--repo", self.repository],
@@ -1507,6 +1508,13 @@ class LocalRunOnce:
             )
         except OSError:
             pass
+        ci_ok = self._exact_head_canonical_ci(pr_number, branch, head_sha)
+        if not ci_ok:
+            return self._plan_result(
+                "bounded_pause", packet_id, attempt,
+                pr_number=pr_number, head_sha=head_sha, branch=branch,
+                successor_id=successor_id, reason="canonical_ci_pending",
+            )
         merge_commit_sha = dispatcher._authoritative_plan_merge(
             pr_number, head_sha, self.repository
         )
@@ -1520,6 +1528,38 @@ class LocalRunOnce:
             pr_number=pr_number, head_sha=head_sha, branch=branch,
             successor_id=successor_id,
         )
+
+    def _resolve_non_draft_pr(
+        self, branch: str, expected_sha: str, subject_id: str
+    ) -> dict[str, Any] | None:
+        """Resolve an already-Ready or already-merged promotion PR.
+
+        ``pr_binding.find_plan_pr`` binds only Draft plan PRs; once the
+        promotion PR is Ready or merged, the authoritative branch listing and
+        the exact-head plan binding from the merge owner provide the same
+        fail-closed identity, so a later resume can still verify and settle.
+        """
+
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "list", "--head", branch, "--state", "all",
+                 "--repo", self.repository, "--json", "number,headRefOid,isDraft"],
+                capture_output=True, text=True, timeout=self.command_timeout_seconds,
+                check=False,
+            )
+            candidates = json.loads(result.stdout) if result.returncode == 0 else []
+        except (OSError, ValueError):
+            return None
+        if not isinstance(candidates, list) or len(candidates) != 1:
+            return None
+        entry = candidates[0]
+        number = entry.get("number")
+        head = entry.get("headRefOid")
+        if not isinstance(number, int) or head != expected_sha:
+            return None
+        if not dispatcher._verified_plan_pr(number, expected_sha, subject_id, self.repository):
+            return None
+        return {"number": number, "head_sha": expected_sha}
 
     def _exact_head_canonical_ci(self, pr_number: int, branch: str, head_sha: str) -> bool:
         try:
