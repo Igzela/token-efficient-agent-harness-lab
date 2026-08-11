@@ -52,6 +52,9 @@ _CODE_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _T3_REQUEST_MARKER = re.compile(
     r"<!--\s*route-t3-request:v1\s*(\{.*?\})\s*-->", re.DOTALL
 )
+_ROUTE_BOOTSTRAP_RECONCILE = re.compile(
+    r"<!-- route-bootstrap-reconcile:v1 packet_id=(?P<packet>[A-Z0-9-]+) -->"
+)
 
 PACKET_CLASSES = frozenset({"CONTRACT", "IMPLEMENT", "EFFECT", "CLOSEOUT"})
 CLASS_DEFAULT_TIER = {"CONTRACT": "T2", "IMPLEMENT": "T1", "EFFECT": "T3", "CLOSEOUT": "T2"}
@@ -364,6 +367,60 @@ def _accepted_completed_ids(status_document: str) -> frozenset[str]:
         return plan_lane.accepted_completed_packet_ids(status_document)
     except plan_lane.PlanLaneError as exc:
         raise RouteDriverError(f"route_status_receipt_index_invalid:{exc.reason}") from exc
+
+
+def accepted_complete_receipt(status_document: str, packet_id: str) -> str:
+    """Return one bounded, merge-backed accepted receipt for a bootstrap.
+
+    A route normally reaches promotion through the Plan Execution Ledger.  The
+    one narrow migration case is a packet whose implementation was accepted
+    before the route driver itself could create a ledger generation.  That
+    packet may be reconciled only from the canonical status receipt, never
+    from a branch, a model message, or a caller-supplied packet id.
+    """
+
+    if not isinstance(packet_id, str) or plan_lane.PACKET_ID.fullmatch(packet_id) is None:
+        raise RouteDriverError("route_bootstrap_packet_invalid")
+    _accepted_completed_ids(status_document)
+    section = re.search(
+        r"^## Accepted Packet Receipts\s*(?P<body>.*?)(?=^## |\Z)",
+        status_document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if section is None:
+        raise RouteDriverError("route_status_receipt_index_invalid:plan_status_receipt_index_missing")
+    receipt_rows = [
+        match.group(0).strip()
+        for match in plan_lane._ACCEPTED_RECEIPT_ROW.finditer(section.group("body"))
+        if match.group("packet") == packet_id
+    ]
+    if len(receipt_rows) != 1:
+        raise RouteDriverError("route_bootstrap_receipt_missing_or_ambiguous")
+    receipt_match = re.fullmatch(
+        rf"\|\s*`?{re.escape(packet_id)}`?\s*\|\s*`?COMPLETE`?\s*\|\s*(?P<evidence>[^|]+?)\s*\|",
+        receipt_rows[0],
+    )
+    if receipt_match is None:
+        raise RouteDriverError("route_bootstrap_receipt_invalid")
+    receipt = receipt_match.group("evidence").strip()
+    if len(receipt.encode("utf-8")) > 2 * 1024 or re.search(
+        r"PR #[1-9][0-9]* exact head `[0-9a-f]{40}`; merge `[0-9a-f]{40}`; "
+        r"exact-head `PASS`; canonical workflow `[1-9][0-9]*`",
+        receipt,
+    ) is None:
+        raise RouteDriverError("route_bootstrap_receipt_not_merge_backed")
+    return receipt
+
+
+def bootstrap_reconcile_marked(document: str, packet_id: str) -> bool:
+    """Recognize the one explicit bridge from a pre-ledger merge to promotion."""
+
+    matches = _ROUTE_BOOTSTRAP_RECONCILE.findall(document)
+    return (
+        len(matches) == 1
+        and matches[0] == packet_id
+        and plan_lane.PACKET_ID.fullmatch(packet_id) is not None
+    )
 
 
 def _refresh_future_document(future_document: str, promoted_id: str) -> str:
@@ -1614,6 +1671,7 @@ class RepositoryRouteRunner:
         self._runner = runner
         self._attempt_factory = attempt_factory
         self._current_t3_request: T3Request | None = None
+        self._current_complete_receipt: str | None = None
         self._t3_receipt_reader = t3_receipt_reader
         # Tests inject a runner and must remain deterministic.  A real route
         # process polls recoverable controller state instead of burning its
@@ -1674,6 +1732,7 @@ class RepositoryRouteRunner:
         import local_loop
 
         self._current_t3_request = None
+        self._current_complete_receipt = None
         github = self._github or local_loop.GitHubAdapter(self.repository)
         metadata = github.repository_metadata()
         branch = metadata.get("default_branch")
@@ -1697,10 +1756,11 @@ class RepositoryRouteRunner:
             self._current_t3_request = t3_request
             return t3_request.packet_id, accepted_main_sha
         try:
+            completed_ids = _accepted_completed_ids(status_document)
             candidate = plan_lane.parse(
                 document,
                 accepted_main_sha,
-                completed_packet_ids=_accepted_completed_ids(status_document),
+                completed_packet_ids=completed_ids,
             )
         except plan_lane.PlanLaneError as exc:
             if exc.reason != "plan_packet_absent":
@@ -1710,6 +1770,12 @@ class RepositoryRouteRunner:
             if manifest.get("packet_count") == 0:
                 return None, accepted_main_sha
             raise RouteDriverError("route_current_window_missing") from exc
+        if candidate.packet_id in completed_ids:
+            if not bootstrap_reconcile_marked(document, candidate.packet_id):
+                raise RouteDriverError("route_bootstrap_marker_missing_or_invalid")
+            self._current_complete_receipt = accepted_complete_receipt(
+                status_document, candidate.packet_id
+            )
         return candidate.packet_id, accepted_main_sha
 
     def _runner_instance(self) -> object:
@@ -1852,11 +1918,19 @@ class RepositoryRouteRunner:
                 ).to_wire()
             runner = self._runner_instance()
             try:
-                reconcile = getattr(type(runner), "reconcile_plan", None)
-                result = runner.reconcile_plan(packet_id) if callable(reconcile) else None
-                if result is None:
-                    attempt = str(self._attempt_factory())
-                    result = runner.run_plan_once(packet_id, attempt)
+                if self._current_complete_receipt is not None:
+                    bootstrap = getattr(runner, "bootstrap_route_once", None)
+                    if not callable(bootstrap):
+                        return RouteRunResult(
+                            "DECISION_REQUIRED", "route_bootstrap_owner_unavailable", packet_id, transitions
+                        ).to_wire()
+                    result = bootstrap(packet_id, self._current_complete_receipt)
+                else:
+                    reconcile = getattr(type(runner), "reconcile_plan", None)
+                    result = runner.reconcile_plan(packet_id) if callable(reconcile) else None
+                    if result is None:
+                        attempt = str(self._attempt_factory())
+                        result = runner.run_plan_once(packet_id, attempt)
             except (OSError, ValueError) as exc:
                 if not recover(
                     packet_id,

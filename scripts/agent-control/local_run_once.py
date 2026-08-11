@@ -1377,7 +1377,40 @@ class LocalRunOnce:
                 except local_loop.LoopUnavailable:
                     pass
 
-    def run_route_once(self, packet_id: str, attempt_id: str) -> local_loop.LocalRunOnceResult:
+    def bootstrap_route_once(
+        self, packet_id: str, accepted_receipt: str
+    ) -> local_loop.LocalRunOnceResult:
+        """Reconcile one merge-backed pre-ledger packet into normal promotion.
+
+        This is deliberately not a generic alternate route entrypoint.  It
+        derives a deterministic attempt only after the current accepted status
+        document proves one exact merge-backed COMPLETE receipt.  All
+        successor planning, validation, PR creation, CI, review, and manual
+        merge handling remain the existing ``run_route_once`` owners.
+        """
+
+        if not isinstance(packet_id, str) or not plan_lane.PACKET_ID.fullmatch(packet_id):
+            return self._plan_result("rejected", str(packet_id), "", reason="route_bootstrap_packet_invalid")
+        if not isinstance(accepted_receipt, str) or not accepted_receipt.strip():
+            return self._plan_result("rejected", packet_id, "", reason="route_bootstrap_receipt_invalid")
+        receipt_digest = hashlib.sha256(accepted_receipt.encode("utf-8")).hexdigest()
+        attempt = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"route-bootstrap:v1:{self.repository}:{packet_id}:{receipt_digest}",
+        ))
+        return self.run_route_once(
+            packet_id,
+            attempt,
+            bootstrap_receipt=accepted_receipt.strip(),
+        )
+
+    def run_route_once(
+        self,
+        packet_id: str,
+        attempt_id: str,
+        *,
+        bootstrap_receipt: str | None = None,
+    ) -> local_loop.LocalRunOnceResult:
         """Drive the canonical closeout/promotion PR lifecycle for one closed packet.
 
         After an accepted plan closeout, the deterministic route layer selects
@@ -1421,16 +1454,33 @@ class LocalRunOnce:
             ledger_issue = self.github.plan_ledger_issue()
         except local_loop.LoopUnavailable:
             return self._plan_result("unavailable", packet_id, attempt, reason="plan_ledger_unavailable")
-        claim = plan_lifecycle._exact_plan_claim(ledger_issue, packet_id, attempt, self.repository)
-        if claim is None:
-            return self._plan_result("rejected", packet_id, attempt, reason="plan_claim_not_found")
-        if claim.get("status") != "closed_out":
-            return self._plan_result("rejected", packet_id, attempt, reason="plan_claim_not_closed_out")
-        details = claim.get("details")
-        if not isinstance(details, dict) or not isinstance(details.get("closeout_reference"), str):
-            closeout_reference = f"merge on accepted main `{accepted_main}`"
+        if bootstrap_receipt is None:
+            claim = plan_lifecycle._exact_plan_claim(ledger_issue, packet_id, attempt, self.repository)
+            if claim is None:
+                return self._plan_result("rejected", packet_id, attempt, reason="plan_claim_not_found")
+            if claim.get("status") != "closed_out":
+                return self._plan_result("rejected", packet_id, attempt, reason="plan_claim_not_closed_out")
+            details = claim.get("details")
+            if not isinstance(details, dict) or not isinstance(details.get("closeout_reference"), str):
+                closeout_reference = f"merge on accepted main `{accepted_main}`"
+            else:
+                closeout_reference = details["closeout_reference"].strip()
         else:
-            closeout_reference = details["closeout_reference"].strip()
+            try:
+                status_for_receipt = self.github.accepted_status_document(accepted_main)
+                proved_receipt = route_driver.accepted_complete_receipt(
+                    status_for_receipt, packet_id
+                )
+            except (local_loop.LoopUnavailable, route_driver.RouteDriverError):
+                return self._plan_result(
+                    "rejected", packet_id, attempt, reason="route_bootstrap_receipt_unproved"
+                )
+            if proved_receipt != bootstrap_receipt:
+                return self._plan_result(
+                    "rejected", packet_id, attempt, reason="route_bootstrap_receipt_binding_invalid"
+                )
+            details = {}
+            closeout_reference = proved_receipt
         try:
             next_document = self.github.accepted_plan_document(accepted_main)
             future_document = self.github.accepted_route_document(accepted_main)

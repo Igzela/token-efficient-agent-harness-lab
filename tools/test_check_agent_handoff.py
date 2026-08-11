@@ -153,6 +153,35 @@ Replace stale status in place.
         failures = checker.active_state_failures(next_text, next_text)
         self.assertIn("Active Routing points to completed packet PE3-A-1", failures)
 
+    def test_accepted_complete_current_packet_requires_one_matching_bootstrap_marker(self) -> None:
+        checker = load_handoff_checker()
+        status = """## Accepted Packet Receipts
+| Packet | State | Accepted evidence |
+|---|---|---|
+| `PE7-A-1` | `COMPLETE` | merge `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` |
+"""
+        current = """## Active Routing
+1. `PE7-A-1` — `READY_FOR_EXECUTION`.
+<!-- route-bootstrap-reconcile:v1 packet_id=PE7-A-1 -->
+## Packet PE7-A-1
+**State:** `READY_FOR_EXECUTION`
+"""
+        self.assertEqual(checker.active_state_failures(status, current), [])
+
+    def test_bootstrap_marker_cannot_name_an_unaccepted_or_wrong_packet(self) -> None:
+        checker = load_handoff_checker()
+        current = """## Active Routing
+1. `PE7-A-1` — `READY_FOR_EXECUTION`.
+<!-- route-bootstrap-reconcile:v1 packet_id=PE7-B-1 -->
+## Packet PE7-A-1
+**State:** `READY_FOR_EXECUTION`
+"""
+        failures = checker.active_state_failures("", current)
+        self.assertIn(
+            "route-bootstrap-reconcile marker must name one accepted READY_FOR_EXECUTION current packet",
+            failures,
+        )
+
     def test_structural_guard_accepts_terminal_objective_routing(self) -> None:
         checker = load_handoff_checker()
         text = """| Stage | Priority | Goal | Status |
