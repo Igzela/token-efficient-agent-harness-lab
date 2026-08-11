@@ -1763,13 +1763,32 @@ class RepositoryRouteRunner:
                 completed_packet_ids=completed_ids,
             )
         except plan_lane.PlanLaneError as exc:
-            if exc.reason != "plan_packet_absent":
+            if exc.reason == "plan_allowed_paths_invalid":
+                # A pre-ledger merge may have an accepted workflow path in its
+                # historical contract.  It is readable only to bind the
+                # completed receipt into promotion; the ordinary parser and
+                # every patch artifact remain workflow-write-denying.
+                try:
+                    candidate = plan_lane.parse_bootstrap(
+                        document,
+                        accepted_main_sha,
+                        completed_packet_ids=completed_ids,
+                    )
+                except plan_lane.PlanLaneError:
+                    raise exc
+                if (
+                    candidate.packet_id not in completed_ids
+                    or not bootstrap_reconcile_marked(document, candidate.packet_id)
+                ):
+                    raise exc
+            elif exc.reason != "plan_packet_absent":
                 raise
-            route_document = github.accepted_route_document(accepted_main_sha)
-            manifest = inventory_manifest(route_document)
-            if manifest.get("packet_count") == 0:
-                return None, accepted_main_sha
-            raise RouteDriverError("route_current_window_missing") from exc
+            else:
+                route_document = github.accepted_route_document(accepted_main_sha)
+                manifest = inventory_manifest(route_document)
+                if manifest.get("packet_count") == 0:
+                    return None, accepted_main_sha
+                raise RouteDriverError("route_current_window_missing") from exc
         if candidate.packet_id in completed_ids:
             if not bootstrap_reconcile_marked(document, candidate.packet_id):
                 raise RouteDriverError("route_bootstrap_marker_missing_or_invalid")

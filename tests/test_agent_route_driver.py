@@ -154,7 +154,7 @@ def _packet_payload(packet_id, lane="plan_lane_active"):
     }
 
 
-def next_document(current=CLOSED, completed=("PE7-PLAN-LANE-ACTIVATION-1",)):
+def next_document(current=CLOSED, completed=("PE7-PLAN-LANE-ACTIVATION-1",), marker_payload=None):
     blocks = []
     for packet_id in completed:
         blocks.append(
@@ -162,7 +162,7 @@ def next_document(current=CLOSED, completed=("PE7-PLAN-LANE-ACTIVATION-1",)):
         )
     blocks.append(
         f"## Packet {current}\n\n**State:** `READY_FOR_EXECUTION`\n\n"
-        f"<!-- weak-agent-dispatch:v1 {json.dumps(_packet_payload(current), sort_keys=True)} -->\n"
+        f"<!-- weak-agent-dispatch:v1 {json.dumps(marker_payload or _packet_payload(current), sort_keys=True)} -->\n"
     )
     return "\n\n".join(["## Active Routing", f"1. `{current}`", *blocks])
 
@@ -1040,8 +1040,15 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         github = mock.Mock()
         github.repository_metadata.return_value = {"default_branch": "main"}
         github.accepted_main_sha.return_value = MAIN
+        payload = _packet_payload(CLOSED)
+        payload["allowed_paths"] = [
+            ".github/workflows/agent-controller.yml",
+            "scripts/agent-control/",
+            "tests/",
+        ]
         github.accepted_plan_document.return_value = (
-            next_document() + f"\n<!-- route-bootstrap-reconcile:v1 packet_id={CLOSED} -->\n"
+            next_document(marker_payload=payload)
+            + f"\n<!-- route-bootstrap-reconcile:v1 packet_id={CLOSED} -->\n"
         )
         github.accepted_status_document.return_value = status
         route = route_driver.RepositoryRouteRunner(
@@ -1051,6 +1058,23 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         with mock.patch.object(local_loop, "GitAdapter"):
             self.assertEqual(route._current_packet(), (CLOSED, MAIN))
         self.assertEqual(route._current_complete_receipt, evidence)
+
+    def test_current_packet_cannot_bootstrap_an_incomplete_workflow_scope(self):
+        payload = _packet_payload(CLOSED)
+        payload["allowed_paths"] = [".github/workflows/agent-controller.yml", "tests/"]
+        github = mock.Mock()
+        github.repository_metadata.return_value = {"default_branch": "main"}
+        github.accepted_main_sha.return_value = MAIN
+        github.accepted_plan_document.return_value = next_document(marker_payload=payload)
+        github.accepted_status_document.return_value = status_document()
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo", repo_path=Path("/tmp"), runner=mock.Mock(), github=github,
+        )
+        import local_loop
+        with mock.patch.object(local_loop, "GitAdapter"):
+            with self.assertRaises(plan_lane.PlanLaneError) as ctx:
+                route._current_packet()
+        self.assertEqual(ctx.exception.reason, "plan_allowed_paths_invalid")
 
     def test_current_packet_rejects_a_completed_receipt_without_merge_evidence(self):
         receipt = f"| `{CLOSED}` | `COMPLETE` | PR #390 accepted |"

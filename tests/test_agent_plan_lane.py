@@ -17,6 +17,7 @@ import plan_lane  # noqa: E402
 import local_loop  # noqa: E402
 import state_manager  # noqa: E402
 import control_state  # noqa: E402
+import artifact_contract  # noqa: E402
 
 
 MAIN = "a" * 40
@@ -207,6 +208,23 @@ class TestPlanLane(unittest.TestCase):
         payload = packet_payload(plan_lane_state="plan_lane_unknown")
         with self.assertRaisesRegex(plan_lane.PlanLaneError, "lane_state"):
             plan_lane.parse(document(marker_payload=payload), MAIN)
+
+    def test_bootstrap_reader_can_only_read_a_workflow_scope(self):
+        payload = packet_payload(
+            allowed_paths=[".github/workflows/agent-controller.yml", "tests/"]
+        )
+        with self.assertRaisesRegex(plan_lane.PlanLaneError, "allowed_paths"):
+            plan_lane.parse(document(marker_payload=payload), MAIN)
+        candidate = plan_lane.parse_bootstrap(document(marker_payload=payload), MAIN)
+        self.assertEqual(candidate.allowed_paths, payload["allowed_paths"])
+        with self.assertRaises(artifact_contract.ArtifactContractError):
+            artifact_contract.validate_allowed_paths([".github/workflows/agent-controller.yml"])
+        payload["allowed_paths"] = [".github/workflows/"]
+        with self.assertRaisesRegex(plan_lane.PlanLaneError, "allowed_paths"):
+            plan_lane.parse_bootstrap(document(marker_payload=payload), MAIN)
+        payload["allowed_paths"] = [".github/workflows/../outside.yml"]
+        with self.assertRaisesRegex(plan_lane.PlanLaneError, "allowed_paths"):
+            plan_lane.parse_bootstrap(document(marker_payload=payload), MAIN)
 
     def test_deferred_lane_and_nonzero_effect_fail_closed(self):
         payload = packet_payload(plan_lane_state=plan_lane.PLAN_LANE_DEFERRED)

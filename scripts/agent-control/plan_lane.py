@@ -220,11 +220,82 @@ def _canonical_spec(payload: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def _bootstrap_control_path_safe(path: object) -> bool:
+    """Accept an exact workflow file only for a completed migration read.
+
+    Patch artifacts must continue to reject workflow edits.  The one-time
+    route-bootstrap reader only needs to identify an already merged packet so
+    its accepted receipt can enter the existing promotion owner; it never
+    dispatches that packet to a patch worker.
+    """
+
+    prefix = ".github/workflows/"
+    return (
+        isinstance(path, str)
+        and path.startswith(prefix)
+        and not path.endswith("/")
+        # artifact_contract owns the shared path-boundary rules.  Removing
+        # only the explicitly admitted read-only prefix keeps this migration
+        # adapter from becoming a second path-safety authority.
+        and artifact_contract._scope_path_safe(path.removeprefix(prefix))
+    )
+
+
+def _validate_bootstrap_allowed_paths(value: object) -> list[str]:
+    """Keep artifact-safe paths strict while admitting a read-only workflow fact."""
+
+    # _bounded_strings has already established list shape, length, and unique
+    # non-empty strings before this narrowly different path policy is applied.
+    assert isinstance(value, list)
+    result: list[str] = []
+    for path in value:
+        try:
+            result.extend(artifact_contract.validate_allowed_paths([path]))
+        except artifact_contract.ArtifactContractError:
+            if not _bootstrap_control_path_safe(path):
+                raise
+            result.append(path)
+    return result
+
+
 def parse(
     document: str,
     accepted_main_sha: str,
     *,
     completed_packet_ids: frozenset[str] = frozenset(),
+) -> PlanCandidate:
+    """Parse an ordinary execution candidate with artifact-safe paths only."""
+
+    return _parse(
+        document,
+        accepted_main_sha,
+        completed_packet_ids=completed_packet_ids,
+        bootstrap_read_only=False,
+    )
+
+
+def parse_bootstrap(
+    document: str,
+    accepted_main_sha: str,
+    *,
+    completed_packet_ids: frozenset[str] = frozenset(),
+) -> PlanCandidate:
+    """Parse a completed migration bridge without granting patch-write scope."""
+
+    return _parse(
+        document,
+        accepted_main_sha,
+        completed_packet_ids=completed_packet_ids,
+        bootstrap_read_only=True,
+    )
+
+
+def _parse(
+    document: str,
+    accepted_main_sha: str,
+    *,
+    completed_packet_ids: frozenset[str] = frozenset(),
+    bootstrap_read_only: bool,
 ) -> PlanCandidate:
     """Parse exactly one explicit READY packet from accepted canonical prose.
 
@@ -285,7 +356,11 @@ def parse(
         raise PlanLaneError("plan_allowed_paths_missing_or_invalid")
     allowed_paths = _bounded_strings(payload["allowed_paths"], "allowed_paths")
     try:
-        allowed_paths = artifact_contract.validate_allowed_paths(allowed_paths)
+        allowed_paths = (
+            _validate_bootstrap_allowed_paths(allowed_paths)
+            if bootstrap_read_only
+            else artifact_contract.validate_allowed_paths(allowed_paths)
+        )
     except artifact_contract.ArtifactContractError as exc:
         raise PlanLaneError("plan_allowed_paths_invalid") from exc
     prerequisites = _bounded_strings(payload["prerequisites"], "prerequisites", allow_empty=True)
