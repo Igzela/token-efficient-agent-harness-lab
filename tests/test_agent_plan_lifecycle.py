@@ -723,6 +723,33 @@ class TestPlanLifecycleWait(unittest.TestCase):
         self.assertEqual(result.details["promotion"], escalation)
         github.dispatch_controller.assert_not_called()
 
+    def test_other_controller_escalation_remains_a_bounded_pause(self):
+        github = mock.Mock()
+        runner = local_run_once.LocalRunOnce(
+            github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
+            lifecycle_timeout_seconds=60, sleeper=lambda _: None,
+        )
+        lifecycle = {
+            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
+            "transitions": {
+                "merge": {"merge_commit_sha": MERGE},
+                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
+            },
+        }
+        escalation = {
+            "kind": "plan-escalate", "status": "escalated",
+            "details": {"reason": "promotion_owner_ambiguous"},
+        }
+        with mock.patch.object(
+            plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle
+        ), mock.patch.object(
+            runner, "_read_plan_promotion", return_value=escalation
+        ):
+            result = runner._wait_for_plan_terminal_receipts(LEDGER, PACKET, ATTEMPT, PR, HEAD)
+        self.assertEqual(result.status, "bounded_pause")
+        self.assertEqual(result.details["reason"], "promotion_owner_ambiguous")
+        github.dispatch_controller.assert_not_called()
+
     def test_wait_dispatches_controller_for_merge_and_closeout_stages(self):
         github = mock.Mock()
         runner = local_run_once.LocalRunOnce(

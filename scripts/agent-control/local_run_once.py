@@ -756,6 +756,17 @@ class LocalRunOnce:
                 promotion = self._read_plan_promotion(ledger_issue, packet_id, attempt)
                 promotion_classification = self._promotion_receipt_classification(promotion)
                 if promotion_classification == "escalated":
+                    receipt_details = promotion.get("details")
+                    reason = (
+                        receipt_details.get("reason")
+                        if isinstance(receipt_details, dict)
+                        else None
+                    )
+                    if reason != "promotion_current_main_evidence_missing":
+                        return self._promotion_escalation_pause(
+                            packet_id, attempt, promotion,
+                            ledger_issue=ledger_issue, pr_number=pr_number, head_sha=head_sha,
+                        )
                     return self._plan_result(
                         "closed_out", packet_id, attempt,
                         ledger_issue=ledger_issue,
