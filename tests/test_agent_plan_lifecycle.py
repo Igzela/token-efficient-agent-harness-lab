@@ -422,6 +422,29 @@ class TestRecordPlanCloseoutReceipt(unittest.TestCase):
         self.assertEqual(result["reason"], "closeout_identity_invalid")
         write.assert_not_called()
 
+    def test_closeout_reference_values_must_match_verified_ledger_receipts(self):
+        wrong_merge_reference = plan_lifecycle.canonical_closeout_reference(
+            PR, HEAD, "e" * 40, 7
+        )
+        assert wrong_merge_reference is not None
+        patches = self._patch(self._full())
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        result = plan_lifecycle.record_plan_closeout_receipt(
+            LEDGER,
+            PACKET,
+            ATTEMPT,
+            MAIN,
+            PR,
+            HEAD,
+            "closed_out",
+            wrong_merge_reference,
+        )
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "closeout_reference_binding_invalid")
+        state_manager.record_dispatch_state.assert_not_called()
+
 
 class TestReadPlanLifecycle(unittest.TestCase):
     def _comments(self, states):

@@ -31,8 +31,9 @@ _ATTEMPT_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
 _CLOSEOUT_REFERENCE_PATTERN = re.compile(
-    r"^PR #[1-9][0-9]* exact head `[0-9a-f]{40}`; merge "
-    r"`(?P<merge>[0-9a-f]{40})`; exact-head `PASS`; canonical workflow `[1-9][0-9]*`$"
+    r"^(?P<canonical>PR #(?P<pr>[1-9][0-9]*) exact head `(?P<head>[0-9a-f]{40})`; merge "
+    r"`(?P<merge>[0-9a-f]{40})`; exact-head `PASS`; canonical workflow "
+    r"`(?P<workflow>[1-9][0-9]*)`)(?:; (?P<detail>[^\r\n]{1,1800}))?$"
 )
 _TERMINAL_PACKET_STATE_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
 
@@ -75,7 +76,7 @@ def canonical_closeout_reference(
 
 
 def canonical_closeout_reference_match(value: object) -> re.Match[str] | None:
-    """Parse a bounded closeout reference written by the lifecycle owner."""
+    """Parse a bounded canonical closeout reference and ignored status detail."""
 
     if not isinstance(value, str) or len(value.encode("utf-8")) > 2 * 1024:
         return None
@@ -284,6 +285,7 @@ def record_plan_closeout_receipt(
     """
 
     attempt = _normalized_attempt_id(attempt_id)
+    closeout_match = canonical_closeout_reference_match(closeout_reference)
     if (
         not isinstance(packet_id, str)
         or plan_lane.PACKET_ID.fullmatch(packet_id) is None
@@ -293,9 +295,10 @@ def record_plan_closeout_receipt(
         or pr_number <= 0
         or local_loop.HEX40.fullmatch(head_sha) is None
         or _TERMINAL_PACKET_STATE_PATTERN.fullmatch(terminal_packet_state) is None
-        or _CLOSEOUT_REFERENCE_PATTERN.fullmatch(closeout_reference) is None
+        or closeout_match is None
     ):
         return {"recorded": False, "reason": "closeout_identity_invalid"}
+    receipts = {}
     for stage in ("ci", "review", "merge"):
         present = {
             "ci": plan_ci_receipt,
@@ -304,6 +307,17 @@ def record_plan_closeout_receipt(
         }[stage](ledger_issue, pr_number, head_sha, repo)
         if present is None:
             return {"recorded": False, "reason": f"missing_transition:{stage}"}
+        receipts[stage] = present
+    assert closeout_match is not None
+    ci_receipt = receipts["ci"]
+    merge_receipt = receipts["merge"]
+    if (
+        closeout_match.group("pr") != str(pr_number)
+        or closeout_match.group("head") != head_sha
+        or closeout_match.group("merge") != merge_receipt.get("merge_commit_sha")
+        or closeout_match.group("workflow") != str(ci_receipt.get("workflow_run_id"))
+    ):
+        return {"recorded": False, "reason": "closeout_reference_binding_invalid"}
     dispatch_id = f"plan-run:{packet_id}:{source_main_sha}:{attempt}"
     claim = _plan_claim(ledger_issue, dispatch_id, repo)
     if claim is None:

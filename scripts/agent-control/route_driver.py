@@ -405,9 +405,10 @@ def accepted_complete_receipt(status_document: str, packet_id: str) -> str:
     if receipt_match is None:
         raise RouteDriverError("route_bootstrap_receipt_invalid")
     receipt = receipt_match.group("evidence").strip()
-    if plan_lifecycle.canonical_closeout_reference_match(receipt) is None:
+    match = plan_lifecycle.canonical_closeout_reference_match(receipt)
+    if match is None:
         raise RouteDriverError("route_bootstrap_receipt_not_merge_backed")
-    return receipt
+    return match.group("canonical")
 
 
 def verified_predecessor_receipt(
@@ -825,6 +826,29 @@ def t3_closeout_reference(receipt: T3Receipt) -> str:
         f"T3 operator authority `{receipt.authority_receipt_digest}`; redacted effect outcome "
         f"`{receipt.outcome_receipt_digest}`"
     )
+
+
+def _t3_receipt_wire(receipt: T3Receipt) -> dict[str, object]:
+    """Serialize a typed receipt for the same hostile-input validation path."""
+
+    return {
+        "schema_version": "route_t3_receipt.v1",
+        "packet_id": receipt.packet_id,
+        "accepted_main_sha": receipt.accepted_main_sha,
+        "candidate_digest": receipt.candidate_digest,
+        "action_digest": receipt.action_digest,
+        "scope_digest": receipt.scope_digest,
+        "authority_receipt_digest": receipt.authority_receipt_digest,
+        "outcome_receipt_digest": receipt.outcome_receipt_digest,
+        "authority_owner_digest": receipt.authority_owner_digest,
+        "operator": receipt.operator,
+        "decision_source": receipt.decision_source,
+        "decision_evidence_digest": receipt.decision_evidence_digest,
+        "decision_digest": receipt.decision_digest,
+        "issued_at": receipt.issued_at,
+        "expires_at": receipt.expires_at,
+        "disposition": receipt.disposition,
+    }
 
 
 def validate_t3_receipt(
@@ -1612,10 +1636,18 @@ class RoutePromotionPlanner:
         if not successor.sketch.prerequisites:
             return PromotionPlanResult("DECISION_REQUIRED", "promotion_prerequisites_missing")
         if retained_t3_request is not None or retained_t3_receipt is not None:
+            validated_t3_receipt = (
+                None
+                if retained_t3_request is None or retained_t3_receipt is None
+                else validate_recorded_t3_receipt(
+                    _t3_receipt_wire(retained_t3_receipt), retained_t3_request
+                )[0]
+            )
             if (
                 closed_packet_id is None
                 or retained_t3_request is None
                 or retained_t3_receipt is None
+                or validated_t3_receipt != retained_t3_receipt
                 or successor.sketch.prerequisites != (closed_packet_id,)
                 or retained_t3_request.packet_id != closed_packet_id
                 or retained_t3_receipt.packet_id != closed_packet_id

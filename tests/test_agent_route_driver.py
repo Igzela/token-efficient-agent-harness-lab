@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from pathlib import Path
@@ -350,6 +351,18 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             status,
         )
 
+    def test_accepted_complete_receipt_keeps_only_the_canonical_status_prefix(self):
+        evidence = (
+            f"PR #390 exact head `{'b' * 40}`; merge `{'c' * 40}`; "
+            "exact-head `PASS`; canonical workflow `31467821768`"
+        )
+        status = status_document().replace(
+            "|---|---|---|\n\n",
+            f"|---|---|---|\n| `{CLOSED}` | `COMPLETE` | {evidence}; controller-owned detail |\n\n",
+            1,
+        )
+        self.assertEqual(route_driver.accepted_complete_receipt(status, CLOSED), evidence)
+
     def _successor(
         self,
         packet_class="IMPLEMENT",
@@ -564,6 +577,7 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
 
     def test_t3_closeout_uses_only_the_validated_digest_bound_reference(self):
         successor = self._successor("CLOSEOUT")
+        now = datetime.now(timezone.utc)
         request = route_driver.T3Request(
             packet_id=CLOSED,
             accepted_main_sha=MAIN,
@@ -585,9 +599,11 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             operator="existing-operator",
             decision_source="local_sol_5_6_max",
             decision_evidence_digest="2" * 64,
-            decision_digest="3" * 64,
-            issued_at="2026-08-12T00:00:00+00:00",
-            expires_at="2026-08-12T00:05:00+00:00",
+            decision_digest=route_driver.t3_decision_digest(
+                request, "local_sol_5_6_max", "2" * 64, "GO"
+            ),
+            issued_at=now.isoformat(),
+            expires_at=(now + timedelta(minutes=5)).isoformat(),
             disposition="GO",
         )
         reference = route_driver.t3_closeout_reference(receipt)
@@ -616,6 +632,21 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         )
         self.assertEqual(invalid.state, "DECISION_REQUIRED")
         self.assertEqual(invalid.reason, "promotion_t3_closeout_receipt_invalid")
+
+        forged = dataclasses.replace(receipt, decision_digest="3" * 64)
+        forged_result = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            route_driver.t3_closeout_reference(forged),
+            self._evidence(),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status_document(),
+            retained_t3_request=request,
+            retained_t3_receipt=forged,
+        )
+        self.assertEqual(forged_result.state, "DECISION_REQUIRED")
+        self.assertEqual(forged_result.reason, "promotion_t3_closeout_receipt_invalid")
 
     def test_serialized_promoted_capsule_round_trips_through_plan_and_handoff_validation(self):
         successor = self._successor()
