@@ -548,6 +548,35 @@ class TestBootstrapPromotionFallback(unittest.TestCase):
         )
         drive.assert_called_once_with(CLOSED, ATTEMPT, MAIN, LEDGER, compiled, {})
 
+    def test_planner_transport_unavailability_is_recoverable_not_a_controller_pause(self):
+        runner, github = self._runner()
+        receipt = "PR #390 exact merge-backed COMPLETE receipt"
+        successor = mock.Mock()
+        planned = route_driver.PromotionPlanResult(
+            "DECISION_REQUIRED", "promotion_planner_unavailable"
+        )
+
+        with mock.patch.object(
+            route_driver, "accepted_complete_receipt", return_value=receipt
+        ), mock.patch.object(
+            route_driver, "retained_t3_request", return_value=None
+        ), mock.patch.object(
+            plan_lane,
+            "successor_binding",
+            side_effect=plan_lane.PlanLaneError("plan_allowed_paths_invalid"),
+        ), mock.patch.object(
+            route_driver, "eligible_successor", return_value=successor
+        ), mock.patch.object(
+            runner, "_plan_current_main_evidence", return_value=planned
+        ):
+            result = runner.run_route_once(
+                CLOSED, ATTEMPT, bootstrap_receipt=receipt
+            )
+
+        self.assertEqual(result.status, "unavailable")
+        self.assertEqual(result.details["reason"], "promotion_planner_unavailable")
+        github.dispatch_controller.assert_not_called()
+
     def test_ordinary_scope_error_does_not_enter_bootstrap_fallback(self):
         runner, _github = self._runner()
 
@@ -1030,6 +1059,27 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
         self.assertEqual(drive.call_args.args[0], CLOSED)
         self.assertEqual(drive.call_args.args[2], MAIN)
         self.assertEqual(drive.call_args.args[4], compiled)
+
+    def test_effect_closeout_planner_transport_unavailability_is_recoverable(self):
+        request, receipt, raw = self._request_and_receipt()
+        runner, _github, state = self._runner(request, raw)
+        successor = mock.Mock(
+            profile=("PE7-EFFECT-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"),
+        )
+        successor.sketch.prerequisites = (CLOSED,)
+        planned = route_driver.PromotionPlanResult(
+            "DECISION_REQUIRED", "promotion_planner_unavailable"
+        )
+
+        with mock.patch.object(state_manager, "read_dispatch_state", return_value=state), \
+             mock.patch.object(route_driver, "eligible_successor", return_value=successor), \
+             mock.patch.object(runner, "_plan_current_main_evidence", return_value=planned), \
+             mock.patch.object(runner, "_drive_promotion_pr") as drive:
+            result = runner.run_effect_route_once(request, receipt)
+
+        self.assertEqual(result.status, "unavailable")
+        self.assertEqual(result.details["reason"], "promotion_planner_unavailable")
+        drive.assert_not_called()
 
     def test_receipt_without_a_direct_closeout_stops_outcome_unknown(self):
         request, receipt, raw = self._request_and_receipt()
