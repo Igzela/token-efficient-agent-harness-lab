@@ -463,6 +463,18 @@ class TestRecordPlanCloseoutReceipt(unittest.TestCase):
                 LEDGER, PACKET, ATTEMPT, f"PR #{PR}"
             )
         self.assertEqual(reconciled, CLOSEOUT_REFERENCE)
+        with mock.patch.object(plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle):
+            self.assertEqual(
+                plan_lifecycle.reconcile_legacy_closeout_reference(
+                    LEDGER, PACKET, ATTEMPT, CLOSEOUT_REFERENCE
+                ),
+                CLOSEOUT_REFERENCE,
+            )
+        mismatch = CLOSEOUT_REFERENCE.replace(f"PR #{PR}", "PR #999")
+        with mock.patch.object(plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle):
+            self.assertIsNone(plan_lifecycle.reconcile_legacy_closeout_reference(
+                LEDGER, PACKET, ATTEMPT, mismatch
+            ))
         lifecycle["stages"]["review"] = False
         with mock.patch.object(plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle):
             self.assertIsNone(plan_lifecycle.reconcile_legacy_closeout_reference(

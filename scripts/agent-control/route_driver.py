@@ -70,6 +70,9 @@ CLASS_DEFAULT_VERIFICATION = {
 T3_DECISION_SOURCES = frozenset({"human_operator", "local_sol_5_6_max", "gpt_web"})
 
 _CLOSEOUT_FIELDS = ("Prerequisite", "Class", "Outcome", "Allowed delta", "Exit", "Stop")
+_ROUTE_CLOSEOUT_PACKET_DETAIL = re.compile(
+    rf"^route closeout packet `(?P<packet>{plan_lane.PACKET_TOKEN})`$"
+)
 
 
 class RouteDriverError(ValueError):
@@ -411,6 +414,22 @@ def accepted_complete_receipt(status_document: str, packet_id: str) -> str:
     return match.group("canonical")
 
 
+def route_bound_closeout_reference(packet_id: str, closeout_reference: object) -> str:
+    """Bind a ledger-proved closeout to its packet during the status-row gap.
+
+    This annotation is only an in-memory routing bridge.  Once the promotion
+    PR writes the accepted status row, that row's packet column is the durable
+    identity binding and downstream readers retain only the canonical receipt.
+    """
+
+    if not isinstance(packet_id, str) or plan_lane.PACKET_ID.fullmatch(packet_id) is None:
+        raise RouteDriverError("promotion_closed_packet_invalid")
+    match = plan_lifecycle.canonical_closeout_reference_match(closeout_reference)
+    if match is None:
+        raise RouteDriverError("promotion_predecessor_receipt_unproved")
+    return f"{match.group('canonical')}; route closeout packet `{packet_id}`"
+
+
 def verified_predecessor_receipt(
     status_document: str,
     closed_packet_id: str,
@@ -424,6 +443,10 @@ def verified_predecessor_receipt(
     if plan_lane.SHA40.fullmatch(accepted_main_sha) is None:
         raise RouteDriverError("promotion_accepted_main_invalid")
     receipt = predecessor_receipt.strip()
+    match = plan_lifecycle.canonical_closeout_reference_match(receipt)
+    if match is None:
+        raise RouteDriverError("promotion_predecessor_receipt_unproved")
+    canonical = match.group("canonical")
     if isinstance(status_document, str) and status_document:
         try:
             accepted = accepted_complete_receipt(status_document, closed_packet_id)
@@ -431,13 +454,22 @@ def verified_predecessor_receipt(
             if exc.reason != "route_bootstrap_receipt_missing_or_ambiguous":
                 raise
         else:
-            if accepted != receipt:
+            if accepted != canonical:
                 raise RouteDriverError("promotion_predecessor_receipt_mismatch")
-            return receipt
-    match = plan_lifecycle.canonical_closeout_reference_match(receipt)
-    if match is None or match.group("merge") != accepted_main_sha:
+            return canonical
+    detail = match.group("detail")
+    packet_detail = (
+        _ROUTE_CLOSEOUT_PACKET_DETAIL.fullmatch(detail)
+        if isinstance(detail, str)
+        else None
+    )
+    if (
+        match.group("merge") != accepted_main_sha
+        or packet_detail is None
+        or packet_detail.group("packet") != closed_packet_id
+    ):
         raise RouteDriverError("promotion_predecessor_receipt_unproved")
-    return receipt
+    return canonical
 
 
 def bound_prerequisite_receipts(
@@ -615,6 +647,14 @@ def compile_successor(
     candidate = planned.candidate
     contract = candidate.contract
     packet_state = planned.state
+    durable_predecessor_evidence = predecessor_evidence.strip()
+    if closed_packet_state == "COMPLETE":
+        predecessor_match = plan_lifecycle.canonical_closeout_reference_match(
+            durable_predecessor_evidence
+        )
+        if predecessor_match is None:
+            raise RouteDriverError("promotion_predecessor_receipt_unproved")
+        durable_predecessor_evidence = predecessor_match.group("canonical")
     capsule = dict(candidate.capsule)
     capsule["packet_state"] = packet_state
     if planned.t3_request is not None:
@@ -631,7 +671,7 @@ def compile_successor(
         f"## Packet {successor.packet_id}\n\n"
         f"**State:** `{packet_state}`\n\n"
         f"**Prerequisite:** {', '.join(successor.sketch.prerequisites) or 'none'} — "
-        f"{predecessor_state} on accepted main `{accepted_main_sha}` ({predecessor_evidence.strip()}).\n\n"
+        f"{predecessor_state} on accepted main `{accepted_main_sha}` ({durable_predecessor_evidence}).\n\n"
         f"**Class:** `{successor.sketch.packet_class}`\n\n"
         f"**Outcome:** {successor.sketch.outcome}\n\n"
         f"**Allowed delta:** {', '.join(contract['allowed_paths'])}.\n\n"
@@ -639,7 +679,7 @@ def compile_successor(
         f"**Stop:** {successor.sketch.stop}\n\n"
         "### Twelve-field contract\n\n"
         f"1. **Outcome and non-goals.** {successor.sketch.outcome}\n"
-        f"2. **Prerequisites and evidence.** Accepted main `{accepted_main_sha}`; checked route manifest SHA `{candidate.manifest_sha256}`; predecessor receipt {predecessor_evidence.strip()}; current-main evidence SHA `{candidate.evidence_sha256}`.\n"
+        f"2. **Prerequisites and evidence.** Accepted main `{accepted_main_sha}`; checked route manifest SHA `{candidate.manifest_sha256}`; predecessor receipt {durable_predecessor_evidence}; current-main evidence SHA `{candidate.evidence_sha256}`.\n"
         f"3. **Owners and paths.** Owners: {', '.join(contract['owner_paths'])}; callers: {', '.join(contract['caller_paths'])}; tests: {', '.join(contract['test_paths'])}.\n"
         f"4. **Frozen invariants.** Packet identity, route manifest SHA `{candidate.manifest_sha256}`, accepted-main SHA, predecessor receipt, and current-main evidence digest are immutable for this candidate.\n"
         "5. **Only semantic delta.** Execute only the independently reviewed candidate contract.\n"
@@ -656,7 +696,7 @@ def compile_successor(
     next_document = compact_next_window(
         next_document,
         closed_packet_id=closed_packet_id,
-        predecessor_receipt=predecessor_evidence,
+        predecessor_receipt=durable_predecessor_evidence,
         active_packet_block=packet_block,
         active_state=packet_state,
         closed_packet_state=closed_packet_state,
@@ -668,7 +708,7 @@ def compile_successor(
     )
     future_document = _refresh_future_document(future_document, successor.packet_id)
     closed_row, successor_row = _status_readiness_rows(
-        closed_packet_id, successor.packet_id, predecessor_evidence, packet_state,
+        closed_packet_id, successor.packet_id, durable_predecessor_evidence, packet_state,
         closed_packet_state=closed_packet_state,
     )
     status_document = _with_status_rows(

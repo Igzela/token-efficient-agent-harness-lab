@@ -1481,6 +1481,17 @@ class LocalRunOnce:
                     attempt,
                     reason="route_closeout_receipt_unproved",
                 )
+            try:
+                closeout_reference = route_driver.route_bound_closeout_reference(
+                    packet_id, closeout_reference
+                )
+            except route_driver.RouteDriverError:
+                return self._plan_result(
+                    "bounded_pause",
+                    packet_id,
+                    attempt,
+                    reason="route_closeout_receipt_unproved",
+                )
         else:
             try:
                 status_for_receipt = self.github.accepted_status_document(accepted_main)

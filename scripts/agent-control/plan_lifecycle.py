@@ -100,14 +100,12 @@ def reconcile_legacy_closeout_reference(
     """
 
     canonical = canonical_closeout_reference_match(closeout_reference)
-    if canonical is not None:
-        return canonical.group("canonical")
     legacy = (
         _LEGACY_CLOSEOUT_REFERENCE_PATTERN.fullmatch(closeout_reference)
         if isinstance(closeout_reference, str)
         else None
     )
-    if legacy is None:
+    if canonical is None and legacy is None:
         return None
     lifecycle = read_plan_lifecycle(ledger_issue, packet_id, attempt_id, repo)
     if not isinstance(lifecycle, dict):
@@ -115,7 +113,10 @@ def reconcile_legacy_closeout_reference(
     stages = lifecycle.get("stages")
     if (
         lifecycle.get("claim_status") != "closed_out"
-        or lifecycle.get("pr_number") != int(legacy.group("pr"))
+        or (
+            legacy is not None
+            and lifecycle.get("pr_number") != int(legacy.group("pr"))
+        )
         or not isinstance(stages, dict)
         or not all(stages.get(stage) is True for stage in ("ci", "review", "merge", "closeout"))
     ):
@@ -128,12 +129,17 @@ def reconcile_legacy_closeout_reference(
     head_sha = lifecycle.get("head_sha")
     if not isinstance(ci, dict) or not isinstance(merge, dict):
         return None
-    return canonical_closeout_reference(
+    rebuilt = canonical_closeout_reference(
         lifecycle.get("pr_number"),
         head_sha,
         merge.get("merge_commit_sha"),
         ci.get("workflow_run_id"),
     )
+    if rebuilt is None:
+        return None
+    if canonical is not None and canonical.group("canonical") != rebuilt:
+        return None
+    return rebuilt
 
 
 def _plan_claim(ledger_issue: int, dispatch_id: str, repo: str) -> dict[str, Any] | None:

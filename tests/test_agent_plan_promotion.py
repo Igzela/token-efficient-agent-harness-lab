@@ -590,7 +590,10 @@ class TestBootstrapPromotionFallback(unittest.TestCase):
         ), mock.patch.object(
             plan_lifecycle,
             "reconcile_legacy_closeout_reference",
-            return_value="PR #42",
+            return_value=(
+                "PR #42 exact head `" + "b" * 40 + "`; merge `" + MAIN
+                + "`; exact-head `PASS`; canonical workflow `31467821767`"
+            ),
         ), mock.patch.object(
             route_driver, "retained_t3_request", return_value=None
         ), mock.patch.object(
@@ -1158,7 +1161,10 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
         ), mock.patch.object(
             plan_lifecycle,
             "reconcile_legacy_closeout_reference",
-            return_value="PR #42",
+            return_value=(
+                "PR #42 exact head `" + "b" * 40 + "`; merge `" + MAIN
+                + "`; exact-head `PASS`; canonical workflow `31467821767`"
+            ),
         ), mock.patch.object(runner, "_drive_promotion_pr") as drive:
             result = runner.run_route_once(closeout, ATTEMPT)
         self.assertEqual(result.status, "outcome_unknown")
