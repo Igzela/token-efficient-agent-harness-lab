@@ -13,7 +13,9 @@ from unittest import mock
 
 CONTROL = Path(__file__).resolve().parents[1] / "scripts" / "agent-control"
 sys.path.insert(0, str(CONTROL))
+sys.path.insert(0, str(CONTROL.parent))
 
+import check_agent_handoff  # noqa: E402
 import plan_lane  # noqa: E402
 import route_driver  # noqa: E402
 
@@ -422,6 +424,36 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         self.assertEqual(result.candidate.manifest_sha256, MANIFEST)
         self.assertEqual(result.candidate.capsule["route_manifest_sha256"], MANIFEST)
         self.assertEqual(result.candidate.contract["manifest_sha256"], MANIFEST)
+
+    def test_serialized_promoted_capsule_round_trips_through_plan_and_handoff_validation(self):
+        successor = self._successor()
+        evidence = self._evidence()
+        result = route_driver.RoutePromotionPlanner().plan(
+            successor, MAIN, EVIDENCE, evidence, MANIFEST
+        )
+        self.assertEqual(result.state, "READY_FOR_EXECUTION")
+        assert result.candidate is not None
+        capsule = result.candidate.capsule
+        document = (
+            "## Active Routing\n\n"
+            f"1. `{successor.packet_id}` — `READY_FOR_EXECUTION`\n\n"
+            f"## Packet {successor.packet_id}\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            f"### 11. Weak-Agent Dispatch Capsule\n\n<!-- weak-agent-dispatch:v1\n"
+            f"{json.dumps(capsule, sort_keys=True)}\n-->\n"
+        )
+        parsed = plan_lane.parse(
+            document, MAIN, completed_packet_ids=frozenset({CLOSED})
+        )
+        self.assertEqual(parsed.packet_id, successor.packet_id)
+        self.assertEqual(parsed.allowed_paths, list(evidence.allowed_paths))
+        self.assertEqual(
+            check_agent_handoff.weak_agent_dispatch_failures(
+                document,
+                {successor.packet_id: {"state": "READY_FOR_EXECUTION"}},
+            ),
+            [],
+        )
 
     def test_manifest_is_required_and_changes_the_immutable_candidate_digest(self):
         missing = route_driver.RoutePromotionPlanner().plan(

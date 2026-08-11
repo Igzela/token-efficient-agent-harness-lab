@@ -1487,6 +1487,24 @@ class RoutePromotionPlanner:
             "evidence_destinations": list(evidence.evidence_destinations),
             "decisions": list(evidence.decisions),
         }
+        forbidden_changes = [
+            "Do not use FUTURE_ROUTE static paths as current-main authority.",
+            "Do not create a second controller, ledger, queue, lease, store, or workflow owner.",
+            "Do not mint T3 authority, execute an EFFECT, auto-merge, call a Provider, or write a target.",
+        ]
+        pause_gates = [
+            "Stop when an owner, caller, test, path, operation, destination, or decision cannot be re-proved from accepted main.",
+            "Stop when exact-head review or canonical CI is missing, stale, failed, or conflicting.",
+            "Recover ordinary worker, CI, review, checkpoint, duplicate, restart, and main-drift failures through existing owners; stop if recovery evidence is unproved.",
+            "Stop before a Provider, target, automatic merge, authority consumption, or external effect.",
+            "Do not retry a possibly executed external effect whose outcome is unknown.",
+        ]
+        forbidden_next_actions = [
+            "Do not skip an EFFECT node or execute an EFFECT or T3 path without its exact valid finite receipt.",
+            "Do not treat missing, conflicting, stale, or outcome-unknown routing or receipts as success.",
+            "Do not start a successor whose promotion candidate has not been independently accepted.",
+            *forbidden_changes,
+        ]
         capsule = {
             "schema_version": "weak_agent_dispatch.v1",
             "packet_id": packet_id,
@@ -1506,24 +1524,13 @@ class RoutePromotionPlanner:
             ],
             "prerequisites": list(successor.sketch.prerequisites),
             "prerequisite_receipts": [predecessor_receipt.strip()],
-            "forbidden_changes": [
-                "Do not use FUTURE_ROUTE static paths as current-main authority.",
-                "Do not create a second controller, ledger, queue, lease, store, or workflow owner.",
-                "Do not mint T3 authority, execute an EFFECT, auto-merge, call a Provider, or write a target.",
-            ],
+            "forbidden_changes": forbidden_changes,
             "ordered_steps": list(evidence.ordered_slices),
             "verification": list(evidence.verification),
             "rollback": evidence.rollback,
-            "pause_gates": [
-                "Stop when an owner, caller, test, path, operation, destination, or decision cannot be re-proved from accepted main.",
-                "Stop before a Provider, target, automatic merge, authority consumption, or external effect.",
-            ],
+            "pause_gates": pause_gates,
             "expected_artifacts": list(evidence.evidence_destinations),
-            "forbidden_next_actions": [
-                "Do not use FUTURE_ROUTE static paths as current-main authority.",
-                "Do not create a second controller, ledger, queue, lease, store, or workflow owner.",
-                "Do not mint T3 authority, execute an EFFECT, auto-merge, call a Provider, or write a target.",
-            ],
+            "forbidden_next_actions": forbidden_next_actions,
             "promotion_evidence_sha256": evidence_sha256,
             "route_manifest_sha256": manifest_sha256,
             "verification_family": verification_family,
