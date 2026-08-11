@@ -413,6 +413,36 @@ def accepted_complete_receipt(status_document: str, packet_id: str) -> str:
     return receipt
 
 
+def bound_prerequisite_receipts(
+    successor: EligibleSuccessor,
+    closed_packet_id: str,
+    predecessor_receipt: str,
+    status_document: str,
+) -> tuple[str, ...]:
+    """Bind every prerequisite to its exact accepted receipt.
+
+    The just-closed packet has a closeout receipt before this promotion's
+    document update can add its durable status row.  Every other prerequisite
+    must already have one exact accepted-current-status receipt.  This keeps a
+    multi-prerequisite candidate from carrying a plausible but incomplete
+    receipt list.
+    """
+
+    if not isinstance(closed_packet_id, str) or plan_lane.PACKET_ID.fullmatch(closed_packet_id) is None:
+        raise RouteDriverError("promotion_closed_packet_invalid")
+    if not isinstance(predecessor_receipt, str) or not predecessor_receipt.strip():
+        raise RouteDriverError("promotion_predecessor_receipt_missing")
+    if not successor.sketch.prerequisites:
+        raise RouteDriverError("promotion_prerequisites_missing")
+    receipts: list[str] = []
+    for prerequisite in successor.sketch.prerequisites:
+        if prerequisite == closed_packet_id:
+            receipts.append(predecessor_receipt.strip())
+        else:
+            receipts.append(accepted_complete_receipt(status_document, prerequisite))
+    return tuple(receipts)
+
+
 def bootstrap_reconcile_marked(document: str, packet_id: str) -> bool:
     """Recognize the one explicit bridge from a pre-ledger merge to promotion."""
 
@@ -525,8 +555,19 @@ def compile_successor(
             raise RouteDriverError("route_effect_closeout_bridge_invalid")
     manifest = inventory_manifest(future_document)
     manifest_sha256 = _json_sha256(manifest)
+    prerequisite_receipts = bound_prerequisite_receipts(
+        successor,
+        closed_packet_id,
+        predecessor_evidence,
+        status_document,
+    )
     planned = RoutePromotionPlanner().plan(
-        successor, accepted_main_sha, predecessor_evidence, evidence, manifest_sha256
+        successor,
+        accepted_main_sha,
+        predecessor_evidence,
+        evidence,
+        manifest_sha256,
+        prerequisite_receipts=prerequisite_receipts,
     )
     if planned.state not in {"READY_FOR_EXECUTION", "T3_REQUIRED"} or planned.candidate is None:
         raise RouteDriverError(planned.reason)
@@ -1281,12 +1322,15 @@ class CurrentMainEvidenceVerifier:
         raw: str,
         successor: EligibleSuccessor,
         predecessor_receipt: str,
+        closed_packet_id: str | None = None,
     ) -> PromotionPlanResult:
         proposal = self._proposal(raw, successor)
         if isinstance(proposal, PromotionPlanResult):
             return proposal
         try:
-            return self._verify_proposal(proposal, successor, predecessor_receipt)
+            return self._verify_proposal(
+                proposal, successor, predecessor_receipt, closed_packet_id
+            )
         except RouteDriverError as exc:
             return PromotionPlanResult("DECISION_REQUIRED", exc.reason)
 
@@ -1295,6 +1339,7 @@ class CurrentMainEvidenceVerifier:
         proposal: dict[str, object],
         successor: EligibleSuccessor,
         predecessor_receipt: str,
+        closed_packet_id: str | None,
     ) -> PromotionPlanResult:
         raw_allowed = self._list(proposal["allowed_paths"], "promotion_allowed_paths_invalid")
         if any(not isinstance(path, str) for path in raw_allowed):
@@ -1441,8 +1486,41 @@ class CurrentMainEvidenceVerifier:
             decisions=tuple(decision_text),
         )
         manifest_sha256 = _json_sha256(inventory_manifest(self._source("docs/FUTURE_ROUTE.md")))
+        if closed_packet_id is None:
+            if len(successor.sketch.prerequisites) != 1:
+                raise RouteDriverError("promotion_prerequisite_receipts_missing_or_invalid")
+            closed_packet_id = successor.sketch.prerequisites[0]
+        status_document = (
+            self._source("docs/CURRENT_STATUS.md")
+            if any(
+                prerequisite != closed_packet_id
+                for prerequisite in successor.sketch.prerequisites
+            )
+            else ""
+        )
+        try:
+            prerequisite_receipts = bound_prerequisite_receipts(
+                successor,
+                closed_packet_id,
+                predecessor_receipt,
+                status_document,
+            )
+        except RouteDriverError as exc:
+            if any(
+                prerequisite != closed_packet_id
+                for prerequisite in successor.sketch.prerequisites
+            ):
+                raise RouteDriverError(
+                    "promotion_prerequisite_receipts_missing_or_invalid"
+                ) from exc
+            raise
         return RoutePromotionPlanner().plan(
-            successor, self.accepted_main_sha, predecessor_receipt, evidence, manifest_sha256
+            successor,
+            self.accepted_main_sha,
+            predecessor_receipt,
+            evidence,
+            manifest_sha256,
+            prerequisite_receipts=prerequisite_receipts,
         )
 
 
@@ -1462,6 +1540,8 @@ class RoutePromotionPlanner:
         predecessor_receipt: str,
         evidence: CurrentMainEvidence | None,
         manifest_sha256: str | None,
+        *,
+        prerequisite_receipts: tuple[str, ...] | None = None,
     ) -> PromotionPlanResult:
         if not isinstance(predecessor_receipt, str) or not predecessor_receipt.strip():
             return PromotionPlanResult("DECISION_REQUIRED", "promotion_predecessor_receipt_missing")
@@ -1471,6 +1551,32 @@ class RoutePromotionPlanner:
         if problem is not None:
             return PromotionPlanResult("DECISION_REQUIRED", problem)
         assert evidence is not None
+        if len(successor.sketch.outcome.strip()) < 20:
+            return PromotionPlanResult("DECISION_REQUIRED", "promotion_goal_too_short")
+        if len(evidence.rollback.strip()) < 20:
+            return PromotionPlanResult("DECISION_REQUIRED", "promotion_rollback_too_short")
+        if not successor.sketch.prerequisites:
+            return PromotionPlanResult("DECISION_REQUIRED", "promotion_prerequisites_missing")
+        if prerequisite_receipts is None:
+            if len(successor.sketch.prerequisites) != 1:
+                return PromotionPlanResult(
+                    "DECISION_REQUIRED",
+                    "promotion_prerequisite_receipts_missing_or_invalid",
+                )
+            prerequisite_receipts = (predecessor_receipt.strip(),)
+        if (
+            len(prerequisite_receipts) != len(successor.sketch.prerequisites)
+            or any(
+                not isinstance(receipt, str) or not receipt.strip()
+                for receipt in prerequisite_receipts
+            )
+            or predecessor_receipt.strip()
+            not in {receipt.strip() for receipt in prerequisite_receipts}
+        ):
+            return PromotionPlanResult(
+                "DECISION_REQUIRED", "promotion_prerequisite_receipts_missing_or_invalid"
+            )
+        prerequisite_receipts = tuple(receipt.strip() for receipt in prerequisite_receipts)
         evidence_sha256 = _json_sha256(_evidence_payload(evidence))
         packet_id, packet_class, worker_tier, risk_class, verification_family = successor.profile
         contract = {
@@ -1523,7 +1629,7 @@ class RoutePromotionPlanner:
                 "Exact-head verification and review evidence through the existing lifecycle owners.",
             ],
             "prerequisites": list(successor.sketch.prerequisites),
-            "prerequisite_receipts": [predecessor_receipt.strip()],
+            "prerequisite_receipts": list(prerequisite_receipts),
             "forbidden_changes": forbidden_changes,
             "ordered_steps": list(evidence.ordered_slices),
             "verification": list(evidence.verification),

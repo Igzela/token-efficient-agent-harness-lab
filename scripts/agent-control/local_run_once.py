@@ -1582,7 +1582,7 @@ class LocalRunOnce:
                 completed_ids=route_driver._accepted_completed_ids(status_document),
             )
             planned = self._plan_current_main_evidence(
-                successor, accepted_main, closeout_reference
+                successor, packet_id, accepted_main, closeout_reference
             )
             if planned.reason == "promotion_planner_unavailable":
                 return self._plan_result(
@@ -1721,7 +1721,7 @@ class LocalRunOnce:
                     reason="route_effect_closeout_not_proved",
                 )
             planned = self._plan_current_main_evidence(
-                successor, accepted_main, closeout_reference
+                successor, request.packet_id, accepted_main, closeout_reference
             )
             if planned.reason == "promotion_planner_unavailable":
                 return self._plan_result(
@@ -1758,6 +1758,7 @@ class LocalRunOnce:
     def _plan_current_main_evidence(
         self,
         successor: route_driver.EligibleSuccessor,
+        closed_packet_id: str,
         accepted_main: str,
         predecessor_receipt: str,
     ) -> route_driver.PromotionPlanResult:
@@ -1807,7 +1808,9 @@ class LocalRunOnce:
                 )
         try:
             verifier = route_driver.CurrentMainEvidenceVerifier(self.repo_path, accepted_main)
-            return verifier.verify(output or "", successor, predecessor_receipt)
+            return verifier.verify(
+                output or "", successor, predecessor_receipt, closed_packet_id
+            )
         except route_driver.RouteDriverError as exc:
             return route_driver.PromotionPlanResult("DECISION_REQUIRED", exc.reason)
 

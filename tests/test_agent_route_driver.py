@@ -346,12 +346,18 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             status,
         )
 
-    def _successor(self, packet_class="IMPLEMENT"):
+    def _successor(
+        self,
+        packet_class="IMPLEMENT",
+        *,
+        prerequisites=(CLOSED,),
+        outcome="Use the existing repository-maintenance control-plane owner.",
+    ):
         sketch = route_driver.PacketSketch(
             packet_id="PE7-EXACT-PROMOTION-1",
-            prerequisites=(CLOSED,),
+            prerequisites=prerequisites,
             packet_class=packet_class,
-            outcome="Use the existing repository-maintenance control-plane owner.",
+            outcome=outcome,
             allowed_delta="Static hints only: docs/ and scripts/agent-control/.",
             exit_statement="An independently accepted bounded contract exists.",
             stop="Stop on any unproved current-main authority.",
@@ -424,6 +430,81 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         self.assertEqual(result.candidate.manifest_sha256, MANIFEST)
         self.assertEqual(result.candidate.capsule["route_manifest_sha256"], MANIFEST)
         self.assertEqual(result.candidate.contract["manifest_sha256"], MANIFEST)
+
+    def test_short_goal_and_rollback_are_rejected_before_handoff(self):
+        short_goal = route_driver.RoutePromotionPlanner().plan(
+            self._successor(outcome="Too short."), MAIN, EVIDENCE, self._evidence(), MANIFEST
+        )
+        self.assertEqual(short_goal.state, "DECISION_REQUIRED")
+        self.assertEqual(short_goal.reason, "promotion_goal_too_short")
+
+        evidence = self._evidence()
+        short_rollback = route_driver.CurrentMainEvidence(
+            packet_id=evidence.packet_id,
+            accepted_main_sha=evidence.accepted_main_sha,
+            owner_paths=evidence.owner_paths,
+            caller_paths=evidence.caller_paths,
+            test_paths=evidence.test_paths,
+            allowed_paths=evidence.allowed_paths,
+            ordered_slices=evidence.ordered_slices,
+            verification=evidence.verification,
+            rollback="Revert.",
+            cleanup=evidence.cleanup,
+            retention=evidence.retention,
+            evidence_destinations=evidence.evidence_destinations,
+            decisions=evidence.decisions,
+        )
+        short_rollback_result = route_driver.RoutePromotionPlanner().plan(
+            self._successor(), MAIN, EVIDENCE, short_rollback, MANIFEST
+        )
+        self.assertEqual(short_rollback_result.state, "DECISION_REQUIRED")
+        self.assertEqual(short_rollback_result.reason, "promotion_rollback_too_short")
+
+    def test_multi_prerequisite_contract_requires_each_bound_receipt(self):
+        successor = self._successor(
+            prerequisites=(CLOSED, "PE7-OTHER-1"),
+        )
+        missing = route_driver.RoutePromotionPlanner().plan(
+            successor, MAIN, EVIDENCE, self._evidence(), MANIFEST
+        )
+        self.assertEqual(missing.state, "DECISION_REQUIRED")
+        self.assertEqual(
+            missing.reason, "promotion_prerequisite_receipts_missing_or_invalid"
+        )
+
+        second_receipt = "PR #401 exact accepted receipt"
+        complete = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            EVIDENCE,
+            self._evidence(),
+            MANIFEST,
+            prerequisite_receipts=(EVIDENCE, second_receipt),
+        )
+        self.assertEqual(complete.state, "READY_FOR_EXECUTION")
+        assert complete.candidate is not None
+        self.assertEqual(
+            complete.candidate.capsule["prerequisite_receipts"],
+            [EVIDENCE, second_receipt],
+        )
+
+    def test_prerequisite_receipts_use_current_status_for_every_prior_packet(self):
+        successor = self._successor(prerequisites=(CLOSED, "PE7-OTHER-1"))
+        second_receipt = (
+            f"PR #401 exact head `{'d' * 40}`; merge `{'e' * 40}`; "
+            "exact-head `PASS`; canonical workflow `31467821768`"
+        )
+        status = status_document().replace(
+            "|---|---|---|\n\n",
+            f"|---|---|---|\n| `PE7-OTHER-1` | `COMPLETE` | {second_receipt} |\n\n",
+            1,
+        )
+        self.assertEqual(
+            route_driver.bound_prerequisite_receipts(
+                successor, CLOSED, EVIDENCE, status
+            ),
+            (EVIDENCE, second_receipt),
+        )
 
     def test_serialized_promoted_capsule_round_trips_through_plan_and_handoff_validation(self):
         successor = self._successor()

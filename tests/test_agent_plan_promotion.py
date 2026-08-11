@@ -536,7 +536,7 @@ class TestBootstrapPromotionFallback(unittest.TestCase):
 
         self.assertIs(result, expected)
         github.dispatch_controller.assert_not_called()
-        planner.assert_called_once_with(successor, MAIN, receipt)
+        planner.assert_called_once_with(successor, CLOSED, MAIN, receipt)
         compiler.assert_called_once_with(
             "# Future Route\n",
             "# Next Decision\n",
