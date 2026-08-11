@@ -12,11 +12,18 @@ from typing import Callable, Sequence
 import local_loop
 import local_run_once
 import local_supervisor
+import route_driver
 import state_manager
 
 
 NORMAL_IDLE = {"control_stopped", "capacity_full", "no_eligible_task"}
 FAIL_CLOSED = {"identity_rejected", "stale_checkout", "unavailable"}
+ROUTE_TERMINALS = {
+    "ROUTE_EXHAUSTED",
+    "DECISION_REQUIRED",
+    "T3_REQUIRED",
+    "OUTCOME_UNKNOWN",
+}
 
 
 def _bounded_max_active(value: str) -> int:
@@ -28,6 +35,16 @@ def _bounded_max_active(value: str) -> int:
         raise argparse.ArgumentTypeError(
             f"must be between 1 and {state_manager.MAX_ACTIVE}"
         )
+    return parsed
+
+
+def _bounded_route_transitions(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be an integer")
+    if parsed < 1 or parsed > 256:
+        raise argparse.ArgumentTypeError("must be between 1 and 256")
     return parsed
 
 
@@ -51,7 +68,15 @@ def build_parser() -> argparse.ArgumentParser:
     run_subject = run_once.add_mutually_exclusive_group(required=True)
     run_subject.add_argument("--issue", type=int)
     run_subject.add_argument("--plan-id")
+    run_subject.add_argument("--route-drive", metavar="PACKET_ID", help="drive the closeout/promotion PR lifecycle for one closed packet")
     run_once.add_argument("--attempt-id", required=True)
+    route_run = subparsers.add_parser(
+        "route-run",
+        help="continuously drive the accepted route without a caller-selected packet",
+    )
+    route_run.add_argument("--repo", required=True, help="GitHub repository as owner/name")
+    route_run.add_argument("--repo-path", required=True, type=Path, help="exact local Git worktree root")
+    route_run.add_argument("--max-transitions", type=_bounded_route_transitions, default=128)
     batch = subparsers.add_parser(
         "run-batch", help="poll and launch up to the repository K local workers"
     )
@@ -68,6 +93,7 @@ def main(
     controller_factory: Callable[..., local_loop.LoopController] | None = None,
     run_once_factory: Callable[..., local_run_once.LocalRunOnce] | None = None,
     supervisor_factory: Callable[..., local_supervisor.LocalSupervisor] | None = None,
+    route_run_factory: Callable[..., route_driver.RepositoryRouteRunner] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "run-batch":
@@ -102,6 +128,8 @@ def main(
             runner = factory(repository=args.repo, repo_path=args.repo_path)
             if args.plan_id is not None:
                 result = runner.run_plan_once(args.plan_id, args.attempt_id)
+            elif args.route_drive:
+                result = runner.run_route_once(args.route_drive, args.attempt_id)
             else:
                 result = runner.run_once(args.issue, args.attempt_id)
             wire = result.to_wire() if hasattr(result, "to_wire") else result
@@ -115,6 +143,24 @@ def main(
             }
         print(json.dumps(wire, ensure_ascii=False, sort_keys=True))
         return 0 if wire.get("status") == "handed_off" else 2
+    if args.command == "route-run":
+        try:
+            factory = route_run_factory or route_driver.RepositoryRouteRunner
+            runner = factory(
+                repository=args.repo,
+                repo_path=args.repo_path,
+                max_transitions=args.max_transitions,
+            )
+            result = runner.run()
+            wire = result.to_wire() if hasattr(result, "to_wire") else result
+        except (OSError, ValueError, local_loop.LoopUnavailable) as exc:
+            wire = {
+                "kind": "repo-agent-route-run.v1",
+                "state": "UNRECOVERABLE_INFRASTRUCTURE_FAILURE",
+                "reason": str(exc)[:300],
+            }
+        print(json.dumps(wire, ensure_ascii=False, sort_keys=True))
+        return 0 if wire.get("state") in ROUTE_TERMINALS else 2
     factory = controller_factory or local_loop.LoopController
     try:
         controller = factory(

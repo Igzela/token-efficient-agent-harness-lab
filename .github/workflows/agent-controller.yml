@@ -27,6 +27,9 @@ on:
           - block-local
           - claim-plan
           - handoff-plan
+          - lifecycle-plan
+          - promote-plan
+          - record-route-t3-receipt
           - release-plan
           - block-plan
       issue:
@@ -68,6 +71,39 @@ on:
       source_main_sha:
         required: false
         type: string
+      stage:
+        required: false
+        type: string
+      accepted_main_sha:
+        required: false
+        type: string
+      candidate_digest:
+        required: false
+        type: string
+      action_digest:
+        required: false
+        type: string
+      scope_digest:
+        required: false
+        type: string
+      authority_receipt_digest:
+        required: false
+        type: string
+      authority_owner:
+        required: false
+        type: string
+      operator:
+        required: false
+        type: string
+      issued_at:
+        required: false
+        type: string
+      expires_at:
+        required: false
+        type: string
+      disposition:
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -94,6 +130,17 @@ jobs:
       INPUT_REASON_CODE: ${{ inputs.reason_code }}
       INPUT_PACKET_ID: ${{ inputs.packet_id }}
       INPUT_SOURCE_MAIN_SHA: ${{ inputs.source_main_sha }}
+      INPUT_STAGE: ${{ inputs.stage }}
+      INPUT_ACCEPTED_MAIN_SHA: ${{ inputs.accepted_main_sha }}
+      INPUT_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+      INPUT_ACTION_DIGEST: ${{ inputs.action_digest }}
+      INPUT_SCOPE_DIGEST: ${{ inputs.scope_digest }}
+      INPUT_AUTHORITY_RECEIPT_DIGEST: ${{ inputs.authority_receipt_digest }}
+      INPUT_AUTHORITY_OWNER: ${{ inputs.authority_owner }}
+      INPUT_OPERATOR: ${{ inputs.operator }}
+      INPUT_ISSUED_AT: ${{ inputs.issued_at }}
+      INPUT_EXPIRES_AT: ${{ inputs.expires_at }}
+      INPUT_DISPOSITION: ${{ inputs.disposition }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -166,6 +213,24 @@ jobs:
               python3 scripts/agent-control/control_state.py require-live >/dev/null
               python3 scripts/agent-control/dispatcher.py handoff-plan \
                 "$INPUT_PACKET_ID" "$INPUT_ATTEMPT_ID" "$INPUT_HEAD_SHA" "$INPUT_CLAIM_NONCE"
+              ;;
+            lifecycle-plan)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py lifecycle-plan \
+                "$INPUT_PACKET_ID" "$INPUT_ATTEMPT_ID" "$INPUT_STAGE"
+              ;;
+            promote-plan)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py promote-plan \
+                "$INPUT_PACKET_ID" "$INPUT_ATTEMPT_ID"
+              ;;
+            record-route-t3-receipt)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py record-route-t3-receipt \
+                "$INPUT_PACKET_ID" "$INPUT_ACCEPTED_MAIN_SHA" "$INPUT_CANDIDATE_DIGEST" \
+                "$INPUT_ACTION_DIGEST" "$INPUT_SCOPE_DIGEST" "$INPUT_AUTHORITY_RECEIPT_DIGEST" \
+                "$INPUT_AUTHORITY_OWNER" "$INPUT_OPERATOR" "$INPUT_ISSUED_AT" \
+                "$INPUT_EXPIRES_AT" "$INPUT_DISPOSITION"
               ;;
             release-plan)
               python3 scripts/agent-control/control_state.py require-live >/dev/null

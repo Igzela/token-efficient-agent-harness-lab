@@ -780,5 +780,25 @@ class TestPlanLifecycleWait(unittest.TestCase):
         github.dispatch_controller.assert_not_called()
 
 
+class TestPlanLifecycleWorkflowTransport(unittest.TestCase):
+    def test_existing_controller_exposes_lifecycle_and_promotion_with_bounded_inputs(self):
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github"
+            / "workflows"
+            / "agent-controller.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("          - lifecycle-plan\n", workflow)
+        self.assertIn("          - promote-plan\n", workflow)
+        self.assertIn("      stage:\n", workflow)
+        self.assertIn("      INPUT_STAGE: ${{ inputs.stage }}\n", workflow)
+        self.assertIn("dispatcher.py lifecycle-plan", workflow)
+        self.assertIn('"$INPUT_PACKET_ID" "$INPUT_ATTEMPT_ID" "$INPUT_STAGE"', workflow)
+        self.assertIn("dispatcher.py promote-plan", workflow)
+        self.assertIn("          - record-route-t3-receipt\n", workflow)
+        self.assertIn("      INPUT_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}\n", workflow)
+        self.assertIn("dispatcher.py record-route-t3-receipt", workflow)
+
+
 if __name__ == "__main__":
     unittest.main()

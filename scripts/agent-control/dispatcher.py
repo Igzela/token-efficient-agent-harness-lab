@@ -1045,10 +1045,13 @@ def promote_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
 
     After an accepted plan closeout, reads the live accepted routing on the
     current accepted main and records either the bounded promotion receipt
-    (successor packet id + capsule digest) or a bounded escalation pause
-    receipt when the routing does not yet name exactly one eligible
-    successor.  The successor is never executed; every write is idempotent,
-    conflicts fail closed, and no model self-report advances routing.
+    (successor packet id + capsule digest) or a bounded escalation pause.
+    This controller transport never reconstructs current ownership from
+    FUTURE_ROUTE prose: when no already-accepted successor exists, the
+    evidence-backed route planner owns candidate generation and this command
+    records only its eventual accepted binding.  The successor is never
+    executed here; every write is idempotent, conflicts fail closed, and no
+    model self-report advances routing.
     """
 
     attempt = _normalized_attempt_id(attempt_id)
@@ -1083,16 +1086,23 @@ def promote_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
     if routing is None:
         return {"promoted": False, "reason": "routing_unavailable"}
     accepted_main, document = routing
+    compiled: dict[str, object] | None = None
     try:
         successor_id, capsule_digest = plan_lane.successor_binding(
             document, packet_id, accepted_main
         )
     except plan_lane.PlanLaneError as exc:
-        if exc.reason in {"plan_packet_absent", "successor_still_current", "multiple_plan_packets"}:
-            return _record_plan_escalation(
-                ledger_issue, packet_id, attempt, exc.reason, repo
-            )
-        return {"promoted": False, "reason": f"routing_invalid:{exc.reason}"}
+        if exc.reason not in {"plan_packet_absent", "successor_still_current", "multiple_plan_packets"}:
+            return {"promoted": False, "reason": f"routing_invalid:{exc.reason}"}
+        compiled = _compile_promotion(
+            repo, packet_id, attempt, accepted_main, details
+        )
+        if compiled is None:
+            return {"promoted": False, "reason": "route_compile_unavailable"}
+        if "escalated" in compiled:
+            return compiled
+        successor_id = compiled["successor_id"]
+        capsule_digest = compiled["capsule_digest"]
     receipt_id = f"plan-promote:{packet_id}:{attempt}"
     receipt_details = {
         "subject_kind": "plan-packet",
@@ -1103,6 +1113,10 @@ def promote_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
         "successor_id": successor_id,
         "capsule_digest": capsule_digest,
     }
+    if compiled is not None:
+        receipt_details["compiled"] = True
+        if isinstance(compiled.get("manifest_sha256"), str):
+            receipt_details["manifest_sha256"] = compiled["manifest_sha256"]
     try:
         previous = sm.read_dispatch_state(ledger_issue, receipt_id, repo)
     except sm.StateUnavailableError:
@@ -1116,6 +1130,109 @@ def promote_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
     ):
         return {"promoted": False, "reason": "promotion_receipt_write_failed"}
     return {"promoted": True, "reason": "promoted", **receipt_details}
+
+
+def record_route_t3_receipt(
+    packet_id: str,
+    accepted_main_sha: str,
+    candidate_digest: str,
+    action_digest: str,
+    scope_digest: str,
+    authority_receipt_digest: str,
+    authority_owner: str,
+    operator: str,
+    issued_at: str,
+    expires_at: str,
+    disposition: str,
+) -> dict[str, object]:
+    """Record a human-dispatched finite T3 receipt on the existing ledger.
+
+    This command is intentionally absent from every worker-facing route path.
+    The GitHub workflow dispatch itself is the finite operator act; this
+    transport records its typed hash binding under the existing Plan Execution
+    Ledger.  It does not issue product authority, invoke an effect, or allow a
+    model to manufacture a receipt.
+    """
+
+    import route_driver
+
+    repo = _repo()
+    try:
+        control_state.require_live(repo or None)
+    except control_state.ControlStateError:
+        return {"authorized": False, "reason": "disabled_or_emergency_stopped"}
+    if not repo or plan_lane.PACKET_ID.fullmatch(packet_id) is None:
+        return {"authorized": False, "reason": "route_t3_identity_invalid"}
+    if local_loop.HEX40.fullmatch(accepted_main_sha) is None:
+        return {"authorized": False, "reason": "route_t3_identity_invalid"}
+    # A receipt is meaningful only for the one currently accepted typed T3
+    # pause.  Never let a workflow input create an orphan authority binding or
+    # substitute hashes for the request that the accepted route actually
+    # prepared.
+    try:
+        adapter = local_loop.GitHubAdapter(repo)
+        metadata = adapter.repository_metadata()
+        branch = metadata.get("default_branch")
+        if not isinstance(branch, str) or not local_loop.BRANCH.fullmatch(branch):
+            return {"authorized": False, "reason": "route_t3_request_unavailable"}
+        current_main = adapter.accepted_main_sha(branch)
+        request = route_driver.current_t3_request(
+            adapter.accepted_plan_document(current_main), current_main
+        )
+    except (local_loop.LoopUnavailable, route_driver.RouteDriverError):
+        return {"authorized": False, "reason": "route_t3_request_unavailable"}
+    if request is None:
+        return {"authorized": False, "reason": "route_t3_request_not_current"}
+    if (
+        request.packet_id != packet_id
+        or request.accepted_main_sha != accepted_main_sha
+        or request.candidate_digest != candidate_digest
+        or request.action_digest != action_digest
+        or request.scope_digest != scope_digest
+    ):
+        return {"authorized": False, "reason": "route_t3_request_binding_mismatch"}
+    receipt = {
+        "schema_version": "route_t3_receipt.v1",
+        "packet_id": packet_id,
+        "accepted_main_sha": accepted_main_sha,
+        "candidate_digest": candidate_digest,
+        "action_digest": action_digest,
+        "scope_digest": scope_digest,
+        "authority_receipt_digest": authority_receipt_digest,
+        "authority_owner": authority_owner,
+        "operator": operator,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+        "disposition": disposition,
+    }
+    parsed, reason = route_driver.validate_t3_receipt(receipt, request)
+    if parsed is None:
+        return {"authorized": False, "reason": reason}
+    try:
+        ledger = control_state.read_plan_ledger(repo)
+    except control_state.ControlStateError:
+        return {"authorized": False, "reason": "plan_ledger_unavailable"}
+    ledger_issue = ledger.get("number") if isinstance(ledger, dict) else None
+    if type(ledger_issue) is not int or ledger_issue <= 0:
+        return {"authorized": False, "reason": "plan_execution_ledger_invalid"}
+    dispatch_id = f"route-t3:{packet_id}:{candidate_digest}"
+    try:
+        existing = sm.read_dispatch_state(ledger_issue, dispatch_id, repo)
+    except sm.StateUnavailableError:
+        return {"authorized": False, "reason": "t3_receipt_state_unavailable"}
+    if isinstance(existing, dict):
+        if (
+            existing.get("action") == "route-t3-receipt"
+            and existing.get("status") == "authorized"
+            and existing.get("details") == receipt
+        ):
+            return {"authorized": True, "reason": "already_recorded", **receipt}
+        return {"authorized": False, "reason": "conflicting_t3_receipt"}
+    if not sm.record_dispatch_state(
+        ledger_issue, dispatch_id, "route-t3-receipt", "authorized", receipt, repo
+    ):
+        return {"authorized": False, "reason": "t3_receipt_write_failed"}
+    return {"authorized": True, "reason": "recorded", **receipt}
 
 
 def _record_plan_escalation(
@@ -1144,6 +1261,35 @@ def _record_plan_escalation(
     ):
         return {"promoted": False, "reason": "escalation_receipt_write_failed"}
     return {"promoted": False, "escalated": True, **receipt_details}
+
+
+def _compile_promotion(
+    repo: str,
+    packet_id: str,
+    attempt: str,
+    accepted_main: str,
+    claim_details: dict[str, object],
+) -> dict[str, object] | None:
+    """Record a typed pause until the evidence-backed planner supplies a candidate.
+
+    The controller owns receipt transport, not promotion planning.  In
+    particular it must not reconstruct current ownership from FUTURE_ROUTE
+    prose, so an absent successor remains a durable ``DECISION_REQUIRED``
+    escalation until a separately validated current-main candidate exists.
+    """
+
+    try:
+        ledger = control_state.read_plan_ledger(repo)
+    except control_state.ControlStateError:
+        return None
+    ledger_issue = ledger.get("number")
+    if type(ledger_issue) is not int or ledger_issue <= 0:
+        return None
+
+    def escalate(reason: str) -> dict[str, object]:
+        return _record_plan_escalation(ledger_issue, packet_id, attempt, reason, repo)
+
+    return escalate("promotion_current_main_evidence_missing")
 
 
 def _terminal_plan(
@@ -2043,7 +2189,7 @@ def main() -> None:
             "Usage: dispatcher.py <dispatch-ready|dispatch-repair|dispatch-review|"
             "retry-review|dispatch-merge|dispatch-next|claim-local|handoff-local|"
             "release-local|block-local|claim-plan|handoff-plan|lifecycle-plan|"
-            "promote-plan|release-plan|block-plan> ..."
+            "promote-plan|record-route-t3-receipt|release-plan|block-plan> ..."
         )
     command = sys.argv[1]
     if command == "dispatch-ready" and len(sys.argv) in {3, 4}:
@@ -2064,6 +2210,12 @@ def main() -> None:
         result = record_plan_lifecycle(sys.argv[2], sys.argv[3], sys.argv[4])
     elif command == "promote-plan" and len(sys.argv) == 4:
         result = promote_plan(sys.argv[2], sys.argv[3])
+    elif command == "record-route-t3-receipt" and len(sys.argv) == 13:
+        result = record_route_t3_receipt(
+            sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6],
+            sys.argv[7], sys.argv[8], sys.argv[9], sys.argv[10], sys.argv[11],
+            sys.argv[12],
+        )
     elif command == "release-plan" and len(sys.argv) == 7:
         result = release_plan(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])
     elif command == "block-plan" and len(sys.argv) == 6:
