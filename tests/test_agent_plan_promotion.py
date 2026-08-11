@@ -208,6 +208,9 @@ def future_route_document(promoted=SUCCESSOR, only_blocked=False):
 
 def status_document():
     return (
+        "## Accepted Packet Receipts\n\n"
+        "| Packet | State | Accepted evidence |\n"
+        "|---|---|---|\n\n"
         "## Accepted Readiness Boundary\n\n"
         "| Capability | State | Entry or exit condition |\n"
         "|---|---|---|\n"
@@ -288,11 +291,11 @@ class TestPromotePlanDispatcher(unittest.TestCase):
             ),
             mock.patch.object(
                 dispatcher, "_live_routing_document",
-                return_value=routing or (MAIN, routing_document()),
+                return_value=routing or (MAIN, routing_document(), status_document()),
             ),
         ]
         if routing_error is not None:
-            def _raise(_document, _closed, _main):
+            def _raise(_document, _closed, _main, **_kwargs):
                 raise plan_lane.PlanLaneError(routing_error)
 
             patches.append(mock.patch.object(
@@ -686,7 +689,7 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
         now = datetime.now(timezone.utc)
         return (
             CLOSED, MAIN, "b" * 64, "c" * 64, "d" * 64, "e" * 64,
-            "f" * 64, "a" * 64, "authorized-operator", now.isoformat(),
+            "f" * 64, "a" * 64, "authorized-operator", "local_sol_5_6_max", "1" * 64, now.isoformat(),
             (now + timedelta(minutes=5)).isoformat(), "GO",
         )
 
@@ -786,6 +789,19 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
         self.assertEqual(result["reason"], "route_t3_request_binding_mismatch")
         write.assert_not_called()
 
+    def test_unallowlisted_decision_source_is_rejected_before_ledger_write(self):
+        adapter = self._adapter()
+        arguments = list(self._arguments())
+        arguments[9] = "untrusted_model"
+        with mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.control_state, "require_live", return_value=None), \
+             mock.patch.object(local_loop, "GitHubAdapter", return_value=adapter), \
+             mock.patch.object(state_manager, "record_dispatch_state") as write:
+            result = dispatcher.record_route_t3_receipt(*arguments)
+        self.assertFalse(result["authorized"])
+        self.assertEqual(result["reason"], "t3_receipt_decision_source_invalid")
+        write.assert_not_called()
+
 
 class TestOperatorEffectRouteResume(unittest.TestCase):
     def _request_and_receipt(self):
@@ -810,6 +826,8 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             "outcome_receipt_digest": "f" * 64,
             "authority_owner_digest": request.authority_owner_digest,
             "operator": "authorized-operator",
+            "decision_source": "local_sol_5_6_max",
+            "decision_digest": "1" * 64,
             "issued_at": now.isoformat(),
             "expires_at": (now + timedelta(minutes=5)).isoformat(),
             "disposition": "GO",
@@ -843,7 +861,7 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
         github.accepted_main_sha.return_value = MAIN
         github.accepted_plan_document.return_value = self._t3_document(request)
         github.accepted_route_document.return_value = "future"
-        github.accepted_status_document.return_value = "status"
+        github.accepted_status_document.return_value = status_document()
         github.plan_ledger_issue.return_value = LEDGER
         git = mock.Mock()
         git.origin_main_sha.return_value = MAIN
@@ -874,6 +892,9 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
                 compile_successor.call_args.kwargs["closed_packet_state"],
                 "IN_PROGRESS",
             )
+            self.assertEqual(
+                compile_successor.call_args.kwargs["retained_t3_request"], request
+            )
         self.assertEqual(result.status, "promotion_pr")
         self.assertEqual(drive.call_args.args[0], CLOSED)
         self.assertEqual(drive.call_args.args[2], MAIN)
@@ -902,6 +923,32 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             result = runner.run_effect_route_once(request, receipt)
         self.assertEqual(result.status, "rejected")
         self.assertEqual(result.details["reason"], "route_effect_receipt_unproved")
+        drive.assert_not_called()
+
+    def test_closeout_cannot_promote_after_effect_without_owner_validated_outcome_receipt(self):
+        request, _receipt, _raw = self._request_and_receipt()
+        runner, github, _state = self._runner(request, _raw)
+        closeout = "PE7-EFFECT-CLOSEOUT-1"
+        bridge = route_driver.compact_next_window(
+            "# Next\n\n## Common Execution Protocol\n\n- retained\n",
+            closed_packet_id=request.packet_id,
+            predecessor_receipt="T3 receipt " + "f" * 64,
+            active_packet_block=(
+                f"## Packet {closeout}\n\n**State:** `READY_FOR_EXECUTION`\n\n"
+                "**Class:** `CLOSEOUT`\n"
+            ),
+            closed_packet_state="IN_PROGRESS",
+            retained_marker=route_driver._t3_request_marker(request),
+        )
+        github.accepted_plan_document.return_value = bridge
+        with mock.patch.object(
+            plan_lifecycle,
+            "_exact_plan_claim",
+            return_value={"status": "closed_out", "details": {"closeout_reference": "PR #42"}},
+        ), mock.patch.object(runner, "_drive_promotion_pr") as drive:
+            result = runner.run_route_once(closeout, ATTEMPT)
+        self.assertEqual(result.status, "outcome_unknown")
+        self.assertEqual(result.details["reason"], "route_effect_owner_outcome_unproved")
         drive.assert_not_called()
 
 

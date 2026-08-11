@@ -596,7 +596,12 @@ def _read_live_plan(packet_id: str, repo: str) -> tuple[plan_lane.PlanCandidate 
             return None, None, "default_branch_unavailable"
         accepted_main = adapter.accepted_main_sha(branch)
         document = adapter.accepted_plan_document(accepted_main)
-        candidate = plan_lane.parse(document, accepted_main)
+        status_document = adapter.accepted_status_document(accepted_main)
+        candidate = plan_lane.parse(
+            document,
+            accepted_main,
+            completed_packet_ids=plan_lane.accepted_completed_packet_ids(status_document),
+        )
         if candidate.packet_id != packet_id:
             return None, None, "plan_packet_not_current"
         ledger = control_state.read_plan_ledger(repo)
@@ -1024,8 +1029,8 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
     return {**outcome, "stage": stage}
 
 
-def _live_routing_document(repo: str) -> tuple[str, str] | None:
-    """Return ``(accepted_main, plan_document)`` from authoritative live routing."""
+def _live_routing_document(repo: str) -> tuple[str, str, str] | None:
+    """Return accepted main plus plan/status documents from authoritative routing."""
 
     try:
         adapter = local_loop.GitHubAdapter(repo)
@@ -1037,9 +1042,10 @@ def _live_routing_document(repo: str) -> tuple[str, str] | None:
         if local_loop.HEX40.fullmatch(accepted_main) is None:
             return None
         document = adapter.accepted_plan_document(accepted_main)
+        status_document = adapter.accepted_status_document(accepted_main)
     except local_loop.LoopUnavailable:
         return None
-    return accepted_main, document
+    return accepted_main, document, status_document
 
 
 def promote_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
@@ -1087,11 +1093,14 @@ def promote_plan(packet_id: str, attempt_id: str) -> dict[str, object]:
     routing = _live_routing_document(repo)
     if routing is None:
         return {"promoted": False, "reason": "routing_unavailable"}
-    accepted_main, document = routing
+    accepted_main, document, status_document = routing
     compiled: dict[str, object] | None = None
     try:
         successor_id, capsule_digest = plan_lane.successor_binding(
-            document, packet_id, accepted_main
+            document,
+            packet_id,
+            accepted_main,
+            completed_packet_ids=plan_lane.accepted_completed_packet_ids(status_document),
         )
     except plan_lane.PlanLaneError as exc:
         if exc.reason not in {"plan_packet_absent", "successor_still_current", "multiple_plan_packets"}:
@@ -1144,22 +1153,25 @@ def record_route_t3_receipt(
     outcome_receipt_digest: str,
     authority_owner_digest: str,
     operator: str,
+    decision_source: str,
+    decision_digest: str,
     issued_at: str,
     expires_at: str,
     disposition: str,
 ) -> dict[str, object]:
-    """Record a human-dispatched finite T3 receipt on the existing ledger.
+    """Record a finite source-authoritative T3 decision on the existing ledger.
 
     This command is intentionally absent from every worker-facing route path.
-    The GitHub workflow dispatch records the finite operator handoff under the
-    existing Plan Execution Ledger.  Its operator identity is derived from
-    the authenticated Actions actor, while the existing authority owner is
-    bound by the accepted current-main T3 request rather than supplied by the
-    caller. The operator uses that established product effect owner outside
-    this controller, then supplies only its redacted outcome digest here; the
-    routed CLOSEOUT packet independently validates that owner-held evidence.
-    This command does not issue product authority, invoke an effect, or allow
-    a model to manufacture a receipt.
+    The GitHub workflow dispatch records the finite decision handoff under the
+    existing Plan Execution Ledger. Its transport identity is derived from the
+    authenticated Actions actor; the declared source is one of the accepted
+    human/local-Sol/GPT-web sources, and the authority owner is bound by the
+    accepted current-main T3 request rather than supplied by the caller. The
+    established product effect owner remains outside this controller and
+    supplies only its redacted outcome digest here; the routed CLOSEOUT packet
+    independently validates that owner-held evidence. This command does not
+    issue product authority or invoke an effect; a model source can decide
+    only the finite disposition already accepted by the route.
     """
 
     import route_driver
@@ -1220,6 +1232,8 @@ def record_route_t3_receipt(
         "outcome_receipt_digest": outcome_receipt_digest,
         "authority_owner_digest": authority_owner_digest,
         "operator": operator,
+        "decision_source": decision_source,
+        "decision_digest": decision_digest,
         "issued_at": issued_at,
         "expires_at": expires_at,
         "disposition": disposition,
@@ -2229,11 +2243,11 @@ def main() -> None:
         result = record_plan_lifecycle(sys.argv[2], sys.argv[3], sys.argv[4])
     elif command == "promote-plan" and len(sys.argv) == 4:
         result = promote_plan(sys.argv[2], sys.argv[3])
-    elif command == "record-route-t3-receipt" and len(sys.argv) == 14:
+    elif command == "record-route-t3-receipt" and len(sys.argv) == 16:
         result = record_route_t3_receipt(
             sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6],
             sys.argv[7], sys.argv[8], sys.argv[9], sys.argv[10], sys.argv[11],
-            sys.argv[12], sys.argv[13],
+            sys.argv[12], sys.argv[13], sys.argv[14], sys.argv[15],
         )
     elif command == "release-plan" and len(sys.argv) == 7:
         result = release_plan(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])

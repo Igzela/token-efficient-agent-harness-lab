@@ -563,7 +563,12 @@ class LocalRunOnce:
             raise local_loop.LoopUnavailable("default branch is unavailable")
         accepted_main = self.github.accepted_main_sha(branch)
         document = self.github.accepted_plan_document(accepted_main)
-        candidate = plan_lane.parse(document, accepted_main)
+        status_document = self.github.accepted_status_document(accepted_main)
+        candidate = plan_lane.parse(
+            document,
+            accepted_main,
+            completed_packet_ids=plan_lane.accepted_completed_packet_ids(status_document),
+        )
         if candidate.packet_id != packet_id:
             raise local_loop.LoopUnavailable("plan packet is not the current route")
         ledger = self.github.plan_ledger_issue()
@@ -1413,7 +1418,45 @@ class LocalRunOnce:
         except local_loop.LoopUnavailable:
             return self._plan_result("unavailable", packet_id, attempt, reason="routing_documents_unavailable")
         try:
-            _successor_id, _digest = plan_lane.successor_binding(next_document, packet_id, accepted_main)
+            retained_request = route_driver.retained_t3_request(next_document)
+            if retained_request is not None:
+                try:
+                    retained_state = state_manager.read_dispatch_state(
+                        ledger_issue,
+                        f"route-t3:{retained_request.packet_id}:{retained_request.candidate_digest}",
+                        self.repository,
+                    )
+                except state_manager.StateUnavailableError:
+                    retained_state = None
+                raw_receipt = (
+                    retained_state.get("details")
+                    if isinstance(retained_state, dict)
+                    and retained_state.get("action") == "route-t3-receipt"
+                    and retained_state.get("status") == "authorized"
+                    and isinstance(retained_state.get("details"), dict)
+                    else None
+                )
+                recorded_receipt, _receipt_reason = route_driver.validate_recorded_t3_receipt(
+                    raw_receipt, retained_request
+                )
+                if (
+                    recorded_receipt is None
+                    or not route_driver.owner_outcome_receipt_proved(
+                        status_document, retained_request, recorded_receipt
+                    )
+                ):
+                    return self._plan_result(
+                        "outcome_unknown",
+                        packet_id,
+                        attempt,
+                        reason="route_effect_owner_outcome_unproved",
+                    )
+            _successor_id, _digest = plan_lane.successor_binding(
+                next_document,
+                packet_id,
+                accepted_main,
+                completed_packet_ids=route_driver._accepted_completed_ids(status_document),
+            )
             try:
                 self.github.dispatch_controller(
                     "promote-plan", {"packet_id": packet_id, "attempt_id": attempt}
@@ -1547,6 +1590,8 @@ class LocalRunOnce:
             "outcome_receipt_digest": receipt.outcome_receipt_digest,
             "authority_owner_digest": receipt.authority_owner_digest,
             "operator": receipt.operator,
+            "decision_source": receipt.decision_source,
+            "decision_digest": receipt.decision_digest,
             "issued_at": receipt.issued_at,
             "expires_at": receipt.expires_at,
             "disposition": receipt.disposition,
@@ -1600,6 +1645,7 @@ class LocalRunOnce:
                 accepted_main,
                 planned.evidence,
                 closed_packet_state="IN_PROGRESS",
+                retained_t3_request=request,
             )
         except (local_loop.LoopUnavailable, route_driver.RouteDriverError):
             return self._plan_result(

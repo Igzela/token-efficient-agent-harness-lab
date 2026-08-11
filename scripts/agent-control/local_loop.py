@@ -251,7 +251,13 @@ class LoopController:
                 plan_document = None
             if plan_document is not None:
                 try:
-                    plan = plan_lane.parse_optional(plan_document, accepted_main)
+                    status_document = self.github.accepted_status_document(accepted_main)
+                    completed_packet_ids = plan_lane.accepted_completed_packet_ids(status_document)
+                    plan = plan_lane.parse_optional(
+                        plan_document,
+                        accepted_main,
+                        completed_packet_ids=completed_packet_ids,
+                    )
                 except plan_lane.PlanLaneError as exc:
                     # Structural plan parse failures are non-admission signals,
                     # not Issue-path blockers.

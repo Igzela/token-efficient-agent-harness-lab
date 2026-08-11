@@ -798,7 +798,13 @@ class TestPlanLifecycleWorkflowTransport(unittest.TestCase):
         self.assertIn("          - record-route-t3-receipt\n", workflow)
         self.assertIn("      INPUT_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}\n", workflow)
         self.assertIn("      INPUT_OUTCOME_RECEIPT_DIGEST: ${{ inputs.outcome_receipt_digest }}\n", workflow)
+        self.assertIn("      INPUT_DECISION_SOURCE: ${{ inputs.decision_source }}\n", workflow)
+        self.assertIn("      INPUT_DECISION_DIGEST: ${{ inputs.decision_digest }}\n", workflow)
         self.assertIn("dispatcher.py record-route-t3-receipt", workflow)
+        self.assertIn(
+            '"$INPUT_DECISION_SOURCE" "$INPUT_DECISION_DIGEST" "$INPUT_ISSUED_AT"',
+            workflow,
+        )
 
 
 if __name__ == "__main__":

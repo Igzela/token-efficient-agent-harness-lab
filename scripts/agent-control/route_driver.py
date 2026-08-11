@@ -62,6 +62,7 @@ CLASS_DEFAULT_VERIFICATION = {
     "EFFECT": "external_effect_evidence",
     "CLOSEOUT": "evidence_review",
 }
+T3_DECISION_SOURCES = frozenset({"human_operator", "local_sol_5_6_max", "gpt_web"})
 
 _CLOSEOUT_FIELDS = ("Prerequisite", "Class", "Outcome", "Allowed delta", "Exit", "Stop")
 
@@ -356,28 +357,13 @@ def eligible_successor(
     raise RouteDriverError("no_eligible_successor")
 
 
-_ACCEPTED_RECEIPT_ROW = re.compile(
-    rf"^\|\s*`?(?P<packet>{plan_lane.PACKET_TOKEN})`?\s*\|\s*`?COMPLETE`?\s*\|"
-    r"\s*(?P<evidence>[^|]+?)\s*\|\s*$",
-    re.MULTILINE,
-)
-
-
 def _accepted_completed_ids(status_document: str) -> frozenset[str]:
     """Return durable accepted-receipt identities from CURRENT_STATUS."""
 
-    receipt_section = re.search(
-        r"## Accepted Packet Receipts\s*(?P<body>.*?)(?=^## |\Z)",
-        status_document,
-        re.MULTILINE | re.DOTALL,
-    )
-    if receipt_section is None:
-        return frozenset()
-    ids = {
-        match.group("packet")
-        for match in _ACCEPTED_RECEIPT_ROW.finditer(receipt_section.group("body"))
-    }
-    return frozenset(ids)
+    try:
+        return plan_lane.accepted_completed_packet_ids(status_document)
+    except plan_lane.PlanLaneError as exc:
+        raise RouteDriverError(f"route_status_receipt_index_invalid:{exc.reason}") from exc
 
 
 def _refresh_future_document(future_document: str, promoted_id: str) -> str:
@@ -413,26 +399,39 @@ def _status_readiness_rows(
 ) -> tuple[str, str]:
     if closed_packet_state not in {"COMPLETE", "IN_PROGRESS"}:
         raise RouteDriverError("route_closed_packet_state_invalid")
-    closed_row = (
-        f"| {closed_packet_id} | `{closed_packet_state}` | "
-        f"{predecessor_evidence} |\n"
+    if closed_packet_state == "IN_PROGRESS":
+        return "", ""
+    return (
+        f"| `{closed_packet_id}` | `COMPLETE` | {predecessor_evidence} |\n",
+        "",
     )
-    successor_row = (
-        f"| {successor_id} | `{state}` | "
-        f"Compiled by the route driver after {predecessor_evidence} |\n"
-    )
-    return closed_row, successor_row
 
 
 def _with_status_rows(status_document: str, closed_row: str, successor_row: str) -> str:
-    marker = "| Repository-maintenance route contract"
-    if marker not in status_document:
-        raise RouteDriverError("route_status_readiness_table_missing")
-    return status_document.replace(
-        marker,
-        closed_row.rstrip("\n") + "\n" + successor_row.rstrip("\n") + "\n" + marker,
-        1,
+    if successor_row:
+        raise RouteDriverError("route_successor_status_row_forbidden")
+    if not closed_row:
+        return status_document
+    section = re.search(
+        r"^## Accepted Packet Receipts\s*(?P<body>.*?)(?=^## |\Z)",
+        status_document,
+        re.MULTILINE | re.DOTALL,
     )
+    if section is None:
+        raise RouteDriverError("route_status_receipt_index_missing")
+    packet = re.search(r"\|\s*`?(?P<packet>[^`|\s]+)`?\s*\|", closed_row)
+    if packet is None or plan_lane.PACKET_ID.fullmatch(packet.group("packet")) is None:
+        raise RouteDriverError("route_status_receipt_row_invalid")
+    existing = [
+        match.group(0)
+        for match in plan_lane._ACCEPTED_RECEIPT_ROW.finditer(section.group("body"))
+        if match.group("packet") == packet.group("packet")
+    ]
+    if existing:
+        if len(existing) == 1 and existing[0].strip() == closed_row.strip():
+            return status_document
+        raise RouteDriverError("route_status_receipt_conflict")
+    return status_document[:section.end()] + closed_row + status_document[section.end():]
 
 
 def compile_successor(
@@ -445,6 +444,7 @@ def compile_successor(
     evidence: CurrentMainEvidence | None = None,
     *,
     closed_packet_state: str = "COMPLETE",
+    retained_t3_request: T3Request | None = None,
 ) -> CompiledSuccessor:
     """Compile one evidence-backed non-EFFECT successor into document updates.
 
@@ -457,10 +457,18 @@ def compile_successor(
         future_document, next_document, closed_packet_id,
         completed_ids=_accepted_completed_ids(status_document),
     )
+    if closed_packet_state == "IN_PROGRESS":
+        if (
+            retained_t3_request is None
+            or retained_t3_request.packet_id != closed_packet_id
+            or successor.profile[1] != "CLOSEOUT"
+            or successor.sketch.prerequisites != (closed_packet_id,)
+        ):
+            raise RouteDriverError("route_effect_closeout_bridge_invalid")
     manifest = inventory_manifest(future_document)
     manifest_sha256 = _json_sha256(manifest)
     planned = RoutePromotionPlanner().plan(
-        successor, accepted_main_sha, predecessor_evidence, evidence
+        successor, accepted_main_sha, predecessor_evidence, evidence, manifest_sha256
     )
     if planned.state not in {"READY_FOR_EXECUTION", "T3_REQUIRED"} or planned.candidate is None:
         raise RouteDriverError(planned.reason)
@@ -474,24 +482,7 @@ def compile_successor(
     capsule_json = json.dumps(capsule, ensure_ascii=False, sort_keys=True)
     t3_marker = ""
     if planned.t3_request is not None:
-        t3_marker = (
-            "\n<!-- route-t3-request:v1\n"
-            + json.dumps(
-                {
-                    "schema_version": "route_t3_request.v1",
-                    "packet_id": planned.t3_request.packet_id,
-                    "accepted_main_sha": planned.t3_request.accepted_main_sha,
-                    "candidate_digest": planned.t3_request.candidate_digest,
-                    "action_digest": planned.t3_request.action_digest,
-                    "scope_digest": planned.t3_request.scope_digest,
-                    "authority_owner_digest": planned.t3_request.authority_owner_digest,
-                    "requested_action": planned.t3_request.requested_action,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            + "\n-->\n"
-        )
+        t3_marker = _t3_request_marker(planned.t3_request)
     predecessor_state = (
         "COMPLETE" if closed_packet_state == "COMPLETE"
         else "IN_PROGRESS pending this packet's independent outcome validation"
@@ -508,9 +499,9 @@ def compile_successor(
         f"**Stop:** {successor.sketch.stop}\n\n"
         "### Twelve-field contract\n\n"
         f"1. **Outcome and non-goals.** {successor.sketch.outcome}\n"
-        f"2. **Prerequisites and evidence.** Accepted main `{accepted_main_sha}`; predecessor receipt {predecessor_evidence.strip()}; current-main evidence SHA `{candidate.evidence_sha256}`.\n"
+        f"2. **Prerequisites and evidence.** Accepted main `{accepted_main_sha}`; checked route manifest SHA `{candidate.manifest_sha256}`; predecessor receipt {predecessor_evidence.strip()}; current-main evidence SHA `{candidate.evidence_sha256}`.\n"
         f"3. **Owners and paths.** Owners: {', '.join(contract['owner_paths'])}; callers: {', '.join(contract['caller_paths'])}; tests: {', '.join(contract['test_paths'])}.\n"
-        "4. **Frozen invariants.** Packet identity, manifest digest, accepted-main SHA, predecessor receipt, and current-main evidence digest are immutable for this candidate.\n"
+        f"4. **Frozen invariants.** Packet identity, route manifest SHA `{candidate.manifest_sha256}`, accepted-main SHA, predecessor receipt, and current-main evidence digest are immutable for this candidate.\n"
         "5. **Only semantic delta.** Execute only the independently reviewed candidate contract.\n"
         "6. **Forbidden changes.** No static route hint is authority; no effect, T3 action, provider, target, automatic merge, or second owner.\n"
         f"7. **Ordered implementation slices.** {'; '.join(contract['ordered_slices'])}\n"
@@ -528,6 +519,12 @@ def compile_successor(
         predecessor_receipt=predecessor_evidence,
         active_packet_block=packet_block,
         active_state=packet_state,
+        closed_packet_state=closed_packet_state,
+        retained_marker=(
+            _t3_request_marker(retained_t3_request)
+            if retained_t3_request is not None
+            else ""
+        ),
     )
     future_document = _refresh_future_document(future_document, successor.packet_id)
     closed_row, successor_row = _status_readiness_rows(
@@ -583,6 +580,7 @@ class PromotionCandidate:
     accepted_main_sha: str
     predecessor_receipt: str
     evidence_sha256: str
+    manifest_sha256: str
     spec_digest: str
     capsule: dict[str, Any]
     contract: dict[str, object]
@@ -601,15 +599,39 @@ class T3Request:
     requested_action: str
 
 
+def _t3_request_marker(request: T3Request) -> str:
+    """Serialize a typed request for an active or retained route boundary."""
+
+    return (
+        "\n<!-- route-t3-request:v1\n"
+        + json.dumps(
+            {
+                "schema_version": "route_t3_request.v1",
+                "packet_id": request.packet_id,
+                "accepted_main_sha": request.accepted_main_sha,
+                "candidate_digest": request.candidate_digest,
+                "action_digest": request.action_digest,
+                "scope_digest": request.scope_digest,
+                "authority_owner_digest": request.authority_owner_digest,
+                "requested_action": request.requested_action,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n-->\n"
+    )
+
+
 @dataclass(frozen=True)
 class T3Receipt:
-    """A hostile-input-validated finite operator completion receipt.
+    """A hostile-input-validated finite source-authoritative decision receipt.
 
-    The operator obtains the finite authority and uses the existing product
-    effect owner outside this repository-maintenance controller.  The redacted
-    outcome digest is only a handoff binding: the routed CLOSEOUT packet must
-    independently validate the owner-held evidence before it can make a
-    stronger claim.
+    The authenticated transport binds an allowlisted decision source to the
+    finite request; it does not execute the effect.  The existing product
+    effect owner remains outside this repository-maintenance controller.  The
+    redacted outcome digest is only a handoff binding: the routed CLOSEOUT
+    packet must independently validate the owner-held evidence before it can
+    make a stronger claim.
     """
 
     packet_id: str
@@ -621,6 +643,8 @@ class T3Receipt:
     outcome_receipt_digest: str
     authority_owner_digest: str
     operator: str
+    decision_source: str
+    decision_digest: str
     issued_at: str
     expires_at: str
     disposition: str
@@ -634,17 +658,18 @@ def validate_t3_receipt(
 ) -> tuple[T3Receipt | None, str]:
     """Validate one finite receipt without issuing or consuming authority.
 
-    The route never writes these receipts.  An existing operator/authority
-    owner must put a typed, hash-bound record on the authoritative ledger;
-    this function only rejects malformed, stale, or conflicting values.  A
-    valid GO permits the route to compile the next provider-free CLOSEOUT
-    packet; it never causes this controller to execute an EFFECT.
+    The route never writes these receipts.  An existing authenticated
+    transport must put a typed, hash-bound record on the authoritative ledger
+    for one allowlisted decision source; this function only rejects malformed,
+    stale, or conflicting values.  A valid GO permits the route to compile the
+    next provider-free CLOSEOUT packet; it never causes this controller to
+    execute an EFFECT.
     """
 
     required = {
         "schema_version", "packet_id", "accepted_main_sha", "candidate_digest",
         "action_digest", "scope_digest", "authority_receipt_digest", "outcome_receipt_digest",
-        "authority_owner_digest", "operator",
+        "authority_owner_digest", "operator", "decision_source", "decision_digest",
         "issued_at", "expires_at", "disposition",
     }
     if not isinstance(raw, dict) or set(raw) != required:
@@ -671,6 +696,10 @@ def validate_t3_receipt(
         or _SAFE_PROPOSAL_TOKEN.fullmatch(operator) is None
     ):
         return None, "t3_receipt_operator_invalid"
+    decision_source = raw.get("decision_source")
+    decision_digest = raw.get("decision_digest")
+    if decision_source not in T3_DECISION_SOURCES or not isinstance(decision_digest, str) or plan_lane.SHA256.fullmatch(decision_digest) is None:
+        return None, "t3_receipt_decision_source_invalid"
     disposition = raw.get("disposition")
     if disposition not in {"GO", "NO_GO", "DEFER"}:
         return None, "t3_receipt_disposition_invalid"
@@ -700,6 +729,8 @@ def validate_t3_receipt(
         outcome_receipt_digest=raw["outcome_receipt_digest"],
         authority_owner_digest=raw["authority_owner_digest"],
         operator=operator,
+        decision_source=decision_source,
+        decision_digest=decision_digest,
         issued_at=raw["issued_at"],
         expires_at=raw["expires_at"],
         disposition=disposition,
@@ -764,6 +795,93 @@ def current_t3_request(document: str, accepted_main_sha: str) -> T3Request | Non
         authority_owner_digest=payload["authority_owner_digest"],
         requested_action=payload["requested_action"].strip(),
     )
+
+
+def retained_t3_request(document: str) -> T3Request | None:
+    """Read the one retained EFFECT request that gates a direct CLOSEOUT."""
+
+    retained = list(re.finditer(
+        rf"^#{{2,3}} Retained .*?\((?P<packet>{plan_lane.PACKET_TOKEN})\)\s*$",
+        document,
+        re.MULTILINE,
+    ))
+    if not retained:
+        return None
+    if len(retained) != 1:
+        raise RouteDriverError("route_retained_t3_request_ambiguous")
+    heading = retained[0]
+    next_heading = re.search(r"^#{2,3} ", document[heading.end():], re.MULTILINE)
+    end = heading.end() + next_heading.start() if next_heading is not None else len(document)
+    block = document[heading.start():end]
+    markers = list(_T3_REQUEST_MARKER.finditer(block))
+    if len(markers) != 1:
+        raise RouteDriverError("route_retained_t3_request_missing_or_ambiguous")
+    try:
+        payload = json.loads(markers[0].group(1))
+    except json.JSONDecodeError as exc:
+        raise RouteDriverError("route_retained_t3_request_invalid") from exc
+    accepted_main_sha = payload.get("accepted_main_sha") if isinstance(payload, dict) else None
+    if not isinstance(accepted_main_sha, str) or plan_lane.SHA40.fullmatch(accepted_main_sha) is None:
+        raise RouteDriverError("route_retained_t3_request_invalid")
+    synthetic = (
+        f"## Active Routing\n\n1. `{heading.group('packet')}` — `T3_REQUIRED`\n\n"
+        f"## Packet {heading.group('packet')}\n\n**State:** `T3_REQUIRED`\n\n"
+        f"<!-- route-t3-request:v1\n{markers[0].group(1)}\n-->\n"
+    )
+    return current_t3_request(synthetic, accepted_main_sha)
+
+
+def validate_recorded_t3_receipt(
+    raw: object, request: T3Request
+) -> tuple[T3Receipt | None, str]:
+    """Validate an already-recorded receipt without requiring it to stay fresh.
+
+    Freshness is enforced before the bridge is opened. Once that accepted
+    bridge exists, later CLOSEOUT verification proves the immutable binding at
+    issuance time rather than treating ordinary PR/CI latency as a new T3
+    expiry.
+    """
+
+    issued_at = raw.get("issued_at") if isinstance(raw, dict) else None
+    if not isinstance(issued_at, str):
+        return None, "t3_receipt_time_invalid"
+    try:
+        issued = datetime.fromisoformat(issued_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None, "t3_receipt_time_invalid"
+    if issued.tzinfo is None:
+        return None, "t3_receipt_time_invalid"
+    return validate_t3_receipt(raw, request, now=issued)
+
+
+def owner_outcome_receipt_proved(
+    status_document: str, request: T3Request, receipt: T3Receipt
+) -> bool:
+    """Require accepted owner validation, not a raw T3 outcome digest."""
+
+    if not isinstance(status_document, str):
+        return False
+    try:
+        completed = plan_lane.accepted_completed_packet_ids(status_document)
+    except plan_lane.PlanLaneError:
+        return False
+    if request.packet_id not in completed:
+        return False
+    section = re.search(
+        r"^## Accepted Packet Receipts\s*(?P<body>.*?)(?=^## |\Z)",
+        status_document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if section is None:
+        return False
+    for row in section.group("body").splitlines():
+        if (
+            re.match(rf"^\|\s*`?{re.escape(request.packet_id)}`?\s*\|\s*`?COMPLETE`?\s*\|", row)
+            and receipt.outcome_receipt_digest in row
+            and "owner-validated" in row.casefold()
+        ):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -1198,8 +1316,9 @@ class CurrentMainEvidenceVerifier:
             evidence_destinations=tuple(destinations),
             decisions=tuple(decision_text),
         )
+        manifest_sha256 = _json_sha256(inventory_manifest(self._source("docs/FUTURE_ROUTE.md")))
         return RoutePromotionPlanner().plan(
-            successor, self.accepted_main_sha, predecessor_receipt, evidence
+            successor, self.accepted_main_sha, predecessor_receipt, evidence, manifest_sha256
         )
 
 
@@ -1218,9 +1337,12 @@ class RoutePromotionPlanner:
         accepted_main_sha: str,
         predecessor_receipt: str,
         evidence: CurrentMainEvidence | None,
+        manifest_sha256: str | None,
     ) -> PromotionPlanResult:
         if not isinstance(predecessor_receipt, str) or not predecessor_receipt.strip():
             return PromotionPlanResult("DECISION_REQUIRED", "promotion_predecessor_receipt_missing")
+        if not isinstance(manifest_sha256, str) or plan_lane.SHA256.fullmatch(manifest_sha256) is None:
+            return PromotionPlanResult("DECISION_REQUIRED", "promotion_manifest_missing_or_invalid")
         problem = _evidence_problem(successor, accepted_main_sha, evidence)
         if problem is not None:
             return PromotionPlanResult("DECISION_REQUIRED", problem)
@@ -1228,6 +1350,7 @@ class RoutePromotionPlanner:
         evidence_sha256 = _json_sha256(_evidence_payload(evidence))
         packet_id, packet_class, worker_tier, risk_class, verification_family = successor.profile
         contract = {
+            "manifest_sha256": manifest_sha256,
             "owner_paths": list(evidence.owner_paths),
             "caller_paths": list(evidence.caller_paths),
             "test_paths": list(evidence.test_paths),
@@ -1261,6 +1384,7 @@ class RoutePromotionPlanner:
             "verification": list(evidence.verification),
             "rollback": evidence.rollback,
             "promotion_evidence_sha256": evidence_sha256,
+            "route_manifest_sha256": manifest_sha256,
             "verification_family": verification_family,
             "worker_tier": worker_tier,
             "risk_class": risk_class,
@@ -1269,6 +1393,7 @@ class RoutePromotionPlanner:
             "packet_id": packet_id,
             "accepted_main_sha": accepted_main_sha,
             "predecessor_receipt": predecessor_receipt.strip(),
+            "manifest_sha256": manifest_sha256,
             "evidence_sha256": evidence_sha256,
             "capsule": capsule,
             "contract": contract,
@@ -1278,6 +1403,7 @@ class RoutePromotionPlanner:
             accepted_main_sha=accepted_main_sha,
             predecessor_receipt=predecessor_receipt.strip(),
             evidence_sha256=evidence_sha256,
+            manifest_sha256=manifest_sha256,
             spec_digest=spec_digest,
             capsule=capsule,
             contract=contract,
@@ -1320,6 +1446,8 @@ def compact_next_window(
     predecessor_receipt: str,
     active_packet_block: str,
     active_state: str = "READY_FOR_EXECUTION",
+    closed_packet_state: str = "COMPLETE",
+    retained_marker: str = "",
 ) -> str:
     """Replace routing history with one active window and one short binding.
 
@@ -1340,6 +1468,12 @@ def compact_next_window(
         raise RouteDriverError("route_active_packet_block_invalid")
     if active_state not in {"READY_FOR_EXECUTION", "T3_REQUIRED"}:
         raise RouteDriverError("route_active_packet_state_invalid")
+    if closed_packet_state not in {"COMPLETE", "IN_PROGRESS"}:
+        raise RouteDriverError("route_closed_packet_state_invalid")
+    if not isinstance(retained_marker, str) or len(retained_marker.encode("utf-8")) > 4 * 1024:
+        raise RouteDriverError("route_retained_marker_invalid")
+    if closed_packet_state == "COMPLETE" and retained_marker:
+        raise RouteDriverError("route_completed_packet_retained_marker_forbidden")
     common_marker = "## Common Execution Protocol"
     common_index = document.find(common_marker)
     routing_marker = "## Active Routing"
@@ -1352,12 +1486,13 @@ def compact_next_window(
         prefix = document.rstrip() + "\n\n"
     suffix = document[common_index:].lstrip() if common_index >= 0 else ""
     active_id = active_match.group("packet")
+    historical_heading = "Completed" if closed_packet_state == "COMPLETE" else "Retained"
     compact = (
         f"{prefix}## Active Routing\n\n"
         f"1. `{active_id}` — `{active_state}`\n\n"
-        f"## Completed ({closed_packet_id})\n\n"
-        f"**Historical state:** `COMPLETE`\n\n"
-        f"**Historical evidence:** {predecessor_receipt.strip()}.\n\n"
+        f"## {historical_heading} ({closed_packet_id})\n\n"
+        f"**Historical state:** `{closed_packet_state}`\n\n"
+        f"**Historical evidence:** {predecessor_receipt.strip()}.{retained_marker}\n"
         f"{active_packet_block.strip()}\n\n{suffix}"
     )
     if len(compact.encode("utf-8")) > NEXT_DECISION_MAX_BYTES:
@@ -1505,6 +1640,7 @@ class RepositoryRouteRunner:
             raise RouteDriverError("route_origin_main_refresh_unavailable") from exc
         accepted_main_sha = github.accepted_main_sha(branch)
         document = github.accepted_plan_document(accepted_main_sha)
+        status_document = github.accepted_status_document(accepted_main_sha)
         # Handle an authenticated EFFECT pause before asking the ordinary plan
         # parser for its deliberately READY-only execution candidate.
         t3_request = current_t3_request(document, accepted_main_sha)
@@ -1512,7 +1648,11 @@ class RepositoryRouteRunner:
             self._current_t3_request = t3_request
             return t3_request.packet_id, accepted_main_sha
         try:
-            candidate = plan_lane.parse(document, accepted_main_sha)
+            candidate = plan_lane.parse(
+                document,
+                accepted_main_sha,
+                completed_packet_ids=_accepted_completed_ids(status_document),
+            )
         except plan_lane.PlanLaneError as exc:
             if exc.reason != "plan_packet_absent":
                 raise
@@ -1536,6 +1676,41 @@ class RepositoryRouteRunner:
     def run(self) -> dict[str, object]:
         transitions = 0
         last_packet: str | None = None
+        last_recovery_marker: tuple[str, str, str] | None = None
+
+        def recover(
+            packet_id: str,
+            status: object,
+            details: object,
+            *,
+            stable_poll: bool = True,
+        ) -> bool:
+            """Poll a stable production wait without exhausting transition budget.
+
+            CI and review may legitimately outlast a fixed number of
+            five-second polls. The budget therefore limits distinct recovery
+            transitions, not repeated observations of one unchanged state.
+            Injected test runners retain count-on-every-call behavior so a
+            deterministic fake cannot spin indefinitely.
+            """
+
+            nonlocal transitions, last_recovery_marker
+            reason = (
+                str(details.get("reason", ""))
+                if isinstance(details, dict)
+                else ""
+            )
+            marker = (packet_id, str(status), reason)
+            if (
+                not self._poll_recoverable
+                or not stable_poll
+                or marker != last_recovery_marker
+            ):
+                transitions += 1
+                last_recovery_marker = marker
+            self._wait_for_recovery()
+            return transitions < self.max_transitions
+
         while transitions < self.max_transitions:
             try:
                 packet_id, _accepted_main_sha = self._current_packet()
@@ -1582,18 +1757,22 @@ class RepositoryRouteRunner:
                                 transitions,
                             ).to_wire()
                         if effect_status in self.RECOVERABLE:
-                            transitions += 1
-                            self._wait_for_recovery()
+                            if not recover(packet_id, effect_status, effect_details):
+                                break
                             continue
                         resumed = "RESUMED" if effect_status in {
                             "promoted", "successor_current", "t3_required",
                         } else "UNPROVED"
-                    except (OSError, ValueError):
-                        resumed = "UNRECOVERABLE_INFRASTRUCTURE_FAILURE"
-                    if resumed == "OUTCOME_UNKNOWN":
-                        return RouteRunResult("OUTCOME_UNKNOWN", "route_effect_resume_outcome_unknown", packet_id, transitions).to_wire()
+                    except (OSError, ValueError) as exc:
+                        return RouteRunResult(
+                            "UNRECOVERABLE_INFRASTRUCTURE_FAILURE",
+                            str(exc)[:200],
+                            packet_id,
+                            transitions,
+                        ).to_wire()
                     if resumed == "RESUMED":
                         transitions += 1
+                        last_recovery_marker = None
                         continue
                     return RouteRunResult(
                         "DECISION_REQUIRED", "route_effect_resume_unproved", packet_id, transitions
@@ -1612,12 +1791,15 @@ class RepositoryRouteRunner:
                     attempt = str(self._attempt_factory())
                     result = runner.run_plan_once(packet_id, attempt)
             except (OSError, ValueError) as exc:
-                transitions += 1
-                if transitions >= self.max_transitions:
+                if not recover(
+                    packet_id,
+                    "route_adapter_exception",
+                    {"reason": str(exc)[:200]},
+                    stable_poll=False,
+                ):
                     return RouteRunResult(
                         "UNRECOVERABLE_INFRASTRUCTURE_FAILURE", str(exc)[:200], packet_id, transitions
                     ).to_wire()
-                self._wait_for_recovery()
                 continue
             status = getattr(result, "status", None)
             details = getattr(result, "details", {})
@@ -1658,6 +1840,7 @@ class RepositoryRouteRunner:
                     ).to_wire()
                 if promotion_status == "promoted":
                     transitions += 1
+                    last_recovery_marker = None
                     continue
                 if promotion_status == "bounded_pause":
                     return RouteRunResult(
@@ -1667,13 +1850,13 @@ class RepositoryRouteRunner:
                         transitions,
                     ).to_wire()
                 if promotion_status in self.RECOVERABLE:
-                    transitions += 1
-                    self._wait_for_recovery()
+                    if not recover(packet_id, promotion_status, promotion_details):
+                        break
                     continue
                 return RouteRunResult("DECISION_REQUIRED", str(promotion_details.get("reason", promotion_status)), packet_id, transitions).to_wire()
             if status in self.RECOVERABLE:
-                transitions += 1
-                self._wait_for_recovery()
+                if not recover(packet_id, status, details):
+                    break
                 continue
             return RouteRunResult("DECISION_REQUIRED", str(details.get("reason", status or "route_state_unknown")), packet_id, transitions).to_wire()
         return RouteRunResult(

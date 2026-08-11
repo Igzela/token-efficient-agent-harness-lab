@@ -21,6 +21,7 @@ MAIN = "a" * 40
 CLOSED = "PE7-LIFECYCLE-CONTROLLER-1"
 SUCCESSOR = "PE7-SUCCESSOR-PROMOTION-ESCALATION-1"
 EVIDENCE = "PR #389 exact head " + "b" * 40 + "; merge " + "c" * 40
+MANIFEST = "d" * 64
 ATTEMPT = "123e4567-e89b-12d3-a456-426614174000"
 
 SKETCH = f"""### Packet {SUCCESSOR}
@@ -168,6 +169,9 @@ def next_document(current=CLOSED, completed=("PE7-PLAN-LANE-ACTIVATION-1",)):
 
 def status_document():
     return (
+        "## Accepted Packet Receipts\n\n"
+        "| Packet | State | Accepted evidence |\n"
+        "|---|---|---|\n\n"
         "## Accepted Readiness Boundary\n\n"
         "| Capability | State | Entry or exit condition |\n"
         "|---|---|---|\n"
@@ -366,14 +370,14 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
 
     def test_static_future_paths_are_hints_not_promotion_evidence(self):
         result = route_driver.RoutePromotionPlanner().plan(
-            self._successor(), MAIN, EVIDENCE, None
+            self._successor(), MAIN, EVIDENCE, None, MANIFEST
         )
         self.assertEqual(result.state, "DECISION_REQUIRED")
         self.assertEqual(result.reason, "promotion_current_main_evidence_missing")
 
     def test_current_main_evidence_owns_every_refreshed_contract_field(self):
         result = route_driver.RoutePromotionPlanner().plan(
-            self._successor(), MAIN, EVIDENCE, self._evidence()
+            self._successor(), MAIN, EVIDENCE, self._evidence(), MANIFEST
         )
         self.assertEqual(result.state, "READY_FOR_EXECUTION")
         self.assertIsNotNone(result.candidate)
@@ -386,11 +390,28 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             result.candidate.contract["cleanup"],
             self._evidence().cleanup,
         )
+        self.assertEqual(result.candidate.manifest_sha256, MANIFEST)
+        self.assertEqual(result.candidate.capsule["route_manifest_sha256"], MANIFEST)
+        self.assertEqual(result.candidate.contract["manifest_sha256"], MANIFEST)
+
+    def test_manifest_is_required_and_changes_the_immutable_candidate_digest(self):
+        missing = route_driver.RoutePromotionPlanner().plan(
+            self._successor(), MAIN, EVIDENCE, self._evidence(), None
+        )
+        self.assertEqual(missing.state, "DECISION_REQUIRED")
+        self.assertEqual(missing.reason, "promotion_manifest_missing_or_invalid")
+        first = route_driver.RoutePromotionPlanner().plan(
+            self._successor(), MAIN, EVIDENCE, self._evidence(), MANIFEST
+        )
+        second = route_driver.RoutePromotionPlanner().plan(
+            self._successor(), MAIN, EVIDENCE, self._evidence(), "e" * 64
+        )
+        self.assertNotEqual(first.candidate.spec_digest, second.candidate.spec_digest)
 
     def test_effect_is_prepared_then_paused_for_t3_instead_of_skipped(self):
         successor = self._successor("EFFECT")
         evidence = self._evidence(packet_id=successor.packet_id)
-        result = route_driver.RoutePromotionPlanner().plan(successor, MAIN, EVIDENCE, evidence)
+        result = route_driver.RoutePromotionPlanner().plan(successor, MAIN, EVIDENCE, evidence, MANIFEST)
         self.assertEqual(result.state, "T3_REQUIRED")
         self.assertIsNotNone(result.t3_request)
         self.assertEqual(result.t3_request.packet_id, successor.packet_id)
@@ -439,6 +460,8 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             "outcome_receipt_digest": "f" * 64,
             "authority_owner_digest": "a" * 64,
             "operator": "authorized-operator",
+            "decision_source": "local_sol_5_6_max",
+            "decision_digest": "1" * 64,
             "issued_at": now.isoformat(),
             "expires_at": (now + timedelta(minutes=5)).isoformat(),
             "disposition": "GO",
@@ -446,6 +469,11 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         validated, reason = route_driver.validate_t3_receipt(receipt, request, now=now)
         self.assertEqual(reason, "t3_receipt_valid")
         self.assertEqual(validated.disposition, "GO")
+        receipt["decision_source"] = "gpt_web"
+        receipt["decision_digest"] = "2" * 64
+        validated, reason = route_driver.validate_t3_receipt(receipt, request, now=now)
+        self.assertEqual(reason, "t3_receipt_valid")
+        self.assertEqual(validated.decision_source, "gpt_web")
         receipt["candidate_digest"] = "f" * 64
         validated, reason = route_driver.validate_t3_receipt(receipt, request, now=now)
         self.assertIsNone(validated)
@@ -464,9 +492,9 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         self.assertIsNone(validated)
         self.assertEqual(reason, "t3_receipt_window_exceeded")
 
-    def test_compaction_keeps_one_current_window_for_116_crossings(self):
+    def test_compaction_keeps_one_current_window_for_many_crossings(self):
         document = "# Next\n\n## Common Execution Protocol\n\n- retained\n"
-        for number in range(116):
+        for number in range(128):
             document = route_driver.compact_next_window(
                 document,
                 closed_packet_id=f"PE7-TEST-{number}-1",
@@ -485,8 +513,63 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             "PE7-EFFECT-1", "PE7-EFFECT-CLOSEOUT-1", "T3 outcome pending", "READY_FOR_EXECUTION",
             closed_packet_state="IN_PROGRESS",
         )
-        self.assertIn("| PE7-EFFECT-1 | `IN_PROGRESS` |", effect_row)
-        self.assertIn("| PE7-EFFECT-CLOSEOUT-1 | `READY_FOR_EXECUTION` |", closeout_row)
+        self.assertEqual(effect_row, "")
+        self.assertEqual(closeout_row, "")
+
+    def test_compaction_retains_an_effect_in_progress_with_its_exact_t3_request(self):
+        request = route_driver.T3Request(
+            packet_id="PE7-EFFECT-1", accepted_main_sha=MAIN,
+            candidate_digest="b" * 64, action_digest="c" * 64,
+            scope_digest="d" * 64, authority_owner_digest="e" * 64,
+            requested_action="one bounded effect",
+        )
+        document = route_driver.compact_next_window(
+            "# Next\n\n## Common Execution Protocol\n\n- retained\n",
+            closed_packet_id=request.packet_id,
+            predecessor_receipt="T3 receipt " + "f" * 64,
+            active_packet_block=(
+                "## Packet PE7-EFFECT-CLOSEOUT-1\n\n"
+                "**State:** `READY_FOR_EXECUTION`\n"
+            ),
+            closed_packet_state="IN_PROGRESS",
+            retained_marker=route_driver._t3_request_marker(request),
+        )
+        self.assertIn("## Retained (PE7-EFFECT-1)", document)
+        self.assertIn("**Historical state:** `IN_PROGRESS`", document)
+        self.assertIn(request.candidate_digest, document)
+        self.assertNotIn("## Completed (PE7-EFFECT-1)", document)
+
+    def test_owner_outcome_proof_requires_an_accepted_digest_bound_receipt(self):
+        now = datetime.now(timezone.utc)
+        request = route_driver.T3Request(
+            packet_id="PE7-EFFECT-1", accepted_main_sha=MAIN,
+            candidate_digest="b" * 64, action_digest="c" * 64,
+            scope_digest="d" * 64, authority_owner_digest="e" * 64,
+            requested_action="one bounded effect",
+        )
+        raw = {
+            "schema_version": "route_t3_receipt.v1", "packet_id": request.packet_id,
+            "accepted_main_sha": MAIN, "candidate_digest": request.candidate_digest,
+            "action_digest": request.action_digest, "scope_digest": request.scope_digest,
+            "authority_receipt_digest": "f" * 64,
+            "outcome_receipt_digest": "1" * 64,
+            "authority_owner_digest": request.authority_owner_digest,
+            "operator": "approved-model-decision-transport",
+            "decision_source": "local_sol_5_6_max",
+            "decision_digest": "2" * 64,
+            "issued_at": now.isoformat(), "expires_at": (now + timedelta(minutes=5)).isoformat(),
+            "disposition": "GO",
+        }
+        receipt, reason = route_driver.validate_recorded_t3_receipt(raw, request)
+        self.assertEqual(reason, "t3_receipt_valid")
+        status = (
+            "## Accepted Packet Receipts\n\n| Packet | State | Accepted evidence |\n|---|---|---|\n"
+            f"| `{request.packet_id}` | `COMPLETE` | owner-validated existing product evidence for `{receipt.outcome_receipt_digest}` |\n"
+        )
+        self.assertTrue(route_driver.owner_outcome_receipt_proved(status, request, receipt))
+        self.assertFalse(route_driver.owner_outcome_receipt_proved(
+            status.replace("owner-validated", "operator asserted"), request, receipt
+        ))
 
     def test_compaction_traverses_the_current_canonical_portfolio_without_growth(self):
         """Use the accepted inventory, not a synthetic count, for the soak proof."""
@@ -494,8 +577,10 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         future = (Path(__file__).resolve().parents[1] / "docs" / "FUTURE_ROUTE.md").read_text(
             encoding="utf-8"
         )
-        packet_ids = route_driver.inventory_manifest(future)["ordered_packet_ids"]
-        self.assertGreaterEqual(len(packet_ids), 116)
+        manifest = route_driver.inventory_manifest(future)
+        packet_ids = manifest["ordered_packet_ids"]
+        self.assertEqual(len(packet_ids), manifest["packet_count"])
+        self.assertGreater(len(packet_ids), 0)
         document = "# Next\n\n## Common Execution Protocol\n\n- retained\n"
         for index, closed_packet_id in enumerate(packet_ids):
             active_packet_id = (
@@ -529,6 +614,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
                 "rollback-marker cleanup-marker retention-marker evidence-marker "
                 "schema-marker evaluator-marker authority-marker recovery-marker\n"
             ),
+            "docs/FUTURE_ROUTE.md": future_document([SKETCH]),
             "scripts/agent-control/route_driver.py": "class RoutePromotionPlanner: pass\n",
             "scripts/agent-control/local_run_once.py": "from route_driver import RoutePromotionPlanner\nRoutePromotionPlanner()\n",
             "tests/test_route_driver.py": "from route_driver import RoutePromotionPlanner\nRoutePromotionPlanner()\n",
@@ -716,6 +802,29 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         self.assertEqual(result["state"], "DECISION_REQUIRED")
         self.assertEqual(waits, [3.0])
 
+    def test_production_route_does_not_exhaust_its_budget_while_ci_state_is_unchanged(self):
+        runner = mock.Mock()
+        runner.run_plan_once.side_effect = [
+            self.Result("promotion_ci_pending", reason="canonical_ci_wait"),
+            self.Result("promotion_ci_pending", reason="canonical_ci_wait"),
+            self.Result("control_stopped", reason="operator_pause"),
+        ]
+        waits = []
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo",
+            repo_path=Path("/tmp"),
+            max_transitions=2,
+            sleeper=waits.append,
+            poll_interval_seconds=3,
+        )
+        route._runner = runner
+        with mock.patch.object(route, "_current_packet", return_value=(CLOSED, MAIN)):
+            result = route.run()
+        self.assertEqual(result["state"], "DECISION_REQUIRED")
+        self.assertEqual(result["transitions"], 1)
+        self.assertEqual(waits, [3.0, 3.0])
+        self.assertEqual(runner.run_plan_once.call_count, 3)
+
     def test_outcome_unknown_is_terminal_and_never_retried(self):
         runner = mock.Mock()
         runner.run_plan_once.return_value = self.Result(
@@ -762,6 +871,7 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         github.repository_metadata.return_value = {"default_branch": "main"}
         github.accepted_main_sha.return_value = MAIN
         github.accepted_plan_document.return_value = next_document()
+        github.accepted_status_document.return_value = status_document()
         route = route_driver.RepositoryRouteRunner(
             repository="acme/repo", repo_path=Path("/tmp"), runner=mock.Mock(), github=github,
         )
@@ -839,6 +949,8 @@ class TestRepositoryRouteRunner(unittest.TestCase):
             "authority_receipt_digest": "e" * 64, "authority_owner_digest": "a" * 64,
             "outcome_receipt_digest": "f" * 64,
             "operator": "authorized-operator",
+            "decision_source": "local_sol_5_6_max",
+            "decision_digest": "1" * 64,
             "issued_at": now.isoformat(), "expires_at": (now + timedelta(minutes=5)).isoformat(),
             "disposition": "GO",
         }
