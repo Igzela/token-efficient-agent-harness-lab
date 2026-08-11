@@ -1464,12 +1464,18 @@ class LocalRunOnce:
             if claim.get("status") != "closed_out":
                 return self._plan_result("rejected", packet_id, attempt, reason="plan_claim_not_closed_out")
             details = claim.get("details")
-            if isinstance(details, dict) and isinstance(details.get("source_main_sha"), str):
-                source_main_sha = details["source_main_sha"]
-            if not isinstance(details, dict) or not isinstance(details.get("closeout_reference"), str):
-                closeout_reference = f"merge on accepted main `{accepted_main}`"
-            else:
-                closeout_reference = details["closeout_reference"].strip()
+            if (
+                not isinstance(details, dict)
+                or not isinstance(details.get("closeout_reference"), str)
+                or not isinstance(details.get("source_main_sha"), str)
+                or local_loop.HEX40.fullmatch(details["source_main_sha"]) is None
+            ):
+                return self._plan_result(
+                    "bounded_pause", packet_id, attempt,
+                    reason="route_closeout_receipt_unproved",
+                )
+            source_main_sha = details["source_main_sha"]
+            closeout_reference = details["closeout_reference"].strip()
             closeout_reference = plan_lifecycle.reconcile_legacy_closeout_reference(
                 ledger_issue,
                 packet_id,
@@ -1519,7 +1525,7 @@ class LocalRunOnce:
             return self._plan_result("unavailable", packet_id, attempt, reason="routing_documents_unavailable")
         try:
             retained_request = route_driver.retained_t3_request(next_document)
-            if source_main_sha:
+            if bootstrap_receipt is None:
                 try:
                     source_request = route_driver.direct_effect_closeout_request(
                         self.github.accepted_plan_document(source_main_sha),

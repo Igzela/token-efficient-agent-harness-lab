@@ -585,7 +585,7 @@ class TestBootstrapPromotionFallback(unittest.TestCase):
             "_exact_plan_claim",
             return_value={
                 "status": "closed_out",
-                "details": {"closeout_reference": "PR #42"},
+                "details": {"closeout_reference": "PR #42", "source_main_sha": MAIN},
             },
         ), mock.patch.object(
             plan_lifecycle,
@@ -1140,6 +1140,7 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             predecessor_receipt="T3 receipt " + "f" * 64,
             active_packet_block=(
                 f"## Packet {closeout}\n\n**State:** `READY_FOR_EXECUTION`\n\n"
+                f"**Prerequisite:** {request.packet_id} — IN_PROGRESS.\n\n"
                 "**Class:** `CLOSEOUT`\n"
             ),
             closed_packet_state="IN_PROGRESS",
@@ -1149,7 +1150,7 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
         with mock.patch.object(
             plan_lifecycle,
             "_exact_plan_claim",
-            return_value={"status": "closed_out", "details": {"closeout_reference": "PR #42"}},
+            return_value={"status": "closed_out", "details": {"closeout_reference": "PR #42", "source_main_sha": MAIN}},
         ), mock.patch.object(
             plan_lifecycle,
             "reconcile_legacy_closeout_reference",

@@ -1110,6 +1110,15 @@ def direct_effect_closeout_request(
         return None
     if request.accepted_main_sha != source_main_sha:
         raise RouteDriverError("route_effect_closeout_source_invalid")
+    block = re.search(
+        rf"^## Packet {re.escape(closeout_packet_id)}\s*(?P<body>.*?)(?=^## |\Z)",
+        document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if block is None or not re.search(
+        r"^\*\*Class:\*\*\s*`CLOSEOUT`\s*$", block.group("body"), re.MULTILINE
+    ):
+        return None
     active = re.search(
         r"^## Active Routing\s*(?P<body>.*?)(?=^## |\Z)",
         document,
@@ -1120,15 +1129,6 @@ def direct_effect_closeout_request(
         active.group("body"),
         re.MULTILINE,
     )) != 1:
-        raise RouteDriverError("route_effect_closeout_source_invalid")
-    block = re.search(
-        rf"^## Packet {re.escape(closeout_packet_id)}\s*(?P<body>.*?)(?=^## |\Z)",
-        document,
-        re.MULTILINE | re.DOTALL,
-    )
-    if block is None or not re.search(
-        r"^\*\*Class:\*\*\s*`CLOSEOUT`\s*$", block.group("body"), re.MULTILINE
-    ):
         raise RouteDriverError("route_effect_closeout_source_invalid")
     prerequisite = re.search(
         r"^\*\*Prerequisite:\*\*\s*(?P<value>.+)$",
