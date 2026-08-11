@@ -1721,7 +1721,12 @@ class LocalRunOnce:
                     reason="route_effect_closeout_not_proved",
                 )
             planned = self._plan_current_main_evidence(
-                successor, request.packet_id, accepted_main, closeout_reference
+                successor,
+                request.packet_id,
+                accepted_main,
+                closeout_reference,
+                retained_t3_request=request,
+                retained_t3_receipt=receipt,
             )
             if planned.reason == "promotion_planner_unavailable":
                 return self._plan_result(
@@ -1741,6 +1746,7 @@ class LocalRunOnce:
                 planned.evidence,
                 closed_packet_state="IN_PROGRESS",
                 retained_t3_request=request,
+                retained_t3_receipt=receipt,
             )
         except (local_loop.LoopUnavailable, route_driver.RouteDriverError):
             return self._plan_result(
@@ -1761,6 +1767,9 @@ class LocalRunOnce:
         closed_packet_id: str,
         accepted_main: str,
         predecessor_receipt: str,
+        *,
+        retained_t3_request: route_driver.T3Request | None = None,
+        retained_t3_receipt: route_driver.T3Receipt | None = None,
     ) -> route_driver.PromotionPlanResult:
         """Obtain a bounded proposal then prove it against exact accepted main.
 
@@ -1809,7 +1818,12 @@ class LocalRunOnce:
         try:
             verifier = route_driver.CurrentMainEvidenceVerifier(self.repo_path, accepted_main)
             return verifier.verify(
-                output or "", successor, predecessor_receipt, closed_packet_id
+                output or "",
+                successor,
+                predecessor_receipt,
+                closed_packet_id,
+                retained_t3_request,
+                retained_t3_receipt,
             )
         except route_driver.RouteDriverError as exc:
             return route_driver.PromotionPlanResult("DECISION_REQUIRED", exc.reason)

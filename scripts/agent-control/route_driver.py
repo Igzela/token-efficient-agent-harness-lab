@@ -574,6 +574,7 @@ def compile_successor(
     *,
     closed_packet_state: str = "COMPLETE",
     retained_t3_request: T3Request | None = None,
+    retained_t3_receipt: T3Receipt | None = None,
 ) -> CompiledSuccessor:
     """Compile one evidence-backed non-EFFECT successor into document updates.
 
@@ -589,7 +590,11 @@ def compile_successor(
     if closed_packet_state == "IN_PROGRESS":
         if (
             retained_t3_request is None
+            or retained_t3_receipt is None
             or retained_t3_request.packet_id != closed_packet_id
+            or retained_t3_receipt.packet_id != closed_packet_id
+            or retained_t3_receipt.accepted_main_sha != accepted_main_sha
+            or retained_t3_receipt.candidate_digest != retained_t3_request.candidate_digest
             or successor.profile[1] != "CLOSEOUT"
             or successor.sketch.prerequisites != (closed_packet_id,)
         ):
@@ -604,6 +609,8 @@ def compile_successor(
         manifest_sha256,
         closed_packet_id=closed_packet_id,
         status_document=status_document,
+        retained_t3_request=retained_t3_request,
+        retained_t3_receipt=retained_t3_receipt,
     )
     if planned.state not in {"READY_FOR_EXECUTION", "T3_REQUIRED"} or planned.candidate is None:
         raise RouteDriverError(planned.reason)
@@ -812,6 +819,15 @@ class T3Receipt:
     issued_at: str
     expires_at: str
     disposition: str
+
+
+def t3_closeout_reference(receipt: T3Receipt) -> str:
+    """Return the only predecessor reference permitted after an EFFECT."""
+
+    return (
+        f"T3 operator authority `{receipt.authority_receipt_digest}`; redacted effect outcome "
+        f"`{receipt.outcome_receipt_digest}`"
+    )
 
 
 def validate_t3_receipt(
@@ -1363,13 +1379,20 @@ class CurrentMainEvidenceVerifier:
         successor: EligibleSuccessor,
         predecessor_receipt: str,
         closed_packet_id: str | None = None,
+        retained_t3_request: T3Request | None = None,
+        retained_t3_receipt: T3Receipt | None = None,
     ) -> PromotionPlanResult:
         proposal = self._proposal(raw, successor)
         if isinstance(proposal, PromotionPlanResult):
             return proposal
         try:
             return self._verify_proposal(
-                proposal, successor, predecessor_receipt, closed_packet_id
+                proposal,
+                successor,
+                predecessor_receipt,
+                closed_packet_id,
+                retained_t3_request,
+                retained_t3_receipt,
             )
         except RouteDriverError as exc:
             return PromotionPlanResult("DECISION_REQUIRED", exc.reason)
@@ -1380,6 +1403,8 @@ class CurrentMainEvidenceVerifier:
         successor: EligibleSuccessor,
         predecessor_receipt: str,
         closed_packet_id: str | None,
+        retained_t3_request: T3Request | None,
+        retained_t3_receipt: T3Receipt | None,
     ) -> PromotionPlanResult:
         raw_allowed = self._list(proposal["allowed_paths"], "promotion_allowed_paths_invalid")
         if any(not isinstance(path, str) for path in raw_allowed):
@@ -1542,6 +1567,8 @@ class CurrentMainEvidenceVerifier:
             manifest_sha256,
             closed_packet_id=closed_packet_id,
             status_document=status_document,
+            retained_t3_request=retained_t3_request,
+            retained_t3_receipt=retained_t3_receipt,
         )
 
 
@@ -1564,6 +1591,8 @@ class RoutePromotionPlanner:
         *,
         closed_packet_id: str | None = None,
         status_document: str | None = None,
+        retained_t3_request: T3Request | None = None,
+        retained_t3_receipt: T3Receipt | None = None,
     ) -> PromotionPlanResult:
         if not isinstance(predecessor_receipt, str) or not predecessor_receipt.strip():
             return PromotionPlanResult("DECISION_REQUIRED", "promotion_predecessor_receipt_missing")
@@ -1585,7 +1614,28 @@ class RoutePromotionPlanner:
             return PromotionPlanResult("DECISION_REQUIRED", "promotion_rollback_too_short")
         if not successor.sketch.prerequisites:
             return PromotionPlanResult("DECISION_REQUIRED", "promotion_prerequisites_missing")
-        if closed_packet_id is None:
+        if retained_t3_request is not None or retained_t3_receipt is not None:
+            if (
+                closed_packet_id is None
+                or retained_t3_request is None
+                or retained_t3_receipt is None
+                or successor.sketch.prerequisites != (closed_packet_id,)
+                or retained_t3_request.packet_id != closed_packet_id
+                or retained_t3_receipt.packet_id != closed_packet_id
+                or retained_t3_request.accepted_main_sha != accepted_main_sha
+                or retained_t3_receipt.accepted_main_sha != accepted_main_sha
+                or retained_t3_receipt.candidate_digest != retained_t3_request.candidate_digest
+                or retained_t3_receipt.action_digest != retained_t3_request.action_digest
+                or retained_t3_receipt.scope_digest != retained_t3_request.scope_digest
+                or retained_t3_receipt.authority_owner_digest
+                != retained_t3_request.authority_owner_digest
+                or predecessor_receipt.strip() != t3_closeout_reference(retained_t3_receipt)
+            ):
+                return PromotionPlanResult(
+                    "DECISION_REQUIRED", "promotion_t3_closeout_receipt_invalid"
+                )
+            prerequisite_receipts = (predecessor_receipt.strip(),)
+        elif closed_packet_id is None:
             if len(successor.sketch.prerequisites) != 1:
                 return PromotionPlanResult(
                     "DECISION_REQUIRED",

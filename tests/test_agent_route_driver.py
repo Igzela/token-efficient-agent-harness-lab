@@ -562,6 +562,61 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             mismatched_status.reason, "promotion_status_document_binding_invalid"
         )
 
+    def test_t3_closeout_uses_only_the_validated_digest_bound_reference(self):
+        successor = self._successor("CLOSEOUT")
+        request = route_driver.T3Request(
+            packet_id=CLOSED,
+            accepted_main_sha=MAIN,
+            candidate_digest="b" * 64,
+            action_digest="c" * 64,
+            scope_digest="d" * 64,
+            authority_owner_digest="e" * 64,
+            requested_action="one finite authorized effect",
+        )
+        receipt = route_driver.T3Receipt(
+            packet_id=CLOSED,
+            accepted_main_sha=MAIN,
+            candidate_digest=request.candidate_digest,
+            action_digest=request.action_digest,
+            scope_digest=request.scope_digest,
+            authority_receipt_digest="f" * 64,
+            outcome_receipt_digest="1" * 64,
+            authority_owner_digest=request.authority_owner_digest,
+            operator="existing-operator",
+            decision_source="local_sol_5_6_max",
+            decision_evidence_digest="2" * 64,
+            decision_digest="3" * 64,
+            issued_at="2026-08-12T00:00:00+00:00",
+            expires_at="2026-08-12T00:05:00+00:00",
+            disposition="GO",
+        )
+        reference = route_driver.t3_closeout_reference(receipt)
+        ready = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            reference,
+            self._evidence(),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status_document(),
+            retained_t3_request=request,
+            retained_t3_receipt=receipt,
+        )
+        self.assertEqual(ready.state, "READY_FOR_EXECUTION")
+        invalid = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            reference + " changed",
+            self._evidence(),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status_document(),
+            retained_t3_request=request,
+            retained_t3_receipt=receipt,
+        )
+        self.assertEqual(invalid.state, "DECISION_REQUIRED")
+        self.assertEqual(invalid.reason, "promotion_t3_closeout_receipt_invalid")
+
     def test_serialized_promoted_capsule_round_trips_through_plan_and_handoff_validation(self):
         successor = self._successor()
         evidence = self._evidence()
