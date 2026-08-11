@@ -763,6 +763,17 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "authority unchanged (docs/NEXT_DECISION.md:authority-marker)",
         )
 
+    def test_allowed_paths_over_the_prompt_limit_are_a_decision(self):
+        proposal = self._proposal()
+        proposal["allowed_paths"] = [
+            "docs/MODULE_MAP.md"
+        ] * (route_driver._MAX_PROMOTION_LIST_ITEMS + 1)
+        result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
+            json.dumps(proposal), self.successor, EVIDENCE
+        )
+        self.assertEqual(result.state, "DECISION_REQUIRED")
+        self.assertEqual(result.reason, "promotion_allowed_paths_invalid")
+
     def test_unproved_caller_is_a_decision_not_a_plausible_contract(self):
         proposal = self._proposal()
         proposal["caller_evidence"][0]["symbol"] = "ImaginaryCaller"
@@ -801,6 +812,20 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.assertIn("git show " + self.main, prompt)
         self.assertNotIn(self.successor.sketch.allowed_delta, prompt)
         self.assertIn("Do not use FUTURE_ROUTE's Allowed delta", prompt)
+
+    def test_worker_prompt_requires_machine_valid_allowed_paths(self):
+        prompt = route_driver.promotion_planner_prompt(
+            self.successor, self.main, EVIDENCE
+        )
+        self.assertIn("Each `allowed_paths` entry must be a literal repository-relative path", prompt)
+        self.assertIn(
+            f"at most {route_driver._MAX_PROMOTION_LIST_ITEMS} entries", prompt
+        )
+        self.assertIn("Never use placeholders such as `...` or `exact/file`", prompt)
+        self.assertIn("existing regular, non-symlink accepted-tree file", prompt)
+        self.assertIn("with no duplicates", prompt)
+        self.assertIn("glob characters", prompt)
+        self.assertIn("Every path named elsewhere in the proposal must also appear in `allowed_paths`", prompt)
 
     def test_worker_prompt_defines_machine_verifiable_caller_evidence(self):
         prompt = route_driver.promotion_planner_prompt(
