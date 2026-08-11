@@ -1938,27 +1938,28 @@ impl LocalProductStore {
         intake: &ValidatedProductTaskIntake,
         actor: &str,
     ) -> Result<ProductTaskWorkspacePreparationReceipt, String> {
-        if let Some(receipt) = self.product_task_workspace_preparation_receipt(task_id)? {
-            return Ok(receipt);
-        }
-
-        let task = self
-            .get_product_task(task_id)?
-            .ok_or_else(|| "product task missing before workspace preparation".to_string())?;
-        let status = task.get("status").and_then(Value::as_str).unwrap_or("");
-        if status == ProductTaskStatus::WorkspacePreparing.as_str() {
-            return Err(format!(
-                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: legacy preparing task has no receipt"
-            ));
-        }
-        if status != ProductTaskStatus::Admitted.as_str() {
-            return Err("product task is not eligible for workspace preparation".to_string());
-        }
-
-        let receipt = self.new_product_task_workspace_preparation_receipt(task_id, intake)?;
-        let now = self.now();
         match &self.db {
-            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+            DatabaseConnection::Sqlite(_) => {
+                if let Some(receipt) = self.product_task_workspace_preparation_receipt(task_id)? {
+                    return Ok(receipt);
+                }
+
+                let task = self.get_product_task(task_id)?.ok_or_else(|| {
+                    "product task missing before workspace preparation".to_string()
+                })?;
+                let status = task.get("status").and_then(Value::as_str).unwrap_or("");
+                if status == ProductTaskStatus::WorkspacePreparing.as_str() {
+                    return Err(format!(
+                        "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: legacy preparing task has no receipt"
+                    ));
+                }
+                if status != ProductTaskStatus::Admitted.as_str() {
+                    return Err("product task is not eligible for workspace preparation".to_string());
+                }
+
+                let receipt = self.new_product_task_workspace_preparation_receipt(task_id, intake)?;
+                let now = self.now();
+                self.with_conn(|conn| {
                 let tx = conn
                     .unchecked_transaction()
                     .map_err(|error| error.to_string())?;
@@ -2057,8 +2058,9 @@ impl LocalProductStore {
                     }),
                 )?;
                 tx.commit().map_err(|error| error.to_string())?;
-                Ok(receipt.clone())
-            }),
+                    Ok(receipt.clone())
+                })
+            }
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|error| error.to_string())?;
@@ -2095,6 +2097,22 @@ impl LocalProductStore {
                         "workspace preparation schema is not current",
                     ));
                 }
+                let row = tx
+                    .query_opt(
+                        "SELECT status, version FROM product_tasks WHERE task_id=$1 FOR UPDATE",
+                        &[&task_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        "product task missing before workspace preparation".to_string()
+                    })?;
+                let current_status: String = row.get(0);
+                let current_version: i64 = row.get(1);
+                // The task-row lock is the serialization point for a duplicate
+                // admission. Query the receipt only after taking it: a prior
+                // statement-level PostgreSQL snapshot can otherwise miss the
+                // receipt that the lock holder committed atomically with the
+                // workspace_preparing transition.
                 let existing = tx
                     .query_opt(
                         "SELECT workspace_root, workspace_path, marker_sha256, marker_state,
@@ -2115,20 +2133,16 @@ impl LocalProductStore {
                     tx.commit().map_err(|error| error.to_string())?;
                     return Ok(existing);
                 }
-                let row = tx
-                    .query_opt(
-                        "SELECT status, version FROM product_tasks WHERE task_id=$1 FOR UPDATE",
-                        &[&task_id],
-                    )
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| {
-                        "product task missing before workspace preparation".to_string()
-                    })?;
-                let current_status: String = row.get(0);
-                let current_version: i64 = row.get(1);
+                if current_status == ProductTaskStatus::WorkspacePreparing.as_str() {
+                    return Err(format!(
+                        "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: legacy preparing task has no receipt"
+                    ));
+                }
                 if current_status != ProductTaskStatus::Admitted.as_str() {
                     return Err("product task expected-current update conflict".to_string());
                 }
+                let receipt = self.new_product_task_workspace_preparation_receipt(task_id, intake)?;
+                let now = self.now();
                 let next_version = current_version.saturating_add(1);
                 let updated = tx
                     .execute(
