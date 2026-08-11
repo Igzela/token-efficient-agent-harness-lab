@@ -802,6 +802,16 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.assertNotIn(self.successor.sketch.allowed_delta, prompt)
         self.assertIn("Do not use FUTURE_ROUTE's Allowed delta", prompt)
 
+    def test_worker_prompt_defines_machine_verifiable_caller_evidence(self):
+        prompt = route_driver.promotion_planner_prompt(
+            self.successor, self.main, EVIDENCE
+        )
+        self.assertIn("Each `caller_evidence` row must", prompt)
+        self.assertIn("owner_path` must be in both `owner_evidence` and `allowed_paths`", prompt)
+        self.assertIn("caller_path` must be in `allowed_paths`", prompt)
+        self.assertIn("Python `def` or `class` declaration in `owner_path`", prompt)
+        self.assertIn("verifier-recognized `symbol(` reference in `caller_path`", prompt)
+
 
 class TestRepositoryRouteRunner(unittest.TestCase):
     class Result:

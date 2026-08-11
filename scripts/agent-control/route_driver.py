@@ -1087,6 +1087,14 @@ tests, allowed-path closure, ordered slices, precise allowlisted verification,
 rollback, cleanup, retention, evidence destinations, and the schema,
 evaluator, authority, and recovery decisions.
 
+Each `caller_evidence` row must be independently machine-verifiable:
+- `owner_path` must be in both `owner_evidence` and `allowed_paths`.
+- `caller_path` must be in `allowed_paths`.
+- `symbol` must match a Python `def` or `class` declaration in `owner_path`
+  and a verifier-recognized `symbol(` reference in `caller_path`.
+Do not include a speculative caller row; return the bounded decision object
+instead when no such exact caller fact can be proved.
+
 Return exactly one compact JSON object and no Markdown.  If any fact cannot
 be proved, return exactly:
 {{"schema_version":"{_ROUTE_EVIDENCE_SCHEMA}","state":"DECISION_REQUIRED","reason":"short_safe_reason"}}
