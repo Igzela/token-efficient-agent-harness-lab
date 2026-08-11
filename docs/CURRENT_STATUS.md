@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-10.
+Last updated: 2026-08-11.
 
 This document owns accepted repository truth and confirmed capability gaps only. It separates two states that must not be conflated:
 
@@ -31,6 +31,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-CTRL-ROUTE-CONTRACT-1` | `COMPLETE` | PR #380 exact head `e905cf6ec7a989b54e60f913657ca306f33ebf49`; merge `546cabc1ceb98b49b543d0bd90a62fc228e67338`; exact-head `PASS`; canonical workflow `31386777810`; route-contract receipt bound to the accepted main merge |
 | `PE7-PLAN-LANE-ACTIVATION-1` | `COMPLETE` | PR #382 exact head `dde26f884ce8a85b776b5933c84c4e6cfd73cb19`; merge `e55e19f1b7c353b4baa2b40ee7b5b16af8918a6c`; exact-head `PASS`; canonical workflow `31395404498` (native-runtime rerun after a confirmed infra-only OpenSSL linker flake); Plan lane active behind real terminal-owner readiness; Plan Execution Ledger Issue #383 provisioned |
 | `PE7-LIFECYCLE-CONTROLLER-1` | `COMPLETE` | PR #385 exact head `5867eb9e35151c8252cda26bb6a956dfe80252b0`; merge `ca7e4585c594a5c9820c8d1267858780c28503ac`; exact-head `PASS`; canonical workflow `31401184171`; plan-packet CI/review/merge/closeout receipts recorded on the ledger as controller-owned transitions with idempotent readback |
+| `PE7-SUCCESSOR-PROMOTION-ESCALATION-1` | `COMPLETE` | PR #387 exact head `5fe3d55af19aa7a081115637f8f8a7aa63b581af`; merge `597f90282fb6ca72472b890b825684bf54486709`; exact-head `PASS`; canonical workflow `31403849100`; exactly-one successor-promotion receipts (packet id, accepted-main SHA, capsule digest) and bounded pause escalation are controller-owned on the Plan Execution Ledger |
 
 ## Accepted Product and Control-Plane State
 
@@ -41,9 +42,10 @@ Accepted `main` contains:
 - managed-coding runtime profiles and provider-free DeepSeek protocol/runtime wiring;
 - delegated Golden Path authority with separate risk, spend, attempt, artifact approval, output confirmation, and terminal-evidence owners;
 - exact-head CI, bounded review convergence, context-capsule transport, and the outbound local engineering loop;
-- the repository-maintenance route contract with one existing queue/lease/controller boundary and no Plan-lane admission yet;
+- the repository-maintenance route contract with one existing queue/lease/controller boundary;
 - an activated Plan lane behind real terminal-owner readiness checks, consuming the accepted weak-agent dispatch capsule and the provisioned Plan Execution Ledger Issue #383;
 - controller-owned plan-packet lifecycle transitions (CI/review/merge/closeout receipts) recorded on the Plan Execution Ledger with idempotent readback and recovery;
+- controller-owned exactly-one successor-promotion and bounded pause-escalation receipts, with no successor execution, EFFECT, or T3 authority;
 - provider-free RWE/VDE contracts, production RWE v2 issue/admit/one-use spend, the first-live-baseline composition seam, store cell fence, and artifact validation;
 - a transport whose authorized finite request timeout is no longer silently capped by the former 20-second body-read ceiling;
 - an operator-gated, maximum-two-request compatibility calibration that requires parseable implementation content and is skipped by CI;
@@ -78,7 +80,7 @@ These runs established the root cause and fail-closed behavior. They did not est
 
 ## Accepted Readiness Boundary
 
-Accepted `main` contains the provider-free compatibility-calibration mechanism, the distinct versioned v2 refreeze, and the accepted repository-maintenance route contract. It contains **no accepted v2 preflight receipt** and **no v2 four-cell viability result**. `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` is retained as a blocked historical contract; its B1/B2 policy values remain packet-local and its timestamp/expiry enforcement and provenance disposition are not accepted. The next executable window is the separately promoted Plan-lane activation packet; it must preserve the same provider-free and zero-external-effect boundary. Current execution state and routing belong to `docs/NEXT_DECISION.md`. The packet's provider-free preflight and operator-readable authorization request package must not issue or consume authority, call a Provider, write a target, run the schedule, or authorize downstream measurement/Architecture Convergence work.
+Accepted `main` contains the provider-free compatibility-calibration mechanism, the distinct versioned v2 refreeze, and the accepted repository-maintenance route contract. It contains **no accepted v2 preflight receipt** and **no v2 four-cell viability result**. `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` remains blocked until authoritative B1 timestamp evidence, store-owned B2 expiry, and Golden Path test-tooling provenance are accepted. The current executable window is the separately promoted route-automation implementation contract; it remains provider-free and zero-external-effect. Current execution state and routing belong to `docs/NEXT_DECISION.md`. Neither the route controller nor a compiled successor may issue or consume authority, call a Provider, write a target, run the schedule, or authorize downstream measurement/Architecture Convergence work.
 
 Candidate evidence remains non-authoritative until it is bound to one exact PR head, passes the repository review protocol and canonical CI, and is merged. Do not record candidate branches, PR numbers, CI runs, or review claims here; the capsule observes them at handoff time and fails closed when unavailable or conflicting.
 
@@ -90,11 +92,13 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Timeout ownership repair | `COMPLETE` | PR #368 accepted |
 | Compatibility calibration mechanism | `COMPLETE` | PR #369 accepted; mechanism only |
 | V2 refreeze + bounded test-race repair | `COMPLETE` | PR #370 accepted; exact v2 freeze and canonical lock repair are on main |
-| Repository-maintenance route contract | `COMPLETE` | PR #380 accepted; Plan-lane admission remains a separate packet |
+| Repository-maintenance route contract | `COMPLETE` | PR #380 accepted; its queue/lease/controller boundary is consumed by the accepted Plan lane |
 | Plan-lane activation | `COMPLETE` | PR #382 accepted; Plan lane active behind terminal-owner readiness; ledger Issue #383 provisioned |
 | Plan-packet lifecycle controller | `COMPLETE` | PR #385 accepted; CI/review/merge/closeout receipts controller-owned on the ledger with idempotent readback |
-| Plan-lane successor promotion and escalation | `BLOCKED_PREREQUISITE` | Next promoted packet; wires exactly-one successor-promotion receipts and bounded blocker escalation through existing owners |
-| V2 provider-free viability preflight | `BLOCKED_PREREQUISITE` | Repository-maintenance route transition first; then authoritative B1 timestamp, store-owned B2 issuance expiry, and Golden Path test-tooling provenance disposition must be accepted before re-expansion |
+| Plan-lane successor promotion and escalation | `COMPLETE` | PR #387 accepted; exactly-one successor-promotion receipts and bounded pause escalation are controller-owned on the existing ledger |
+| Route automation | `READY_FOR_EXECUTION` | Accepted implementation contract: evidence-backed promotion planning, a repository-owned continuous route command, typed EFFECT/T3 pauses, existing controller transport, and bounded current-routing documents |
+| Route-autopilot adversarial soak | `BLOCKED_PREREQUISITE` | Canonical provider-free successor after route automation; proves clean and failure/recovery crossings without executing a Provider, target, EFFECT, or T3 action |
+| V2 provider-free viability preflight | `BLOCKED_PREREQUISITE` | Route-autopilot soak, then authoritative B1 timestamp, store-owned B2 issuance expiry, and Golden Path test-tooling provenance repair/contract must be accepted before re-expansion |
 | V2 four-cell run and closeout | `BLOCKED_PREREQUISITE` | Preflight acceptance, then one separately authorized run and independent closeout |
 | Measurement readiness | `BLOCKED_PREREQUISITE` | 4 packets: estimands, corpus/sample, operations/evidence, protocol freeze |
 | Decision-grade pre-AC baseline | `BLOCKED_PREREQUISITE` | 4 packets: snapshot/corpus, preflight, run, analysis |
@@ -147,8 +151,10 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 5. No accepted causal-mutation, lineage/mutation, evaluator/holdout, lifecycle-budget, diversity/exploration, or Pareto/stop/recovery contract or implementation packet exists.
 6. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or fixed Meta operator-comparison result exists.
 7. No accepted metacognitive-operator, parameter-efficient training adapter, weight/harness factorial, co-evolution, or outer-policy research contract exists; full-weight and model-architecture evolution remain unrouted.
-8. Plan-lane admission, subject-aware terminal-owner readiness (PR #382), and controller-owned plan-packet lifecycle receipts (PR #385) are accepted; the next promoted packet wires exactly-one successor-promotion receipts and bounded blocker escalation through the existing owners without parallel ownership.
-9. Plan-lane successor promotion and escalation (exactly-one successor-promotion receipt per accepted plan closeout, bounded pause escalation) is the next promoted packet; successor execution, EFFECT execution, and automatic T3 handling remain explicitly inactive.
+8. Plan-lane admission, subject-aware terminal-owner readiness (PR #382), controller-owned plan-packet lifecycle receipts (PR #385), and exactly-one successor-promotion with bounded pause escalation (PR #387) are accepted. The current route-automation implementation is deliberately separate from its promotion contract: a candidate implementation PR cannot create its own execution authority.
+9. The route controller does not yet prove a continuous, caller-independent traversal. Its accepted implementation must derive current-main ownership/caller/test evidence at promotion time, validate the resulting candidate contract, preserve one bounded current window, carry EFFECT successors to a typed T3 pause instead of skipping them, and recover ordinary CI/review/crash/drift failures through existing lifecycle owners.
+10. The `agent-controller.yml` workflow does not yet expose the existing `lifecycle-plan` and `promote-plan` controller commands. Those commands must be wired through the established controller owner with bounded validated inputs and existing gates; no second workflow owner is permitted.
+11. `docs/MODULE_MAP.md` does not yet name the route-driver module because it is not accepted code. The route-automation implementation must synchronize that ownership row with the accepted implementation, not before it exists.
 
 ## Maintenance Boundary
 
