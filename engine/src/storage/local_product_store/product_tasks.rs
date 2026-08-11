@@ -1938,127 +1938,129 @@ impl LocalProductStore {
         intake: &ValidatedProductTaskIntake,
         actor: &str,
     ) -> Result<ProductTaskWorkspacePreparationReceipt, String> {
-        if let Some(receipt) = self.product_task_workspace_preparation_receipt(task_id)? {
-            return Ok(receipt);
-        }
-
-        let task = self
-            .get_product_task(task_id)?
-            .ok_or_else(|| "product task missing before workspace preparation".to_string())?;
-        let status = task.get("status").and_then(Value::as_str).unwrap_or("");
-        if status == ProductTaskStatus::WorkspacePreparing.as_str() {
-            return Err(format!(
-                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: legacy preparing task has no receipt"
-            ));
-        }
-        if status != ProductTaskStatus::Admitted.as_str() {
-            return Err("product task is not eligible for workspace preparation".to_string());
-        }
-
-        let receipt = self.new_product_task_workspace_preparation_receipt(task_id, intake)?;
-        let now = self.now();
         match &self.db {
-            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let tx = conn
-                    .unchecked_transaction()
-                    .map_err(|error| error.to_string())?;
-                let existing = tx
-                    .query_row(
-                        "SELECT workspace_root, workspace_path, marker_sha256, marker_state,
-                                receipt_sha256
-                         FROM product_task_workspace_preparations WHERE task_id=?1",
-                        params![task_id],
-                        |row| {
-                            Ok((
-                                row.get::<_, String>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, String>(2)?,
-                                row.get::<_, String>(3)?,
-                                row.get::<_, String>(4)?,
-                            ))
-                        },
-                    )
-                    .optional()
-                    .map_err(|error| error.to_string())?;
-                if let Some((root, path, marker, state, hash)) = existing {
-                    tx.commit().map_err(|error| error.to_string())?;
-                    return ProductTaskWorkspacePreparationReceipt::from_persisted(
-                        task_id, root, path, marker, state, hash,
-                    );
+            DatabaseConnection::Sqlite(_) => {
+                if let Some(receipt) = self.product_task_workspace_preparation_receipt(task_id)? {
+                    return Ok(receipt);
                 }
-                let (current_status, current_version): (String, i64) = tx
-                    .query_row(
-                        "SELECT status, version FROM product_tasks WHERE task_id=?1",
-                        params![task_id],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .map_err(|error| error.to_string())?;
-                if current_status != ProductTaskStatus::Admitted.as_str() {
-                    return Err("product task expected-current update conflict".to_string());
+
+                let task = self.get_product_task(task_id)?.ok_or_else(|| {
+                    "product task missing before workspace preparation".to_string()
+                })?;
+                let status = task.get("status").and_then(Value::as_str).unwrap_or("");
+                if status == ProductTaskStatus::WorkspacePreparing.as_str() {
+                    return Err(format!(
+                        "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: legacy preparing task has no receipt"
+                    ));
                 }
-                let next_version = current_version.saturating_add(1);
-                let updated = tx
-                    .execute(
-                        "UPDATE product_tasks SET status=?1, version=?2, updated_at=?3
-                         WHERE task_id=?4 AND status=?5 AND version=?6",
+                if status != ProductTaskStatus::Admitted.as_str() {
+                    return Err("product task is not eligible for workspace preparation".to_string());
+                }
+
+                let receipt = self.new_product_task_workspace_preparation_receipt(task_id, intake)?;
+                let now = self.now();
+                self.with_conn(|conn| {
+                    let tx = conn
+                        .unchecked_transaction()
+                        .map_err(|error| error.to_string())?;
+                    let existing = tx
+                        .query_row(
+                            "SELECT workspace_root, workspace_path, marker_sha256, marker_state,
+                                    receipt_sha256
+                             FROM product_task_workspace_preparations WHERE task_id=?1",
+                            params![task_id],
+                            |row| {
+                                Ok((
+                                    row.get::<_, String>(0)?,
+                                    row.get::<_, String>(1)?,
+                                    row.get::<_, String>(2)?,
+                                    row.get::<_, String>(3)?,
+                                    row.get::<_, String>(4)?,
+                                ))
+                            },
+                        )
+                        .optional()
+                        .map_err(|error| error.to_string())?;
+                    if let Some((root, path, marker, state, hash)) = existing {
+                        tx.commit().map_err(|error| error.to_string())?;
+                        return ProductTaskWorkspacePreparationReceipt::from_persisted(
+                            task_id, root, path, marker, state, hash,
+                        );
+                    }
+                    let (current_status, current_version): (String, i64) = tx
+                        .query_row(
+                            "SELECT status, version FROM product_tasks WHERE task_id=?1",
+                            params![task_id],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if current_status != ProductTaskStatus::Admitted.as_str() {
+                        return Err("product task expected-current update conflict".to_string());
+                    }
+                    let next_version = current_version.saturating_add(1);
+                    let updated = tx
+                        .execute(
+                            "UPDATE product_tasks SET status=?1, version=?2, updated_at=?3
+                             WHERE task_id=?4 AND status=?5 AND version=?6",
+                            params![
+                                ProductTaskStatus::WorkspacePreparing.as_str(),
+                                next_version,
+                                now,
+                                task_id,
+                                ProductTaskStatus::Admitted.as_str(),
+                                current_version,
+                            ],
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if updated != 1 {
+                        return Err("product task expected-current update conflict".to_string());
+                    }
+                    tx.execute(
+                        "INSERT INTO product_task_workspace_preparations (
+                            task_id, workspace_root, workspace_path, marker_sha256, marker_state,
+                            receipt_sha256, created_at, updated_at
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
                         params![
-                            ProductTaskStatus::WorkspacePreparing.as_str(),
-                            next_version,
-                            now,
                             task_id,
-                            ProductTaskStatus::Admitted.as_str(),
-                            current_version,
+                            receipt.workspace_root.to_string_lossy(),
+                            receipt.workspace_path.to_string_lossy(),
+                            receipt.marker_sha256,
+                            receipt.marker_state.as_str(),
+                            receipt.receipt_sha256,
+                            now,
                         ],
                     )
                     .map_err(|error| error.to_string())?;
-                if updated != 1 {
-                    return Err("product task expected-current update conflict".to_string());
-                }
-                tx.execute(
-                    "INSERT INTO product_task_workspace_preparations (
-                        task_id, workspace_root, workspace_path, marker_sha256, marker_state,
-                        receipt_sha256, created_at, updated_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-                    params![
+                    append_audit_locked(
+                        &tx,
+                        &now,
+                        actor,
+                        "product_task.transition",
                         task_id,
-                        receipt.workspace_root.to_string_lossy(),
-                        receipt.workspace_path.to_string_lossy(),
-                        receipt.marker_sha256,
-                        receipt.marker_state.as_str(),
-                        receipt.receipt_sha256,
-                        now,
-                    ],
-                )
-                .map_err(|error| error.to_string())?;
-                append_audit_locked(
-                    &tx,
-                    &now,
-                    actor,
-                    "product_task.transition",
-                    task_id,
-                    &json!({
-                        "from": ProductTaskStatus::Admitted.as_str(),
-                        "to": ProductTaskStatus::WorkspacePreparing.as_str(),
-                        "version": next_version,
-                        "execution_admitted": false,
-                        "failure_code": Value::Null,
-                    }),
-                )?;
-                append_audit_locked(
-                    &tx,
-                    &now,
-                    actor,
-                    "product_task.workspace_prepare_planned",
-                    task_id,
-                    &json!({
-                        "receipt_sha256": receipt.receipt_sha256,
-                        "marker_state": receipt.marker_state.as_str(),
-                        "authority_owner": "product_task",
-                    }),
-                )?;
-                tx.commit().map_err(|error| error.to_string())?;
-                Ok(receipt.clone())
-            }),
+                        &json!({
+                            "from": ProductTaskStatus::Admitted.as_str(),
+                            "to": ProductTaskStatus::WorkspacePreparing.as_str(),
+                            "version": next_version,
+                            "execution_admitted": false,
+                            "failure_code": Value::Null,
+                        }),
+                    )?;
+                    append_audit_locked(
+                        &tx,
+                        &now,
+                        actor,
+                        "product_task.workspace_prepare_planned",
+                        task_id,
+                        &json!({
+                            "receipt_sha256": receipt.receipt_sha256,
+                            "marker_state": receipt.marker_state.as_str(),
+                            "authority_owner": "product_task",
+                        }),
+                    )?;
+                    tx.commit().map_err(|error| error.to_string())?;
+                    Ok(receipt.clone())
+                })
+            }
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|error| error.to_string())?;
@@ -2095,6 +2097,22 @@ impl LocalProductStore {
                         "workspace preparation schema is not current",
                     ));
                 }
+                let row = tx
+                    .query_opt(
+                        "SELECT status, version FROM product_tasks WHERE task_id=$1 FOR UPDATE",
+                        &[&task_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        "product task missing before workspace preparation".to_string()
+                    })?;
+                let current_status: String = row.get(0);
+                let current_version: i64 = row.get(1);
+                // The task-row lock is the serialization point for a duplicate
+                // admission. Query the receipt only after taking it: a prior
+                // statement-level PostgreSQL snapshot can otherwise miss the
+                // receipt that the lock holder committed atomically with the
+                // workspace_preparing transition.
                 let existing = tx
                     .query_opt(
                         "SELECT workspace_root, workspace_path, marker_sha256, marker_state,
@@ -2115,20 +2133,16 @@ impl LocalProductStore {
                     tx.commit().map_err(|error| error.to_string())?;
                     return Ok(existing);
                 }
-                let row = tx
-                    .query_opt(
-                        "SELECT status, version FROM product_tasks WHERE task_id=$1 FOR UPDATE",
-                        &[&task_id],
-                    )
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| {
-                        "product task missing before workspace preparation".to_string()
-                    })?;
-                let current_status: String = row.get(0);
-                let current_version: i64 = row.get(1);
+                if current_status == ProductTaskStatus::WorkspacePreparing.as_str() {
+                    return Err(format!(
+                        "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: legacy preparing task has no receipt"
+                    ));
+                }
                 if current_status != ProductTaskStatus::Admitted.as_str() {
                     return Err("product task expected-current update conflict".to_string());
                 }
+                let receipt = self.new_product_task_workspace_preparation_receipt(task_id, intake)?;
+                let now = self.now();
                 let next_version = current_version.saturating_add(1);
                 let updated = tx
                     .execute(
