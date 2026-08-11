@@ -481,6 +481,100 @@ class TestPromotePlanDispatcher(unittest.TestCase):
         self.assertTrue(result["reason"].startswith("routing_invalid:"))
 
 
+class TestBootstrapPromotionFallback(unittest.TestCase):
+    def _runner(self):
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "acme/repo",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN
+        github.accepted_plan_document.return_value = "# Next Decision\n"
+        github.accepted_route_document.return_value = "# Future Route\n"
+        github.accepted_status_document.return_value = status_document()
+        github.plan_ledger_issue.return_value = LEDGER
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN
+        return local_run_once.LocalRunOnce(
+            github, git, repository="acme/repo", repo_path=Path("/tmp")
+        ), github
+
+    def test_proved_bootstrap_scope_bridge_uses_existing_promotion_fallback(self):
+        runner, github = self._runner()
+        receipt = "PR #390 exact merge-backed COMPLETE receipt"
+        successor = mock.Mock()
+        planned = route_driver.PromotionPlanResult(
+            "READY_FOR_EXECUTION", "proved", evidence=mock.Mock()
+        )
+        compiled = mock.Mock()
+        expected = mock.Mock(status="promotion_pr")
+
+        with mock.patch.object(
+            route_driver, "accepted_complete_receipt", return_value=receipt
+        ), mock.patch.object(
+            route_driver, "retained_t3_request", return_value=None
+        ), mock.patch.object(
+            plan_lane,
+            "successor_binding",
+            side_effect=plan_lane.PlanLaneError("plan_allowed_paths_invalid"),
+        ), mock.patch.object(
+            route_driver, "eligible_successor", return_value=successor
+        ), mock.patch.object(
+            runner, "_plan_current_main_evidence", return_value=planned
+        ) as planner, mock.patch.object(
+            route_driver, "compile_successor", return_value=compiled
+        ) as compiler, mock.patch.object(
+            runner, "_drive_promotion_pr", return_value=expected
+        ) as drive:
+            result = runner.run_route_once(
+                CLOSED, ATTEMPT, bootstrap_receipt=receipt
+            )
+
+        self.assertIs(result, expected)
+        github.dispatch_controller.assert_not_called()
+        planner.assert_called_once_with(successor, MAIN, receipt)
+        compiler.assert_called_once_with(
+            "# Future Route\n",
+            "# Next Decision\n",
+            status_document(),
+            CLOSED,
+            receipt,
+            MAIN,
+            planned.evidence,
+        )
+        drive.assert_called_once_with(CLOSED, ATTEMPT, MAIN, LEDGER, compiled, {})
+
+    def test_ordinary_scope_error_does_not_enter_bootstrap_fallback(self):
+        runner, _github = self._runner()
+
+        with mock.patch.object(
+            plan_lifecycle,
+            "_exact_plan_claim",
+            return_value={
+                "status": "closed_out",
+                "details": {"closeout_reference": "PR #42"},
+            },
+        ), mock.patch.object(
+            route_driver, "retained_t3_request", return_value=None
+        ), mock.patch.object(
+            plan_lane,
+            "successor_binding",
+            side_effect=plan_lane.PlanLaneError("plan_allowed_paths_invalid"),
+        ), mock.patch.object(runner, "_plan_current_main_evidence") as planner, mock.patch.object(
+            runner, "_drive_promotion_pr"
+        ) as drive:
+            result = runner.run_route_once(CLOSED, ATTEMPT)
+
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.details["reason"], "routing_invalid:plan_allowed_paths_invalid")
+        planner.assert_not_called()
+        drive.assert_not_called()
+
+
 class TestPromotionWait(unittest.TestCase):
     def test_reconcile_unknown_generation_never_mints_a_fresh_attempt(self):
         github = mock.Mock()
