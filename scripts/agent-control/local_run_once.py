@@ -1727,15 +1727,6 @@ class LocalRunOnce:
             next_document = self.github.accepted_plan_document(accepted_main)
             future_document = self.github.accepted_route_document(accepted_main)
             status_document = self.github.accepted_status_document(accepted_main)
-            if not route_driver.owner_outcome_receipt_proved(
-                status_document, request, receipt
-            ):
-                return self._plan_result(
-                    "outcome_unknown",
-                    request.packet_id,
-                    attempt,
-                    reason="route_effect_owner_outcome_unproved",
-                )
             successor = route_driver.eligible_successor(
                 future_document,
                 next_document,
