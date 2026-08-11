@@ -44,6 +44,7 @@ MAX_SKETCH_FIELD_CHARS = 8 * 1024
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_PROMOTION_EVIDENCE_BYTES = 64 * 1024
 MAX_CURRENT_MAIN_SOURCE_BYTES = 512 * 1024
+_MAX_PROMOTION_LIST_ITEMS = 50
 MAX_T3_RECEIPT_WINDOW = timedelta(minutes=15)
 _ROUTE_EVIDENCE_SCHEMA = "route_promotion_evidence.v1"
 _DECISION_KINDS = frozenset({"schema", "evaluator", "authority", "recovery"})
@@ -1087,6 +1088,18 @@ tests, allowed-path closure, ordered slices, precise allowlisted verification,
 rollback, cleanup, retention, evidence destinations, and the schema,
 evaluator, authority, and recovery decisions.
 
+Treat `allowed_paths` as a closed, machine-validated file list.
+Each `allowed_paths` entry must be a literal repository-relative path:
+- Return a non-empty list of at most {_MAX_PROMOTION_LIST_ITEMS} entries, with no duplicates and no
+  glob characters.
+- Every entry must name an existing regular, non-symlink accepted-tree file.
+  Prove each with `git ls-tree {accepted_main_sha} -- <path>` before
+  returning it.
+- Never use placeholders such as `...` or `exact/file`, a directory, an
+  absolute path, or a path containing `..`.
+- Every path named elsewhere in the proposal must also appear in `allowed_paths`;
+  do not use the list to smuggle a static route hint.
+
 Each `caller_evidence` row must be independently machine-verifiable:
 - `owner_path` must be in both `owner_evidence` and `allowed_paths`.
 - `caller_path` must be in `allowed_paths`.
@@ -1105,8 +1118,8 @@ Otherwise return this schema (no extra keys):
  "accepted_main_sha":"...", "owner_evidence":[{{"path":"...","module_map_token":"..."}}],
  "caller_evidence":[{{"owner_path":"...","caller_path":"...","symbol":"..."}}],
  "test_evidence":[{{"target_path":"...","test_path":"...","symbol":"..."}}],
- "allowed_paths":["exact/file"],
- "ordered_slices":[{{"paths":["exact/file"],"description":"precise bounded slice"}}],
+ "allowed_paths":["docs/MODULE_MAP.md"],
+ "ordered_slices":[{{"paths":["docs/MODULE_MAP.md"],"description":"precise bounded slice"}}],
  "verification":["one repository allowlisted command"],
  "operations":{{
    "rollback":{{"source_path":"...","needle":"...","description":"..."}},
@@ -1219,7 +1232,12 @@ class CurrentMainEvidenceVerifier:
         ) is not None
 
     @staticmethod
-    def _list(value: object, reason: str, *, maximum: int = 50) -> list[object]:
+    def _list(
+        value: object,
+        reason: str,
+        *,
+        maximum: int = _MAX_PROMOTION_LIST_ITEMS,
+    ) -> list[object]:
         if not isinstance(value, list) or not value or len(value) > maximum:
             raise RouteDriverError(reason)
         return value
