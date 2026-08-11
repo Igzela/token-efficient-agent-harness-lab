@@ -472,14 +472,23 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             missing.reason, "promotion_prerequisite_receipts_missing_or_invalid"
         )
 
-        second_receipt = "PR #401 exact accepted receipt"
+        second_receipt = (
+            f"PR #401 exact head `{'d' * 40}`; merge `{'e' * 40}`; "
+            "exact-head `PASS`; canonical workflow `31467821768`"
+        )
+        status = status_document().replace(
+            "|---|---|---|\n\n",
+            f"|---|---|---|\n| `PE7-OTHER-1` | `COMPLETE` | {second_receipt} |\n\n",
+            1,
+        )
         complete = route_driver.RoutePromotionPlanner().plan(
             successor,
             MAIN,
             EVIDENCE,
             self._evidence(),
             MANIFEST,
-            prerequisite_receipts=(EVIDENCE, second_receipt),
+            closed_packet_id=CLOSED,
+            status_document=status,
         )
         self.assertEqual(complete.state, "READY_FOR_EXECUTION")
         assert complete.candidate is not None
