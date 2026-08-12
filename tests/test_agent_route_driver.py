@@ -1211,6 +1211,38 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "authority unchanged (docs/NEXT_DECISION.md:authority-marker)",
         )
 
+    def test_equivalent_worker_path_orders_compile_one_canonical_candidate(self):
+        baseline = self._proposal()
+        permuted = self._proposal()
+        permuted["allowed_paths"] = list(reversed(permuted["allowed_paths"]))
+
+        verifier = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main)
+        first = verifier.verify(
+            json.dumps(baseline), self.successor, self._predecessor_receipt()
+        )
+        second = verifier.verify(
+            json.dumps(permuted), self.successor, self._predecessor_receipt()
+        )
+
+        expected = (
+            "docs/CURRENT_STATUS.md",
+            "docs/FUTURE_ROUTE.md",
+            "docs/MODULE_MAP.md",
+            "docs/NEXT_DECISION.md",
+            "scripts/agent-control/local_run_once.py",
+            "scripts/agent-control/route_driver.py",
+            "tests/test_route_driver.py",
+        )
+        self.assertEqual(first.state, "READY_FOR_EXECUTION")
+        self.assertEqual(second.state, "READY_FOR_EXECUTION")
+        self.assertIsNotNone(first.evidence)
+        self.assertIsNotNone(second.evidence)
+        self.assertEqual(first.evidence.allowed_paths, expected)
+        self.assertEqual(second.evidence.allowed_paths, expected)
+        self.assertIsNotNone(first.candidate)
+        self.assertIsNotNone(second.candidate)
+        self.assertEqual(first.candidate.spec_digest, second.candidate.spec_digest)
+
     def test_allowed_paths_over_the_prompt_limit_are_a_decision(self):
         proposal = self._proposal()
         proposal["allowed_paths"] = [
