@@ -13,8 +13,7 @@ The repository-maintenance route is continuous only through the existing Plan Ex
 ## Authoritative Forward Order
 
 ```text
-[window: Route autonomy stabilization — READY_FOR_EXECUTION, provider-free]
-→ [route automation bootstrap reconciliation — BLOCKED_PREREQUISITE, provider-free]
+[window: Route automation bootstrap reconciliation — READY_FOR_EXECUTION, provider-free]
 → [route-autopilot adversarial soak — provider-free]
 → [PREFLIGHT B1/B2/provenance contract → bounded repair → provider-free PREFLIGHT]
 → [viability RUN — typed T3 pause]
@@ -25,16 +24,17 @@ Every successor remains routing-only until its accepted predecessor closes and t
 
 ## Active Routing
 
-1. `PE7-ROUTE-AUTONOMY-STABILIZATION-1` — `READY_FOR_EXECUTION`. Sole current packet: maintain one long-lived Draft implementation PR over the existing repository-maintenance control-plane owners, repair every ordinary provider-free defect encountered, and continue until the adversarial soak plus one real code-and-document packet prove the full weak-agent lifecycle.
-2. The prior route bootstrap window is blocked until stabilization is accepted, a read-only live controller dispatch succeeds, and route starts from the refreshed accepted main. Failed attempt `ea64fd6d-fb8e-5c54-b86c-ae8f96c17550` is retained as non-authorizing failure evidence and is not a checkpoint.
+1. `PE7-ROUTE-AUTONOMY-STABILIZATION-1` — `READY_FOR_EXECUTION` only as the existing merge-backed bootstrap bridge. PR #416 exact head `9ce548f620314303b37753a18539c17b5daa6698`, canonical workflow `31630036965`, merge `306b500c43270ca83d7cb9defd365140b525187c`, and accepted-main status smoke `31631388199` prove the implementation and former HTTP 422 defect are accepted; the route must reconcile that receipt rather than execute the implementation again.
+2. Start a fresh route from accepted main `306b500c43270ca83d7cb9defd365140b525187c`. Its first transition must consume the canonical CURRENT_STATUS receipt through the existing one-time bootstrap owner and promote a validated provider-free successor. Failed attempt `ea64fd6d-fb8e-5c54-b86c-ae8f96c17550` remains non-authorizing evidence and is not a checkpoint.
 3. The first canonical provider-free soak and every later packet remain routing-only until the existing promotion planner proves and accepts one exact current-main successor contract.
 4. Provider, credential, target, release, deployment, automatic merge, EFFECT execution, and T3 action remain forbidden.
 
 <!-- route-autonomy-stabilization:v1 packet_id=PE7-ROUTE-AUTONOMY-STABILIZATION-1 -->
+<!-- route-bootstrap-reconcile:v1 packet_id=PE7-ROUTE-AUTONOMY-STABILIZATION-1 -->
 
 ## Blocked Successors
 
-The fresh bootstrap reached the sole controller dispatch boundary but GitHub rejected it before creating a run: HTTP 422 reported 28 declared `workflow_dispatch` inputs against a maximum of 25. The route then stopped with `route_controller_unavailable_timeout`, with no claim, PR, Provider call, target write, or effect. Rather than authorizing one PR per newly exposed control-plane defect, the bounded stabilization packet below owns one Draft repair branch and one fixed end-to-end exit criterion. It may repair only ordinary defects inside existing repository-maintenance owners and tests; every new architecture, authority, schema, evaluator, recovery, product-runtime, or external-effect choice still stops with `DECISION_REQUIRED`. The old route10 attempt remains non-resumable evidence from an obsolete main, not a checkpoint.
+The old bootstrap reached the sole controller dispatch boundary but GitHub rejected it before creating a run: HTTP 422 reported 28 declared `workflow_dispatch` inputs against a maximum of 25. PR #416 accepted the bounded stabilization implementation, and accepted-main status smoke `31631388199` proved the repaired 16-input controller surface live without a packet, PR, ledger, Provider, target, EFFECT, or T3 write. The one-time merge-backed bootstrap reconciliation is now the only permitted next transition. Overall autonomy stabilization remains incomplete until the adversarial soak, one real code-and-document packet, and a subsequent provider-free packet advancement are accepted. The old route10 attempt remains non-resumable evidence from an obsolete main, not a checkpoint.
 
 ## Packet States
 
@@ -69,7 +69,7 @@ At a T3 boundary, a conclusion from an allowlisted decision source — `human_op
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** Accepted main `aa83ac1f5eada74199e0ce28ecb91d37a48769d6` contains the accepted route, control-binding, and SQLite race-repair receipts. The failed fresh route attempt `ea64fd6d-fb8e-5c54-b86c-ae8f96c17550` and the exact manual reproduction both prove HTTP 422 before workflow creation: `agent-controller.yml` declares 28 `workflow_dispatch` inputs while GitHub permits at most 25. No route claim, PR, Provider call, target write, or effect occurred.
+**Prerequisite:** Accepted main `306b500c43270ca83d7cb9defd365140b525187c` contains the accepted route, control-binding, SQLite race-repair, and route-autonomy stabilization implementation receipts. PR #416 exact head `9ce548f620314303b37753a18539c17b5daa6698`, canonical workflow `31630036965`, merge `306b500c43270ca83d7cb9defd365140b525187c`, and controller status smoke `31631388199` prove the repaired dispatch surface. The failed attempt `ea64fd6d-fb8e-5c54-b86c-ae8f96c17550` and route10 remain non-resumable historical evidence.
 
 **Class:** `IMPLEMENT`
 
@@ -94,7 +94,7 @@ At a T3 boundary, a conclusion from an allowlisted decision source — `human_op
 9. **Verification.** Every slice adds focused regression evidence; the stable implementation head runs all Python control-plane tests, applicable workflow/YAML, handoff, security, route, artifact, prompt, review, CI, and `git diff --check` checks plus any touched Rust/TypeScript lanes. Stable exact-head independent review and canonical CI precede manual merge. Live route evidence must prove the full exit lifecycle, not merely unit tests.
 10. **Compatibility, rollback, cleanup, and retention.** Keep the implementation PR Draft while changing. Emergency-stop and disable orchestration before rollback; revert the single implementation merge if needed; preserve every failed/replaced head, ledger receipt, run, log, and route10 capture. Use the strict prose-only direct-main exception for final status synchronization when applicable, rather than opening another infrastructure closeout PR.
 11. **Exit artifact.** One accepted stabilization implementation PR and its exact review/CI/merge evidence; one accepted adversarial-soak receipt; one real routed code-and-document packet with complete lifecycle receipts; one successor advancement proof; synchronized canonical status/decision documents; and no external effect.
-12. **Next permitted action and forbidden next actions.** From the accepted authority main, create one long-lived Draft stabilization PR and keep it open while deterministic and adversarial pre-merge evidence exposes ordinary defects. Merge it once only after that candidate is stable; live accepted-main execution begins afterward. Do not split a pre-merge ordinary defect into another infrastructure repair PR; do not touch PR #225 or perform Provider/credential/target/release/deploy/auto-merge/EFFECT/T3 actions.
+12. **Next permitted action and forbidden next actions.** Consume the canonical merge-backed #416 receipt through the existing one-time bootstrap reconciliation, then let the accepted promotion owner derive the first provider-free successor from current main. Do not execute the stabilization implementation again, create another infrastructure repair PR without a reproduced ordinary defect inside this packet, touch PR #225, or perform Provider/credential/target/release/deploy/auto-merge/EFFECT/T3 actions.
 
 ### 11. Weak-Agent Dispatch Capsule
 
