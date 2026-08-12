@@ -7,7 +7,9 @@ import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
+import tempfile
 import time
 import unittest
 import uuid
@@ -578,6 +580,152 @@ class TestPlanDocumentDecode(unittest.TestCase):
 
 
 class TestLocalRunOnce(unittest.TestCase):
+    def test_stateful_plan_runner_keeps_one_identity_through_closeout_and_promotion(self):
+        import plan_lane
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            subprocess.run(
+                ["git", "clone", "-q", "--shared", str(Path(__file__).resolve().parents[1]), str(repo)],
+                check=True,
+            )
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+            source_main = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+            packet_id = "PE7-STATEFUL-SOAK-1"
+            candidate = plan_lane.PlanCandidate(
+                packet_id=packet_id,
+                source_main_sha=source_main,
+                task_spec_sha256="c" * 64,
+                goal="Modify one repository script and synchronize one canonical document.",
+                allowed_paths=["scripts/agent-control/codex_wrapper.sh", "docs/CURRENT_STATUS.md"],
+                prerequisites=[],
+                forbidden_changes=["provider calls", "external effects"],
+                verification=["git diff --check", "python tools/check_security_baseline.py", "python scripts/check_agent_handoff.py"],
+                rollback=["revert the packet commit"],
+            )
+            subprocess.run(["git", "switch", "-qc", candidate.branch], cwd=repo, check=True)
+            transport = {
+                "dispatches": [],
+                "head_sha": None,
+                "pr_number": 4901,
+                "merge_sha": "e" * 40,
+            }
+
+            class StatefulGitHub:
+                def read_control_state(self):
+                    return {"emergency_stop": False, "orchestrator_enabled": True}
+
+                def repository_metadata(self):
+                    return {"name_with_owner": "Igzela/example", "default_branch": "main"}
+
+                def accepted_main_sha(self, _branch):
+                    return source_main
+
+                def dispatch_controller(self, command, inputs):
+                    transport["dispatches"].append((command, dict(inputs)))
+
+            class StatefulGit:
+                def origin_main_sha(self, _repo_path, _branch):
+                    return source_main
+
+            runner = local_run_once.LocalRunOnce(
+                StatefulGitHub(), StatefulGit(), repository="Igzela/example",
+                repo_path=repo, sleeper=lambda _: None, lifecycle_timeout_seconds=0,
+            )
+            real_bounded_process = local_run_once._bounded_process
+            claim = {
+                "claim_nonce": NONCE,
+                "allowed_paths": candidate.allowed_paths,
+            }
+            artifact_dir = root / "artifact"
+
+            def bounded(command, **kwargs):
+                if command[:2] == ["bash", str(Path(local_run_once.__file__).resolve().parent / "codex_wrapper.sh")]:
+                    output_dir = Path(command[4])
+                    worktree = Path(command[5])
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    script = worktree / "scripts" / "agent-control" / "codex_wrapper.sh"
+                    status = worktree / "docs" / "CURRENT_STATUS.md"
+                    script.write_text(script.read_text(encoding="utf-8") + "\n# stateful soak candidate\n", encoding="utf-8")
+                    status.write_text(status.read_text(encoding="utf-8") + "\nStateful soak candidate.\n", encoding="utf-8")
+                    (output_dir / "codex-exit-code.txt").write_text("0", encoding="utf-8")
+                    return 0, "", ""
+                if command[:2] == ["git", "push"]:
+                    return 0, "", ""
+                return real_bounded_process(command, **kwargs)
+
+            def git_checked(worktree, *args):
+                if args[:2] == ("ls-remote", "origin"):
+                    head = subprocess.run(
+                        ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                        capture_output=True, text=True,
+                    ).stdout.strip()
+                    transport["head_sha"] = head
+                    return f"{head}\trefs/heads/{candidate.branch}"
+                result = subprocess.run(
+                    ["git", *args], cwd=worktree, check=True,
+                    capture_output=True, text=True,
+                )
+                return result.stdout.strip()
+
+            lifecycle = {
+                "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
+                "transitions": {
+                    "ci": {"head_sha": None, "status": "success"},
+                    "review": {"head_sha": None, "verdict": "PASS"},
+                    "merge": {"head_sha": None, "merge_commit_sha": transport["merge_sha"]},
+                    "closeout": {
+                        "head_sha": None,
+                        "terminal_packet_state": "COMPLETE",
+                        "closeout_reference": "stateful-soak",
+                    },
+                },
+            }
+            promotion = {
+                "kind": "plan-promote",
+                "status": "promoted",
+                "details": {"packet_id": packet_id, "attempt_id": ATTEMPT},
+            }
+
+            def create_pr(*args, **_kwargs):
+                self.assertEqual(args[0], packet_id)
+                self.assertEqual(args[2], transport["head_sha"])
+                return {"number": transport["pr_number"]}
+
+            with mock.patch.object(runner, "_live_plan", return_value=(candidate, 383)), \
+                 mock.patch.object(runner, "_wait_for_plan_claim", return_value=claim), \
+                 mock.patch.object(runner, "_owned_artifact_dir", return_value=artifact_dir), \
+                 mock.patch.object(runner, "_git_checked", side_effect=git_checked), \
+                 mock.patch.object(state_manager, "plan_claim_binding_valid", return_value=(True, "ok")), \
+                 mock.patch.object(local_run_once.worktree_manager, "create_plan_worktree", return_value=(str(repo), candidate.branch, source_main, None)), \
+                 mock.patch.object(local_run_once.worktree_manager, "remove_plan_worktree", return_value=True), \
+                 mock.patch.object(local_run_once, "_bounded_process", side_effect=bounded), \
+                 mock.patch.object(local_run_once.pr_binding, "create_or_update_plan_pr", side_effect=create_pr), \
+                 mock.patch.object(local_run_once.pr_binding, "verify_post_push_plan_binding"), \
+                 mock.patch.object(runner, "_wait_for_plan_handoff", return_value=(True, "handoff_proven")) as handoff, \
+                 mock.patch.object(local_run_once.plan_lifecycle, "read_plan_lifecycle", side_effect=lambda *_args: lifecycle), \
+                 mock.patch.object(runner, "_read_plan_promotion", return_value=promotion):
+                result = runner._run_plan_once_authorized(packet_id, ATTEMPT)
+
+            self.assertEqual(result.status, "closed_out")
+            self.assertEqual(result.attempt_id, ATTEMPT)
+            self.assertEqual(result.details["head_sha"], transport["head_sha"])
+            self.assertEqual(result.details["merge_commit_sha"], transport["merge_sha"])
+            handoff.assert_called_once_with(
+                383, packet_id, ATTEMPT, NONCE, transport["pr_number"], transport["head_sha"]
+            )
+            self.assertEqual(transport["dispatches"][0], (
+                "claim-plan", {"packet_id": packet_id, "attempt_id": ATTEMPT},
+            ))
+            self.assertEqual(transport["dispatches"][1][0], "handoff-plan")
+            self.assertEqual(transport["dispatches"][1][1]["claim_nonce"], NONCE)
+            self.assertEqual(transport["dispatches"][1][1]["head_sha"], transport["head_sha"])
+
     def test_bootstrap_route_binds_receipt_to_deterministic_attempt(self):
         runner = local_run_once.LocalRunOnce(
             mock.Mock(), mock.Mock(), repository="Igzela/example", repo_path=Path("/tmp")
@@ -1061,6 +1209,65 @@ class TestLocalRunOnce(unittest.TestCase):
         self.assertEqual(result.details["reason"], "plan_scope_violation")
         self.assertIn("README.md", result.details["diagnostic"])
         self.assertEqual(len(process_calls), 1)
+        git_checked.assert_not_called()
+        create_pr.assert_not_called()
+        actions = [call.args[0] for call in github.dispatch_controller.call_args_list]
+        self.assertNotIn("handoff-plan", actions)
+
+    def test_plan_check_mutation_has_no_artifact_commit_push_pr_or_handoff(self):
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN_SHA
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN_SHA
+        candidate = plan_lane_fixture()
+        claim = {"claim_nonce": NONCE, "allowed_paths": candidate.allowed_paths}
+        runner = local_run_once.LocalRunOnce(
+            github,
+            git,
+            repository="Igzela/example",
+            repo_path=Path("/tmp/repo"),
+            sleeper=lambda _: None,
+        )
+
+        def bounded(command, **_kwargs):
+            output_dir = Path(command[4])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "codex-exit-code.txt").write_text("0")
+            return 0, "", ""
+
+        artifact = mock.Mock()
+        git_checked = mock.Mock()
+        create_pr = mock.Mock()
+        with mock.patch.object(runner, "_live_plan", return_value=(candidate, 383)), \
+             mock.patch.object(runner, "_wait_for_plan_claim", return_value=claim), \
+             mock.patch.object(runner, "_owned_artifact_dir", return_value=Path("/tmp/fake-artifact")), \
+             mock.patch.object(runner, "_git_checked", git_checked), \
+             mock.patch.object(state_manager, "plan_claim_binding_valid", return_value=(True, "ok")), \
+             mock.patch.object(local_run_once.worktree_manager, "create_plan_worktree", return_value=("/tmp/fake-plan-worktree", candidate.branch, MAIN_SHA, None)), \
+             mock.patch.object(local_run_once.worktree_manager, "remove_plan_worktree", return_value=True), \
+             mock.patch.object(local_run_once, "_bounded_process", side_effect=bounded), \
+             mock.patch.object(
+                 local_run_once.local_verification,
+                 "run_plan_focused_checks",
+                 side_effect=local_run_once.local_verification.LocalVerificationError(
+                     "focused_check_mutated_candidate"
+                 ),
+             ), \
+             mock.patch.object(local_run_once.artifact_contract, "create_artifact", artifact), \
+             mock.patch.object(local_run_once.pr_binding, "create_or_update_plan_pr", create_pr):
+            result = runner._run_plan_once_authorized(PLAN_ID, ATTEMPT)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.details["reason"], "focused_check_mutated_candidate")
+        artifact.assert_not_called()
         git_checked.assert_not_called()
         create_pr.assert_not_called()
         actions = [call.args[0] for call in github.dispatch_controller.call_args_list]

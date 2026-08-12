@@ -1119,6 +1119,16 @@ class TestPromptBuilderContextSelection(unittest.TestCase):
         from prompt_builder import _detect_task_requires_governance
         self.assertTrue(_detect_task_requires_governance("Modify src/main.rs."))
 
+    def test_implementation_prompt_leaves_controller_owned_staging_and_subset_scope(self):
+        template = (CONTROL / "prompts" / "implementation.md").read_text(encoding="utf-8")
+        self.assertIn("leave a non-empty set of working-tree changes", template)
+        self.assertIn("subset of the machine-readable allowed-paths scope", template)
+        self.assertIn("The orchestrator owns staging", template)
+        self.assertIn("git diff --name-only HEAD", template)
+        self.assertIn("git ls-files --others --exclude-standard", template)
+        self.assertNotIn("non-empty set of staged changes", template)
+        self.assertNotIn("must equal exactly", template)
+
 
 class TestFailureStateMapping(unittest.TestCase):
     def test_no_workspace_changes_mapped_before_codex(self):

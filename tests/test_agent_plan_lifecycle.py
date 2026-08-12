@@ -947,20 +947,32 @@ class TestPlanLifecycleWorkflowTransport(unittest.TestCase):
         self.assertIn('"$INPUT_PACKET_ID" "$INPUT_ATTEMPT_ID" "$INPUT_STAGE"', workflow)
         self.assertIn("dispatcher.py promote-plan", workflow)
         self.assertIn("          - record-route-t3-receipt\n", workflow)
-        self.assertIn("      INPUT_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}\n", workflow)
-        self.assertIn("      INPUT_OUTCOME_RECEIPT_DIGEST: ${{ inputs.outcome_receipt_digest }}\n", workflow)
-        self.assertIn("      INPUT_DECISION_SOURCE: ${{ inputs.decision_source }}\n", workflow)
-        self.assertIn(
-            "      INPUT_DECISION_EVIDENCE_DIGEST: ${{ inputs.decision_evidence_digest }}\n",
-            workflow,
+        self.assertLessEqual(
+            sum(
+                1
+                for line in workflow.splitlines()
+                if line.startswith("      ")
+                and not line.startswith("        ")
+                and line.rstrip().endswith(":")
+            ),
+            25,
         )
+        self.assertIn("      route_payload:\n", workflow)
+        self.assertIn("      INPUT_ROUTE_PAYLOAD: ${{ inputs.route_payload }}\n", workflow)
+        self.assertEqual(workflow.count("${{ inputs.route_payload }}"), 1)
+        self.assertNotIn('echo "$INPUT_ROUTE_PAYLOAD"', workflow)
+        self.assertNotIn("set -x", workflow)
+        for removed in (
+            "accepted_main_sha", "candidate_digest", "action_digest", "scope_digest",
+            "authority_receipt_digest", "outcome_receipt_digest", "owner_evidence_digest",
+            "authority_owner_digest", "decision_source", "decision_evidence_digest",
+            "issued_at", "expires_at", "disposition",
+        ):
+            self.assertNotIn(f"      {removed}:\n", workflow)
+            self.assertNotIn(f"inputs.{removed}", workflow)
         self.assertIn("dispatcher.py record-route-t3-receipt", workflow)
-        self.assertIn(
-            '"$INPUT_DECISION_SOURCE" "$INPUT_DECISION_EVIDENCE_DIGEST" "$INPUT_ISSUED_AT"',
-            workflow,
-        )
+        self.assertIn('"$INPUT_PACKET_ID" "$INPUT_ROUTE_PAYLOAD"', workflow)
         self.assertIn("          - record-route-owner-outcome\n", workflow)
-        self.assertIn("      INPUT_OWNER_EVIDENCE_DIGEST: ${{ inputs.owner_evidence_digest }}\n", workflow)
         self.assertIn("dispatcher.py record-route-owner-outcome", workflow)
 
 

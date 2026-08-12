@@ -9,9 +9,11 @@ Issues, plan markers, or model transcripts is never executed as a shell.
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import re
 import subprocess
 import sys
+import tempfile
 from typing import Any, Callable
 
 
@@ -26,7 +28,7 @@ class LocalVerificationError(RuntimeError):
 # Display string → argv.  The display is what the artifact records; argv is
 # what the process actually executes.  Keep displays stable for evidence.
 _ALLOWLIST: dict[str, list[str]] = {
-    "git diff --check": ["git", "diff", "--check"],
+    "git diff --check": ["git", "diff", "--check", "HEAD"],
     "python -m unittest discover -s tests -p test_agent_*.py": [
         sys.executable,
         "-m",
@@ -283,6 +285,40 @@ def changed_paths(worktree: Path) -> list[str]:
     return paths
 
 
+def _candidate_patch_sha256(worktree: Path) -> str:
+    """Hash tracked and untracked candidate content without changing its index."""
+
+    # Lazy import avoids the module-level local_run_once/local_verification cycle.
+    import local_run_once
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="agent-candidate-index-") as directory:
+            index_path = Path(directory) / "index"
+            env = local_run_once.child_env()
+            env["GIT_INDEX_FILE"] = str(index_path)
+            commands = (
+                ["git", "read-tree", "HEAD"],
+                ["git", "add", "-A"],
+                ["git", "diff", "--cached", "--binary", "--full-index", "--no-ext-diff"],
+            )
+            outputs: list[bytes] = []
+            for command in commands:
+                result = subprocess.run(
+                    command,
+                    cwd=worktree,
+                    env=env,
+                    capture_output=True,
+                    timeout=60,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    raise LocalVerificationError("candidate_identity_git_failed")
+                outputs.append(result.stdout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise LocalVerificationError("candidate_identity_git_unavailable") from exc
+    return hashlib.sha256(outputs[-1]).hexdigest()
+
+
 def run_focused_checks(
     worktree: Path,
     displays: list[str],
@@ -308,6 +344,7 @@ def run_focused_checks(
             argv, cwd=cwd, timeout_seconds=timeout_seconds
         )
     )
+    candidate_identity = _candidate_patch_sha256(worktree)
     results: list[dict[str, Any]] = []
     for display in displays:
         argv = allowlisted_command(display)
@@ -321,6 +358,8 @@ def run_focused_checks(
             raise LocalVerificationError(
                 f"focused_check_unavailable:{display[:80]}"
             ) from exc
+        if _candidate_patch_sha256(worktree) != candidate_identity:
+            raise LocalVerificationError("focused_check_mutated_candidate")
         # Record the exact display (stable) which is 1:1 with allowlisted argv.
         results.append({"command": display, "exit_code": int(exit_code)})
         if exit_code == 124:

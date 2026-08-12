@@ -860,6 +860,120 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
         self.assertFalse(result["recorded"])
         self.assertEqual(result["reason"], "route_owner_outcome_owner_unproved")
 
+    def test_compact_t3_transport_rejects_malformed_payload_before_owner(self):
+        valid = {
+            "schema_version": "route_t3_transport.v1",
+            "accepted_main_sha": MAIN,
+            "candidate_digest": "b" * 64,
+            "action_digest": "c" * 64,
+            "scope_digest": "d" * 64,
+            "authority_receipt_digest": "e" * 64,
+            "outcome_receipt_digest": "f" * 64,
+            "authority_owner_digest": "a" * 64,
+            "decision_source": "local_sol_5_6_max",
+            "decision_evidence_digest": "1" * 64,
+            "issued_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2026-01-01T00:05:00+00:00",
+            "disposition": "GO",
+        }
+        malformed = (
+            "not-json",
+            json.dumps({**valid, "extra": "x"}),
+            json.dumps({key: value for key, value in valid.items() if key != "scope_digest"}),
+            json.dumps({**valid, "scope_digest": 7}),
+            json.dumps({**valid, "schema_version": "route_t3_transport.v2"}),
+            '{"schema_version":"route_t3_transport.v1","schema_version":"route_t3_transport.v1"}',
+            "x" * 8193,
+            json.dumps(valid) + "\x00",
+        )
+        with mock.patch.object(dispatcher, "record_route_t3_receipt") as owner:
+            for raw in malformed:
+                with self.subTest(raw=raw[:40]):
+                    result = dispatcher.dispatch_route_t3_payload(CLOSED, raw)
+                    self.assertFalse(result["authorized"])
+            owner.assert_not_called()
+
+    def test_compact_route_transports_delegate_exact_fields_and_controller_actor(self):
+        t3 = {
+            "schema_version": "route_t3_transport.v1",
+            "accepted_main_sha": MAIN,
+            "candidate_digest": "b" * 64,
+            "action_digest": "c" * 64,
+            "scope_digest": "d" * 64,
+            "authority_receipt_digest": "e" * 64,
+            "outcome_receipt_digest": "f" * 64,
+            "authority_owner_digest": "a" * 64,
+            "decision_source": "human_operator",
+            "decision_evidence_digest": "1" * 64,
+            "issued_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2026-01-01T00:05:00+00:00",
+            "disposition": "NO_GO",
+        }
+        owner_payload = {
+            "schema_version": "route_owner_outcome_transport.v1",
+            "accepted_main_sha": MAIN,
+            "candidate_digest": "b" * 64,
+            "outcome_receipt_digest": "f" * 64,
+            "owner_evidence_digest": "3" * 64,
+        }
+        with mock.patch.dict(os.environ, {"GITHUB_ACTOR": "product-owner"}), \
+             mock.patch.object(
+                 dispatcher, "record_route_t3_receipt", return_value={"authorized": True}
+             ) as t3_owner, \
+             mock.patch.object(
+                 dispatcher, "record_route_owner_outcome", return_value={"recorded": True}
+             ) as outcome_owner:
+            self.assertTrue(
+                dispatcher.dispatch_route_t3_payload(CLOSED, json.dumps(t3))["authorized"]
+            )
+            self.assertTrue(
+                dispatcher.dispatch_route_owner_payload(
+                    CLOSED, json.dumps(owner_payload)
+                )["recorded"]
+            )
+        self.assertEqual(t3_owner.call_args.args[0], CLOSED)
+        self.assertEqual(t3_owner.call_args.args[8], "product-owner")
+        self.assertEqual(outcome_owner.call_args.args, (
+            CLOSED, MAIN, "b" * 64, "f" * 64, "3" * 64,
+        ))
+
+    def test_compact_owner_transport_rejects_invalid_shape_before_owner(self):
+        payload = {
+            "schema_version": "route_owner_outcome_transport.v1",
+            "accepted_main_sha": MAIN,
+            "candidate_digest": "b" * 64,
+            "outcome_receipt_digest": "f" * 64,
+            "owner_evidence_digest": "3" * 64,
+        }
+        with mock.patch.object(dispatcher, "record_route_owner_outcome") as owner:
+            for raw in (
+                "{}",
+                json.dumps({**payload, "extra": "x"}),
+                json.dumps({**payload, "owner_evidence_digest": None}),
+                '{"schema_version":"route_owner_outcome_transport.v1",'
+                '"schema_version":"route_owner_outcome_transport.v1"}',
+            ):
+                with self.subTest(raw=raw):
+                    result = dispatcher.dispatch_route_owner_payload(CLOSED, raw)
+                    self.assertFalse(result["recorded"])
+            owner.assert_not_called()
+
+    def test_old_route_receipt_cli_arity_is_not_accepted(self):
+        old_t3_argv = ["dispatcher.py", "record-route-t3-receipt", *self._arguments()]
+        old_owner_argv = [
+            "dispatcher.py", "record-route-owner-outcome", CLOSED, MAIN,
+            "b" * 64, "f" * 64, "3" * 64,
+        ]
+        with mock.patch.object(dispatcher, "record_route_t3_receipt") as t3_owner, \
+             mock.patch.object(dispatcher, "record_route_owner_outcome") as outcome_owner:
+            for argv in (old_t3_argv, old_owner_argv):
+                with self.subTest(command=argv[1]), \
+                     mock.patch.object(sys, "argv", argv), \
+                     self.assertRaisesRegex(SystemExit, "invalid dispatcher command arity"):
+                    dispatcher.main()
+            t3_owner.assert_not_called()
+            outcome_owner.assert_not_called()
+
     def test_operator_transport_records_only_one_exact_receipt(self):
         adapter = self._adapter()
         with mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \

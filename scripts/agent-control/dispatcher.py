@@ -24,6 +24,114 @@ MONITOR_RECEIPT_ACTION = "ci-monitor"
 LOCAL_UNKNOWN_OUTPUT_REASON = "local_unknown_output"
 PLAN_LIFECYCLE_STAGES = frozenset({"ci", "review", "merge", "closeout"})
 _SAFE_GITHUB_OPERATOR = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37})$")
+_MAX_ROUTE_PAYLOAD_BYTES = 8192
+_ROUTE_T3_TRANSPORT_KEYS = frozenset({
+    "schema_version", "accepted_main_sha", "candidate_digest", "action_digest",
+    "scope_digest", "authority_receipt_digest", "outcome_receipt_digest",
+    "authority_owner_digest", "decision_source", "decision_evidence_digest",
+    "issued_at", "expires_at", "disposition",
+})
+_ROUTE_OWNER_TRANSPORT_KEYS = frozenset({
+    "schema_version", "accepted_main_sha", "candidate_digest",
+    "outcome_receipt_digest", "owner_evidence_digest",
+})
+
+
+class RoutePayloadError(ValueError):
+    """A route receipt transport payload failed bounded structural validation."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _decode_route_payload(
+    raw: object,
+    *,
+    schema_version: str,
+    exact_keys: frozenset[str],
+) -> dict[str, str]:
+    """Decode one exact-key string-only payload without exposing its contents."""
+
+    if not isinstance(raw, str) or not raw or "\x00" in raw:
+        raise RoutePayloadError("route_payload_invalid")
+    try:
+        encoded = raw.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise RoutePayloadError("route_payload_invalid") from exc
+    if len(encoded) > _MAX_ROUTE_PAYLOAD_BYTES:
+        raise RoutePayloadError("route_payload_too_large")
+
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        decoded: dict[str, object] = {}
+        for key, value in pairs:
+            if key in decoded:
+                raise RoutePayloadError("route_payload_duplicate_key")
+            decoded[key] = value
+        return decoded
+
+    try:
+        decoded = json.loads(raw, object_pairs_hook=reject_duplicates)
+    except RoutePayloadError:
+        raise
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise RoutePayloadError("route_payload_invalid") from exc
+    if not isinstance(decoded, dict) or set(decoded) != exact_keys:
+        raise RoutePayloadError("route_payload_keys_invalid")
+    if decoded.get("schema_version") != schema_version:
+        raise RoutePayloadError("route_payload_schema_invalid")
+    if any(not isinstance(value, str) or "\x00" in value for value in decoded.values()):
+        raise RoutePayloadError("route_payload_value_invalid")
+    return decoded  # type: ignore[return-value]
+
+
+def dispatch_route_t3_payload(packet_id: str, raw_payload: object) -> dict[str, object]:
+    """Validate the compact workflow transport before entering the T3 owner."""
+
+    try:
+        payload = _decode_route_payload(
+            raw_payload,
+            schema_version="route_t3_transport.v1",
+            exact_keys=_ROUTE_T3_TRANSPORT_KEYS,
+        )
+    except RoutePayloadError as exc:
+        return {"authorized": False, "reason": exc.reason}
+    return record_route_t3_receipt(
+        packet_id,
+        payload["accepted_main_sha"],
+        payload["candidate_digest"],
+        payload["action_digest"],
+        payload["scope_digest"],
+        payload["authority_receipt_digest"],
+        payload["outcome_receipt_digest"],
+        payload["authority_owner_digest"],
+        os.environ.get("GITHUB_ACTOR", ""),
+        payload["decision_source"],
+        payload["decision_evidence_digest"],
+        payload["issued_at"],
+        payload["expires_at"],
+        payload["disposition"],
+    )
+
+
+def dispatch_route_owner_payload(packet_id: str, raw_payload: object) -> dict[str, object]:
+    """Validate the compact workflow transport before entering the owner receipt."""
+
+    try:
+        payload = _decode_route_payload(
+            raw_payload,
+            schema_version="route_owner_outcome_transport.v1",
+            exact_keys=_ROUTE_OWNER_TRANSPORT_KEYS,
+        )
+    except RoutePayloadError as exc:
+        return {"recorded": False, "reason": exc.reason}
+    return record_route_owner_outcome(
+        packet_id,
+        payload["accepted_main_sha"],
+        payload["candidate_digest"],
+        payload["outcome_receipt_digest"],
+        payload["owner_evidence_digest"],
+    )
 
 
 def _repo() -> str:
@@ -2440,16 +2548,10 @@ def main() -> None:
         result = record_plan_lifecycle(sys.argv[2], sys.argv[3], sys.argv[4])
     elif command == "promote-plan" and len(sys.argv) == 4:
         result = promote_plan(sys.argv[2], sys.argv[3])
-    elif command == "record-route-t3-receipt" and len(sys.argv) == 16:
-        result = record_route_t3_receipt(
-            sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6],
-            sys.argv[7], sys.argv[8], sys.argv[9], sys.argv[10], sys.argv[11],
-            sys.argv[12], sys.argv[13], sys.argv[14], sys.argv[15],
-        )
-    elif command == "record-route-owner-outcome" and len(sys.argv) == 7:
-        result = record_route_owner_outcome(
-            sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
-        )
+    elif command == "record-route-t3-receipt" and len(sys.argv) == 4:
+        result = dispatch_route_t3_payload(sys.argv[2], sys.argv[3])
+    elif command == "record-route-owner-outcome" and len(sys.argv) == 4:
+        result = dispatch_route_owner_payload(sys.argv[2], sys.argv[3])
     elif command == "release-plan" and len(sys.argv) == 7:
         result = release_plan(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])
     elif command == "block-plan" and len(sys.argv) == 6:
