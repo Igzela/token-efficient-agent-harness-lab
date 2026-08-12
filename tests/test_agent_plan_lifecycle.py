@@ -758,6 +758,25 @@ class TestRecordPlanLifecycleDispatcher(unittest.TestCase):
 
 
 class TestPlanLifecycleWait(unittest.TestCase):
+    @staticmethod
+    def _lifecycle(*, stages=None, transitions=None, packet_id=PACKET, pr_number=PR, head_sha=HEAD):
+        stages = stages or {"ci": True, "review": True, "merge": True, "closeout": True}
+        transitions = transitions or {
+            "ci": ci_wire(pr_number=pr_number, head_sha=head_sha),
+            "review": review_wire(pr_number=pr_number, head_sha=head_sha),
+            "merge": merge_wire(pr_number=pr_number, head_sha=head_sha),
+            "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{pr_number}"},
+        }
+        return {
+            "packet_id": packet_id,
+            "attempt_id": ATTEMPT,
+            "ledger_issue": LEDGER,
+            "pr_number": pr_number,
+            "head_sha": head_sha,
+            "stages": stages,
+            "transitions": transitions,
+        }
+
     def test_wait_returns_closed_out_when_all_stages_done(self):
         github = mock.Mock()
         git = mock.Mock()
@@ -765,13 +784,7 @@ class TestPlanLifecycleWait(unittest.TestCase):
             github, git, repository="acme/repo", repo_path=Path("/tmp"),
             lifecycle_timeout_seconds=60, sleeper=lambda _: None,
         )
-        lifecycle = {
-            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
-            "transitions": {
-                "merge": {"merge_commit_sha": MERGE},
-                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
-            },
-        }
+        lifecycle = self._lifecycle()
         promotion = {
             "kind": "plan-promote", "status": "promoted",
             "details": {"successor_id": "PE7-SUCCESSOR-PROMOTION-ESCALATION-1"},
@@ -795,13 +808,7 @@ class TestPlanLifecycleWait(unittest.TestCase):
             github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
             lifecycle_timeout_seconds=60, sleeper=lambda _: None,
         )
-        lifecycle = {
-            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
-            "transitions": {
-                "merge": {"merge_commit_sha": MERGE},
-                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
-            },
-        }
+        lifecycle = self._lifecycle()
         escalation = {
             "kind": "plan-escalate", "status": "escalated",
             "details": {"reason": "promotion_current_main_evidence_missing"},
@@ -824,13 +831,7 @@ class TestPlanLifecycleWait(unittest.TestCase):
             github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
             lifecycle_timeout_seconds=60, sleeper=lambda _: None,
         )
-        lifecycle = {
-            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
-            "transitions": {
-                "merge": {"merge_commit_sha": MERGE},
-                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
-            },
-        }
+        lifecycle = self._lifecycle()
         escalation = {
             "kind": "plan-escalate", "status": "escalated",
             "details": {"reason": "promotion_owner_ambiguous"},
@@ -845,6 +846,47 @@ class TestPlanLifecycleWait(unittest.TestCase):
         self.assertEqual(result.details["reason"], "promotion_owner_ambiguous")
         github.dispatch_controller.assert_not_called()
 
+    def test_wait_rejects_mismatched_lifecycle_before_promotion(self):
+        github = mock.Mock()
+        runner = local_run_once.LocalRunOnce(
+            github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
+            lifecycle_timeout_seconds=60, sleeper=lambda _: None,
+        )
+        cases = {
+            "top_level_pr": self._lifecycle(pr_number=PR + 1),
+            "top_level_head": self._lifecycle(head_sha="f" * 40),
+            "abbreviated_head": self._lifecycle(head_sha=HEAD[:12]),
+            "ci_head": self._lifecycle(transitions={
+                "ci": ci_wire(head_sha="f" * 40),
+                "review": review_wire(), "merge": merge_wire(),
+                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
+            }),
+            "review_pr": self._lifecycle(transitions={
+                "ci": ci_wire(), "review": review_wire(pr_number=PR + 1),
+                "merge": merge_wire(),
+                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
+            }),
+            "merge_head": self._lifecycle(transitions={
+                "ci": ci_wire(), "review": review_wire(),
+                "merge": merge_wire(head_sha="f" * 40),
+                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
+            }),
+        }
+        missing_head = self._lifecycle()
+        del missing_head["head_sha"]
+        cases["missing_head"] = missing_head
+        for name, lifecycle in cases.items():
+            with self.subTest(name=name), mock.patch.object(
+                plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle
+            ), mock.patch.object(runner, "_read_plan_promotion", return_value=None) as promotion:
+                result = runner._wait_for_plan_terminal_receipts(
+                    LEDGER, PACKET, ATTEMPT, PR, HEAD
+                )
+                self.assertEqual(result.status, "rejected")
+                self.assertEqual(result.details["reason"], "plan_lifecycle_binding_invalid")
+                promotion.assert_not_called()
+        github.dispatch_controller.assert_not_called()
+
     def test_wait_dispatches_controller_for_merge_and_closeout_stages(self):
         github = mock.Mock()
         runner = local_run_once.LocalRunOnce(
@@ -852,21 +894,15 @@ class TestPlanLifecycleWait(unittest.TestCase):
             lifecycle_timeout_seconds=10, sleeper=lambda _: None,
         )
         readbacks = [
-            {
-                "stages": {"ci": True, "review": True, "merge": False, "closeout": False},
-                "transitions": {},
-            },
-            {
-                "stages": {"ci": True, "review": True, "merge": True, "closeout": False},
-                "transitions": {"merge": {"merge_commit_sha": MERGE}},
-            },
-            {
-                "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
-                "transitions": {
-                    "merge": {"merge_commit_sha": MERGE},
-                    "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
-                },
-            },
+            self._lifecycle(
+                stages={"ci": True, "review": True, "merge": False, "closeout": False},
+                transitions={"ci": ci_wire(), "review": review_wire()},
+            ),
+            self._lifecycle(
+                stages={"ci": True, "review": True, "merge": True, "closeout": False},
+                transitions={"ci": ci_wire(), "review": review_wire(), "merge": merge_wire()},
+            ),
+            self._lifecycle(),
         ]
         with mock.patch.object(
             plan_lifecycle, "read_plan_lifecycle", side_effect=readbacks
@@ -891,10 +927,10 @@ class TestPlanLifecycleWait(unittest.TestCase):
             github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
             lifecycle_timeout_seconds=10, sleeper=lambda _: None,
         )
-        readback = {
-            "stages": {"ci": True, "review": True, "merge": True, "closeout": False},
-            "transitions": {},
-        }
+        readback = self._lifecycle(
+            stages={"ci": True, "review": True, "merge": True, "closeout": False},
+            transitions={"ci": ci_wire(), "review": review_wire(), "merge": merge_wire()},
+        )
         with mock.patch.object(
             plan_lifecycle, "read_plan_lifecycle", return_value=readback
         ), mock.patch.object(

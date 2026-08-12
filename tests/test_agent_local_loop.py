@@ -680,11 +680,20 @@ class TestLocalRunOnce(unittest.TestCase):
                 transition_heads = [head] * 4
                 transport["lifecycle_heads"].append(transition_heads)
                 return {
+                    "packet_id": packet_id,
+                    "attempt_id": ATTEMPT,
+                    "ledger_issue": 383,
+                    "pr_number": transport["pr_number"],
+                    "head_sha": head,
                     "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
                     "transitions": {
-                        "ci": {"head_sha": head, "status": "success"},
-                        "review": {"head_sha": head, "verdict": "PASS"},
-                        "merge": {"head_sha": head, "merge_commit_sha": transport["merge_sha"]},
+                        "ci": {"pr_number": transport["pr_number"], "head_sha": head, "status": "success"},
+                        "review": {"pr_number": transport["pr_number"], "head_sha": head, "verdict": "PASS"},
+                        "merge": {
+                            "pr_number": transport["pr_number"],
+                            "expected_head_sha": head,
+                            "merge_commit_sha": transport["merge_sha"],
+                        },
                         "closeout": {
                             "head_sha": head,
                             "terminal_packet_state": "COMPLETE",

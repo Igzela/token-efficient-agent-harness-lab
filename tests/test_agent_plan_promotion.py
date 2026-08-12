@@ -667,9 +667,13 @@ class TestPromotionWait(unittest.TestCase):
             lifecycle_timeout_seconds=10, sleeper=lambda _: None,
         )
         lifecycle = {
+            "packet_id": CLOSED, "attempt_id": ATTEMPT, "ledger_issue": LEDGER,
+            "pr_number": 42, "head_sha": "b" * 40,
             "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
             "transitions": {
-                "merge": {"merge_commit_sha": "c" * 40},
+                "ci": {"pr_number": 42, "head_sha": "b" * 40},
+                "review": {"pr_number": 42, "head_sha": "b" * 40},
+                "merge": {"pr_number": 42, "expected_head_sha": "b" * 40, "merge_commit_sha": "c" * 40},
                 "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": "PR #42"},
             },
         }
@@ -692,9 +696,13 @@ class TestPromotionWait(unittest.TestCase):
             lifecycle_timeout_seconds=10, sleeper=lambda _: None,
         )
         lifecycle = {
+            "packet_id": CLOSED, "attempt_id": ATTEMPT, "ledger_issue": LEDGER,
+            "pr_number": 42, "head_sha": "b" * 40,
             "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
             "transitions": {
-                "merge": {"merge_commit_sha": "c" * 40},
+                "ci": {"pr_number": 42, "head_sha": "b" * 40},
+                "review": {"pr_number": 42, "head_sha": "b" * 40},
+                "merge": {"pr_number": 42, "expected_head_sha": "b" * 40, "merge_commit_sha": "c" * 40},
                 "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": "PR #42"},
             },
         }
