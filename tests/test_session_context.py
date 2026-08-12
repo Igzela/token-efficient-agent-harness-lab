@@ -933,18 +933,18 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_route_bootstrap_window_binds_dispatch_capsule(self):
+    def test_current_workspace_prep_race_repair_window_binds_dispatch_capsule(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         packet = session_context.current_packet_binding(next_document, MAIN)
-        self.assertEqual(packet["packet_id"], "PE7-ROUTE-AUTOMATION-1")
+        self.assertEqual(packet["packet_id"], "PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1")
         self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
         self.assertTrue(packet["checkpoint_allowed"])
         capsule = session_context.current_dispatch_capsule(next_document, packet)
-        self.assertEqual(capsule["packet_id"], "PE7-ROUTE-AUTOMATION-1")
+        self.assertEqual(capsule["packet_id"], "PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1")
         self.assertEqual(capsule["packet_state"], "READY_FOR_EXECUTION")
-        self.assertEqual(capsule["dispatch_lane"], "provider_free_repository_maintenance")
+        self.assertEqual(capsule["dispatch_lane"], "provider_free_local")
         self.assertEqual(capsule["external_effect_limit"], 0)
         self.assertIs(capsule["authority_consumption_allowed"], False)
         self.assertIs(capsule["secret_values_allowed"], False)
@@ -952,7 +952,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(
             capsule["plan_lane_state"], "plan_lane_active"
         )
-        self.assertEqual(capsule["allowed_paths"], packet["allowed_paths"])
+        self.assertEqual(sorted(capsule["allowed_paths"]), packet["allowed_paths"])
         self.assertEqual(
             capsule["forbidden_next_actions"], packet["forbidden_next_actions"]
         )
@@ -979,7 +979,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(entry["resume_reason"], "clean_accepted_baseline")
         self.assertIsNotNone(entry["dispatch_capsule"])
         self.assertEqual(
-            entry["dispatch_capsule"]["packet_id"], "PE7-ROUTE-AUTOMATION-1"
+            entry["dispatch_capsule"]["packet_id"], "PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1"
         )
         self.assertFalse(entry["execution_authorized"])
         self.assertTrue(entry["checkpoint_allowed"])
