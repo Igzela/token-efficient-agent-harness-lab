@@ -1272,6 +1272,9 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.assertIn("with no duplicates", prompt)
         self.assertIn("glob characters", prompt)
         self.assertIn("Every path named elsewhere in the proposal must also appear in `allowed_paths`", prompt)
+        self.assertIn(".github/workflows/", prompt)
+        self.assertIn(".github/actions/", prompt)
+        self.assertIn("row whose owner/caller/symbol cannot be proven is rejected", prompt)
 
     def test_worker_prompt_defines_machine_verifiable_caller_evidence(self):
         prompt = route_driver.promotion_planner_prompt(
