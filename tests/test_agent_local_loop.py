@@ -612,6 +612,7 @@ class TestLocalRunOnce(unittest.TestCase):
             transport = {
                 "dispatches": [],
                 "head_sha": None,
+                "lifecycle_heads": [],
                 "pr_number": 4901,
                 "merge_sha": "e" * 40,
             }
@@ -673,19 +674,24 @@ class TestLocalRunOnce(unittest.TestCase):
                 )
                 return result.stdout.strip()
 
-            lifecycle = {
-                "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
-                "transitions": {
-                    "ci": {"head_sha": None, "status": "success"},
-                    "review": {"head_sha": None, "verdict": "PASS"},
-                    "merge": {"head_sha": None, "merge_commit_sha": transport["merge_sha"]},
-                    "closeout": {
-                        "head_sha": None,
-                        "terminal_packet_state": "COMPLETE",
-                        "closeout_reference": "stateful-soak",
+            def read_lifecycle(*_args):
+                head = transport["head_sha"]
+                self.assertRegex(head, r"^[0-9a-f]{40}$")
+                transition_heads = [head] * 4
+                transport["lifecycle_heads"].append(transition_heads)
+                return {
+                    "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
+                    "transitions": {
+                        "ci": {"head_sha": head, "status": "success"},
+                        "review": {"head_sha": head, "verdict": "PASS"},
+                        "merge": {"head_sha": head, "merge_commit_sha": transport["merge_sha"]},
+                        "closeout": {
+                            "head_sha": head,
+                            "terminal_packet_state": "COMPLETE",
+                            "closeout_reference": "stateful-soak",
+                        },
                     },
-                },
-            }
+                }
             promotion = {
                 "kind": "plan-promote",
                 "status": "promoted",
@@ -708,7 +714,7 @@ class TestLocalRunOnce(unittest.TestCase):
                  mock.patch.object(local_run_once.pr_binding, "create_or_update_plan_pr", side_effect=create_pr), \
                  mock.patch.object(local_run_once.pr_binding, "verify_post_push_plan_binding"), \
                  mock.patch.object(runner, "_wait_for_plan_handoff", return_value=(True, "handoff_proven")) as handoff, \
-                 mock.patch.object(local_run_once.plan_lifecycle, "read_plan_lifecycle", side_effect=lambda *_args: lifecycle), \
+                 mock.patch.object(local_run_once.plan_lifecycle, "read_plan_lifecycle", side_effect=read_lifecycle), \
                  mock.patch.object(runner, "_read_plan_promotion", return_value=promotion):
                 result = runner._run_plan_once_authorized(packet_id, ATTEMPT)
 
@@ -716,6 +722,12 @@ class TestLocalRunOnce(unittest.TestCase):
             self.assertEqual(result.attempt_id, ATTEMPT)
             self.assertEqual(result.details["head_sha"], transport["head_sha"])
             self.assertEqual(result.details["merge_commit_sha"], transport["merge_sha"])
+            self.assertTrue(transport["lifecycle_heads"])
+            self.assertTrue(all(
+                transition_head == transport["head_sha"]
+                for lifecycle_heads in transport["lifecycle_heads"]
+                for transition_head in lifecycle_heads
+            ))
             handoff.assert_called_once_with(
                 383, packet_id, ATTEMPT, NONCE, transport["pr_number"], transport["head_sha"]
             )
