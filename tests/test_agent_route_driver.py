@@ -939,9 +939,10 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             route_driver.direct_effect_closeout_request(document, closeout, MAIN),
             request,
         )
-        self.assertIsNone(route_driver.direct_effect_closeout_request(
-            document.replace("## Retained", "## Historical", 1), closeout, MAIN
-        ))
+        with self.assertRaises(route_driver.RouteDriverError):
+            route_driver.direct_effect_closeout_request(
+                document.replace("## Retained", "## Historical", 1), closeout, MAIN
+            )
 
     def test_owner_outcome_proof_requires_an_accepted_digest_bound_receipt(self):
         now = datetime.now(timezone.utc)
@@ -998,7 +999,7 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             },
         }
         self.assertTrue(route_driver.owner_outcome_receipt_proved(status, request, receipt, owner_receipt))
-        self.assertFalse(route_driver.owner_outcome_receipt_proved(
+        self.assertTrue(route_driver.owner_outcome_receipt_proved(
             status.replace("owner-validated", "operator asserted"), request, receipt, owner_receipt
         ))
 

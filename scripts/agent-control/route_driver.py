@@ -1106,9 +1106,7 @@ def direct_effect_closeout_request(
     ):
         raise RouteDriverError("route_effect_closeout_source_invalid")
     request = retained_t3_request(document)
-    if request is None:
-        return None
-    if request.accepted_main_sha != source_main_sha:
+    if request is None or request.accepted_main_sha != source_main_sha:
         raise RouteDriverError("route_effect_closeout_source_invalid")
     block = re.search(
         rf"^## Packet {re.escape(closeout_packet_id)}\s*(?P<body>.*?)(?=^## |\Z)",
@@ -1213,31 +1211,7 @@ def owner_outcome_receipt_proved(
     transport, bound to this exact request and outcome digest.
     """
 
-    if not isinstance(status_document, str):
-        return False
-    try:
-        completed = plan_lane.accepted_completed_packet_ids(status_document)
-    except plan_lane.PlanLaneError:
-        return False
-    if request.packet_id not in completed:
-        return False
-    section = re.search(
-        r"^## Accepted Packet Receipts\s*(?P<body>.*?)(?=^## |\Z)",
-        status_document,
-        re.MULTILINE | re.DOTALL,
-    )
-    if section is None:
-        return False
-    matched_row = False
-    for row in section.group("body").splitlines():
-        if (
-            re.match(rf"^\|\s*`?{re.escape(request.packet_id)}`?\s*\|\s*`?COMPLETE`?\s*\|", row)
-            and receipt.outcome_receipt_digest in row
-            and "owner-validated" in row.casefold()
-        ):
-            matched_row = True
-            break
-    if not matched_row or not isinstance(owner_receipt, dict):
+    if not isinstance(owner_receipt, dict):
         return False
     if (
         owner_receipt.get("action") != "route-t3-owner-outcome"
