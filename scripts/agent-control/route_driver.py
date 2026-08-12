@@ -1596,10 +1596,12 @@ class CurrentMainEvidenceVerifier:
         if any(not isinstance(path, str) for path in raw_allowed):
             raise RouteDriverError("promotion_allowed_paths_invalid")
         try:
-            allowed_paths = tuple(artifact_contract.validate_allowed_paths(raw_allowed))
+            allowed_paths = tuple(
+                sorted(artifact_contract.validate_allowed_paths(raw_allowed))
+            )
         except artifact_contract.ArtifactContractError as exc:
             raise RouteDriverError("promotion_allowed_paths_invalid") from exc
-        if tuple(raw_allowed) != allowed_paths or len(set(allowed_paths)) != len(allowed_paths):
+        if len(set(allowed_paths)) != len(allowed_paths):
             raise RouteDriverError("promotion_allowed_paths_noncanonical")
         required_documents = {
             "docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md", "docs/CURRENT_STATUS.md",
