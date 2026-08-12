@@ -705,6 +705,7 @@ def compile_successor(
             if retained_t3_request is not None
             else ""
         ),
+        active_risk_class=successor.profile[3],
     )
     future_document = _refresh_future_document(future_document, successor.packet_id)
     closed_row, successor_row = _status_readiness_rows(
@@ -1978,6 +1979,52 @@ class RoutePromotionPlanner:
         )
 
 
+def _refresh_forward_order_window(
+    document: str,
+    *,
+    active_id: str,
+    active_state: str,
+    risk_class: str,
+) -> str:
+    """Refresh the Authoritative Forward Order window projection.
+
+    The block is routing prose, but its first line names the current window;
+    leaving it stale while the Active Routing section advances would make the
+    compiled NEXT_DECISION self-contradictory.  The replacement is
+    deterministic: the exact active packet id, its machine state, and a
+    provider-free detail when the risk class is ``none``.  The first hop line
+    (the just-promoted successor) is consumed, and any block shape that
+    cannot be proven is left untouched so an unexpected document fails closed
+    instead of being silently rewritten.
+    """
+
+    heading = "## Authoritative Forward Order"
+    index = document.find(heading)
+    if index < 0:
+        return document
+    section_start = index + len(heading)
+    section_end = document.find("\n## ", section_start)
+    if section_end < 0:
+        section_end = len(document)
+    section = document[section_start:section_end]
+    if "[window:" not in section:
+        return document
+    window_line = re.search(r"(?m)^\[window: [^\]]*\]\s*$", section)
+    if window_line is None:
+        return document
+    detail = "provider-free" if risk_class == "none" else risk_class
+    replacement = f"[window: {active_id} — {active_state}, {detail}]"
+    hop_line = re.search(r"(?m)^→ .*$\n?", section[window_line.end():])
+    refreshed = section[: window_line.start()] + replacement + "\n"
+    if hop_line is not None:
+        hop_start = window_line.end() + hop_line.start()
+        hop_end = window_line.end() + hop_line.end()
+        refreshed += section[window_line.end(): hop_start] + section[hop_end:]
+    else:
+        refreshed += section[window_line.end():]
+    return document[:section_start] + refreshed + document[section_end:]
+
+
 def compact_next_window(
     document: str,
     *,
@@ -1987,6 +2034,7 @@ def compact_next_window(
     active_state: str = "READY_FOR_EXECUTION",
     closed_packet_state: str = "COMPLETE",
     retained_marker: str = "",
+    active_risk_class: str = "none",
 ) -> str:
     """Replace routing history with one active window and one short binding.
 
@@ -2013,6 +2061,8 @@ def compact_next_window(
         raise RouteDriverError("route_retained_marker_invalid")
     if closed_packet_state == "COMPLETE" and retained_marker:
         raise RouteDriverError("route_completed_packet_retained_marker_forbidden")
+    if not isinstance(active_risk_class, str) or not active_risk_class.strip():
+        raise RouteDriverError("route_active_risk_class_invalid")
     common_marker = "## Common Execution Protocol"
     common_index = document.find(common_marker)
     routing_marker = "## Active Routing"
@@ -2023,6 +2073,12 @@ def compact_next_window(
         prefix = document[:common_index].rstrip() + "\n\n"
     else:
         prefix = document.rstrip() + "\n\n"
+    prefix = _refresh_forward_order_window(
+        prefix,
+        active_id=active_match.group("packet"),
+        active_state=active_state,
+        risk_class=active_risk_class,
+    )
     suffix = document[common_index:].lstrip() if common_index >= 0 else ""
     active_id = active_match.group("packet")
     historical_heading = "Completed" if closed_packet_state == "COMPLETE" else "Retained"
