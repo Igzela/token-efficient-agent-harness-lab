@@ -1383,8 +1383,12 @@ Each `caller_evidence` row must be independently machine-verifiable:
 - `caller_path` must be in `allowed_paths`.
 - `symbol` must match a Python `def` or `class` declaration in `owner_path`
   and a verifier-recognized `symbol(` reference in `caller_path`.
-- Prove each symbol against the exact accepted tree before returning it; a
-  row whose owner/caller/symbol cannot be proven is rejected.
+- Prove each symbol against the exact accepted tree by running
+  `git grep -nE '^[[:space:]]*(def|class)[[:space:]]+<symbol>' {accepted_main_sha} -- <owner_path>`
+  for the declaration and
+  `git grep -nF '<symbol>(' {accepted_main_sha} -- <caller_path>`
+  for the consumption, and return the row only when both commands prove it;
+  a row whose owner/caller/symbol cannot be proven is rejected.
 Do not include a speculative caller row; return the bounded decision object
 instead when no such exact caller fact can be proved.
 
