@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Barrier, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -764,6 +764,8 @@ fn duplicate_intake_is_idempotent() {
 #[test]
 fn concurrent_duplicate_intake_one_effect() {
     with_gates(|| {
+        const CONCURRENT_INTAKES: usize = 16;
+
         let (dir, store) = temp_store();
         let store = Arc::new(store);
         let repo = dir.path().join("repo");
@@ -771,11 +773,14 @@ fn concurrent_duplicate_intake_one_effect() {
         let validated = Arc::new(
             validate_intake(&intake(&repo, &rev, "rec-concurrent-1"), "local", "default").unwrap(),
         );
+        let start = Arc::new(Barrier::new(CONCURRENT_INTAKES));
         let mut handles = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..CONCURRENT_INTAKES {
             let store = store.clone();
             let validated = validated.clone();
+            let start = start.clone();
             handles.push(thread::spawn(move || {
+                start.wait();
                 store.admit_product_task(&validated, "tester")
             }));
         }
@@ -789,7 +794,7 @@ fn concurrent_duplicate_intake_one_effect() {
                 task["task_id"].as_str().unwrap().to_string()
             })
             .collect::<Vec<_>>();
-        assert_eq!(ids.len(), 4);
+        assert_eq!(ids.len(), CONCURRENT_INTAKES);
         assert!(
             ids.iter().all(|task_id| task_id == &ids[0]),
             "concurrent intake must collapse to one task: {ids:?}"

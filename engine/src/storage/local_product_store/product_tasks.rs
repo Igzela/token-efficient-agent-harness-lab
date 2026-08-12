@@ -573,6 +573,61 @@ struct ProductTaskWorkspacePreparationReceipt {
     receipt_sha256: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SqliteWorkspacePreparationObservation {
+    Existing(ProductTaskWorkspacePreparationReceipt),
+    Admitted { version: i64 },
+}
+
+fn observe_sqlite_workspace_preparation(
+    tx: &rusqlite::Transaction<'_>,
+    task_id: &str,
+) -> Result<SqliteWorkspacePreparationObservation, String> {
+    let existing = tx
+        .query_row(
+            "SELECT workspace_root, workspace_path, marker_sha256, marker_state,
+                    receipt_sha256
+             FROM product_task_workspace_preparations WHERE task_id=?1",
+            params![task_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some((root, path, marker, state, hash)) = existing {
+        return ProductTaskWorkspacePreparationReceipt::from_persisted(
+            task_id, root, path, marker, state, hash,
+        )
+        .map(SqliteWorkspacePreparationObservation::Existing);
+    }
+    let task = tx
+        .query_row(
+            "SELECT status, version FROM product_tasks WHERE task_id=?1",
+            params![task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let (status, version): (String, i64) =
+        task.ok_or_else(|| "product task missing before workspace preparation".to_string())?;
+    if status == ProductTaskStatus::WorkspacePreparing.as_str() {
+        return Err(format!(
+            "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: legacy preparing task has no receipt"
+        ));
+    }
+    if status != ProductTaskStatus::Admitted.as_str() {
+        return Err("product task is not eligible for workspace preparation".to_string());
+    }
+    Ok(SqliteWorkspacePreparationObservation::Admitted { version })
+}
+
 impl ProductTaskWorkspacePreparationReceipt {
     fn planned(task_id: &str, workspace_root: PathBuf) -> Result<Self, String> {
         let workspace_fs_id = product_task_workspace_fs_id(task_id);
@@ -1938,65 +1993,56 @@ impl LocalProductStore {
         intake: &ValidatedProductTaskIntake,
         actor: &str,
     ) -> Result<ProductTaskWorkspacePreparationReceipt, String> {
+        self.ensure_product_task_workspace_preparation_receipt_after_sqlite_observation(
+            task_id,
+            intake,
+            actor,
+            || {},
+        )
+    }
+
+    fn ensure_product_task_workspace_preparation_receipt_after_sqlite_observation<F>(
+        &self,
+        task_id: &str,
+        intake: &ValidatedProductTaskIntake,
+        actor: &str,
+        after_sqlite_initial_observation: F,
+    ) -> Result<ProductTaskWorkspacePreparationReceipt, String>
+    where
+        F: FnOnce(),
+    {
         match &self.db {
             DatabaseConnection::Sqlite(_) => {
-                if let Some(receipt) = self.product_task_workspace_preparation_receipt(task_id)? {
+                let initial = self.with_conn(|conn| {
+                    let tx = conn
+                        .unchecked_transaction()
+                        .map_err(|error| error.to_string())?;
+                    let observed = observe_sqlite_workspace_preparation(&tx, task_id)?;
+                    tx.commit().map_err(|error| error.to_string())?;
+                    Ok(observed)
+                })?;
+                if let SqliteWorkspacePreparationObservation::Existing(receipt) = initial {
                     return Ok(receipt);
                 }
 
-                let task = self.get_product_task(task_id)?.ok_or_else(|| {
-                    "product task missing before workspace preparation".to_string()
-                })?;
-                let status = task.get("status").and_then(Value::as_str).unwrap_or("");
-                if status == ProductTaskStatus::WorkspacePreparing.as_str() {
-                    return Err(format!(
-                        "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: legacy preparing task has no receipt"
-                    ));
-                }
-                if status != ProductTaskStatus::Admitted.as_str() {
-                    return Err("product task is not eligible for workspace preparation".to_string());
-                }
-
+                // Keep path inspection outside the connection lock. The
+                // second transaction below is the authoritative observation;
+                // the callback is a no-op in production and lets the unit
+                // test deterministically publish a concurrent winner here.
+                after_sqlite_initial_observation();
                 let receipt = self.new_product_task_workspace_preparation_receipt(task_id, intake)?;
                 let now = self.now();
                 self.with_conn(|conn| {
                     let tx = conn
                         .unchecked_transaction()
                         .map_err(|error| error.to_string())?;
-                    let existing = tx
-                        .query_row(
-                            "SELECT workspace_root, workspace_path, marker_sha256, marker_state,
-                                    receipt_sha256
-                             FROM product_task_workspace_preparations WHERE task_id=?1",
-                            params![task_id],
-                            |row| {
-                                Ok((
-                                    row.get::<_, String>(0)?,
-                                    row.get::<_, String>(1)?,
-                                    row.get::<_, String>(2)?,
-                                    row.get::<_, String>(3)?,
-                                    row.get::<_, String>(4)?,
-                                ))
-                            },
-                        )
-                        .optional()
-                        .map_err(|error| error.to_string())?;
-                    if let Some((root, path, marker, state, hash)) = existing {
-                        tx.commit().map_err(|error| error.to_string())?;
-                        return ProductTaskWorkspacePreparationReceipt::from_persisted(
-                            task_id, root, path, marker, state, hash,
-                        );
-                    }
-                    let (current_status, current_version): (String, i64) = tx
-                        .query_row(
-                            "SELECT status, version FROM product_tasks WHERE task_id=?1",
-                            params![task_id],
-                            |row| Ok((row.get(0)?, row.get(1)?)),
-                        )
-                        .map_err(|error| error.to_string())?;
-                    if current_status != ProductTaskStatus::Admitted.as_str() {
-                        return Err("product task expected-current update conflict".to_string());
-                    }
+                    let current_version = match observe_sqlite_workspace_preparation(&tx, task_id)? {
+                        SqliteWorkspacePreparationObservation::Existing(existing) => {
+                            tx.commit().map_err(|error| error.to_string())?;
+                            return Ok(existing);
+                        }
+                        SqliteWorkspacePreparationObservation::Admitted { version } => version,
+                    };
                     let next_version = current_version.saturating_add(1);
                     let updated = tx
                         .execute(
@@ -9426,6 +9472,126 @@ mod local_folder_product_task_tests {
                 std::env::remove_var(PRODUCT_TASK_GATE);
             }
         }
+    }
+
+    #[test]
+    fn sqlite_workspace_preparation_transaction_reuses_receipt_committed_after_fast_miss() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("operator-folder");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("README.md"), b"original").unwrap();
+        let _gate_guard = ProductGateGuard::enable();
+        let source = std::fs::canonicalize(&source).unwrap();
+        let request = ProductTaskIntakeRequest {
+            objective: "Stage one bounded local document".to_string(),
+            target_id: "sqlite-receipt-race-fixture".to_string(),
+            target_repo_path: source.to_string_lossy().into_owned(),
+            source_kind: Some("local_folder".to_string()),
+            source_revision: "operator-supplied-placeholder".to_string(),
+            source_tree_hash: None,
+            allowed_paths: vec!["README.md".to_string()],
+            verification_commands: vec![ProductVerificationCommand {
+                command: "test -f README.md".to_string(),
+                timeout_ms: 1_000,
+            }],
+            output_intent: "artifact_only".to_string(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["deterministic".to_string()],
+                prefer: Some("deterministic".to_string()),
+            },
+            budget: None,
+            risk_class: "low".to_string(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(false),
+            idempotency_key: "sqlite-receipt-race".to_string(),
+            expected_version: None,
+            tenant_id: Some("tenant-local".to_string()),
+            workspace_id: Some("workspace-local".to_string()),
+            workspace_mode: Some("local_folder".to_string()),
+        };
+        let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
+        let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
+        let task = store.admit_product_task(&intake, "operator").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        store
+            .with_conn(|conn| {
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                tx.execute(
+                    "DELETE FROM product_task_workspace_preparations WHERE task_id=?1",
+                    rusqlite::params![task_id],
+                )
+                .map_err(|error| error.to_string())?;
+                tx.execute(
+                    "UPDATE product_tasks SET status=?1 WHERE task_id=?2",
+                    rusqlite::params![ProductTaskStatus::Admitted.as_str(), task_id],
+                )
+                .map_err(|error| error.to_string())?;
+                tx.commit().map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(store
+            .product_task_workspace_preparation_receipt(task_id)
+            .unwrap()
+            .is_none());
+
+        let (loser_receipt, winner_receipt) = std::thread::scope(|scope| {
+            let (start_winner_tx, start_winner_rx) = std::sync::mpsc::sync_channel(0);
+            let (winner_committed_tx, winner_committed_rx) = std::sync::mpsc::sync_channel(0);
+            let winner_store = &store;
+            let winner_intake = &intake;
+            let winner = scope.spawn(move || {
+                start_winner_rx.recv().unwrap();
+                let receipt = winner_store
+                    .ensure_product_task_workspace_preparation_receipt(
+                        task_id,
+                        winner_intake,
+                        "winner",
+                    )
+                    .unwrap();
+                winner_committed_tx.send(()).unwrap();
+                receipt
+            });
+            let loser_receipt = store
+                .ensure_product_task_workspace_preparation_receipt_after_sqlite_observation(
+                    task_id,
+                    &intake,
+                    "loser",
+                    || {
+                        start_winner_tx.send(()).unwrap();
+                        winner_committed_rx.recv().unwrap();
+                    },
+                )
+                .unwrap();
+            (loser_receipt, winner.join().unwrap())
+        });
+        assert_eq!(loser_receipt, winner_receipt);
+        assert_eq!(loser_receipt.receipt_sha256, winner_receipt.receipt_sha256);
+        assert_eq!(
+            store
+                .product_task_workspace_preparation_receipt(task_id)
+                .unwrap()
+                .unwrap(),
+            winner_receipt
+        );
+
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "DELETE FROM product_task_workspace_preparations WHERE task_id=?1",
+                    rusqlite::params![task_id],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let error = store
+            .ensure_product_task_workspace_preparation_receipt(task_id, &intake, "legacy")
+            .unwrap_err();
+        assert!(error.starts_with(PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED));
+        assert!(error.contains("legacy preparing task has no receipt"));
     }
 
     #[test]
