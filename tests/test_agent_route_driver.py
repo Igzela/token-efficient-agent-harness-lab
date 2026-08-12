@@ -1285,6 +1285,8 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.assertIn("caller_path` must be in `allowed_paths`", prompt)
         self.assertIn("Python `def` or `class` declaration in `owner_path`", prompt)
         self.assertIn("verifier-recognized `symbol(` reference in `caller_path`", prompt)
+        self.assertIn("git grep -n", prompt)
+        self.assertIn("return the row only when both commands prove it", prompt)
 
 
 class TestRepositoryRouteRunner(unittest.TestCase):
