@@ -957,6 +957,31 @@ class CheckpointTests(unittest.TestCase):
             capsule["plan_lane_state"], "plan_lane_active"
         )
         self.assertEqual(capsule["allowed_paths"], packet["allowed_paths"])
+        expected_test_paths = {
+            "tests/test_agent_claim_local.py",
+            "tests/test_agent_control_ci.py",
+            "tests/test_agent_control_dry_run.py",
+            "tests/test_agent_control_state.py",
+            "tests/test_agent_control_worktree.py",
+            "tests/test_agent_local_handoff.py",
+            "tests/test_agent_local_loop.py",
+            "tests/test_agent_local_verification.py",
+            "tests/test_agent_orchestrator_artifacts.py",
+            "tests/test_agent_orchestrator_repairs.py",
+            "tests/test_agent_plan_lane.py",
+            "tests/test_agent_plan_lifecycle.py",
+            "tests/test_agent_plan_promotion.py",
+            "tests/test_agent_review_finalization.py",
+            "tests/test_agent_route_driver.py",
+            "tests/test_project_context.py",
+            "tests/test_review_convergence.py",
+            "tests/test_session_context.py",
+        }
+        self.assertNotIn("tests/", capsule["allowed_paths"])
+        self.assertEqual(
+            {path for path in capsule["allowed_paths"] if path.startswith("tests/")},
+            expected_test_paths,
+        )
         self.assertIn("PE7-ROUTE-AUTOMATION-1", capsule["prerequisites"])
         self.assertIn(
             "scripts/agent-control/", capsule["allowed_paths"]
