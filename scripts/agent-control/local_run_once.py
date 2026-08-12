@@ -738,7 +738,9 @@ class LocalRunOnce:
         if not isinstance(stages, dict):
             return "invalid"
         stage_names = ("ci", "review", "merge", "closeout")
-        if any(type(stages.get(name)) is not bool for name in stage_names):
+        if set(stages) != set(stage_names) or any(
+            type(stages[name]) is not bool for name in stage_names
+        ):
             return "invalid"
         binding_keys = ("packet_id", "attempt_id", "ledger_issue", "pr_number", "head_sha")
         if not all(key in lifecycle for key in binding_keys):
@@ -754,7 +756,7 @@ class LocalRunOnce:
             return "invalid"
 
         transitions = lifecycle.get("transitions")
-        if not isinstance(transitions, dict):
+        if not isinstance(transitions, dict) or set(transitions) != set(stage_names):
             return "invalid"
         for stage, head_key in (
             ("ci", "head_sha"),

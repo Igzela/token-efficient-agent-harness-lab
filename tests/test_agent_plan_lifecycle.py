@@ -774,6 +774,11 @@ class TestPlanLifecycleWait(unittest.TestCase):
                     ),
                 },
             }
+        else:
+            transitions = {
+                "ci": None, "review": None, "merge": None, "closeout": None,
+                **transitions,
+            }
         return {
             "packet_id": packet_id,
             "attempt_id": ATTEMPT,
@@ -905,6 +910,15 @@ class TestPlanLifecycleWait(unittest.TestCase):
         missing_stage = self._lifecycle()
         del missing_stage["stages"]["ci"]
         cases["missing_stage"] = missing_stage
+        extra_stage = self._lifecycle()
+        extra_stage["stages"]["unknown"] = False
+        cases["extra_stage"] = extra_stage
+        missing_transition = self._lifecycle()
+        del missing_transition["transitions"]["closeout"]
+        cases["missing_transition_key"] = missing_transition
+        extra_transition = self._lifecycle()
+        extra_transition["transitions"]["unknown"] = None
+        cases["extra_transition_key"] = extra_transition
         for name, lifecycle in cases.items():
             with self.subTest(name=name), mock.patch.object(
                 plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle
