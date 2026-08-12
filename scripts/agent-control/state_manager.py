@@ -1464,6 +1464,39 @@ def _verified_superseded_review_comment(correction, target_repo):
     return state
 
 
+def _verified_pr_correction_comment(correction, target_repo):
+    """Read and authenticate the exact PR comment attesting the correction."""
+
+    comment_id = correction.get("pr_correction_comment_id")
+    raw = _gh("api", f"repos/{target_repo}/issues/comments/{comment_id}")
+    try:
+        comment = json.loads(raw) if raw else None
+    except json.JSONDecodeError:
+        return None
+    body = comment.get("body", "") if isinstance(comment, dict) else ""
+    base = correction.get("controller_base_sha")
+    head = correction.get("controller_head_sha")
+    invalid_head = correction.get("invalid_recorded_head_sha")
+    pr_number = correction.get("pr_number")
+    if (
+        not _repository_owner_comment(comment, target_repo)
+        or comment.get("id") != comment_id
+        or not str(comment.get("issue_url", "")).endswith(f"/issues/{pr_number}")
+        or not isinstance(base, str)
+        or not isinstance(head, str)
+        or head not in body
+        or invalid_head not in body
+        or base not in body
+        or f"{base}...{head}" not in body
+        or correction.get("standards_reviewer_session") not in body
+        or correction.get("spec_reviewer_session") not in body
+        or "exact `pass`" not in body.lower()
+        or "post-merge retrospective" not in body.lower()
+    ):
+        return None
+    return comment
+
+
 def _review_state_from_correction(correction, older_comments, repo=""):
     """Return a compatibility review state for one valid retrospective correction."""
 
@@ -1505,6 +1538,8 @@ def _review_state_from_correction(correction, older_comments, repo=""):
         "GITHUB_REPOSITORY", ""
     )
     if re.fullmatch(r"[^/\s]+/[^/\s]+", target_repo) is None:
+        return None
+    if _verified_pr_correction_comment(correction, target_repo) is None:
         return None
     superseded = _verified_superseded_review_comment(correction, target_repo)
     if superseded is None:
@@ -1618,38 +1653,21 @@ def record_review_correction(issue_number, payload, repo=""):
     target_repo = repo or os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
     if re.fullmatch(r"[^/\s]+/[^/\s]+", target_repo) is None:
         return False, "repository_unavailable"
-    raw_pr_comment = _gh(
-        "api", f"repos/{target_repo}/issues/comments/{pr_correction_comment_id}"
-    )
-    try:
-        pr_comment = json.loads(raw_pr_comment) if raw_pr_comment else None
-    except json.JSONDecodeError:
-        pr_comment = None
-    pr_body = pr_comment.get("body", "") if isinstance(pr_comment, dict) else ""
-    if (
-        not _repository_owner_comment(pr_comment, target_repo)
-        or pr_comment.get("id") != pr_correction_comment_id
-        or not str(pr_comment.get("issue_url", "")).endswith(
-            f"/issues/{pr_number}"
-        )
-        or binding["head_sha"] not in pr_body
-        or invalid_head not in pr_body
-        or binding["base_sha"] not in pr_body
-        or binding["reviewed_range"] not in pr_body
-        or payload["standards_reviewer_session"] not in pr_body
-        or payload["spec_reviewer_session"] not in pr_body
-        or "exact `pass`" not in pr_body.lower()
-        or "post-merge retrospective" not in pr_body.lower()
-    ):
-        return False, "pr_correction_comment_unverified"
     correction_identity = {
+        **payload,
+        "controller_base_sha": binding["base_sha"],
+        "controller_head_sha": binding["head_sha"],
+    }
+    if _verified_pr_correction_comment(correction_identity, target_repo) is None:
+        return False, "pr_correction_comment_unverified"
+    superseded_identity = {
         "issue_number": int(issue_number),
         "pr_number": pr_number,
         "controller_base_sha": binding["base_sha"],
         "invalid_recorded_head_sha": invalid_head,
         "supersedes_comment_id": supersedes_comment_id,
     }
-    if _verified_superseded_review_comment(correction_identity, target_repo) is None:
+    if _verified_superseded_review_comment(superseded_identity, target_repo) is None:
         return False, "superseded_review_state_unverified"
     comments = get_issue_comments(issue_number, repo)
     for comment in comments:

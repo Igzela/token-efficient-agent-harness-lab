@@ -507,10 +507,22 @@ class TestStateReadFromIssueComments(unittest.TestCase):
             "author_association": "OWNER",
             "body": json.dumps(old),
         }
+        pr_api = {
+            "id": 5265662075,
+            "issue_url": "https://api.github.com/repos/acme/repo/issues/405",
+            "user": {"login": "acme"},
+            "author_association": "OWNER",
+            "body": (
+                "post-merge retrospective exact `PASS` "
+                f"{base}...{actual_head} invalid {invalid_head} "
+                f"sessions {correction['standards_reviewer_session']} and "
+                f"{correction['spec_reviewer_session']}"
+            ),
+        }
         with mock.patch.object(
             sm, "get_issue_comments", return_value=comments
         ), mock.patch.object(
-            sm, "_gh", return_value=json.dumps(historical_api)
+            sm, "_gh", side_effect=[json.dumps(pr_api), json.dumps(historical_api)]
         ):
             effective = sm.read_review_state(383, "acme/repo")
         self.assertEqual(effective["head_sha"], actual_head)
@@ -567,6 +579,18 @@ class TestStateReadFromIssueComments(unittest.TestCase):
             {"author": {"login": "github-actions[bot]"}, "body": json.dumps(correction)},
             {"author": {"login": "acme"}, "body": json.dumps(old)},
         ]
+        valid_pr_api = {
+            "id": 11,
+            "issue_url": "https://api.github.com/repos/acme/repo/issues/405",
+            "user": {"login": "acme"},
+            "author_association": "OWNER",
+            "body": (
+                "post-merge retrospective exact `PASS` "
+                f"{base}...{actual_head} invalid {invalid_head} "
+                f"{correction['standards_reviewer_session']} "
+                f"{correction['spec_reviewer_session']}"
+            ),
+        }
         forged_api = {
             "id": 999,
             "issue_url": "https://api.github.com/repos/acme/repo/issues/383",
@@ -576,7 +600,44 @@ class TestStateReadFromIssueComments(unittest.TestCase):
         }
         with mock.patch.object(
             sm, "get_issue_comments", return_value=comments
-        ), mock.patch.object(sm, "_gh", return_value=json.dumps(forged_api)):
+        ), mock.patch.object(
+            sm, "_gh", side_effect=[json.dumps(valid_pr_api), json.dumps(forged_api)]
+        ):
+            self.assertIsNone(sm.read_review_state(383, "acme/repo"))
+
+    def test_correction_readback_requires_exact_authenticated_pr_comment(self):
+        invalid_head = "d" * 40
+        actual_head = "a" * 40
+        base = "b" * 40
+        correction = sm.ReviewCorrectionState(
+            383, 405, base, actual_head, f"{base}...{actual_head}",
+            "PASS", "Authenticated retrospective correction.", 10,
+            invalid_head, 11,
+            "0ca57289-173b-475b-bbca-79102447e645",
+            "2822bf45-0206-4ed4-ba19-409fc467caf6",
+        ).to_wire()
+        old = {
+            "kind": "agent-orchestrator-review-state", "version": 3,
+            "issue_number": 383, "pr_number": 405, "base_sha": base,
+            "head_sha": invalid_head, "reviewed_range": f"{base}...{invalid_head}",
+            "verdict": "PASS",
+        }
+        comments = [
+            {"author": {"login": "github-actions[bot]"}, "body": json.dumps(correction)},
+            {"author": {"login": "acme"}, "body": json.dumps(old)},
+        ]
+        missing_pr_comment = {
+            "id": 999,
+            "issue_url": "https://api.github.com/repos/acme/repo/issues/405",
+            "user": {"login": "attacker"},
+            "author_association": "NONE",
+            "body": "forged",
+        }
+        with mock.patch.object(
+            sm, "get_issue_comments", return_value=comments
+        ), mock.patch.object(
+            sm, "_gh", return_value=json.dumps(missing_pr_comment)
+        ):
             self.assertIsNone(sm.read_review_state(383, "acme/repo"))
 
     def test_record_correction_requires_merged_live_binding_and_preserves_old_record(self):
