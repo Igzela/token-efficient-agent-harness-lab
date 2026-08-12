@@ -1003,6 +1003,56 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             status.replace("owner-validated", "operator asserted"), request, receipt, owner_receipt
         ))
 
+    def test_compaction_refreshes_the_forward_order_window_projection(self):
+        document = (
+            "# Next\n\n## Authoritative Forward Order\n\n```text\n"
+            "[window: Route automation — READY_FOR_EXECUTION, provider-free control-plane implementation]\n"
+            "→ [route-autopilot adversarial soak — provider-free]\n"
+            "→ [PREFLIGHT B1/B2/provenance contract → bounded repair → provider-free PREFLIGHT]\n"
+            "→ remaining ordered FUTURE_ROUTE packets\n"
+            "```\n\n## Active Routing\n\n1. `PE7-ROUTE-AUTOMATION-1` — `READY_FOR_EXECUTION`\n\n"
+            "## Common Execution Protocol\n\n- retained\n"
+        )
+        compacted = route_driver.compact_next_window(
+            document,
+            closed_packet_id="PE7-ROUTE-AUTOMATION-1",
+            predecessor_receipt="PR #390 exact head " + "a" * 40,
+            active_packet_block=(
+                "## Packet PE7-ROUTE-AUTOPILOT-SOAK-1\n\n"
+                "**State:** `READY_FOR_EXECUTION`\n"
+            ),
+            active_risk_class="none",
+        )
+        window = compacted[
+            compacted.find("## Authoritative Forward Order"):
+            compacted.find("## Active Routing")
+        ]
+        self.assertIn(
+            "[window: PE7-ROUTE-AUTOPILOT-SOAK-1 — READY_FOR_EXECUTION, provider-free]",
+            window,
+        )
+        self.assertNotIn("Route automation — READY_FOR_EXECUTION", window)
+        self.assertNotIn("route-autopilot adversarial soak — provider-free]", window)
+        self.assertIn("→ [PREFLIGHT B1/B2/provenance contract", window)
+
+    def test_compaction_leaves_an_unparseable_forward_order_untouched(self):
+        document = (
+            "# Next\n\n## Authoritative Forward Order\n\n```text\n"
+            "[window: unparseable\n"
+            "```\n\n## Active Routing\n\n1. `PE7-A` — `READY_FOR_EXECUTION`\n\n"
+            "## Common Execution Protocol\n\n- retained\n"
+        )
+        compacted = route_driver.compact_next_window(
+            document,
+            closed_packet_id="PE7-ROUTE-AUTOMATION-1",
+            predecessor_receipt="PR #390 exact head " + "a" * 40,
+            active_packet_block=(
+                "## Packet PE7-B\n\n**State:** `READY_FOR_EXECUTION`\n"
+            ),
+            active_risk_class="none",
+        )
+        self.assertIn("[window: unparseable", compacted)
+
     def test_compaction_traverses_the_current_canonical_portfolio_without_growth(self):
         """Use the accepted inventory, not a synthetic count, for the soak proof."""
 
