@@ -75,43 +75,7 @@ on:
       stage:
         required: false
         type: string
-      accepted_main_sha:
-        required: false
-        type: string
-      candidate_digest:
-        required: false
-        type: string
-      action_digest:
-        required: false
-        type: string
-      scope_digest:
-        required: false
-        type: string
-      authority_receipt_digest:
-        required: false
-        type: string
-      outcome_receipt_digest:
-        required: false
-        type: string
-      owner_evidence_digest:
-        required: false
-        type: string
-      authority_owner_digest:
-        required: false
-        type: string
-      decision_source:
-        required: false
-        type: string
-      decision_evidence_digest:
-        required: false
-        type: string
-      issued_at:
-        required: false
-        type: string
-      expires_at:
-        required: false
-        type: string
-      disposition:
+      route_payload:
         required: false
         type: string
 
@@ -141,19 +105,7 @@ jobs:
       INPUT_PACKET_ID: ${{ inputs.packet_id }}
       INPUT_SOURCE_MAIN_SHA: ${{ inputs.source_main_sha }}
       INPUT_STAGE: ${{ inputs.stage }}
-      INPUT_ACCEPTED_MAIN_SHA: ${{ inputs.accepted_main_sha }}
-      INPUT_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
-      INPUT_ACTION_DIGEST: ${{ inputs.action_digest }}
-      INPUT_SCOPE_DIGEST: ${{ inputs.scope_digest }}
-      INPUT_AUTHORITY_RECEIPT_DIGEST: ${{ inputs.authority_receipt_digest }}
-      INPUT_OUTCOME_RECEIPT_DIGEST: ${{ inputs.outcome_receipt_digest }}
-      INPUT_OWNER_EVIDENCE_DIGEST: ${{ inputs.owner_evidence_digest }}
-      INPUT_AUTHORITY_OWNER_DIGEST: ${{ inputs.authority_owner_digest }}
-      INPUT_DECISION_SOURCE: ${{ inputs.decision_source }}
-      INPUT_DECISION_EVIDENCE_DIGEST: ${{ inputs.decision_evidence_digest }}
-      INPUT_ISSUED_AT: ${{ inputs.issued_at }}
-      INPUT_EXPIRES_AT: ${{ inputs.expires_at }}
-      INPUT_DISPOSITION: ${{ inputs.disposition }}
+      INPUT_ROUTE_PAYLOAD: ${{ inputs.route_payload }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -240,17 +192,12 @@ jobs:
             record-route-t3-receipt)
               python3 scripts/agent-control/control_state.py require-live >/dev/null
               python3 scripts/agent-control/dispatcher.py record-route-t3-receipt \
-                "$INPUT_PACKET_ID" "$INPUT_ACCEPTED_MAIN_SHA" "$INPUT_CANDIDATE_DIGEST" \
-                "$INPUT_ACTION_DIGEST" "$INPUT_SCOPE_DIGEST" "$INPUT_AUTHORITY_RECEIPT_DIGEST" \
-                "$INPUT_OUTCOME_RECEIPT_DIGEST" "$INPUT_AUTHORITY_OWNER_DIGEST" "$GITHUB_ACTOR" \
-                "$INPUT_DECISION_SOURCE" "$INPUT_DECISION_EVIDENCE_DIGEST" "$INPUT_ISSUED_AT" \
-                "$INPUT_EXPIRES_AT" "$INPUT_DISPOSITION"
+                "$INPUT_PACKET_ID" "$INPUT_ROUTE_PAYLOAD"
               ;;
             record-route-owner-outcome)
               python3 scripts/agent-control/control_state.py require-live >/dev/null
               python3 scripts/agent-control/dispatcher.py record-route-owner-outcome \
-                "$INPUT_PACKET_ID" "$INPUT_ACCEPTED_MAIN_SHA" "$INPUT_CANDIDATE_DIGEST" \
-                "$INPUT_OUTCOME_RECEIPT_DIGEST" "$INPUT_OWNER_EVIDENCE_DIGEST"
+                "$INPUT_PACKET_ID" "$INPUT_ROUTE_PAYLOAD"
               ;;
             release-plan)
               python3 scripts/agent-control/control_state.py require-live >/dev/null

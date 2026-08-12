@@ -758,6 +758,37 @@ class TestRecordPlanLifecycleDispatcher(unittest.TestCase):
 
 
 class TestPlanLifecycleWait(unittest.TestCase):
+    @staticmethod
+    def _lifecycle(*, stages=None, transitions=None, packet_id=PACKET, pr_number=PR, head_sha=HEAD):
+        if stages is None:
+            stages = {"ci": True, "review": True, "merge": True, "closeout": True}
+        if transitions is None:
+            transitions = {
+                "ci": ci_wire(pr_number=pr_number, head_sha=head_sha),
+                "review": review_wire(pr_number=pr_number, head_sha=head_sha),
+                "merge": merge_wire(pr_number=pr_number, head_sha=head_sha),
+                "closeout": {
+                    "terminal_packet_state": "closed_out",
+                    "closeout_reference": plan_lifecycle.canonical_closeout_reference(
+                        pr_number, head_sha, MERGE, 7
+                    ),
+                },
+            }
+        else:
+            transitions = {
+                "ci": None, "review": None, "merge": None, "closeout": None,
+                **transitions,
+            }
+        return {
+            "packet_id": packet_id,
+            "attempt_id": ATTEMPT,
+            "ledger_issue": LEDGER,
+            "pr_number": pr_number,
+            "head_sha": head_sha,
+            "stages": stages,
+            "transitions": transitions,
+        }
+
     def test_wait_returns_closed_out_when_all_stages_done(self):
         github = mock.Mock()
         git = mock.Mock()
@@ -765,13 +796,7 @@ class TestPlanLifecycleWait(unittest.TestCase):
             github, git, repository="acme/repo", repo_path=Path("/tmp"),
             lifecycle_timeout_seconds=60, sleeper=lambda _: None,
         )
-        lifecycle = {
-            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
-            "transitions": {
-                "merge": {"merge_commit_sha": MERGE},
-                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
-            },
-        }
+        lifecycle = self._lifecycle()
         promotion = {
             "kind": "plan-promote", "status": "promoted",
             "details": {"successor_id": "PE7-SUCCESSOR-PROMOTION-ESCALATION-1"},
@@ -795,13 +820,7 @@ class TestPlanLifecycleWait(unittest.TestCase):
             github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
             lifecycle_timeout_seconds=60, sleeper=lambda _: None,
         )
-        lifecycle = {
-            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
-            "transitions": {
-                "merge": {"merge_commit_sha": MERGE},
-                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
-            },
-        }
+        lifecycle = self._lifecycle()
         escalation = {
             "kind": "plan-escalate", "status": "escalated",
             "details": {"reason": "promotion_current_main_evidence_missing"},
@@ -824,13 +843,7 @@ class TestPlanLifecycleWait(unittest.TestCase):
             github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
             lifecycle_timeout_seconds=60, sleeper=lambda _: None,
         )
-        lifecycle = {
-            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
-            "transitions": {
-                "merge": {"merge_commit_sha": MERGE},
-                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
-            },
-        }
+        lifecycle = self._lifecycle()
         escalation = {
             "kind": "plan-escalate", "status": "escalated",
             "details": {"reason": "promotion_owner_ambiguous"},
@@ -845,6 +858,79 @@ class TestPlanLifecycleWait(unittest.TestCase):
         self.assertEqual(result.details["reason"], "promotion_owner_ambiguous")
         github.dispatch_controller.assert_not_called()
 
+    def test_wait_rejects_mismatched_lifecycle_before_promotion(self):
+        github = mock.Mock()
+        runner = local_run_once.LocalRunOnce(
+            github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
+            lifecycle_timeout_seconds=60, sleeper=lambda _: None,
+        )
+        cases = {
+            "top_level_pr": self._lifecycle(pr_number=PR + 1),
+            "top_level_head": self._lifecycle(head_sha="f" * 40),
+            "abbreviated_head": self._lifecycle(head_sha=HEAD[:12]),
+            "ci_head": self._lifecycle(transitions={
+                "ci": ci_wire(head_sha="f" * 40),
+                "review": review_wire(), "merge": merge_wire(),
+                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
+            }),
+            "review_pr": self._lifecycle(transitions={
+                "ci": ci_wire(), "review": review_wire(pr_number=PR + 1),
+                "merge": merge_wire(),
+                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
+            }),
+            "merge_head": self._lifecycle(transitions={
+                "ci": ci_wire(), "review": review_wire(),
+                "merge": merge_wire(head_sha="f" * 40),
+                "closeout": {
+                    "terminal_packet_state": "closed_out",
+                    "closeout_reference": CLOSEOUT_REFERENCE,
+                },
+            }),
+        }
+        for name, reference in {
+            "closeout_head": CLOSEOUT_REFERENCE.replace(HEAD, "f" * 40),
+            "closeout_merge": CLOSEOUT_REFERENCE.replace(MERGE, "f" * 40),
+            "closeout_workflow": CLOSEOUT_REFERENCE.replace("workflow `7`", "workflow `8`"),
+            "legacy_closeout": f"PR #{PR}",
+        }.items():
+            lifecycle = self._lifecycle()
+            lifecycle["transitions"]["closeout"] = {
+                "terminal_packet_state": "closed_out",
+                "closeout_reference": reference,
+            }
+            cases[name] = lifecycle
+        for key in ("packet_id", "attempt_id", "ledger_issue", "pr_number", "head_sha"):
+            missing_binding = self._lifecycle()
+            del missing_binding[key]
+            cases[f"missing_{key}"] = missing_binding
+        for name, value in (("string", "true"), ("integer", 1), ("none", None)):
+            invalid_stages = self._lifecycle()
+            invalid_stages["stages"]["ci"] = value
+            cases[f"stage_{name}"] = invalid_stages
+        missing_stage = self._lifecycle()
+        del missing_stage["stages"]["ci"]
+        cases["missing_stage"] = missing_stage
+        extra_stage = self._lifecycle()
+        extra_stage["stages"]["unknown"] = False
+        cases["extra_stage"] = extra_stage
+        missing_transition = self._lifecycle()
+        del missing_transition["transitions"]["closeout"]
+        cases["missing_transition_key"] = missing_transition
+        extra_transition = self._lifecycle()
+        extra_transition["transitions"]["unknown"] = None
+        cases["extra_transition_key"] = extra_transition
+        for name, lifecycle in cases.items():
+            with self.subTest(name=name), mock.patch.object(
+                plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle
+            ), mock.patch.object(runner, "_read_plan_promotion", return_value=None) as promotion:
+                result = runner._wait_for_plan_terminal_receipts(
+                    LEDGER, PACKET, ATTEMPT, PR, HEAD
+                )
+                self.assertEqual(result.status, "rejected")
+                self.assertEqual(result.details["reason"], "plan_lifecycle_binding_invalid")
+                promotion.assert_not_called()
+        github.dispatch_controller.assert_not_called()
+
     def test_wait_dispatches_controller_for_merge_and_closeout_stages(self):
         github = mock.Mock()
         runner = local_run_once.LocalRunOnce(
@@ -852,21 +938,15 @@ class TestPlanLifecycleWait(unittest.TestCase):
             lifecycle_timeout_seconds=10, sleeper=lambda _: None,
         )
         readbacks = [
-            {
-                "stages": {"ci": True, "review": True, "merge": False, "closeout": False},
-                "transitions": {},
-            },
-            {
-                "stages": {"ci": True, "review": True, "merge": True, "closeout": False},
-                "transitions": {"merge": {"merge_commit_sha": MERGE}},
-            },
-            {
-                "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
-                "transitions": {
-                    "merge": {"merge_commit_sha": MERGE},
-                    "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
-                },
-            },
+            self._lifecycle(
+                stages={"ci": True, "review": True, "merge": False, "closeout": False},
+                transitions={"ci": ci_wire(), "review": review_wire()},
+            ),
+            self._lifecycle(
+                stages={"ci": True, "review": True, "merge": True, "closeout": False},
+                transitions={"ci": ci_wire(), "review": review_wire(), "merge": merge_wire()},
+            ),
+            self._lifecycle(),
         ]
         with mock.patch.object(
             plan_lifecycle, "read_plan_lifecycle", side_effect=readbacks
@@ -891,10 +971,10 @@ class TestPlanLifecycleWait(unittest.TestCase):
             github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
             lifecycle_timeout_seconds=10, sleeper=lambda _: None,
         )
-        readback = {
-            "stages": {"ci": True, "review": True, "merge": True, "closeout": False},
-            "transitions": {},
-        }
+        readback = self._lifecycle(
+            stages={"ci": True, "review": True, "merge": True, "closeout": False},
+            transitions={"ci": ci_wire(), "review": review_wire(), "merge": merge_wire()},
+        )
         with mock.patch.object(
             plan_lifecycle, "read_plan_lifecycle", return_value=readback
         ), mock.patch.object(
@@ -947,20 +1027,32 @@ class TestPlanLifecycleWorkflowTransport(unittest.TestCase):
         self.assertIn('"$INPUT_PACKET_ID" "$INPUT_ATTEMPT_ID" "$INPUT_STAGE"', workflow)
         self.assertIn("dispatcher.py promote-plan", workflow)
         self.assertIn("          - record-route-t3-receipt\n", workflow)
-        self.assertIn("      INPUT_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}\n", workflow)
-        self.assertIn("      INPUT_OUTCOME_RECEIPT_DIGEST: ${{ inputs.outcome_receipt_digest }}\n", workflow)
-        self.assertIn("      INPUT_DECISION_SOURCE: ${{ inputs.decision_source }}\n", workflow)
-        self.assertIn(
-            "      INPUT_DECISION_EVIDENCE_DIGEST: ${{ inputs.decision_evidence_digest }}\n",
-            workflow,
+        self.assertLessEqual(
+            sum(
+                1
+                for line in workflow.splitlines()
+                if line.startswith("      ")
+                and not line.startswith("        ")
+                and line.rstrip().endswith(":")
+            ),
+            25,
         )
+        self.assertIn("      route_payload:\n", workflow)
+        self.assertIn("      INPUT_ROUTE_PAYLOAD: ${{ inputs.route_payload }}\n", workflow)
+        self.assertEqual(workflow.count("${{ inputs.route_payload }}"), 1)
+        self.assertNotIn('echo "$INPUT_ROUTE_PAYLOAD"', workflow)
+        self.assertNotIn("set -x", workflow)
+        for removed in (
+            "accepted_main_sha", "candidate_digest", "action_digest", "scope_digest",
+            "authority_receipt_digest", "outcome_receipt_digest", "owner_evidence_digest",
+            "authority_owner_digest", "decision_source", "decision_evidence_digest",
+            "issued_at", "expires_at", "disposition",
+        ):
+            self.assertNotIn(f"      {removed}:\n", workflow)
+            self.assertNotIn(f"inputs.{removed}", workflow)
         self.assertIn("dispatcher.py record-route-t3-receipt", workflow)
-        self.assertIn(
-            '"$INPUT_DECISION_SOURCE" "$INPUT_DECISION_EVIDENCE_DIGEST" "$INPUT_ISSUED_AT"',
-            workflow,
-        )
+        self.assertIn('"$INPUT_PACKET_ID" "$INPUT_ROUTE_PAYLOAD"', workflow)
         self.assertIn("          - record-route-owner-outcome\n", workflow)
-        self.assertIn("      INPUT_OWNER_EVIDENCE_DIGEST: ${{ inputs.owner_evidence_digest }}\n", workflow)
         self.assertIn("dispatcher.py record-route-owner-outcome", workflow)
 
 

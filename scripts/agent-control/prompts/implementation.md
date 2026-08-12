@@ -10,16 +10,17 @@ Issue #{{ISSUE_NUMBER}}: {{ISSUE_TITLE}}
 
 ### Required Output
 
-You must leave a non-empty set of staged changes. The orchestrator will fail the task if no files were modified, created, or deleted in the workspace.
+You must leave a non-empty set of working-tree changes. The orchestrator owns staging and will fail the task if no files were modified, created, or deleted in the workspace.
 
 Before finishing, verify:
 
 ```bash
-git diff --stat --cached && echo "✓ workspace has changes" || (echo "ERROR: no changes staged"; exit 1)
-git diff --name-only --diff-filter=ACMRTUXB
+git diff --stat HEAD
+git diff --name-only HEAD
+git ls-files --others --exclude-standard
 ```
 
-The changed files must equal exactly the files declared in the machine-readable allowed-paths scope. If the task asks you to create a file and it does not exist on disk, or if the staged paths differ from the allowed set, the task will be rejected.
+The changed files must be a non-empty subset of the machine-readable allowed-paths scope. An allowed path grants a boundary; it does not require every allowed file to change. If a changed path falls outside that boundary, the task will be rejected.
 
 ### Instructions
 
@@ -27,7 +28,7 @@ The changed files must equal exactly the files declared in the machine-readable 
 2. Do not modify files outside the scope declared in the task.
 3. Follow the code conventions, module ownership, and architecture boundaries in the repository.
 4. Run the checks that are relevant to your changes. For documentation-only changes, `git diff --check` and checking that the written file is well-formed Markdown is sufficient.
-5. Verify that every required file exists on disk and that the staged paths are exactly the allowed set.
+5. Verify that every task-required file exists on disk and that every changed path is within the allowed set. Do not stage changes; the orchestrator will capture and stage the exact candidate after verification.
 6. When the orchestrator opens a PR from your staged changes, merge eligibility requires an exact-head review receipt on the stable head (exact SHA, complete diff, axes, outcome — see `docs/REAL_WORLD_TESTING_PLAYBOOK.md`); a replacement head invalidates a prior receipt, so keep the reviewed head the stable one.
 
 ### What You Must NOT Do

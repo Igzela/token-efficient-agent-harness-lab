@@ -721,6 +721,83 @@ class LocalRunOnce:
             reason=str(reason or "promotion_escalated"), promotion=promotion, **details,
         )
 
+    @staticmethod
+    def _plan_lifecycle_binding_status(
+        lifecycle: object,
+        ledger_issue: int,
+        packet_id: str,
+        attempt: str,
+        pr_number: int,
+        head_sha: str,
+    ) -> str:
+        """Classify one lifecycle readback as pending, exact, or conflicting."""
+
+        if not isinstance(lifecycle, dict):
+            return "invalid"
+        stages = lifecycle.get("stages")
+        if not isinstance(stages, dict):
+            return "invalid"
+        stage_names = ("ci", "review", "merge", "closeout")
+        if set(stages) != set(stage_names) or any(
+            type(stages[name]) is not bool for name in stage_names
+        ):
+            return "invalid"
+        binding_keys = ("packet_id", "attempt_id", "ledger_issue", "pr_number", "head_sha")
+        if not all(key in lifecycle for key in binding_keys):
+            return "invalid"
+        if (
+            lifecycle.get("ledger_issue") != ledger_issue
+            or lifecycle.get("packet_id") != packet_id
+            or lifecycle.get("attempt_id") != attempt
+            or lifecycle.get("pr_number") != pr_number
+            or lifecycle.get("head_sha") != head_sha
+            or local_loop.HEX40.fullmatch(head_sha) is None
+        ):
+            return "invalid"
+
+        transitions = lifecycle.get("transitions")
+        if not isinstance(transitions, dict) or set(transitions) != set(stage_names):
+            return "invalid"
+        for stage, head_key in (
+            ("ci", "head_sha"),
+            ("review", "head_sha"),
+            ("merge", "expected_head_sha"),
+        ):
+            receipt = transitions.get(stage)
+            if receipt is None:
+                if stages.get(stage) is True:
+                    return "invalid"
+                continue
+            if (
+                not isinstance(receipt, dict)
+                or stages.get(stage) is not True
+                or receipt.get("pr_number") != pr_number
+                or receipt.get(head_key) != head_sha
+            ):
+                return "invalid"
+        closeout = transitions.get("closeout")
+        if (closeout is None) != (stages.get("closeout") is not True):
+            return "invalid"
+        if closeout is not None and not isinstance(closeout, dict):
+            return "invalid"
+        if isinstance(closeout, dict):
+            ci = transitions.get("ci")
+            merge = transitions.get("merge")
+            closeout_match = plan_lifecycle.canonical_closeout_reference_match(
+                closeout.get("closeout_reference")
+            )
+            if (
+                not isinstance(ci, dict)
+                or not isinstance(merge, dict)
+                or closeout_match is None
+                or closeout_match.group("pr") != str(pr_number)
+                or closeout_match.group("head") != head_sha
+                or closeout_match.group("merge") != merge.get("merge_commit_sha")
+                or closeout_match.group("workflow") != str(ci.get("workflow_run_id"))
+            ):
+                return "invalid"
+        return "exact"
+
     def _wait_for_plan_terminal_receipts(
         self,
         ledger_issue: int,
@@ -750,6 +827,15 @@ class LocalRunOnce:
                 ledger_issue, packet_id, attempt, self.repository
             )
             stages = lifecycle.get("stages") if isinstance(lifecycle, dict) else None
+            binding_status = self._plan_lifecycle_binding_status(
+                lifecycle, ledger_issue, packet_id, attempt, pr_number, head_sha
+            )
+            if binding_status == "invalid":
+                return self._plan_result(
+                    "rejected", packet_id, attempt,
+                    reason="plan_lifecycle_binding_invalid",
+                    ledger_issue=ledger_issue, pr_number=pr_number, head_sha=head_sha,
+                )
             if isinstance(stages, dict) and all(stages.get(name) for name in ("ci", "review", "merge", "closeout")):
                 transitions = lifecycle.get("transitions") or {}
                 merge = transitions.get("merge") or {}
