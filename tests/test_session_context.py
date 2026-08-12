@@ -142,6 +142,17 @@ def dispatch_capsule(**overrides) -> dict:
     return value
 
 
+def promoted_dispatch_capsule(**overrides) -> dict:
+    value = dispatch_capsule(
+        promotion_evidence_sha256="d" * 64,
+        route_manifest_sha256="e" * 64,
+        risk_class="none",
+        verification_family="source_focused_full",
+    )
+    value.update(overrides)
+    return value
+
+
 def next_document_with_dispatch(**overrides) -> str:
     capsule = dispatch_capsule(**overrides)
     return (
@@ -627,6 +638,42 @@ class CheckpointTests(unittest.TestCase):
                     extra_private="/tmp/private/secret",
                 ),
             )
+
+    def test_entry_accepts_complete_promoted_evidence_and_rejects_partial_or_bad_fields(self):
+        arguments = {
+            "contract": session_context.parse_route_contract(route_document()),
+            "role": "coding",
+            "accepted_main_sha": MAIN,
+            "document_source": "accepted",
+            "document_source_binding": MAIN,
+            "packet": packet_binding(
+                forbidden_next_actions=["Do not start a successor packet."],
+                dispatch_lane="provider_free_local",
+            ),
+            "snapshot": checkout_snapshot(),
+            "checkpoint": self.build(),
+        }
+        entry = session_context.build_session_entry(
+            **arguments,
+            dispatch_capsule=promoted_dispatch_capsule(),
+        )
+        self.assertEqual(
+            entry["dispatch_capsule"]["promotion_evidence_sha256"], "d" * 64
+        )
+        for capsule in (
+            promoted_dispatch_capsule(route_manifest_sha256="not-a-digest"),
+            promoted_dispatch_capsule(risk_class=""),
+            dispatch_capsule(promotion_evidence_sha256="d" * 64),
+        ):
+            with self.subTest(capsule=capsule):
+                with self.assertRaisesRegex(
+                    session_context.SessionContextError,
+                    "dispatch_(promotion_evidence_fields_invalid|route_manifest_sha256|risk_class)",
+                ):
+                    session_context.build_session_entry(
+                        **arguments,
+                        dispatch_capsule=capsule,
+                    )
 
     def test_entry_rejects_rehashed_semantic_forgery(self):
         receipt = self.build()

@@ -536,7 +536,7 @@ class TestBootstrapPromotionFallback(unittest.TestCase):
 
         self.assertIs(result, expected)
         github.dispatch_controller.assert_not_called()
-        planner.assert_called_once_with(successor, MAIN, receipt)
+        planner.assert_called_once_with(successor, CLOSED, MAIN, receipt)
         compiler.assert_called_once_with(
             "# Future Route\n",
             "# Next Decision\n",
@@ -585,8 +585,15 @@ class TestBootstrapPromotionFallback(unittest.TestCase):
             "_exact_plan_claim",
             return_value={
                 "status": "closed_out",
-                "details": {"closeout_reference": "PR #42"},
+                "details": {"closeout_reference": "PR #42", "source_main_sha": MAIN},
             },
+        ), mock.patch.object(
+            plan_lifecycle,
+            "reconcile_legacy_closeout_reference",
+            return_value=(
+                "PR #42 exact head `" + "b" * 40 + "`; merge `" + MAIN
+                + "`; exact-head `PASS`; canonical workflow `31467821767`"
+            ),
         ), mock.patch.object(
             route_driver, "retained_t3_request", return_value=None
         ), mock.patch.object(
@@ -833,10 +840,25 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
 
     def _adapter(self):
         adapter = mock.Mock()
-        adapter.repository_metadata.return_value = {"default_branch": "main"}
+        adapter.repository_metadata.return_value = {"default_branch": "main", "owner": "product-owner"}
         adapter.accepted_main_sha.return_value = MAIN
         adapter.accepted_plan_document.return_value = self._live_t3_document()
         return adapter
+
+    def test_owner_outcome_requires_authenticated_repository_owner(self):
+        adapter = self._adapter()
+        adapter.repository_metadata.return_value = {"default_branch": "main", "owner": "other-owner"}
+        with mock.patch.dict(os.environ, {
+            "GITHUB_ACTIONS": "true", "GITHUB_ACTOR": "product-owner",
+        }), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.control_state, "require_live", return_value=None), \
+             mock.patch.object(local_loop, "GitHubAdapter", return_value=adapter):
+            result = dispatcher.record_route_owner_outcome(
+                CLOSED, MAIN, "b" * 64, "f" * 64, "3" * 64
+            )
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "route_owner_outcome_owner_unproved")
 
     def test_operator_transport_records_only_one_exact_receipt(self):
         adapter = self._adapter()
@@ -929,6 +951,52 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
         self.assertEqual(result["reason"], "route_t3_request_binding_mismatch")
         write.assert_not_called()
 
+    def test_existing_owner_outcome_is_a_separate_authenticated_ledger_receipt(self):
+        adapter = self._adapter()
+        t3_state = {
+            "action": "route-t3-receipt",
+            "status": "authorized",
+            "details": {
+                "outcome_receipt_digest": "f" * 64,
+                "operator": "authorized-operator",
+            },
+        }
+        with mock.patch.dict(os.environ, {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_ACTOR": "product-owner",
+        }), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.control_state, "require_live", return_value=None), \
+             mock.patch.object(dispatcher.control_state, "read_plan_ledger", return_value={"number": LEDGER}), \
+             mock.patch.object(local_loop, "GitHubAdapter", return_value=adapter), \
+             mock.patch.object(state_manager, "read_dispatch_state", side_effect=[t3_state, None]), \
+             mock.patch.object(state_manager, "record_dispatch_state", return_value=True) as write:
+            result = dispatcher.record_route_owner_outcome(
+                CLOSED, MAIN, "b" * 64, "f" * 64, "3" * 64
+            )
+        self.assertTrue(result["recorded"])
+        self.assertEqual(write.call_args.args[2:4], ("route-t3-owner-outcome", "validated"))
+        self.assertEqual(write.call_args.args[1], f"route-t3-owner-outcome:{CLOSED}:" + "b" * 64)
+
+    def test_owner_outcome_cannot_be_recorded_without_the_separate_t3_receipt(self):
+        adapter = self._adapter()
+        with mock.patch.dict(os.environ, {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_ACTOR": "product-owner",
+        }), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.control_state, "require_live", return_value=None), \
+             mock.patch.object(dispatcher.control_state, "read_plan_ledger", return_value={"number": LEDGER}), \
+             mock.patch.object(local_loop, "GitHubAdapter", return_value=adapter), \
+             mock.patch.object(state_manager, "read_dispatch_state", return_value=None), \
+             mock.patch.object(state_manager, "record_dispatch_state") as write:
+            result = dispatcher.record_route_owner_outcome(
+                CLOSED, MAIN, "b" * 64, "f" * 64, "3" * 64
+            )
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "route_owner_outcome_t3_binding_unproved")
+        write.assert_not_called()
+
     def test_unallowlisted_decision_source_is_rejected_before_ledger_write(self):
         adapter = self._adapter()
         arguments = list(self._arguments())
@@ -957,6 +1025,38 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
 
 
 class TestOperatorEffectRouteResume(unittest.TestCase):
+    @staticmethod
+    def _owner_validated_status(request, receipt):
+        return (
+            "## Accepted Packet Receipts\n\n"
+            "| Packet | State | Accepted evidence |\n"
+            "|---|---|---|\n"
+            f"| `{request.packet_id}` | `COMPLETE` | owner-validated existing product evidence for `{receipt.outcome_receipt_digest}` |\n"
+        )
+
+    @staticmethod
+    def _owner_receipt(request, receipt):
+        owner_actor = "product-owner"
+        owner_evidence_digest = "3" * 64
+        return {
+            "action": "route-t3-owner-outcome",
+            "status": "validated",
+            "details": {
+                "schema_version": "route_t3_owner_outcome.v1",
+                "packet_id": request.packet_id,
+                "accepted_main_sha": request.accepted_main_sha,
+                "candidate_digest": request.candidate_digest,
+                "outcome_receipt_digest": receipt.outcome_receipt_digest,
+                "owner_actor": owner_actor,
+                "owner_evidence_digest": owner_evidence_digest,
+                "owner_receipt_digest": route_driver.owner_outcome_receipt_digest(
+                    request.packet_id, request.accepted_main_sha,
+                    request.candidate_digest, receipt.outcome_receipt_digest,
+                    owner_actor, owner_evidence_digest,
+                ),
+            },
+        }
+
     def _request_and_receipt(self):
         now = datetime.now(timezone.utc)
         request = route_driver.T3Request(
@@ -1033,7 +1133,10 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
 
     def test_valid_operator_completion_promotes_only_the_provider_free_closeout(self):
         request, receipt, raw = self._request_and_receipt()
-        runner, _github, state = self._runner(request, raw)
+        runner, github, state = self._runner(request, raw)
+        self.assertFalse(route_driver.owner_outcome_receipt_proved(
+            status_document(), request, receipt, None
+        ))
         successor = mock.Mock(
             profile=("PE7-EFFECT-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"),
         )
@@ -1042,7 +1145,12 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             "READY_FOR_EXECUTION", "proved", evidence=mock.Mock()
         )
         compiled = mock.Mock()
-        with mock.patch.object(state_manager, "read_dispatch_state", return_value=state), \
+        owner_state = self._owner_receipt(request, receipt)
+        def read_state(_issue, dispatch_id=None, _repo=""):
+            if dispatch_id == f"route-t3-owner-outcome:{request.packet_id}:{request.candidate_digest}":
+                return owner_state
+            return state
+        with mock.patch.object(state_manager, "read_dispatch_state", side_effect=read_state), \
              mock.patch.object(route_driver, "eligible_successor", return_value=successor), \
              mock.patch.object(runner, "_plan_current_main_evidence", return_value=planned), \
              mock.patch.object(route_driver, "compile_successor", return_value=compiled) as compile_successor, \
@@ -1055,6 +1163,9 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             self.assertEqual(
                 compile_successor.call_args.kwargs["retained_t3_request"], request
             )
+            self.assertEqual(
+                compile_successor.call_args.kwargs["retained_t3_receipt"], receipt
+            )
         self.assertEqual(result.status, "promotion_pr")
         self.assertEqual(drive.call_args.args[0], CLOSED)
         self.assertEqual(drive.call_args.args[2], MAIN)
@@ -1062,7 +1173,8 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
 
     def test_effect_closeout_planner_transport_unavailability_is_recoverable(self):
         request, receipt, raw = self._request_and_receipt()
-        runner, _github, state = self._runner(request, raw)
+        runner, github, state = self._runner(request, raw)
+        github.accepted_status_document.return_value = self._owner_validated_status(request, receipt)
         successor = mock.Mock(
             profile=("PE7-EFFECT-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"),
         )
@@ -1083,7 +1195,8 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
 
     def test_receipt_without_a_direct_closeout_stops_outcome_unknown(self):
         request, receipt, raw = self._request_and_receipt()
-        runner, _github, state = self._runner(request, raw)
+        runner, github, state = self._runner(request, raw)
+        github.accepted_status_document.return_value = self._owner_validated_status(request, receipt)
         successor = mock.Mock(
             profile=("PE7-WRONG-SUCCESSOR-1", "IMPLEMENT", "T1", "none", "source_focused_full"),
         )
@@ -1116,6 +1229,7 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             predecessor_receipt="T3 receipt " + "f" * 64,
             active_packet_block=(
                 f"## Packet {closeout}\n\n**State:** `READY_FOR_EXECUTION`\n\n"
+                f"**Prerequisite:** {request.packet_id} — IN_PROGRESS.\n\n"
                 "**Class:** `CLOSEOUT`\n"
             ),
             closed_packet_state="IN_PROGRESS",
@@ -1125,7 +1239,87 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
         with mock.patch.object(
             plan_lifecycle,
             "_exact_plan_claim",
-            return_value={"status": "closed_out", "details": {"closeout_reference": "PR #42"}},
+            return_value={"status": "closed_out", "details": {"closeout_reference": "PR #42", "source_main_sha": MAIN}},
+        ), mock.patch.object(
+            plan_lifecycle,
+            "reconcile_legacy_closeout_reference",
+            return_value=(
+                "PR #42 exact head `" + "b" * 40 + "`; merge `" + MAIN
+                + "`; exact-head `PASS`; canonical workflow `31467821767`"
+            ),
+        ), mock.patch.object(runner, "_drive_promotion_pr") as drive:
+            result = runner.run_route_once(closeout, ATTEMPT)
+        self.assertEqual(result.status, "outcome_unknown")
+        self.assertEqual(result.details["reason"], "route_effect_owner_outcome_unproved")
+        drive.assert_not_called()
+
+    def test_closeout_marker_removal_cannot_bypass_owner_outcome_proof(self):
+        request, _receipt, raw = self._request_and_receipt()
+        source_main = "c" * 40
+        current_main = "d" * 40
+        request = route_driver.T3Request(
+            packet_id=request.packet_id,
+            accepted_main_sha=source_main,
+            candidate_digest=request.candidate_digest,
+            action_digest=request.action_digest,
+            scope_digest=request.scope_digest,
+            authority_owner_digest=request.authority_owner_digest,
+            requested_action=request.requested_action,
+        )
+        raw = {**raw, "accepted_main_sha": source_main}
+        raw["decision_digest"] = route_driver.t3_decision_digest(
+            request,
+            raw["decision_source"],
+            raw["decision_evidence_digest"],
+            raw["disposition"],
+        )
+        receipt, reason = route_driver.validate_t3_receipt(
+            raw, request, now=datetime.fromisoformat(raw["issued_at"])
+        )
+        self.assertEqual(reason, "t3_receipt_valid")
+        closeout = "PE7-EFFECT-CLOSEOUT-1"
+        source_document = route_driver.compact_next_window(
+            f"## Active Routing\n\n1. `{closeout}` — `READY_FOR_EXECUTION`\n\n"
+            "## Common Execution Protocol\n\n- retained\n",
+            closed_packet_id=request.packet_id,
+            predecessor_receipt=route_driver.t3_closeout_reference(receipt),
+            active_packet_block=(
+                f"## Packet {closeout}\n\n**State:** `READY_FOR_EXECUTION`\n\n"
+                f"**Prerequisite:** {request.packet_id} — IN_PROGRESS.\n\n"
+                "**Class:** `CLOSEOUT`\n"
+            ),
+            closed_packet_state="IN_PROGRESS",
+            retained_marker=route_driver._t3_request_marker(request),
+        )
+        current_document = source_document.replace("## Retained", "## Historical", 1)
+        runner, github, state = self._runner(request, raw)
+        github.accepted_main_sha.return_value = current_main
+        runner.git.origin_main_sha.return_value = current_main
+        github.accepted_plan_document.side_effect = (
+            lambda sha: source_document if sha == source_main else current_document
+        )
+        canonical = (
+            "PR #42 exact head `" + "b" * 40 + "`; merge `" + current_main
+            + "`; exact-head `PASS`; canonical workflow `31467821767`"
+        )
+        with mock.patch.object(
+            plan_lifecycle,
+            "_exact_plan_claim",
+            return_value={
+                "status": "closed_out",
+                "details": {
+                    "closeout_reference": canonical,
+                    "source_main_sha": source_main,
+                },
+            },
+        ), mock.patch.object(
+            plan_lifecycle,
+            "reconcile_legacy_closeout_reference",
+            return_value=canonical,
+        ), mock.patch.object(
+            state_manager,
+            "read_dispatch_state",
+            return_value=state,
         ), mock.patch.object(runner, "_drive_promotion_pr") as drive:
             result = runner.run_route_once(closeout, ATTEMPT)
         self.assertEqual(result.status, "outcome_unknown")

@@ -26,6 +26,9 @@ MERGE = "c" * 40
 ATTEMPT = "123e4567-e89b-12d3-a456-426614174000"
 PACKET = "PE7-LIFECYCLE-CONTROLLER-1"
 DISPATCH_ID = f"plan-run:{PACKET}:{MAIN}:{ATTEMPT}"
+CLOSEOUT_REFERENCE = (
+    f"PR #{PR} exact head `{HEAD}`; merge `{MERGE}`; exact-head `PASS`; canonical workflow `7`"
+)
 
 DETAILS = {
     "ledger_issue_number": LEDGER,
@@ -152,12 +155,13 @@ class TestPlanReceiptReadback(unittest.TestCase):
         with mock.patch.object(state_manager, "get_issue_comment_bodies", return_value=""):
             self.assertIsNone(plan_lifecycle.plan_ci_receipt(LEDGER, PR, HEAD))
 
-    def test_ci_receipt_requires_terminal_status(self):
-        with mock.patch.object(
-            state_manager, "get_issue_comment_bodies",
-            return_value=json.dumps(ci_wire(status="in_progress")),
-        ):
-            self.assertIsNone(plan_lifecycle.plan_ci_receipt(LEDGER, PR, HEAD))
+    def test_ci_receipt_requires_successful_terminal_status(self):
+        for status in ("in_progress", "terminal_failure"):
+            with self.subTest(status=status), mock.patch.object(
+                state_manager, "get_issue_comment_bodies",
+                return_value=json.dumps(ci_wire(status=status)),
+            ):
+                self.assertIsNone(plan_lifecycle.plan_ci_receipt(LEDGER, PR, HEAD))
 
     def test_ci_receipt_requires_exact_binding(self):
         with mock.patch.object(
@@ -328,7 +332,7 @@ class TestRecordPlanCloseoutReceipt(unittest.TestCase):
             patch.start()
         self.addCleanup(lambda: [patch.stop() for patch in patches])
         return plan_lifecycle.record_plan_closeout_receipt(
-            LEDGER, PACKET, ATTEMPT, MAIN, PR, HEAD, "closed_out", f"PR #{PR}"
+            LEDGER, PACKET, ATTEMPT, MAIN, PR, HEAD, "closed_out", CLOSEOUT_REFERENCE
         )
 
     def _full(self):
@@ -353,7 +357,7 @@ class TestRecordPlanCloseoutReceipt(unittest.TestCase):
                 state_manager, "record_dispatch_state"
             ) as write:
                 result = plan_lifecycle.record_plan_closeout_receipt(
-                    LEDGER, PACKET, ATTEMPT, MAIN, PR, HEAD, "closed_out", f"PR #{PR}"
+                    LEDGER, PACKET, ATTEMPT, MAIN, PR, HEAD, "closed_out", CLOSEOUT_REFERENCE
                 )
             self.assertFalse(result["recorded"], result)
             self.assertEqual(result["reason"], f"missing_transition:{missing}")
@@ -370,7 +374,7 @@ class TestRecordPlanCloseoutReceipt(unittest.TestCase):
         self.assertEqual(write_args[2], "plan-run")
         self.assertEqual(write_args[3], "closed_out")
         self.assertEqual(write_args[4]["terminal_packet_state"], "closed_out")
-        self.assertEqual(write_args[4]["closeout_reference"], f"PR #{PR}")
+        self.assertEqual(write_args[4]["closeout_reference"], CLOSEOUT_REFERENCE)
         state_manager.set_labels.assert_called_once_with(
             LEDGER, state_manager.LABEL_COMPLETE, repo=""
         )
@@ -381,7 +385,7 @@ class TestRecordPlanCloseoutReceipt(unittest.TestCase):
     def test_closeout_reentry_is_idempotent(self):
         claim = dispatch_state("closed_out", {
             **DETAILS, "terminal_packet_state": "closed_out",
-            "closeout_reference": f"PR #{PR}",
+            "closeout_reference": CLOSEOUT_REFERENCE,
         })
         result = self._run(self._patch(self._full(), claim=claim))
         self.assertTrue(result["recorded"])
@@ -403,11 +407,84 @@ class TestRecordPlanCloseoutReceipt(unittest.TestCase):
     def test_closeout_identity_invalid_fails_closed(self):
         with mock.patch.object(state_manager, "record_dispatch_state") as write:
             result = plan_lifecycle.record_plan_closeout_receipt(
-                LEDGER, PACKET, "bad", MAIN, PR, HEAD, "closed_out", f"PR #{PR}"
+                LEDGER, PACKET, "bad", MAIN, PR, HEAD, "closed_out", CLOSEOUT_REFERENCE
             )
         self.assertFalse(result["recorded"])
         self.assertEqual(result["reason"], "closeout_identity_invalid")
         write.assert_not_called()
+
+    def test_closeout_reference_must_bind_head_merge_and_canonical_ci(self):
+        with mock.patch.object(state_manager, "record_dispatch_state") as write:
+            result = plan_lifecycle.record_plan_closeout_receipt(
+                LEDGER, PACKET, ATTEMPT, MAIN, PR, HEAD, "closed_out", f"PR #{PR}"
+            )
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "closeout_identity_invalid")
+        write.assert_not_called()
+
+    def test_closeout_reference_values_must_match_verified_ledger_receipts(self):
+        wrong_merge_reference = plan_lifecycle.canonical_closeout_reference(
+            PR, HEAD, "e" * 40, 7
+        )
+        assert wrong_merge_reference is not None
+        patches = self._patch(self._full())
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        result = plan_lifecycle.record_plan_closeout_receipt(
+            LEDGER,
+            PACKET,
+            ATTEMPT,
+            MAIN,
+            PR,
+            HEAD,
+            "closed_out",
+            wrong_merge_reference,
+        )
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "closeout_reference_binding_invalid")
+        state_manager.record_dispatch_state.assert_not_called()
+
+    def test_legacy_closeout_reference_reconciles_only_with_all_bound_receipts(self):
+        lifecycle = {
+            "claim_status": "closed_out",
+            "pr_number": PR,
+            "head_sha": HEAD,
+            "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
+            "transitions": {
+                "ci": ci_wire(),
+                "review": review_wire(),
+                "merge": merge_wire(),
+                "closeout": {"closeout_reference": f"PR #{PR}"},
+            },
+        }
+        with mock.patch.object(plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle):
+            reconciled = plan_lifecycle.reconcile_legacy_closeout_reference(
+                LEDGER, PACKET, ATTEMPT, f"PR #{PR}"
+            )
+        self.assertEqual(reconciled, CLOSEOUT_REFERENCE)
+        with mock.patch.object(plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle):
+            self.assertEqual(
+                plan_lifecycle.reconcile_legacy_closeout_reference(
+                    LEDGER, PACKET, ATTEMPT, CLOSEOUT_REFERENCE
+                ),
+                CLOSEOUT_REFERENCE,
+            )
+        mismatch = CLOSEOUT_REFERENCE.replace(f"PR #{PR}", "PR #999")
+        with mock.patch.object(plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle):
+            self.assertIsNone(plan_lifecycle.reconcile_legacy_closeout_reference(
+                LEDGER, PACKET, ATTEMPT, mismatch
+            ))
+        lifecycle["stages"]["review"] = False
+        with mock.patch.object(plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle):
+            self.assertIsNone(plan_lifecycle.reconcile_legacy_closeout_reference(
+                LEDGER, PACKET, ATTEMPT, f"PR #{PR}"
+            ))
+        lifecycle["stages"] = []
+        with mock.patch.object(plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle):
+            self.assertIsNone(plan_lifecycle.reconcile_legacy_closeout_reference(
+                LEDGER, PACKET, ATTEMPT, f"PR #{PR}"
+            ))
 
 
 class TestReadPlanLifecycle(unittest.TestCase):
@@ -467,7 +544,7 @@ class TestReadPlanLifecycle(unittest.TestCase):
         claim = dispatch_state("closed_out", {
             **DETAILS,
             "terminal_packet_state": "closed_out",
-            "closeout_reference": f"PR #{PR}",
+            "closeout_reference": CLOSEOUT_REFERENCE,
         })
         with mock.patch.object(
             state_manager, "get_issue_comments", return_value=self._comments([claim])
@@ -485,7 +562,7 @@ class TestReadPlanLifecycle(unittest.TestCase):
         self.assertTrue(all(result["stages"].values()))
         self.assertEqual(result["claim_status"], "closed_out")
         self.assertEqual(result["transitions"]["closeout"]["terminal_packet_state"], "closed_out")
-        self.assertEqual(result["transitions"]["closeout"]["closeout_reference"], f"PR #{PR}")
+        self.assertEqual(result["transitions"]["closeout"]["closeout_reference"], CLOSEOUT_REFERENCE)
         self.assertEqual(result["transitions"]["merge"]["merge_commit_sha"], MERGE)
 
 
@@ -630,7 +707,10 @@ class TestRecordPlanLifecycleDispatcher(unittest.TestCase):
         self.assertEqual(result["merge_commit_sha"], MERGE)
 
     def test_closeout_stage_records_verified_transition(self):
-        patches = self._patch_dispatch()
+        patches = self._patch_dispatch(bodies={
+            "agent-orchestrator-ci-state": json.dumps(ci_wire()),
+            "agent-orchestrator-merge-state": json.dumps(merge_wire()),
+        })
         for patch in patches:
             patch.start()
         try:
@@ -642,11 +722,26 @@ class TestRecordPlanLifecycleDispatcher(unittest.TestCase):
             record.assert_called_once()
             self.assertEqual(record.call_args.args[1], PACKET)
             self.assertEqual(record.call_args.args[6], "closed_out")
+            self.assertEqual(record.call_args.args[7], CLOSEOUT_REFERENCE)
         finally:
             for patch in patches:
                 patch.stop()
         self.assertTrue(result["recorded"])
         self.assertEqual(result["reason"], "closed_out")
+
+    def test_closeout_stage_requires_canonical_ci_and_merge_receipts(self):
+        patches = self._patch_dispatch()
+        for patch in patches:
+            patch.start()
+        try:
+            with mock.patch.object(plan_lifecycle, "record_plan_closeout_receipt") as record:
+                result = dispatcher.record_plan_lifecycle(PACKET, ATTEMPT, "closeout")
+            record.assert_not_called()
+        finally:
+            for patch in patches:
+                patch.stop()
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "closeout_receipt_pending")
 
     def test_closed_out_claim_reports_idempotent_success(self):
         claim = dispatch_state("closed_out", {**DETAILS, "terminal_packet_state": "closed_out"})
@@ -864,6 +959,9 @@ class TestPlanLifecycleWorkflowTransport(unittest.TestCase):
             '"$INPUT_DECISION_SOURCE" "$INPUT_DECISION_EVIDENCE_DIGEST" "$INPUT_ISSUED_AT"',
             workflow,
         )
+        self.assertIn("          - record-route-owner-outcome\n", workflow)
+        self.assertIn("      INPUT_OWNER_EVIDENCE_DIGEST: ${{ inputs.owner_evidence_digest }}\n", workflow)
+        self.assertIn("dispatcher.py record-route-owner-outcome", workflow)
 
 
 if __name__ == "__main__":

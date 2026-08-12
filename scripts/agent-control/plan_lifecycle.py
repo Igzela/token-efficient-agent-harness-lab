@@ -30,7 +30,12 @@ import state_manager as sm
 _ATTEMPT_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
-_CLOSEOUT_REFERENCE_PATTERN = re.compile(r"^[a-zA-Z0-9_ ./:#-]{1,200}$")
+_CLOSEOUT_REFERENCE_PATTERN = re.compile(
+    r"^(?P<canonical>PR #(?P<pr>[1-9][0-9]*) exact head `(?P<head>[0-9a-f]{40})`; merge "
+    r"`(?P<merge>[0-9a-f]{40})`; exact-head `PASS`; canonical workflow "
+    r"`(?P<workflow>[1-9][0-9]*)`)(?:; (?P<detail>[^\r\n]{1,1800}))?$"
+)
+_LEGACY_CLOSEOUT_REFERENCE_PATTERN = re.compile(r"^PR #(?P<pr>[1-9][0-9]*)$")
 _TERMINAL_PACKET_STATE_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
@@ -44,6 +49,97 @@ def _normalized_attempt_id(value: object) -> str | None:
     except ValueError:
         return None
     return value if value == str(parsed) else None
+
+
+def canonical_closeout_reference(
+    pr_number: object,
+    head_sha: object,
+    merge_commit_sha: object,
+    workflow_run_id: object,
+) -> str | None:
+    """Render the one closeout reference accepted by routing and status rows."""
+
+    if (
+        type(pr_number) is not int
+        or pr_number < 1
+        or not isinstance(head_sha, str)
+        or local_loop.HEX40.fullmatch(head_sha) is None
+        or not isinstance(merge_commit_sha, str)
+        or local_loop.HEX40.fullmatch(merge_commit_sha) is None
+        or type(workflow_run_id) is not int
+        or workflow_run_id < 1
+    ):
+        return None
+    return (
+        f"PR #{pr_number} exact head `{head_sha}`; merge `{merge_commit_sha}`; "
+        f"exact-head `PASS`; canonical workflow `{workflow_run_id}`"
+    )
+
+
+def canonical_closeout_reference_match(value: object) -> re.Match[str] | None:
+    """Parse a bounded canonical closeout reference and ignored status detail."""
+
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 2 * 1024:
+        return None
+    return _CLOSEOUT_REFERENCE_PATTERN.fullmatch(value)
+
+
+def reconcile_legacy_closeout_reference(
+    ledger_issue: int,
+    packet_id: str,
+    attempt_id: str,
+    closeout_reference: object,
+    repo: str = "",
+) -> str | None:
+    """Rebuild one pre-canonical ``PR #n`` receipt from trusted ledger state.
+
+    The function is read-only.  It accepts no generic legacy prose: the legacy
+    PR number must match the exact subject's current worker binding, and all
+    CI/review/merge/closeout transitions must be independently readable before
+    it returns a canonical reference for the route compiler.
+    """
+
+    canonical = canonical_closeout_reference_match(closeout_reference)
+    legacy = (
+        _LEGACY_CLOSEOUT_REFERENCE_PATTERN.fullmatch(closeout_reference)
+        if isinstance(closeout_reference, str)
+        else None
+    )
+    if canonical is None and legacy is None:
+        return None
+    lifecycle = read_plan_lifecycle(ledger_issue, packet_id, attempt_id, repo)
+    if not isinstance(lifecycle, dict):
+        return None
+    stages = lifecycle.get("stages")
+    if (
+        lifecycle.get("claim_status") != "closed_out"
+        or (
+            legacy is not None
+            and lifecycle.get("pr_number") != int(legacy.group("pr"))
+        )
+        or not isinstance(stages, dict)
+        or not all(stages.get(stage) is True for stage in ("ci", "review", "merge", "closeout"))
+    ):
+        return None
+    transitions = lifecycle.get("transitions")
+    if not isinstance(transitions, dict):
+        return None
+    ci = transitions.get("ci")
+    merge = transitions.get("merge")
+    head_sha = lifecycle.get("head_sha")
+    if not isinstance(ci, dict) or not isinstance(merge, dict):
+        return None
+    rebuilt = canonical_closeout_reference(
+        lifecycle.get("pr_number"),
+        head_sha,
+        merge.get("merge_commit_sha"),
+        ci.get("workflow_run_id"),
+    )
+    if rebuilt is None:
+        return None
+    if canonical is not None and canonical.group("canonical") != rebuilt:
+        return None
+    return rebuilt
 
 
 def _plan_claim(ledger_issue: int, dispatch_id: str, repo: str) -> dict[str, Any] | None:
@@ -123,8 +219,7 @@ def plan_ci_receipt(ledger_issue: int, pr_number: int, head_sha: str, repo: str 
         return None
     if state.get("pr_number") != int(pr_number) or state.get("head_sha") != head_sha:
         return None
-    status = state.get("status")
-    if not isinstance(status, str) or not status.startswith("terminal_"):
+    if state.get("status") != "terminal_success":
         return None
     return state
 
@@ -249,6 +344,7 @@ def record_plan_closeout_receipt(
     """
 
     attempt = _normalized_attempt_id(attempt_id)
+    closeout_match = canonical_closeout_reference_match(closeout_reference)
     if (
         not isinstance(packet_id, str)
         or plan_lane.PACKET_ID.fullmatch(packet_id) is None
@@ -258,9 +354,10 @@ def record_plan_closeout_receipt(
         or pr_number <= 0
         or local_loop.HEX40.fullmatch(head_sha) is None
         or _TERMINAL_PACKET_STATE_PATTERN.fullmatch(terminal_packet_state) is None
-        or _CLOSEOUT_REFERENCE_PATTERN.fullmatch(closeout_reference) is None
+        or closeout_match is None
     ):
         return {"recorded": False, "reason": "closeout_identity_invalid"}
+    receipts = {}
     for stage in ("ci", "review", "merge"):
         present = {
             "ci": plan_ci_receipt,
@@ -269,6 +366,17 @@ def record_plan_closeout_receipt(
         }[stage](ledger_issue, pr_number, head_sha, repo)
         if present is None:
             return {"recorded": False, "reason": f"missing_transition:{stage}"}
+        receipts[stage] = present
+    assert closeout_match is not None
+    ci_receipt = receipts["ci"]
+    merge_receipt = receipts["merge"]
+    if (
+        closeout_match.group("pr") != str(pr_number)
+        or closeout_match.group("head") != head_sha
+        or closeout_match.group("merge") != merge_receipt.get("merge_commit_sha")
+        or closeout_match.group("workflow") != str(ci_receipt.get("workflow_run_id"))
+    ):
+        return {"recorded": False, "reason": "closeout_reference_binding_invalid"}
     dispatch_id = f"plan-run:{packet_id}:{source_main_sha}:{attempt}"
     claim = _plan_claim(ledger_issue, dispatch_id, repo)
     if claim is None:

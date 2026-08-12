@@ -34,6 +34,7 @@ import uuid
 
 import artifact_contract
 import plan_lane
+import plan_lifecycle
 
 
 INVENTORY_MARKER = re.compile(
@@ -69,6 +70,9 @@ CLASS_DEFAULT_VERIFICATION = {
 T3_DECISION_SOURCES = frozenset({"human_operator", "local_sol_5_6_max", "gpt_web"})
 
 _CLOSEOUT_FIELDS = ("Prerequisite", "Class", "Outcome", "Allowed delta", "Exit", "Stop")
+_ROUTE_CLOSEOUT_PACKET_DETAIL = re.compile(
+    rf"^route closeout packet `(?P<packet>{plan_lane.PACKET_TOKEN})`$"
+)
 
 
 class RouteDriverError(ValueError):
@@ -404,13 +408,110 @@ def accepted_complete_receipt(status_document: str, packet_id: str) -> str:
     if receipt_match is None:
         raise RouteDriverError("route_bootstrap_receipt_invalid")
     receipt = receipt_match.group("evidence").strip()
-    if len(receipt.encode("utf-8")) > 2 * 1024 or re.search(
-        r"PR #[1-9][0-9]* exact head `[0-9a-f]{40}`; merge `[0-9a-f]{40}`; "
-        r"exact-head `PASS`; canonical workflow `[1-9][0-9]*`",
-        receipt,
-    ) is None:
+    match = plan_lifecycle.canonical_closeout_reference_match(receipt)
+    if match is None:
         raise RouteDriverError("route_bootstrap_receipt_not_merge_backed")
-    return receipt
+    return match.group("canonical")
+
+
+def route_bound_closeout_reference(packet_id: str, closeout_reference: object) -> str:
+    """Bind a ledger-proved closeout to its packet during the status-row gap.
+
+    This annotation is only an in-memory routing bridge.  Once the promotion
+    PR writes the accepted status row, that row's packet column is the durable
+    identity binding and downstream readers retain only the canonical receipt.
+    """
+
+    if not isinstance(packet_id, str) or plan_lane.PACKET_ID.fullmatch(packet_id) is None:
+        raise RouteDriverError("promotion_closed_packet_invalid")
+    match = plan_lifecycle.canonical_closeout_reference_match(closeout_reference)
+    if match is None:
+        raise RouteDriverError("promotion_predecessor_receipt_unproved")
+    return f"{match.group('canonical')}; route closeout packet `{packet_id}`"
+
+
+def verified_predecessor_receipt(
+    status_document: str,
+    closed_packet_id: str,
+    predecessor_receipt: str,
+    accepted_main_sha: str,
+) -> str:
+    """Prove the just-closed prerequisite before it enters a candidate."""
+
+    if not isinstance(predecessor_receipt, str) or not predecessor_receipt.strip():
+        raise RouteDriverError("promotion_predecessor_receipt_missing")
+    if plan_lane.SHA40.fullmatch(accepted_main_sha) is None:
+        raise RouteDriverError("promotion_accepted_main_invalid")
+    receipt = predecessor_receipt.strip()
+    match = plan_lifecycle.canonical_closeout_reference_match(receipt)
+    if match is None:
+        raise RouteDriverError("promotion_predecessor_receipt_unproved")
+    canonical = match.group("canonical")
+    if isinstance(status_document, str) and status_document:
+        try:
+            accepted = accepted_complete_receipt(status_document, closed_packet_id)
+        except RouteDriverError as exc:
+            if exc.reason != "route_bootstrap_receipt_missing_or_ambiguous":
+                raise
+        else:
+            if accepted != canonical:
+                raise RouteDriverError("promotion_predecessor_receipt_mismatch")
+            return canonical
+    detail = match.group("detail")
+    packet_detail = (
+        _ROUTE_CLOSEOUT_PACKET_DETAIL.fullmatch(detail)
+        if isinstance(detail, str)
+        else None
+    )
+    if (
+        match.group("merge") != accepted_main_sha
+        or packet_detail is None
+        or packet_detail.group("packet") != closed_packet_id
+    ):
+        raise RouteDriverError("promotion_predecessor_receipt_unproved")
+    return canonical
+
+
+def bound_prerequisite_receipts(
+    successor: EligibleSuccessor,
+    closed_packet_id: str,
+    predecessor_receipt: str,
+    status_document: str,
+    accepted_main_sha: str,
+) -> tuple[str, ...]:
+    """Bind every prerequisite to its exact accepted receipt.
+
+    The just-closed packet has a closeout receipt before this promotion's
+    document update can add its durable status row.  Every other prerequisite
+    must already have one exact accepted-current-status receipt.  This keeps a
+    multi-prerequisite candidate from carrying a plausible but incomplete
+    receipt list.
+    """
+
+    if not isinstance(closed_packet_id, str) or plan_lane.PACKET_ID.fullmatch(closed_packet_id) is None:
+        raise RouteDriverError("promotion_closed_packet_invalid")
+    if not isinstance(predecessor_receipt, str) or not predecessor_receipt.strip():
+        raise RouteDriverError("promotion_predecessor_receipt_missing")
+    if not successor.sketch.prerequisites:
+        raise RouteDriverError("promotion_prerequisites_missing")
+    if closed_packet_id not in successor.sketch.prerequisites:
+        raise RouteDriverError("promotion_closed_packet_not_prerequisite")
+    if not isinstance(status_document, str):
+        raise RouteDriverError("promotion_prerequisite_receipts_missing_or_invalid")
+    receipts: list[str] = []
+    for prerequisite in successor.sketch.prerequisites:
+        if prerequisite == closed_packet_id:
+            receipts.append(
+                verified_predecessor_receipt(
+                    status_document,
+                    closed_packet_id,
+                    predecessor_receipt,
+                    accepted_main_sha,
+                )
+            )
+        else:
+            receipts.append(accepted_complete_receipt(status_document, prerequisite))
+    return tuple(receipts)
 
 
 def bootstrap_reconcile_marked(document: str, packet_id: str) -> bool:
@@ -503,6 +604,7 @@ def compile_successor(
     *,
     closed_packet_state: str = "COMPLETE",
     retained_t3_request: T3Request | None = None,
+    retained_t3_receipt: T3Receipt | None = None,
 ) -> CompiledSuccessor:
     """Compile one evidence-backed non-EFFECT successor into document updates.
 
@@ -518,7 +620,11 @@ def compile_successor(
     if closed_packet_state == "IN_PROGRESS":
         if (
             retained_t3_request is None
+            or retained_t3_receipt is None
             or retained_t3_request.packet_id != closed_packet_id
+            or retained_t3_receipt.packet_id != closed_packet_id
+            or retained_t3_receipt.accepted_main_sha != accepted_main_sha
+            or retained_t3_receipt.candidate_digest != retained_t3_request.candidate_digest
             or successor.profile[1] != "CLOSEOUT"
             or successor.sketch.prerequisites != (closed_packet_id,)
         ):
@@ -526,13 +632,29 @@ def compile_successor(
     manifest = inventory_manifest(future_document)
     manifest_sha256 = _json_sha256(manifest)
     planned = RoutePromotionPlanner().plan(
-        successor, accepted_main_sha, predecessor_evidence, evidence, manifest_sha256
+        successor,
+        accepted_main_sha,
+        predecessor_evidence,
+        evidence,
+        manifest_sha256,
+        closed_packet_id=closed_packet_id,
+        status_document=status_document,
+        retained_t3_request=retained_t3_request,
+        retained_t3_receipt=retained_t3_receipt,
     )
     if planned.state not in {"READY_FOR_EXECUTION", "T3_REQUIRED"} or planned.candidate is None:
         raise RouteDriverError(planned.reason)
     candidate = planned.candidate
     contract = candidate.contract
     packet_state = planned.state
+    durable_predecessor_evidence = predecessor_evidence.strip()
+    if closed_packet_state == "COMPLETE":
+        predecessor_match = plan_lifecycle.canonical_closeout_reference_match(
+            durable_predecessor_evidence
+        )
+        if predecessor_match is None:
+            raise RouteDriverError("promotion_predecessor_receipt_unproved")
+        durable_predecessor_evidence = predecessor_match.group("canonical")
     capsule = dict(candidate.capsule)
     capsule["packet_state"] = packet_state
     if planned.t3_request is not None:
@@ -549,7 +671,7 @@ def compile_successor(
         f"## Packet {successor.packet_id}\n\n"
         f"**State:** `{packet_state}`\n\n"
         f"**Prerequisite:** {', '.join(successor.sketch.prerequisites) or 'none'} — "
-        f"{predecessor_state} on accepted main `{accepted_main_sha}` ({predecessor_evidence.strip()}).\n\n"
+        f"{predecessor_state} on accepted main `{accepted_main_sha}` ({durable_predecessor_evidence}).\n\n"
         f"**Class:** `{successor.sketch.packet_class}`\n\n"
         f"**Outcome:** {successor.sketch.outcome}\n\n"
         f"**Allowed delta:** {', '.join(contract['allowed_paths'])}.\n\n"
@@ -557,7 +679,7 @@ def compile_successor(
         f"**Stop:** {successor.sketch.stop}\n\n"
         "### Twelve-field contract\n\n"
         f"1. **Outcome and non-goals.** {successor.sketch.outcome}\n"
-        f"2. **Prerequisites and evidence.** Accepted main `{accepted_main_sha}`; checked route manifest SHA `{candidate.manifest_sha256}`; predecessor receipt {predecessor_evidence.strip()}; current-main evidence SHA `{candidate.evidence_sha256}`.\n"
+        f"2. **Prerequisites and evidence.** Accepted main `{accepted_main_sha}`; checked route manifest SHA `{candidate.manifest_sha256}`; predecessor receipt {durable_predecessor_evidence}; current-main evidence SHA `{candidate.evidence_sha256}`.\n"
         f"3. **Owners and paths.** Owners: {', '.join(contract['owner_paths'])}; callers: {', '.join(contract['caller_paths'])}; tests: {', '.join(contract['test_paths'])}.\n"
         f"4. **Frozen invariants.** Packet identity, route manifest SHA `{candidate.manifest_sha256}`, accepted-main SHA, predecessor receipt, and current-main evidence digest are immutable for this candidate.\n"
         "5. **Only semantic delta.** Execute only the independently reviewed candidate contract.\n"
@@ -574,7 +696,7 @@ def compile_successor(
     next_document = compact_next_window(
         next_document,
         closed_packet_id=closed_packet_id,
-        predecessor_receipt=predecessor_evidence,
+        predecessor_receipt=durable_predecessor_evidence,
         active_packet_block=packet_block,
         active_state=packet_state,
         closed_packet_state=closed_packet_state,
@@ -586,7 +708,7 @@ def compile_successor(
     )
     future_document = _refresh_future_document(future_document, successor.packet_id)
     closed_row, successor_row = _status_readiness_rows(
-        closed_packet_id, successor.packet_id, predecessor_evidence, packet_state,
+        closed_packet_id, successor.packet_id, durable_predecessor_evidence, packet_state,
         closed_packet_state=closed_packet_state,
     )
     status_document = _with_status_rows(
@@ -617,6 +739,7 @@ class CurrentMainEvidence:
 
     packet_id: str
     accepted_main_sha: str
+    status_document_sha256: str
     owner_paths: tuple[str, ...]
     caller_paths: tuple[str, ...]
     test_paths: tuple[str, ...]
@@ -734,6 +857,38 @@ class T3Receipt:
     issued_at: str
     expires_at: str
     disposition: str
+
+
+def t3_closeout_reference(receipt: T3Receipt) -> str:
+    """Return the only predecessor reference permitted after an EFFECT."""
+
+    return (
+        f"T3 operator authority `{receipt.authority_receipt_digest}`; redacted effect outcome "
+        f"`{receipt.outcome_receipt_digest}`"
+    )
+
+
+def _t3_receipt_wire(receipt: T3Receipt) -> dict[str, object]:
+    """Serialize a typed receipt for the same hostile-input validation path."""
+
+    return {
+        "schema_version": "route_t3_receipt.v1",
+        "packet_id": receipt.packet_id,
+        "accepted_main_sha": receipt.accepted_main_sha,
+        "candidate_digest": receipt.candidate_digest,
+        "action_digest": receipt.action_digest,
+        "scope_digest": receipt.scope_digest,
+        "authority_receipt_digest": receipt.authority_receipt_digest,
+        "outcome_receipt_digest": receipt.outcome_receipt_digest,
+        "authority_owner_digest": receipt.authority_owner_digest,
+        "operator": receipt.operator,
+        "decision_source": receipt.decision_source,
+        "decision_evidence_digest": receipt.decision_evidence_digest,
+        "decision_digest": receipt.decision_digest,
+        "issued_at": receipt.issued_at,
+        "expires_at": receipt.expires_at,
+        "disposition": receipt.disposition,
+    }
 
 
 def validate_t3_receipt(
@@ -930,6 +1085,72 @@ def retained_t3_request(document: str) -> T3Request | None:
     return current_t3_request(synthetic, accepted_main_sha)
 
 
+def direct_effect_closeout_request(
+    document: str,
+    closeout_packet_id: str,
+    source_main_sha: str,
+) -> T3Request | None:
+    """Recover the immutable EFFECT binding for its direct CLOSEOUT packet.
+
+    The closeout's plan claim binds ``source_main_sha`` before its PR can
+    change the current window.  Re-reading that source prevents a completed
+    closeout from deleting its retained marker and thereby bypassing the
+    independent existing-owner outcome proof required before later promotion.
+    """
+
+    if (
+        not isinstance(closeout_packet_id, str)
+        or plan_lane.PACKET_ID.fullmatch(closeout_packet_id) is None
+        or not isinstance(source_main_sha, str)
+        or plan_lane.SHA40.fullmatch(source_main_sha) is None
+    ):
+        raise RouteDriverError("route_effect_closeout_source_invalid")
+    request = retained_t3_request(document)
+    block = re.search(
+        rf"^## Packet {re.escape(closeout_packet_id)}\s*(?P<body>.*?)(?=^## |\Z)",
+        document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if block is None or not re.search(
+        r"^\*\*Class:\*\*\s*`CLOSEOUT`\s*$", block.group("body"), re.MULTILINE
+    ):
+        return None
+    active = re.search(
+        r"^## Active Routing\s*(?P<body>.*?)(?=^## |\Z)",
+        document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if active is None or len(re.findall(
+        rf"^1\. `{re.escape(closeout_packet_id)}` — `READY_FOR_EXECUTION`\s*$",
+        active.group("body"),
+        re.MULTILINE,
+    )) != 1:
+        raise RouteDriverError("route_effect_closeout_source_invalid")
+    prerequisite = re.search(
+        r"^\*\*Prerequisite:\*\*\s*(?P<value>.+)$",
+        block.group("body"),
+        re.MULTILINE,
+    )
+    if request is None:
+        # An ordinary CLOSEOUT may have no retained T3 marker.  A direct
+        # EFFECT closeout is distinguishable by its still-IN_PROGRESS
+        # prerequisite; a missing marker there is source-window tampering and
+        # must not downgrade to ordinary routing.
+        if prerequisite is not None and re.search(r"\bIN_PROGRESS\b", prerequisite.group("value")):
+            raise RouteDriverError("route_effect_closeout_source_invalid")
+        return None
+    if request.accepted_main_sha != source_main_sha:
+        raise RouteDriverError("route_effect_closeout_source_invalid")
+    packet_ids = (
+        tuple(dict.fromkeys(re.findall(plan_lane.PACKET_TOKEN, prerequisite.group("value"))))
+        if prerequisite is not None
+        else ()
+    )
+    if packet_ids != (request.packet_id,):
+        raise RouteDriverError("route_effect_closeout_source_invalid")
+    return request
+
+
 def validate_recorded_t3_receipt(
     raw: object, request: T3Request
 ) -> tuple[T3Receipt | None, str]:
@@ -942,45 +1163,96 @@ def validate_recorded_t3_receipt(
     """
 
     issued_at = raw.get("issued_at") if isinstance(raw, dict) else None
-    if not isinstance(issued_at, str):
+    expires_at = raw.get("expires_at") if isinstance(raw, dict) else None
+    if not isinstance(issued_at, str) or not isinstance(expires_at, str):
         return None, "t3_receipt_time_invalid"
     try:
         issued = datetime.fromisoformat(issued_at.replace("Z", "+00:00"))
+        expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
     except ValueError:
         return None, "t3_receipt_time_invalid"
-    if issued.tzinfo is None:
+    if issued.tzinfo is None or expires.tzinfo is None:
         return None, "t3_receipt_time_invalid"
-    return validate_t3_receipt(raw, request, now=issued)
+    observed = datetime.now(timezone.utc)
+    if issued > observed:
+        return None, "t3_receipt_issued_in_future"
+    return validate_t3_receipt(raw, request, now=min(observed, expires))
+
+
+_OWNER_ACTOR = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37})$")
+
+
+def owner_outcome_receipt_digest(
+    packet_id: str,
+    accepted_main_sha: str,
+    candidate_digest: str,
+    outcome_receipt_digest: str,
+    owner_actor: str,
+    owner_evidence_digest: str,
+) -> str:
+    """Derive the stable binding for an authenticated existing-owner receipt."""
+
+    payload = {
+        "schema_version": "route_t3_owner_outcome.v1",
+        "packet_id": packet_id,
+        "accepted_main_sha": accepted_main_sha,
+        "candidate_digest": candidate_digest,
+        "outcome_receipt_digest": outcome_receipt_digest,
+        "owner_actor": owner_actor,
+        "owner_evidence_digest": owner_evidence_digest,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def owner_outcome_receipt_proved(
-    status_document: str, request: T3Request, receipt: T3Receipt
+    status_document: str,
+    request: T3Request,
+    receipt: T3Receipt,
+    owner_receipt: object,
 ) -> bool:
-    """Require accepted owner validation, not a raw T3 outcome digest."""
+    """Require an independent, authenticated owner receipt, not status prose.
 
-    if not isinstance(status_document, str):
+    The accepted status row is only the closeout index.  The authority is the
+    separate trusted ledger state written by the existing product owner
+    transport, bound to this exact request and outcome digest.
+    """
+
+    if not isinstance(owner_receipt, dict):
         return False
-    try:
-        completed = plan_lane.accepted_completed_packet_ids(status_document)
-    except plan_lane.PlanLaneError:
+    if (
+        owner_receipt.get("action") != "route-t3-owner-outcome"
+        or owner_receipt.get("status") != "validated"
+    ):
         return False
-    if request.packet_id not in completed:
+    details = owner_receipt.get("details")
+    if not isinstance(details, dict):
         return False
-    section = re.search(
-        r"^## Accepted Packet Receipts\s*(?P<body>.*?)(?=^## |\Z)",
-        status_document,
-        re.MULTILINE | re.DOTALL,
+    owner_actor = details.get("owner_actor")
+    owner_evidence_digest = details.get("owner_evidence_digest")
+    if (
+        details.get("schema_version") != "route_t3_owner_outcome.v1"
+        or details.get("packet_id") != request.packet_id
+        or details.get("accepted_main_sha") != request.accepted_main_sha
+        or details.get("candidate_digest") != request.candidate_digest
+        or details.get("outcome_receipt_digest") != receipt.outcome_receipt_digest
+        or not isinstance(owner_actor, str)
+        or _OWNER_ACTOR.fullmatch(owner_actor) is None
+        or owner_actor.endswith("[bot]")
+        or not isinstance(owner_evidence_digest, str)
+        or plan_lane.SHA256.fullmatch(owner_evidence_digest) is None
+    ):
+        return False
+    expected_digest = owner_outcome_receipt_digest(
+        request.packet_id,
+        request.accepted_main_sha,
+        request.candidate_digest,
+        receipt.outcome_receipt_digest,
+        owner_actor,
+        owner_evidence_digest,
     )
-    if section is None:
-        return False
-    for row in section.group("body").splitlines():
-        if (
-            re.match(rf"^\|\s*`?{re.escape(request.packet_id)}`?\s*\|\s*`?COMPLETE`?\s*\|", row)
-            and receipt.outcome_receipt_digest in row
-            and "owner-validated" in row.casefold()
-        ):
-            return True
-    return False
+    return details.get("owner_receipt_digest") == expected_digest
 
 
 @dataclass(frozen=True)
@@ -996,6 +1268,7 @@ def _evidence_payload(evidence: CurrentMainEvidence) -> dict[str, object]:
     return {
         "packet_id": evidence.packet_id,
         "accepted_main_sha": evidence.accepted_main_sha,
+        "status_document_sha256": evidence.status_document_sha256,
         "owner_paths": list(evidence.owner_paths),
         "caller_paths": list(evidence.caller_paths),
         "test_paths": list(evidence.test_paths),
@@ -1023,6 +1296,8 @@ def _evidence_problem(
         return "promotion_evidence_main_mismatch"
     if not plan_lane.SHA40.fullmatch(accepted_main_sha):
         return "promotion_accepted_main_invalid"
+    if plan_lane.SHA256.fullmatch(evidence.status_document_sha256) is None:
+        return "promotion_status_document_binding_invalid"
     fields = (
         evidence.owner_paths,
         evidence.caller_paths,
@@ -1210,14 +1485,13 @@ class CurrentMainEvidenceVerifier:
 
         A token occurring anywhere in the map is not ownership evidence for
         an arbitrary file.  The current map must put both the declared token
-        and the exact path (or its explicit file-name entry) on the same
-        table row.  This keeps routing from treating an unrelated map mention
-        as a refreshed current-main owner proof.
+        and the exact path on the same table row.  Basename matching is
+        deliberately forbidden because two owners may contain the same file
+        name.
         """
 
-        basename = path.rsplit("/", 1)[-1]
         return any(
-            line.startswith("|") and token in line and (path in line or basename in line)
+            line.startswith("|") and token in line and path in line
             for line in module_map.splitlines()
         )
 
@@ -1281,12 +1555,22 @@ class CurrentMainEvidenceVerifier:
         raw: str,
         successor: EligibleSuccessor,
         predecessor_receipt: str,
+        closed_packet_id: str | None = None,
+        retained_t3_request: T3Request | None = None,
+        retained_t3_receipt: T3Receipt | None = None,
     ) -> PromotionPlanResult:
         proposal = self._proposal(raw, successor)
         if isinstance(proposal, PromotionPlanResult):
             return proposal
         try:
-            return self._verify_proposal(proposal, successor, predecessor_receipt)
+            return self._verify_proposal(
+                proposal,
+                successor,
+                predecessor_receipt,
+                closed_packet_id,
+                retained_t3_request,
+                retained_t3_receipt,
+            )
         except RouteDriverError as exc:
             return PromotionPlanResult("DECISION_REQUIRED", exc.reason)
 
@@ -1295,6 +1579,9 @@ class CurrentMainEvidenceVerifier:
         proposal: dict[str, object],
         successor: EligibleSuccessor,
         predecessor_receipt: str,
+        closed_packet_id: str | None,
+        retained_t3_request: T3Request | None,
+        retained_t3_receipt: T3Receipt | None,
     ) -> PromotionPlanResult:
         raw_allowed = self._list(proposal["allowed_paths"], "promotion_allowed_paths_invalid")
         if any(not isinstance(path, str) for path in raw_allowed):
@@ -1305,6 +1592,11 @@ class CurrentMainEvidenceVerifier:
             raise RouteDriverError("promotion_allowed_paths_invalid") from exc
         if tuple(raw_allowed) != allowed_paths or len(set(allowed_paths)) != len(allowed_paths):
             raise RouteDriverError("promotion_allowed_paths_noncanonical")
+        required_documents = {
+            "docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md", "docs/CURRENT_STATUS.md",
+        }
+        if not required_documents.issubset(allowed_paths):
+            raise RouteDriverError("promotion_allowed_paths_missing_canonical_documents")
         for path in allowed_paths:
             self._source(path)
 
@@ -1425,9 +1717,13 @@ class CurrentMainEvidenceVerifier:
             decision_proofs[kind] = entry
         provenance["decisions"] = decision_proofs
 
+        status_document = self._source("docs/CURRENT_STATUS.md")
         evidence = CurrentMainEvidence(
             packet_id=successor.packet_id,
             accepted_main_sha=self.accepted_main_sha,
+            status_document_sha256=hashlib.sha256(
+                status_document.encode("utf-8")
+            ).hexdigest(),
             owner_paths=tuple(owner_paths),
             caller_paths=tuple(caller_paths),
             test_paths=tuple(test_paths),
@@ -1441,8 +1737,20 @@ class CurrentMainEvidenceVerifier:
             decisions=tuple(decision_text),
         )
         manifest_sha256 = _json_sha256(inventory_manifest(self._source("docs/FUTURE_ROUTE.md")))
+        if closed_packet_id is None:
+            if len(successor.sketch.prerequisites) != 1:
+                raise RouteDriverError("promotion_prerequisite_receipts_missing_or_invalid")
+            closed_packet_id = successor.sketch.prerequisites[0]
         return RoutePromotionPlanner().plan(
-            successor, self.accepted_main_sha, predecessor_receipt, evidence, manifest_sha256
+            successor,
+            self.accepted_main_sha,
+            predecessor_receipt,
+            evidence,
+            manifest_sha256,
+            closed_packet_id=closed_packet_id,
+            status_document=status_document,
+            retained_t3_request=retained_t3_request,
+            retained_t3_receipt=retained_t3_receipt,
         )
 
 
@@ -1462,6 +1770,11 @@ class RoutePromotionPlanner:
         predecessor_receipt: str,
         evidence: CurrentMainEvidence | None,
         manifest_sha256: str | None,
+        *,
+        closed_packet_id: str | None = None,
+        status_document: str | None = None,
+        retained_t3_request: T3Request | None = None,
+        retained_t3_receipt: T3Receipt | None = None,
     ) -> PromotionPlanResult:
         if not isinstance(predecessor_receipt, str) or not predecessor_receipt.strip():
             return PromotionPlanResult("DECISION_REQUIRED", "promotion_predecessor_receipt_missing")
@@ -1471,6 +1784,84 @@ class RoutePromotionPlanner:
         if problem is not None:
             return PromotionPlanResult("DECISION_REQUIRED", problem)
         assert evidence is not None
+        if status_document is not None and evidence.status_document_sha256 != hashlib.sha256(
+            status_document.encode("utf-8")
+        ).hexdigest():
+            return PromotionPlanResult(
+                "DECISION_REQUIRED", "promotion_status_document_binding_invalid"
+            )
+        if len(successor.sketch.outcome.strip()) < 20:
+            return PromotionPlanResult("DECISION_REQUIRED", "promotion_goal_too_short")
+        if len(evidence.rollback.strip()) < 20:
+            return PromotionPlanResult("DECISION_REQUIRED", "promotion_rollback_too_short")
+        if not successor.sketch.prerequisites:
+            return PromotionPlanResult("DECISION_REQUIRED", "promotion_prerequisites_missing")
+        if retained_t3_request is not None or retained_t3_receipt is not None:
+            validated_t3_receipt = (
+                None
+                if retained_t3_request is None or retained_t3_receipt is None
+                else validate_recorded_t3_receipt(
+                    _t3_receipt_wire(retained_t3_receipt), retained_t3_request
+                )[0]
+            )
+            if (
+                closed_packet_id is None
+                or retained_t3_request is None
+                or retained_t3_receipt is None
+                or validated_t3_receipt != retained_t3_receipt
+                or retained_t3_receipt.disposition != "GO"
+                or successor.sketch.prerequisites != (closed_packet_id,)
+                or retained_t3_request.packet_id != closed_packet_id
+                or retained_t3_receipt.packet_id != closed_packet_id
+                or retained_t3_request.accepted_main_sha != accepted_main_sha
+                or retained_t3_receipt.accepted_main_sha != accepted_main_sha
+                or retained_t3_receipt.candidate_digest != retained_t3_request.candidate_digest
+                or retained_t3_receipt.action_digest != retained_t3_request.action_digest
+                or retained_t3_receipt.scope_digest != retained_t3_request.scope_digest
+                or retained_t3_receipt.authority_owner_digest
+                != retained_t3_request.authority_owner_digest
+                or predecessor_receipt.strip() != t3_closeout_reference(retained_t3_receipt)
+            ):
+                return PromotionPlanResult(
+                    "DECISION_REQUIRED", "promotion_t3_closeout_receipt_invalid"
+                )
+            prerequisite_receipts = (predecessor_receipt.strip(),)
+        elif closed_packet_id is None:
+            if len(successor.sketch.prerequisites) != 1:
+                return PromotionPlanResult(
+                    "DECISION_REQUIRED",
+                    "promotion_prerequisite_receipts_missing_or_invalid",
+                )
+            try:
+                prerequisite_receipts = (
+                    verified_predecessor_receipt(
+                        status_document or "",
+                        successor.sketch.prerequisites[0],
+                        predecessor_receipt,
+                        accepted_main_sha,
+                    ),
+                )
+            except RouteDriverError as exc:
+                return PromotionPlanResult("DECISION_REQUIRED", exc.reason)
+        else:
+            try:
+                prerequisite_receipts = bound_prerequisite_receipts(
+                    successor,
+                    closed_packet_id,
+                    predecessor_receipt,
+                    status_document,
+                    accepted_main_sha,
+                )
+            except RouteDriverError as exc:
+                if len(successor.sketch.prerequisites) > 1 or exc.reason in {
+                    "promotion_predecessor_receipt_unproved",
+                    "promotion_predecessor_receipt_mismatch",
+                }:
+                    return PromotionPlanResult(
+                        "DECISION_REQUIRED",
+                        "promotion_prerequisite_receipts_missing_or_invalid",
+                    )
+                return PromotionPlanResult("DECISION_REQUIRED", exc.reason)
         evidence_sha256 = _json_sha256(_evidence_payload(evidence))
         packet_id, packet_class, worker_tier, risk_class, verification_family = successor.profile
         contract = {
@@ -1487,6 +1878,24 @@ class RoutePromotionPlanner:
             "evidence_destinations": list(evidence.evidence_destinations),
             "decisions": list(evidence.decisions),
         }
+        forbidden_changes = [
+            "Do not use FUTURE_ROUTE static paths as current-main authority.",
+            "Do not create a second controller, ledger, queue, lease, store, or workflow owner.",
+            "Do not mint T3 authority, execute an EFFECT, auto-merge, call a Provider, or write a target.",
+        ]
+        pause_gates = [
+            "Stop when an owner, caller, test, path, operation, destination, or decision cannot be re-proved from accepted main.",
+            "Stop when exact-head review or canonical CI is missing, stale, failed, or conflicting.",
+            "Recover ordinary worker, CI, review, checkpoint, duplicate, restart, and main-drift failures through existing owners; stop if recovery evidence is unproved.",
+            "Stop before a Provider, target, automatic merge, authority consumption, or external effect.",
+            "Do not retry a possibly executed external effect whose outcome is unknown.",
+        ]
+        forbidden_next_actions = [
+            "Do not skip an EFFECT node or execute an EFFECT or T3 path without its exact valid finite receipt.",
+            "Do not treat missing, conflicting, stale, or outcome-unknown routing or receipts as success.",
+            "Do not start a successor whose promotion candidate has not been independently accepted.",
+            *forbidden_changes,
+        ]
         capsule = {
             "schema_version": "weak_agent_dispatch.v1",
             "packet_id": packet_id,
@@ -1499,14 +1908,20 @@ class RoutePromotionPlanner:
             "plan_lane_state": plan_lane.PLAN_LANE_ACTIVE,
             "goal": successor.sketch.outcome,
             "allowed_paths": list(evidence.allowed_paths),
-            "prerequisites": list(successor.sketch.prerequisites),
-            "forbidden_changes": [
-                "Do not use FUTURE_ROUTE static paths as current-main authority.",
-                "Do not create a second controller, ledger, queue, lease, store, or workflow owner.",
-                "Do not mint T3 authority, execute an EFFECT, auto-merge, call a Provider, or write a target.",
+            "read_paths": list(evidence.allowed_paths),
+            "allowed_outputs": [
+                "A provider-free change limited to the independently proved current-main allowed paths.",
+                "Exact-head verification and review evidence through the existing lifecycle owners.",
             ],
+            "prerequisites": list(successor.sketch.prerequisites),
+            "prerequisite_receipts": list(prerequisite_receipts),
+            "forbidden_changes": forbidden_changes,
+            "ordered_steps": list(evidence.ordered_slices),
             "verification": list(evidence.verification),
             "rollback": evidence.rollback,
+            "pause_gates": pause_gates,
+            "expected_artifacts": list(evidence.evidence_destinations),
+            "forbidden_next_actions": forbidden_next_actions,
             "promotion_evidence_sha256": evidence_sha256,
             "route_manifest_sha256": manifest_sha256,
             "verification_family": verification_family,

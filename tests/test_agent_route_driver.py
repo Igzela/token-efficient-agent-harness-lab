@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -13,14 +15,20 @@ from unittest import mock
 
 CONTROL = Path(__file__).resolve().parents[1] / "scripts" / "agent-control"
 sys.path.insert(0, str(CONTROL))
+sys.path.insert(0, str(CONTROL.parent))
 
+import check_agent_handoff  # noqa: E402
 import plan_lane  # noqa: E402
 import route_driver  # noqa: E402
 
 MAIN = "a" * 40
 CLOSED = "PE7-LIFECYCLE-CONTROLLER-1"
 SUCCESSOR = "PE7-SUCCESSOR-PROMOTION-ESCALATION-1"
-EVIDENCE = "PR #389 exact head " + "b" * 40 + "; merge " + "c" * 40
+EVIDENCE = (
+    "PR #389 exact head `" + "b" * 40 + "`; merge `" + MAIN + "`; "
+    "exact-head `PASS`; canonical workflow `31467821766`"
+)
+BOUND_EVIDENCE = route_driver.route_bound_closeout_reference(CLOSED, EVIDENCE)
 MANIFEST = "d" * 64
 ATTEMPT = "123e4567-e89b-12d3-a456-426614174000"
 
@@ -344,12 +352,30 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             status,
         )
 
-    def _successor(self, packet_class="IMPLEMENT"):
+    def test_accepted_complete_receipt_keeps_only_the_canonical_status_prefix(self):
+        evidence = (
+            f"PR #390 exact head `{'b' * 40}`; merge `{'c' * 40}`; "
+            "exact-head `PASS`; canonical workflow `31467821768`"
+        )
+        status = status_document().replace(
+            "|---|---|---|\n\n",
+            f"|---|---|---|\n| `{CLOSED}` | `COMPLETE` | {evidence}; controller-owned detail |\n\n",
+            1,
+        )
+        self.assertEqual(route_driver.accepted_complete_receipt(status, CLOSED), evidence)
+
+    def _successor(
+        self,
+        packet_class="IMPLEMENT",
+        *,
+        prerequisites=(CLOSED,),
+        outcome="Use the existing repository-maintenance control-plane owner.",
+    ):
         sketch = route_driver.PacketSketch(
             packet_id="PE7-EXACT-PROMOTION-1",
-            prerequisites=(CLOSED,),
+            prerequisites=prerequisites,
             packet_class=packet_class,
-            outcome="Use the existing repository-maintenance control-plane owner.",
+            outcome=outcome,
             allowed_delta="Static hints only: docs/ and scripts/agent-control/.",
             exit_statement="An independently accepted bounded contract exists.",
             stop="Stop on any unproved current-main authority.",
@@ -363,10 +389,14 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         )
         return route_driver.EligibleSuccessor(sketch.packet_id, sketch, profile)
 
-    def _evidence(self, *, packet_id="PE7-EXACT-PROMOTION-1"):
+    def _evidence(self, *, packet_id="PE7-EXACT-PROMOTION-1", status_text=None):
+        status_text = status_document() if status_text is None else status_text
         return route_driver.CurrentMainEvidence(
             packet_id=packet_id,
             accepted_main_sha=MAIN,
+            status_document_sha256=hashlib.sha256(
+                status_text.encode("utf-8")
+            ).hexdigest(),
             owner_paths=("scripts/agent-control/plan_lifecycle.py",),
             caller_paths=("scripts/agent-control/local_run_once.py",),
             test_paths=("tests/test_agent_plan_lifecycle.py",),
@@ -392,23 +422,330 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         self.assertEqual(result.reason, "promotion_current_main_evidence_missing")
 
     def test_current_main_evidence_owns_every_refreshed_contract_field(self):
+        evidence = self._evidence()
         result = route_driver.RoutePromotionPlanner().plan(
-            self._successor(), MAIN, EVIDENCE, self._evidence(), MANIFEST
+            self._successor(), MAIN, BOUND_EVIDENCE, evidence, MANIFEST
         )
         self.assertEqual(result.state, "READY_FOR_EXECUTION")
         self.assertIsNotNone(result.candidate)
+        assert result.candidate is not None
+        capsule = result.candidate.capsule
         self.assertEqual(
-            result.candidate.capsule["allowed_paths"],
-            list(self._evidence().allowed_paths),
+            capsule["allowed_paths"], list(evidence.allowed_paths),
         )
-        self.assertNotIn("docs/", result.candidate.capsule["allowed_paths"])
+        self.assertEqual(capsule["read_paths"], list(evidence.allowed_paths))
+        self.assertEqual(capsule["prerequisite_receipts"], [EVIDENCE])
+        self.assertEqual(capsule["ordered_steps"], list(evidence.ordered_slices))
+        self.assertEqual(capsule["expected_artifacts"], list(evidence.evidence_destinations))
+        for field in (
+            "allowed_outputs",
+            "forbidden_changes",
+            "pause_gates",
+            "forbidden_next_actions",
+        ):
+            self.assertTrue(capsule[field])
+        self.assertNotIn("docs/", capsule["allowed_paths"])
         self.assertEqual(
             result.candidate.contract["cleanup"],
-            self._evidence().cleanup,
+            evidence.cleanup,
         )
         self.assertEqual(result.candidate.manifest_sha256, MANIFEST)
         self.assertEqual(result.candidate.capsule["route_manifest_sha256"], MANIFEST)
         self.assertEqual(result.candidate.contract["manifest_sha256"], MANIFEST)
+
+    def test_short_goal_and_rollback_are_rejected_before_handoff(self):
+        short_goal = route_driver.RoutePromotionPlanner().plan(
+            self._successor(outcome="Too short."), MAIN, BOUND_EVIDENCE, self._evidence(), MANIFEST
+        )
+        self.assertEqual(short_goal.state, "DECISION_REQUIRED")
+        self.assertEqual(short_goal.reason, "promotion_goal_too_short")
+
+        evidence = self._evidence()
+        short_rollback = route_driver.CurrentMainEvidence(
+            packet_id=evidence.packet_id,
+            accepted_main_sha=evidence.accepted_main_sha,
+            status_document_sha256=evidence.status_document_sha256,
+            owner_paths=evidence.owner_paths,
+            caller_paths=evidence.caller_paths,
+            test_paths=evidence.test_paths,
+            allowed_paths=evidence.allowed_paths,
+            ordered_slices=evidence.ordered_slices,
+            verification=evidence.verification,
+            rollback="Revert.",
+            cleanup=evidence.cleanup,
+            retention=evidence.retention,
+            evidence_destinations=evidence.evidence_destinations,
+            decisions=evidence.decisions,
+        )
+        short_rollback_result = route_driver.RoutePromotionPlanner().plan(
+            self._successor(), MAIN, BOUND_EVIDENCE, short_rollback, MANIFEST
+        )
+        self.assertEqual(short_rollback_result.state, "DECISION_REQUIRED")
+        self.assertEqual(short_rollback_result.reason, "promotion_rollback_too_short")
+
+    def test_multi_prerequisite_contract_requires_each_bound_receipt(self):
+        successor = self._successor(
+            prerequisites=(CLOSED, "PE7-OTHER-1"),
+        )
+        missing = route_driver.RoutePromotionPlanner().plan(
+            successor, MAIN, EVIDENCE, self._evidence(), MANIFEST
+        )
+        self.assertEqual(missing.state, "DECISION_REQUIRED")
+        self.assertEqual(
+            missing.reason, "promotion_prerequisite_receipts_missing_or_invalid"
+        )
+
+        second_receipt = (
+            f"PR #401 exact head `{'d' * 40}`; merge `{'e' * 40}`; "
+            "exact-head `PASS`; canonical workflow `31467821768`"
+        )
+        closed_receipt = (
+            f"PR #400 exact head `{'b' * 40}`; merge `{MAIN}`; "
+            "exact-head `PASS`; canonical workflow `31467821767`"
+        )
+        status = status_document().replace(
+            "|---|---|---|\n\n",
+            f"|---|---|---|\n| `PE7-OTHER-1` | `COMPLETE` | {second_receipt} |\n\n",
+            1,
+        )
+        bound_closed_receipt = route_driver.route_bound_closeout_reference(
+            CLOSED, closed_receipt
+        )
+        complete = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            bound_closed_receipt,
+            self._evidence(status_text=status),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status,
+        )
+        self.assertEqual(complete.state, "READY_FOR_EXECUTION")
+        assert complete.candidate is not None
+        self.assertEqual(
+            complete.candidate.capsule["prerequisite_receipts"],
+            [closed_receipt, second_receipt],
+        )
+
+    def test_prerequisite_receipts_use_current_status_for_every_prior_packet(self):
+        successor = self._successor(prerequisites=(CLOSED, "PE7-OTHER-1"))
+        second_receipt = (
+            f"PR #401 exact head `{'d' * 40}`; merge `{'e' * 40}`; "
+            "exact-head `PASS`; canonical workflow `31467821768`"
+        )
+        closed_receipt = (
+            f"PR #400 exact head `{'b' * 40}`; merge `{MAIN}`; "
+            "exact-head `PASS`; canonical workflow `31467821767`"
+        )
+        status = status_document().replace(
+            "|---|---|---|\n\n",
+            f"|---|---|---|\n| `PE7-OTHER-1` | `COMPLETE` | {second_receipt} |\n\n",
+            1,
+        )
+        bound_closed_receipt = route_driver.route_bound_closeout_reference(
+            CLOSED, closed_receipt
+        )
+        self.assertEqual(
+            route_driver.bound_prerequisite_receipts(
+                successor, CLOSED, bound_closed_receipt, status, MAIN
+            ),
+            (closed_receipt, second_receipt),
+        )
+        self.assertEqual(
+            route_driver._status_readiness_rows(
+                CLOSED,
+                SUCCESSOR,
+                route_driver.verified_predecessor_receipt(
+                    status, CLOSED, bound_closed_receipt, MAIN
+                ),
+                "READY_FOR_EXECUTION",
+            )[0],
+            f"| `{CLOSED}` | `COMPLETE` | {closed_receipt} |\n",
+        )
+
+    def test_status_gap_rejects_an_unbound_or_wrongly_bound_receipt(self):
+        successor = self._successor()
+        receipt = (
+            f"PR #400 exact head `{'b' * 40}`; merge `{MAIN}`; "
+            "exact-head `PASS`; canonical workflow `31467821767`"
+        )
+        unbound = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            receipt,
+            self._evidence(),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status_document(),
+        )
+        self.assertEqual(unbound.state, "DECISION_REQUIRED")
+        self.assertEqual(
+            unbound.reason, "promotion_prerequisite_receipts_missing_or_invalid"
+        )
+        wrong_packet = route_driver.route_bound_closeout_reference(
+            "PE7-OTHER-1", receipt
+        )
+        wrongly_bound = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            wrong_packet,
+            self._evidence(),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status_document(),
+        )
+        self.assertEqual(wrongly_bound.state, "DECISION_REQUIRED")
+        self.assertEqual(
+            wrongly_bound.reason, "promotion_prerequisite_receipts_missing_or_invalid"
+        )
+
+    def test_predecessor_and_status_bindings_fail_closed(self):
+        successor = self._successor()
+        unproved = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            "unproved predecessor receipt",
+            self._evidence(),
+            MANIFEST,
+        )
+        self.assertEqual(unproved.state, "DECISION_REQUIRED")
+        self.assertEqual(unproved.reason, "promotion_predecessor_receipt_unproved")
+
+        receipt = (
+            f"PR #400 exact head `{'b' * 40}`; merge `{MAIN}`; "
+            "exact-head `PASS`; canonical workflow `31467821767`"
+        )
+        mismatched_status = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            receipt,
+            self._evidence(),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status_document() + "\nchanged",
+        )
+        self.assertEqual(mismatched_status.state, "DECISION_REQUIRED")
+        self.assertEqual(
+            mismatched_status.reason, "promotion_status_document_binding_invalid"
+        )
+
+    def test_t3_closeout_uses_only_the_validated_digest_bound_reference(self):
+        successor = self._successor("CLOSEOUT")
+        now = datetime.now(timezone.utc)
+        request = route_driver.T3Request(
+            packet_id=CLOSED,
+            accepted_main_sha=MAIN,
+            candidate_digest="b" * 64,
+            action_digest="c" * 64,
+            scope_digest="d" * 64,
+            authority_owner_digest="e" * 64,
+            requested_action="one finite authorized effect",
+        )
+        receipt = route_driver.T3Receipt(
+            packet_id=CLOSED,
+            accepted_main_sha=MAIN,
+            candidate_digest=request.candidate_digest,
+            action_digest=request.action_digest,
+            scope_digest=request.scope_digest,
+            authority_receipt_digest="f" * 64,
+            outcome_receipt_digest="1" * 64,
+            authority_owner_digest=request.authority_owner_digest,
+            operator="existing-operator",
+            decision_source="local_sol_5_6_max",
+            decision_evidence_digest="2" * 64,
+            decision_digest=route_driver.t3_decision_digest(
+                request, "local_sol_5_6_max", "2" * 64, "GO"
+            ),
+            issued_at=now.isoformat(),
+            expires_at=(now + timedelta(minutes=5)).isoformat(),
+            disposition="GO",
+        )
+        reference = route_driver.t3_closeout_reference(receipt)
+        ready = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            reference,
+            self._evidence(),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status_document(),
+            retained_t3_request=request,
+            retained_t3_receipt=receipt,
+        )
+        self.assertEqual(ready.state, "READY_FOR_EXECUTION")
+        invalid = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            reference + " changed",
+            self._evidence(),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status_document(),
+            retained_t3_request=request,
+            retained_t3_receipt=receipt,
+        )
+        self.assertEqual(invalid.state, "DECISION_REQUIRED")
+        self.assertEqual(invalid.reason, "promotion_t3_closeout_receipt_invalid")
+
+        forged = dataclasses.replace(receipt, decision_digest="3" * 64)
+        forged_result = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            route_driver.t3_closeout_reference(forged),
+            self._evidence(),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status_document(),
+            retained_t3_request=request,
+            retained_t3_receipt=forged,
+        )
+        self.assertEqual(forged_result.state, "DECISION_REQUIRED")
+        self.assertEqual(forged_result.reason, "promotion_t3_closeout_receipt_invalid")
+
+        non_go = dataclasses.replace(receipt, disposition="NO_GO")
+        non_go_result = route_driver.RoutePromotionPlanner().plan(
+            successor,
+            MAIN,
+            route_driver.t3_closeout_reference(non_go),
+            self._evidence(),
+            MANIFEST,
+            closed_packet_id=CLOSED,
+            status_document=status_document(),
+            retained_t3_request=request,
+            retained_t3_receipt=non_go,
+        )
+        self.assertEqual(non_go_result.state, "DECISION_REQUIRED")
+        self.assertEqual(non_go_result.reason, "promotion_t3_closeout_receipt_invalid")
+
+    def test_serialized_promoted_capsule_round_trips_through_plan_and_handoff_validation(self):
+        successor = self._successor()
+        evidence = self._evidence()
+        result = route_driver.RoutePromotionPlanner().plan(
+            successor, MAIN, BOUND_EVIDENCE, evidence, MANIFEST
+        )
+        self.assertEqual(result.state, "READY_FOR_EXECUTION")
+        assert result.candidate is not None
+        capsule = result.candidate.capsule
+        document = (
+            "## Active Routing\n\n"
+            f"1. `{successor.packet_id}` — `READY_FOR_EXECUTION`\n\n"
+            f"## Packet {successor.packet_id}\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            f"### 11. Weak-Agent Dispatch Capsule\n\n<!-- weak-agent-dispatch:v1\n"
+            f"{json.dumps(capsule, sort_keys=True)}\n-->\n"
+        )
+        parsed = plan_lane.parse(
+            document, MAIN, completed_packet_ids=frozenset({CLOSED})
+        )
+        self.assertEqual(parsed.packet_id, successor.packet_id)
+        self.assertEqual(parsed.allowed_paths, list(evidence.allowed_paths))
+        self.assertEqual(
+            check_agent_handoff.weak_agent_dispatch_failures(
+                document,
+                {successor.packet_id: {"state": "READY_FOR_EXECUTION"}},
+            ),
+            [],
+        )
 
     def test_manifest_is_required_and_changes_the_immutable_candidate_digest(self):
         missing = route_driver.RoutePromotionPlanner().plan(
@@ -417,17 +754,17 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         self.assertEqual(missing.state, "DECISION_REQUIRED")
         self.assertEqual(missing.reason, "promotion_manifest_missing_or_invalid")
         first = route_driver.RoutePromotionPlanner().plan(
-            self._successor(), MAIN, EVIDENCE, self._evidence(), MANIFEST
+            self._successor(), MAIN, BOUND_EVIDENCE, self._evidence(), MANIFEST
         )
         second = route_driver.RoutePromotionPlanner().plan(
-            self._successor(), MAIN, EVIDENCE, self._evidence(), "e" * 64
+            self._successor(), MAIN, BOUND_EVIDENCE, self._evidence(), "e" * 64
         )
         self.assertNotEqual(first.candidate.spec_digest, second.candidate.spec_digest)
 
     def test_effect_is_prepared_then_paused_for_t3_instead_of_skipped(self):
         successor = self._successor("EFFECT")
         evidence = self._evidence(packet_id=successor.packet_id)
-        result = route_driver.RoutePromotionPlanner().plan(successor, MAIN, EVIDENCE, evidence, MANIFEST)
+        result = route_driver.RoutePromotionPlanner().plan(successor, MAIN, BOUND_EVIDENCE, evidence, MANIFEST)
         self.assertEqual(result.state, "T3_REQUIRED")
         self.assertIsNotNone(result.t3_request)
         self.assertEqual(result.t3_request.packet_id, successor.packet_id)
@@ -577,6 +914,36 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         self.assertIn(request.candidate_digest, document)
         self.assertNotIn("## Completed (PE7-EFFECT-1)", document)
 
+    def test_direct_effect_closeout_source_recovers_the_retained_request(self):
+        request = route_driver.T3Request(
+            packet_id="PE7-EFFECT-1", accepted_main_sha=MAIN,
+            candidate_digest="b" * 64, action_digest="c" * 64,
+            scope_digest="d" * 64, authority_owner_digest="e" * 64,
+            requested_action="one bounded effect",
+        )
+        closeout = "PE7-EFFECT-CLOSEOUT-1"
+        document = route_driver.compact_next_window(
+            f"## Active Routing\n\n1. `{closeout}` — `READY_FOR_EXECUTION`\n\n"
+            "## Common Execution Protocol\n\n- retained\n",
+            closed_packet_id=request.packet_id,
+            predecessor_receipt="T3 receipt " + "f" * 64,
+            active_packet_block=(
+                f"## Packet {closeout}\n\n**State:** `READY_FOR_EXECUTION`\n\n"
+                f"**Prerequisite:** {request.packet_id} — IN_PROGRESS.\n\n"
+                "**Class:** `CLOSEOUT`\n"
+            ),
+            closed_packet_state="IN_PROGRESS",
+            retained_marker=route_driver._t3_request_marker(request),
+        )
+        self.assertEqual(
+            route_driver.direct_effect_closeout_request(document, closeout, MAIN),
+            request,
+        )
+        with self.assertRaises(route_driver.RouteDriverError):
+            route_driver.direct_effect_closeout_request(
+                document.replace("## Retained", "## Historical", 1), closeout, MAIN
+            )
+
     def test_owner_outcome_proof_requires_an_accepted_digest_bound_receipt(self):
         now = datetime.now(timezone.utc)
         request = route_driver.T3Request(
@@ -611,9 +978,29 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             "## Accepted Packet Receipts\n\n| Packet | State | Accepted evidence |\n|---|---|---|\n"
             f"| `{request.packet_id}` | `COMPLETE` | owner-validated existing product evidence for `{receipt.outcome_receipt_digest}` |\n"
         )
-        self.assertTrue(route_driver.owner_outcome_receipt_proved(status, request, receipt))
-        self.assertFalse(route_driver.owner_outcome_receipt_proved(
-            status.replace("owner-validated", "operator asserted"), request, receipt
+        owner_actor = "product-owner"
+        owner_evidence_digest = "3" * 64
+        owner_receipt = {
+            "action": "route-t3-owner-outcome",
+            "status": "validated",
+            "details": {
+                "schema_version": "route_t3_owner_outcome.v1",
+                "packet_id": request.packet_id,
+                "accepted_main_sha": request.accepted_main_sha,
+                "candidate_digest": request.candidate_digest,
+                "outcome_receipt_digest": receipt.outcome_receipt_digest,
+                "owner_actor": owner_actor,
+                "owner_evidence_digest": owner_evidence_digest,
+                "owner_receipt_digest": route_driver.owner_outcome_receipt_digest(
+                    request.packet_id, request.accepted_main_sha,
+                    request.candidate_digest, receipt.outcome_receipt_digest,
+                    owner_actor, owner_evidence_digest,
+                ),
+            },
+        }
+        self.assertTrue(route_driver.owner_outcome_receipt_proved(status, request, receipt, owner_receipt))
+        self.assertTrue(route_driver.owner_outcome_receipt_proved(
+            status.replace("owner-validated", "operator asserted"), request, receipt, owner_receipt
         ))
 
     def test_compaction_traverses_the_current_canonical_portfolio_without_growth(self):
@@ -655,6 +1042,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.repo = Path(self.temporary.name)
         for relative, content in {
             "docs/MODULE_MAP.md": "| Route | `scripts/agent-control/route_driver.py` | `route_driver.py` is the route promotion owner |\n",
+            "docs/CURRENT_STATUS.md": status_document(),
             "docs/NEXT_DECISION.md": (
                 "rollback-marker cleanup-marker retention-marker evidence-marker "
                 "schema-marker evaluator-marker authority-marker recovery-marker\n"
@@ -692,12 +1080,20 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             ("PE7-EXACT-PROMOTION-1", "IMPLEMENT", "T1", "none", "source_focused_full"),
         )
 
+    def _predecessor_receipt(self):
+        receipt = (
+            f"PR #389 exact head `{'b' * 40}`; merge `{self.main}`; "
+            "exact-head `PASS`; canonical workflow `31467821766`"
+        )
+        return route_driver.route_bound_closeout_reference(CLOSED, receipt)
+
     def tearDown(self):
         self.temporary.cleanup()
 
     def _proposal(self):
         allowed = [
-            "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md",
+            "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md",
+            "docs/CURRENT_STATUS.md",
             "scripts/agent-control/route_driver.py",
             "scripts/agent-control/local_run_once.py", "tests/test_route_driver.py",
         ]
@@ -750,7 +1146,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
 
     def test_exact_tree_proves_all_refreshed_fields(self):
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
-            json.dumps(self._proposal()), self.successor, EVIDENCE
+            json.dumps(self._proposal()), self.successor, self._predecessor_receipt()
         )
         self.assertEqual(result.state, "READY_FOR_EXECUTION")
         self.assertIsNotNone(result.evidence)
@@ -769,7 +1165,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "docs/MODULE_MAP.md"
         ] * (route_driver._MAX_PROMOTION_LIST_ITEMS + 1)
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
-            json.dumps(proposal), self.successor, EVIDENCE
+            json.dumps(proposal), self.successor, self._predecessor_receipt()
         )
         self.assertEqual(result.state, "DECISION_REQUIRED")
         self.assertEqual(result.reason, "promotion_allowed_paths_invalid")
@@ -778,7 +1174,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         proposal = self._proposal()
         proposal["caller_evidence"][0]["symbol"] = "ImaginaryCaller"
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
-            json.dumps(proposal), self.successor, EVIDENCE
+            json.dumps(proposal), self.successor, self._predecessor_receipt()
         )
         self.assertEqual(result.state, "DECISION_REQUIRED")
         self.assertEqual(result.reason, "promotion_caller_not_proved")
@@ -787,7 +1183,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         proposal = self._proposal()
         proposal["owner_evidence"][0]["path"] = "scripts/agent-control/local_run_once.py"
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
-            json.dumps(proposal), self.successor, EVIDENCE
+            json.dumps(proposal), self.successor, self._predecessor_receipt()
         )
         self.assertEqual(result.state, "DECISION_REQUIRED")
         self.assertEqual(result.reason, "promotion_owner_not_proved")
@@ -800,7 +1196,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
                 "reason": "owner_ambiguous",
             }),
             self.successor,
-            EVIDENCE,
+            self._predecessor_receipt(),
         )
         self.assertEqual(result.state, "DECISION_REQUIRED")
         self.assertEqual(result.reason, "promotion_planner:owner_ambiguous")

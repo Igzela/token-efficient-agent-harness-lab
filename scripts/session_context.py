@@ -167,14 +167,18 @@ DISPATCH_CAPSULE_FIELDS = frozenset(
         "packet_state",
         "pause_gates",
         "plan_lane_state",
+        "promotion_evidence_sha256",
         "prerequisite_receipts",
         "prerequisites",
         "private_paths_allowed",
         "read_paths",
         "rollback",
+        "risk_class",
+        "route_manifest_sha256",
         "schema_version",
         "secret_values_allowed",
         "verification",
+        "verification_family",
         "worker_tier",
     }
 )
@@ -2123,6 +2127,14 @@ def _canonical_dispatch_capsule(value: object) -> dict[str, object]:
     }
     if not required.issubset(capsule):
         raise SessionContextError("dispatch_capsule_fields_invalid")
+    promotion_fields = {
+        "promotion_evidence_sha256",
+        "route_manifest_sha256",
+        "risk_class",
+        "verification_family",
+    }
+    if set(capsule).intersection(promotion_fields) not in (set(), promotion_fields):
+        raise SessionContextError("dispatch_promotion_evidence_fields_invalid")
     if capsule.get("schema_version") != "weak_agent_dispatch.v1":
         raise SessionContextError("dispatch_capsule_version_unsupported")
     if (
@@ -2140,6 +2152,23 @@ def _canonical_dispatch_capsule(value: object) -> dict[str, object]:
     packet_id = capsule.get("packet_id")
     if not isinstance(packet_id, str) or not PACKET_ID.fullmatch(packet_id):
         raise SessionContextError("dispatch_capsule_packet_invalid")
+    if promotion_fields.issubset(capsule):
+        _validate_sha(
+            capsule["promotion_evidence_sha256"],
+            "dispatch_promotion_evidence_sha256",
+            SHA256,
+        )
+        _validate_sha(
+            capsule["route_manifest_sha256"],
+            "dispatch_route_manifest_sha256",
+            SHA256,
+        )
+        _bounded_text(capsule["risk_class"], "dispatch_risk_class", max_chars=128)
+        _bounded_text(
+            capsule["verification_family"],
+            "dispatch_verification_family",
+            max_chars=128,
+        )
     _bounded_text(capsule.get("dispatch_lane"), "dispatch_lane", max_chars=128)
     raw_allowed = capsule.get("allowed_paths")
     if not isinstance(raw_allowed, list) or not raw_allowed:
