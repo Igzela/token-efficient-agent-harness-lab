@@ -1106,8 +1106,6 @@ def direct_effect_closeout_request(
     ):
         raise RouteDriverError("route_effect_closeout_source_invalid")
     request = retained_t3_request(document)
-    if request is None or request.accepted_main_sha != source_main_sha:
-        raise RouteDriverError("route_effect_closeout_source_invalid")
     block = re.search(
         rf"^## Packet {re.escape(closeout_packet_id)}\s*(?P<body>.*?)(?=^## |\Z)",
         document,
@@ -1133,6 +1131,16 @@ def direct_effect_closeout_request(
         block.group("body"),
         re.MULTILINE,
     )
+    if request is None:
+        # An ordinary CLOSEOUT may have no retained T3 marker.  A direct
+        # EFFECT closeout is distinguishable by its still-IN_PROGRESS
+        # prerequisite; a missing marker there is source-window tampering and
+        # must not downgrade to ordinary routing.
+        if prerequisite is not None and re.search(r"\bIN_PROGRESS\b", prerequisite.group("value")):
+            raise RouteDriverError("route_effect_closeout_source_invalid")
+        return None
+    if request.accepted_main_sha != source_main_sha:
+        raise RouteDriverError("route_effect_closeout_source_invalid")
     packet_ids = (
         tuple(dict.fromkeys(re.findall(plan_lane.PACKET_TOKEN, prerequisite.group("value"))))
         if prerequisite is not None
