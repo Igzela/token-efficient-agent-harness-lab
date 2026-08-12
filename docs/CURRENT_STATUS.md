@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-11.
+Last updated: 2026-08-12.
 
 This document owns accepted repository truth and confirmed capability gaps only. It separates two states that must not be conflated:
 
@@ -81,7 +81,7 @@ These runs established the root cause and fail-closed behavior. They did not est
 
 ## Accepted Readiness Boundary
 
-Accepted `main` contains the provider-free compatibility-calibration mechanism, the distinct versioned v2 refreeze, and the accepted repository-maintenance route contract. It contains **no accepted v2 preflight receipt** and **no v2 four-cell viability result**. `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` remains blocked until authoritative B1 timestamp evidence, store-owned B2 expiry, and Golden Path test-tooling provenance are accepted. The current executable window is the separately promoted route-automation implementation contract; it remains provider-free and zero-external-effect. Current execution state and routing belong to `docs/NEXT_DECISION.md`. Neither the route controller nor a compiled successor may issue or consume authority, call a Provider, write a target, run the schedule, or authorize downstream measurement/Architecture Convergence work.
+Accepted `main` contains the provider-free compatibility-calibration mechanism, the distinct versioned v2 refreeze, and the accepted repository-maintenance route implementation. It contains **no accepted v2 preflight receipt** and **no v2 four-cell viability result**. A confirmed control-plane gap remains: PR #405's original review record bound a nonexistent head instead of the actual merged head, and the plan-packet artifact path does not yet deterministically enforce candidate-bound `allowed_paths` before worktree or GitHub effects. A fresh retrospective full review of the actual #405 head returned exact `PASS`, but cannot retroactively make that merge compliant. The current executable window is the bounded provider-free control-binding integrity repair in `docs/NEXT_DECISION.md`; route bootstrap reconciliation, weak-worker execution, soak, and every later route action remain paused. Neither the route controller nor a compiled successor may issue or consume authority, call a Provider, write a target, run the schedule, or authorize downstream measurement/Architecture Convergence work.
 
 Candidate evidence remains non-authoritative until it is bound to one exact PR head, passes the repository review protocol and canonical CI, and is merged. Do not record candidate branches, PR numbers, CI runs, or review claims here; the capsule observes them at handoff time and fails closed when unavailable or conflicting.
 
@@ -98,6 +98,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Plan-packet lifecycle controller | `COMPLETE` | PR #385 accepted; CI/review/merge/closeout receipts controller-owned on the ledger with idempotent readback |
 | Plan-lane successor promotion and escalation | `COMPLETE` | PR #387 accepted; exactly-one successor-promotion receipts and bounded pause escalation are controller-owned on the existing ledger |
 | Route automation | `COMPLETE` | PR #390 accepted the evidence-backed promotion planner, repository-owned continuous route command, typed EFFECT/T3 pauses, existing controller transport, and bounded current-routing documents; the same route-run reconciles this one pre-ledger merge before it promotes the canonical soak |
+| Control binding integrity | `CONFIRMED_GAP` | Repair exact-head review binding, append-only #405 correction/readback, and plan-artifact allowed-path enforcement before route bootstrap reconciliation can resume |
 | Route-autopilot adversarial soak | `BLOCKED_PREREQUISITE` | Canonical provider-free successor after route automation; proves clean and failure/recovery crossings without executing a Provider, target, EFFECT, or T3 action |
 | V2 provider-free viability preflight | `BLOCKED_PREREQUISITE` | Route-autopilot soak, then authoritative B1 timestamp, store-owned B2 issuance expiry, and Golden Path test-tooling provenance repair/contract must be accepted before re-expansion |
 | V2 four-cell run and closeout | `BLOCKED_PREREQUISITE` | Preflight acceptance, then one separately authorized run and independent closeout |
