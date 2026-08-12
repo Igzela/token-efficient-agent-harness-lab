@@ -391,6 +391,24 @@ def validate_scope_binding(binding: Any, manifest: dict[str, Any]) -> None:
     _validate_paths_within(normalized["allowed_paths"], manifest["changed_files"])
 
 
+def validate_artifact_scope(allowed_paths: Any, manifest: dict[str, Any]) -> None:
+    """Apply the canonical path-containment algorithm to a validated artifact.
+
+    Plan packets bind ``allowed_paths`` through their claim/candidate contract
+    rather than an Issue body.  This public helper keeps normalization and
+    file/directory containment in this module instead of duplicating path
+    semantics in the plan runner.
+    """
+
+    normalized = validate_allowed_paths(allowed_paths)
+    changed_files = manifest.get("changed_files") if isinstance(manifest, dict) else None
+    if not isinstance(changed_files, list) or not all(
+        isinstance(path, str) and _safe_path(path) for path in changed_files
+    ):
+        raise ArtifactContractError("artifact changed_files are invalid")
+    _validate_paths_within(normalized, changed_files)
+
+
 def _scope_path_safe(path: str) -> bool:
     if not _safe_path(path) or path in {".", "./", "/"} or any(char in path for char in "*?[]"):
         return False

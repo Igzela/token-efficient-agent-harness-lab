@@ -1006,6 +1006,66 @@ class TestLocalRunOnce(unittest.TestCase):
             99, PLAN_ID, ATTEMPT, NONCE, 4001, remote_head
         )
 
+    def test_plan_scope_violation_has_no_commit_push_pr_or_handoff(self):
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN_SHA
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN_SHA
+        candidate = plan_lane_fixture()
+        claim = {
+            "claim_nonce": NONCE,
+            "allowed_paths": candidate.allowed_paths,
+        }
+        runner = local_run_once.LocalRunOnce(
+            github,
+            git,
+            repository="Igzela/example",
+            repo_path=Path("/tmp/repo"),
+            sleeper=lambda _: None,
+        )
+
+        process_calls = []
+
+        def bounded(command, **_kwargs):
+            process_calls.append(command)
+            output_dir = Path(command[4])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "codex-exit-code.txt").write_text("0")
+            return 0, "", ""
+
+        git_checked = mock.Mock()
+        create_pr = mock.Mock()
+        with mock.patch.object(runner, "_live_plan", return_value=(candidate, 383)), \
+             mock.patch.object(runner, "_wait_for_plan_claim", return_value=claim), \
+             mock.patch.object(runner, "_owned_artifact_dir", return_value=Path("/tmp/fake-artifact")), \
+             mock.patch.object(runner, "_git_checked", git_checked), \
+             mock.patch.object(state_manager, "plan_claim_binding_valid", return_value=(True, "ok")), \
+             mock.patch.object(local_run_once.worktree_manager, "create_plan_worktree", return_value=("/tmp/fake-plan-worktree", candidate.branch, MAIN_SHA, None)), \
+             mock.patch.object(local_run_once.worktree_manager, "remove_plan_worktree", return_value=True), \
+             mock.patch.object(local_run_once, "_bounded_process", side_effect=bounded), \
+             mock.patch.object(local_run_once.local_verification, "run_plan_focused_checks", return_value=[]), \
+             mock.patch.object(local_run_once.artifact_contract, "create_artifact", return_value={"changed_files": ["README.md"]}), \
+             mock.patch.object(local_run_once.artifact_contract, "validate_artifact", return_value={"changed_files": ["README.md"]}), \
+             mock.patch.object(local_run_once.pr_binding, "create_or_update_plan_pr", create_pr):
+            result = runner._run_plan_once_authorized(PLAN_ID, ATTEMPT)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.details["reason"], "plan_scope_violation")
+        self.assertIn("README.md", result.details["diagnostic"])
+        self.assertEqual(len(process_calls), 1)
+        git_checked.assert_not_called()
+        create_pr.assert_not_called()
+        actions = [call.args[0] for call in github.dispatch_controller.call_args_list]
+        self.assertNotIn("handoff-plan", actions)
+
     def test_unknown_plan_output_requires_durable_ledger_terminal_readback(self):
         github = mock.Mock()
         github.plan_ledger_issue.return_value = 99

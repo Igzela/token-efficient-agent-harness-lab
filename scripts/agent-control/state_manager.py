@@ -226,6 +226,29 @@ class ReviewValidationFailureState:
 
 
 @dataclass(frozen=True)
+class ReviewCorrectionState:
+    """Append-only retrospective correction for one historical review record."""
+
+    issue_number: int
+    pr_number: int
+    controller_base_sha: str
+    controller_head_sha: str
+    reviewed_range: str
+    verdict: str
+    summary: str
+    supersedes_comment_id: int
+    invalid_recorded_head_sha: str
+    pr_correction_comment_id: int
+    standards_reviewer_session: str
+    spec_reviewer_session: str
+    classification: str = "post_merge_retrospective"
+    historical_merge_compliant: bool = False
+
+    def to_wire(self):
+        return _state_wire("agent-orchestrator-review-correction", 1, self)
+
+
+@dataclass(frozen=True)
 class WorkflowFailureState:
     issue_number: int
     workflow_kind: str
@@ -455,7 +478,8 @@ def get_issue_comment_bodies(issue_number, search_text, repo=""):
 def get_pr_info(pr_number, repo=""):
     args = [
         "pr", "view", str(pr_number), "--json",
-        "headRefName,headRefOid,state,mergeable,mergeStateStatus,labels,baseRefName,body,mergeCommit,mergedAt",
+        "number,headRefName,headRefOid,state,mergeable,mergeStateStatus,labels,"
+        "baseRefName,baseRefOid,body,mergeCommit,mergedAt",
     ]
     if repo:
         args.extend(["--repo", repo])
@@ -467,6 +491,49 @@ def get_pr_info(pr_number, repo=""):
         return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
         return None
+
+
+def resolve_live_review_binding(pr_number, expected_head_sha, repo="", expected_base_sha=""):
+    """Resolve the controller-owned full live PR review identity.
+
+    GitHub's live ``headRefOid`` and ``baseRefOid`` are commit-object
+    identities.  Requiring both as full 40-hex values, and requiring the
+    caller's full expected head to equal the live head, rejects abbreviated,
+    nonexistent, stale, conflicting, or unavailable inputs before a review
+    diff, dispatch, durable write, or receipt can be trusted.
+    """
+
+    if not isinstance(expected_head_sha, str) or re.fullmatch(
+        r"[0-9a-f]{40}", expected_head_sha
+    ) is None:
+        return False, "expected_head_invalid", None
+    if expected_base_sha and (
+        not isinstance(expected_base_sha, str)
+        or re.fullmatch(r"[0-9a-f]{40}", expected_base_sha) is None
+    ):
+        return False, "expected_base_invalid", None
+    pr = get_pr_info(pr_number, repo)
+    if not isinstance(pr, dict):
+        return False, "live_metadata_unavailable", None
+    if pr.get("number") != int(pr_number):
+        return False, "live_pr_identity_mismatch", None
+    live_head = pr.get("headRefOid")
+    live_base = pr.get("baseRefOid")
+    if not isinstance(live_head, str) or re.fullmatch(r"[0-9a-f]{40}", live_head) is None:
+        return False, "live_head_unavailable", None
+    if not isinstance(live_base, str) or re.fullmatch(r"[0-9a-f]{40}", live_base) is None:
+        return False, "live_base_unavailable", None
+    if live_head != expected_head_sha:
+        return False, "head_mismatch", None
+    if expected_base_sha and live_base != expected_base_sha:
+        return False, "base_mismatch", None
+    return True, "ok", {
+        "pr_number": int(pr_number),
+        "base_sha": live_base,
+        "head_sha": live_head,
+        "reviewed_range": f"{live_base}...{live_head}",
+        "pr": pr,
+    }
 
 
 def _pr_base_sha(pr_number, repo=""):
@@ -1341,6 +1408,311 @@ def record_review_state(
     return comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo)
 
 
+def _valid_uuid(value):
+    return isinstance(value, str) and re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+        value,
+    ) is not None
+
+
+def _repository_owner(target_repo):
+    if not isinstance(target_repo, str) or "/" not in target_repo:
+        return ""
+    return target_repo.split("/", 1)[0]
+
+
+def _repository_owner_comment(comment, target_repo):
+    """Require an API comment authored by the repository owner."""
+
+    return (
+        isinstance(comment, dict)
+        and isinstance(comment.get("user"), dict)
+        and comment["user"].get("login") == _repository_owner(target_repo)
+        and comment.get("author_association") == "OWNER"
+    )
+
+
+def _verified_superseded_review_comment(correction, target_repo):
+    """Read and authenticate the exact historical comment named by a correction."""
+
+    comment_id = correction.get("supersedes_comment_id")
+    raw = _gh("api", f"repos/{target_repo}/issues/comments/{comment_id}")
+    try:
+        comment = json.loads(raw) if raw else None
+        state = json.loads(comment.get("body", ""))
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return None
+    invalid_head = correction.get("invalid_recorded_head_sha")
+    base = correction.get("controller_base_sha")
+    if (
+        not _repository_owner_comment(comment, target_repo)
+        or comment.get("id") != comment_id
+        or not str(comment.get("issue_url", "")).endswith(
+            f"/issues/{correction.get('issue_number')}"
+        )
+        or not isinstance(state, dict)
+        or state.get("kind") != "agent-orchestrator-review-state"
+        or state.get("version") not in (2, 3)
+        or state.get("issue_number") != correction.get("issue_number")
+        or state.get("pr_number") != correction.get("pr_number")
+        or state.get("base_sha") != base
+        or state.get("head_sha") != invalid_head
+        or state.get("reviewed_range") != f"{base}...{invalid_head}"
+        or state.get("verdict") != "PASS"
+    ):
+        return None
+    return state
+
+
+def _verified_pr_correction_comment(correction, target_repo):
+    """Read and authenticate the exact PR comment attesting the correction."""
+
+    comment_id = correction.get("pr_correction_comment_id")
+    raw = _gh("api", f"repos/{target_repo}/issues/comments/{comment_id}")
+    try:
+        comment = json.loads(raw) if raw else None
+    except json.JSONDecodeError:
+        return None
+    body = comment.get("body", "") if isinstance(comment, dict) else ""
+    base = correction.get("controller_base_sha")
+    head = correction.get("controller_head_sha")
+    invalid_head = correction.get("invalid_recorded_head_sha")
+    pr_number = correction.get("pr_number")
+    if (
+        not _repository_owner_comment(comment, target_repo)
+        or comment.get("id") != comment_id
+        or not str(comment.get("issue_url", "")).endswith(f"/issues/{pr_number}")
+        or not isinstance(base, str)
+        or not isinstance(head, str)
+        or head not in body
+        or invalid_head not in body
+        or base not in body
+        or f"{base}...{head}" not in body
+        or correction.get("standards_reviewer_session") not in body
+        or correction.get("spec_reviewer_session") not in body
+        or "exact `pass`" not in body.lower()
+        or "post-merge retrospective" not in body.lower()
+    ):
+        return None
+    return comment
+
+
+def _review_state_from_correction(correction, older_comments, repo=""):
+    """Return a compatibility review state for one valid retrospective correction."""
+
+    required = {
+        "kind", "version", "issue_number", "pr_number", "controller_base_sha",
+        "controller_head_sha", "reviewed_range", "verdict", "summary",
+        "supersedes_comment_id", "invalid_recorded_head_sha",
+        "pr_correction_comment_id", "standards_reviewer_session",
+        "spec_reviewer_session", "classification", "historical_merge_compliant",
+    }
+    if set(correction) != required:
+        return None
+    base = correction.get("controller_base_sha")
+    head = correction.get("controller_head_sha")
+    invalid_head = correction.get("invalid_recorded_head_sha")
+    if (
+        correction.get("version") != 1
+        or correction.get("classification") != "post_merge_retrospective"
+        or correction.get("historical_merge_compliant") is not False
+        or correction.get("verdict") != "PASS"
+        or type(correction.get("issue_number")) is not int
+        or type(correction.get("pr_number")) is not int
+        or type(correction.get("supersedes_comment_id")) is not int
+        or correction["supersedes_comment_id"] < 1
+        or type(correction.get("pr_correction_comment_id")) is not int
+        or correction["pr_correction_comment_id"] < 1
+        or re.fullmatch(r"[0-9a-f]{40}", str(base or "")) is None
+        or re.fullmatch(r"[0-9a-f]{40}", str(head or "")) is None
+        or re.fullmatch(r"[0-9a-f]{40}", str(invalid_head or "")) is None
+        or head == invalid_head
+        or correction.get("reviewed_range") != f"{base}...{head}"
+        or not isinstance(correction.get("summary"), str)
+        or not (1 <= len(correction["summary"]) <= 2000)
+        or not _valid_uuid(correction.get("standards_reviewer_session"))
+        or not _valid_uuid(correction.get("spec_reviewer_session"))
+    ):
+        return None
+    target_repo = repo or os.environ.get("AGENT_REPO") or os.environ.get(
+        "GITHUB_REPOSITORY", ""
+    )
+    if re.fullmatch(r"[^/\s]+/[^/\s]+", target_repo) is None:
+        return None
+    if _verified_pr_correction_comment(correction, target_repo) is None:
+        return None
+    superseded = _verified_superseded_review_comment(correction, target_repo)
+    if superseded is None:
+        return None
+    historical_body_found = False
+    for comment in older_comments:
+        try:
+            value = json.loads(comment.get("body", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (
+            isinstance(value, dict)
+            and value.get("kind") == "agent-orchestrator-review-state"
+            and value.get("version") in (2, 3)
+            and value.get("pr_number") == correction["pr_number"]
+            and value.get("head_sha") == invalid_head
+            and value.get("verdict") == "PASS"
+        ):
+            historical_body_found = True
+            break
+    if not historical_body_found:
+        return None
+    return {
+        "kind": "agent-orchestrator-review-state",
+        "version": 3,
+        "issue_number": correction["issue_number"],
+        "pr_number": correction["pr_number"],
+        "head_sha": head,
+        "verdict": "PASS",
+        "summary": correction["summary"],
+        "blockers": [],
+        "major_notes": [],
+        "minor_notes": [],
+        "artifact_sha256": "",
+        "review_workflow_run_id": None,
+        "base_sha": base,
+        "reviewed_range": correction["reviewed_range"],
+        "review_mode": "full",
+        "review_round": 1,
+        "prior_reviewed_head": "",
+        "findings": [],
+        "finding_ledger_digest": "",
+        "open_blocker_ids": [],
+        "deferred_note_ids": [],
+        "decision_required_ids": [],
+        "autonomous_repairs_remaining": 1,
+        "stop_reason": "",
+        "review_protocol_version": REVIEW_PROTOCOL_VERSION,
+        "retrospective_correction": True,
+        "historical_merge_compliant": False,
+        "supersedes_comment_id": correction["supersedes_comment_id"],
+        "invalid_recorded_head_sha": invalid_head,
+        "pr_correction_comment_id": correction["pr_correction_comment_id"],
+    }
+
+
+def record_review_correction(issue_number, payload, repo=""):
+    """Append one idempotent, non-retroactive correction for a merged PR review."""
+
+    if not isinstance(payload, dict):
+        return False, "correction_payload_invalid"
+    expected_fields = {
+        "pr_number", "controller_base_sha", "controller_head_sha", "verdict",
+        "summary", "supersedes_comment_id", "invalid_recorded_head_sha",
+        "pr_correction_comment_id", "standards_reviewer_session",
+        "spec_reviewer_session",
+    }
+    if set(payload) != expected_fields:
+        return False, "correction_payload_fields_invalid"
+    if (
+        type(payload.get("pr_number")) is not int
+        or type(payload.get("supersedes_comment_id")) is not int
+        or type(payload.get("pr_correction_comment_id")) is not int
+    ):
+        return False, "correction_identity_invalid"
+    try:
+        pr_number = int(payload["pr_number"])
+        supersedes_comment_id = int(payload["supersedes_comment_id"])
+        pr_correction_comment_id = int(payload["pr_correction_comment_id"])
+    except (TypeError, ValueError):
+        return False, "correction_identity_invalid"
+    if payload.get("verdict") != "PASS":
+        return False, "correction_verdict_invalid"
+    summary = payload.get("summary")
+    if (
+        not isinstance(summary, str)
+        or not (1 <= len(summary) <= 2000)
+        or "\0" in summary
+        or "\r" in summary
+    ):
+        return False, "correction_summary_invalid"
+    if not _valid_uuid(payload.get("standards_reviewer_session")) or not _valid_uuid(
+        payload.get("spec_reviewer_session")
+    ):
+        return False, "correction_reviewer_identity_invalid"
+    invalid_head = payload.get("invalid_recorded_head_sha")
+    if re.fullmatch(r"[0-9a-f]{40}", str(invalid_head or "")) is None:
+        return False, "correction_invalid_head_invalid"
+    binding_ok, binding_reason, binding = resolve_live_review_binding(
+        pr_number,
+        payload.get("controller_head_sha"),
+        repo,
+        payload.get("controller_base_sha"),
+    )
+    if not binding_ok:
+        return False, f"binding_rejected:{binding_reason}"
+    if str(binding["pr"].get("state", "")).upper() != "MERGED":
+        return False, "correction_pr_not_merged"
+    if invalid_head == binding["head_sha"]:
+        return False, "correction_does_not_change_head"
+    target_repo = repo or os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
+    if re.fullmatch(r"[^/\s]+/[^/\s]+", target_repo) is None:
+        return False, "repository_unavailable"
+    correction_identity = {
+        **payload,
+        "controller_base_sha": binding["base_sha"],
+        "controller_head_sha": binding["head_sha"],
+    }
+    if _verified_pr_correction_comment(correction_identity, target_repo) is None:
+        return False, "pr_correction_comment_unverified"
+    superseded_identity = {
+        "issue_number": int(issue_number),
+        "pr_number": pr_number,
+        "controller_base_sha": binding["base_sha"],
+        "invalid_recorded_head_sha": invalid_head,
+        "supersedes_comment_id": supersedes_comment_id,
+    }
+    if _verified_superseded_review_comment(superseded_identity, target_repo) is None:
+        return False, "superseded_review_state_unverified"
+    comments = get_issue_comments(issue_number, repo)
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        try:
+            value = json.loads(comment.get("body", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (
+            isinstance(value, dict)
+            and value.get("kind") == "agent-orchestrator-review-correction"
+            and value.get("pr_number") == pr_number
+            and value.get("controller_head_sha") == binding["head_sha"]
+            and value.get("supersedes_comment_id") == supersedes_comment_id
+        ):
+            return True, "already_recorded"
+    correction = ReviewCorrectionState(
+        int(issue_number),
+        pr_number,
+        binding["base_sha"],
+        binding["head_sha"],
+        binding["reviewed_range"],
+        "PASS",
+        summary,
+        supersedes_comment_id,
+        invalid_head,
+        pr_correction_comment_id,
+        payload["standards_reviewer_session"],
+        payload["spec_reviewer_session"],
+    ).to_wire()
+    rebound_ok, rebound_reason, rebound = resolve_live_review_binding(
+        pr_number, binding["head_sha"], repo, binding["base_sha"]
+    )
+    if (
+        not rebound_ok
+        or rebound["reviewed_range"] != binding["reviewed_range"]
+        or str(rebound["pr"].get("state", "")).upper() != "MERGED"
+    ):
+        return False, f"binding_rejected:{rebound_reason}"
+    if not comment_on_issue(issue_number, json.dumps(correction, sort_keys=True), repo):
+        return False, "correction_write_failed"
+    return True, "recorded"
+
+
 def _bounded_review_strings(value, field_name):
     if not isinstance(value, list) or len(value) > 50:
         raise ValueError(f"{field_name} is invalid")
@@ -1453,7 +1825,9 @@ def record_validated_review(issue_number, pr_number, head_sha, sidecar_path, rep
         evidence = _validated_review_evidence(sidecar_path, pr_number, head_sha)
     except ValueError as exc:
         return False, str(exc)
-    binding_ok, binding_reason = verify_issue_pr_binding(issue_number, pr_number, head_sha, repo)
+    binding_ok, binding_reason, live_binding = verify_review_issue_pr_binding(
+        issue_number, pr_number, head_sha, repo
+    )
     if not binding_ok:
         return False, f"binding_rejected:{binding_reason}"
     try:
@@ -1515,13 +1889,10 @@ def record_validated_review(issue_number, pr_number, head_sha, sidecar_path, rep
         or attempt.get("prior_reviewed_head")
         or "",
         "findings": evidence.get("findings"),
-        "reviewed_base": _pr_base_sha(pr_number, repo)
-        or ((previous or {}).get("base_sha") if previous else "")
-        or evidence.get("reviewed_base")
-        or "",
+        "reviewed_base": live_binding["base_sha"],
     }
     # When findings not in sidecar, legacy lists are used by decision_from_legacy_artifact.
-    trusted_base = _pr_base_sha(pr_number, repo) or ((previous or {}).get("base_sha") if previous else "")
+    trusted_base = live_binding["base_sha"]
     artifact_base = evidence.get("reviewed_base")
     if (
         artifact_base
@@ -1606,6 +1977,14 @@ def record_validated_review(issue_number, pr_number, head_sha, sidecar_path, rep
         return False, f"transition_rejected:{exc}"
 
     fields = round_state.to_persistence_fields()
+    rebound_ok, rebound_reason, rebound = verify_review_issue_pr_binding(
+        issue_number, pr_number, head_sha, repo
+    )
+    if (
+        not rebound_ok
+        or rebound["reviewed_range"] != live_binding["reviewed_range"]
+    ):
+        return False, f"binding_rejected:{rebound_reason}"
     if not record_review_state(
         issue_number,
         pr_number,
@@ -1658,7 +2037,9 @@ def record_review_validation_failure(issue_number, pr_number, head_sha, sidecar_
     run_id = value.get("review_workflow_run_id")
     if run_id is not None and (type(run_id) is not int or run_id < 1):
         return False, "review validation failure workflow identity is invalid"
-    binding_ok, binding_reason = verify_issue_pr_binding(issue_number, pr_number, head_sha, repo)
+    binding_ok, binding_reason, _live_binding = verify_review_issue_pr_binding(
+        issue_number, pr_number, head_sha, repo
+    )
     if not binding_ok:
         return False, f"binding_rejected:{binding_reason}"
     try:
@@ -1712,7 +2093,9 @@ def _record_review_validation_failure(
 def record_review_infrastructure_failure(issue_number, pr_number, head_sha, repo=""):
     """Record a fixed workflow-failure reason when no validator sidecar exists."""
 
-    binding_ok, binding_reason = verify_issue_pr_binding(issue_number, pr_number, head_sha, repo)
+    binding_ok, binding_reason, _live_binding = verify_review_issue_pr_binding(
+        issue_number, pr_number, head_sha, repo
+    )
     if not binding_ok:
         return False, f"binding_rejected:{binding_reason}"
     try:
@@ -1879,23 +2262,36 @@ def record_merge_state(issue_number, pr_number, expected_head_sha, merge_commit_
 
 
 def read_review_state(issue_number, repo=""):
-    """Read the most recent review state from Issue comments.
+    """Read the current effective review state from trusted Issue comments.
 
-    Accepts wire version 2 (legacy, read-only) and version 3 (convergence).
+    Accepts wire version 2 (legacy, read-only), version 3 (convergence), and
+    the additive retrospective correction record.  A correction is effective
+    only when a matching older trusted PASS record exists; invalid or
+    untrusted corrections are skipped rather than shadowing valid history.
     """
-    body = get_issue_comment_bodies(issue_number, "agent-orchestrator-review-state", repo)
-    if not body:
-        return None
-    try:
-        state = json.loads(body)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(state, dict) or state.get("kind") != "agent-orchestrator-review-state":
-        return None
-    version = state.get("version")
-    if version not in (2, 3):
-        return None
-    return state
+    comments = get_issue_comments(issue_number, repo)
+    for index, comment in enumerate(comments):
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        try:
+            state = json.loads(comment.get("body", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(state, dict):
+            continue
+        if state.get("kind") == "agent-orchestrator-review-correction":
+            effective = _review_state_from_correction(
+                state, comments[index + 1 :], repo
+            )
+            if effective is not None and effective["issue_number"] == int(issue_number):
+                return effective
+            continue
+        if (
+            state.get("kind") == "agent-orchestrator-review-state"
+            and state.get("version") in (2, 3)
+        ):
+            return state
+    return None
 
 
 def get_active_workers(repo=""):
@@ -2291,6 +2687,8 @@ def parse_binding_marker(body):
 
 def verify_issue_pr_binding(issue_number, pr_number, expected_sha, repo=""):
     """Verify the durable worker binding and reject ambiguous open PR associations."""
+    if re.fullmatch(r"[0-9a-f]{40}", str(expected_sha or "")) is None:
+        return False, "expected_head_invalid"
     pr = get_pr_info(pr_number, repo)
     if not pr:
         return False, "pr_not_found"
@@ -2347,6 +2745,22 @@ def verify_issue_pr_binding(issue_number, pr_number, expected_sha, repo=""):
         ):
             return False, "issue_has_another_active_pr"
     return True, "ok"
+
+
+def verify_review_issue_pr_binding(issue_number, pr_number, expected_sha, repo=""):
+    """Bind a review path to live full base/head identities and its Issue PR."""
+
+    live_ok, live_reason, binding = resolve_live_review_binding(
+        pr_number, expected_sha, repo
+    )
+    if not live_ok:
+        return False, live_reason, None
+    issue_ok, issue_reason = verify_issue_pr_binding(
+        issue_number, pr_number, binding["head_sha"], repo
+    )
+    if not issue_ok:
+        return False, issue_reason, None
+    return True, "ok", binding
 
 
 def verify_ci_terminal_binding(issue_number, pr_number, expected_sha, repo=""):
@@ -3155,7 +3569,9 @@ def verify_merge_requirements(pr_number, issue_number, expected_sha, repo=""):
         raise RuntimeError("PR target or exact head is invalid")
     if pr.get("mergeable") != "MERGEABLE" or pr.get("mergeStateStatus") != "CLEAN":
         raise RuntimeError("PR is not mergeable under current governance")
-    binding_ok, binding_reason = verify_issue_pr_binding(issue_number, pr_number, expected_sha, repo)
+    binding_ok, binding_reason, _live_binding = verify_review_issue_pr_binding(
+        issue_number, pr_number, expected_sha, repo
+    )
     if not binding_ok:
         raise RuntimeError(f"Issue/PR binding rejected: {binding_reason}")
     review = read_review_state(issue_number, repo)
@@ -3476,6 +3892,25 @@ def main():
             sys.exit(1)
         print(reason)
 
+    elif command == "record-review-correction":
+        issue_number = int(sys.argv[2])
+        if len(sys.argv) != 5 or sys.argv[3] != "--payload-json":
+            print(
+                "Usage: state_manager.py record-review-correction <issue> --payload-json <json>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            payload = json.loads(sys.argv[4])
+        except json.JSONDecodeError:
+            print("FATAL: review correction payload is invalid JSON", file=sys.stderr)
+            sys.exit(1)
+        ok, reason = record_review_correction(issue_number, payload, repo=repo)
+        if not ok:
+            print(f"FATAL: unable to persist review correction: {reason}", file=sys.stderr)
+            sys.exit(1)
+        print(reason)
+
     elif command == "record-review-failure":
         issue_number = int(sys.argv[2])
         pr_number = int(sys.argv[3])
@@ -3538,6 +3973,23 @@ def main():
             print(f"FATAL: Issue/PR binding rejected: {reason}", file=sys.stderr)
             sys.exit(1)
         print("binding-ok")
+
+    elif command == "verify-review-binding":
+        issue_number = int(sys.argv[2])
+        pr_number = int(sys.argv[3])
+        expected_sha = sys.argv[4]
+        ok, reason, binding = verify_review_issue_pr_binding(
+            issue_number, pr_number, expected_sha, repo
+        )
+        if not ok:
+            print(f"FATAL: review binding rejected: {reason}", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps({
+            "pr_number": binding["pr_number"],
+            "base_sha": binding["base_sha"],
+            "head_sha": binding["head_sha"],
+            "reviewed_range": binding["reviewed_range"],
+        }, sort_keys=True))
 
     elif command == "record-merge":
         issue_number = int(sys.argv[2])

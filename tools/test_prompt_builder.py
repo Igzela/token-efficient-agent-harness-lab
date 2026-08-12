@@ -26,6 +26,13 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
     def _minimal_capsule(self) -> str:
         return "# Project Context Capsule\n\n- Test capsule\n"
 
+    def _live_review_binding(self) -> tuple[bool, str, dict[str, str]]:
+        return True, "ok", {
+            "head_sha": "a" * 40,
+            "base_sha": "c" * 40,
+            "reviewed_range": f"{'c' * 40}...{'a' * 40}",
+        }
+
     def test_implementation_prompt_prepends_capsule(self) -> None:
         with mock.patch.object(
             prompt_builder,
@@ -67,7 +74,10 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
             "generate_fresh_capsule",
             return_value=self._minimal_capsule(),
         ) as gen:
-            with mock.patch.object(
+            with mock.patch(
+                "state_manager.resolve_live_review_binding",
+                return_value=self._live_review_binding(),
+            ), mock.patch.object(
                 prompt_builder,
                 "_gh",
                 return_value="diff content",
@@ -93,6 +103,33 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 prompt_builder.build_ci_repair_prompt(301, "a" * 40, "[]", "", 0)
 
+    def test_review_binding_failure_refuses_diff_acquisition(self) -> None:
+        with mock.patch(
+            "state_manager.resolve_live_review_binding",
+            return_value=(False, "head_mismatch", None),
+        ), mock.patch.object(prompt_builder, "_gh") as gh:
+            with self.assertRaisesRegex(ValueError, "review binding rejected: head_mismatch"):
+                prompt_builder.build_review_prompt(301, "a" * 40)
+        gh.assert_not_called()
+
+    def test_review_head_move_during_prompt_build_is_rejected(self) -> None:
+        with mock.patch(
+            "state_manager.resolve_live_review_binding",
+            side_effect=[
+                self._live_review_binding(),
+                (False, "head_mismatch", None),
+            ],
+        ), mock.patch.object(
+            prompt_builder, "_gh", return_value="diff content"
+        ), mock.patch.object(
+            prompt_builder, "generate_fresh_capsule"
+        ) as capsule:
+            with self.assertRaisesRegex(
+                ValueError, "review binding changed during prompt build: head_mismatch"
+            ):
+                prompt_builder.build_review_prompt(301, "a" * 40)
+        capsule.assert_not_called()
+
     def test_capsule_size_bound_is_enforced(self) -> None:
         huge = "x" * (prompt_builder.MAX_CAPSULE_CHARS + 1)
         with mock.patch.object(
@@ -113,7 +150,10 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
             "generate_fresh_capsule",
             return_value=capsule,
         ):
-            with mock.patch.object(
+            with mock.patch(
+                "state_manager.resolve_live_review_binding",
+                return_value=self._live_review_binding(),
+            ), mock.patch.object(
                 prompt_builder,
                 "_gh",
                 return_value="sensitive diff content",

@@ -24,6 +24,15 @@ HEAD = "a" * 40
 OLD_HEAD = "b" * 40
 
 
+def live_review_binding(head=HEAD, base="c" * 40):
+    return True, "ok", {
+        "pr_number": 207,
+        "head_sha": head,
+        "base_sha": base,
+        "reviewed_range": f"{base}...{head}",
+    }
+
+
 def review_payload(verdict="PASS", **overrides):
     payload = {
         "verdict": verdict,
@@ -227,8 +236,8 @@ class TestReviewStateFinalization(unittest.TestCase):
                     "labels": ["review-running"],
                     "comments": [{"author": {"login": "github-actions"}, "body": json.dumps(worker)}],
                     "pr": {
-                        "state": "OPEN", "headRefName": "agent/issue-42", "headRefOid": HEAD,
-                        "baseRefName": "main",
+                        "number": 207, "state": "OPEN", "headRefName": "agent/issue-42", "headRefOid": HEAD,
+                        "baseRefName": "main", "baseRefOid": "c" * 40,
                         "body": "Closes #42\n<!-- agent-orchestrator-binding: {\"issue_number\": 42, \"branch\": \"agent/issue-42\"} -->",
                     },
                 }))
@@ -271,7 +280,7 @@ class TestReviewStateFinalization(unittest.TestCase):
                 "artifact_sha256": "c" * 64, "review_workflow_run_id": 9,
             }, valid)
             valid.close()
-            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(False, "head_mismatch")), \
+            with mock.patch.object(sm, "verify_review_issue_pr_binding", return_value=(False, "head_mismatch", None)), \
                  mock.patch.object(sm, "record_review_state") as record:
                 ok, reason = sm.record_validated_review(42, 207, HEAD, valid.name, "acme/repo")
             self.assertFalse(ok)
@@ -286,7 +295,7 @@ class TestReviewStateFinalization(unittest.TestCase):
                 "artifact_sha256": None, "review_workflow_run_id": 9,
             }, invalid)
             invalid.close()
-            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+            with mock.patch.object(sm, "verify_review_issue_pr_binding", return_value=live_review_binding()), \
                  mock.patch.object(sm, "read_review_state", return_value={"pr_number": 207, "head_sha": HEAD, "verdict": "PASS"}), \
                  mock.patch.object(sm, "comment_on_issue") as comment:
                 ok, reason = sm.record_review_validation_failure(42, 207, HEAD, invalid.name, "acme/repo")
@@ -453,7 +462,7 @@ class TestReviewThreadPagination(unittest.TestCase):
         base_pr = {"state": "OPEN", "baseRefName": "main", "headRefOid": HEAD, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}
         with mock.patch.object(sm, "get_issue_labels", return_value={sm.LABEL_REVIEW_PASSED, sm.LABEL_MERGE_READY}), \
              mock.patch.object(sm, "get_pr_info", return_value=base_pr), \
-             mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(sm, "verify_review_issue_pr_binding", return_value=live_review_binding()), \
              mock.patch.object(sm, "read_review_state", return_value={"pr_number": 207, "head_sha": HEAD, "verdict": "PASS"}), \
              mock.patch.object(sm, "current_effective_reviews", return_value={"review_decision": None, "requested_changes": []}), \
              mock.patch.object(sm, "review_threads_status", return_value={"complete": False, "unresolved_thread_ids": []}), \
@@ -463,7 +472,7 @@ class TestReviewThreadPagination(unittest.TestCase):
                 sm.verify_merge_requirements(207, 42, HEAD, "acme/repo")
         with mock.patch.object(sm, "get_issue_labels", return_value={sm.LABEL_REVIEW_PASSED, sm.LABEL_MERGE_READY}), \
              mock.patch.object(sm, "get_pr_info", return_value=base_pr), \
-             mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(sm, "verify_review_issue_pr_binding", return_value=live_review_binding()), \
              mock.patch.object(sm, "read_review_state", return_value={"pr_number": 207, "head_sha": HEAD, "verdict": "PASS"}), \
              mock.patch.object(sm, "current_effective_reviews", return_value={"review_decision": "CHANGES_REQUESTED", "requested_changes": [{"id": "r1"}]}), \
              mock.patch("control_state.require_auto_merge", return_value={}):
@@ -471,7 +480,7 @@ class TestReviewThreadPagination(unittest.TestCase):
                 sm.verify_merge_requirements(207, 42, HEAD, "acme/repo")
         with mock.patch.object(sm, "get_issue_labels", return_value={sm.LABEL_REVIEW_PASSED, sm.LABEL_MERGE_READY}), \
              mock.patch.object(sm, "get_pr_info", return_value=base_pr), \
-             mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(sm, "verify_review_issue_pr_binding", return_value=live_review_binding()), \
              mock.patch.object(sm, "read_review_state", return_value={"pr_number": 207, "head_sha": HEAD, "verdict": "PASS"}), \
              mock.patch.object(sm, "current_effective_reviews", return_value={"review_decision": "REVIEW_REQUIRED", "requested_changes": []}), \
              mock.patch("control_state.require_auto_merge", return_value={}):
@@ -535,7 +544,7 @@ class TestConvergenceStateMachineWiring(unittest.TestCase):
                 review_round=1,
             )
             recorded = []
-            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+            with mock.patch.object(sm, "verify_review_issue_pr_binding", return_value=live_review_binding()), \
                  mock.patch.object(sm, "read_review_state", return_value=None), \
                  mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
                 ok, reason = sm.record_validated_review(42, 207, HEAD, sidecar, "acme/repo")
@@ -603,7 +612,7 @@ class TestConvergenceStateMachineWiring(unittest.TestCase):
                 open_blocker_ids=[],
             )
             recorded = []
-            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+            with mock.patch.object(sm, "verify_review_issue_pr_binding", return_value=live_review_binding()), \
                  mock.patch.object(sm, "read_review_state", return_value=prior), \
                  mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
                 ok, reason = sm.record_validated_review(42, 207, HEAD, sidecar, "acme/repo")
@@ -659,7 +668,7 @@ class TestConvergenceStateMachineWiring(unittest.TestCase):
                 findings=[],
             )
             recorded = []
-            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+            with mock.patch.object(sm, "verify_review_issue_pr_binding", return_value=live_review_binding()), \
                  mock.patch.object(sm, "read_review_state", return_value=prior), \
                  mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
                 ok, reason = sm.record_validated_review(42, 207, HEAD, sidecar, "acme/repo")
@@ -801,7 +810,7 @@ class TestReviewRepairHeadWiring(unittest.TestCase):
                 review_round=2,
             )
             recorded = []
-            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+            with mock.patch.object(sm, "verify_review_issue_pr_binding", return_value=live_review_binding("b" * 40)), \
                  mock.patch.object(sm, "read_review_state", return_value=self._blocked_prior()), \
                  mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
                 ok, reason = sm.record_validated_review(42, 207, "b" * 40, sidecar, "acme/repo")
@@ -825,7 +834,7 @@ class TestReviewRepairHeadWiring(unittest.TestCase):
                 review_round=1,
             )
             recorded = []
-            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+            with mock.patch.object(sm, "verify_review_issue_pr_binding", return_value=live_review_binding("b" * 40)), \
                  mock.patch.object(sm, "read_review_state", return_value=self._blocked_prior()), \
                  mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
                 ok, reason = sm.record_validated_review(42, 207, "b" * 40, sidecar, "acme/repo")
@@ -914,7 +923,7 @@ class TestFreshR1AfterTerminalPass(unittest.TestCase):
             }
             Path(tmp.name).write_text(json.dumps(payload))
             recorded = []
-            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+            with mock.patch.object(sm, "verify_review_issue_pr_binding", return_value=live_review_binding("d" * 40)), \
                  mock.patch.object(sm, "read_review_state", return_value=self._terminal_pass_prior()), \
                  mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
                 ok, reason = sm.record_validated_review(42, 207, "d" * 40, tmp.name, "acme/repo")
@@ -958,7 +967,7 @@ class TestFreshR1AfterTerminalPass(unittest.TestCase):
             }
             Path(tmp.name).write_text(json.dumps(payload))
             recorded = []
-            with mock.patch.object(sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+            with mock.patch.object(sm, "verify_review_issue_pr_binding", return_value=live_review_binding("d" * 40)), \
                  mock.patch.object(sm, "read_review_state", return_value=self._terminal_pass_prior()), \
                  mock.patch.object(sm, "comment_on_issue", side_effect=lambda *a, **k: recorded.append(a[1]) or True):
                 ok, reason = sm.record_validated_review(42, 207, "d" * 40, tmp.name, "acme/repo")

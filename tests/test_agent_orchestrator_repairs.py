@@ -28,10 +28,99 @@ import ci_handler
 import ci_verifier
 import control_state
 import dispatcher
+import plan_lifecycle
 import pr_binding
 import prompt_builder
 import runner_readiness
 import state_manager
+
+
+class TestReviewReceiptConsumerBinding(unittest.TestCase):
+    def test_plan_pr_verifier_returns_full_controller_range(self):
+        base = "b" * 40
+        head = "a" * 40
+        packet = "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1"
+        body = (
+            '<!-- agent-orchestrator-binding: '
+            f'{{"subject_kind":"plan-packet","subject_id":"{packet}"}} -->'
+        )
+        with mock.patch.object(
+            dispatcher.pr_binding,
+            "_gh_json",
+            return_value={
+                "state": "OPEN",
+                "headRefOid": head,
+                "baseRefName": "main",
+                "baseRefOid": base,
+                "body": body,
+            },
+        ):
+            binding = dispatcher._verified_plan_pr(408, head, packet, "acme/repo")
+        self.assertEqual(binding, {
+            "base_sha": base,
+            "head_sha": head,
+            "reviewed_range": f"{base}...{head}",
+        })
+
+    def test_plan_pr_verifier_rejects_missing_or_malformed_base_identity(self):
+        head = "a" * 40
+        packet = "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1"
+        body = (
+            '<!-- agent-orchestrator-binding: '
+            f'{{"subject_kind":"plan-packet","subject_id":"{packet}"}} -->'
+        )
+        for base in (None, "b" * 12):
+            with self.subTest(base=base), mock.patch.object(
+                dispatcher.pr_binding,
+                "_gh_json",
+                return_value={
+                    "headRefOid": head,
+                    "baseRefName": "main",
+                    "baseRefOid": base,
+                    "body": body,
+                },
+            ):
+                self.assertIsNone(
+                    dispatcher._verified_plan_pr(408, head, packet, "acme/repo")
+                )
+
+    def test_plan_review_receipt_rejects_base_drift_and_metadata_loss(self):
+        base = "b" * 40
+        head = "a" * 40
+        binding = {
+            "base_sha": base,
+            "head_sha": head,
+            "reviewed_range": f"{base}...{head}",
+        }
+        state = {
+            "pr_number": 408,
+            "head_sha": head,
+            "base_sha": base,
+            "reviewed_range": binding["reviewed_range"],
+            "verdict": "PASS",
+        }
+        moved = {
+            "base_sha": "c" * 40,
+            "head_sha": head,
+            "reviewed_range": f"{'c' * 40}...{head}",
+        }
+        for second in (
+            (False, "base_mismatch", None),
+            (False, "live_metadata_unavailable", None),
+            (True, "ok", moved),
+        ):
+            with self.subTest(second=second[1:]), mock.patch.object(
+                state_manager,
+                "resolve_live_review_binding",
+                side_effect=[(True, "ok", binding), second],
+            ), mock.patch.object(
+                state_manager, "read_review_state", return_value=state
+            ):
+                self.assertIsNone(
+                    plan_lifecycle.plan_review_receipt(
+                        383, 408, head, "acme/repo", base
+                    )
+                )
 
 
 def _successful_required_jobs():
@@ -64,6 +153,7 @@ def _pr_binding_fixture(number=207, sha=None, issue_number=42, branch="agent/iss
         "number": number,
         "state": "OPEN",
         "baseRefName": "main",
+        "baseRefOid": "c" * 40,
         "headRefName": branch,
         "headRefOid": sha,
         "body": body,
@@ -98,6 +188,14 @@ class TestWorkflowContracts(unittest.TestCase):
                 scripts.append(candidate)
                 index += 1
         return "\n".join(scripts)
+
+    def test_review_workflow_has_bounded_retrospective_correction_lane(self):
+        workflow = self.read("agent-review.yml")
+        self.assertIn("retrospective-correction:", workflow)
+        self.assertIn("record-review-correction", workflow)
+        self.assertIn("Read back effective corrected review state", workflow)
+        self.assertIn("historical_merge_compliant == false", workflow)
+        self.assertIn("if: inputs.operation == 'review'", workflow)
 
     def test_all_workflow_dispatch_callers_and_inputs_match(self):
         expected = {
@@ -1862,6 +1960,7 @@ class TestDispatcher(unittest.TestCase):
 
     def test_review_prompt_rejects_an_incomplete_truncated_diff(self):
         with mock.patch.object(prompt_builder, "build_context", return_value={"AGENTS_md": ""}), \
+             mock.patch.object(state_manager, "resolve_live_review_binding", return_value=(True, "ok", {"head_sha": "a" * 40, "base_sha": "c" * 40, "reviewed_range": f"{'c' * 40}...{'a' * 40}"})), \
              mock.patch.object(prompt_builder, "_gh", return_value="x" * (prompt_builder.MAX_REVIEW_DIFF_CHARS + 1)):
             with self.assertRaisesRegex(ValueError, "complete PR diff exceeds"):
                 prompt_builder.build_review_prompt(207, "a" * 40)
@@ -1869,6 +1968,7 @@ class TestDispatcher(unittest.TestCase):
     def test_capacity_full_is_nonterminal(self):
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
              mock.patch.object(dispatcher, "_repo", return_value="repo"), \
+             mock.patch.object(dispatcher.sm, "verify_review_issue_pr_binding", return_value=(True, "ok", {"head_sha": "a" * 40})), \
              mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": {1, 2}, "plans": []}):
             result = dispatcher.dispatch_next("1")
         self.assertFalse(result["dispatched"])
@@ -2027,6 +2127,7 @@ class TestDispatcher(unittest.TestCase):
 
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
              mock.patch.object(dispatcher, "_repo", return_value="repo"), \
+             mock.patch.object(dispatcher.sm, "verify_review_issue_pr_binding", return_value=(True, "ok", {"head_sha": "a" * 40})), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
               mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": {42}, "plans": []}), \
@@ -2042,6 +2143,25 @@ class TestDispatcher(unittest.TestCase):
         self.assertEqual(second["reason"], "dispatch_in_flight")
         self.assertEqual(len(workflow_calls), 1)
         self.assertEqual(labels, {state_manager.LABEL_REVIEW_RUNNING})
+
+    def test_review_binding_failure_prevents_claim_and_workflow_dispatch(self):
+        for reason in (
+            "expected_head_invalid",
+            "head_mismatch",
+            "live_metadata_unavailable",
+            "live_base_unavailable",
+        ):
+            with self.subTest(reason=reason), \
+                 mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+                 mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+                 mock.patch.object(dispatcher.sm, "verify_review_issue_pr_binding", return_value=(False, reason, None)), \
+                 mock.patch.object(dispatcher, "_claim") as claim, \
+                 mock.patch.object(dispatcher, "_run_workflow") as workflow:
+                result = dispatcher.dispatch_review(207, 42, "a" * 40)
+            self.assertFalse(result["dispatched"])
+            self.assertEqual(result["reason"], f"binding_rejected:{reason}")
+            claim.assert_not_called()
+            workflow.assert_not_called()
 
     def test_repair_dispatch_audit_failure_retains_claim_and_blocks_duplicate(self):
         labels = {state_manager.LABEL_RUNNING}
@@ -2114,6 +2234,7 @@ class TestDispatcher(unittest.TestCase):
 
         with mock.patch.object(dispatcher.control_state, "require_auto_merge", return_value={}), \
              mock.patch.object(dispatcher, "_repo", return_value="repo"), \
+             mock.patch.object(dispatcher.sm, "verify_review_issue_pr_binding", return_value=(True, "ok", {"head_sha": "a" * 40})), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_MERGE_READY, state_manager.LABEL_REVIEW_PASSED}), \
              mock.patch.object(dispatcher.sm, "read_review_state", return_value={"pr_number": 207, "head_sha": "a" * 40, "verdict": "PASS"}), \
@@ -2167,7 +2288,7 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_REVIEW_BLOCKED}), \
              mock.patch.object(dispatcher.sm, "read_worker_state", return_value=worker), \
-             mock.patch.object(dispatcher.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(dispatcher.sm, "verify_review_issue_pr_binding", return_value=(True, "ok", {"head_sha": "a" * 40})), \
              mock.patch.object(dispatcher.sm, "read_review_state", return_value=prior_review), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
               mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": set(), "plans": []}), \
@@ -2229,7 +2350,7 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_REVIEW_BLOCKED}), \
              mock.patch.object(dispatcher.sm, "read_worker_state", return_value=worker), \
-             mock.patch.object(dispatcher.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(dispatcher.sm, "verify_review_issue_pr_binding", return_value=(True, "ok", {"head_sha": "a" * 40})), \
              mock.patch.object(dispatcher.sm, "read_review_state", return_value=prior_review), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
               mock.patch.object(dispatcher.sm, "get_active_capacity", return_value={"issues": set(), "plans": []}), \
