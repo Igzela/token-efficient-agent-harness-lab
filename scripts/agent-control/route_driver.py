@@ -629,8 +629,18 @@ def compile_successor(
             or successor.sketch.prerequisites != (closed_packet_id,)
         ):
             raise RouteDriverError("route_effect_closeout_bridge_invalid")
-    manifest = inventory_manifest(future_document)
-    manifest_sha256 = _json_sha256(manifest)
+    # Validate the accepted source inventory before selecting a successor, then
+    # bind the active candidate to the inventory that will coexist with it.
+    # Promotion removes exactly that candidate from FUTURE_ROUTE, so retaining
+    # the source hash in the active dispatch capsule would make the accepted
+    # plan impossible to reproduce from its own canonical documents.
+    inventory_manifest(future_document)
+    refreshed_future_document = _refresh_future_document(
+        future_document, successor.packet_id
+    )
+    manifest_sha256 = _json_sha256(
+        inventory_manifest(refreshed_future_document)
+    )
     planned = RoutePromotionPlanner().plan(
         successor,
         accepted_main_sha,
@@ -707,7 +717,7 @@ def compile_successor(
         ),
         active_risk_class=successor.profile[3],
     )
-    future_document = _refresh_future_document(future_document, successor.packet_id)
+    future_document = refreshed_future_document
     closed_row, successor_row = _status_readiness_rows(
         closed_packet_id, successor.packet_id, durable_predecessor_evidence, packet_state,
         closed_packet_state=closed_packet_state,
