@@ -840,10 +840,25 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
 
     def _adapter(self):
         adapter = mock.Mock()
-        adapter.repository_metadata.return_value = {"default_branch": "main"}
+        adapter.repository_metadata.return_value = {"default_branch": "main", "owner": "product-owner"}
         adapter.accepted_main_sha.return_value = MAIN
         adapter.accepted_plan_document.return_value = self._live_t3_document()
         return adapter
+
+    def test_owner_outcome_requires_authenticated_repository_owner(self):
+        adapter = self._adapter()
+        adapter.repository_metadata.return_value = {"default_branch": "main", "owner": "other-owner"}
+        with mock.patch.dict(os.environ, {
+            "GITHUB_ACTIONS": "true", "GITHUB_ACTOR": "product-owner",
+        }), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.control_state, "require_live", return_value=None), \
+             mock.patch.object(local_loop, "GitHubAdapter", return_value=adapter):
+            result = dispatcher.record_route_owner_outcome(
+                CLOSED, MAIN, "b" * 64, "f" * 64, "3" * 64
+            )
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "route_owner_outcome_owner_unproved")
 
     def test_operator_transport_records_only_one_exact_receipt(self):
         adapter = self._adapter()
@@ -936,6 +951,52 @@ class TestRouteT3ReceiptTransport(unittest.TestCase):
         self.assertEqual(result["reason"], "route_t3_request_binding_mismatch")
         write.assert_not_called()
 
+    def test_existing_owner_outcome_is_a_separate_authenticated_ledger_receipt(self):
+        adapter = self._adapter()
+        t3_state = {
+            "action": "route-t3-receipt",
+            "status": "authorized",
+            "details": {
+                "outcome_receipt_digest": "f" * 64,
+                "operator": "authorized-operator",
+            },
+        }
+        with mock.patch.dict(os.environ, {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_ACTOR": "product-owner",
+        }), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.control_state, "require_live", return_value=None), \
+             mock.patch.object(dispatcher.control_state, "read_plan_ledger", return_value={"number": LEDGER}), \
+             mock.patch.object(local_loop, "GitHubAdapter", return_value=adapter), \
+             mock.patch.object(state_manager, "read_dispatch_state", side_effect=[t3_state, None]), \
+             mock.patch.object(state_manager, "record_dispatch_state", return_value=True) as write:
+            result = dispatcher.record_route_owner_outcome(
+                CLOSED, MAIN, "b" * 64, "f" * 64, "3" * 64
+            )
+        self.assertTrue(result["recorded"])
+        self.assertEqual(write.call_args.args[2:4], ("route-t3-owner-outcome", "validated"))
+        self.assertEqual(write.call_args.args[1], f"route-t3-owner-outcome:{CLOSED}:" + "b" * 64)
+
+    def test_owner_outcome_cannot_be_recorded_without_the_separate_t3_receipt(self):
+        adapter = self._adapter()
+        with mock.patch.dict(os.environ, {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_ACTOR": "product-owner",
+        }), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.control_state, "require_live", return_value=None), \
+             mock.patch.object(dispatcher.control_state, "read_plan_ledger", return_value={"number": LEDGER}), \
+             mock.patch.object(local_loop, "GitHubAdapter", return_value=adapter), \
+             mock.patch.object(state_manager, "read_dispatch_state", return_value=None), \
+             mock.patch.object(state_manager, "record_dispatch_state") as write:
+            result = dispatcher.record_route_owner_outcome(
+                CLOSED, MAIN, "b" * 64, "f" * 64, "3" * 64
+            )
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "route_owner_outcome_t3_binding_unproved")
+        write.assert_not_called()
+
     def test_unallowlisted_decision_source_is_rejected_before_ledger_write(self):
         adapter = self._adapter()
         arguments = list(self._arguments())
@@ -972,6 +1033,29 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             "|---|---|---|\n"
             f"| `{request.packet_id}` | `COMPLETE` | owner-validated existing product evidence for `{receipt.outcome_receipt_digest}` |\n"
         )
+
+    @staticmethod
+    def _owner_receipt(request, receipt):
+        owner_actor = "product-owner"
+        owner_evidence_digest = "3" * 64
+        return {
+            "action": "route-t3-owner-outcome",
+            "status": "validated",
+            "details": {
+                "schema_version": "route_t3_owner_outcome.v1",
+                "packet_id": request.packet_id,
+                "accepted_main_sha": request.accepted_main_sha,
+                "candidate_digest": request.candidate_digest,
+                "outcome_receipt_digest": receipt.outcome_receipt_digest,
+                "owner_actor": owner_actor,
+                "owner_evidence_digest": owner_evidence_digest,
+                "owner_receipt_digest": route_driver.owner_outcome_receipt_digest(
+                    request.packet_id, request.accepted_main_sha,
+                    request.candidate_digest, receipt.outcome_receipt_digest,
+                    owner_actor, owner_evidence_digest,
+                ),
+            },
+        }
 
     def _request_and_receipt(self):
         now = datetime.now(timezone.utc)
@@ -1051,7 +1135,7 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
         request, receipt, raw = self._request_and_receipt()
         runner, github, state = self._runner(request, raw)
         self.assertFalse(route_driver.owner_outcome_receipt_proved(
-            status_document(), request, receipt
+            status_document(), request, receipt, None
         ))
         successor = mock.Mock(
             profile=("PE7-EFFECT-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"),
@@ -1061,7 +1145,12 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             "READY_FOR_EXECUTION", "proved", evidence=mock.Mock()
         )
         compiled = mock.Mock()
-        with mock.patch.object(state_manager, "read_dispatch_state", return_value=state), \
+        owner_state = self._owner_receipt(request, receipt)
+        def read_state(_issue, dispatch_id=None, _repo=""):
+            if dispatch_id == f"route-t3-owner-outcome:{request.packet_id}:{request.candidate_digest}":
+                return owner_state
+            return state
+        with mock.patch.object(state_manager, "read_dispatch_state", side_effect=read_state), \
              mock.patch.object(route_driver, "eligible_successor", return_value=successor), \
              mock.patch.object(runner, "_plan_current_main_evidence", return_value=planned), \
              mock.patch.object(route_driver, "compile_successor", return_value=compiled) as compile_successor, \

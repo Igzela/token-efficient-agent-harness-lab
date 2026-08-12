@@ -1568,10 +1568,20 @@ class LocalRunOnce:
                 recorded_receipt, _receipt_reason = route_driver.validate_recorded_t3_receipt(
                     raw_receipt, retained_request
                 )
+                owner_receipt = None
+                if recorded_receipt is not None:
+                    try:
+                        owner_receipt = state_manager.read_dispatch_state(
+                            ledger_issue,
+                            f"route-t3-owner-outcome:{retained_request.packet_id}:{retained_request.candidate_digest}",
+                            self.repository,
+                        )
+                    except state_manager.StateUnavailableError:
+                        owner_receipt = None
                 if (
                     recorded_receipt is None
                     or not route_driver.owner_outcome_receipt_proved(
-                        status_document, retained_request, recorded_receipt
+                        status_document, retained_request, recorded_receipt, owner_receipt
                     )
                 ):
                     return self._plan_result(

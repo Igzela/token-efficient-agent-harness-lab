@@ -959,6 +959,9 @@ class TestPlanLifecycleWorkflowTransport(unittest.TestCase):
             '"$INPUT_DECISION_SOURCE" "$INPUT_DECISION_EVIDENCE_DIGEST" "$INPUT_ISSUED_AT"',
             workflow,
         )
+        self.assertIn("          - record-route-owner-outcome\n", workflow)
+        self.assertIn("      INPUT_OWNER_EVIDENCE_DIGEST: ${{ inputs.owner_evidence_digest }}\n", workflow)
+        self.assertIn("dispatcher.py record-route-owner-outcome", workflow)
 
 
 if __name__ == "__main__":

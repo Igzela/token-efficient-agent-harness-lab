@@ -1173,10 +1173,45 @@ def validate_recorded_t3_receipt(
     return validate_t3_receipt(raw, request, now=min(observed, expires))
 
 
+_OWNER_ACTOR = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37})$")
+
+
+def owner_outcome_receipt_digest(
+    packet_id: str,
+    accepted_main_sha: str,
+    candidate_digest: str,
+    outcome_receipt_digest: str,
+    owner_actor: str,
+    owner_evidence_digest: str,
+) -> str:
+    """Derive the stable binding for an authenticated existing-owner receipt."""
+
+    payload = {
+        "schema_version": "route_t3_owner_outcome.v1",
+        "packet_id": packet_id,
+        "accepted_main_sha": accepted_main_sha,
+        "candidate_digest": candidate_digest,
+        "outcome_receipt_digest": outcome_receipt_digest,
+        "owner_actor": owner_actor,
+        "owner_evidence_digest": owner_evidence_digest,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def owner_outcome_receipt_proved(
-    status_document: str, request: T3Request, receipt: T3Receipt
+    status_document: str,
+    request: T3Request,
+    receipt: T3Receipt,
+    owner_receipt: object,
 ) -> bool:
-    """Require accepted owner validation, not a raw T3 outcome digest."""
+    """Require an independent, authenticated owner receipt, not status prose.
+
+    The accepted status row is only the closeout index.  The authority is the
+    separate trusted ledger state written by the existing product owner
+    transport, bound to this exact request and outcome digest.
+    """
 
     if not isinstance(status_document, str):
         return False
@@ -1193,14 +1228,49 @@ def owner_outcome_receipt_proved(
     )
     if section is None:
         return False
+    matched_row = False
     for row in section.group("body").splitlines():
         if (
             re.match(rf"^\|\s*`?{re.escape(request.packet_id)}`?\s*\|\s*`?COMPLETE`?\s*\|", row)
             and receipt.outcome_receipt_digest in row
             and "owner-validated" in row.casefold()
         ):
-            return True
-    return False
+            matched_row = True
+            break
+    if not matched_row or not isinstance(owner_receipt, dict):
+        return False
+    if (
+        owner_receipt.get("action") != "route-t3-owner-outcome"
+        or owner_receipt.get("status") != "validated"
+    ):
+        return False
+    details = owner_receipt.get("details")
+    if not isinstance(details, dict):
+        return False
+    owner_actor = details.get("owner_actor")
+    owner_evidence_digest = details.get("owner_evidence_digest")
+    if (
+        details.get("schema_version") != "route_t3_owner_outcome.v1"
+        or details.get("packet_id") != request.packet_id
+        or details.get("accepted_main_sha") != request.accepted_main_sha
+        or details.get("candidate_digest") != request.candidate_digest
+        or details.get("outcome_receipt_digest") != receipt.outcome_receipt_digest
+        or not isinstance(owner_actor, str)
+        or _OWNER_ACTOR.fullmatch(owner_actor) is None
+        or owner_actor.endswith("[bot]")
+        or not isinstance(owner_evidence_digest, str)
+        or plan_lane.SHA256.fullmatch(owner_evidence_digest) is None
+    ):
+        return False
+    expected_digest = owner_outcome_receipt_digest(
+        request.packet_id,
+        request.accepted_main_sha,
+        request.candidate_digest,
+        receipt.outcome_receipt_digest,
+        owner_actor,
+        owner_evidence_digest,
+    )
+    return details.get("owner_receipt_digest") == expected_digest
 
 
 @dataclass(frozen=True)
@@ -1433,14 +1503,13 @@ class CurrentMainEvidenceVerifier:
 
         A token occurring anywhere in the map is not ownership evidence for
         an arbitrary file.  The current map must put both the declared token
-        and the exact path (or its explicit file-name entry) on the same
-        table row.  This keeps routing from treating an unrelated map mention
-        as a refreshed current-main owner proof.
+        and the exact path on the same table row.  Basename matching is
+        deliberately forbidden because two owners may contain the same file
+        name.
         """
 
-        basename = path.rsplit("/", 1)[-1]
         return any(
-            line.startswith("|") and token in line and (path in line or basename in line)
+            line.startswith("|") and token in line and path in line
             for line in module_map.splitlines()
         )
 
@@ -1541,6 +1610,11 @@ class CurrentMainEvidenceVerifier:
             raise RouteDriverError("promotion_allowed_paths_invalid") from exc
         if tuple(raw_allowed) != allowed_paths or len(set(allowed_paths)) != len(allowed_paths):
             raise RouteDriverError("promotion_allowed_paths_noncanonical")
+        required_documents = {
+            "docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md", "docs/CURRENT_STATUS.md",
+        }
+        if not required_documents.issubset(allowed_paths):
+            raise RouteDriverError("promotion_allowed_paths_missing_canonical_documents")
         for path in allowed_paths:
             self._source(path)
 

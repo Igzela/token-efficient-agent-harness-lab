@@ -1283,6 +1283,112 @@ def record_route_t3_receipt(
     return {"authorized": True, "reason": "recorded", **receipt}
 
 
+def record_route_owner_outcome(
+    packet_id: str,
+    accepted_main_sha: str,
+    candidate_digest: str,
+    outcome_receipt_digest: str,
+    owner_evidence_digest: str,
+) -> dict[str, object]:
+    """Record an existing product owner's independent outcome evidence.
+
+    This is a separate authenticated transport and ledger action from the T3
+    decision receipt.  It only records a redacted evidence binding; it never
+    executes an effect or supplies authority to one.
+    """
+
+    import route_driver
+
+    repo = _repo()
+    try:
+        control_state.require_live(repo or None)
+    except control_state.ControlStateError:
+        return {"recorded": False, "reason": "disabled_or_emergency_stopped"}
+    actor = os.environ.get("GITHUB_ACTOR")
+    if (
+        os.environ.get("GITHUB_ACTIONS") != "true"
+        or not isinstance(actor, str)
+        or _SAFE_GITHUB_OPERATOR.fullmatch(actor) is None
+        or actor.endswith("[bot]")
+        or not repo
+        or plan_lane.PACKET_ID.fullmatch(packet_id) is None
+        or local_loop.HEX40.fullmatch(accepted_main_sha) is None
+        or plan_lane.SHA256.fullmatch(candidate_digest) is None
+        or plan_lane.SHA256.fullmatch(outcome_receipt_digest) is None
+        or plan_lane.SHA256.fullmatch(owner_evidence_digest) is None
+    ):
+        return {"recorded": False, "reason": "route_owner_outcome_identity_invalid"}
+    try:
+        adapter = local_loop.GitHubAdapter(repo)
+        metadata = adapter.repository_metadata()
+        branch = metadata.get("default_branch")
+        if not isinstance(branch, str) or not local_loop.BRANCH.fullmatch(branch):
+            return {"recorded": False, "reason": "route_t3_request_unavailable"}
+        repository_owner = metadata.get("owner")
+        if (
+            not isinstance(repository_owner, str)
+            or _SAFE_GITHUB_OPERATOR.fullmatch(repository_owner) is None
+            or actor.casefold() != repository_owner.casefold()
+        ):
+            return {"recorded": False, "reason": "route_owner_outcome_owner_unproved"}
+        current_main = adapter.accepted_main_sha(branch)
+        request = route_driver.current_t3_request(
+            adapter.accepted_plan_document(current_main), current_main
+        )
+    except (local_loop.LoopUnavailable, route_driver.RouteDriverError):
+        return {"recorded": False, "reason": "route_t3_request_unavailable"}
+    if request is None or (
+        request.packet_id != packet_id
+        or request.accepted_main_sha != accepted_main_sha
+        or request.candidate_digest != candidate_digest
+    ):
+        return {"recorded": False, "reason": "route_owner_outcome_binding_mismatch"}
+    try:
+        ledger = control_state.read_plan_ledger(repo)
+    except control_state.ControlStateError:
+        return {"recorded": False, "reason": "plan_ledger_unavailable"}
+    ledger_issue = ledger.get("number") if isinstance(ledger, dict) else None
+    if type(ledger_issue) is not int or ledger_issue <= 0:
+        return {"recorded": False, "reason": "plan_execution_ledger_invalid"}
+    t3_id = f"route-t3:{packet_id}:{candidate_digest}"
+    owner_id = f"route-t3-owner-outcome:{packet_id}:{candidate_digest}"
+    try:
+        t3_state = sm.read_dispatch_state(ledger_issue, t3_id, repo)
+        existing = sm.read_dispatch_state(ledger_issue, owner_id, repo)
+    except sm.StateUnavailableError:
+        return {"recorded": False, "reason": "route_owner_outcome_state_unavailable"}
+    t3_details = t3_state.get("details") if isinstance(t3_state, dict) else None
+    if (
+        not isinstance(t3_state, dict)
+        or t3_state.get("action") != "route-t3-receipt"
+        or t3_state.get("status") != "authorized"
+        or not isinstance(t3_details, dict)
+        or t3_details.get("outcome_receipt_digest") != outcome_receipt_digest
+        or t3_details.get("operator") == actor
+    ):
+        return {"recorded": False, "reason": "route_owner_outcome_t3_binding_unproved"}
+    details = {
+        "schema_version": "route_t3_owner_outcome.v1",
+        "packet_id": packet_id,
+        "accepted_main_sha": accepted_main_sha,
+        "candidate_digest": candidate_digest,
+        "outcome_receipt_digest": outcome_receipt_digest,
+        "owner_actor": actor,
+        "owner_evidence_digest": owner_evidence_digest,
+        "owner_receipt_digest": route_driver.owner_outcome_receipt_digest(
+            packet_id, accepted_main_sha, candidate_digest,
+            outcome_receipt_digest, actor, owner_evidence_digest,
+        ),
+    }
+    if isinstance(existing, dict):
+        if existing.get("action") == "route-t3-owner-outcome" and existing.get("status") == "validated" and existing.get("details") == details:
+            return {"recorded": True, "reason": "already_recorded", **details}
+        return {"recorded": False, "reason": "conflicting_owner_outcome_receipt"}
+    if not sm.record_dispatch_state(ledger_issue, owner_id, "route-t3-owner-outcome", "validated", details, repo):
+        return {"recorded": False, "reason": "owner_outcome_receipt_write_failed"}
+    return {"recorded": True, "reason": "recorded", **details}
+
+
 def _record_plan_escalation(
     ledger_issue: int, packet_id: str, attempt: str, reason: str, repo: str
 ) -> dict[str, object]:
@@ -2235,7 +2341,8 @@ def main() -> None:
             "Usage: dispatcher.py <dispatch-ready|dispatch-repair|dispatch-review|"
             "retry-review|dispatch-merge|dispatch-next|claim-local|handoff-local|"
             "release-local|block-local|claim-plan|handoff-plan|lifecycle-plan|"
-            "promote-plan|record-route-t3-receipt|release-plan|block-plan> ..."
+            "promote-plan|record-route-t3-receipt|record-route-owner-outcome|"
+            "release-plan|block-plan> ..."
         )
     command = sys.argv[1]
     if command == "dispatch-ready" and len(sys.argv) in {3, 4}:
@@ -2262,6 +2369,10 @@ def main() -> None:
             sys.argv[7], sys.argv[8], sys.argv[9], sys.argv[10], sys.argv[11],
             sys.argv[12], sys.argv[13], sys.argv[14], sys.argv[15],
         )
+    elif command == "record-route-owner-outcome" and len(sys.argv) == 7:
+        result = record_route_owner_outcome(
+            sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+        )
     elif command == "release-plan" and len(sys.argv) == 7:
         result = release_plan(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])
     elif command == "block-plan" and len(sys.argv) == 6:
@@ -2284,6 +2395,8 @@ def main() -> None:
         or result.get("handed_off") is False
         or result.get("released") is False
         or result.get("blocked") is False
+        or result.get("authorized") is False
+        or result.get("recorded") is False
     ):
         raise SystemExit(1)
 

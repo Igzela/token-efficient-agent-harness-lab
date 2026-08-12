@@ -977,9 +977,29 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             "## Accepted Packet Receipts\n\n| Packet | State | Accepted evidence |\n|---|---|---|\n"
             f"| `{request.packet_id}` | `COMPLETE` | owner-validated existing product evidence for `{receipt.outcome_receipt_digest}` |\n"
         )
-        self.assertTrue(route_driver.owner_outcome_receipt_proved(status, request, receipt))
+        owner_actor = "product-owner"
+        owner_evidence_digest = "3" * 64
+        owner_receipt = {
+            "action": "route-t3-owner-outcome",
+            "status": "validated",
+            "details": {
+                "schema_version": "route_t3_owner_outcome.v1",
+                "packet_id": request.packet_id,
+                "accepted_main_sha": request.accepted_main_sha,
+                "candidate_digest": request.candidate_digest,
+                "outcome_receipt_digest": receipt.outcome_receipt_digest,
+                "owner_actor": owner_actor,
+                "owner_evidence_digest": owner_evidence_digest,
+                "owner_receipt_digest": route_driver.owner_outcome_receipt_digest(
+                    request.packet_id, request.accepted_main_sha,
+                    request.candidate_digest, receipt.outcome_receipt_digest,
+                    owner_actor, owner_evidence_digest,
+                ),
+            },
+        }
+        self.assertTrue(route_driver.owner_outcome_receipt_proved(status, request, receipt, owner_receipt))
         self.assertFalse(route_driver.owner_outcome_receipt_proved(
-            status.replace("owner-validated", "operator asserted"), request, receipt
+            status.replace("owner-validated", "operator asserted"), request, receipt, owner_receipt
         ))
 
     def test_compaction_traverses_the_current_canonical_portfolio_without_growth(self):
@@ -1071,7 +1091,8 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
 
     def _proposal(self):
         allowed = [
-            "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md",
+            "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md",
+            "docs/CURRENT_STATUS.md",
             "scripts/agent-control/route_driver.py",
             "scripts/agent-control/local_run_once.py", "tests/test_route_driver.py",
         ]

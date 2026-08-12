@@ -30,6 +30,7 @@ on:
           - lifecycle-plan
           - promote-plan
           - record-route-t3-receipt
+          - record-route-owner-outcome
           - release-plan
           - block-plan
       issue:
@@ -92,6 +93,9 @@ on:
       outcome_receipt_digest:
         required: false
         type: string
+      owner_evidence_digest:
+        required: false
+        type: string
       authority_owner_digest:
         required: false
         type: string
@@ -143,6 +147,7 @@ jobs:
       INPUT_SCOPE_DIGEST: ${{ inputs.scope_digest }}
       INPUT_AUTHORITY_RECEIPT_DIGEST: ${{ inputs.authority_receipt_digest }}
       INPUT_OUTCOME_RECEIPT_DIGEST: ${{ inputs.outcome_receipt_digest }}
+      INPUT_OWNER_EVIDENCE_DIGEST: ${{ inputs.owner_evidence_digest }}
       INPUT_AUTHORITY_OWNER_DIGEST: ${{ inputs.authority_owner_digest }}
       INPUT_DECISION_SOURCE: ${{ inputs.decision_source }}
       INPUT_DECISION_EVIDENCE_DIGEST: ${{ inputs.decision_evidence_digest }}
@@ -240,6 +245,12 @@ jobs:
                 "$INPUT_OUTCOME_RECEIPT_DIGEST" "$INPUT_AUTHORITY_OWNER_DIGEST" "$GITHUB_ACTOR" \
                 "$INPUT_DECISION_SOURCE" "$INPUT_DECISION_EVIDENCE_DIGEST" "$INPUT_ISSUED_AT" \
                 "$INPUT_EXPIRES_AT" "$INPUT_DISPOSITION"
+              ;;
+            record-route-owner-outcome)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py record-route-owner-outcome \
+                "$INPUT_PACKET_ID" "$INPUT_ACCEPTED_MAIN_SHA" "$INPUT_CANDIDATE_DIGEST" \
+                "$INPUT_OUTCOME_RECEIPT_DIGEST" "$INPUT_OWNER_EVIDENCE_DIGEST"
               ;;
             release-plan)
               python3 scripts/agent-control/control_state.py require-live >/dev/null
