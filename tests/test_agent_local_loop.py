@@ -146,6 +146,50 @@ class TestLoopControllerPoll(unittest.TestCase):
         )
         self.assertEqual(run.call_args.kwargs["cwd"], Path("/tmp"))
 
+    def test_worker_failure_reason_accepts_only_wrapper_reason_codes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)
+            (output / "failure_reason.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "agent-orchestrator-failure",
+                        "reason": "authentication_failure",
+                        "detail": "must not be projected",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                local_run_once._worker_failure_reason(output),
+                "authentication_failure",
+            )
+            (output / "failure_reason.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "agent-orchestrator-failure",
+                        "reason": "caller-controlled-text",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                local_run_once._worker_failure_reason(output),
+                "unclassified_worker_failure",
+            )
+            (output / "failure_reason.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "agent-orchestrator-failure",
+                        "reason": ["authentication_failure"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                local_run_once._worker_failure_reason(output),
+                "unclassified_worker_failure",
+            )
+
     def controller(self, github=None, git=None, *, max_active=state_manager.MAX_ACTIVE):
         return local_loop.LoopController(
             github or FakeGitHub(),
@@ -1184,6 +1228,62 @@ class TestLocalRunOnce(unittest.TestCase):
             99, PLAN_ID, ATTEMPT, NONCE, 4001, remote_head
         )
 
+    def test_plan_run_once_waits_on_a_typed_recovered_handoff(self):
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN_SHA
+        github.plan_ledger_issue.return_value = 99
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN_SHA
+        candidate = plan_lane_fixture()
+        runner = local_run_once.LocalRunOnce(
+            github,
+            git,
+            repository="Igzela/example",
+            repo_path=Path("/tmp"),
+        )
+        recovered = local_loop.LocalRunOnceResult(
+            "handed_off",
+            0,
+            ATTEMPT,
+            {
+                "subject_kind": "plan-packet",
+                "subject_id": PLAN_ID,
+                "pr_number": 4001,
+                "head_sha": "b" * 40,
+            },
+        )
+        terminal = local_loop.LocalRunOnceResult(
+            "closed_out",
+            0,
+            ATTEMPT,
+            {"subject_kind": "plan-packet", "subject_id": PLAN_ID},
+        )
+        with mock.patch.object(
+            runner, "_plan_terminal_owner_readiness", return_value=(True, [])
+        ), mock.patch.object(
+            runner, "_live_plan", return_value=(candidate, 99)
+        ), mock.patch.object(
+            runner, "_recover_existing_plan_claim", return_value=recovered
+        ), mock.patch.object(
+            runner, "_wait_for_plan_terminal_receipts", return_value=terminal
+        ) as wait_for_receipts, mock.patch.object(
+            runner, "_run_plan_once_authorized"
+        ) as execute_worker:
+            result = runner.run_plan_once(PLAN_ID, ATTEMPT)
+        self.assertIs(result, terminal)
+        wait_for_receipts.assert_called_once_with(
+            99, PLAN_ID, ATTEMPT, 4001, "b" * 40
+        )
+        execute_worker.assert_not_called()
+
     def test_plan_scope_violation_has_no_commit_push_pr_or_handoff(self):
         github = mock.Mock()
         github.read_control_state.return_value = {
@@ -1239,6 +1339,69 @@ class TestLocalRunOnce(unittest.TestCase):
         self.assertEqual(result.details["reason"], "plan_scope_violation")
         self.assertIn("README.md", result.details["diagnostic"])
         self.assertEqual(len(process_calls), 1)
+        git_checked.assert_not_called()
+        create_pr.assert_not_called()
+        actions = [call.args[0] for call in github.dispatch_controller.call_args_list]
+        self.assertNotIn("handoff-plan", actions)
+
+    def test_plan_worker_usage_failure_is_typed_before_any_git_or_pr_effect(self):
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN_SHA
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN_SHA
+        candidate = plan_lane_fixture()
+        claim = {"claim_nonce": NONCE, "allowed_paths": candidate.allowed_paths}
+        runner = local_run_once.LocalRunOnce(
+            github,
+            git,
+            repository="Igzela/example",
+            repo_path=Path("/tmp/repo"),
+            sleeper=lambda _: None,
+        )
+
+        def bounded(command, **_kwargs):
+            output_dir = Path(command[4])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "failure_reason.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "agent-orchestrator-failure",
+                        "reason": "usage_or_credit_exhaustion",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return 1, "", ""
+
+        git_checked = mock.Mock()
+        create_pr = mock.Mock()
+        artifact = mock.Mock()
+        with mock.patch.object(runner, "_live_plan", return_value=(candidate, 383)), \
+             mock.patch.object(runner, "_wait_for_plan_claim", return_value=claim), \
+             mock.patch.object(runner, "_owned_artifact_dir", return_value=Path("/tmp/fake-artifact")), \
+             mock.patch.object(runner, "_git_checked", git_checked), \
+             mock.patch.object(state_manager, "plan_claim_binding_valid", return_value=(True, "ok")), \
+             mock.patch.object(local_run_once.worktree_manager, "create_plan_worktree", return_value=("/tmp/fake-plan-worktree", candidate.branch, MAIN_SHA, None)), \
+             mock.patch.object(local_run_once.worktree_manager, "remove_plan_worktree", return_value=True), \
+             mock.patch.object(local_run_once, "_bounded_process", side_effect=bounded), \
+             mock.patch.object(local_run_once.artifact_contract, "create_artifact", artifact), \
+             mock.patch.object(local_run_once.pr_binding, "create_or_update_plan_pr", create_pr):
+            result = runner._run_plan_once_authorized(PLAN_ID, ATTEMPT)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.details["reason"], "codex_failed")
+        self.assertEqual(
+            result.details["worker_failure_reason"], "usage_or_credit_exhaustion"
+        )
+        artifact.assert_not_called()
         git_checked.assert_not_called()
         create_pr.assert_not_called()
         actions = [call.args[0] for call in github.dispatch_controller.call_args_list]

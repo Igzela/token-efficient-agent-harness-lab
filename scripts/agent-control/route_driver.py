@@ -2480,6 +2480,21 @@ class RepositoryRouteRunner:
                 continue
             status = getattr(result, "status", None)
             details = getattr(result, "details", {})
+            worker_failure_reason = (
+                details.get("worker_failure_reason")
+                if isinstance(details, dict)
+                else None
+            )
+            if status == "failed" and worker_failure_reason in {
+                "authentication_failure",
+                "usage_or_credit_exhaustion",
+            }:
+                return RouteRunResult(
+                    "UNRECOVERABLE_INFRASTRUCTURE_FAILURE",
+                    f"route_worker_{worker_failure_reason}",
+                    packet_id,
+                    transitions,
+                ).to_wire()
             if status == "outcome_unknown":
                 return RouteRunResult("OUTCOME_UNKNOWN", str(details.get("reason", "outcome_unknown")), packet_id, transitions).to_wire()
             if status == "failed_unknown_output":
