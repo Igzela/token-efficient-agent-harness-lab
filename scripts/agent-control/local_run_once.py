@@ -733,19 +733,16 @@ class LocalRunOnce:
         """Classify one lifecycle readback as pending, exact, or conflicting."""
 
         if not isinstance(lifecycle, dict):
-            return "pending"
+            return "invalid"
         stages = lifecycle.get("stages")
         if not isinstance(stages, dict):
             return "invalid"
-        terminal = all(stages.get(name) is True for name in ("ci", "review", "merge", "closeout"))
-        if (
-            ("packet_id" in lifecycle and lifecycle.get("packet_id") != packet_id)
-            or ("attempt_id" in lifecycle and lifecycle.get("attempt_id") != attempt)
-        ):
+        stage_names = ("ci", "review", "merge", "closeout")
+        if any(type(stages.get(name)) is not bool for name in stage_names):
             return "invalid"
-        binding_keys = ("ledger_issue", "pr_number", "head_sha")
+        binding_keys = ("packet_id", "attempt_id", "ledger_issue", "pr_number", "head_sha")
         if not all(key in lifecycle for key in binding_keys):
-            return "invalid" if terminal or any(stages.values()) else "pending"
+            return "invalid"
         if (
             lifecycle.get("ledger_issue") != ledger_issue
             or lifecycle.get("packet_id") != packet_id

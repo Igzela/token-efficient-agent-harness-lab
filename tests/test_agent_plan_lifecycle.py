@@ -760,18 +760,20 @@ class TestRecordPlanLifecycleDispatcher(unittest.TestCase):
 class TestPlanLifecycleWait(unittest.TestCase):
     @staticmethod
     def _lifecycle(*, stages=None, transitions=None, packet_id=PACKET, pr_number=PR, head_sha=HEAD):
-        stages = stages or {"ci": True, "review": True, "merge": True, "closeout": True}
-        transitions = transitions or {
-            "ci": ci_wire(pr_number=pr_number, head_sha=head_sha),
-            "review": review_wire(pr_number=pr_number, head_sha=head_sha),
-            "merge": merge_wire(pr_number=pr_number, head_sha=head_sha),
-            "closeout": {
-                "terminal_packet_state": "closed_out",
-                "closeout_reference": plan_lifecycle.canonical_closeout_reference(
-                    pr_number, head_sha, MERGE, 7
-                ),
-            },
-        }
+        if stages is None:
+            stages = {"ci": True, "review": True, "merge": True, "closeout": True}
+        if transitions is None:
+            transitions = {
+                "ci": ci_wire(pr_number=pr_number, head_sha=head_sha),
+                "review": review_wire(pr_number=pr_number, head_sha=head_sha),
+                "merge": merge_wire(pr_number=pr_number, head_sha=head_sha),
+                "closeout": {
+                    "terminal_packet_state": "closed_out",
+                    "closeout_reference": plan_lifecycle.canonical_closeout_reference(
+                        pr_number, head_sha, MERGE, 7
+                    ),
+                },
+            }
         return {
             "packet_id": packet_id,
             "attempt_id": ATTEMPT,
@@ -892,9 +894,17 @@ class TestPlanLifecycleWait(unittest.TestCase):
                 "closeout_reference": reference,
             }
             cases[name] = lifecycle
-        missing_head = self._lifecycle()
-        del missing_head["head_sha"]
-        cases["missing_head"] = missing_head
+        for key in ("packet_id", "attempt_id", "ledger_issue", "pr_number", "head_sha"):
+            missing_binding = self._lifecycle()
+            del missing_binding[key]
+            cases[f"missing_{key}"] = missing_binding
+        for name, value in (("string", "true"), ("integer", 1), ("none", None)):
+            invalid_stages = self._lifecycle()
+            invalid_stages["stages"]["ci"] = value
+            cases[f"stage_{name}"] = invalid_stages
+        missing_stage = self._lifecycle()
+        del missing_stage["stages"]["ci"]
+        cases["missing_stage"] = missing_stage
         for name, lifecycle in cases.items():
             with self.subTest(name=name), mock.patch.object(
                 plan_lifecycle, "read_plan_lifecycle", return_value=lifecycle
