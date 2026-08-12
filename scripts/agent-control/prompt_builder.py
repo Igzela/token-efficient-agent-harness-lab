@@ -586,9 +586,19 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
     focus.  A retry that exceeds the substantive-round budget or follows
     DECISION_REQUIRED fails closed instead of silently dispatching.
     """
+    import state_manager as sm
+
+    repository = os.environ.get("AGENT_REPO") or f"{REPO_OWNER}/{REPO_NAME}"
+    binding_ok, binding_reason, live_binding = sm.resolve_live_review_binding(
+        pr_number, head_sha, repository
+    )
+    if not binding_ok:
+        raise ValueError(f"review binding rejected: {binding_reason}")
+
     ctx = build_context(0)
     ctx["pr_number"] = pr_number
-    ctx["head_sha"] = head_sha
+    ctx["head_sha"] = live_binding["head_sha"]
+    ctx["base_sha"] = live_binding["base_sha"]
 
     diff = _gh("pr", "diff", str(pr_number))
     if diff is None:
@@ -611,6 +621,15 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
         except json.JSONDecodeError:
             pass
 
+    rebound_ok, rebound_reason, rebound = sm.resolve_live_review_binding(
+        pr_number, head_sha, repository, live_binding["base_sha"]
+    )
+    if (
+        not rebound_ok
+        or rebound["reviewed_range"] != live_binding["reviewed_range"]
+    ):
+        raise ValueError(f"review binding changed during prompt build: {rebound_reason}")
+
     schema_path = pathlib.Path(__file__).resolve().parent / "review_schema.json"
     if schema_path.exists():
         ctx["review_schema"] = schema_path.read_text()
@@ -623,8 +642,9 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
     review_round = 1
     prior_blockers_text = ""
     mode_context = (
-        "This is an **R1 first full review**: `review_mode=full`, complete "
-        "`base...head` attestation."
+        "Controller-resolved live review range: `"
+        f"{live_binding['reviewed_range']}`. This is an **R1 first full review**: "
+        "`review_mode=full`, complete `base...head` attestation."
     )
     if issue_number:
         sm = None
@@ -650,7 +670,9 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
         prior_head = str(attempt.get("prior_reviewed_head") or "")
         if review_mode == "repair_verification":
             mode_context = (
-                "This is the **R2 repair verification** review: `review_mode=repair_verification`. "
+                "Controller-resolved live review range: `"
+                f"{live_binding['reviewed_range']}`. This is the **R2 repair verification** "
+                "review: `review_mode=repair_verification`. "
                 f"Round {review_round}, prior reviewed head {prior_head[:12]}..."
             )
             if prior_ledger_digest:

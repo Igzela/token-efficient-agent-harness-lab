@@ -6,6 +6,13 @@ env:
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        required: true
+        type: choice
+        default: review
+        options:
+          - review
+          - retrospective-correction
       pr_number:
         required: true
         type: number
@@ -15,6 +22,10 @@ on:
       head_sha:
         required: true
         type: string
+      correction_payload:
+        required: false
+        type: string
+        default: "{}"
 
 permissions:
   actions: write
@@ -28,6 +39,7 @@ concurrency:
 
 jobs:
   prepare:
+    if: inputs.operation == 'review'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -48,7 +60,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
+          python3 scripts/agent-control/state_manager.py verify-review-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
       - name: Recheck control immediately before recording review-running
         env:
           AGENT_REPO: ${{ github.repository }}
@@ -78,6 +90,7 @@ jobs:
           if-no-files-found: error
 
   vader-review:
+    if: inputs.operation == 'review'
     needs: prepare
     runs-on: [self-hosted, vader, agent-worker]
     timeout-minutes: 35
@@ -128,7 +141,7 @@ jobs:
 
   finalize:
     needs: vader-review
-    if: needs.vader-review.result == 'success'
+    if: inputs.operation == 'review' && needs.vader-review.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -171,7 +184,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
+          python3 scripts/agent-control/state_manager.py verify-review-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
           python3 scripts/agent-control/state_manager.py record-review \
             "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA" \
             --evidence-file "$RUNNER_TEMP/review-validation.json"
@@ -199,7 +212,7 @@ jobs:
 
   failure-handler:
     needs: [prepare, vader-review, finalize]
-    if: always() && (needs.prepare.result != 'success' || needs.vader-review.result != 'success' || needs.finalize.result != 'success')
+    if: inputs.operation == 'review' && always() && (needs.prepare.result != 'success' || needs.vader-review.result != 'success' || needs.finalize.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -220,3 +233,42 @@ jobs:
           python3 scripts/agent-control/state_manager.py release-failed-evidence \
             "${{ inputs.issue_number }}" review-running agent-review-blocked review \
             "${{ github.run_id }}" "$INPUT_HEAD_SHA" "" ""
+
+  retrospective-correction:
+    if: inputs.operation == 'retrospective-correction'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Validate correction input binding
+        env:
+          CORRECTION_PAYLOAD: ${{ inputs.correction_payload }}
+        run: >-
+          jq -e --argjson pr "${{ inputs.pr_number }}" --arg head "$INPUT_HEAD_SHA"
+          '.pr_number == $pr and .controller_head_sha == $head'
+          <<<"$CORRECTION_PAYLOAD" >/dev/null
+      - name: Append trusted retrospective correction
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          CORRECTION_PAYLOAD: ${{ inputs.correction_payload }}
+        run: >-
+          python3 scripts/agent-control/state_manager.py record-review-correction
+          "${{ inputs.issue_number }}" --payload-json "$CORRECTION_PAYLOAD"
+      - name: Read back effective corrected review state
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/agent-control/state_manager.py read-review
+          "${{ inputs.issue_number }}" |
+          jq -e --arg head "$INPUT_HEAD_SHA"
+          '.head_sha == $head and .verdict == "PASS" and
+          .retrospective_correction == true and
+          .historical_merge_compliant == false' >/dev/null

@@ -1009,7 +1009,10 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
             return {"recorded": False, "stage": stage, "reason": "ci_receipt_pending"}
         return {"recorded": True, "stage": stage, "reason": "verified", "ci_run_id": receipt.get("workflow_run_id")}
     if stage == "review":
-        receipt = plan_lifecycle.plan_review_receipt(ledger_issue, pr_number, head_sha, repo)
+        # _verified_plan_pr above is the controller-owned live binding gate for
+        # this consumer.  The receipt read therefore only needs the exact
+        # ledger binding; merge authorization revalidates live metadata again.
+        receipt = plan_lifecycle.plan_review_receipt(ledger_issue, pr_number, head_sha)
         if receipt is None:
             return {"recorded": False, "stage": stage, "reason": "review_receipt_pending"}
         return {"recorded": True, "stage": stage, "reason": "verified", "review_workflow_run_id": receipt.get("review_workflow_run_id")}
@@ -2121,16 +2124,37 @@ def dispatch_repair(pr: int, issue: int, sha: str, run_id: str, repair_count: st
 
 def dispatch_review(pr: int, issue: int, sha: str) -> dict[str, object]:
     dispatch_id = _dispatch_id("review", pr, sha)
+    repo = _repo()
     try:
-        control_state.require_live(_repo() or None)
+        control_state.require_live(repo or None)
     except control_state.ControlStateError:
         return {"dispatched": False, "reason": "disabled_or_emergency_stopped"}
+    binding_ok, binding_reason, live_binding = sm.verify_review_issue_pr_binding(
+        issue, pr, sha, repo
+    )
+    if not binding_ok:
+        return {"dispatched": False, "reason": f"binding_rejected:{binding_reason}"}
+    sha = live_binding["head_sha"]
+    dispatch_id = _dispatch_id("review", pr, sha)
     fields = {"pr_number": pr, "issue_number": issue, "head_sha": sha}
     claimed, previous, reason = _claim(
         issue, sm.LABEL_REVIEW_RUNNING, dispatch_id, "review", fields
     )
     if not claimed:
         return {"dispatched": reason == "already_dispatched", "reason": reason}
+    rebound_ok, rebound_reason, rebound = sm.verify_review_issue_pr_binding(
+        issue, pr, sha, repo
+    )
+    if not rebound_ok or rebound["head_sha"] != sha:
+        rolled_back = _rollback(
+            issue, dispatch_id, previous, "binding_changed_before_dispatch"
+        )
+        reason = (
+            f"binding_rejected:{rebound_reason}"
+            if rolled_back
+            else "binding_changed_before_dispatch_rollback_failed"
+        )
+        return {"dispatched": False, "reason": reason}
     if not _run_workflow("agent-review.yml", fields):
         rolled_back = _rollback(issue, dispatch_id, previous, "workflow_dispatch_failed")
         reason = "workflow_dispatch_failed" if rolled_back else "workflow_dispatch_failed_rollback_failed"
@@ -2168,7 +2192,9 @@ def retry_review(issue: int) -> dict[str, object]:
         sha = str(worker["head_sha"])
     except (KeyError, TypeError, ValueError):
         return {"dispatched": False, "reason": "worker_state_invalid"}
-    binding_ok, binding_reason = sm.verify_issue_pr_binding(issue, pr, sha, repo)
+    binding_ok, binding_reason, _live_binding = sm.verify_review_issue_pr_binding(
+        issue, pr, sha, repo
+    )
     if not binding_ok:
         return {"dispatched": False, "reason": f"binding_rejected:{binding_reason}"}
     try:
@@ -2236,6 +2262,19 @@ def retry_review(issue: int) -> dict[str, object]:
             repo,
         )
         return {"dispatched": False, "reason": "claim_label_failed"}
+    rebound_ok, rebound_reason, rebound = sm.verify_review_issue_pr_binding(
+        issue, pr, sha, repo
+    )
+    if not rebound_ok or rebound["head_sha"] != sha:
+        rolled_back = _rollback(
+            issue, dispatch_id, previous_labels, "binding_changed_before_dispatch"
+        )
+        reason = (
+            f"binding_rejected:{rebound_reason}"
+            if rolled_back
+            else "binding_changed_before_dispatch_rollback_failed"
+        )
+        return {"dispatched": False, "reason": reason}
     if not _run_workflow("agent-review.yml", fields):
         rolled_back = _rollback(
             issue, dispatch_id, previous_labels, "workflow_dispatch_failed"
@@ -2255,6 +2294,14 @@ def dispatch_merge(pr: int, issue: int, sha: str) -> dict[str, object]:
         control_state.require_auto_merge(_repo() or None)
     except control_state.ControlStateError:
         return {"dispatched": False, "reason": "disabled_or_emergency_stopped"}
+    binding_ok, binding_reason, live_binding = sm.verify_review_issue_pr_binding(
+        issue, pr, sha, _repo()
+    )
+    if not binding_ok:
+        return {"dispatched": False, "reason": f"binding_rejected:{binding_reason}"}
+    sha = live_binding["head_sha"]
+    dispatch_id = _dispatch_id("merge", pr, sha)
+    fields = {"pr_number": pr, "issue_number": issue, "head_sha": sha}
     try:
         existing = sm.read_dispatch_state(issue, dispatch_id, _repo())
     except sm.StateUnavailableError:
@@ -2278,6 +2325,11 @@ def dispatch_merge(pr: int, issue: int, sha: str) -> dict[str, object]:
         return {"dispatched": False, "reason": "review_state_unavailable"}
     if not review or review.get("pr_number") != int(pr) or review.get("head_sha") != sha or review.get("verdict") != "PASS":
         return {"dispatched": False, "reason": "review_head_mismatch"}
+    rebound_ok, rebound_reason, rebound = sm.verify_review_issue_pr_binding(
+        issue, pr, sha, _repo()
+    )
+    if not rebound_ok or rebound["head_sha"] != sha:
+        return {"dispatched": False, "reason": f"binding_rejected:{rebound_reason}"}
     if not sm.record_dispatch_state(issue, dispatch_id, "merge", "claimed", fields, _repo()):
         return {"dispatched": False, "reason": "claim_state_failed"}
     if not _run_workflow("agent-merge.yml", fields):

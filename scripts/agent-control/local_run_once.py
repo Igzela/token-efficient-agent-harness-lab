@@ -1288,6 +1288,18 @@ class LocalRunOnce:
                     expected_remote_sha=expected_remote_sha, branch=candidate.branch,
                     subject_kind="plan-packet", subject_id=packet_id,
                 )
+                try:
+                    artifact_contract.validate_artifact_scope(
+                        candidate.allowed_paths, manifest
+                    )
+                except artifact_contract.ArtifactContractError as exc:
+                    return self._plan_result(
+                        "failed",
+                        packet_id,
+                        attempt,
+                        reason="plan_scope_violation",
+                        diagnostic=str(exc)[:200],
+                    )
                 self._git_checked(worktree_path, "reset", "--hard", base_sha)
                 self._git_checked(worktree_path, "clean", "-fd")
                 self._git_checked(worktree_path, "apply", "--index", "--binary", str(artifact_dir / artifact_contract.PATCH_NAME))

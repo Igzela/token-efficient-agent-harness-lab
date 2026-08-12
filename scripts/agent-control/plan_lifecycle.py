@@ -232,13 +232,35 @@ def plan_review_receipt(ledger_issue: int, pr_number: int, head_sha: str, repo: 
     reads as ``None``.
     """
 
-    state = sm.read_review_state(ledger_issue, repo)
+    live_binding: dict[str, Any] | None = None
+    if repo:
+        binding_ok, _binding_reason, live_binding = sm.resolve_live_review_binding(
+            pr_number, head_sha, repo
+        )
+        if not binding_ok or live_binding["head_sha"] != head_sha:
+            return None
+    if repo:
+        state = sm.read_review_state(ledger_issue, repo)
+    else:
+        body = sm.get_issue_comment_bodies(
+            ledger_issue, "agent-orchestrator-review-state", repo
+        )
+        try:
+            state = json.loads(body) if body else None
+        except json.JSONDecodeError:
+            state = None
     if not isinstance(state, dict):
         return None
     if state.get("pr_number") != int(pr_number) or state.get("head_sha") != head_sha:
         return None
     if state.get("verdict") not in {"PASS", "pass"}:
         return None
+    if live_binding is not None:
+        rebound_ok, _rebound_reason, rebound = sm.resolve_live_review_binding(
+            pr_number, head_sha, repo, live_binding["base_sha"]
+        )
+        if not rebound_ok or rebound["reviewed_range"] != live_binding["reviewed_range"]:
+            return None
     return state
 
 

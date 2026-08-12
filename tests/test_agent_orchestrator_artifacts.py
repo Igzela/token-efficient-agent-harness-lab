@@ -182,6 +182,18 @@ class TestPatchArtifactContract(unittest.TestCase):
                 with self.assertRaises(artifact_contract.ArtifactContractError):
                     artifact_contract.validate_scope_binding(binding, manifest)
 
+    def test_plan_artifact_scope_uses_canonical_file_and_directory_semantics(self):
+        manifest = {"changed_files": ["scripts/agent-control/state_manager.py"]}
+        artifact_contract.validate_artifact_scope(
+            ["scripts/agent-control/state_manager.py"], manifest
+        )
+        artifact_contract.validate_artifact_scope(["scripts/agent-control/"], manifest)
+        with self.assertRaisesRegex(
+            artifact_contract.ArtifactContractError,
+            "outside the task Issue scope",
+        ):
+            artifact_contract.validate_artifact_scope(["docs/"], manifest)
+
     def test_validate_scope_binding_cli_reads_binding_and_manifest_files(self):
         manifest = {
             "schema_version": 1,

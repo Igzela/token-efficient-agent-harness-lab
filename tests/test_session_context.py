@@ -938,11 +938,11 @@ class CheckpointTests(unittest.TestCase):
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         packet = session_context.current_packet_binding(next_document, MAIN)
-        self.assertEqual(packet["packet_id"], "PE7-ROUTE-AUTOMATION-1")
+        self.assertEqual(packet["packet_id"], "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1")
         self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
         self.assertTrue(packet["checkpoint_allowed"])
         capsule = session_context.current_dispatch_capsule(next_document, packet)
-        self.assertEqual(capsule["packet_id"], "PE7-ROUTE-AUTOMATION-1")
+        self.assertEqual(capsule["packet_id"], "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1")
         self.assertEqual(capsule["packet_state"], "READY_FOR_EXECUTION")
         self.assertEqual(capsule["dispatch_lane"], "provider_free_repository_maintenance")
         self.assertEqual(capsule["external_effect_limit"], 0)
@@ -979,7 +979,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(entry["resume_reason"], "clean_accepted_baseline")
         self.assertIsNotNone(entry["dispatch_capsule"])
         self.assertEqual(
-            entry["dispatch_capsule"]["packet_id"], "PE7-ROUTE-AUTOMATION-1"
+            entry["dispatch_capsule"]["packet_id"], "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1"
         )
         self.assertFalse(entry["execution_authorized"])
         self.assertTrue(entry["checkpoint_allowed"])
