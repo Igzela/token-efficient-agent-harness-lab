@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping
 from dataclasses import dataclass, fields as dataclass_fields, replace
+import fnmatch
 import hashlib
 import importlib.util
 import json
@@ -1505,7 +1506,181 @@ def extract_packet(
     ).to_wire()
 
 
-def current_packet_binding(next_document: str, accepted_main_sha: str) -> dict[str, object]:
+def _packet_contract_binding(
+    block: str,
+    payload: Mapping[str, object],
+    status_document: str,
+) -> None:
+    """Cross-bind one executable packet to prose and accepted receipts."""
+
+    allowed_line = re.search(
+        r"^\*\*Allowed delta:\*\*\s*(?P<value>.+)$", block, re.MULTILINE
+    )
+    if allowed_line is None:
+        raise SessionContextError("packet_allowed_paths_binding_invalid")
+    allowed_text = allowed_line.group("value").split(" Do not modify", 1)[0]
+    backticked = re.findall(r"`([^`]+)`", allowed_text)
+    raw_patterns = (
+        backticked
+        if backticked
+        else [item.strip().rstrip(".") for item in allowed_text.split(",")]
+    )
+    patterns = [
+        item for item in raw_patterns
+        if item and ("/" in item or item.endswith((".md", ".py", ".yml")))
+    ]
+    try:
+        capsule_allowed = sorted(
+            {
+                _repo_path(item, "packet_allowed_path")
+                for item in _bounded_string_list(
+                    payload.get("allowed_paths"), "packet_allowed_paths"
+                )
+            }
+        )
+    except SessionContextError as exc:
+        raise SessionContextError("packet_allowed_paths_binding_invalid") from exc
+    if not patterns or any(
+        not any(
+            (pattern.endswith("/") and path.startswith(pattern))
+            or fnmatch.fnmatchcase(path, pattern)
+            for pattern in patterns
+        )
+        for path in capsule_allowed
+    ):
+        raise SessionContextError("packet_allowed_paths_binding_invalid")
+
+    prerequisite_line = re.search(
+        r"^\*\*Prerequisites?:\*\*\s*(?P<value>.+)$", block, re.MULTILINE
+    )
+    prose_prerequisites = (
+        list(dict.fromkeys(PACKET_TOKEN.findall(prerequisite_line.group("value"))))
+        if prerequisite_line is not None
+        else []
+    )
+    capsule_prerequisites = _bounded_string_list(
+        payload.get("prerequisites"), "packet_prerequisites", allow_empty=True
+    )
+    packet_id = payload.get("packet_id")
+    stabilization_bridge = packet_id == "PE7-ROUTE-AUTONOMY-STABILIZATION-1"
+    stabilization_prerequisite = (
+        "Accepted main `306b500c43270ca83d7cb9defd365140b525187c` contains the "
+        "accepted route, control-binding, SQLite race-repair, and route-autonomy "
+        "stabilization implementation receipts. PR #416 exact head "
+        "`9ce548f620314303b37753a18539c17b5daa6698`, canonical workflow "
+        "`31630036965`, merge `306b500c43270ca83d7cb9defd365140b525187c`, "
+        "and controller status smoke `31631388199` prove the repaired dispatch "
+        "surface. The failed attempt `ea64fd6d-fb8e-5c54-b86c-ae8f96c17550` "
+        "and route10 remain non-resumable historical evidence."
+    )
+    if (
+        (
+            stabilization_bridge
+            and (
+                prerequisite_line is None
+                or prerequisite_line.group("value") != stabilization_prerequisite
+            )
+        )
+        or (not stabilization_bridge and prose_prerequisites != capsule_prerequisites)
+        or any(PACKET_ID.fullmatch(item) is None for item in capsule_prerequisites)
+    ):
+        raise SessionContextError("packet_prerequisite_binding_invalid")
+
+    receipts = _bounded_string_list(
+        payload.get("prerequisite_receipts"),
+        "packet_prerequisite_receipts",
+        allow_empty=True,
+    )
+    receipt_section = re.search(
+        r"^## Accepted Packet Receipts$(?P<body>.*?)(?=^## |\Z)",
+        status_document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if receipt_section is None:
+        raise SessionContextError("packet_prerequisite_receipt_invalid")
+    accepted_rows: dict[str, str] = {}
+    for line in receipt_section.group("body").splitlines():
+        match = re.fullmatch(
+            r"\|\s*`(?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)`\s*"
+            r"\|\s*`COMPLETE`\s*\|\s*(?P<receipt>[^|]+?)\s*\|",
+            line,
+        )
+        if match is None:
+            continue
+        packet_id = match.group("packet")
+        if packet_id in accepted_rows:
+            raise SessionContextError("packet_prerequisite_receipt_invalid")
+        accepted_rows[packet_id] = match.group("receipt").strip()
+    if stabilization_bridge:
+        expected_prerequisites = [
+            "PE7-ROUTE-AUTOMATION-1",
+            "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1",
+            "PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1",
+        ]
+        expected_receipts = [
+            "PE7-ROUTE-AUTOMATION-1 COMPLETE: PR #390 exact head "
+            "24618e52c969adc93e7bc092c51dde6b2d0ffea9; merge "
+            "5481053c736e7db8481cabd9316741f2a5cd6c7a; canonical workflow "
+            "31467821768",
+            "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1 COMPLETE: "
+            "implementation PR #408 merge "
+            "57a86c78c3f9611ce48c5bce249721af23db5532; canonical workflow "
+            "31593460813; correction workflow 31594277043",
+            "PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1 COMPLETE: PR #413 "
+            "exact head fc8c005981d2fa12f0f494a131b839d65a46a8ba; canonical workflow "
+            "31611860646; merge 9cc118fa72d9d13a24cdf968cc5fc20dbe80b28f",
+            "Route bootstrap failure: attempt "
+            "ea64fd6d-fb8e-5c54-b86c-ae8f96c17550; accepted main "
+            "aa83ac1f5eada74199e0ce28ecb91d37a48769d6; HTTP 422 for 28 "
+            "inputs over GitHub maximum 25; no workflow run or downstream mutation",
+        ]
+        expected_accepted_rows = {
+            "PE7-ROUTE-AUTOMATION-1":
+                "PR #390 exact head `24618e52c969adc93e7bc092c51dde6b2d0ffea9`; "
+                "merge `5481053c736e7db8481cabd9316741f2a5cd6c7a`; exact-head `PASS`; "
+                "canonical workflow `31467821768`",
+            "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1":
+                "Authority PRs #406/#407/#409; implementation PR #408 exact head "
+                "`4a2dcf42728ae53f7daaec73e15310e8b0d67b59`; merge "
+                "`57a86c78c3f9611ce48c5bce249721af23db5532`; exact-head `PASS` on "
+                "both review axes; canonical workflow `31593460813`; #405 "
+                "retrospective correction workflow `31594277043` and production "
+                "readback bind actual head `e68ec0b3a7b78d3ca241922bf3995c2f3ba4ecfa` "
+                "while retaining `historical_merge_compliant=false`",
+            "PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1":
+                "PR #413 base `59cec5745ddd7f89ce8c099a5de2c7e3c3ec3a1e`; exact head "
+                "`fc8c005981d2fa12f0f494a131b839d65a46a8ba`; exact-head `PASS` "
+                "receipt comment `5268787985`; canonical workflow `31611860646`; "
+                "merge `9cc118fa72d9d13a24cdf968cc5fc20dbe80b28f`; deterministic "
+                "production-path concurrent-winner receipt reuse and genuine "
+                "missing-receipt rejection",
+        }
+        if capsule_prerequisites != expected_prerequisites or receipts != expected_receipts:
+            raise SessionContextError("packet_prerequisite_receipt_invalid")
+        for prerequisite_id, expected_receipt in expected_accepted_rows.items():
+            if accepted_rows.get(prerequisite_id) != expected_receipt:
+                raise SessionContextError("packet_prerequisite_receipt_invalid")
+        return
+
+    if len(receipts) != len(capsule_prerequisites):
+        raise SessionContextError("packet_prerequisite_receipt_invalid")
+    for index, prerequisite_id in enumerate(capsule_prerequisites):
+        accepted_receipt = accepted_rows.get(prerequisite_id)
+        if accepted_receipt is None:
+            raise SessionContextError("packet_prerequisite_receipt_invalid")
+        candidate = receipts[index]
+        prefix = f"{prerequisite_id} COMPLETE:"
+        if candidate.startswith(prefix):
+            candidate = candidate[len(prefix):].strip()
+        if candidate != accepted_receipt:
+            raise SessionContextError("packet_prerequisite_receipt_invalid")
+
+
+def current_packet_binding(
+    next_document: str,
+    status_document: str,
+    accepted_main_sha: str,
+) -> dict[str, object]:
     """Bind the routed packet without interpreting prose as new authority."""
 
     _validate_sha(accepted_main_sha, "accepted_main_sha", SHA40)
@@ -1529,8 +1704,21 @@ def current_packet_binding(next_document: str, accepted_main_sha: str) -> dict[s
             next_document,
             re.MULTILINE | re.DOTALL,
         )
-        if not active or packet_id not in active.group("body"):
+        active_body = active.group("body") if active else ""
+        numbered = re.findall(
+            r"^\s*\d+\.\s+`(?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)`",
+            active_body,
+            re.MULTILINE,
+        )
+        labelled = re.findall(
+            r"^Current packet:\s*(?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\s*$",
+            active_body,
+            re.MULTILINE,
+        )
+        routed = list(dict.fromkeys([*numbered, *labelled]))
+        if routed != [packet_id]:
             raise SessionContextError("packet_not_current_route")
+        _packet_contract_binding(block, payload, status_document)
         raw_allowed = payload.get("allowed_paths")
         if not isinstance(raw_allowed, list) or not raw_allowed:
             raise SessionContextError("packet_allowed_paths_invalid")
@@ -2586,7 +2774,12 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
         raise SessionContextError("document_source_invalid")
     documents = {
         path: reader(path)
-        for path in ("START_HERE.md", "docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md")
+        for path in (
+            "START_HERE.md",
+            "docs/CURRENT_STATUS.md",
+            "docs/NEXT_DECISION.md",
+            "docs/FUTURE_ROUTE.md",
+        )
     }
     if any(not value for value in documents.values()):
         raise SessionContextError("canonical_document_unavailable")
@@ -2685,7 +2878,11 @@ def main(argv: list[str] | None = None) -> int:
         loaded = _load_documents(source=source, offline=args.offline)
         accepted_main_sha = loaded["accepted_main_sha"]
         documents = loaded["documents"]
-        packet = current_packet_binding(documents["docs/NEXT_DECISION.md"], accepted_main_sha)
+        packet = current_packet_binding(
+            documents["docs/NEXT_DECISION.md"],
+            documents["docs/CURRENT_STATUS.md"],
+            accepted_main_sha,
+        )
         if source != "accepted":
             packet_model = PacketBinding.from_wire(packet)
             packet = replace(

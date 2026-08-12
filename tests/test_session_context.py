@@ -28,6 +28,7 @@ import session_context  # noqa: E402
 MAIN = "a" * 40
 HEAD = "b" * 40
 VERIFY = "uv run --no-project python -m unittest tests.test_session_context"
+ACCEPTED_RECEIPT = "accepted receipt " + "1" * 40 + " workflow 1234567890"
 
 
 def route_document(*, payload: dict | None = None) -> str:
@@ -124,6 +125,8 @@ def dispatch_capsule(**overrides) -> dict:
         "plan_lane_state": "plan_lane_deferred_until_terminal_owners",
         "goal": "Finish the current bounded session-context packet.",
         "allowed_paths": ["docs/", "scripts/", "tests/"],
+        "prerequisites": ["TOOL-PREREQUISITE-1"],
+        "prerequisite_receipts": [ACCEPTED_RECEIPT],
         "forbidden_next_actions": ["Do not start a successor packet."],
         "ordered_steps": [
             "Read the focused owner paths.",
@@ -161,9 +164,21 @@ def next_document_with_dispatch(**overrides) -> str:
         "Current packet: TOOL-SESSION-CONTEXT-1\n\n"
         "### Packet TOOL-SESSION-CONTEXT-1\n\n"
         "**State:** `READY_FOR_EXECUTION`\n\n"
+        "**Prerequisite:** TOOL-PREREQUISITE-1 — COMPLETE.\n\n"
+        "**Allowed delta:** docs/, scripts/, tests/.\n\n"
         "<!-- weak-agent-dispatch:v1\n"
         + json.dumps(capsule, sort_keys=True)
         + "\n-->\n"
+    )
+
+
+def accepted_status_document(*, receipt: str = ACCEPTED_RECEIPT) -> str:
+    return (
+        "# Current Status\n\n"
+        "## Accepted Packet Receipts\n\n"
+        "| Packet | State | Accepted evidence |\n"
+        "|---|---|---|\n"
+        f"| `TOOL-PREREQUISITE-1` | `COMPLETE` | {receipt} |\n"
     )
 
 
@@ -313,6 +328,32 @@ class RouteContractTests(unittest.TestCase):
 
 
 class PacketExtractionTests(unittest.TestCase):
+    def test_loader_reads_status_with_route_documents_from_one_accepted_head(self):
+        module = mock.Mock()
+        module.accepted_baseline.return_value = {"sha": MAIN, "source": "test"}
+        module.ensure_commit_available.return_value = True
+        module.git_show_text.side_effect = lambda _sha, path: f"content:{path}"
+        spec = mock.Mock(loader=mock.Mock())
+        spec.loader.exec_module.side_effect = lambda target: target.__dict__.update(
+            module.__dict__
+        )
+        with mock.patch.object(
+            session_context.importlib.util, "spec_from_file_location", return_value=spec
+        ), mock.patch.object(
+            session_context.importlib.util, "module_from_spec", return_value=mock.Mock()
+        ):
+            loaded = session_context._load_documents(source="accepted", offline=True)
+        self.assertEqual(
+            set(loaded["documents"]),
+            {
+                "START_HERE.md",
+                "docs/CURRENT_STATUS.md",
+                "docs/NEXT_DECISION.md",
+                "docs/FUTURE_ROUTE.md",
+            },
+        )
+        self.assertTrue(all(call.args[0] == MAIN for call in module.git_show_text.call_args_list))
+
     def test_current_weak_dispatch_binds_checkpoint_without_granting_authority(self):
         payload = {
             "schema_version": "weak_agent_dispatch.v1",
@@ -324,6 +365,8 @@ class PacketExtractionTests(unittest.TestCase):
             "private_paths_allowed": False,
             "plan_lane_state": "plan_lane_deferred_until_terminal_owners",
             "allowed_paths": ["scripts/", "tests/", "docs/"],
+            "prerequisites": ["TOOL-PREREQUISITE-1"],
+            "prerequisite_receipts": [ACCEPTED_RECEIPT],
             "forbidden_next_actions": ["Do not start a successor packet."],
             "read_paths": ["scripts/session_context.py"],
             "verification": [VERIFY],
@@ -334,17 +377,166 @@ class PacketExtractionTests(unittest.TestCase):
             "Current packet: TOOL-SESSION-CONTEXT-1\n\n"
             "### Packet TOOL-SESSION-CONTEXT-1\n\n"
             "**State:** `READY_FOR_EXECUTION`\n\n"
+            "**Prerequisite:** TOOL-PREREQUISITE-1 — COMPLETE.\n\n"
+            "**Allowed delta:** docs/, scripts/, tests/.\n\n"
             "<!-- weak-agent-dispatch:v1\n"
             + json.dumps(payload, sort_keys=True)
             + "\n-->\n"
         )
-        packet = session_context.current_packet_binding(document, MAIN)
+        packet = session_context.current_packet_binding(
+            document, accepted_status_document(), MAIN
+        )
         self.assertEqual(packet["packet_id"], "TOOL-SESSION-CONTEXT-1")
         self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
         self.assertTrue(packet["checkpoint_allowed"])
         self.assertFalse(packet["execution_authorized"])
         capsule = session_context.current_dispatch_capsule(document, packet)
         self.assertEqual(capsule["packet_id"], packet["packet_id"])
+
+    def test_current_packet_rejects_unaccepted_prerequisite_identity(self):
+        document = next_document_with_dispatch(
+            prerequisites=["TOOL-FAKE-PREREQUISITE-1"],
+        )
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "packet_prerequisite_binding_invalid",
+        ):
+            session_context.current_packet_binding(
+                document, accepted_status_document(), MAIN
+            )
+
+    def test_current_packet_rejects_stale_prerequisite_receipt(self):
+        document = next_document_with_dispatch(
+            prerequisite_receipts=["stale unbound receipt"],
+        )
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "packet_prerequisite_receipt_invalid",
+        ):
+            session_context.current_packet_binding(
+                document, accepted_status_document(), MAIN
+            )
+
+    def test_current_packet_rejects_truncated_or_extended_accepted_receipt(self):
+        for receipt in (
+            "TOOL-PREREQUISITE-1 COMPLETE: accepted receipt",
+            ACCEPTED_RECEIPT + "; FORGED EXTRA TEXT",
+        ):
+            with self.subTest(receipt=receipt):
+                document = next_document_with_dispatch(
+                    prerequisite_receipts=[receipt],
+                )
+                with self.assertRaisesRegex(
+                    session_context.SessionContextError,
+                    "packet_prerequisite_receipt_invalid",
+                ):
+                    session_context.current_packet_binding(
+                        document, accepted_status_document(), MAIN
+                    )
+
+    def test_current_packet_rejects_capsule_prerequisite_missing_from_prose(self):
+        document = next_document_with_dispatch().replace(
+            "**Prerequisite:** TOOL-PREREQUISITE-1 — COMPLETE.\n\n", ""
+        )
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "packet_prerequisite_binding_invalid",
+        ):
+            session_context.current_packet_binding(
+                document, accepted_status_document(), MAIN
+            )
+
+    def test_current_packet_rejects_receipt_when_no_prerequisite_exists(self):
+        document = next_document_with_dispatch(prerequisites=[]).replace(
+            "**Prerequisite:** TOOL-PREREQUISITE-1 — COMPLETE.\n\n", ""
+        )
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "packet_prerequisite_receipt_invalid",
+        ):
+            session_context.current_packet_binding(
+                document, accepted_status_document(), MAIN
+            )
+
+    def test_stabilization_bridge_rejects_accepted_row_identity_tampering(self):
+        accepted = "cada05247e4e86b7415c041497cdf89ec504eb07"
+
+        def show(path: str) -> str:
+            return subprocess.check_output(
+                ["git", "show", f"{accepted}:{path}"], text=True
+            )
+
+        next_document = show("docs/NEXT_DECISION.md")
+        for status_document in (
+            show("docs/CURRENT_STATUS.md").replace(
+                "canonical workflow `31467821768`",
+                "canonical workflow `99999999999`",
+                1,
+            ),
+            show("docs/CURRENT_STATUS.md").replace(
+                "canonical workflow `31467821768` |",
+                "canonical workflow `31467821768` FORGED |",
+                1,
+            ),
+        ):
+            with self.subTest(status_document=status_document):
+                with self.assertRaisesRegex(
+                    session_context.SessionContextError,
+                    "packet_prerequisite_receipt_invalid",
+                ):
+                    session_context.current_packet_binding(
+                        next_document, status_document, accepted
+                    )
+
+    def test_stabilization_bridge_rejects_missing_prerequisite_prose(self):
+        accepted = "cada05247e4e86b7415c041497cdf89ec504eb07"
+
+        def show(path: str) -> str:
+            return subprocess.check_output(
+                ["git", "show", f"{accepted}:{path}"], text=True
+            )
+
+        next_document = show("docs/NEXT_DECISION.md")
+        next_document = next_document.replace(
+            next(
+                line + "\n"
+                for line in next_document.splitlines()
+                if line.startswith("**Prerequisite:**")
+            ),
+            "",
+            1,
+        )
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "packet_prerequisite_binding_invalid",
+        ):
+            session_context.current_packet_binding(
+                next_document, show("docs/CURRENT_STATUS.md"), accepted
+            )
+
+    def test_current_packet_rejects_scope_not_bound_to_packet_prose(self):
+        document = next_document_with_dispatch(allowed_paths=["README.md"])
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "packet_allowed_paths_binding_invalid",
+        ):
+            session_context.current_packet_binding(
+                document, accepted_status_document(), MAIN
+            )
+
+    def test_forbidden_path_mentioned_after_allowed_delta_is_not_authority(self):
+        document = next_document_with_dispatch(allowed_paths=["tests.yml"])
+        document = document.replace(
+            "**Allowed delta:** docs/, scripts/, tests/.",
+            "**Allowed delta:** docs/, scripts/, tests/. Do not modify `tests.yml`.",
+        )
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "packet_allowed_paths_binding_invalid",
+        ):
+            session_context.current_packet_binding(
+                document, accepted_status_document(), MAIN
+            )
 
     def test_planning_parked_window_never_binds_checkpoint_authority(self):
         document = (
@@ -354,7 +546,9 @@ class PacketExtractionTests(unittest.TestCase):
             "## Packet TOOL-SESSION-CONTEXT-1\n\n"
             "**State:** `DECISION_REQUIRED`\n\n"
         )
-        packet = session_context.current_packet_binding(document, MAIN)
+        packet = session_context.current_packet_binding(
+            document, accepted_status_document(), MAIN
+        )
         self.assertEqual(packet["state"], "DECISION_REQUIRED")
         self.assertFalse(packet["checkpoint_allowed"])
         self.assertFalse(packet["execution_authorized"])
@@ -913,6 +1107,7 @@ class CheckpointTests(unittest.TestCase):
             "document_source_binding": MAIN,
             "documents": {
                 "START_HERE.md": route_document(),
+                "docs/CURRENT_STATUS.md": accepted_status_document(),
                 "docs/NEXT_DECISION.md": next_document_with_dispatch(),
                 "docs/FUTURE_ROUTE.md": "# Future Route\n",
             },
@@ -937,7 +1132,10 @@ class CheckpointTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
-        packet = session_context.current_packet_binding(next_document, MAIN)
+        status_document = (root / "docs/CURRENT_STATUS.md").read_text(encoding="utf-8")
+        packet = session_context.current_packet_binding(
+            next_document, status_document, MAIN
+        )
         self.assertEqual(
             packet["packet_id"], "PE7-ROUTE-AUTONOMY-STABILIZATION-1"
         )
