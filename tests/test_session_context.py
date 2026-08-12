@@ -963,7 +963,7 @@ class CheckpointTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                "HTTP 422 for 29 inputs over GitHub maximum 25" in receipt
+                "HTTP 422 for 28 inputs over GitHub maximum 25" in receipt
                 for receipt in capsule["prerequisite_receipts"]
             )
         )
