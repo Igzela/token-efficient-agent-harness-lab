@@ -765,7 +765,12 @@ class TestPlanLifecycleWait(unittest.TestCase):
             "ci": ci_wire(pr_number=pr_number, head_sha=head_sha),
             "review": review_wire(pr_number=pr_number, head_sha=head_sha),
             "merge": merge_wire(pr_number=pr_number, head_sha=head_sha),
-            "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{pr_number}"},
+            "closeout": {
+                "terminal_packet_state": "closed_out",
+                "closeout_reference": plan_lifecycle.canonical_closeout_reference(
+                    pr_number, head_sha, MERGE, 7
+                ),
+            },
         }
         return {
             "packet_id": packet_id,
@@ -869,9 +874,24 @@ class TestPlanLifecycleWait(unittest.TestCase):
             "merge_head": self._lifecycle(transitions={
                 "ci": ci_wire(), "review": review_wire(),
                 "merge": merge_wire(head_sha="f" * 40),
-                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": f"PR #{PR}"},
+                "closeout": {
+                    "terminal_packet_state": "closed_out",
+                    "closeout_reference": CLOSEOUT_REFERENCE,
+                },
             }),
         }
+        for name, reference in {
+            "closeout_head": CLOSEOUT_REFERENCE.replace(HEAD, "f" * 40),
+            "closeout_merge": CLOSEOUT_REFERENCE.replace(MERGE, "f" * 40),
+            "closeout_workflow": CLOSEOUT_REFERENCE.replace("workflow `7`", "workflow `8`"),
+            "legacy_closeout": f"PR #{PR}",
+        }.items():
+            lifecycle = self._lifecycle()
+            lifecycle["transitions"]["closeout"] = {
+                "terminal_packet_state": "closed_out",
+                "closeout_reference": reference,
+            }
+            cases[name] = lifecycle
         missing_head = self._lifecycle()
         del missing_head["head_sha"]
         cases["missing_head"] = missing_head

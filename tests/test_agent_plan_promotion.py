@@ -671,10 +671,10 @@ class TestPromotionWait(unittest.TestCase):
             "pr_number": 42, "head_sha": "b" * 40,
             "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
             "transitions": {
-                "ci": {"pr_number": 42, "head_sha": "b" * 40},
+                "ci": {"pr_number": 42, "head_sha": "b" * 40, "workflow_run_id": 7},
                 "review": {"pr_number": 42, "head_sha": "b" * 40},
                 "merge": {"pr_number": 42, "expected_head_sha": "b" * 40, "merge_commit_sha": "c" * 40},
-                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": "PR #42"},
+                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": "PR #42 exact head `bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb`; merge `cccccccccccccccccccccccccccccccccccccccc`; exact-head `PASS`; canonical workflow `7`"},
             },
         }
         promotion = {"kind": "plan-promote", "status": "promoted", "details": {"successor_id": SUCCESSOR}}
@@ -700,10 +700,10 @@ class TestPromotionWait(unittest.TestCase):
             "pr_number": 42, "head_sha": "b" * 40,
             "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
             "transitions": {
-                "ci": {"pr_number": 42, "head_sha": "b" * 40},
+                "ci": {"pr_number": 42, "head_sha": "b" * 40, "workflow_run_id": 7},
                 "review": {"pr_number": 42, "head_sha": "b" * 40},
                 "merge": {"pr_number": 42, "expected_head_sha": "b" * 40, "merge_commit_sha": "c" * 40},
-                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": "PR #42"},
+                "closeout": {"terminal_packet_state": "closed_out", "closeout_reference": "PR #42 exact head `bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb`; merge `cccccccccccccccccccccccccccccccccccccccc`; exact-head `PASS`; canonical workflow `7`"},
             },
         }
         with mock.patch.object(

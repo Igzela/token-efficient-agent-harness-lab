@@ -781,6 +781,22 @@ class LocalRunOnce:
             return "invalid"
         if closeout is not None and not isinstance(closeout, dict):
             return "invalid"
+        if isinstance(closeout, dict):
+            ci = transitions.get("ci")
+            merge = transitions.get("merge")
+            closeout_match = plan_lifecycle.canonical_closeout_reference_match(
+                closeout.get("closeout_reference")
+            )
+            if (
+                not isinstance(ci, dict)
+                or not isinstance(merge, dict)
+                or closeout_match is None
+                or closeout_match.group("pr") != str(pr_number)
+                or closeout_match.group("head") != head_sha
+                or closeout_match.group("merge") != merge.get("merge_commit_sha")
+                or closeout_match.group("workflow") != str(ci.get("workflow_run_id"))
+            ):
+                return "invalid"
         return "exact"
 
     def _wait_for_plan_terminal_receipts(

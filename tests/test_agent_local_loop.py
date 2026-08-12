@@ -687,7 +687,12 @@ class TestLocalRunOnce(unittest.TestCase):
                     "head_sha": head,
                     "stages": {"ci": True, "review": True, "merge": True, "closeout": True},
                     "transitions": {
-                        "ci": {"pr_number": transport["pr_number"], "head_sha": head, "status": "success"},
+                        "ci": {
+                            "pr_number": transport["pr_number"],
+                            "head_sha": head,
+                            "workflow_run_id": 901,
+                            "status": "success",
+                        },
                         "review": {"pr_number": transport["pr_number"], "head_sha": head, "verdict": "PASS"},
                         "merge": {
                             "pr_number": transport["pr_number"],
@@ -697,7 +702,11 @@ class TestLocalRunOnce(unittest.TestCase):
                         "closeout": {
                             "head_sha": head,
                             "terminal_packet_state": "COMPLETE",
-                            "closeout_reference": "stateful-soak",
+                            "closeout_reference": (
+                                f"PR #{transport['pr_number']} exact head `{head}`; "
+                                f"merge `{transport['merge_sha']}`; exact-head `PASS`; "
+                                "canonical workflow `901`"
+                            ),
                         },
                     },
                 }
