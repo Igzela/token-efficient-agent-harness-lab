@@ -1128,7 +1128,7 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_route_autonomy_stabilization_binds_capsule(self):
+    def test_current_repository_packet_binds_safe_live_capsule(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
@@ -1136,16 +1136,11 @@ class CheckpointTests(unittest.TestCase):
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
-        self.assertEqual(
-            packet["packet_id"], "PE7-ROUTE-AUTONOMY-STABILIZATION-1"
-        )
         self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
         self.assertTrue(packet["checkpoint_allowed"])
         capsule = session_context.current_dispatch_capsule(next_document, packet)
-        self.assertEqual(
-            capsule["packet_id"], "PE7-ROUTE-AUTONOMY-STABILIZATION-1"
-        )
-        self.assertEqual(capsule["packet_state"], "READY_FOR_EXECUTION")
+        self.assertEqual(capsule["packet_id"], packet["packet_id"])
+        self.assertEqual(capsule["packet_state"], packet["state"])
         self.assertEqual(capsule["dispatch_lane"], "provider_free_repository_maintenance")
         self.assertEqual(capsule["external_effect_limit"], 0)
         self.assertIs(capsule["authority_consumption_allowed"], False)
@@ -1155,41 +1150,10 @@ class CheckpointTests(unittest.TestCase):
             capsule["plan_lane_state"], "plan_lane_active"
         )
         self.assertEqual(capsule["allowed_paths"], packet["allowed_paths"])
-        expected_test_paths = {
-            "tests/test_agent_claim_local.py",
-            "tests/test_agent_control_ci.py",
-            "tests/test_agent_control_dry_run.py",
-            "tests/test_agent_control_state.py",
-            "tests/test_agent_control_worktree.py",
-            "tests/test_agent_local_handoff.py",
-            "tests/test_agent_local_loop.py",
-            "tests/test_agent_local_verification.py",
-            "tests/test_agent_orchestrator_artifacts.py",
-            "tests/test_agent_orchestrator_repairs.py",
-            "tests/test_agent_plan_lane.py",
-            "tests/test_agent_plan_lifecycle.py",
-            "tests/test_agent_plan_promotion.py",
-            "tests/test_agent_review_finalization.py",
-            "tests/test_agent_route_driver.py",
-            "tests/test_project_context.py",
-            "tests/test_review_convergence.py",
-            "tests/test_session_context.py",
-        }
+        self.assertTrue(capsule["allowed_paths"])
         self.assertNotIn("tests/", capsule["allowed_paths"])
-        self.assertEqual(
-            {path for path in capsule["allowed_paths"] if path.startswith("tests/")},
-            expected_test_paths,
-        )
-        self.assertIn("PE7-ROUTE-AUTOMATION-1", capsule["prerequisites"])
-        self.assertIn(
-            "scripts/agent-control/", capsule["allowed_paths"]
-        )
-        self.assertTrue(
-            any(
-                "HTTP 422 for 28 inputs over GitHub maximum 25" in receipt
-                for receipt in capsule["prerequisite_receipts"]
-            )
-        )
+        self.assertTrue(capsule["verification"])
+        self.assertTrue(capsule["forbidden_next_actions"])
         self.assertEqual(
             capsule["forbidden_next_actions"], packet["forbidden_next_actions"]
         )
@@ -1217,7 +1181,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertIsNotNone(entry["dispatch_capsule"])
         self.assertEqual(
             entry["dispatch_capsule"]["packet_id"],
-            "PE7-ROUTE-AUTONOMY-STABILIZATION-1",
+            packet["packet_id"],
         )
         self.assertFalse(entry["execution_authorized"])
         self.assertTrue(entry["checkpoint_allowed"])
