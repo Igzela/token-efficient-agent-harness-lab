@@ -6,6 +6,8 @@ import dataclasses
 import hashlib
 import json
 from pathlib import Path
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1285,8 +1287,52 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.assertIn("caller_path` must be in `allowed_paths`", prompt)
         self.assertIn("Python `def` or `class` declaration in `owner_path`", prompt)
         self.assertIn("verifier-recognized `symbol(` reference in `caller_path`", prompt)
-        self.assertIn("git grep -n", prompt)
+        self.assertIn("git grep -nE", prompt)
+        self.assertIn("git grep -nF", prompt)
         self.assertIn("return the row only when both commands prove it", prompt)
+
+    def test_worker_prompt_symbol_proof_commands_are_executable(self):
+        prompt = route_driver.promotion_planner_prompt(
+            self.successor, self.main, EVIDENCE
+        )
+        declaration = re.search(
+            r"git grep -nE '[^']+' [0-9a-f]+ -- <owner_path>", prompt
+        )
+        self.assertIsNotNone(declaration)
+        consumption = re.search(
+            r"git grep -nF '[^']+' [0-9a-f]+ -- <caller_path>", prompt
+        )
+        self.assertIsNotNone(consumption)
+        owner = "scripts/agent-control/route_driver.py"
+        caller = "scripts/agent-control/local_run_once.py"
+        declaration_cmd = declaration.group(0).replace(
+            "<symbol>", "RoutePromotionPlanner"
+        ).replace("<owner_path>", owner).replace(
+            "git grep", "git -C " + str(self.repo) + " grep"
+        )
+        consumption_cmd = consumption.group(0).replace(
+            "<symbol>", "RoutePromotionPlanner"
+        ).replace("<caller_path>", caller).replace(
+            "git grep", "git -C " + str(self.repo) + " grep"
+        )
+        negative_cmd = declaration.group(0).replace(
+            "<symbol>", "NoSuchRouteSymbol"
+        ).replace("<owner_path>", owner).replace(
+            "git grep", "git -C " + str(self.repo) + " grep"
+        )
+        for command, expected in (
+            (declaration_cmd, True),
+            (consumption_cmd, True),
+            (negative_cmd, False),
+        ):
+            result = subprocess.run(
+                shlex.split(command), capture_output=True, text=True
+            )
+            self.assertEqual(
+                (result.returncode == 0 and result.stdout.strip() != ""),
+                expected,
+                f"command {command} produced {result.returncode}: {result.stdout[:120]}",
+            )
 
 
 class TestRepositoryRouteRunner(unittest.TestCase):
