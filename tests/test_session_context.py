@@ -933,19 +933,19 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_dispatch_input_limit_repair_binds_capsule(self):
+    def test_current_repository_route_autonomy_stabilization_binds_capsule(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         packet = session_context.current_packet_binding(next_document, MAIN)
         self.assertEqual(
-            packet["packet_id"], "PE7-CONTROLLER-DISPATCH-INPUT-LIMIT-REPAIR-1"
+            packet["packet_id"], "PE7-ROUTE-AUTONOMY-STABILIZATION-1"
         )
         self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
         self.assertTrue(packet["checkpoint_allowed"])
         capsule = session_context.current_dispatch_capsule(next_document, packet)
         self.assertEqual(
-            capsule["packet_id"], "PE7-CONTROLLER-DISPATCH-INPUT-LIMIT-REPAIR-1"
+            capsule["packet_id"], "PE7-ROUTE-AUTONOMY-STABILIZATION-1"
         )
         self.assertEqual(capsule["packet_state"], "READY_FOR_EXECUTION")
         self.assertEqual(capsule["dispatch_lane"], "provider_free_repository_maintenance")
@@ -959,7 +959,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(capsule["allowed_paths"], packet["allowed_paths"])
         self.assertIn("PE7-ROUTE-AUTOMATION-1", capsule["prerequisites"])
         self.assertIn(
-            ".github/workflows/agent-controller.yml", capsule["allowed_paths"]
+            "scripts/agent-control/", capsule["allowed_paths"]
         )
         self.assertTrue(
             any(
@@ -994,7 +994,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertIsNotNone(entry["dispatch_capsule"])
         self.assertEqual(
             entry["dispatch_capsule"]["packet_id"],
-            "PE7-CONTROLLER-DISPATCH-INPUT-LIMIT-REPAIR-1",
+            "PE7-ROUTE-AUTONOMY-STABILIZATION-1",
         )
         self.assertFalse(entry["execution_authorized"])
         self.assertTrue(entry["checkpoint_allowed"])
