@@ -1373,6 +1373,8 @@ Each `allowed_paths` entry must be a literal repository-relative path:
   returning it.
 - Never use placeholders such as `...` or `exact/file`, a directory, an
   absolute path, or a path containing `..`.
+- The verifier hard-rejects workflow and hidden paths: never include any
+  path under `.github/workflows/`, `.github/actions/`, `.git/`, or `.codex/`.
 - Every path named elsewhere in the proposal must also appear in `allowed_paths`;
   do not use the list to smuggle a static route hint.
 
@@ -1381,6 +1383,8 @@ Each `caller_evidence` row must be independently machine-verifiable:
 - `caller_path` must be in `allowed_paths`.
 - `symbol` must match a Python `def` or `class` declaration in `owner_path`
   and a verifier-recognized `symbol(` reference in `caller_path`.
+- Prove each symbol against the exact accepted tree before returning it; a
+  row whose owner/caller/symbol cannot be proven is rejected.
 Do not include a speculative caller row; return the bounded decision object
 instead when no such exact caller fact can be proved.
 
