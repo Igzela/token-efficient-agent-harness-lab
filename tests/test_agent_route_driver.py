@@ -416,6 +416,40 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             decisions=("No schema, evaluator, authority, or recovery decision is changed.",),
         )
 
+    def test_compiled_successor_binds_the_remaining_route_inventory(self):
+        successor_sketch = SKETCH.replace(
+            "**Prerequisite:** PE7-PLAN-LANE-ACTIVATION-1",
+            f"**Prerequisite:** {CLOSED}",
+        )
+        source_future = future_document([successor_sketch, BLOCKED_SKETCH])
+        source_manifest_sha256 = route_driver._json_sha256(
+            route_driver.inventory_manifest(source_future)
+        )
+
+        compiled = route_driver.compile_successor(
+            source_future,
+            next_document(),
+            status_document(),
+            CLOSED,
+            BOUND_EVIDENCE,
+            MAIN,
+            self._evidence(packet_id=SUCCESSOR),
+        )
+
+        remaining_manifest_sha256 = route_driver._json_sha256(
+            route_driver.inventory_manifest(compiled.future_document)
+        )
+        self.assertNotEqual(remaining_manifest_sha256, source_manifest_sha256)
+        self.assertEqual(compiled.manifest_sha256, remaining_manifest_sha256)
+        self.assertEqual(
+            compiled.capsule["route_manifest_sha256"],
+            remaining_manifest_sha256,
+        )
+        self.assertIn(
+            f'"route_manifest_sha256": "{remaining_manifest_sha256}"',
+            compiled.next_document,
+        )
+
     def test_static_future_paths_are_hints_not_promotion_evidence(self):
         result = route_driver.RoutePromotionPlanner().plan(
             self._successor(), MAIN, EVIDENCE, None, MANIFEST
