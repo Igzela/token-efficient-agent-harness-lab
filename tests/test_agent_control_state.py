@@ -478,6 +478,8 @@ class TestStateReadFromIssueComments(unittest.TestCase):
             "issue_number": 383,
             "pr_number": 405,
             "head_sha": invalid_head,
+            "base_sha": base,
+            "reviewed_range": f"{base}...{invalid_head}",
             "verdict": "PASS",
         }
         correction = sm.ReviewCorrectionState(
@@ -498,7 +500,18 @@ class TestStateReadFromIssueComments(unittest.TestCase):
             {"author": {"login": "github-actions[bot]"}, "body": json.dumps(correction)},
             {"author": {"login": "Igzela"}, "body": json.dumps(old)},
         ]
-        with mock.patch.object(sm, "get_issue_comments", return_value=comments):
+        historical_api = {
+            "id": 5263609544,
+            "issue_url": "https://api.github.com/repos/acme/repo/issues/383",
+            "user": {"login": "acme"},
+            "author_association": "OWNER",
+            "body": json.dumps(old),
+        }
+        with mock.patch.object(
+            sm, "get_issue_comments", return_value=comments
+        ), mock.patch.object(
+            sm, "_gh", return_value=json.dumps(historical_api)
+        ):
             effective = sm.read_review_state(383, "acme/repo")
         self.assertEqual(effective["head_sha"], actual_head)
         self.assertTrue(effective["retrospective_correction"])
@@ -529,6 +542,43 @@ class TestStateReadFromIssueComments(unittest.TestCase):
             effective = sm.read_review_state(383, "acme/repo")
         self.assertEqual(effective["verdict"], "BLOCKED")
 
+    def test_correction_readback_requires_exact_authenticated_superseded_comment(self):
+        invalid_head = "d" * 40
+        actual_head = "a" * 40
+        base = "b" * 40
+        old = {
+            "kind": "agent-orchestrator-review-state",
+            "version": 3,
+            "issue_number": 383,
+            "pr_number": 405,
+            "base_sha": base,
+            "head_sha": invalid_head,
+            "reviewed_range": f"{base}...{invalid_head}",
+            "verdict": "PASS",
+        }
+        correction = sm.ReviewCorrectionState(
+            383, 405, base, actual_head, f"{base}...{actual_head}",
+            "PASS", "Authenticated retrospective correction.", 10,
+            invalid_head, 11,
+            "0ca57289-173b-475b-bbca-79102447e645",
+            "2822bf45-0206-4ed4-ba19-409fc467caf6",
+        ).to_wire()
+        comments = [
+            {"author": {"login": "github-actions[bot]"}, "body": json.dumps(correction)},
+            {"author": {"login": "acme"}, "body": json.dumps(old)},
+        ]
+        forged_api = {
+            "id": 999,
+            "issue_url": "https://api.github.com/repos/acme/repo/issues/383",
+            "user": {"login": "attacker"},
+            "author_association": "NONE",
+            "body": json.dumps(old),
+        }
+        with mock.patch.object(
+            sm, "get_issue_comments", return_value=comments
+        ), mock.patch.object(sm, "_gh", return_value=json.dumps(forged_api)):
+            self.assertIsNone(sm.read_review_state(383, "acme/repo"))
+
     def test_record_correction_requires_merged_live_binding_and_preserves_old_record(self):
         invalid_head = "d" * 40
         actual_head = "a" * 40
@@ -539,6 +589,8 @@ class TestStateReadFromIssueComments(unittest.TestCase):
             "issue_number": 383,
             "pr_number": 405,
             "head_sha": invalid_head,
+            "base_sha": base,
+            "reviewed_range": f"{base}...{invalid_head}",
             "verdict": "PASS",
         }
         payload = {
@@ -563,14 +615,21 @@ class TestStateReadFromIssueComments(unittest.TestCase):
         pr_comment = {
             "id": 5265662075,
             "issue_url": "https://api.github.com/repos/acme/repo/issues/405",
+            "user": {"login": "acme"},
+            "author_association": "OWNER",
             "body": (
-                "POST-MERGE RETROSPECTIVE correction supersedes 5263609544 "
-                f"and replaces invalid {invalid_head} with {actual_head}"
+                "POST-MERGE RETROSPECTIVE exact `PASS` correction "
+                f"supersedes 5263609544 and replaces invalid {invalid_head} "
+                f"with {actual_head}; range {base}...{actual_head}; "
+                f"sessions {payload['standards_reviewer_session']} and "
+                f"{payload['spec_reviewer_session']}"
             ),
         }
         superseded_comment = {
             "id": 5263609544,
             "issue_url": "https://api.github.com/repos/acme/repo/issues/383",
+            "user": {"login": "acme"},
+            "author_association": "OWNER",
             "body": json.dumps(old),
         }
         comments = [{
@@ -594,6 +653,46 @@ class TestStateReadFromIssueComments(unittest.TestCase):
         self.assertEqual(correction["controller_head_sha"], actual_head)
         self.assertFalse(correction["historical_merge_compliant"])
         self.assertEqual(old["head_sha"], invalid_head)
+
+    def test_record_correction_rejects_unauthenticated_comment_authors(self):
+        invalid_head = "d" * 40
+        actual_head = "a" * 40
+        base = "b" * 40
+        payload = {
+            "pr_number": 405,
+            "controller_base_sha": base,
+            "controller_head_sha": actual_head,
+            "verdict": "PASS",
+            "summary": "Retrospective evidence remains non-authorizing for history.",
+            "supersedes_comment_id": 10,
+            "invalid_recorded_head_sha": invalid_head,
+            "pr_correction_comment_id": 11,
+            "standards_reviewer_session": "0ca57289-173b-475b-bbca-79102447e645",
+            "spec_reviewer_session": "2822bf45-0206-4ed4-ba19-409fc467caf6",
+        }
+        binding = {
+            "base_sha": base,
+            "head_sha": actual_head,
+            "reviewed_range": f"{base}...{actual_head}",
+            "pr": {"state": "MERGED"},
+        }
+        forged = {
+            "id": 11,
+            "issue_url": "https://api.github.com/repos/acme/repo/issues/405",
+            "user": {"login": "attacker"},
+            "author_association": "NONE",
+            "body": (
+                f"post-merge retrospective exact `PASS` {base}...{actual_head} "
+                f"{invalid_head} {payload['standards_reviewer_session']} "
+                f"{payload['spec_reviewer_session']}"
+            ),
+        }
+        with mock.patch.object(
+            sm, "resolve_live_review_binding", return_value=(True, "ok", binding)
+        ), mock.patch.object(sm, "_gh", return_value=json.dumps(forged)):
+            ok, reason = sm.record_review_correction(383, payload, "acme/repo")
+        self.assertFalse(ok)
+        self.assertEqual(reason, "pr_correction_comment_unverified")
 
 
 class TestCapacityRelease(unittest.TestCase):

@@ -1415,7 +1415,56 @@ def _valid_uuid(value):
     ) is not None
 
 
-def _review_state_from_correction(correction, older_comments):
+def _repository_owner(target_repo):
+    if not isinstance(target_repo, str) or "/" not in target_repo:
+        return ""
+    return target_repo.split("/", 1)[0]
+
+
+def _repository_owner_comment(comment, target_repo):
+    """Require an API comment authored by the repository owner."""
+
+    return (
+        isinstance(comment, dict)
+        and isinstance(comment.get("user"), dict)
+        and comment["user"].get("login") == _repository_owner(target_repo)
+        and comment.get("author_association") == "OWNER"
+    )
+
+
+def _verified_superseded_review_comment(correction, target_repo):
+    """Read and authenticate the exact historical comment named by a correction."""
+
+    comment_id = correction.get("supersedes_comment_id")
+    raw = _gh("api", f"repos/{target_repo}/issues/comments/{comment_id}")
+    try:
+        comment = json.loads(raw) if raw else None
+        state = json.loads(comment.get("body", ""))
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return None
+    invalid_head = correction.get("invalid_recorded_head_sha")
+    base = correction.get("controller_base_sha")
+    if (
+        not _repository_owner_comment(comment, target_repo)
+        or comment.get("id") != comment_id
+        or not str(comment.get("issue_url", "")).endswith(
+            f"/issues/{correction.get('issue_number')}"
+        )
+        or not isinstance(state, dict)
+        or state.get("kind") != "agent-orchestrator-review-state"
+        or state.get("version") not in (2, 3)
+        or state.get("issue_number") != correction.get("issue_number")
+        or state.get("pr_number") != correction.get("pr_number")
+        or state.get("base_sha") != base
+        or state.get("head_sha") != invalid_head
+        or state.get("reviewed_range") != f"{base}...{invalid_head}"
+        or state.get("verdict") != "PASS"
+    ):
+        return None
+    return state
+
+
+def _review_state_from_correction(correction, older_comments, repo=""):
     """Return a compatibility review state for one valid retrospective correction."""
 
     required = {
@@ -1452,7 +1501,15 @@ def _review_state_from_correction(correction, older_comments):
         or not _valid_uuid(correction.get("spec_reviewer_session"))
     ):
         return None
-    superseded = None
+    target_repo = repo or os.environ.get("AGENT_REPO") or os.environ.get(
+        "GITHUB_REPOSITORY", ""
+    )
+    if re.fullmatch(r"[^/\s]+/[^/\s]+", target_repo) is None:
+        return None
+    superseded = _verified_superseded_review_comment(correction, target_repo)
+    if superseded is None:
+        return None
+    historical_body_found = False
     for comment in older_comments:
         try:
             value = json.loads(comment.get("body", ""))
@@ -1466,9 +1523,9 @@ def _review_state_from_correction(correction, older_comments):
             and value.get("head_sha") == invalid_head
             and value.get("verdict") == "PASS"
         ):
-            superseded = value
+            historical_body_found = True
             break
-    if superseded is None:
+    if not historical_body_found:
         return None
     return {
         "kind": "agent-orchestrator-review-state",
@@ -1570,38 +1627,29 @@ def record_review_correction(issue_number, payload, repo=""):
         pr_comment = None
     pr_body = pr_comment.get("body", "") if isinstance(pr_comment, dict) else ""
     if (
-        not isinstance(pr_comment, dict)
+        not _repository_owner_comment(pr_comment, target_repo)
         or pr_comment.get("id") != pr_correction_comment_id
         or not str(pr_comment.get("issue_url", "")).endswith(
             f"/issues/{pr_number}"
         )
         or binding["head_sha"] not in pr_body
         or invalid_head not in pr_body
+        or binding["base_sha"] not in pr_body
+        or binding["reviewed_range"] not in pr_body
+        or payload["standards_reviewer_session"] not in pr_body
+        or payload["spec_reviewer_session"] not in pr_body
+        or "exact `pass`" not in pr_body.lower()
         or "post-merge retrospective" not in pr_body.lower()
     ):
         return False, "pr_correction_comment_unverified"
-    raw_superseded = _gh(
-        "api", f"repos/{target_repo}/issues/comments/{supersedes_comment_id}"
-    )
-    try:
-        superseded_comment = json.loads(raw_superseded) if raw_superseded else None
-        superseded_state = json.loads(superseded_comment.get("body", ""))
-    except (json.JSONDecodeError, AttributeError, TypeError):
-        superseded_comment = None
-        superseded_state = None
-    if (
-        not isinstance(superseded_comment, dict)
-        or superseded_comment.get("id") != supersedes_comment_id
-        or not str(superseded_comment.get("issue_url", "")).endswith(
-            f"/issues/{int(issue_number)}"
-        )
-        or not isinstance(superseded_state, dict)
-        or superseded_state.get("kind") != "agent-orchestrator-review-state"
-        or superseded_state.get("version") not in (2, 3)
-        or superseded_state.get("pr_number") != pr_number
-        or superseded_state.get("head_sha") != invalid_head
-        or superseded_state.get("verdict") != "PASS"
-    ):
+    correction_identity = {
+        "issue_number": int(issue_number),
+        "pr_number": pr_number,
+        "controller_base_sha": binding["base_sha"],
+        "invalid_recorded_head_sha": invalid_head,
+        "supersedes_comment_id": supersedes_comment_id,
+    }
+    if _verified_superseded_review_comment(correction_identity, target_repo) is None:
         return False, "superseded_review_state_unverified"
     comments = get_issue_comments(issue_number, repo)
     for comment in comments:
@@ -2214,7 +2262,9 @@ def read_review_state(issue_number, repo=""):
         if not isinstance(state, dict):
             continue
         if state.get("kind") == "agent-orchestrator-review-correction":
-            effective = _review_state_from_correction(state, comments[index + 1 :])
+            effective = _review_state_from_correction(
+                state, comments[index + 1 :], repo
+            )
             if effective is not None and effective["issue_number"] == int(issue_number):
                 return effective
             continue

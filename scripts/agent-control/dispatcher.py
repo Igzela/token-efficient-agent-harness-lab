@@ -878,7 +878,9 @@ def handoff_plan(
     }
 
 
-def _verified_plan_pr(pr_number: int, head_sha: str, packet_id: str, repo: str) -> bool:
+def _verified_plan_pr(
+    pr_number: int, head_sha: str, packet_id: str, repo: str
+) -> dict[str, str] | None:
     """Verify one plan PR binding by number against authoritative GitHub state.
 
     Unlike the open-PR list in ``pr_binding.find_plan_pr``, this read also
@@ -890,20 +892,35 @@ def _verified_plan_pr(pr_number: int, head_sha: str, packet_id: str, repo: str) 
     try:
         value = pr_binding._gh_json(
             "pr", "view", str(pr_number), "--repo", repo,
-            "--json", "state,headRefOid,baseRefName,body",
+            "--json", "state,headRefOid,baseRefName,baseRefOid,body",
         )
     except pr_binding.PRBindingError:
-        return False
+        return None
     if not isinstance(value, dict):
-        return False
-    if value.get("headRefOid") != head_sha or value.get("baseRefName") != "main":
-        return False
+        return None
+    live_head = value.get("headRefOid")
+    live_base = value.get("baseRefOid")
+    if (
+        not isinstance(live_head, str)
+        or local_loop.HEX40.fullmatch(live_head) is None
+        or not isinstance(live_base, str)
+        or local_loop.HEX40.fullmatch(live_base) is None
+        or live_head != head_sha
+        or value.get("baseRefName") != "main"
+    ):
+        return None
     marker = sm.parse_binding_marker(str(value.get("body", "")))
-    return (
+    if not (
         isinstance(marker, dict)
         and marker.get("subject_kind") == "plan-packet"
         and marker.get("subject_id") == packet_id
-    )
+    ):
+        return None
+    return {
+        "base_sha": live_base,
+        "head_sha": live_head,
+        "reviewed_range": f"{live_base}...{live_head}",
+    }
 
 
 def _authoritative_plan_merge(pr_number: int, head_sha: str, repo: str) -> str | None:
@@ -1001,7 +1018,8 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
         or not isinstance(head_sha, str) or local_loop.HEX40.fullmatch(head_sha) is None
     ):
         return {"recorded": False, "stage": stage, "reason": "worker_binding_invalid"}
-    if not _verified_plan_pr(pr_number, head_sha, packet_id, repo):
+    plan_binding = _verified_plan_pr(pr_number, head_sha, packet_id, repo)
+    if not plan_binding:
         return {"recorded": False, "stage": stage, "reason": "plan_pr_binding_unverified"}
     if stage == "ci":
         receipt = plan_lifecycle.plan_ci_receipt(ledger_issue, pr_number, head_sha, repo)
@@ -1009,10 +1027,17 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
             return {"recorded": False, "stage": stage, "reason": "ci_receipt_pending"}
         return {"recorded": True, "stage": stage, "reason": "verified", "ci_run_id": receipt.get("workflow_run_id")}
     if stage == "review":
-        # _verified_plan_pr above is the controller-owned live binding gate for
-        # this consumer.  The receipt read therefore only needs the exact
-        # ledger binding; merge authorization revalidates live metadata again.
-        receipt = plan_lifecycle.plan_review_receipt(ledger_issue, pr_number, head_sha)
+        # Production _verified_plan_pr returns the controller-derived full
+        # base/head range.  A bool True is retained only for legacy isolated
+        # test doubles and cannot occur from the production verifier.
+        if isinstance(plan_binding, dict):
+            receipt = plan_lifecycle.plan_review_receipt(
+                ledger_issue, pr_number, head_sha, repo, plan_binding["base_sha"]
+            )
+        else:
+            receipt = plan_lifecycle.plan_review_receipt(
+                ledger_issue, pr_number, head_sha
+            )
         if receipt is None:
             return {"recorded": False, "stage": stage, "reason": "review_receipt_pending"}
         return {"recorded": True, "stage": stage, "reason": "verified", "review_workflow_run_id": receipt.get("review_workflow_run_id")}

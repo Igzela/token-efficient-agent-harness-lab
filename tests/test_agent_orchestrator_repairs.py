@@ -28,10 +28,99 @@ import ci_handler
 import ci_verifier
 import control_state
 import dispatcher
+import plan_lifecycle
 import pr_binding
 import prompt_builder
 import runner_readiness
 import state_manager
+
+
+class TestReviewReceiptConsumerBinding(unittest.TestCase):
+    def test_plan_pr_verifier_returns_full_controller_range(self):
+        base = "b" * 40
+        head = "a" * 40
+        packet = "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1"
+        body = (
+            '<!-- agent-orchestrator-binding: '
+            f'{{"subject_kind":"plan-packet","subject_id":"{packet}"}} -->'
+        )
+        with mock.patch.object(
+            dispatcher.pr_binding,
+            "_gh_json",
+            return_value={
+                "state": "OPEN",
+                "headRefOid": head,
+                "baseRefName": "main",
+                "baseRefOid": base,
+                "body": body,
+            },
+        ):
+            binding = dispatcher._verified_plan_pr(408, head, packet, "acme/repo")
+        self.assertEqual(binding, {
+            "base_sha": base,
+            "head_sha": head,
+            "reviewed_range": f"{base}...{head}",
+        })
+
+    def test_plan_pr_verifier_rejects_missing_or_malformed_base_identity(self):
+        head = "a" * 40
+        packet = "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1"
+        body = (
+            '<!-- agent-orchestrator-binding: '
+            f'{{"subject_kind":"plan-packet","subject_id":"{packet}"}} -->'
+        )
+        for base in (None, "b" * 12):
+            with self.subTest(base=base), mock.patch.object(
+                dispatcher.pr_binding,
+                "_gh_json",
+                return_value={
+                    "headRefOid": head,
+                    "baseRefName": "main",
+                    "baseRefOid": base,
+                    "body": body,
+                },
+            ):
+                self.assertIsNone(
+                    dispatcher._verified_plan_pr(408, head, packet, "acme/repo")
+                )
+
+    def test_plan_review_receipt_rejects_base_drift_and_metadata_loss(self):
+        base = "b" * 40
+        head = "a" * 40
+        binding = {
+            "base_sha": base,
+            "head_sha": head,
+            "reviewed_range": f"{base}...{head}",
+        }
+        state = {
+            "pr_number": 408,
+            "head_sha": head,
+            "base_sha": base,
+            "reviewed_range": binding["reviewed_range"],
+            "verdict": "PASS",
+        }
+        moved = {
+            "base_sha": "c" * 40,
+            "head_sha": head,
+            "reviewed_range": f"{'c' * 40}...{head}",
+        }
+        for second in (
+            (False, "base_mismatch", None),
+            (False, "live_metadata_unavailable", None),
+            (True, "ok", moved),
+        ):
+            with self.subTest(second=second[1:]), mock.patch.object(
+                state_manager,
+                "resolve_live_review_binding",
+                side_effect=[(True, "ok", binding), second],
+            ), mock.patch.object(
+                state_manager, "read_review_state", return_value=state
+            ):
+                self.assertIsNone(
+                    plan_lifecycle.plan_review_receipt(
+                        383, 408, head, "acme/repo", base
+                    )
+                )
 
 
 def _successful_required_jobs():
