@@ -111,7 +111,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Control binding integrity | `COMPLETE` | PR #408 accepted strict live exact-head review binding, authenticated append-only #405 correction/readback, and deterministic pre-effect plan-artifact scope enforcement |
 | `PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1` | `COMPLETE` | PR #413 base `59cec5745ddd7f89ce8c099a5de2c7e3c3ec3a1e`, exact head `fc8c005981d2fa12f0f494a131b839d65a46a8ba`, exact-head review receipt comment `5268787985`, canonical workflow `31611860646`, and squash merge `9cc118fa72d9d13a24cdf968cc5fc20dbe80b28f` accepted transactionally consistent SQLite receipt/status observation with deterministic concurrent-winner reuse and genuine missing-receipt rejection |
 | Route-autopilot adversarial soak | `COMPLETE` | PR #426 worker plus PR #429 closeout: one real OpenCode-backed packet through existing PR/CI/review/merge/closeout owners, with trusted ledger receipts after GitHub verify |
-| V2 provider-free viability preflight | `READY_FOR_EXECUTION` | B1/provenance on main; durable B2 rule is caller-supplied finite expires_at; current packet is provider-free preflight |
+| V2 provider-free viability preflight | `READY_FOR_EXECUTION` | Provider-free operator_preflight ready=true without issue/admit/spend; unissued request package sha256 `015c94e9d65a902f3aba5eae4f3da6cba6d534cc3c57af3a6faf89125663469a`; closeout still required |
 | V2 four-cell run and closeout | `BLOCKED_PREREQUISITE` | Preflight acceptance, then one separately authorized run and independent closeout |
 | Measurement readiness | `BLOCKED_PREREQUISITE` | 4 packets: estimands, corpus/sample, operations/evidence, protocol freeze |
 | Decision-grade pre-AC baseline | `BLOCKED_PREREQUISITE` | 4 packets: snapshot/corpus, preflight, run, analysis |
@@ -157,7 +157,7 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 
 ## Confirmed Integration Gaps
 
-1. No accepted provider-free v2 preflight receipt or viable four-cell v2 RWE baseline exists. The durable B2 rule is caller-supplied finite `expires_at`; it is not a store-derived freeze TTL.
+1. No accepted four-cell v2 RWE baseline exists. A provider-free preflight ran ready=true with zero blockers and no issue/admit/Provider/target effect; the unissued request package digest is `015c94e9d65a902f3aba5eae4f3da6cba6d534cc3c57af3a6faf89125663469a`. The durable B2 rule remains caller-supplied finite `expires_at`.
 2. The current two-task/four-cell design is lifecycle viability evidence, not a statistically decision-grade architecture baseline.
 3. No accepted task-level measurement-readiness contract, larger decision baseline, or reconstructable contemporary old/new comparison exists.
 4. AC0–AC7 have not started; each implementation slice remains blocked until its immediately preceding current-main contract packet is accepted.
