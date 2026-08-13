@@ -2891,6 +2891,79 @@ mod tests {
     }
 
     #[test]
+    fn viability_preflight_is_ready_without_issuing_or_consuming() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(LocalProductStore::new(dir.path().join("pf-ready.db")).unwrap());
+        let principal = operator(&store, "t-pf-ready", "op-pf-ready");
+        seed_gp(&store, "ptask-gp-pf-ready", principal.tenant_id());
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let had_cred = std::env::var_os(DEEPSEEK_CREDENTIAL_REFERENCE);
+        let had_ci = std::env::var_os("CI");
+        std::env::set_var(DEEPSEEK_CREDENTIAL_REFERENCE, "test-operator-credential");
+        std::env::remove_var("CI");
+        let pre = operator_preflight(&store, &principal, None, Some("ptask-gp-pf-ready"));
+        match had_cred {
+            Some(v) => std::env::set_var(DEEPSEEK_CREDENTIAL_REFERENCE, v),
+            None => std::env::remove_var(DEEPSEEK_CREDENTIAL_REFERENCE),
+        }
+        match had_ci {
+            Some(v) => std::env::set_var("CI", v),
+            None => std::env::remove_var("CI"),
+        }
+        let pre = pre.unwrap();
+        assert_eq!(pre["ready"], true);
+        assert_eq!(pre["authority_consumed"], false);
+        assert_eq!(pre["provider_call_performed"], false);
+        assert_eq!(pre["target_write_performed"], false);
+        assert_eq!(pre["live_baseline_sealed"], false);
+        assert!(pre["blockers"].as_array().unwrap().is_empty());
+        let observed = pre["observed_at"].as_str().unwrap();
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(observed).is_ok(),
+            "{observed}"
+        );
+        let frozen = freeze_current_operator_contract_set().unwrap();
+        assert_eq!(
+            frozen.accepted_main_sha,
+            crate::rwe::operator_corpus::OPERATOR_ARTIFACTS_FROZEN_AT_MAIN_SHA
+        );
+        assert_eq!(
+            frozen.corpus.corpus_sha256,
+            crate::rwe::operator_corpus::OPERATOR_V2_CORPUS_SHA256
+        );
+        assert_eq!(
+            frozen.protocol.body_sha256,
+            crate::rwe::operator_corpus::OPERATOR_V2_PROTOCOL_SHA256
+        );
+        assert_eq!(
+            frozen.schedule.schedule_sha256,
+            crate::rwe::operator_corpus::OPERATOR_V2_SCHEDULE_SHA256
+        );
+        let request = sort_value(&json!({
+            "schema_version": "rwe_run_authorization_v2_request.v1",
+            "authorization_id": "unissued",
+            "expires_at": "caller-supplied-finite",
+            "issued": false,
+            "admitted": false,
+            "accepted_main_sha": frozen.accepted_main_sha,
+            "corpus_sha256": frozen.corpus.corpus_sha256,
+            "protocol_sha256": frozen.protocol.body_sha256,
+            "schedule_sha256": frozen.schedule.schedule_sha256,
+        }));
+        let request_sha256 = sha256_hex(serde_json::to_vec(&request).unwrap().as_slice());
+        assert_eq!(
+            request_sha256,
+            "015c94e9d65a902f3aba5eae4f3da6cba6d534cc3c57af3a6faf89125663469a"
+        );
+        assert!(store
+            .get_rwe_run_authorization("unissued")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
     fn preflight_fails_closed_without_parseable_store_clock() {
         let dir = tempdir().unwrap();
         let store = Arc::new(
