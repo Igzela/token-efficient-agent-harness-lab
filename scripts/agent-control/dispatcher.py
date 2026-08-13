@@ -1172,21 +1172,10 @@ def _authoritative_plan_review(
     if len(current) != 1:
         return None
     receipt = current[0]
-    errors = [
-        error
-        for error in receipt.get("errors") or []
-        if error != "parent_reviewer_session_identity_is_not_a_uuid"
-    ]
-    reviewer = receipt.get("reviewer_session_identity")
-    uuid_bound = (
-        isinstance(reviewer, str)
-        and project_context.REVIEW_SESSION_ID_PATTERN.search(reviewer) is not None
-    )
     if (
-        receipt.get("outcome") != "PASS"
+        receipt.get("state") != "valid"
+        or receipt.get("outcome") != "PASS"
         or receipt.get("complete_diff_range") != reviewed_range
-        or errors
-        or (receipt.get("state") != "valid" and not uuid_bound)
     ):
         return None
     return {

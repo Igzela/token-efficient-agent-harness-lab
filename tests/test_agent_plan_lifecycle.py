@@ -425,8 +425,8 @@ class TestRecordPlanReviewReceipt(unittest.TestCase):
 
 def _playbook_receipt(
     *,
-    reviewer="019ff89b-eb32-7232-beeb-150fd146f582-review-426",
-    implementation="019ff89b-eb32-7232-beeb-150fd146f582",
+    reviewer="019ff89b-eb32-7232-beeb-150fd146f582",
+    implementation="019ff89b-eb32-7232-beeb-150fd146f583",
     outcome="PASS",
     author="Igzela",
 ):
@@ -477,6 +477,17 @@ class TestAuthoritativePlanReview(unittest.TestCase):
 
     def test_rejects_same_session_or_non_pass(self):
         patches = self._patches(_playbook_receipt(reviewer="same", implementation="same"))
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        self.assertIsNone(
+            dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
+        )
+
+    def test_rejects_parent_session_that_canonical_parser_marks_invalid(self):
+        patches = self._patches(
+            _playbook_receipt(reviewer="019ff89b-eb32-7232-beeb-150fd146f582-review-426")
+        )
         for patch in patches:
             patch.start()
         self.addCleanup(lambda: [patch.stop() for patch in patches])
