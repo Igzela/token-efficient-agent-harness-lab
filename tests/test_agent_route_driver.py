@@ -1917,6 +1917,44 @@ class TestRepositoryRouteRunner(unittest.TestCase):
             result = route.run()
         self.assertEqual(result["reason"], "route_no_go_requires_canonical_rewrite")
 
+    def test_stable_post_merge_in_flight_is_a_typed_unknown_not_an_unbounded_recover(self):
+        """A repeated unrepairable in_flight after merge must stop with a typed result.
+
+        Production poll mode does not increment the transition budget on an
+        unchanged recover marker.  Crash-restart still recovers the first
+        in_flight; a second identical post-merge in_flight is outcome-unknown.
+        """
+
+        class RecoveringRunner:
+            def __init__(self):
+                self.calls = 0
+
+            def run_plan_once(self, _packet, _attempt):
+                self.calls += 1
+                return TestRepositoryRouteRunner.Result(
+                    "in_flight", reason="dispatched_generation_unrepairable"
+                )
+
+        def sleeper(_seconds):
+            if runner.calls > 8:
+                raise AssertionError("stable in_flight recovered unbounded")
+
+        runner = RecoveringRunner()
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo",
+            repo_path=Path("/tmp"),
+            max_transitions=8,
+            sleeper=sleeper,
+        )
+        route._runner = runner
+        self.assertTrue(route._poll_recoverable)
+        with mock.patch.object(route, "_current_packet", return_value=(CLOSED, MAIN)):
+            result = route.run()
+        self.assertEqual(result["state"], "OUTCOME_UNKNOWN")
+        self.assertEqual(result["reason"], "dispatched_generation_unrepairable")
+        self.assertEqual(runner.calls, 2)
+        self.assertLess(runner.calls, 8)
+
 
 if __name__ == "__main__":
     unittest.main()

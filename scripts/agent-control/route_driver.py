@@ -2579,6 +2579,21 @@ class RepositoryRouteRunner:
                     continue
                 return RouteRunResult("DECISION_REQUIRED", str(promotion_details.get("reason", promotion_status)), packet_id, transitions).to_wire()
             if status in self.RECOVERABLE:
+                reason = (
+                    str(details.get("reason", ""))
+                    if isinstance(details, dict)
+                    else ""
+                )
+                if (
+                    status == "in_flight"
+                    and last_recovery_marker == (packet_id, str(status), reason)
+                ):
+                    return RouteRunResult(
+                        "OUTCOME_UNKNOWN",
+                        reason or "in_flight_unbounded",
+                        packet_id,
+                        transitions,
+                    ).to_wire()
                 if not recover(packet_id, status, details):
                     return RouteRunResult(
                         "UNRECOVERABLE_INFRASTRUCTURE_FAILURE",
