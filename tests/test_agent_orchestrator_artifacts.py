@@ -674,50 +674,72 @@ class TestWorkflowTrustBoundaries(unittest.TestCase):
         self.assertIn("retry-review", controller)
 
 
+def _write_fake_opencode(path: Path, body: str) -> None:
+    path.write_text(body, encoding="utf-8")
+    path.chmod(path.stat().st_mode | 0o111)
+
+
+def _opencode_probe_script(*, record: Path | None = None, run_body: str) -> str:
+    record_block = ""
+    if record is not None:
+        record_block = (
+            f"record = {str(record)!r}\n"
+            "with open(record, 'a', encoding='utf-8') as handle:\n"
+            "    json.dump({'args': sys.argv[1:], 'env': dict(os.environ)}, handle, sort_keys=True); handle.write('\\n')\n"
+        )
+    return (
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        f"{record_block}"
+        "if sys.argv[1:2] == ['--version']:\n"
+        "    print('1.18.16'); raise SystemExit(0)\n"
+        "if sys.argv[1:3] == ['auth', 'list']:\n"
+        "    raise SystemExit(0)\n"
+        "if sys.argv[1:3] == ['run', '--help']:\n"
+        "    print('--format json --dir --file'); raise SystemExit(0)\n"
+        "if sys.argv[1:3] == ['session', 'delete']:\n"
+        "    raise SystemExit(0)\n"
+        "if sys.argv[1:2] == ['run']:\n"
+        f"{run_body}"
+        "raise SystemExit(2)\n"
+    )
+
+
 class TestCodexWrapperEnvironment(unittest.TestCase):
     def test_all_wrapper_modes_use_allowlisted_environment_and_suppress_failure_output(self):
         wrapper = CONTROL / "codex_wrapper.sh"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             record = root / "records.jsonl"
-            fake = root / "codex"
-            fake.write_text(
-                "#!/usr/bin/env python3\n"
-                "import json, os, sys\n"
-                f"record = {str(record)!r}\n"
-                "with open(record, 'a', encoding='utf-8') as handle:\n"
-                "    json.dump({'args': sys.argv[1:], 'env': dict(os.environ)}, handle, sort_keys=True); handle.write('\\n')\n"
-                "if sys.argv[1:3] == ['--version']:\n"
-                "    print('codex 1.0'); raise SystemExit(0)\n"
-                "if sys.argv[1:3] == ['login', 'status']:\n"
-                "    raise SystemExit(0)\n"
-                "if sys.argv[1:3] == ['exec', '--help']:\n"
-                "    print('--cd --sandbox --ephemeral --json --output-last-message'); raise SystemExit(0)\n"
-                "if sys.argv and sys.argv[1] == 'exec':\n"
-                "    out = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
-                "    if 'FAIL_CODEX' in sys.stdin.read():\n"
-                "        print('super-secret-value-from-failing-provider', file=sys.stderr); raise SystemExit(7)\n"
-                "    json.dump({'ok': True}, open(out, 'w', encoding='utf-8'))\n"
-                "    raise SystemExit(0)\n"
-                "raise SystemExit(2)\n"
+            _write_fake_opencode(
+                root / "opencode",
+                _opencode_probe_script(
+                    record=record,
+                    run_body=(
+                        "    args = sys.argv[1:]\n"
+                        "    prompt = open(args[args.index('--file') + 1], encoding='utf-8').read() if '--file' in args else ''\n"
+                        "    if 'FAIL_CODEX' in prompt:\n"
+                        "        print('super-secret-value-from-failing-provider', file=sys.stderr); raise SystemExit(7)\n"
+                        "    print(json.dumps({'type':'text','part':{'text':'ok'}})); raise SystemExit(0)\n"
+                    ),
+                ),
             )
-            fake.chmod(fake.stat().st_mode | 0o111)
             prompt = root / "prompt.txt"
             prompt.write_text("hello")
             home = root / "home"
             home.mkdir()
-            codex_home = root / "codex-home"
-            codex_home.mkdir()
+            isolated_path = f"{root}:/usr/bin:/bin"
             for worker in ("implement", "ci-repair", "review"):
                 output = root / worker
                 env = {
-                    **os.environ,
-                    "PATH": f"{root}:{os.environ['PATH']}",
+                    "PATH": isolated_path,
                     "HOME": str(home),
-                    "CODEX_HOME": str(codex_home),
+                    "LANG": "C",
+                    "LC_ALL": "C",
                     "OPENAI_API_KEY": "super-secret-value-from-parent",
                     "GH_TOKEN": "github-secret",
                     "UNKNOWN_SECRET_TOKEN": "unknown-secret",
+                    "OPENCODE_SERVER_PASSWORD": "server-password",
                 }
                 result = subprocess.run(
                     [str(wrapper), worker, str(prompt), str(output), str(root)],
@@ -727,10 +749,9 @@ class TestCodexWrapperEnvironment(unittest.TestCase):
             records = [json.loads(line) for line in record.read_text().splitlines()]
             self.assertGreaterEqual(len(records), 12)
             allowed = {
-                "HOME", "CODEX_HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE",
+                "HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE",
                 "TMPDIR", "TMP", "TEMP", "TERM", "USER", "LOGNAME", "SHELL",
-                "PWD",
-                # Operator network/CA/XDG allowlist for proxy-only hosts.
+                "PWD", "OPENCODE_PERMISSION",
                 "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
                 "http_proxy", "https_proxy", "all_proxy", "no_proxy",
                 "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
@@ -739,21 +760,18 @@ class TestCodexWrapperEnvironment(unittest.TestCase):
             for item in records:
                 self.assertTrue(set(item["env"]).issubset(allowed), set(item["env"]) - allowed)
                 self.assertEqual(item["env"].get("HOME"), str(home))
-                self.assertEqual(item["env"].get("CODEX_HOME"), str(codex_home))
+                self.assertNotIn("CODEX_HOME", item["env"])
                 self.assertNotIn("OPENAI_API_KEY", item["env"])
                 self.assertNotIn("GH_TOKEN", item["env"])
                 self.assertNotIn("UNKNOWN_SECRET_TOKEN", item["env"])
+                self.assertNotIn("OPENCODE_SERVER_PASSWORD", item["env"])
 
             failed_output = root / "failed"
             failed_prompt = root / "failed-prompt.txt"
             failed_prompt.write_text("FAIL_CODEX")
-            failed_env = {
-                **env,
-                "OPENAI_API_KEY": "super-secret-value-from-parent",
-            }
             failed = subprocess.run(
                 [str(wrapper), "review", str(failed_prompt), str(failed_output), str(root)],
-                cwd=ROOT, env=failed_env, text=True, capture_output=True,
+                cwd=ROOT, env=env, text=True, capture_output=True,
             )
             self.assertNotEqual(failed.returncode, 0)
             self.assertNotIn("super-secret-value-from-failing-provider", failed.stderr)
@@ -776,33 +794,26 @@ class TestCodexLastMessageBoundary(unittest.TestCase):
     def run_wrapper(self, marker: str, worker: str = "review"):
         directory = tempfile.TemporaryDirectory()
         root = Path(directory.name)
-        fake = root / "codex"
-        fake.write_text(
-            "#!/usr/bin/env python3\n"
-            "import sys\n"
-            "if sys.argv[1:3] == ['--version']:\n"
-            "    print('codex 1.0'); raise SystemExit(0)\n"
-            "if sys.argv[1:3] == ['login', 'status']:\n"
-            "    raise SystemExit(0)\n"
-            "if sys.argv[1:3] == ['exec', '--help']:\n"
-            "    print('--cd --sandbox --ephemeral --json --output-last-message'); raise SystemExit(0)\n"
-            "if sys.argv and sys.argv[1] == 'exec':\n"
-            "    output = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
-            "    prompt = sys.stdin.read()\n"
-            "    if 'FAIL_CODEX' in prompt:\n"
-            "        print('provider-secret-must-not-escape', file=sys.stderr); raise SystemExit(7)\n"
-            "    if 'EMPTY' in prompt: payload = b''\n"
-            "    elif 'OVERSIZED' in prompt: payload = b'x' * (64 * 1024 + 1)\n"
-            "    elif 'INVALID_UTF8' in prompt: payload = b'\\xff'\n"
-            "    elif 'INVALID_REVIEW' in prompt: payload = b'plain review text'\n"
-            f"    elif 'VALID_REVIEW' in prompt: payload = {self.VALID_REVIEW.encode()!r}\n"
-            "    else: payload = b'plain non-json model message'\n"
-            "    with open(output, 'wb') as handle: handle.write(payload)\n"
-            "    print('{\"type\":\"completed\"}')\n"
-            "    raise SystemExit(0)\n"
-            "raise SystemExit(2)\n"
+        _write_fake_opencode(
+            root / "opencode",
+            _opencode_probe_script(
+                run_body=(
+                    "    args = sys.argv[1:]\n"
+                    "    prompt = open(args[args.index('--file') + 1], encoding='utf-8').read() if '--file' in args else ''\n"
+                    "    if 'FAIL_CODEX' in prompt:\n"
+                    "        print('provider-secret-must-not-escape', file=sys.stderr); raise SystemExit(7)\n"
+                    "    if 'EMPTY' in prompt: payload = ''\n"
+                    "    elif 'OVERSIZED' in prompt: payload = 'x' * (64 * 1024 + 1)\n"
+                    "    elif 'INVALID_UTF8' in prompt:\n"
+                    "        sys.stdout.buffer.write(b'\\xff\\n'); raise SystemExit(0)\n"
+                    "    elif 'INVALID_REVIEW' in prompt: payload = 'plain review text'\n"
+                    f"    elif 'VALID_REVIEW' in prompt: payload = {self.VALID_REVIEW!r}\n"
+                    "    else: payload = 'plain non-json model message'\n"
+                    "    print(json.dumps({'type':'text','part':{'text': payload}}))\n"
+                    "    raise SystemExit(0)\n"
+                ),
+            ),
         )
-        fake.chmod(fake.stat().st_mode | 0o111)
         prompt = root / "prompt.txt"
         prompt.write_text(marker)
         output = root / "output"
@@ -811,7 +822,7 @@ class TestCodexLastMessageBoundary(unittest.TestCase):
         result = subprocess.run(
             [str(CONTROL / "codex_wrapper.sh"), worker, str(prompt), str(output), str(root)],
             cwd=ROOT,
-            env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "HOME": str(home)},
+            env={"PATH": f"{root}:/usr/bin:/bin", "HOME": str(home), "LANG": "C"},
             text=True,
             capture_output=True,
             timeout=30,
@@ -830,7 +841,7 @@ class TestCodexLastMessageBoundary(unittest.TestCase):
             raw = (output / "codex-last-message.txt").read_bytes()
             self.assertEqual(metadata["byte_count"], len(raw))
             self.assertEqual(metadata["sha256"], hashlib.sha256(raw).hexdigest())
-            self.assertEqual((output / "codex-events.jsonl").read_text(), '{"type":"completed"}\n')
+            self.assertFalse((output / "codex-events.jsonl").exists())
         finally:
             directory.cleanup()
 
@@ -860,19 +871,15 @@ class TestCodexLastMessageBoundary(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         try:
             root = Path(directory.name)
-            fake = root / "codex"
-            fake.write_text(
-                "#!/usr/bin/env python3\n"
-                "import sys, time\n"
-                "if sys.argv[1:3] == ['--version']:\n"
-                " print('codex 1.0'); raise SystemExit(0)\n"
-                "if sys.argv[1:3] == ['login', 'status']: raise SystemExit(0)\n"
-                "if sys.argv[1:3] == ['exec', '--help']:\n"
-                " print('--cd --sandbox --ephemeral --json --output-last-message'); raise SystemExit(0)\n"
-                "if sys.argv and sys.argv[1] == 'exec':\n"
-                " print('provider-secret-must-not-escape', file=sys.stderr); time.sleep(10)\n"
+            _write_fake_opencode(
+                root / "opencode",
+                _opencode_probe_script(
+                    run_body=(
+                        "    import time\n"
+                        "    print('provider-secret-must-not-escape', file=sys.stderr); time.sleep(10)\n"
+                    ),
+                ),
             )
-            fake.chmod(fake.stat().st_mode | 0o111)
             prompt = root / "prompt.txt"
             prompt.write_text("timeout")
             output = root / "output"
@@ -882,9 +889,9 @@ class TestCodexLastMessageBoundary(unittest.TestCase):
                 [str(CONTROL / "codex_wrapper.sh"), "review", str(prompt), str(output), str(root)],
                 cwd=ROOT,
                 env={
-                    **os.environ,
-                    "PATH": f"{root}:{os.environ['PATH']}",
+                    "PATH": f"{root}:/usr/bin:/bin",
                     "HOME": str(home),
+                    "LANG": "C",
                     "AGENT_CODEX_TIMEOUT_SECONDS": "1",
                 },
                 text=True,
@@ -937,123 +944,50 @@ class TestCodexLastMessageBoundary(unittest.TestCase):
 
 
 class TestCodexWrapperEmptyWorkspace(unittest.TestCase):
-    def test_success_with_no_changes_emits_marker(self):
+    def _run(self, worker: str, *, dirty: bool = False):
         directory = tempfile.TemporaryDirectory()
-        try:
-            root = Path(directory.name)
-            wt = root / "worktree"
-            wt.mkdir()
-            subprocess.run(["git", "init", "-b", "main"], cwd=wt, check=True, text=True, capture_output=True)
-            fake = root / "codex"
-            fake.write_text(
-                "#!/usr/bin/env python3\n"
-                "import sys\n"
-                "if sys.argv[1:3] == ['--version']:\n"
-                " print('codex 1.0'); raise SystemExit(0)\n"
-                "if sys.argv[1:3] == ['login', 'status']: raise SystemExit(0)\n"
-                "if sys.argv[1:3] == ['exec', '--help']:\n"
-                " print('--cd --sandbox --ephemeral --json --output-last-message'); raise SystemExit(0)\n"
-                "if sys.argv and sys.argv[1] == 'exec':\n"
-                " out = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
-                " open(out, 'w', encoding='utf-8').write('ok'); raise SystemExit(0)\n"
-                "raise SystemExit(2)\n"
-            )
-            fake.chmod(fake.stat().st_mode | 0o111)
-            prompt = root / "prompt.txt"
-            prompt.write_text("no changes")
-            output = root / "output"
-            home = root / "home"
-            home.mkdir()
-            result = subprocess.run(
-                [str(CONTROL / "codex_wrapper.sh"), "implement", str(prompt), str(output), str(wt)],
-                cwd=ROOT,
-                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "HOME": str(home)},
-                text=True, capture_output=True, timeout=30,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            marker = output / "workspace_empty.json"
-            self.assertTrue(marker.is_file(), "must emit workspace_empty.json")
-            self.assertIn("no_workspace_changes", marker.read_text())
-        finally:
-            directory.cleanup()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        wt = root / "worktree"
+        wt.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=wt, check=True, text=True, capture_output=True)
+        if dirty:
+            (wt / "changed.txt").write_text("hello")
+        _write_fake_opencode(
+            root / "opencode",
+            _opencode_probe_script(
+                run_body="    print(json.dumps({'type':'text','part':{'text':'ok'}})); raise SystemExit(0)\n",
+            ),
+        )
+        prompt = root / "prompt.txt"
+        prompt.write_text("workspace")
+        output = root / "output"
+        home = root / "home"
+        home.mkdir()
+        result = subprocess.run(
+            [str(CONTROL / "codex_wrapper.sh"), worker, str(prompt), str(output), str(wt)],
+            cwd=ROOT,
+            env={"PATH": f"{root}:/usr/bin:/bin", "HOME": str(home), "LANG": "C"},
+            text=True, capture_output=True, timeout=30,
+        )
+        return output, result
+
+    def test_success_with_no_changes_emits_marker(self):
+        output, result = self._run("implement")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        marker = output / "workspace_empty.json"
+        self.assertTrue(marker.is_file(), "must emit workspace_empty.json")
+        self.assertIn("no_workspace_changes", marker.read_text())
 
     def test_success_with_changes_emits_no_marker(self):
-        directory = tempfile.TemporaryDirectory()
-        try:
-            root = Path(directory.name)
-            wt = root / "worktree"
-            wt.mkdir()
-            subprocess.run(["git", "init", "-b", "main"], cwd=wt, check=True, text=True, capture_output=True)
-            (wt / "changed.txt").write_text("hello")
-            fake = root / "codex"
-            fake.write_text(
-                "#!/usr/bin/env python3\n"
-                "import sys\n"
-                "if sys.argv[1:3] == ['--version']:\n"
-                " print('codex 1.0'); raise SystemExit(0)\n"
-                "if sys.argv[1:3] == ['login', 'status']: raise SystemExit(0)\n"
-                "if sys.argv[1:3] == ['exec', '--help']:\n"
-                " print('--cd --sandbox --ephemeral --json --output-last-message'); raise SystemExit(0)\n"
-                "if sys.argv and sys.argv[1] == 'exec':\n"
-                " out = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
-                " open(out, 'w', encoding='utf-8').write('ok'); raise SystemExit(0)\n"
-                "raise SystemExit(2)\n"
-            )
-            fake.chmod(fake.stat().st_mode | 0o111)
-            prompt = root / "prompt.txt"
-            prompt.write_text("no changes")
-            output = root / "output"
-            home = root / "home"
-            home.mkdir()
-            result = subprocess.run(
-                [str(CONTROL / "codex_wrapper.sh"), "implement", str(prompt), str(output), str(wt)],
-                cwd=ROOT,
-                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "HOME": str(home)},
-                text=True, capture_output=True, timeout=30,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse((output / "workspace_empty.json").is_file())
-        finally:
-            directory.cleanup()
+        output, result = self._run("implement", dirty=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((output / "workspace_empty.json").is_file())
 
     def test_review_mode_never_emits_workspace_marker(self):
-        directory = tempfile.TemporaryDirectory()
-        try:
-            root = Path(directory.name)
-            wt = root / "worktree"
-            wt.mkdir()
-            subprocess.run(["git", "init", "-b", "main"], cwd=wt, check=True, text=True, capture_output=True)
-            VALID = '{"verdict":"BLOCKED","summary":"ok","reviewed_head_sha":"a"*40}'
-            fake = root / "codex"
-            fake.write_text(
-                "#!/usr/bin/env python3\n"
-                "import sys\n"
-                "if sys.argv[1:3] == ['--version']:\n"
-                " print('codex 1.0'); raise SystemExit(0)\n"
-                "if sys.argv[1:3] == ['login', 'status']: raise SystemExit(0)\n"
-                "if sys.argv[1:3] == ['exec', '--help']:\n"
-                " print('--cd --sandbox --ephemeral --json --output-last-message'); raise SystemExit(0)\n"
-                f"if sys.argv and sys.argv[1] == 'exec':\n"
-                f" out = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
-                f" open(out, 'w', encoding='utf-8').write({VALID!r}); raise SystemExit(0)\n"
-                "raise SystemExit(2)\n"
-            )
-            fake.chmod(fake.stat().st_mode | 0o111)
-            prompt = root / "prompt.txt"
-            prompt.write_text("review")
-            output = root / "output"
-            home = root / "home"
-            home.mkdir()
-            result = subprocess.run(
-                [str(CONTROL / "codex_wrapper.sh"), "review", str(prompt), str(output), str(wt)],
-                cwd=ROOT,
-                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "HOME": str(home)},
-                text=True, capture_output=True, timeout=30,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse((output / "workspace_empty.json").is_file())
-        finally:
-            directory.cleanup()
+        output, result = self._run("review")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((output / "workspace_empty.json").is_file())
 
 
 class TestArtifactCreateFailureModes(unittest.TestCase):

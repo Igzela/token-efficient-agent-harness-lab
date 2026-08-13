@@ -391,7 +391,7 @@ class LocalRunOnce:
         self.lifecycle_timeout_seconds = lifecycle_timeout_seconds
         self.sleeper = sleeper
         # Tests may supply a bounded read-only worker result.  Production uses
-        # the existing read-only Codex wrapper below; neither path grants a
+        # the existing read-only wrapper below; neither path grants a
         # child GitHub, merge, Provider-effect, or T3 capability.
         self.promotion_output_provider = promotion_output_provider
 
