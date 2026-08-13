@@ -303,6 +303,258 @@ class TestRecordPlanMergeReceipt(unittest.TestCase):
         self.assertEqual(result["reason"], "merge_receipt_write_failed")
 
 
+class TestRecordPlanCiReceipt(unittest.TestCase):
+    def _patch(self, claim=None, ci_body="", record_ok=True):
+        return [
+            mock.patch.object(
+                state_manager, "read_dispatch_state",
+                return_value=claim if claim is not None else dispatch_state("dispatched"),
+            ),
+            mock.patch.object(
+                state_manager, "get_issue_comment_bodies",
+                return_value=ci_body,
+            ),
+            mock.patch.object(state_manager, "record_ci_state", return_value=record_ok),
+        ]
+
+    def _run(self, patches):
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        return plan_lifecycle.record_plan_ci_receipt(
+            LEDGER, PACKET, ATTEMPT, MAIN, PR, HEAD, 7
+        )
+
+    def test_invalid_identity_fails_closed_without_write(self):
+        with mock.patch.object(state_manager, "record_ci_state") as write:
+            result = plan_lifecycle.record_plan_ci_receipt(
+                LEDGER, "bad packet", ATTEMPT, MAIN, PR, HEAD, 7
+            )
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "ci_receipt_identity_invalid")
+        write.assert_not_called()
+
+    def test_fresh_receipt_records_through_existing_owner(self):
+        result = self._run(self._patch())
+        self.assertTrue(result["recorded"])
+        state_manager.record_ci_state.assert_called_once_with(
+            LEDGER, PR, HEAD, 7, "terminal_success",
+            extra={
+                "workflow_name": "tests",
+                "required_jobs": [],
+                "successful_jobs": [],
+                "workflow_run_id": 7,
+            },
+            repo="",
+        )
+
+    def test_identical_existing_receipt_is_idempotent(self):
+        result = self._run(self._patch(ci_body=json.dumps(ci_wire())))
+        self.assertTrue(result["recorded"])
+        self.assertEqual(result["reason"], "already_recorded")
+        state_manager.record_ci_state.assert_not_called()
+
+    def test_conflicting_existing_receipt_fails_closed(self):
+        result = self._run(self._patch(ci_body=json.dumps(ci_wire(run_id=99))))
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "conflicting_ci_receipt")
+        state_manager.record_ci_state.assert_not_called()
+
+    def test_write_failure_fails_closed(self):
+        result = self._run(self._patch(record_ok=False))
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "ci_receipt_write_failed")
+
+
+class TestRecordPlanReviewReceipt(unittest.TestCase):
+    RANGE = f"{MAIN}...{HEAD}"
+
+    def _patch(self, claim=None, review_body="", record_ok=True):
+        return [
+            mock.patch.object(
+                state_manager, "read_dispatch_state",
+                return_value=claim if claim is not None else dispatch_state("dispatched"),
+            ),
+            mock.patch.object(
+                state_manager, "get_issue_comment_bodies",
+                return_value=review_body,
+            ),
+            mock.patch.object(state_manager, "record_review_state", return_value=record_ok),
+        ]
+
+    def _run(self, patches):
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        return plan_lifecycle.record_plan_review_receipt(
+            LEDGER, PACKET, ATTEMPT, MAIN, PR, HEAD, MAIN, self.RANGE
+        )
+
+    def test_range_must_bind_base_and_head(self):
+        with mock.patch.object(state_manager, "record_review_state") as write:
+            result = plan_lifecycle.record_plan_review_receipt(
+                LEDGER, PACKET, ATTEMPT, MAIN, PR, HEAD, MAIN, f"{HEAD}...{MAIN}"
+            )
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "review_receipt_identity_invalid")
+        write.assert_not_called()
+
+    def test_fresh_receipt_records_through_existing_owner(self):
+        result = self._run(self._patch())
+        self.assertTrue(result["recorded"])
+        state_manager.record_review_state.assert_called_once()
+        kwargs = state_manager.record_review_state.call_args
+        self.assertEqual(kwargs.args[0], LEDGER)
+        self.assertEqual(kwargs.args[1], PR)
+        self.assertEqual(kwargs.args[2], HEAD)
+        self.assertEqual(kwargs.args[3], "PASS")
+        self.assertEqual(kwargs.kwargs["base_sha"], MAIN)
+        self.assertEqual(kwargs.kwargs["reviewed_range"], self.RANGE)
+
+    def test_identical_existing_receipt_is_idempotent(self):
+        result = self._run(self._patch(review_body=json.dumps(review_wire())))
+        self.assertTrue(result["recorded"])
+        self.assertEqual(result["reason"], "already_recorded")
+        state_manager.record_review_state.assert_not_called()
+
+    def test_write_failure_fails_closed(self):
+        result = self._run(self._patch(record_ok=False))
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["reason"], "review_receipt_write_failed")
+
+
+def _playbook_receipt(
+    *,
+    reviewer="019ff89b-eb32-7232-beeb-150fd146f582",
+    implementation="019ff89b-eb32-7232-beeb-150fd146f583",
+    outcome="PASS",
+    author="Igzela",
+):
+    return (
+        "EXACT-HEAD REVIEW RECEIPT\n"
+        f"Reviewed SHA: {HEAD}\n"
+        f"Reviewed range: {MAIN}...{HEAD}\n"
+        f"Reviewer session identity: {reviewer}\n"
+        f"Reviewer authenticated identity: {author}\n"
+        "Review transport: parent-posted-on-behalf-of-independent-session\n"
+        f"Implementation session identity: {implementation}\n"
+        "Observed at: 2026-08-13T03:36:30Z\n"
+        "Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding\n"
+        f"Outcome: {outcome}\n"
+        "Unresolved objections: none\n"
+    )
+
+
+class TestAuthoritativePlanReview(unittest.TestCase):
+    def _patches(self, body, author="Igzela"):
+        return [
+            mock.patch.object(
+                state_manager, "resolve_live_review_binding",
+                return_value=(True, "ok", {
+                    "base_sha": MAIN,
+                    "head_sha": HEAD,
+                    "reviewed_range": f"{MAIN}...{HEAD}",
+                }),
+            ),
+            mock.patch.object(
+                state_manager, "get_issue_comments",
+                return_value=[{"author": {"login": "Igzela"}, "body": body}],
+            ),
+            mock.patch.object(
+                dispatcher.pr_binding, "_gh_json",
+                return_value={"author": {"login": author}},
+            ),
+        ]
+
+    def test_accepts_playbook_pass_receipt_with_distinct_sessions(self):
+        patches = self._patches(_playbook_receipt())
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        evidence = dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
+        self.assertEqual(evidence["base_sha"], MAIN)
+        self.assertEqual(evidence["reviewed_range"], f"{MAIN}...{HEAD}")
+
+    def test_rejects_same_session_or_non_pass(self):
+        patches = self._patches(_playbook_receipt(reviewer="same", implementation="same"))
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        self.assertIsNone(
+            dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
+        )
+
+    def test_rejects_parent_session_that_canonical_parser_marks_invalid(self):
+        patches = self._patches(
+            _playbook_receipt(reviewer="019ff89b-eb32-7232-beeb-150fd146f582-review-426")
+        )
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        self.assertIsNone(
+            dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
+        )
+
+    def test_rejects_incomplete_receipt_missing_axes_and_identity(self):
+        body = (
+            "EXACT-HEAD REVIEW RECEIPT\n"
+            f"Reviewed SHA: {HEAD}\n"
+            f"Reviewed range: {MAIN}...{HEAD}\n"
+            "Reviewer session identity: review-session-1\n"
+            "Implementation session identity: impl-session-1\n"
+            "Outcome: PASS\n"
+            "Unresolved objections: none\n"
+        )
+        patches = self._patches(body)
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        self.assertIsNone(
+            dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
+        )
+
+    def test_merge_uses_mergedAt_not_invalid_merged_field(self):
+        payload = {
+            "state": "MERGED",
+            "mergedAt": "2026-08-13T03:59:04Z",
+            "headRefOid": HEAD,
+            "mergeCommit": {"oid": MERGE},
+        }
+        with mock.patch.object(dispatcher.pr_binding, "_gh_json", return_value=payload) as view:
+            oid = dispatcher._authoritative_plan_merge(PR, HEAD, "acme/repo")
+        self.assertEqual(oid, MERGE)
+        self.assertIn("mergedAt", view.call_args.args[-1])
+        self.assertNotIn("merged,", view.call_args.args[-1])
+
+    def test_rejects_conflicting_current_head_receipts(self):
+        body = _playbook_receipt()
+        comment = {"author": {"login": "Igzela"}, "body": body}
+        patches = [
+            mock.patch.object(
+                state_manager, "resolve_live_review_binding",
+                return_value=(True, "ok", {
+                    "base_sha": MAIN,
+                    "head_sha": HEAD,
+                    "reviewed_range": f"{MAIN}...{HEAD}",
+                }),
+            ),
+            mock.patch.object(
+                state_manager, "get_issue_comments",
+                return_value=[comment, comment],
+            ),
+            mock.patch.object(
+                dispatcher.pr_binding, "_gh_json",
+                return_value={"author": {"login": "Igzela"}},
+            ),
+        ]
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        self.assertIsNone(
+            dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
+        )
+
+
 class TestRecordPlanCloseoutReceipt(unittest.TestCase):
     def _patch(self, bodies, claim=None, labels=None, set_ok=True, remove_ok=True):
         return [
@@ -575,6 +827,16 @@ class TestRecordPlanLifecycleDispatcher(unittest.TestCase):
                 dispatcher, "_read_live_plan",
                 return_value=(candidate(), LEDGER, None),
             ),
+            mock.patch.object(state_manager, "get_issue_comments", return_value=[]),
+            mock.patch.object(
+                local_run_once, "select_live_plan_generation",
+                return_value=("live", "dispatched", ATTEMPT, {
+                    "source_main_sha": MAIN,
+                    "task_spec_sha256": DETAILS["task_spec_sha256"],
+                    "subject_id": PACKET,
+                    "attempt_id": ATTEMPT,
+                }),
+            ),
             mock.patch.object(
                 state_manager, "read_dispatch_state",
                 return_value=claim if claim is not None else dispatch_state("dispatched"),
@@ -641,12 +903,124 @@ class TestRecordPlanLifecycleDispatcher(unittest.TestCase):
         for patch in patches:
             patch.start()
         try:
-            result = dispatcher.record_plan_lifecycle(PACKET, ATTEMPT, "ci")
+            with mock.patch.object(dispatcher, "_authoritative_plan_ci", return_value=None):
+                result = dispatcher.record_plan_lifecycle(PACKET, ATTEMPT, "ci")
         finally:
             for patch in patches:
                 patch.stop()
         self.assertFalse(result["recorded"])
-        self.assertEqual(result["reason"], "ci_receipt_pending")
+        self.assertEqual(result["reason"], "ci_evidence_unavailable")
+
+    def test_ci_stage_does_not_require_a_live_execution_lease(self):
+        patches = self._patch_dispatch()
+        for patch in patches:
+            patch.start()
+        try:
+            with mock.patch.object(
+                dispatcher, "_authoritative_plan_ci",
+                return_value={
+                    "workflow_run_id": 7,
+                    "workflow_name": "tests",
+                    "required_jobs": ["python-tests"],
+                    "successful_jobs": ["python-tests"],
+                },
+            ), mock.patch.object(
+                plan_lifecycle, "record_plan_ci_receipt",
+                return_value={"recorded": True, "reason": "recorded"},
+            ):
+                result = dispatcher.record_plan_lifecycle(PACKET, ATTEMPT, "ci")
+            kwargs = state_manager.plan_claim_binding_valid.call_args.kwargs
+            self.assertEqual(kwargs.get("require_lease_live"), False)
+        finally:
+            for patch in patches:
+                patch.stop()
+        self.assertTrue(result["recorded"])
+
+    def test_ci_stage_uses_live_generation_after_main_moves(self):
+        drifted = "e" * 40
+        drifted_claim = dispatch_state("dispatched", {**DETAILS, "source_main_sha": drifted})
+        patches = self._patch_dispatch(claim=drifted_claim)
+        for patch in patches:
+            patch.start()
+        try:
+            with mock.patch.object(
+                local_run_once, "select_live_plan_generation",
+                return_value=("live", "dispatched", ATTEMPT, {
+                    "source_main_sha": drifted,
+                    "task_spec_sha256": DETAILS["task_spec_sha256"],
+                    "subject_id": PACKET,
+                    "attempt_id": ATTEMPT,
+                }),
+            ), mock.patch.object(
+                dispatcher, "_authoritative_plan_ci",
+                return_value={
+                    "workflow_run_id": 7,
+                    "workflow_name": "tests",
+                    "required_jobs": ["python-tests"],
+                    "successful_jobs": ["python-tests"],
+                },
+            ), mock.patch.object(
+                plan_lifecycle, "record_plan_ci_receipt",
+                return_value={"recorded": True, "reason": "recorded"},
+            ) as record:
+                result = dispatcher.record_plan_lifecycle(PACKET, ATTEMPT, "ci")
+            record.assert_called_once()
+            self.assertEqual(record.call_args.args[3], drifted)
+        finally:
+            for patch in patches:
+                patch.stop()
+        self.assertTrue(result["recorded"])
+
+    def test_ci_stage_records_verified_github_evidence(self):
+        patches = self._patch_dispatch()
+        for patch in patches:
+            patch.start()
+        try:
+            evidence = {
+                "workflow_run_id": 7,
+                "workflow_name": "tests",
+                "required_jobs": ["python-tests"],
+                "successful_jobs": ["python-tests"],
+            }
+            with mock.patch.object(
+                dispatcher, "_authoritative_plan_ci", return_value=evidence
+            ), mock.patch.object(
+                plan_lifecycle, "record_plan_ci_receipt",
+                return_value={"recorded": True, "reason": "recorded"},
+            ) as record:
+                result = dispatcher.record_plan_lifecycle(PACKET, ATTEMPT, "ci")
+            record.assert_called_once()
+            self.assertEqual(record.call_args.args[6], 7)
+        finally:
+            for patch in patches:
+                patch.stop()
+        self.assertTrue(result["recorded"])
+        self.assertEqual(result["ci_run_id"], 7)
+
+    def test_review_stage_records_verified_github_evidence(self):
+        patches = self._patch_dispatch()
+        for patch in patches:
+            patch.start()
+        try:
+            evidence = {
+                "base_sha": MAIN,
+                "reviewed_range": f"{MAIN}...{HEAD}",
+                "summary": "exact-head PASS review receipt verified from live PR",
+            }
+            with mock.patch.object(
+                dispatcher, "_authoritative_plan_review", return_value=evidence
+            ), mock.patch.object(
+                plan_lifecycle, "record_plan_review_receipt",
+                return_value={"recorded": True, "reason": "recorded"},
+            ) as record:
+                result = dispatcher.record_plan_lifecycle(PACKET, ATTEMPT, "review")
+            record.assert_called_once()
+            self.assertEqual(record.call_args.args[6], MAIN)
+            self.assertEqual(record.call_args.args[7], f"{MAIN}...{HEAD}")
+        finally:
+            for patch in patches:
+                patch.stop()
+        self.assertTrue(result["recorded"])
 
     def test_ci_stage_verified_reports_existing_receipt(self):
         patches = self._patch_dispatch(bodies={"agent-orchestrator-ci-state": json.dumps(ci_wire())})
@@ -930,6 +1304,29 @@ class TestPlanLifecycleWait(unittest.TestCase):
                 self.assertEqual(result.details["reason"], "plan_lifecycle_binding_invalid")
                 promotion.assert_not_called()
         github.dispatch_controller.assert_not_called()
+
+    def test_wait_dispatches_controller_for_ci_when_pending(self):
+        github = mock.Mock()
+        runner = local_run_once.LocalRunOnce(
+            github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
+            lifecycle_timeout_seconds=10, sleeper=lambda _: None,
+        )
+        readback = self._lifecycle(
+            stages={"ci": False, "review": False, "merge": False, "closeout": False},
+            transitions={},
+        )
+        with mock.patch.object(
+            plan_lifecycle, "read_plan_lifecycle", return_value=readback
+        ), mock.patch.object(
+            local_run_once.time, "monotonic", side_effect=[0.0, 11.0]
+        ):
+            result = runner._wait_for_plan_terminal_receipts(LEDGER, PACKET, ATTEMPT, PR, HEAD)
+        self.assertEqual(result.status, "outcome_unknown")
+        self.assertEqual(result.details.get("stage"), "ci")
+        github.dispatch_controller.assert_called_once_with(
+            "lifecycle-plan",
+            {"packet_id": PACKET, "attempt_id": ATTEMPT, "stage": "ci"},
+        )
 
     def test_wait_dispatches_controller_for_merge_and_closeout_stages(self):
         github = mock.Mock()
