@@ -1229,6 +1229,75 @@ class TestLocalRunOnce(unittest.TestCase):
             99, PLAN_ID, ATTEMPT, NONCE, 4001, remote_head
         )
 
+    def test_merged_plan_pr_is_recovered_without_creating_a_second_pr(self):
+        """After squash-merge the Draft is gone; recover the merged PR, never open another."""
+
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN_SHA
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN_SHA
+        candidate = plan_lane_fixture()
+        dispatched = {
+            "status": "dispatched",
+            "details": {
+                "claim_nonce": NONCE,
+                "canonical_branch": candidate.branch,
+                "subject_kind": "plan-packet",
+                "subject_id": PLAN_ID,
+                "attempt_id": ATTEMPT,
+                "source_main_sha": MAIN_SHA,
+                "task_spec_sha256": candidate.task_spec_sha256,
+            },
+        }
+        remote_head = "b" * 40
+        runner = local_run_once.LocalRunOnce(
+            github, git, repository="Igzela/example", repo_path=Path("/tmp"),
+            sleeper=lambda _: None,
+        )
+        create_pr = mock.Mock(side_effect=AssertionError("must not open a second plan PR"))
+        with mock.patch.object(state_manager, "read_dispatch_state", return_value=dispatched), \
+             mock.patch.object(state_manager, "plan_claim_binding_valid", return_value=(True, "ok")), \
+             mock.patch.object(
+                 runner, "_git_checked",
+                 return_value=f"{remote_head}\trefs/heads/{candidate.branch}",
+             ), \
+             mock.patch.object(
+                 local_run_once.pr_binding, "find_plan_pr",
+                 side_effect=local_run_once.pr_binding.PRBindingError(
+                     "zero or multiple open PRs bound to the plan packet"
+                 ),
+             ), \
+             mock.patch.object(
+                 runner, "_resolve_non_draft_pr",
+                 return_value={"number": 426, "head_sha": remote_head},
+             ) as resolve_merged, \
+             mock.patch.object(
+                 local_run_once.pr_binding, "create_or_update_plan_pr", create_pr,
+             ), \
+             mock.patch.object(
+                 runner, "_request_plan_handoff",
+                 return_value=(True, "handoff_proven"),
+             ) as request_handoff:
+            result = runner._recover_existing_plan_claim(
+                PLAN_ID, ATTEMPT, candidate, 383
+            )
+        self.assertEqual(result.status, "handed_off")
+        self.assertEqual(result.details.get("pr_number"), 426)
+        self.assertEqual(result.details.get("head_sha"), remote_head)
+        resolve_merged.assert_called_once_with(candidate.branch, remote_head, PLAN_ID)
+        create_pr.assert_not_called()
+        request_handoff.assert_called_once_with(
+            383, PLAN_ID, ATTEMPT, NONCE, 426, remote_head
+        )
+
     def test_plan_run_once_waits_on_a_typed_recovered_handoff(self):
         github = mock.Mock()
         github.read_control_state.return_value = {

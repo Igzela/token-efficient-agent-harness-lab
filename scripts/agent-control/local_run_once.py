@@ -1268,25 +1268,29 @@ class LocalRunOnce:
                 candidate.task_spec_sha256, self.repository,
             )
         except pr_binding.PRBindingError:
-            try:
-                marker = json.dumps({
-                    "subject_kind": "plan-packet", "subject_id": packet_id,
-                    "source_main_sha": candidate.source_main_sha,
-                    "task_spec_sha256": candidate.task_spec_sha256,
-                    "branch": branch,
-                }, sort_keys=True)
-                pr = pr_binding.create_or_update_plan_pr(
-                    packet_id, branch, head_sha, candidate.source_main_sha,
-                    candidate.task_spec_sha256, candidate.goal[:200],
-                    f"<!-- agent-orchestrator-binding: {marker} -->\n\nPlan packet `{packet_id}`.",
-                    self.repository,
-                )
-                pr_binding.verify_post_push_plan_binding(
-                    packet_id, pr.get("number") or 0, branch, head_sha,
-                    candidate.source_main_sha, candidate.task_spec_sha256, self.repository,
-                )
-            except (local_loop.LoopUnavailable, pr_binding.PRBindingError, KeyError, TypeError):
-                return None
+            # A squash-merged plan PR is no longer a Draft. Recover that
+            # exact-head PR instead of opening a second one.
+            pr = self._resolve_non_draft_pr(branch, head_sha, packet_id)
+            if pr is None:
+                try:
+                    marker = json.dumps({
+                        "subject_kind": "plan-packet", "subject_id": packet_id,
+                        "source_main_sha": candidate.source_main_sha,
+                        "task_spec_sha256": candidate.task_spec_sha256,
+                        "branch": branch,
+                    }, sort_keys=True)
+                    pr = pr_binding.create_or_update_plan_pr(
+                        packet_id, branch, head_sha, candidate.source_main_sha,
+                        candidate.task_spec_sha256, candidate.goal[:200],
+                        f"<!-- agent-orchestrator-binding: {marker} -->\n\nPlan packet `{packet_id}`.",
+                        self.repository,
+                    )
+                    pr_binding.verify_post_push_plan_binding(
+                        packet_id, pr.get("number") or 0, branch, head_sha,
+                        candidate.source_main_sha, candidate.task_spec_sha256, self.repository,
+                    )
+                except (local_loop.LoopUnavailable, pr_binding.PRBindingError, KeyError, TypeError):
+                    return None
         pr_number = pr.get("number")
         if type(pr_number) is not int:
             return None
