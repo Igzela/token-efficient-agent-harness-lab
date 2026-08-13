@@ -39,7 +39,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-ROUTE-AUTONOMY-STABILIZATION-1` | `COMPLETE` | PR #416 exact head `9ce548f620314303b37753a18539c17b5daa6698`; merge `306b500c43270ca83d7cb9defd365140b525187c`; exact-head `PASS`; canonical workflow `31630036965` |
 | `PE7-ROUTE-AUTOPILOT-SOAK-1` | `COMPLETE` | Closeout PR #429 exact head `92e9b49c13b51ee9c471a6acc2181c37d8084029`; merge `d40c8ce82101922e7270f30bd6da592d72354ffe`; exact-head `PASS`; canonical workflow `31681024633`; OpenCode worker PR #426 exact head `c54860674fbf5045239469c2a842ec88002bb3df`; merge `f02d58b5d1fb8d74dd1c68349e4075eb7641879e`; ledger #383 trusted CI/review/merge/closeout; canonical workflow `31664342318` |
 | `PE7-RWE-V2-PREFLIGHT-GATE-CONTRACT-1` | `COMPLETE` | PR #432 exact head `f31ba002720424deb003728eec52aa9ceae35e33`; merge `710ce06fee68fb75889aa5fa3b9e031b4fdc3a50`; exact-head `PASS`; canonical workflow `31686429471`; contract digest `c8ea4c802e2554b1fa5d0b2f247879ba758d67e4d5df23ed43f1eddadf8aef74` |
-| `PE7-RWE-V2-PREFLIGHT-GATE-REPAIR-1` | `COMPLETE` | PR #435 exact head `c27f9f3a5b0134a8e01c90831e3ebe3a59421e46`; merge `bfc1dc4b1da53548f89b6c3b507d767d47fdc074`; exact-head `PASS`; canonical workflow `31691645289` |
+| `PE7-RWE-V2-PREFLIGHT-GATE-REPAIR-1` | `COMPLETE` | PR #434 exact head `9fdd1045928f862a5b1c1017bc0e9d73e5d50966`; merge `e311db76bf4d2a3a407213b8129a600bc447fd56`; exact-head `PASS`; canonical workflow `31690000442`; durable B2 rule caller-supplied finite expires_at |
 
 ## Accepted Product and Control-Plane State
 
