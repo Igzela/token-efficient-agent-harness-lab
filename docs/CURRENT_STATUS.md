@@ -38,6 +38,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1` | `COMPLETE` | PR #413 base `59cec5745ddd7f89ce8c099a5de2c7e3c3ec3a1e`; exact head `fc8c005981d2fa12f0f494a131b839d65a46a8ba`; exact-head `PASS` receipt comment `5268787985`; canonical workflow `31611860646`; merge `9cc118fa72d9d13a24cdf968cc5fc20dbe80b28f`; deterministic production-path concurrent-winner receipt reuse and genuine missing-receipt rejection |
 | `PE7-ROUTE-AUTONOMY-STABILIZATION-1` | `COMPLETE` | PR #416 exact head `9ce548f620314303b37753a18539c17b5daa6698`; merge `306b500c43270ca83d7cb9defd365140b525187c`; exact-head `PASS`; canonical workflow `31630036965` |
 | `PE7-ROUTE-AUTOPILOT-SOAK-1` | `COMPLETE` | Closeout PR #429 exact head `92e9b49c13b51ee9c471a6acc2181c37d8084029`; merge `d40c8ce82101922e7270f30bd6da592d72354ffe`; exact-head `PASS`; canonical workflow `31681024633`; OpenCode worker PR #426 exact head `c54860674fbf5045239469c2a842ec88002bb3df`; merge `f02d58b5d1fb8d74dd1c68349e4075eb7641879e`; ledger #383 trusted CI/review/merge/closeout; canonical workflow `31664342318` |
+| `PE7-RWE-V2-PREFLIGHT-GATE-CONTRACT-1` | `COMPLETE` | PR #432 exact head `f31ba002720424deb003728eec52aa9ceae35e33`; merge `710ce06fee68fb75889aa5fa3b9e031b4fdc3a50`; exact-head `PASS`; canonical workflow `31686429471`; contract digest `c8ea4c802e2554b1fa5d0b2f247879ba758d67e4d5df23ed43f1eddadf8aef74` |
 
 ## Accepted Product and Control-Plane State
 
@@ -109,7 +110,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Control binding integrity | `COMPLETE` | PR #408 accepted strict live exact-head review binding, authenticated append-only #405 correction/readback, and deterministic pre-effect plan-artifact scope enforcement |
 | `PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1` | `COMPLETE` | PR #413 base `59cec5745ddd7f89ce8c099a5de2c7e3c3ec3a1e`, exact head `fc8c005981d2fa12f0f494a131b839d65a46a8ba`, exact-head review receipt comment `5268787985`, canonical workflow `31611860646`, and squash merge `9cc118fa72d9d13a24cdf968cc5fc20dbe80b28f` accepted transactionally consistent SQLite receipt/status observation with deterministic concurrent-winner reuse and genuine missing-receipt rejection |
 | Route-autopilot adversarial soak | `COMPLETE` | PR #426 worker plus PR #429 closeout: one real OpenCode-backed packet through existing PR/CI/review/merge/closeout owners, with trusted ledger receipts after GitHub verify |
-| V2 provider-free viability preflight | `READY_FOR_EXECUTION` | Current packet `PE7-RWE-V2-PREFLIGHT-GATE-CONTRACT-1`: inventory B1 timestamp, store-owned B2 expiry, and Golden Path provenance before any provider-free preflight |
+| V2 provider-free viability preflight | `READY_FOR_EXECUTION` | Contract accepted; current packet is the bounded B1/B2/provenance repair implementation |
 | V2 four-cell run and closeout | `BLOCKED_PREREQUISITE` | Preflight acceptance, then one separately authorized run and independent closeout |
 | Measurement readiness | `BLOCKED_PREREQUISITE` | 4 packets: estimands, corpus/sample, operations/evidence, protocol freeze |
 | Decision-grade pre-AC baseline | `BLOCKED_PREREQUISITE` | 4 packets: snapshot/corpus, preflight, run, analysis |
