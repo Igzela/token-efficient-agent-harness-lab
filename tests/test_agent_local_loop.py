@@ -1745,12 +1745,14 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
                 "raise SystemExit(0)\n",
             )
         if install_opencode:
-            body = fake_body or (
+            record_header = (
                 "#!/usr/bin/env python3\n"
                 "import json, os, sys\n"
                 f"record = {str(record)!r}\n"
                 "with open(record, 'a', encoding='utf-8') as handle:\n"
                 "    json.dump({'bin':'opencode','args':sys.argv[1:],'env':dict(os.environ)}, handle); handle.write('\\n')\n"
+            )
+            default_logic = (
                 "if sys.argv[1:2] == ['--version']:\n"
                 "    print('1.18.16'); raise SystemExit(0)\n"
                 "if sys.argv[1:3] == ['auth', 'list']:\n"
@@ -1764,8 +1766,10 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
                 "    raise SystemExit(0)\n"
                 "raise SystemExit(2)\n"
             )
-            _write_executable(root / "opencode", body)
-        prompt_path = root / "prompt.txt"
+            _write_executable(root / "opencode", record_header + (fake_body or default_logic))
+        tmp = root / "tmp"
+        tmp.mkdir()
+        prompt_path = tmp / "implementation-prompt.txt"
         prompt_path.write_text(prompt, encoding="utf-8")
         output = root / "output"
         home = root / "home"
@@ -1779,10 +1783,9 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
             "HOME": str(home),
             "LANG": "C",
             "LC_ALL": "C",
-            "TMPDIR": str(root / "tmp"),
+            "TMPDIR": str(tmp),
             **CREDENTIAL_ENV,
         }
-        (root / "tmp").mkdir()
         if extra_env:
             env.update(extra_env)
         result = subprocess.run(
@@ -1814,8 +1817,11 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
         self.assertIn("--dir", args)
         self.assertEqual(args[args.index("--dir") + 1], str(worktree))
         self.assertIn("--file", args)
-        self.assertEqual(args[args.index("--file") + 1], str(prompt))
+        attached = args[args.index("--file") + 1]
+        self.assertEqual(attached, str(Path(run_calls[0]["env"]["TMPDIR"]) / "claim-prompt.txt"))
+        self.assertNotEqual(attached, str(prompt))
         self.assertNotIn("claim-bound prompt", args)
+        self.assertIn("Execute the attached claim-bound task.", args)
         for flag in FORBIDDEN_OPENCODE_FLAGS:
             self.assertNotIn(flag, args)
         child_env = run_calls[0]["env"]
@@ -1839,8 +1845,6 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
 
     def test_auth_and_usage_failures_are_allowlisted_without_raw_text(self):
         auth_body = (
-            "#!/usr/bin/env python3\n"
-            "import json, os, sys\n"
             "if sys.argv[1:2] == ['--version']:\n"
             "    print('1.18.16'); raise SystemExit(0)\n"
             "if sys.argv[1:3] == ['run', '--help']:\n"
@@ -1857,25 +1861,68 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
         self.assertNotIn("secret-token-xyz", result.stderr)
 
         usage_body = (
-            "#!/usr/bin/env python3\n"
-            "import json, sys\n"
             "if sys.argv[1:2] == ['--version']:\n"
             "    print('1.18.16'); raise SystemExit(0)\n"
             "if sys.argv[1:3] == ['auth', 'list']:\n"
             "    raise SystemExit(0)\n"
             "if sys.argv[1:3] == ['run', '--help']:\n"
             "    print('--format json --dir --file'); raise SystemExit(0)\n"
+            "if sys.argv[1:3] == ['session', 'delete']:\n"
+            "    raise SystemExit(0)\n"
             "if sys.argv[1:2] == ['run']:\n"
+            "    print(json.dumps({'type':'error','sessionID':'ses_failquota','error':{'data':{'message':'quota exceeded token-abc'}}}))\n"
             "    print('quota exceeded token-abc', file=sys.stderr); raise SystemExit(2)\n"
             "raise SystemExit(2)\n"
         )
-        _root, _prompt, output, _wt, result, _records = self._run_wrapper(fake_body=usage_body)
+        _root, _prompt, output, _wt, result, records = self._run_wrapper(fake_body=usage_body)
         self.assertNotEqual(result.returncode, 0)
         failure = json.loads((output / "failure_reason.json").read_text(encoding="utf-8"))
         self.assertEqual(failure["reason"], "usage_or_credit_exhaustion")
         self.assertNotIn("token-abc", json.dumps(failure))
         self.assertNotIn("token-abc", result.stderr)
         self.assertNotIn("quota exceeded", "".join(path.read_text(errors="replace") for path in output.glob("*") if path.is_file()))
+        delete_calls = [item for item in records if item["bin"] == "opencode" and item["args"][:2] == ["session", "delete"]]
+        self.assertEqual(delete_calls[0]["args"], ["session", "delete", "ses_failquota"])
+
+    def test_wrapper_rejects_non_temp_prompt_file(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        record = root / "records.jsonl"
+        _write_executable(
+            root / "opencode",
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            f"record = {str(record)!r}\n"
+            "with open(record, 'a', encoding='utf-8') as handle:\n"
+            "    json.dump({'bin':'opencode','args':sys.argv[1:]}, handle); handle.write('\\n')\n"
+            "raise SystemExit(0)\n",
+        )
+        output = root / "output"
+        home = root / "home"
+        home.mkdir()
+        wt = root / "worktree"
+        wt.mkdir()
+        repo_readme = Path(__file__).resolve().parents[1] / "README.md"
+        result = subprocess.run(
+            [str(WRAPPER), "implement", str(repo_readme), str(output), str(wt)],
+            cwd=Path(__file__).resolve().parents[1],
+            env={
+                "PATH": f"{root}:/usr/bin:/bin",
+                "HOME": str(home),
+                "LANG": "C",
+                "TMPDIR": str(root / "tmp"),
+            },
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            json.loads((output / "failure_reason.json").read_text(encoding="utf-8"))["reason"],
+            "prompt_missing",
+        )
+        self.assertFalse(record.is_file())
 
     def test_dispatched_generation_does_not_invoke_wrapper_again(self):
         github = mock.Mock()

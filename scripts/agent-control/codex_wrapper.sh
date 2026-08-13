@@ -52,21 +52,30 @@ mkdir -p "$OUTPUT_DIR"
 OPENCODE_BIN="$(command -v opencode || true)"
 [ -n "$OPENCODE_BIN" ] || fail_closed "cli_missing" "opencode CLI not found in PATH"
 [ -n "${HOME:-}" ] || fail_closed "environment_invalid" "HOME is not set"
-if [ -L "$PROMPT_FILE" ] || [ ! -f "$PROMPT_FILE" ]; then
-  fail_closed "prompt_missing" "prompt file not found"
-fi
 [ -d "$WORKSPACE" ] || fail_closed "workspace_invalid" "workspace directory not found"
 command -v timeout >/dev/null 2>&1 || fail_closed "timeout_unavailable" "bounded execution utility is unavailable"
 if ! [[ "$WORKER_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || [ "$WORKER_TIMEOUT_SECONDS" -lt 1 ] || [ "$WORKER_TIMEOUT_SECONDS" -gt 3600 ]; then
   fail_closed "timeout_invalid" "OpenCode execution timeout is outside the bounded range"
 fi
+if [ -L "$PROMPT_FILE" ] || [ ! -f "$PROMPT_FILE" ]; then
+  fail_closed "prompt_missing" "prompt file not found"
+fi
 
 PARENT_TMPDIR="${TMPDIR:-/tmp}"
+PROMPT_ABS="$(cd "$(dirname -- "$PROMPT_FILE")" && pwd)/$(basename -- "$PROMPT_FILE")"
+case "$PROMPT_ABS" in
+  "${PARENT_TMPDIR%/}"/*|/tmp/*) ;;
+  *) fail_closed "prompt_missing" "prompt file not found" ;;
+esac
+
 INVOKE_TMP="$(mktemp -d "${PARENT_TMPDIR%/}/agent-opencode.XXXXXX")"
 cleanup_invoke() {
   rm -rf -- "$INVOKE_TMP"
 }
 trap cleanup_invoke EXIT
+CLAIM_PROMPT="$INVOKE_TMP/claim-prompt.txt"
+cp -f -- "$PROMPT_ABS" "$CLAIM_PROMPT"
+FIXED_RUN_MESSAGE="Execute the attached claim-bound task."
 
 # Construct the child environment from an explicit allowlist.  In particular,
 # do not rely on a denylist: runner images and provider CLIs add new secret-
@@ -118,6 +127,52 @@ run_opencode_bounded() {
     env -i "${SANITIZED_ENV[@]}" "$OPENCODE_BIN" "$@"
 }
 
+delete_observed_sessions() {
+  local events="$1"
+  local ids="$INVOKE_TMP/session-ids.txt"
+  rm -f -- "$ids"
+  [ -f "$events" ] || return 0
+  python3 - "$events" "$ids" <<'PY' || true
+import json
+import pathlib
+import sys
+
+events_path = pathlib.Path(sys.argv[1])
+ids_path = pathlib.Path(sys.argv[2])
+if events_path.is_symlink() or not events_path.is_file():
+    raise SystemExit(0)
+session_ids = []
+try:
+    lines = events_path.read_text(encoding="utf-8").splitlines()
+except (OSError, UnicodeDecodeError):
+    raise SystemExit(0)
+for raw_line in lines:
+    if not raw_line.strip():
+        continue
+    try:
+        payload = json.loads(raw_line)
+    except json.JSONDecodeError:
+        continue
+    if not isinstance(payload, dict):
+        continue
+    session_id = payload.get("sessionID")
+    if (
+        isinstance(session_id, str)
+        and session_id.startswith("ses_")
+        and session_id not in session_ids
+    ):
+        session_ids.append(session_id)
+if session_ids:
+    ids_path.write_text("\n".join(session_ids) + "\n", encoding="utf-8")
+PY
+  [ -f "$ids" ] || return 0
+  while IFS= read -r session_id; do
+    [ -n "$session_id" ] || continue
+    run_opencode session delete "$session_id" >/dev/null 2>&1 || true
+  done < "$ids"
+  rm -f -- "$ids"
+}
+
 if ! OPENCODE_VERSION=$(run_opencode --version 2>/dev/null); then
   fail_closed "cli_missing" "opencode version query failed"
 fi
@@ -143,7 +198,8 @@ set +e
 run_opencode_bounded run \
   --format json \
   --dir "$WORKSPACE" \
-  --file "$PROMPT_FILE" \
+  --file "$CLAIM_PROMPT" \
+  "$FIXED_RUN_MESSAGE" \
   > "$JSONL_OUTPUT" 2> "$STDERR_OUTPUT"
 OPENCODE_EXIT=$?
 set -e
@@ -165,6 +221,7 @@ if [ "$OPENCODE_EXIT" -ne 0 ]; then
       tail -40 "$JSONL_OUTPUT" 2>/dev/null || true
     } | tr '[:upper:]' '[:lower:]' | head -c 16384 || true
   )
+  delete_observed_sessions "$JSONL_OUTPUT"
   : > "$JSONL_OUTPUT"
   : > "$STDERR_OUTPUT"
   if [ "$OPENCODE_EXIT" -eq 124 ] || [ "$OPENCODE_EXIT" -eq 137 ]; then
@@ -242,15 +299,11 @@ with temporary.open("w", encoding="utf-8") as handle:
 temporary.replace(metadata_path)
 PY
 then
+  delete_observed_sessions "$JSONL_OUTPUT"
   fail_closed "malformed_output" "OpenCode produced an invalid bounded UTF-8 last message"
 fi
 
-if [ -f "$SESSION_IDS" ]; then
-  while IFS= read -r session_id; do
-    [ -n "$session_id" ] || continue
-    run_opencode session delete "$session_id" >/dev/null 2>&1 || true
-  done < "$SESSION_IDS"
-fi
+delete_observed_sessions "$JSONL_OUTPUT"
 rm -f -- "$JSONL_OUTPUT" "$STDERR_OUTPUT" "$SESSION_IDS"
 if [ "$WORKER_TYPE" != "review" ]; then
   rm -f -- "$LAST_MESSAGE_OUTPUT"
