@@ -198,8 +198,8 @@ set +e
 run_opencode_bounded run \
   --format json \
   --dir "$WORKSPACE" \
-  --file "$CLAIM_PROMPT" \
   "$FIXED_RUN_MESSAGE" \
+  --file "$CLAIM_PROMPT" \
   > "$JSONL_OUTPUT" 2> "$STDERR_OUTPUT"
 OPENCODE_EXIT=$?
 set -e
