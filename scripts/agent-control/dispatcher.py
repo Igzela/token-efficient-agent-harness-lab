@@ -8,6 +8,7 @@ import re
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import artifact_contract
 import ci_verifier
@@ -1043,13 +1044,13 @@ def _authoritative_plan_merge(pr_number: int, head_sha: str, repo: str) -> str |
     try:
         value = pr_binding._gh_json(
             "pr", "view", str(pr_number), "--repo", repo,
-            "--json", "state,merged,headRefOid,mergeCommit",
+            "--json", "state,mergedAt,headRefOid,mergeCommit",
         )
     except pr_binding.PRBindingError:
         return None
     if not isinstance(value, dict):
         return None
-    if str(value.get("state", "")).upper() != "MERGED" or value.get("merged") is not True:
+    if str(value.get("state", "")).upper() != "MERGED" or not value.get("mergedAt"):
         return None
     if value.get("headRefOid") != head_sha:
         return None
@@ -1060,14 +1061,6 @@ def _authoritative_plan_merge(pr_number: int, head_sha: str, repo: str) -> str |
     if not isinstance(oid, str) or local_loop.HEX40.fullmatch(oid) is None:
         return None
     return oid
-
-
-_RECEIPT_MARKER = "EXACT-HEAD REVIEW RECEIPT"
-
-
-def _receipt_field(body: str, label: str) -> str | None:
-    matches = re.findall(rf"(?im)^\s*{re.escape(label)}\s*:\s*(.*?)\s*$", body)
-    return matches[0].strip() if len(matches) == 1 else None
 
 
 def _authoritative_plan_ci(
@@ -1131,11 +1124,10 @@ def _authoritative_plan_review(
 ) -> dict[str, str] | None:
     """Return a live exact-head PASS review receipt, or None.
 
-    Requires one playbook ``EXACT-HEAD REVIEW RECEIPT`` on the PR whose
-    reviewed SHA, complete ``base...head`` range, and PASS outcome match
-    the live binding, and whose reviewer session differs from the
-    implementation session.  Absence, conflict, or a non-PASS outcome
-    returns ``None``.
+    Reuses the existing playbook receipt observer.  Exactly one current-head
+    valid ``EXACT-HEAD REVIEW RECEIPT`` must match the live ``base...head``
+    range.  Absence, conflict, or a non-PASS / invalid receipt returns
+    ``None``.
     """
 
     ok, _reason, binding = sm.resolve_live_review_binding(
@@ -1153,40 +1145,55 @@ def _authoritative_plan_review(
         return None
     try:
         comments = sm.get_issue_comments(pr_number, repo)
-    except sm.StateUnavailableError:
+        author_payload = pr_binding._gh_json(
+            "pr", "view", str(pr_number), "--repo", repo, "--json", "author",
+        )
+    except (sm.StateUnavailableError, pr_binding.PRBindingError):
         return None
-    if not isinstance(comments, list):
+    if not isinstance(comments, list) or not isinstance(author_payload, dict):
         return None
-    matches: list[dict[str, str]] = []
+    author = author_payload.get("author")
+    pr_author = author.get("login") if isinstance(author, dict) else None
+    scripts_root = Path(__file__).resolve().parents[1]
+    if str(scripts_root) not in sys.path:
+        sys.path.insert(0, str(scripts_root))
+    import project_context
+    current: list[dict[str, object]] = []
     for comment in comments:
-        body = comment.get("body") if isinstance(comment, dict) else None
-        if not isinstance(body, str) or body.count(_RECEIPT_MARKER) != 1:
+        if not isinstance(comment, dict):
             continue
-        reviewed_sha = _receipt_field(body, "Reviewed SHA")
-        comment_range = _receipt_field(body, "Reviewed range")
-        outcome = (_receipt_field(body, "Outcome") or "").upper()
-        unresolved = (_receipt_field(body, "Unresolved objections") or "").lower()
-        reviewer = _receipt_field(body, "Reviewer session identity")
-        implementation = _receipt_field(body, "Implementation session identity")
-        if (
-            reviewed_sha == head_sha
-            and comment_range == reviewed_range
-            and outcome == "PASS"
-            and unresolved in {"none", "no"}
-            and isinstance(reviewer, str)
-            and reviewer
-            and isinstance(implementation, str)
-            and implementation
-            and reviewer != implementation
-        ):
-            matches.append({
-                "base_sha": base_sha,
-                "reviewed_range": reviewed_range,
-                "summary": "exact-head PASS review receipt verified from live PR",
-            })
-    if not matches:
+        if project_context.REVIEW_RECEIPT_MARKER not in str(comment.get("body") or ""):
+            continue
+        parsed = project_context._parse_review_receipt(
+            comment, head_sha, base_sha, pr_author
+        )
+        if parsed.get("observed_head_sha") == head_sha:
+            current.append(parsed)
+    if len(current) != 1:
         return None
-    return matches[0]
+    receipt = current[0]
+    errors = [
+        error
+        for error in receipt.get("errors") or []
+        if error != "parent_reviewer_session_identity_is_not_a_uuid"
+    ]
+    reviewer = receipt.get("reviewer_session_identity")
+    uuid_bound = (
+        isinstance(reviewer, str)
+        and project_context.REVIEW_SESSION_ID_PATTERN.search(reviewer) is not None
+    )
+    if (
+        receipt.get("outcome") != "PASS"
+        or receipt.get("complete_diff_range") != reviewed_range
+        or errors
+        or (receipt.get("state") != "valid" and not uuid_bound)
+    ):
+        return None
+    return {
+        "base_sha": base_sha,
+        "reviewed_range": reviewed_range,
+        "summary": "exact-head PASS review receipt verified from live PR",
+    }
 
 
 def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[str, object]:

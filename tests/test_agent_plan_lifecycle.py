@@ -423,8 +423,68 @@ class TestRecordPlanReviewReceipt(unittest.TestCase):
         self.assertEqual(result["reason"], "review_receipt_write_failed")
 
 
+def _playbook_receipt(
+    *,
+    reviewer="019ff89b-eb32-7232-beeb-150fd146f582-review-426",
+    implementation="019ff89b-eb32-7232-beeb-150fd146f582",
+    outcome="PASS",
+    author="Igzela",
+):
+    return (
+        "EXACT-HEAD REVIEW RECEIPT\n"
+        f"Reviewed SHA: {HEAD}\n"
+        f"Reviewed range: {MAIN}...{HEAD}\n"
+        f"Reviewer session identity: {reviewer}\n"
+        f"Reviewer authenticated identity: {author}\n"
+        "Review transport: parent-posted-on-behalf-of-independent-session\n"
+        f"Implementation session identity: {implementation}\n"
+        "Observed at: 2026-08-13T03:36:30Z\n"
+        "Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding\n"
+        f"Outcome: {outcome}\n"
+        "Unresolved objections: none\n"
+    )
+
+
 class TestAuthoritativePlanReview(unittest.TestCase):
+    def _patches(self, body, author="Igzela"):
+        return [
+            mock.patch.object(
+                state_manager, "resolve_live_review_binding",
+                return_value=(True, "ok", {
+                    "base_sha": MAIN,
+                    "head_sha": HEAD,
+                    "reviewed_range": f"{MAIN}...{HEAD}",
+                }),
+            ),
+            mock.patch.object(
+                state_manager, "get_issue_comments",
+                return_value=[{"author": {"login": "Igzela"}, "body": body}],
+            ),
+            mock.patch.object(
+                dispatcher.pr_binding, "_gh_json",
+                return_value={"author": {"login": author}},
+            ),
+        ]
+
     def test_accepts_playbook_pass_receipt_with_distinct_sessions(self):
+        patches = self._patches(_playbook_receipt())
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        evidence = dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
+        self.assertEqual(evidence["base_sha"], MAIN)
+        self.assertEqual(evidence["reviewed_range"], f"{MAIN}...{HEAD}")
+
+    def test_rejects_same_session_or_non_pass(self):
+        patches = self._patches(_playbook_receipt(reviewer="same", implementation="same"))
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        self.assertIsNone(
+            dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
+        )
+
+    def test_rejects_incomplete_receipt_missing_axes_and_identity(self):
         body = (
             "EXACT-HEAD REVIEW RECEIPT\n"
             f"Reviewed SHA: {HEAD}\n"
@@ -434,45 +494,54 @@ class TestAuthoritativePlanReview(unittest.TestCase):
             "Outcome: PASS\n"
             "Unresolved objections: none\n"
         )
-        with mock.patch.object(
-            state_manager, "resolve_live_review_binding",
-            return_value=(True, "ok", {
-                "base_sha": MAIN,
-                "head_sha": HEAD,
-                "reviewed_range": f"{MAIN}...{HEAD}",
-            }),
-        ), mock.patch.object(
-            state_manager, "get_issue_comments",
-            return_value=[{"body": body}],
-        ):
-            evidence = dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
-        self.assertEqual(evidence["base_sha"], MAIN)
-        self.assertEqual(evidence["reviewed_range"], f"{MAIN}...{HEAD}")
-
-    def test_rejects_same_session_or_non_pass(self):
-        body = (
-            "EXACT-HEAD REVIEW RECEIPT\n"
-            f"Reviewed SHA: {HEAD}\n"
-            f"Reviewed range: {MAIN}...{HEAD}\n"
-            "Reviewer session identity: same\n"
-            "Implementation session identity: same\n"
-            "Outcome: PASS\n"
-            "Unresolved objections: none\n"
+        patches = self._patches(body)
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        self.assertIsNone(
+            dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
         )
-        with mock.patch.object(
-            state_manager, "resolve_live_review_binding",
-            return_value=(True, "ok", {
-                "base_sha": MAIN,
-                "head_sha": HEAD,
-                "reviewed_range": f"{MAIN}...{HEAD}",
-            }),
-        ), mock.patch.object(
-            state_manager, "get_issue_comments",
-            return_value=[{"body": body}],
-        ):
-            self.assertIsNone(
-                dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
-            )
+
+    def test_merge_uses_mergedAt_not_invalid_merged_field(self):
+        payload = {
+            "state": "MERGED",
+            "mergedAt": "2026-08-13T03:59:04Z",
+            "headRefOid": HEAD,
+            "mergeCommit": {"oid": MERGE},
+        }
+        with mock.patch.object(dispatcher.pr_binding, "_gh_json", return_value=payload) as view:
+            oid = dispatcher._authoritative_plan_merge(PR, HEAD, "acme/repo")
+        self.assertEqual(oid, MERGE)
+        self.assertIn("mergedAt", view.call_args.args[-1])
+        self.assertNotIn("merged,", view.call_args.args[-1])
+
+    def test_rejects_conflicting_current_head_receipts(self):
+        body = _playbook_receipt()
+        comment = {"author": {"login": "Igzela"}, "body": body}
+        patches = [
+            mock.patch.object(
+                state_manager, "resolve_live_review_binding",
+                return_value=(True, "ok", {
+                    "base_sha": MAIN,
+                    "head_sha": HEAD,
+                    "reviewed_range": f"{MAIN}...{HEAD}",
+                }),
+            ),
+            mock.patch.object(
+                state_manager, "get_issue_comments",
+                return_value=[comment, comment],
+            ),
+            mock.patch.object(
+                dispatcher.pr_binding, "_gh_json",
+                return_value={"author": {"login": "Igzela"}},
+            ),
+        ]
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        self.assertIsNone(
+            dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
+        )
 
 
 class TestRecordPlanCloseoutReceipt(unittest.TestCase):
