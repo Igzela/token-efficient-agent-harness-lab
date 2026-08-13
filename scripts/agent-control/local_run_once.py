@@ -37,6 +37,65 @@ def _canonical_attempt_id(value: object) -> str | None:
     return value if value == str(parsed) else None
 
 
+def select_live_plan_generation(
+    comments: list[Any], packet_id: str
+) -> tuple[str, str | None, str | None, dict[str, Any] | None]:
+    """Select the newest live plan-run generation for one packet.
+
+    A claimed, dispatched, or closed_out generation stays live even when
+    accepted main has moved past its stored ``source_main_sha``.  An older
+    ``failed_unknown_output`` / ``outcome_unknown`` terminal does not shadow
+    a newer live generation.  Returns ``(kind, status, attempt, details)``
+    where kind is ``live``, ``unknown``, ``ambiguous``, or ``absent``.
+    """
+
+    if not isinstance(packet_id, str) or plan_lane.PACKET_ID.fullmatch(packet_id) is None:
+        return "absent", None, None, None
+    newest: tuple[str, str, dict[str, Any]] | None = None
+    seen_dispatch_ids: set[str] = set()
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in state_manager.TRUSTED_STATE_AUTHORS:
+            continue
+        try:
+            state = json.loads(comment.get("body", ""))
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(state, dict) or state.get("action") != "plan-run":
+            continue
+        dispatch_id = state.get("dispatch_id")
+        details = state.get("details")
+        if not isinstance(dispatch_id, str) or dispatch_id in seen_dispatch_ids:
+            continue
+        seen_dispatch_ids.add(dispatch_id)
+        if (
+            not isinstance(details, dict)
+            or details.get("subject_kind") != "plan-packet"
+            or details.get("subject_id") != packet_id
+        ):
+            continue
+        source_main = details.get("source_main_sha")
+        if not isinstance(source_main, str) or local_loop.HEX40.fullmatch(source_main) is None:
+            continue
+        status = state.get("status")
+        if status in {"failed_unknown_output", "outcome_unknown"}:
+            if newest is None:
+                return "unknown", None, None, None
+            continue
+        if status not in {"claimed", "dispatched", "closed_out"}:
+            continue
+        attempt = _canonical_attempt_id(details.get("attempt_id"))
+        if attempt is None:
+            return "ambiguous", None, None, None
+        if newest is None:
+            newest = (status, attempt, details)
+            continue
+        if status in {"claimed", "dispatched"} and newest[0] in {"claimed", "dispatched"}:
+            return "ambiguous", None, None, None
+    if newest is None:
+        return "absent", None, None, None
+    return "live", newest[0], newest[1], newest[2]
+
+
 def _pid_exists(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -1079,49 +1138,16 @@ class LocalRunOnce:
             comments = state_manager.get_issue_comments(ledger_issue, self.repository)
         except (local_loop.LoopUnavailable, plan_lane.PlanLaneError, state_manager.StateUnavailableError):
             return self._plan_result("unavailable", packet_id, "", reason="plan_reconcile_unavailable")
-        generations: list[tuple[str, str, dict[str, Any]]] = []
-        seen_dispatches: set[str] = set()
-        for comment in comments:
-            if (comment.get("author") or {}).get("login") not in state_manager.TRUSTED_STATE_AUTHORS:
-                continue
-            try:
-                state = json.loads(comment.get("body", ""))
-            except (TypeError, json.JSONDecodeError):
-                continue
-            if not isinstance(state, dict) or state.get("action") != "plan-run":
-                continue
-            dispatch_id = state.get("dispatch_id")
-            details = state.get("details")
-            if not isinstance(dispatch_id, str) or dispatch_id in seen_dispatches:
-                continue
-            seen_dispatches.add(dispatch_id)
-            if (
-                not isinstance(details, dict)
-                or details.get("subject_kind") != "plan-packet"
-                or details.get("subject_id") != packet_id
-                or details.get("source_main_sha") != candidate.source_main_sha
-            ):
-                continue
-            if state.get("status") in {"failed_unknown_output", "outcome_unknown"}:
-                return self._plan_result(
-                    "outcome_unknown", packet_id, "",
-                    reason="plan_reconcile_outcome_unknown",
-                )
-            if state.get("status") not in {"claimed", "dispatched", "closed_out"}:
-                # A terminal provider-free worker failure is released by the
-                # existing controller and permits one fresh generation.  It is
-                # intentionally distinct from the non-retryable unknown case
-                # above.
-                continue
-            attempt = details.get("attempt_id")
-            if _canonical_attempt_id(attempt) is None:
-                return self._plan_result("rejected", packet_id, "", reason="plan_reconcile_binding_invalid")
-            generations.append((state["status"], attempt, details))
-        if not generations:
+        kind, status, attempt, details = select_live_plan_generation(comments, packet_id)
+        if kind == "absent":
             return None
-        if len(generations) != 1:
+        if kind == "unknown":
+            return self._plan_result(
+                "outcome_unknown", packet_id, "",
+                reason="plan_reconcile_outcome_unknown",
+            )
+        if kind != "live" or status is None or attempt is None or details is None:
             return self._plan_result("rejected", packet_id, "", reason="plan_reconcile_ambiguous")
-        status, attempt, details = generations[0]
         if status == "closed_out":
             return self._plan_result(
                 "closed_out",
@@ -1178,7 +1204,29 @@ class LocalRunOnce:
                 ledger_issue, dispatch_id, self.repository
             )
         except state_manager.StateUnavailableError:
-            return None
+            existing = None
+        if not isinstance(existing, dict):
+            try:
+                comments = state_manager.get_issue_comments(ledger_issue, self.repository)
+            except state_manager.StateUnavailableError:
+                return None
+            kind, _status, selected_attempt, selected_details = select_live_plan_generation(
+                comments, packet_id
+            )
+            stored_main = (
+                selected_details.get("source_main_sha")
+                if kind == "live" and selected_attempt == attempt and isinstance(selected_details, dict)
+                else None
+            )
+            if not isinstance(stored_main, str) or local_loop.HEX40.fullmatch(stored_main) is None:
+                return None
+            dispatch_id = f"plan-run:{packet_id}:{stored_main}:{attempt}"
+            try:
+                existing = state_manager.read_dispatch_state(
+                    ledger_issue, dispatch_id, self.repository
+                )
+            except state_manager.StateUnavailableError:
+                return None
         if not isinstance(existing, dict):
             return None
         status = existing.get("status")
@@ -1198,16 +1246,22 @@ class LocalRunOnce:
             # execution.  If its binding cannot be proven (stale lease,
             # mismatched attempt, missing nonce), the generation stays in
             # flight and fail-closed reconciliation owns the ledger state.
+            claim_main = details.get("source_main_sha")
+            if not isinstance(claim_main, str) or local_loop.HEX40.fullmatch(claim_main) is None:
+                return self._plan_result(
+                    "in_flight", packet_id, attempt, dispatch_id=dispatch_id,
+                    reason="dispatched_generation_unverifiable",
+                )
             valid, _reason = state_manager.plan_claim_binding_valid(
                 ledger_issue,
                 details,
                 packet_id,
                 attempt,
                 local_loop.plan_execution_token(
-                    self.repository, packet_id, candidate.source_main_sha, attempt
+                    self.repository, packet_id, claim_main, attempt
                 ),
-                candidate.source_main_sha,
-                candidate.task_spec_sha256,
+                claim_main,
+                details.get("task_spec_sha256") or candidate.task_spec_sha256,
             )
             if not valid:
                 return self._plan_result(

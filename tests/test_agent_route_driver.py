@@ -1955,6 +1955,47 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         self.assertEqual(runner.calls, 2)
         self.assertLess(runner.calls, 8)
 
+    def test_stable_post_merge_claim_unavailable_is_a_typed_unknown_not_an_unbounded_recover(self):
+        """After merge, reconcile miss + claim_unavailable must not poll forever.
+
+        The live dispatched generation still occupies capacity, so a fresh
+        attempt returns claim_unavailable. Production poll mode would otherwise
+        loop on that stable recoverable marker.
+        """
+
+        class MissRunner:
+            def __init__(self):
+                self.calls = 0
+
+            def reconcile_plan(self, _packet):
+                return None
+
+            def run_plan_once(self, _packet, _attempt):
+                self.calls += 1
+                return TestRepositoryRouteRunner.Result(
+                    "claim_unavailable", reason="capacity_occupied"
+                )
+
+        def sleeper(_seconds):
+            if runner.calls > 8:
+                raise AssertionError("stable claim_unavailable recovered unbounded")
+
+        runner = MissRunner()
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo",
+            repo_path=Path("/tmp"),
+            max_transitions=8,
+            sleeper=sleeper,
+        )
+        route._runner = runner
+        self.assertTrue(route._poll_recoverable)
+        with mock.patch.object(route, "_current_packet", return_value=(CLOSED, MAIN)):
+            result = route.run()
+        self.assertEqual(result["state"], "OUTCOME_UNKNOWN")
+        self.assertEqual(result["reason"], "capacity_occupied")
+        self.assertEqual(runner.calls, 2)
+        self.assertLess(runner.calls, 8)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2585,7 +2585,7 @@ class RepositoryRouteRunner:
                     else ""
                 )
                 if (
-                    status == "in_flight"
+                    status in {"in_flight", "claim_unavailable"}
                     and last_recovery_marker == (packet_id, str(status), reason)
                 ):
                     return RouteRunResult(
