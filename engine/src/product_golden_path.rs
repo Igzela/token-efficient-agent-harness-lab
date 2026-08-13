@@ -1388,6 +1388,13 @@ pub(crate) fn product_apply_binding_sha256(
     Ok(hex::encode(Sha256::digest(encoded)))
 }
 
+fn require_rfc3339_utc(field: &str, value: &str) -> Result<String, String> {
+    let dt = chrono::DateTime::parse_from_rfc3339(value.trim())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|_| format!("{field} must be canonical RFC3339/UTC"))?;
+    Ok(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
 /// Compile a versioned executable graph for a workspace-bound product task.
 ///
 /// Does not create a second scheduler. Nodes carry exact task/workspace/source
@@ -1398,6 +1405,7 @@ pub fn compile_product_executable_graph(
     plan_ids: &crate::read_only_planner::WorkflowPlanIds,
     resolved_executor: &str,
 ) -> Result<Value, String> {
+    let created_at = require_rfc3339_utc("created_at", created_at)?;
     let task_id = task
         .get("task_id")
         .and_then(Value::as_str)
@@ -1856,6 +1864,25 @@ mod tests {
                 "verification_commands": verification_commands
             }
         })
+    }
+
+    #[test]
+    fn compile_product_executable_graph_rejects_unparseable_created_at() {
+        let task = managed_deepseek_graph_task(json!([{
+            "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+            "timeout_ms": 5_000
+        }]));
+        let err = compile_product_executable_graph(
+            &task,
+            "not-a-timestamp",
+            &crate::read_only_planner::WorkflowPlanIds::for_sequence(1),
+            "managed_deepseek",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("created_at must be canonical RFC3339/UTC"),
+            "{err}"
+        );
     }
 
     #[test]
