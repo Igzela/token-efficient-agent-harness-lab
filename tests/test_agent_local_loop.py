@@ -24,6 +24,7 @@ import local_loop
 import local_run_once
 import local_supervisor
 import loopctl
+import plan_lane
 import state_manager
 
 
@@ -1297,6 +1298,146 @@ class TestLocalRunOnce(unittest.TestCase):
         request_handoff.assert_called_once_with(
             383, PLAN_ID, ATTEMPT, NONCE, 426, remote_head
         )
+
+    def test_select_live_plan_generation_keeps_dispatched_claim_after_main_moves(self):
+        """The live dispatched generation is selected even when accepted main moved."""
+
+        prior_main = "b" * 40
+        current_main = "c" * 40
+        self.assertNotEqual(prior_main, current_main)
+        comments = [
+            {
+                "author": {"login": "github-actions[bot]"},
+                "body": json.dumps({
+                    "action": "plan-run",
+                    "dispatch_id": f"plan-run:{PLAN_ID}:{prior_main}:{ATTEMPT}",
+                    "status": "dispatched",
+                    "details": {
+                        "subject_kind": "plan-packet",
+                        "subject_id": PLAN_ID,
+                        "attempt_id": ATTEMPT,
+                        "source_main_sha": prior_main,
+                    },
+                }),
+            },
+            {
+                "author": {"login": "github-actions[bot]"},
+                "body": json.dumps({
+                    "action": "plan-run",
+                    "dispatch_id": f"plan-run:{PLAN_ID}:{'0' * 40}:{ATTEMPT}",
+                    "status": "failed_unknown_output",
+                    "details": {
+                        "subject_kind": "plan-packet",
+                        "subject_id": PLAN_ID,
+                        "attempt_id": ATTEMPT,
+                        "source_main_sha": "0" * 40,
+                    },
+                }),
+            },
+        ]
+        kind, status, attempt, details = local_run_once.select_live_plan_generation(
+            comments, PLAN_ID
+        )
+        self.assertEqual(kind, "live")
+        self.assertEqual(status, "dispatched")
+        self.assertEqual(attempt, ATTEMPT)
+        self.assertEqual(details["source_main_sha"], prior_main)
+        self.assertNotEqual(details["source_main_sha"], current_main)
+
+    def test_reconcile_after_main_moves_recovers_merged_pr_without_second_pr_or_wrapper(self):
+        """Post-merge accepted main is not the claim source_main; recover still binds the PR."""
+
+        prior_main = "b" * 40
+        current = plan_lane.PlanCandidate(
+            packet_id=PLAN_ID,
+            source_main_sha="c" * 40,
+            task_spec_sha256="c" * 64,
+            goal="Implement one bounded plan lane.",
+            allowed_paths=["scripts/agent-control/", "tests/"],
+            prerequisites=[],
+            forbidden_changes=["default branch", "provider calls"],
+            verification=["focused provider-free tests"],
+            rollback=["disable the adapter and revert the packet"],
+        )
+        self.assertNotEqual(prior_main, current.source_main_sha)
+        comment = {
+            "author": {"login": "github-actions[bot]"},
+            "body": json.dumps({
+                "action": "plan-run",
+                "dispatch_id": f"plan-run:{PLAN_ID}:{prior_main}:{ATTEMPT}",
+                "status": "dispatched",
+                "details": {
+                    "subject_kind": "plan-packet",
+                    "subject_id": PLAN_ID,
+                    "attempt_id": ATTEMPT,
+                    "source_main_sha": prior_main,
+                    "claim_nonce": NONCE,
+                    "canonical_branch": current.branch,
+                    "task_spec_sha256": current.task_spec_sha256,
+                },
+            }),
+        }
+        dispatched = {
+            "status": "dispatched",
+            "details": json.loads(comment["body"])["details"],
+        }
+        remote_head = "d" * 40
+        looked_up = []
+
+        def read_dispatch(_ledger, dispatch_id, _repo=""):
+            looked_up.append(dispatch_id)
+            if dispatch_id == f"plan-run:{PLAN_ID}:{prior_main}:{ATTEMPT}":
+                return dispatched
+            return None
+
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False, "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example", "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = current.source_main_sha
+        github.plan_ledger_issue.return_value = 383
+        git = mock.Mock()
+        git.origin_main_sha.return_value = current.source_main_sha
+        runner = local_run_once.LocalRunOnce(
+            github, git, repository="Igzela/example", repo_path=Path("/tmp"),
+            sleeper=lambda _: None,
+        )
+        create_pr = mock.Mock(side_effect=AssertionError("must not open a second plan PR"))
+        wrapper = mock.Mock(side_effect=AssertionError("wrapper must not run again"))
+        wait_result = local_loop.LocalRunOnceResult(
+            "outcome_unknown", 0, ATTEMPT,
+            {"subject_kind": "plan-packet", "subject_id": PLAN_ID, "reason": "lifecycle_timeout"},
+        )
+        with mock.patch.object(runner, "_plan_terminal_owner_readiness", return_value=(True, [])), \
+             mock.patch.object(runner, "_live_plan", return_value=(current, 383)), \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=[comment]), \
+             mock.patch.object(state_manager, "read_dispatch_state", side_effect=read_dispatch), \
+             mock.patch.object(state_manager, "plan_claim_binding_valid", return_value=(True, "ok")), \
+             mock.patch.object(
+                 runner, "_git_checked",
+                 return_value=f"{remote_head}\trefs/heads/{current.branch}",
+             ), \
+             mock.patch.object(
+                 local_run_once.pr_binding, "find_plan_pr",
+                 side_effect=local_run_once.pr_binding.PRBindingError("no open Draft"),
+             ), \
+             mock.patch.object(
+                 runner, "_resolve_non_draft_pr",
+                 return_value={"number": 426, "head_sha": remote_head},
+             ), \
+             mock.patch.object(local_run_once.pr_binding, "create_or_update_plan_pr", create_pr), \
+             mock.patch.object(runner, "_request_plan_handoff", return_value=(True, "handoff_proven")), \
+             mock.patch.object(runner, "_wait_for_plan_terminal_receipts", return_value=wait_result), \
+             mock.patch.object(local_run_once, "_bounded_process", wrapper):
+            result = runner.reconcile_plan(PLAN_ID)
+        self.assertEqual(result.status, "outcome_unknown")
+        self.assertEqual(result.attempt_id, ATTEMPT)
+        self.assertIn(f"plan-run:{PLAN_ID}:{prior_main}:{ATTEMPT}", looked_up)
+        create_pr.assert_not_called()
+        wrapper.assert_not_called()
 
     def test_plan_run_once_waits_on_a_typed_recovered_handoff(self):
         github = mock.Mock()
