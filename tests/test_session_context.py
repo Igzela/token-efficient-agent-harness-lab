@@ -1133,6 +1133,12 @@ class CheckpointTests(unittest.TestCase):
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         status_document = (root / "docs/CURRENT_STATUS.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "The sole exception is the current packet's dispatch-capsule-authorized, "
+            "one-per-claim local OpenCode weak-worker Provider invocation; it cannot make "
+            "the controller read, pass, persist, or report a credential",
+            next_document,
+        )
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
@@ -1141,7 +1147,7 @@ class CheckpointTests(unittest.TestCase):
         capsule = session_context.current_dispatch_capsule(next_document, packet)
         self.assertEqual(capsule["packet_id"], packet["packet_id"])
         self.assertEqual(capsule["packet_state"], packet["state"])
-        self.assertEqual(capsule["dispatch_lane"], "provider_free_repository_maintenance")
+        self.assertEqual(capsule["dispatch_lane"], "opencode_local_repository_maintenance")
         self.assertEqual(capsule["external_effect_limit"], 0)
         self.assertIs(capsule["authority_consumption_allowed"], False)
         self.assertIs(capsule["secret_values_allowed"], False)
