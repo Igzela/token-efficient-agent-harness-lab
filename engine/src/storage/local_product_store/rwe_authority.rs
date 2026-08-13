@@ -379,8 +379,9 @@ pub struct RweAuthorizationIssueRequest {
 ///
 /// The store derives accepted-main, corpus/protocol/schedule hashes, target,
 /// principal, provider, executor, budgets, and binary identity from current
-/// owners. Callers supply only the operational identity, the Golden Path
-/// prerequisite ProductTask id, and a finite expiry.
+/// owners. Callers supply the operational identity, the Golden Path
+/// prerequisite ProductTask id, and a finite expiry. No accepted freeze
+/// duration exists on current main, so this owner does not invent a B2 TTL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RweAuthorizationV2IssueRequest {
     pub authorization_id: String,
@@ -4362,6 +4363,7 @@ mod operator_v2_authority_tests {
         assert_eq!(body["provider_path"], "/chat/completions");
         assert_eq!(body["binary_sha256"], operator_in_process_binary_sha256());
         assert_eq!(body["one_use"], true);
+        assert_eq!(body["expires_at"], "2026-08-07T00:00:00Z");
         // Issue audit is store-owned and present for SQLite.
         let audit_count: i64 = store
             .with_conn(|conn| {

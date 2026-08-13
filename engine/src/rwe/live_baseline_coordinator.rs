@@ -857,6 +857,7 @@ pub fn operator_preflight(
     authorization_id: Option<&str>,
     golden_path_prerequisite_product_task_id: Option<&str>,
 ) -> Result<Value, String> {
+    let observed_at = store.require_now()?;
     let frozen = freeze_current_operator_contract_set()?;
     let mut blockers = Vec::new();
     let mut notes = Vec::new();
@@ -1000,6 +1001,7 @@ pub fn operator_preflight(
     let ready = blockers.is_empty() && gp_ready;
     Ok(sort_value(&json!({
         "schema_version": "rwe_operator_preflight.v1",
+        "observed_at": observed_at,
         "ready": ready,
         "live_baseline_sealed": false,
         "provider_call_performed": false,
@@ -2025,11 +2027,13 @@ fn execute_armed_delegated_rwe_cell(
     let product_task_id = product_task_id.to_string();
     let delegation_id = format!("rwe-del:{run_id}:{}", ids.cell_id);
     let attempt_id = ids.delegated_attempt_id.clone();
-    let now = store.now();
-    let expires_at = (chrono::DateTime::parse_from_rfc3339(&now)
-        .unwrap_or_else(|_| chrono::DateTime::parse_from_rfc3339("2026-08-06T00:00:00Z").unwrap())
-        + chrono::Duration::hours(24))
-    .to_rfc3339();
+    let now = store.require_now()?;
+    let created = chrono::DateTime::parse_from_rfc3339(&now)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|_| "store clock must be canonical RFC3339/UTC".to_string())?;
+    let expires_at = (created + chrono::Duration::hours(24))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
     let (max_files, max_lines) = crate::rwe::frozen_rwe_bindings::frozen_rwe_max_patch_limits()?;
     let cell_cost = crate::rwe::frozen_rwe_bindings::frozen_schedule_cell_max_cost(cell)?
         .ok_or("frozen RWE cell monetary ceiling required for delegated spend")?;
@@ -2869,6 +2873,7 @@ mod tests {
         let principal = operator(&store, "t-pf", "op-pf");
         let pre = operator_preflight(&store, &principal, None, None).unwrap();
         assert_eq!(pre["ready"], false);
+        assert_eq!(pre["observed_at"], "2026-07-25T12:00:00Z");
         assert_eq!(pre["authority_consumed"], false);
         assert_eq!(pre["provider_call_performed"], false);
         let codes: Vec<_> = pre["blockers"]
@@ -2882,6 +2887,23 @@ mod tests {
                 || codes
                     .iter()
                     .any(|c| c.contains("golden_path") || c.contains("composition"))
+        );
+    }
+
+    #[test]
+    fn preflight_fails_closed_without_parseable_store_clock() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(
+            LocalProductStore::new_with_clock(dir.path().join("pf-bad-clock.db"), || {
+                "not-a-timestamp".into()
+            })
+            .unwrap(),
+        );
+        let principal = operator(&store, "t-pf-clock", "op-pf-clock");
+        let err = operator_preflight(&store, &principal, None, None).unwrap_err();
+        assert!(
+            err.contains("store clock must be canonical RFC3339/UTC"),
+            "{err}"
         );
     }
 

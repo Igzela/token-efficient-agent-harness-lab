@@ -260,6 +260,16 @@ impl LocalProductStore {
         (self.clock)()
     }
 
+    /// Store-owned parseable clock. Production uses `utc_now`; fixture clocks
+    /// remain non-authoritative. Unparseable clocks fail closed.
+    pub fn require_now(&self) -> Result<String, String> {
+        let raw = self.now();
+        let dt = chrono::DateTime::parse_from_rfc3339(raw.trim())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .map_err(|_| "store clock must be canonical RFC3339/UTC".to_string())?;
+        Ok(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+    }
+
     pub fn is_postgres(&self) -> bool {
         #[cfg(feature = "pg")]
         {
