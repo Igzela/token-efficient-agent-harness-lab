@@ -10,60 +10,64 @@ The repository improves verifiable task delivery only under hard quality, safety
 
 The repository-maintenance route is continuous only through the existing Plan Execution Ledger, dispatcher, worktree, PR, CI, review, merge, closeout, and context owners. It does not create product-runtime authority, auto-merge, an unauthorized Provider call, target write, release, deployment, EFFECT execution, or T3 authority.
 
-The current window is parked: B1 freshness and Golden Path/RWE `created_at` provenance are on accepted main, but store-derived B2 authorization expiry has no accepted freeze duration. Do not invent a TTL, do not treat caller-supplied `expires_at` as a completed repair, and do not promote the viability preflight while that value is unowned.
+The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authorization.v2`. No freeze-duration TTL was invented. B1 `observed_at` and fail-closed `created_at` provenance remain the PR #434 repair. The current window is the provider-free viability preflight.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-RWE-V2-PREFLIGHT-GATE-REPAIR-1 — DECISION_REQUIRED, B2 freeze duration unowned]
+[window: PE7-RWE-V2-VIABILITY-PREFLIGHT-1 — READY_FOR_EXECUTION, provider-free]
 
-→ [planning-owned B2 duration, then provider-free PREFLIGHT]
 → [viability RUN — typed T3 pause]
 → remaining ordered FUTURE_ROUTE packets
 ```
 
-Every successor remains routing-only until its accepted predecessor closes and the promotion planner proves a bounded current-main contract. A negative, insufficient, unknown, or authority-required disposition rewrites or pauses the route; it never silently follows the nominal order.
+Every successor remains routing-only until its accepted predecessor closes and the promotion planner proves a bounded current-main contract. A negative, insufficient, unknown, or authority-required disposition is `DECISION_REQUIRED` and rewrites or pauses the route; it never silently follows the nominal order.
 
 ## Active Routing
 
-1. `PE7-RWE-V2-PREFLIGHT-GATE-REPAIR-1` — `DECISION_REQUIRED`
+1. `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` — `READY_FOR_EXECUTION`
 
-## Completed (PE7-ROUTE-AUTOPILOT-SOAK-1)
-
-**Historical state:** `COMPLETE`
-
-**Historical evidence:** PR #429 exact head `92e9b49c13b51ee9c471a6acc2181c37d8084029`; merge `d40c8ce82101922e7270f30bd6da592d72354ffe`; exact-head `PASS`; canonical workflow `31681024633`; OpenCode worker PR #426 exact head `c54860674fbf5045239469c2a842ec88002bb3df`; merge `f02d58b5d1fb8d74dd1c68349e4075eb7641879e`; ledger #383 trusted CI/review/merge/closeout; canonical workflow `31664342318`.
-## Completed (PE7-RWE-V2-PREFLIGHT-GATE-CONTRACT-1)
+## Completed (PE7-RWE-V2-PREFLIGHT-GATE-REPAIR-1)
 
 **Historical state:** `COMPLETE`
 
-**Historical evidence:** PR #432 exact head `f31ba002720424deb003728eec52aa9ceae35e33`; merge `710ce06fee68fb75889aa5fa3b9e031b4fdc3a50`; exact-head `PASS`; canonical workflow `31686429471`; contract digest `c8ea4c802e2554b1fa5d0b2f247879ba758d67e4d5df23ed43f1eddadf8aef74`
-## Packet PE7-RWE-V2-PREFLIGHT-GATE-REPAIR-1
+**Historical evidence:** PR #434 exact head `9fdd1045928f862a5b1c1017bc0e9d73e5d50966`; merge `e311db76bf4d2a3a407213b8129a600bc447fd56`; exact-head `PASS`; canonical workflow `31690000442`; durable B2 rule caller-supplied finite expires_at.
+## Packet PE7-RWE-V2-VIABILITY-PREFLIGHT-1
 
-**State:** `DECISION_REQUIRED`
+**State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** PE7-RWE-V2-PREFLIGHT-GATE-CONTRACT-1 — COMPLETE on accepted main `710ce06fee68fb75889aa5fa3b9e031b4fdc3a50` (PR #432 exact head `f31ba002720424deb003728eec52aa9ceae35e33`; merge `710ce06fee68fb75889aa5fa3b9e031b4fdc3a50`; exact-head `PASS`; canonical workflow `31686429471`; contract digest `c8ea4c802e2554b1fa5d0b2f247879ba758d67e4d5df23ed43f1eddadf8aef74`).
+**Prerequisite:** PE7-RWE-V2-PREFLIGHT-GATE-REPAIR-1 — COMPLETE on accepted main `bfc1dc4b1da53548f89b6c3b507d767d47fdc074` (PR #434 exact head `9fdd1045928f862a5b1c1017bc0e9d73e5d50966`; merge `e311db76bf4d2a3a407213b8129a600bc447fd56`; exact-head `PASS`; canonical workflow `31690000442`; durable B2 rule caller-supplied finite expires_at).
 
-**Class:** `IMPLEMENT`
+**Class:** `CLOSEOUT`
 
-**Outcome:** B1 and Golden Path/RWE `created_at` provenance are implemented on accepted main `e311db76bf4d2a3a407213b8129a600bc447fd56` (PR #434 exact head `9fdd1045928f862a5b1c1017bc0e9d73e5d50966`; exact-head `PASS`; canonical workflow `31690000442`). Store-derived B2 authorization expiry cannot be completed: no accepted freeze duration exists on current main. The 24-hour value is the existing `DelegationContract` invariant, not an RWE authorization TTL. Planning must name an existing owner and finite duration, or accept that caller-supplied expiry remains until a later contract. Do not invent a TTL here.
+**Outcome:** Run the accepted provider-free v2 preflight against the repaired accepted main, verify exact freeze and Golden Path bindings, and construct a redacted, hash-bound one-use authorization request package without issuing, admitting, consuming, or executing authority.
 
-**Allowed delta:** `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, `docs/MODULE_MAP.md`, `docs/NEXT_DECISION.md` only while this window stays parked. Do not implement a B2 duration, issue or admit authority, call a Provider, or promote `PE7-RWE-V2-VIABILITY-PREFLIGHT-1`.
+**Allowed delta:** docs/CURRENT_STATUS.md, docs/FUTURE_ROUTE.md, docs/MODULE_MAP.md, docs/NEXT_DECISION.md, engine/src/rwe/live_baseline_coordinator.rs, engine/src/storage/local_product_store/rwe_authority.rs, scripts/agent-control/local_run_once.py, scripts/agent-control/route_driver.py, tests/test_agent_route_driver.py.
 
-**Exit:** A planning-owned freeze duration bound to an existing owner, or an accepted contract that keeps caller-supplied expiry as the durable B2 rule. Either result must be independently reviewed before this packet can close COMPLETE.
+**Exit:** One fresh, authoritative-timestamp preflight receipt with ready=true, zero blockers, and all negative-effect flags false, plus one bounded T3 authorization request package. The route then promotes the viability RUN as `T3_REQUIRED`; it must not execute it.
 
-**Stop:** Inventing a B2 duration, treating caller-supplied expiry as a completed store-derived repair, promoting viability preflight, minting T3, executing an EFFECT, or writing a target.
+**Stop:** Any stale/missing binding, failed preflight, live lease, non-disposable target state, unresolved Provider/model drift, missing evidence destination, invalid B1/B2/provenance, invented B2 freeze duration, or request for an authority/effect outside the exact future RUN packet.
 
-### Decision required
+### Twelve-field contract
 
-No accepted freeze-duration owner exists in `engine/src/rwe/` corpus, protocol, schedule, or economic-protocol freeze artifacts. `LocalProductStore::issue_rwe_run_authorization_v2` therefore still takes caller `expires_at`. That remaining caller-supplied B2 path is not a completed repair and is not authority to invent a TTL.
+1. **Outcome and non-goals.** Run the accepted provider-free v2 preflight against the repaired accepted main, verify exact freeze and Golden Path bindings, and construct a redacted, hash-bound one-use authorization request package without issuing, admitting, consuming, or executing authority.
+2. **Prerequisites and evidence.** Accepted main `bfc1dc4b1da53548f89b6c3b507d767d47fdc074`; checked route manifest SHA `8afa873f6ab19be5145bfb89a1e118e217a7306a0cfe56d2ea63662d83e9695c`; predecessor receipt PR #434 exact head `9fdd1045928f862a5b1c1017bc0e9d73e5d50966`; merge `e311db76bf4d2a3a407213b8129a600bc447fd56`; exact-head `PASS`; canonical workflow `31690000442`; durable B2 rule caller-supplied finite expires_at; current-main evidence SHA `c3dc0b8c2be0cb8a2e0082fc6ef63fbea9ffc83cd6052bb5beba7f2155b137b0`.
+3. **Owners and paths.** Owners: engine/src/rwe/live_baseline_coordinator.rs, engine/src/storage/local_product_store/rwe_authority.rs, scripts/agent-control/route_driver.py; callers: scripts/agent-control/local_run_once.py; tests: tests/test_agent_route_driver.py.
+4. **Frozen invariants.** Packet identity, route manifest SHA `8afa873f6ab19be5145bfb89a1e118e217a7306a0cfe56d2ea63662d83e9695c`, accepted-main SHA, predecessor receipt, and current-main evidence digest are immutable for this candidate.
+5. **Only semantic delta.** Execute only the independently reviewed candidate contract.
+6. **Forbidden changes.** No static route hint is authority; no effect, T3 action, provider, target, automatic merge, or second owner.
+7. **Ordered implementation slices.** engine/src/rwe/live_baseline_coordinator.rs, engine/src/storage/local_product_store/rwe_authority.rs: Run store-owned operator_preflight and bind the redacted v2 request envelope without issuing authority.; docs/CURRENT_STATUS.md, docs/FUTURE_ROUTE.md, docs/NEXT_DECISION.md: Record the authoritative-timestamp preflight receipt and bounded T3 request package.
+8. **Failure, recovery, and stop taxonomy.** Cleanup: Compact routing state to one current window rather than retain transition history. (proved by scripts/agent-control/route_driver.py:compact_next_window); retention: Retain detailed lifecycle evidence in the existing ledger and merged history. (proved by docs/NEXT_DECISION.md:retain); decisions: authority unchanged (docs/NEXT_DECISION.md:authority); evaluator unchanged (docs/NEXT_DECISION.md:evaluator); recovery unchanged (docs/NEXT_DECISION.md:recovery); schema unchanged (docs/NEXT_DECISION.md:schema).
+9. **Verification.** git diff --check; python scripts/check_agent_handoff.py
+10. **Compatibility, rollback, and retention.** Revert the current window and retain detailed lifecycle evidence. (proved by docs/NEXT_DECISION.md:Emergency-stop)
+11. **Exit artifact.** Evidence destinations: Accepted packet receipt index. (docs/CURRENT_STATUS.md:Accepted).
+12. **Next action.** Governed PR, exact-head review/CI, manual merge, closeout, then repeat evidence-backed promotion.
 
-Options for the planning owner:
-1. Name an existing finite duration already owned on main and bind B2 derivation to `store.require_now()` plus that duration.
-2. Accept caller-supplied finite expiry as the durable B2 rule in a later contract.
-3. Park the route until a human names the duration.
+### 11. Weak-Agent Dispatch Capsule
 
-This parked window carries no weak-agent dispatch capsule and is not `READY_FOR_EXECUTION` until planning owns a B2 duration.
+<!-- weak-agent-dispatch:v1
+{"allowed_outputs": ["A provider-free change limited to the independently proved current-main allowed paths.", "Exact-head verification and review evidence through the existing lifecycle owners."], "allowed_paths": ["docs/CURRENT_STATUS.md", "docs/FUTURE_ROUTE.md", "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md", "engine/src/rwe/live_baseline_coordinator.rs", "engine/src/storage/local_product_store/rwe_authority.rs", "scripts/agent-control/local_run_once.py", "scripts/agent-control/route_driver.py", "tests/test_agent_route_driver.py"], "authority_consumption_allowed": false, "dispatch_lane": "provider_free_repository_maintenance", "expected_artifacts": ["Accepted packet receipt index. (docs/CURRENT_STATUS.md:Accepted)"], "external_effect_limit": 0, "forbidden_changes": ["Do not use FUTURE_ROUTE static paths as current-main authority.", "Do not create a second controller, ledger, queue, lease, store, or workflow owner.", "Do not mint T3 authority, execute an EFFECT, auto-merge, call a Provider, or write a target."], "forbidden_next_actions": ["Do not skip an EFFECT node or execute an EFFECT or T3 path without its exact valid finite receipt.", "Do not treat missing, conflicting, stale, or outcome-unknown routing or receipts as success.", "Do not start a successor whose promotion candidate has not been independently accepted.", "Do not use FUTURE_ROUTE static paths as current-main authority.", "Do not create a second controller, ledger, queue, lease, store, or workflow owner.", "Do not mint T3 authority, execute an EFFECT, auto-merge, call a Provider, or write a target."], "goal": "Run the accepted provider-free v2 preflight against the repaired accepted main, verify exact freeze and Golden Path bindings, and construct a redacted, hash-bound one-use authorization request package without issuing, admitting, consuming, or executing authority.", "ordered_steps": ["engine/src/rwe/live_baseline_coordinator.rs, engine/src/storage/local_product_store/rwe_authority.rs: Run store-owned operator_preflight and bind the redacted v2 request envelope without issuing authority.", "docs/CURRENT_STATUS.md, docs/FUTURE_ROUTE.md, docs/NEXT_DECISION.md: Record the authoritative-timestamp preflight receipt and bounded T3 request package."], "packet_id": "PE7-RWE-V2-VIABILITY-PREFLIGHT-1", "packet_state": "READY_FOR_EXECUTION", "pause_gates": ["Stop when an owner, caller, test, path, operation, destination, or decision cannot be re-proved from accepted main.", "Stop when exact-head review or canonical CI is missing, stale, failed, or conflicting.", "Recover ordinary worker, CI, review, checkpoint, duplicate, restart, and main-drift failures through existing owners; stop if recovery evidence is unproved.", "Stop before a Provider, target, automatic merge, authority consumption, or external effect.", "Do not retry a possibly executed external effect whose outcome is unknown."], "plan_lane_state": "plan_lane_active", "prerequisite_receipts": ["PR #434 exact head `9fdd1045928f862a5b1c1017bc0e9d73e5d50966`; merge `e311db76bf4d2a3a407213b8129a600bc447fd56`; exact-head `PASS`; canonical workflow `31690000442`; durable B2 rule caller-supplied finite expires_at"], "prerequisites": ["PE7-RWE-V2-PREFLIGHT-GATE-REPAIR-1"], "private_paths_allowed": false, "promotion_evidence_sha256": "c3dc0b8c2be0cb8a2e0082fc6ef63fbea9ffc83cd6052bb5beba7f2155b137b0", "read_paths": ["docs/CURRENT_STATUS.md", "docs/FUTURE_ROUTE.md", "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md", "engine/src/rwe/live_baseline_coordinator.rs", "engine/src/storage/local_product_store/rwe_authority.rs", "scripts/agent-control/local_run_once.py", "scripts/agent-control/route_driver.py", "tests/test_agent_route_driver.py"], "risk_class": "none", "rollback": "Revert the current window and retain detailed lifecycle evidence. (proved by docs/NEXT_DECISION.md:Emergency-stop)", "route_manifest_sha256": "8afa873f6ab19be5145bfb89a1e118e217a7306a0cfe56d2ea63662d83e9695c", "schema_version": "weak_agent_dispatch.v1", "secret_values_allowed": false, "verification": ["git diff --check", "python scripts/check_agent_handoff.py"], "verification_family": "evidence_review", "worker_tier": "T2"}
+-->
 
 ## Common Execution Protocol
 
