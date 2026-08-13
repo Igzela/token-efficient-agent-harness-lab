@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1928,6 +1929,59 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
             json.loads((output / "failure_reason.json").read_text(encoding="utf-8"))["reason"],
             "prompt_missing",
         )
+        self.assertFalse(record.is_file())
+
+    def test_wrapper_binds_prompt_location_to_effective_temp_root(self):
+        """A prompt under /tmp but outside TMPDIR is still rejected deterministically.
+
+        The claim-bound prompt must live under the effective temp root, never an
+        arbitrary workspace or repository path.  A blanket ``/tmp/*`` acceptance
+        would let a repository checked out under /tmp smuggle its own files past
+        the gate, so the gate must bind to ``$TMPDIR`` itself.
+        """
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        record = root / "records.jsonl"
+        _write_executable(
+            root / "opencode",
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            f"record = {str(record)!r}\n"
+            "with open(record, 'a', encoding='utf-8') as handle:\n"
+            "    json.dump({'bin':'opencode','args':sys.argv[1:]}, handle); handle.write('\\n')\n"
+            "raise SystemExit(0)\n",
+        )
+        output = root / "output"
+        home = root / "home"
+        home.mkdir()
+        wt = root / "worktree"
+        wt.mkdir()
+        temp_root = root / "bounded-tmp"
+        temp_root.mkdir()
+        system_temp = tempfile.gettempdir()
+        outside_dir = Path(tempfile.mkdtemp(prefix="agent-prompt-outside-", dir=system_temp))
+        self.addCleanup(shutil.rmtree, outside_dir, ignore_errors=True)
+        outside_prompt = outside_dir / "implementation-prompt.txt"
+        outside_prompt.write_text("claim-bound prompt under the system temp", encoding="utf-8")
+        self.assertNotIn(str(temp_root), str(outside_prompt))
+        result = subprocess.run(
+            [str(WRAPPER), "implement", str(outside_prompt), str(output), str(wt)],
+            cwd=Path(__file__).resolve().parents[1],
+            env={
+                "PATH": f"{root}:/usr/bin:/bin",
+                "HOME": str(home),
+                "LANG": "C",
+                "TMPDIR": str(temp_root),
+            },
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        failure = json.loads((output / "failure_reason.json").read_text(encoding="utf-8"))
+        self.assertEqual(failure["reason"], "prompt_missing")
         self.assertFalse(record.is_file())
 
     def test_dispatched_generation_does_not_invoke_wrapper_again(self):
