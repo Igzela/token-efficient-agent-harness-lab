@@ -831,6 +831,31 @@ class TestRecordPlanLifecycleDispatcher(unittest.TestCase):
         self.assertFalse(result["recorded"])
         self.assertEqual(result["reason"], "ci_evidence_unavailable")
 
+    def test_ci_stage_does_not_require_a_live_execution_lease(self):
+        patches = self._patch_dispatch()
+        for patch in patches:
+            patch.start()
+        try:
+            with mock.patch.object(
+                dispatcher, "_authoritative_plan_ci",
+                return_value={
+                    "workflow_run_id": 7,
+                    "workflow_name": "tests",
+                    "required_jobs": ["python-tests"],
+                    "successful_jobs": ["python-tests"],
+                },
+            ), mock.patch.object(
+                plan_lifecycle, "record_plan_ci_receipt",
+                return_value={"recorded": True, "reason": "recorded"},
+            ):
+                result = dispatcher.record_plan_lifecycle(PACKET, ATTEMPT, "ci")
+            kwargs = state_manager.plan_claim_binding_valid.call_args.kwargs
+            self.assertEqual(kwargs.get("require_lease_live"), False)
+        finally:
+            for patch in patches:
+                patch.stop()
+        self.assertTrue(result["recorded"])
+
     def test_ci_stage_uses_live_generation_after_main_moves(self):
         drifted = "e" * 40
         drifted_claim = dispatch_state("dispatched", {**DETAILS, "source_main_sha": drifted})

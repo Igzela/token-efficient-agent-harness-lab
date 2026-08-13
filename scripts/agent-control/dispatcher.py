@@ -1201,8 +1201,9 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
     terminal packet state through the existing dispatch-state owner.
     Every stage validates the exact subject binding (packet id, attempt,
     dispatch id, PR number, exact head SHA) against the durable ledger
-    claim; no model self-report advances state, and every write is
-    idempotent.
+    claim.  Receipt recording does not require a still-live execution
+    lease: the worker may already have finished and the lease expired.
+    No model self-report advances state, and every write is idempotent.
     """
 
     attempt = _normalized_attempt_id(attempt_id)
@@ -1258,6 +1259,7 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
     valid, reason = sm.plan_claim_binding_valid(
         ledger_issue, details, packet_id, attempt, token,
         source_main_sha, task_spec_sha256,
+        require_lease_live=False,
     )
     if not valid:
         return {"recorded": False, "stage": stage, "reason": reason}
