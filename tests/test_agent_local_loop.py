@@ -1817,11 +1817,17 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
         self.assertIn("--dir", args)
         self.assertEqual(args[args.index("--dir") + 1], str(worktree))
         self.assertIn("--file", args)
-        attached = args[args.index("--file") + 1]
+        file_idx = args.index("--file")
+        attached = args[file_idx + 1]
         self.assertEqual(attached, str(Path(run_calls[0]["env"]["TMPDIR"]) / "claim-prompt.txt"))
         self.assertNotEqual(attached, str(prompt))
         self.assertNotIn("claim-bound prompt", args)
         self.assertIn("Execute the attached claim-bound task.", args)
+        self.assertLess(
+            args.index("Execute the attached claim-bound task."),
+            file_idx,
+            "positional message must precede --file; OpenCode treats later words as extra attachments",
+        )
         for flag in FORBIDDEN_OPENCODE_FLAGS:
             self.assertNotIn(flag, args)
         child_env = run_calls[0]["env"]
