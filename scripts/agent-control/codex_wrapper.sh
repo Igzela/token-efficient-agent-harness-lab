@@ -64,11 +64,11 @@ fi
 PARENT_TMPDIR="${TMPDIR:-/tmp}"
 PROMPT_ABS="$(cd "$(dirname -- "$PROMPT_FILE")" && pwd)/$(basename -- "$PROMPT_FILE")"
 case "$PROMPT_ABS" in
-  "${PARENT_TMPDIR%/}"/*|/tmp/*) ;;
+  "${PARENT_TMPDIR%/}"/*) ;;
   *) fail_closed "prompt_missing" "prompt file not found" ;;
 esac
 
-INVOKE_TMP="$(mktemp -d "${PARENT_TMPDIR%/}/agent-opencode.XXXXXX")"
+INVOKE_TMP="$(mktemp -d "${PARENT_TMPDIR%/}/agent-opencode.XXXXXX")" || fail_closed "environment_invalid" "invocation temp root is unavailable"
 cleanup_invoke() {
   rm -rf -- "$INVOKE_TMP"
 }
