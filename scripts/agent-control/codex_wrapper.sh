@@ -179,7 +179,8 @@ if [ "$OPENCODE_EXIT" -ne 0 ]; then
   fail_closed "model_execution_failure" "OpenCode execution failed"
 fi
 
-if ! python3 - "$JSONL_OUTPUT" "$LAST_MESSAGE_OUTPUT" "$LAST_MESSAGE_METADATA" "$WORKER_TYPE" <<'PY'
+SESSION_IDS="$INVOKE_TMP/session-ids.txt"
+if ! python3 - "$JSONL_OUTPUT" "$LAST_MESSAGE_OUTPUT" "$LAST_MESSAGE_METADATA" "$WORKER_TYPE" "$SESSION_IDS" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -189,11 +190,13 @@ events_path = pathlib.Path(sys.argv[1])
 last_message_path = pathlib.Path(sys.argv[2])
 metadata_path = pathlib.Path(sys.argv[3])
 worker_type = sys.argv[4]
+session_ids_path = pathlib.Path(sys.argv[5])
 max_bytes = 64 * 1024
 
 if events_path.is_symlink() or not events_path.is_file():
     raise ValueError("events are not a regular file")
 chunks: list[str] = []
+session_ids: list[str] = []
 for raw_line in events_path.read_text(encoding="utf-8").splitlines():
     if not raw_line.strip():
         continue
@@ -201,12 +204,23 @@ for raw_line in events_path.read_text(encoding="utf-8").splitlines():
         payload = json.loads(raw_line)
     except json.JSONDecodeError as error:
         raise ValueError("events are not JSONL") from error
-    if not isinstance(payload, dict) or payload.get("type") != "text":
+    if not isinstance(payload, dict):
+        continue
+    session_id = payload.get("sessionID")
+    if (
+        isinstance(session_id, str)
+        and session_id.startswith("ses_")
+        and session_id not in session_ids
+    ):
+        session_ids.append(session_id)
+    if payload.get("type") != "text":
         continue
     part = payload.get("part")
     text = part.get("text") if isinstance(part, dict) else None
     if isinstance(text, str) and text:
         chunks.append(text)
+if session_ids:
+    session_ids_path.write_text("\n".join(session_ids) + "\n", encoding="utf-8")
 raw = "".join(chunks).encode("utf-8")
 if not raw or len(raw) > max_bytes:
     raise ValueError("last message size is outside the bounded range")
@@ -231,7 +245,13 @@ then
   fail_closed "malformed_output" "OpenCode produced an invalid bounded UTF-8 last message"
 fi
 
-rm -f -- "$JSONL_OUTPUT" "$STDERR_OUTPUT"
+if [ -f "$SESSION_IDS" ]; then
+  while IFS= read -r session_id; do
+    [ -n "$session_id" ] || continue
+    run_opencode session delete "$session_id" >/dev/null 2>&1 || true
+  done < "$SESSION_IDS"
+fi
+rm -f -- "$JSONL_OUTPUT" "$STDERR_OUTPUT" "$SESSION_IDS"
 if [ "$WORKER_TYPE" != "review" ]; then
   rm -f -- "$LAST_MESSAGE_OUTPUT"
 else

@@ -1757,8 +1757,10 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
                 "    raise SystemExit(0)\n"
                 "if sys.argv[1:3] == ['run', '--help']:\n"
                 "    print('--format json --dir --file'); raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['session', 'delete']:\n"
+                "    raise SystemExit(0)\n"
                 "if sys.argv[1:2] == ['run']:\n"
-                "    print(json.dumps({'type':'text','part':{'text':'bounded-last-message'}}))\n"
+                "    print(json.dumps({'type':'text','sessionID':'ses_testclaim1','part':{'text':'bounded-last-message'}}))\n"
                 "    raise SystemExit(0)\n"
                 "raise SystemExit(2)\n"
             )
@@ -1804,6 +1806,8 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
         self.assertNotIn("codex", bins)
         run_calls = [item for item in records if item["bin"] == "opencode" and item["args"][:1] == ["run"] and "--help" not in item["args"]]
         self.assertEqual(len(run_calls), 1)
+        delete_calls = [item for item in records if item["bin"] == "opencode" and item["args"][:2] == ["session", "delete"]]
+        self.assertEqual(delete_calls[0]["args"], ["session", "delete", "ses_testclaim1"])
         args = run_calls[0]["args"]
         self.assertIn("--format", args)
         self.assertEqual(args[args.index("--format") + 1], "json")
