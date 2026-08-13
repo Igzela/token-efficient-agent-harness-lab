@@ -1222,7 +1222,30 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
     candidate, ledger_issue, error = _read_live_plan(packet_id, repo)
     if candidate is None or ledger_issue is None:
         return {"recorded": False, "stage": stage, "reason": error or "plan_source_unavailable"}
-    dispatch_id = _plan_dispatch_id(packet_id, candidate.source_main_sha, attempt)
+    try:
+        comments = sm.get_issue_comments(ledger_issue, repo)
+    except sm.StateUnavailableError:
+        return {"recorded": False, "stage": stage, "reason": "plan_claim_not_found"}
+    import local_run_once
+    kind, status, selected_attempt, selected_details = local_run_once.select_live_plan_generation(
+        comments, packet_id
+    )
+    if (
+        kind != "live"
+        or selected_attempt != attempt
+        or not isinstance(selected_details, dict)
+    ):
+        return {"recorded": False, "stage": stage, "reason": "plan_claim_not_found"}
+    source_main_sha = selected_details.get("source_main_sha")
+    task_spec_sha256 = selected_details.get("task_spec_sha256")
+    if (
+        not isinstance(source_main_sha, str)
+        or local_loop.HEX40.fullmatch(source_main_sha) is None
+        or not isinstance(task_spec_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", task_spec_sha256) is None
+    ):
+        return {"recorded": False, "stage": stage, "reason": "plan_claim_not_found"}
+    dispatch_id = _plan_dispatch_id(packet_id, source_main_sha, attempt)
     claim = plan_lifecycle._plan_claim(ledger_issue, dispatch_id, repo)
     if claim is None:
         return {"recorded": False, "stage": stage, "reason": "plan_claim_not_found"}
@@ -1231,10 +1254,10 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
     if claim.get("status") != "dispatched":
         return {"recorded": False, "stage": stage, "reason": "plan_claim_state_unexpected"}
     details = claim.get("details")
-    token = local_loop.plan_execution_token(repo, packet_id, candidate.source_main_sha, attempt)
+    token = local_loop.plan_execution_token(repo, packet_id, source_main_sha, attempt)
     valid, reason = sm.plan_claim_binding_valid(
         ledger_issue, details, packet_id, attempt, token,
-        candidate.source_main_sha, candidate.task_spec_sha256,
+        source_main_sha, task_spec_sha256,
     )
     if not valid:
         return {"recorded": False, "stage": stage, "reason": reason}
@@ -1267,7 +1290,7 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
         if evidence is None:
             return {"recorded": False, "stage": stage, "reason": "ci_evidence_unavailable"}
         outcome = plan_lifecycle.record_plan_ci_receipt(
-            ledger_issue, packet_id, attempt, candidate.source_main_sha,
+            ledger_issue, packet_id, attempt, source_main_sha,
             pr_number, head_sha, int(evidence["workflow_run_id"]), repo,
             workflow_name=str(evidence["workflow_name"]),
             required_jobs=list(evidence["required_jobs"]),
@@ -1301,7 +1324,7 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
         if evidence is None:
             return {"recorded": False, "stage": stage, "reason": "review_evidence_unavailable"}
         outcome = plan_lifecycle.record_plan_review_receipt(
-            ledger_issue, packet_id, attempt, candidate.source_main_sha,
+            ledger_issue, packet_id, attempt, source_main_sha,
             pr_number, head_sha, evidence["base_sha"], evidence["reviewed_range"],
             repo, evidence["summary"],
         )
@@ -1311,7 +1334,7 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
         if merge_commit_sha is None:
             return {"recorded": False, "stage": stage, "reason": "merge_evidence_unavailable"}
         outcome = plan_lifecycle.record_plan_merge_receipt(
-            ledger_issue, packet_id, attempt, candidate.source_main_sha,
+            ledger_issue, packet_id, attempt, source_main_sha,
             pr_number, head_sha, merge_commit_sha, repo,
         )
         return {**outcome, "stage": stage, "merge_commit_sha": merge_commit_sha}
@@ -1326,7 +1349,7 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
     if closeout_reference is None:
         return {"recorded": False, "stage": stage, "reason": "closeout_receipt_pending"}
     outcome = plan_lifecycle.record_plan_closeout_receipt(
-        ledger_issue, packet_id, attempt, candidate.source_main_sha,
+        ledger_issue, packet_id, attempt, source_main_sha,
         pr_number, head_sha, "closed_out", closeout_reference, repo,
     )
     return {**outcome, "stage": stage}

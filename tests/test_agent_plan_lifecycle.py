@@ -747,6 +747,16 @@ class TestRecordPlanLifecycleDispatcher(unittest.TestCase):
                 dispatcher, "_read_live_plan",
                 return_value=(candidate(), LEDGER, None),
             ),
+            mock.patch.object(state_manager, "get_issue_comments", return_value=[]),
+            mock.patch.object(
+                local_run_once, "select_live_plan_generation",
+                return_value=("live", "dispatched", ATTEMPT, {
+                    "source_main_sha": MAIN,
+                    "task_spec_sha256": DETAILS["task_spec_sha256"],
+                    "subject_id": PACKET,
+                    "attempt_id": ATTEMPT,
+                }),
+            ),
             mock.patch.object(
                 state_manager, "read_dispatch_state",
                 return_value=claim if claim is not None else dispatch_state("dispatched"),
@@ -820,6 +830,41 @@ class TestRecordPlanLifecycleDispatcher(unittest.TestCase):
                 patch.stop()
         self.assertFalse(result["recorded"])
         self.assertEqual(result["reason"], "ci_evidence_unavailable")
+
+    def test_ci_stage_uses_live_generation_after_main_moves(self):
+        drifted = "e" * 40
+        drifted_claim = dispatch_state("dispatched", {**DETAILS, "source_main_sha": drifted})
+        patches = self._patch_dispatch(claim=drifted_claim)
+        for patch in patches:
+            patch.start()
+        try:
+            with mock.patch.object(
+                local_run_once, "select_live_plan_generation",
+                return_value=("live", "dispatched", ATTEMPT, {
+                    "source_main_sha": drifted,
+                    "task_spec_sha256": DETAILS["task_spec_sha256"],
+                    "subject_id": PACKET,
+                    "attempt_id": ATTEMPT,
+                }),
+            ), mock.patch.object(
+                dispatcher, "_authoritative_plan_ci",
+                return_value={
+                    "workflow_run_id": 7,
+                    "workflow_name": "tests",
+                    "required_jobs": ["python-tests"],
+                    "successful_jobs": ["python-tests"],
+                },
+            ), mock.patch.object(
+                plan_lifecycle, "record_plan_ci_receipt",
+                return_value={"recorded": True, "reason": "recorded"},
+            ) as record:
+                result = dispatcher.record_plan_lifecycle(PACKET, ATTEMPT, "ci")
+            record.assert_called_once()
+            self.assertEqual(record.call_args.args[3], drifted)
+        finally:
+            for patch in patches:
+                patch.stop()
+        self.assertTrue(result["recorded"])
 
     def test_ci_stage_records_verified_github_evidence(self):
         patches = self._patch_dispatch()
