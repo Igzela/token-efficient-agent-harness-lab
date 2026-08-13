@@ -197,6 +197,44 @@ _CHILD_ENV_ALLOWLIST = frozenset(
     }
 )
 
+_WORKER_FAILURE_REASONS = frozenset(
+    {
+        "unsupported_worker_type",
+        "cli_missing",
+        "environment_invalid",
+        "prompt_missing",
+        "workspace_invalid",
+        "timeout_unavailable",
+        "timeout_invalid",
+        "authentication_failure",
+        "unsupported_flags",
+        "model_execution_timeout",
+        "usage_or_credit_exhaustion",
+        "model_execution_failure",
+        "malformed_output",
+    }
+)
+
+
+def _worker_failure_reason(output_dir: Path) -> str:
+    """Read only the wrapper-owned bounded failure classification."""
+
+    path = output_dir / "failure_reason.json"
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 4096:
+            return "unclassified_worker_failure"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "unclassified_worker_failure"
+    if not isinstance(payload, dict) or payload.get("kind") != "agent-orchestrator-failure":
+        return "unclassified_worker_failure"
+    reason = payload.get("reason")
+    return (
+        reason
+        if isinstance(reason, str) and reason in _WORKER_FAILURE_REASONS
+        else "unclassified_worker_failure"
+    )
+
 
 def child_env(base: dict[str, str] | None = None) -> dict[str, str]:
     """Return a fail-closed environment for untrusted or semi-trusted children."""
@@ -1005,9 +1043,9 @@ class LocalRunOnce:
                 packet_id, attempt, candidate, ledger_issue
             )
             if recovered is not None:
-                if recovered.get("status") == "handed_off":
-                    pr_number = recovered.get("pr_number")
-                    head_sha = recovered.get("head_sha")
+                if recovered.status == "handed_off":
+                    pr_number = recovered.details.get("pr_number")
+                    head_sha = recovered.details.get("head_sha")
                     if (
                         type(pr_number) is int and pr_number > 0
                         and isinstance(head_sha, str)
@@ -1349,7 +1387,13 @@ class LocalRunOnce:
                     timeout_seconds=self.command_timeout_seconds,
                 )
                 if exit_code != 0:
-                    return self._plan_result("failed", packet_id, attempt, reason="codex_failed")
+                    return self._plan_result(
+                        "failed",
+                        packet_id,
+                        attempt,
+                        reason="codex_failed",
+                        worker_failure_reason=_worker_failure_reason(output_dir),
+                    )
                 exit_file = output_dir / "codex-exit-code.txt"
                 if not exit_file.is_file() or exit_file.read_text().strip() != "0":
                     return self._plan_result("failed", packet_id, attempt, reason="codex_result_invalid")
@@ -2592,7 +2636,13 @@ class LocalRunOnce:
                     timeout_seconds=self.command_timeout_seconds,
                 )
                 if exit_code != 0:
-                    return self._result("failed", issue_number, attempt, reason="codex_failed")
+                    return self._result(
+                        "failed",
+                        issue_number,
+                        attempt,
+                        reason="codex_failed",
+                        worker_failure_reason=_worker_failure_reason(output_dir),
+                    )
                 exit_file = output_dir / "codex-exit-code.txt"
                 if not exit_file.is_file() or exit_file.read_text().strip() != "0":
                     return self._result("failed", issue_number, attempt, reason="codex_result_invalid")

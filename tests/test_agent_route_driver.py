@@ -1445,6 +1445,25 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         self.assertEqual(runner.run_plan_once.call_count, 2)
         self.assertTrue(all(call.args[0] == CLOSED for call in runner.run_plan_once.call_args_list))
 
+    def test_usage_exhaustion_stops_without_minting_another_generation(self):
+        runner = mock.Mock()
+        runner.run_plan_once.return_value = self.Result(
+            "failed",
+            reason="codex_failed",
+            worker_failure_reason="usage_or_credit_exhaustion",
+        )
+        route = route_driver.RepositoryRouteRunner(
+            repository="acme/repo",
+            repo_path=Path("/tmp"),
+            runner=runner,
+            attempt_factory=lambda: ATTEMPT,
+        )
+        with mock.patch.object(route, "_current_packet", return_value=(CLOSED, MAIN)):
+            result = route.run()
+        self.assertEqual(result["state"], "UNRECOVERABLE_INFRASTRUCTURE_FAILURE")
+        self.assertEqual(result["reason"], "route_worker_usage_or_credit_exhaustion")
+        runner.run_plan_once.assert_called_once_with(CLOSED, ATTEMPT)
+
     def test_production_route_polls_recoverable_controller_state(self):
         runner = mock.Mock()
         runner.run_plan_once.side_effect = [
