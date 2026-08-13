@@ -1,6 +1,6 @@
 # Future Route
 
-Last updated: 2026-08-11.
+Last updated: 2026-08-13.
 
 This document is the sole long-horizon routing index. Every packet here is `BLOCKED_PREREQUISITE` and routing-only: its order, prerequisite, intended class, bounded sketch, and promotion profile are accepted planning context, not implementation or external-effect authority.
 
@@ -79,7 +79,7 @@ The manifest rows are compact arrays of `packet_id`, `class`, `worker_tier`, `ri
 
 # Future Route
 
-Last updated: 2026-08-11.
+Last updated: 2026-08-13.
 
 This document is the sole long-horizon routing index. Every packet here is `BLOCKED_PREREQUISITE` and routing-only: its order, prerequisite, intended class, and bounded sketch are accepted planning context, not implementation or external-effect authority.
 
@@ -105,7 +105,7 @@ These packets prove lifecycle viability only. They do not authorize Architecture
 
 **Exit:** One fresh, authoritative-timestamp preflight receipt with ready=true, zero blockers, and all negative-effect flags false, plus one bounded T3 authorization request package. The route then promotes the viability RUN as `T3_REQUIRED`; it must not execute it.
 
-**Stop:** Any stale/missing binding, failed preflight, live lease, non-disposable target state, unresolved Provider/model drift, missing evidence destination, invalid B1/B2/provenance, or request for an authority/effect outside the exact future RUN packet.
+**Stop:** Any stale/missing binding, failed preflight, live lease, non-disposable target state, unresolved Provider/model drift, missing evidence destination, invalid B1/B2/provenance, unowned B2 freeze duration, or request for an authority/effect outside the exact future RUN packet.
 
 ### Packet PE7-RWE-V2-VIABILITY-RUN-1
 
