@@ -1062,20 +1062,147 @@ def _authoritative_plan_merge(pr_number: int, head_sha: str, repo: str) -> str |
     return oid
 
 
+_RECEIPT_MARKER = "EXACT-HEAD REVIEW RECEIPT"
+
+
+def _receipt_field(body: str, label: str) -> str | None:
+    matches = re.findall(rf"(?im)^\s*{re.escape(label)}\s*:\s*(.*?)\s*$", body)
+    return matches[0].strip() if len(matches) == 1 else None
+
+
+def _authoritative_plan_ci(
+    pr_number: int, head_sha: str, worker: dict[str, object], repo: str
+) -> dict[str, object] | None:
+    """Return verified exact-head canonical CI evidence, or None.
+
+    Finds the newest supported exact-head ``tests`` run for the bound plan
+    branch, then re-proves it through the existing CI verifier.  Any
+    missing branch, unreadable run, or failed exact-head proof returns
+    ``None``.
+    """
+
+    extra = worker.get("extra")
+    branch = extra.get("branch") if isinstance(extra, dict) else None
+    if not isinstance(branch, str) or not branch:
+        return None
+    try:
+        selected = ci_verifier.select_canonical_run(
+            ci_verifier.find_exact_runs(branch, head_sha, pr_number)
+        )
+    except (ci_verifier.CIVerificationError, ValueError, TypeError):
+        return None
+    if not isinstance(selected, dict):
+        return None
+    run_id = selected.get("databaseId")
+    pr = sm.get_pr_info(pr_number, repo)
+    if not isinstance(pr, dict):
+        return None
+    try:
+        evidence = ci_verifier.verify_exact_head_ci(pr_number, head_sha, run_id, pr)
+    except ci_verifier.CIVerificationError:
+        return None
+    workflow_run_id = evidence.get("workflow_run_id")
+    if type(workflow_run_id) is not int:
+        try:
+            workflow_run_id = int(workflow_run_id)
+        except (TypeError, ValueError):
+            return None
+    required = evidence.get("required_jobs")
+    successful = evidence.get("successful_jobs")
+    workflow_name = evidence.get("workflow_name")
+    if (
+        workflow_run_id <= 0
+        or not isinstance(required, list)
+        or not isinstance(successful, list)
+        or not isinstance(workflow_name, str)
+        or not workflow_name
+    ):
+        return None
+    return {
+        "workflow_run_id": workflow_run_id,
+        "workflow_name": workflow_name,
+        "required_jobs": required,
+        "successful_jobs": successful,
+    }
+
+
+def _authoritative_plan_review(
+    pr_number: int, head_sha: str, repo: str, expected_base_sha: str = ""
+) -> dict[str, str] | None:
+    """Return a live exact-head PASS review receipt, or None.
+
+    Requires one playbook ``EXACT-HEAD REVIEW RECEIPT`` on the PR whose
+    reviewed SHA, complete ``base...head`` range, and PASS outcome match
+    the live binding, and whose reviewer session differs from the
+    implementation session.  Absence, conflict, or a non-PASS outcome
+    returns ``None``.
+    """
+
+    ok, _reason, binding = sm.resolve_live_review_binding(
+        pr_number, head_sha, repo, expected_base_sha
+    )
+    if not ok or not isinstance(binding, dict):
+        return None
+    reviewed_range = binding.get("reviewed_range")
+    base_sha = binding.get("base_sha")
+    if (
+        not isinstance(reviewed_range, str)
+        or not isinstance(base_sha, str)
+        or reviewed_range != f"{base_sha}...{head_sha}"
+    ):
+        return None
+    try:
+        comments = sm.get_issue_comments(pr_number, repo)
+    except sm.StateUnavailableError:
+        return None
+    if not isinstance(comments, list):
+        return None
+    matches: list[dict[str, str]] = []
+    for comment in comments:
+        body = comment.get("body") if isinstance(comment, dict) else None
+        if not isinstance(body, str) or body.count(_RECEIPT_MARKER) != 1:
+            continue
+        reviewed_sha = _receipt_field(body, "Reviewed SHA")
+        comment_range = _receipt_field(body, "Reviewed range")
+        outcome = (_receipt_field(body, "Outcome") or "").upper()
+        unresolved = (_receipt_field(body, "Unresolved objections") or "").lower()
+        reviewer = _receipt_field(body, "Reviewer session identity")
+        implementation = _receipt_field(body, "Implementation session identity")
+        if (
+            reviewed_sha == head_sha
+            and comment_range == reviewed_range
+            and outcome == "PASS"
+            and unresolved in {"none", "no"}
+            and isinstance(reviewer, str)
+            and reviewer
+            and isinstance(implementation, str)
+            and implementation
+            and reviewer != implementation
+        ):
+            matches.append({
+                "base_sha": base_sha,
+                "reviewed_range": reviewed_range,
+                "summary": "exact-head PASS review receipt verified from live PR",
+            })
+    if not matches:
+        return None
+    return matches[0]
+
+
 def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[str, object]:
     """Record one controller-owned plan lifecycle transition on the ledger.
 
-    The ``ci`` and ``review`` stages are verified readback gates over the
-    existing CI monitor's and review owner's own ledger recordings for the
-    exact plan head; they never write.  The ``merge`` stage verifies the
-    maintainer merge against authoritative GitHub PR state and then records
-    the merge receipt through the existing merge-state owner.  The
-    ``closeout`` stage requires the CI, review, and merge receipts on the
-    ledger and then records the canonical closeout receipt plus terminal
-    packet state through the existing dispatch-state owner.  Every stage
-    validates the exact subject binding (packet id, attempt, dispatch id, PR
-    number, exact head SHA) against the durable ledger claim; no model
-    self-report advances state, and every write is idempotent.
+    The ``ci`` and ``review`` stages verify authoritative GitHub CI/review
+    state for the exact plan head and then record the receipt through the
+    existing CI-state and review-state owners — the same write path the
+    ``merge`` stage already uses after verifying the maintainer merge.
+    The ``closeout`` stage requires the CI, review, and merge receipts on
+    the ledger and then records the canonical closeout receipt plus
+    terminal packet state through the existing dispatch-state owner.
+    Every stage validates the exact subject binding (packet id, attempt,
+    dispatch id, PR number, exact head SHA) against the durable ledger
+    claim; no model self-report advances state, and every write is
+    idempotent.
     """
 
     attempt = _normalized_attempt_id(attempt_id)
@@ -1131,24 +1258,54 @@ def record_plan_lifecycle(packet_id: str, attempt_id: str, stage: str) -> dict[s
         return {"recorded": False, "stage": stage, "reason": "plan_pr_binding_unverified"}
     if stage == "ci":
         receipt = plan_lifecycle.plan_ci_receipt(ledger_issue, pr_number, head_sha, repo)
-        if receipt is None:
-            return {"recorded": False, "stage": stage, "reason": "ci_receipt_pending"}
-        return {"recorded": True, "stage": stage, "reason": "verified", "ci_run_id": receipt.get("workflow_run_id")}
+        if receipt is not None:
+            return {
+                "recorded": True, "stage": stage, "reason": "verified",
+                "ci_run_id": receipt.get("workflow_run_id"),
+            }
+        evidence = _authoritative_plan_ci(pr_number, head_sha, worker, repo)
+        if evidence is None:
+            return {"recorded": False, "stage": stage, "reason": "ci_evidence_unavailable"}
+        outcome = plan_lifecycle.record_plan_ci_receipt(
+            ledger_issue, packet_id, attempt, candidate.source_main_sha,
+            pr_number, head_sha, int(evidence["workflow_run_id"]), repo,
+            workflow_name=str(evidence["workflow_name"]),
+            required_jobs=list(evidence["required_jobs"]),
+            successful_jobs=list(evidence["successful_jobs"]),
+        )
+        return {
+            **outcome, "stage": stage,
+            "ci_run_id": evidence["workflow_run_id"],
+        }
     if stage == "review":
         # Production _verified_plan_pr returns the controller-derived full
         # base/head range.  A bool True is retained only for legacy isolated
         # test doubles and cannot occur from the production verifier.
+        expected_base = plan_binding["base_sha"] if isinstance(plan_binding, dict) else ""
         if isinstance(plan_binding, dict):
             receipt = plan_lifecycle.plan_review_receipt(
-                ledger_issue, pr_number, head_sha, repo, plan_binding["base_sha"]
+                ledger_issue, pr_number, head_sha, repo, expected_base
             )
         else:
             receipt = plan_lifecycle.plan_review_receipt(
                 ledger_issue, pr_number, head_sha
             )
-        if receipt is None:
-            return {"recorded": False, "stage": stage, "reason": "review_receipt_pending"}
-        return {"recorded": True, "stage": stage, "reason": "verified", "review_workflow_run_id": receipt.get("review_workflow_run_id")}
+        if receipt is not None:
+            return {
+                "recorded": True, "stage": stage, "reason": "verified",
+                "review_workflow_run_id": receipt.get("review_workflow_run_id"),
+            }
+        evidence = _authoritative_plan_review(
+            pr_number, head_sha, repo, expected_base
+        )
+        if evidence is None:
+            return {"recorded": False, "stage": stage, "reason": "review_evidence_unavailable"}
+        outcome = plan_lifecycle.record_plan_review_receipt(
+            ledger_issue, packet_id, attempt, candidate.source_main_sha,
+            pr_number, head_sha, evidence["base_sha"], evidence["reviewed_range"],
+            repo, evidence["summary"],
+        )
+        return {**outcome, "stage": stage}
     if stage == "merge":
         merge_commit_sha = _authoritative_plan_merge(pr_number, head_sha, repo)
         if merge_commit_sha is None:

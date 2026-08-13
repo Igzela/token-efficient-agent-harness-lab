@@ -10,10 +10,11 @@ authoritative GitHub/PR/CI/review state.
 No model self-report advances state.  Every recorder validates the exact
 subject binding (packet id, attempt, dispatch id, PR number, exact head SHA)
 against the durable ledger claim before writing; every write is idempotent;
-every conflict or missing transition fails closed.  The CI and review
-transitions are verified readbacks of the existing owners' own ledger
-recordings; the merge and closeout transitions are written here only after
-authoritative GitHub/PR state is verified by the caller.
+every conflict or missing transition fails closed.  The CI, review, and
+merge transitions are written here only after the caller has verified
+authoritative GitHub/PR/CI/review state; they persist through the existing
+CI-state, review-state, and merge-state owners.  Closeout still requires
+those three receipts on the ledger before recording the terminal claim.
 """
 
 from __future__ import annotations
@@ -224,6 +225,82 @@ def plan_ci_receipt(ledger_issue: int, pr_number: int, head_sha: str, repo: str 
     return state
 
 
+def record_plan_ci_receipt(
+    ledger_issue: int,
+    packet_id: str,
+    attempt_id: str,
+    source_main_sha: str,
+    pr_number: int,
+    head_sha: str,
+    workflow_run_id: int,
+    repo: str = "",
+    workflow_name: str = "tests",
+    required_jobs: list[str] | None = None,
+    successful_jobs: list[str] | None = None,
+) -> dict[str, Any]:
+    """Record the verified exact-head terminal CI receipt on the ledger.
+
+    The caller must already have verified the canonical tests run against
+    authoritative GitHub state; this recorder only validates the subject
+    binding and the bounded identity fields, then persists through the
+    existing CI-state owner.  An identical existing receipt is an
+    idempotent success; any conflicting receipt, unprovable claim, or
+    malformed identity fails closed.
+    """
+
+    attempt = _normalized_attempt_id(attempt_id)
+    jobs = list(required_jobs or [])
+    successful = list(successful_jobs or [])
+    if (
+        not isinstance(packet_id, str)
+        or plan_lane.PACKET_ID.fullmatch(packet_id) is None
+        or attempt is None
+        or local_loop.HEX40.fullmatch(source_main_sha) is None
+        or type(pr_number) is not int
+        or pr_number <= 0
+        or local_loop.HEX40.fullmatch(head_sha) is None
+        or type(workflow_run_id) is not int
+        or workflow_run_id <= 0
+        or not isinstance(workflow_name, str)
+        or not workflow_name
+        or any(not isinstance(job, str) or not job for job in jobs)
+        or any(not isinstance(job, str) or not job for job in successful)
+    ):
+        return {"recorded": False, "reason": "ci_receipt_identity_invalid"}
+    dispatch_id = f"plan-run:{packet_id}:{source_main_sha}:{attempt}"
+    claim = _plan_claim(ledger_issue, dispatch_id, repo)
+    if claim is None:
+        return {"recorded": False, "reason": "plan_claim_not_found"}
+    if claim.get("status") == "closed_out":
+        existing = plan_ci_receipt(ledger_issue, pr_number, head_sha, repo)
+        if existing is not None and existing.get("workflow_run_id") == workflow_run_id:
+            return {"recorded": True, "reason": "already_verified"}
+        return {"recorded": False, "reason": "conflicting_terminal_state"}
+    if claim.get("status") != "dispatched":
+        return {"recorded": False, "reason": "plan_claim_state_unexpected"}
+    existing = plan_ci_receipt(ledger_issue, pr_number, head_sha, repo)
+    if existing is not None:
+        if existing.get("workflow_run_id") == workflow_run_id:
+            return {"recorded": True, "reason": "already_recorded"}
+        return {"recorded": False, "reason": "conflicting_ci_receipt"}
+    if not sm.record_ci_state(
+        ledger_issue,
+        pr_number,
+        head_sha,
+        workflow_run_id,
+        "terminal_success",
+        extra={
+            "workflow_name": workflow_name,
+            "required_jobs": jobs,
+            "successful_jobs": successful,
+            "workflow_run_id": workflow_run_id,
+        },
+        repo=repo,
+    ):
+        return {"recorded": False, "reason": "ci_receipt_write_failed"}
+    return {"recorded": True, "reason": "recorded"}
+
+
 def plan_review_receipt(
     ledger_issue: int,
     pr_number: int,
@@ -273,6 +350,81 @@ def plan_review_receipt(
         if not rebound_ok or rebound["reviewed_range"] != live_binding["reviewed_range"]:
             return None
     return state
+
+
+def record_plan_review_receipt(
+    ledger_issue: int,
+    packet_id: str,
+    attempt_id: str,
+    source_main_sha: str,
+    pr_number: int,
+    head_sha: str,
+    base_sha: str,
+    reviewed_range: str,
+    repo: str = "",
+    summary: str = "exact-head PASS review receipt verified from live PR",
+) -> dict[str, Any]:
+    """Record the verified exact-head PASS review receipt on the ledger.
+
+    The caller must already have verified the live PR review receipt against
+    authoritative GitHub state; this recorder only validates the subject
+    binding and the bounded identity fields, then persists through the
+    existing review-state owner.  An identical existing receipt is an
+    idempotent success; any conflicting receipt, unprovable claim, or
+    malformed identity fails closed.
+    """
+
+    attempt = _normalized_attempt_id(attempt_id)
+    expected_range = f"{base_sha}...{head_sha}"
+    if (
+        not isinstance(packet_id, str)
+        or plan_lane.PACKET_ID.fullmatch(packet_id) is None
+        or attempt is None
+        or local_loop.HEX40.fullmatch(source_main_sha) is None
+        or type(pr_number) is not int
+        or pr_number <= 0
+        or local_loop.HEX40.fullmatch(head_sha) is None
+        or local_loop.HEX40.fullmatch(base_sha) is None
+        or reviewed_range != expected_range
+        or not isinstance(summary, str)
+        or not summary.strip()
+        or len(summary.encode("utf-8")) > 400
+    ):
+        return {"recorded": False, "reason": "review_receipt_identity_invalid"}
+    dispatch_id = f"plan-run:{packet_id}:{source_main_sha}:{attempt}"
+    claim = _plan_claim(ledger_issue, dispatch_id, repo)
+    if claim is None:
+        return {"recorded": False, "reason": "plan_claim_not_found"}
+    if claim.get("status") == "closed_out":
+        existing = plan_review_receipt(ledger_issue, pr_number, head_sha)
+        if (
+            existing is not None
+            and existing.get("verdict") in {"PASS", "pass"}
+            and existing.get("reviewed_range") == reviewed_range
+        ):
+            return {"recorded": True, "reason": "already_verified"}
+        return {"recorded": False, "reason": "conflicting_terminal_state"}
+    if claim.get("status") != "dispatched":
+        return {"recorded": False, "reason": "plan_claim_state_unexpected"}
+    existing = plan_review_receipt(ledger_issue, pr_number, head_sha)
+    if existing is not None:
+        if existing.get("reviewed_range") == reviewed_range:
+            return {"recorded": True, "reason": "already_recorded"}
+        return {"recorded": False, "reason": "conflicting_review_receipt"}
+    if not sm.record_review_state(
+        ledger_issue,
+        pr_number,
+        head_sha,
+        "PASS",
+        summary.strip(),
+        repo,
+        base_sha=base_sha,
+        reviewed_range=reviewed_range,
+        review_mode="full",
+        review_round=1,
+    ):
+        return {"recorded": False, "reason": "review_receipt_write_failed"}
+    return {"recorded": True, "reason": "recorded"}
 
 
 def plan_merge_receipt(ledger_issue: int, pr_number: int, head_sha: str, repo: str = "") -> dict[str, Any] | None:

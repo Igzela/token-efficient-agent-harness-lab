@@ -905,15 +905,15 @@ class LocalRunOnce:
     ) -> local_loop.LocalRunOnceResult:
         """Wait for the controller-owned terminal receipts on the ledger.
 
-        CI and review are read back from the existing owners' own ledger
-        recordings; merge and closeout are requested through the controller,
-        which verifies authoritative GitHub/PR state before recording. After
-        the four terminal receipts, the controller may record a promotion
-        receipt or an evidence-missing escalation. The latter is not a user
-        pause: it returns the proved closeout to ``route-run``, whose existing
-        route adapter performs the current-main evidence planning. This wait
-        never writes ledger state itself, never runs the model again, and
-        never treats a timeout as success for the terminal stages.
+        CI, review, merge, and closeout are requested through the
+        controller, which verifies authoritative GitHub/PR/CI/review state
+        before recording. After the four terminal receipts, the controller
+        may record a promotion receipt or an evidence-missing escalation.
+        The latter is not a user pause: it returns the proved closeout to
+        ``route-run``, whose existing route adapter performs the
+        current-main evidence planning. This wait never writes ledger
+        state itself, never runs the model again, and never treats a
+        timeout as success for the terminal stages.
         """
 
         deadline = time.monotonic() + self.lifecycle_timeout_seconds
@@ -994,7 +994,7 @@ class LocalRunOnce:
                      if not (isinstance(stages, dict) and stages.get(name))),
                     "closeout",
                 )
-                if pending in {"merge", "closeout"} and pending not in dispatched_stages:
+                if pending in {"ci", "review", "merge", "closeout"} and pending not in dispatched_stages:
                     try:
                         self.github.dispatch_controller(
                             "lifecycle-plan",
