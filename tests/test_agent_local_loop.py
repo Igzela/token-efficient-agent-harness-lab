@@ -1697,5 +1697,223 @@ class TestLocalSupervisor(unittest.TestCase):
         controller.github.dispatch_controller.assert_not_called()
 
 
+WRAPPER = Path(local_run_once.__file__).resolve().parent / "codex_wrapper.sh"
+FORBIDDEN_OPENCODE_FLAGS = (
+    "--auto",
+    "--attach",
+    "--continue",
+    "-c",
+    "--session",
+    "-s",
+    "--fork",
+    "--share",
+    "--password",
+    "-p",
+    "--username",
+    "-u",
+)
+CREDENTIAL_ENV = {
+    "OPENAI_API_KEY": "super-secret-value-from-parent",
+    "GH_TOKEN": "github-secret",
+    "OPENCODE_SERVER_PASSWORD": "server-password",
+    "OPENCODE_SERVER_USERNAME": "server-user",
+    "UNKNOWN_SECRET_TOKEN": "unknown-secret",
+}
+
+
+def _write_executable(path: Path, body: str) -> None:
+    path.write_text(body, encoding="utf-8")
+    path.chmod(path.stat().st_mode | 0o111)
+
+
+class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
+    """Drive the existing wrapper shell entry with a fake opencode binary."""
+
+    def _run_wrapper(self, *, worker="implement", prompt="claim-bound prompt", fake_body=None, extra_env=None, install_codex=True, install_opencode=True, workspace=None):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        record = root / "records.jsonl"
+        if install_codex:
+            _write_executable(
+                root / "codex",
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                f"record = {str(record)!r}\n"
+                "with open(record, 'a', encoding='utf-8') as handle:\n"
+                "    json.dump({'bin':'codex','args':sys.argv[1:],'env':dict(os.environ)}, handle); handle.write('\\n')\n"
+                "raise SystemExit(0)\n",
+            )
+        if install_opencode:
+            body = fake_body or (
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                f"record = {str(record)!r}\n"
+                "with open(record, 'a', encoding='utf-8') as handle:\n"
+                "    json.dump({'bin':'opencode','args':sys.argv[1:],'env':dict(os.environ)}, handle); handle.write('\\n')\n"
+                "if sys.argv[1:2] == ['--version']:\n"
+                "    print('1.18.16'); raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['auth', 'list']:\n"
+                "    raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['run', '--help']:\n"
+                "    print('--format json --dir --file'); raise SystemExit(0)\n"
+                "if sys.argv[1:2] == ['run']:\n"
+                "    print(json.dumps({'type':'text','part':{'text':'bounded-last-message'}}))\n"
+                "    raise SystemExit(0)\n"
+                "raise SystemExit(2)\n"
+            )
+            _write_executable(root / "opencode", body)
+        prompt_path = root / "prompt.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        output = root / "output"
+        home = root / "home"
+        home.mkdir()
+        wt = Path(workspace) if workspace is not None else root / "worktree"
+        if workspace is None:
+            wt.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=wt, check=True, capture_output=True, text=True)
+        env = {
+            "PATH": f"{root}:/usr/bin:/bin",
+            "HOME": str(home),
+            "LANG": "C",
+            "LC_ALL": "C",
+            "TMPDIR": str(root / "tmp"),
+            **CREDENTIAL_ENV,
+        }
+        (root / "tmp").mkdir()
+        if extra_env:
+            env.update(extra_env)
+        result = subprocess.run(
+            [str(WRAPPER), worker, str(prompt_path), str(output), str(wt)],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+        records = []
+        if record.is_file():
+            records = [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines() if line]
+        return root, prompt_path, output, wt, result, records
+
+    def test_wrapper_invokes_opencode_never_codex(self):
+        _root, prompt, output, worktree, result, records = self._run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        bins = [item["bin"] for item in records]
+        self.assertIn("opencode", bins)
+        self.assertNotIn("codex", bins)
+        run_calls = [item for item in records if item["bin"] == "opencode" and item["args"][:1] == ["run"] and "--help" not in item["args"]]
+        self.assertEqual(len(run_calls), 1)
+        args = run_calls[0]["args"]
+        self.assertIn("--format", args)
+        self.assertEqual(args[args.index("--format") + 1], "json")
+        self.assertIn("--dir", args)
+        self.assertEqual(args[args.index("--dir") + 1], str(worktree))
+        self.assertIn("--file", args)
+        self.assertEqual(args[args.index("--file") + 1], str(prompt))
+        self.assertNotIn("claim-bound prompt", args)
+        for flag in FORBIDDEN_OPENCODE_FLAGS:
+            self.assertNotIn(flag, args)
+        child_env = run_calls[0]["env"]
+        for name in CREDENTIAL_ENV:
+            self.assertNotIn(name, child_env)
+        self.assertNotIn("OPENCODE_SERVER_PASSWORD", child_env)
+        self.assertFalse((output / "codex-events.jsonl").exists())
+        leaked = "".join(path.read_text(errors="replace") for path in output.glob("*") if path.is_file())
+        self.assertNotIn("claim-bound prompt", leaked)
+        self.assertNotIn("bounded-last-message", leaked)
+        self.assertTrue((output / "codex-last-message.metadata.json").is_file())
+
+    def test_missing_opencode_is_cli_missing_even_when_codex_is_present(self):
+        _root, _prompt, output, _wt, result, records = self._run_wrapper(install_opencode=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            json.loads((output / "failure_reason.json").read_text(encoding="utf-8"))["reason"],
+            "cli_missing",
+        )
+        self.assertEqual([item["bin"] for item in records], [])
+
+    def test_auth_and_usage_failures_are_allowlisted_without_raw_text(self):
+        auth_body = (
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "if sys.argv[1:2] == ['--version']:\n"
+            "    print('1.18.16'); raise SystemExit(0)\n"
+            "if sys.argv[1:3] == ['run', '--help']:\n"
+            "    print('--format json --dir --file'); raise SystemExit(0)\n"
+            "if sys.argv[1:3] == ['auth', 'list']:\n"
+            "    print('login required for secret-token-xyz'); raise SystemExit(1)\n"
+            "raise SystemExit(2)\n"
+        )
+        _root, _prompt, output, _wt, result, _records = self._run_wrapper(fake_body=auth_body)
+        self.assertNotEqual(result.returncode, 0)
+        failure = json.loads((output / "failure_reason.json").read_text(encoding="utf-8"))
+        self.assertEqual(failure["reason"], "authentication_failure")
+        self.assertNotIn("secret-token-xyz", json.dumps(failure))
+        self.assertNotIn("secret-token-xyz", result.stderr)
+
+        usage_body = (
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            "if sys.argv[1:2] == ['--version']:\n"
+            "    print('1.18.16'); raise SystemExit(0)\n"
+            "if sys.argv[1:3] == ['auth', 'list']:\n"
+            "    raise SystemExit(0)\n"
+            "if sys.argv[1:3] == ['run', '--help']:\n"
+            "    print('--format json --dir --file'); raise SystemExit(0)\n"
+            "if sys.argv[1:2] == ['run']:\n"
+            "    print('quota exceeded token-abc', file=sys.stderr); raise SystemExit(2)\n"
+            "raise SystemExit(2)\n"
+        )
+        _root, _prompt, output, _wt, result, _records = self._run_wrapper(fake_body=usage_body)
+        self.assertNotEqual(result.returncode, 0)
+        failure = json.loads((output / "failure_reason.json").read_text(encoding="utf-8"))
+        self.assertEqual(failure["reason"], "usage_or_credit_exhaustion")
+        self.assertNotIn("token-abc", json.dumps(failure))
+        self.assertNotIn("token-abc", result.stderr)
+        self.assertNotIn("quota exceeded", "".join(path.read_text(errors="replace") for path in output.glob("*") if path.is_file()))
+
+    def test_dispatched_generation_does_not_invoke_wrapper_again(self):
+        github = mock.Mock()
+        github.read_control_state.return_value = {
+            "emergency_stop": False,
+            "orchestrator_enabled": True,
+        }
+        github.repository_metadata.return_value = {
+            "name_with_owner": "Igzela/example",
+            "default_branch": "main",
+        }
+        github.accepted_main_sha.return_value = MAIN_SHA
+        git = mock.Mock()
+        git.origin_main_sha.return_value = MAIN_SHA
+        candidate = plan_lane_fixture()
+        runner = local_run_once.LocalRunOnce(
+            github, git, repository="Igzela/example", repo_path=Path("/tmp/repo"),
+            sleeper=lambda _: None,
+        )
+        dispatched = {
+            "status": "dispatched",
+            "details": {
+                "claim_nonce": NONCE,
+                "allowed_paths": candidate.allowed_paths,
+                "canonical_branch": candidate.branch,
+                "subject_kind": "plan-packet",
+                "subject_id": PLAN_ID,
+                "attempt_id": ATTEMPT,
+                "source_main_sha": MAIN_SHA,
+            },
+        }
+        bounded = mock.Mock(side_effect=AssertionError("wrapper must not run again"))
+        with mock.patch.object(runner, "_plan_terminal_owner_readiness", return_value=(True, [])), \
+             mock.patch.object(runner, "_live_plan", return_value=(candidate, 383)), \
+             mock.patch.object(state_manager, "read_dispatch_state", return_value=dispatched), \
+             mock.patch.object(state_manager, "plan_claim_binding_valid", return_value=(True, "ok")), \
+             mock.patch.object(runner, "_git_checked", return_value=""), \
+             mock.patch.object(local_run_once, "_bounded_process", bounded):
+            result = runner.run_plan_once(PLAN_ID, ATTEMPT)
+        self.assertEqual(result.status, "in_flight")
+        bounded.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

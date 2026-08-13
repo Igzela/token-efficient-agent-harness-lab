@@ -84,8 +84,16 @@ class TestDryRunAndVaderTrustBoundary(unittest.TestCase):
         self.assertIn("SANITIZED_ENV=", source)
         self.assertNotIn("GH_TOKEN=", source)
         self.assertNotIn("OPENAI_API_KEY=", source)
-        self.assertIn('SANDBOX_MODE="read-only"', source)
-        self.assertIn('SANDBOX_MODE="workspace-write"', source)
+        self.assertNotIn("OPENCODE_SERVER_PASSWORD=", source)
+        self.assertIn("command -v opencode", source)
+        self.assertNotIn("command -v codex", source)
+        self.assertIn("--format json", source)
+        self.assertNotIn("--auto", source)
+        self.assertNotIn("--attach", source)
+        self.assertNotIn("--continue", source)
+        self.assertNotIn("--session", source)
+        self.assertNotIn("--fork", source)
+        self.assertNotIn("--share", source)
 
 
 class TestCredentialIsolation(unittest.TestCase):
