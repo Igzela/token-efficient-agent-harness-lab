@@ -19,8 +19,8 @@ Conciseness must preserve quality. At session start, establish the leading valid
 
 ## Current Guardrails
 
-- Product Golden Path is default-off and target `main` is protected. No provider call in CI, target-default-branch write, auto-merge, release, deployment, or production installation.
-- Do not use Vader or Issue #208 as product runtime; Issue #254 is parked. Do not admit OpenCode, unpark Issue #254, replace the active Harness, or create a second runtime, scheduler, store, evaluator, workspace, output, audit, or rollback owner.
+- Product Golden Path is default-off and target `main` is protected. No provider call in CI, target-default-branch write, auto-merge, release, deployment, or production installation. A local Provider call is permitted only when the accepted current packet's weak-agent dispatch capsule explicitly authorizes one; that exception never authorizes a target write, EFFECT, T3 action, release, deployment, or automatic merge.
+- Do not use Vader or Issue #208 as product runtime; Issue #254 is parked. OpenCode may serve only as the explicitly packet-authorized local repository-maintenance weak worker through the existing controller and worktree boundary. It must not become a product runtime or create a second runtime, scheduler, store, evaluator, workspace, output, audit, or rollback owner.
 - Fixture/fake/proxy evidence is not managed acceptance. Never persist or report credentials, raw prompts/outputs/transcripts, private paths, or unredacted repository content.
 - Level-2 remains blocked until the post-convergence RWE decision; Meta remains blocked until accepted Level-2, separate authority, and the unseen-task experiment. No recursive self-improvement claim is allowed without that experiment.
 - Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`.
