@@ -1401,15 +1401,29 @@ fn classify_execution_error(err: &str) -> &'static str {
     }
 }
 
+fn mark_cleanup_failed(outcome: &mut CellOutcome, detail: impl Into<String>) {
+    if outcome.classification != "outcome_unknown" {
+        outcome.classification = "cleanup_failed".into();
+    }
+    outcome.cleanup_status = "failed".into();
+    outcome.note = format!(
+        "{}; delegated failure cleanup unavailable: {}",
+        outcome.note,
+        detail.into()
+    );
+}
+
 /// Store-owned transport provenance from the RWE cell evidence projection.
 ///
 /// Returns `external` only when the aggregated execution evidence and every
 /// durable journal claim attest the production external transport. Missing,
 /// invalid, or mixed provenance fails closed with an error.
 fn store_evidence_transport_provenance(projection: &Value) -> Result<String, String> {
+    let journal_projection = provider_execution_from_journal(projection);
     let pe = projection
         .get("provider_execution")
         .filter(|value| !value.is_null())
+        .or(journal_projection.as_ref())
         .ok_or("RWE cell store evidence lacks provider execution")?;
     let aggregate = pe
         .get("transport_provenance")
@@ -1437,6 +1451,82 @@ fn store_evidence_transport_provenance(projection: &Value) -> Result<String, Str
     Ok(aggregate.to_string())
 }
 
+/// Failed delegated stages can stop before artifact confirmation, but the
+/// existing managed-acceptance owner still durably records every provider
+/// request in its journal. Reuse that receipt for accounting rather than
+/// reporting a false zero. Incomplete journal entries stay unavailable.
+fn provider_execution_from_journal(projection: &Value) -> Option<Value> {
+    if projection
+        .get("provider_execution")
+        .is_some_and(|value| !value.is_null())
+    {
+        return None;
+    }
+    let journal = projection
+        .get("provider_request_journal")
+        .and_then(Value::as_array)
+        .filter(|entries| !entries.is_empty())?;
+    let mut provenance: Option<&str> = None;
+    let mut cumulative_tokens = 0_u64;
+    let mut realized_cost_usd = 0.0_f64;
+    let mut cost_unknown = false;
+    let mut requests = Vec::with_capacity(journal.len());
+    for entry in journal {
+        let status = entry.get("status").and_then(Value::as_str)?;
+        if !matches!(
+            status,
+            "succeeded" | "failed_before_send" | "failed_known_outcome" | "outcome_unknown"
+        ) {
+            return None;
+        }
+        let entry_provenance = entry.get("transport_provenance").and_then(Value::as_str)?;
+        if !matches!(entry_provenance, "external" | "injected")
+            || provenance.is_some_and(|seen| seen != entry_provenance)
+        {
+            return None;
+        }
+        provenance = Some(entry_provenance);
+        let cost = entry.get("effective_cost_usd").and_then(Value::as_f64)?;
+        if !cost.is_finite() || cost < 0.0 {
+            return None;
+        }
+        let effective_tokens = entry
+            .get("effective_tokens")
+            .or_else(|| entry.pointer("/usage/cumulative_tokens"))
+            .and_then(Value::as_u64)?;
+        if status == "succeeded" {
+            entry
+                .pointer("/usage/input_tokens")
+                .and_then(Value::as_u64)?;
+            entry
+                .pointer("/usage/output_tokens")
+                .and_then(Value::as_u64)?;
+        }
+        if matches!(status, "succeeded" | "outcome_unknown") {
+            cumulative_tokens = cumulative_tokens.checked_add(effective_tokens)?;
+            if status == "succeeded" {
+                let next_cost = realized_cost_usd + cost;
+                if !next_cost.is_finite() {
+                    return None;
+                }
+                realized_cost_usd = next_cost;
+            } else {
+                cost_unknown = true;
+            }
+            requests.push(entry.clone());
+        }
+    }
+    Some(json!({
+        "schema_version": "managed_deepseek_execution_evidence.v1",
+        "provider_request_count": requests.len(),
+        "transport_provenance": provenance?,
+        "requests": requests,
+        "cumulative_tokens": cumulative_tokens,
+        "realized_cost_usd": realized_cost_usd,
+        "cost_unknown": cost_unknown,
+    }))
+}
+
 /// Couple final usage to canonical managed provider_execution / journal on store.
 /// Never trust driver-supplied usage for accounting or seal.
 fn couple_usage_to_store_journal(store: &LocalProductStore, outcome: &mut CellOutcome) {
@@ -1451,6 +1541,19 @@ fn couple_usage_to_store_journal(store: &LocalProductStore, outcome: &mut CellOu
     let Ok(proj) = store.project_rwe_cell_store_evidence(&outcome.product_task_id, attempt) else {
         return;
     };
+    let journal_has_outcome_unknown = proj
+        .get("provider_request_journal")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry.get("status").and_then(Value::as_str) == Some("outcome_unknown"))
+        });
+    if journal_has_outcome_unknown {
+        outcome.classification = "outcome_unknown".into();
+        outcome.cost_unknown = true;
+        outcome.monetary_cost = None;
+    }
     // Store-owned provenance gate: live provider claims require the durable
     // journal to attest the external transport; anything else stays non-live.
     match store_evidence_transport_provenance(&proj) {
@@ -1467,7 +1570,11 @@ fn couple_usage_to_store_journal(store: &LocalProductStore, outcome: &mut CellOu
             return;
         }
     }
-    let pe = proj.get("provider_execution");
+    let journal_projection = provider_execution_from_journal(&proj);
+    let pe = proj
+        .get("provider_execution")
+        .filter(|value| !value.is_null())
+        .or(journal_projection.as_ref());
     if let Some(count) = pe
         .and_then(|p| p.get("provider_request_count"))
         .and_then(Value::as_u64)
@@ -1486,12 +1593,38 @@ fn couple_usage_to_store_journal(store: &LocalProductStore, outcome: &mut CellOu
     {
         outcome.total_tokens = tok;
     }
-    if let Some(cost) = pe
-        .and_then(|p| p.get("realized_cost_usd"))
-        .and_then(Value::as_f64)
+    if let Some(requests) = pe.and_then(|p| p.get("requests")).and_then(Value::as_array) {
+        outcome.input_tokens = requests
+            .iter()
+            .filter_map(|request| {
+                request
+                    .pointer("/usage/input_tokens")
+                    .and_then(Value::as_u64)
+            })
+            .fold(0_u64, u64::saturating_add);
+        outcome.output_tokens = requests
+            .iter()
+            .filter_map(|request| {
+                request
+                    .pointer("/usage/output_tokens")
+                    .and_then(Value::as_u64)
+            })
+            .fold(0_u64, u64::saturating_add);
+    }
+    if pe
+        .and_then(|p| p.get("cost_unknown"))
+        .and_then(Value::as_bool)
+        == Some(true)
     {
-        outcome.monetary_cost = Some(cost);
-        outcome.cost_unknown = false;
+        outcome.cost_unknown = true;
+        outcome.monetary_cost = None;
+    } else if !outcome.cost_unknown {
+        if let Some(cost) = pe
+            .and_then(|p| p.get("realized_cost_usd"))
+            .and_then(Value::as_f64)
+        {
+            outcome.monetary_cost = Some(cost);
+        }
     }
     if let Ok(te) = store.get_product_task_terminal_evidence(&outcome.product_task_id) {
         if let Some(id) = te.get("evidence_id").and_then(Value::as_str) {
@@ -1806,6 +1939,80 @@ pub fn run_frozen_schedule(
                 let class = classify_execution_error(&e);
                 let mut o = CellOutcome::blocked(class, &e, &ids);
                 o.evidence_source = "product_golden_path_owner".into();
+                // The schedule identity is the ProductTask idempotency key;
+                // after admission, the store owns a distinct generated task
+                // id. Resolve it before coupling failure usage to the durable
+                // delegated journal.
+                let task = match store.get_product_task_by_idempotency(
+                    principal.tenant_id(),
+                    &ids.worktree_id,
+                    &ids.product_task_id,
+                ) {
+                    Ok(Some(task)) => task,
+                    Ok(None) => {
+                        mark_cleanup_failed(&mut o, "admitted ProductTask identity was not found");
+                        Value::Null
+                    }
+                    Err(error) => {
+                        mark_cleanup_failed(
+                            &mut o,
+                            format!("ProductTask identity lookup failed: {error}"),
+                        );
+                        Value::Null
+                    }
+                };
+                if let Some(task_id) = task.get("task_id").and_then(Value::as_str) {
+                    o.product_task_id = task_id.to_string();
+                    let workspace_id = task
+                        .get("workspace_record_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    match store.finalize_product_task_after_execution(task_id, "rwe-live-baseline")
+                    {
+                        Ok(finalized) => {
+                            let phase = finalized.get("phase").and_then(Value::as_str);
+                            let terminal_phase = matches!(
+                                phase,
+                                Some(
+                                    "terminal_failure"
+                                        | "execution_failed"
+                                        | "verification_authority_lost"
+                                        | "verification_failed"
+                                        | "verification_outcome_unknown"
+                                )
+                            );
+                            let workspace_cleaned = workspace_id.as_deref().is_some_and(|id| {
+                                store
+                                    .get_supervised_patch_workspace(id)
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|workspace| {
+                                        workspace
+                                            .get("status")
+                                            .and_then(Value::as_str)
+                                            .map(|status| status == "cleaned")
+                                    })
+                                    .unwrap_or(false)
+                            });
+                            if terminal_phase && workspace_cleaned {
+                                o.cleanup_status = "cleaned".into();
+                            } else {
+                                mark_cleanup_failed(
+                                    &mut o,
+                                    format!(
+                                        "cleanup owner returned phase {} with workspace cleanup unproven",
+                                        phase.unwrap_or("missing")
+                                    ),
+                                );
+                            }
+                        }
+                        Err(cleanup_error) => {
+                            mark_cleanup_failed(&mut o, cleanup_error);
+                        }
+                    }
+                } else if !task.is_null() {
+                    mark_cleanup_failed(&mut o, "ProductTask identity has no task_id");
+                }
                 if class == "outcome_unknown" {
                     o.cost_unknown = true;
                     o.monetary_cost = None;
@@ -2677,6 +2884,112 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tempfile::tempdir;
+
+    #[test]
+    fn failed_cell_journal_usage_is_projected_without_false_zeroes() {
+        let projection = json!({
+            "provider_execution": null,
+            "provider_request_journal": [
+                {
+                    "status": "succeeded",
+                    "effective_tokens": 422,
+                    "effective_cost_usd": 0.000120118,
+                    "transport_provenance": "external",
+                    "usage": {"input_tokens": 314, "output_tokens": 108}
+                },
+                {
+                    "status": "succeeded",
+                    "effective_tokens": 4349,
+                    "effective_cost_usd": 0.0011337368,
+                    "transport_provenance": "external",
+                    "usage": {"input_tokens": 349, "output_tokens": 4000}
+                }
+            ]
+        });
+
+        let execution = provider_execution_from_journal(&projection).unwrap();
+        assert_eq!(execution["provider_request_count"], 2);
+        assert_eq!(execution["cumulative_tokens"], 4771);
+        assert_eq!(execution["transport_provenance"], "external");
+        assert_eq!(
+            store_evidence_transport_provenance(&projection),
+            Ok("external".to_string())
+        );
+    }
+
+    #[test]
+    fn failed_provider_journal_entries_do_not_become_live_requests() {
+        let projection = json!({
+            "provider_execution": null,
+            "provider_request_journal": [{
+                "status": "failed_before_send",
+                "effective_tokens": 0,
+                "effective_cost_usd": 0.0,
+                "transport_provenance": "external"
+            }]
+        });
+        let execution = provider_execution_from_journal(&projection).unwrap();
+        assert_eq!(execution["provider_request_count"], 0);
+        assert_eq!(execution["realized_cost_usd"], 0.0);
+        assert_eq!(
+            store_evidence_transport_provenance(&projection),
+            Ok("external".to_string())
+        );
+    }
+
+    #[test]
+    fn outcome_unknown_journal_entries_preserve_unknown_effect_evidence() {
+        let projection = json!({
+            "provider_execution": null,
+            "provider_request_journal": [{
+                "status": "outcome_unknown",
+                "effective_tokens": 512,
+                "effective_cost_usd": 0.0002,
+                "transport_provenance": "external"
+            }]
+        });
+        let execution = provider_execution_from_journal(&projection).unwrap();
+        assert_eq!(execution["provider_request_count"], 1);
+        assert_eq!(execution["cumulative_tokens"], 512);
+        assert_eq!(execution["cost_unknown"], true);
+    }
+
+    #[test]
+    fn journal_cost_overflow_stays_unavailable() {
+        let projection = json!({
+            "provider_execution": null,
+            "provider_request_journal": [
+                {
+                    "status": "succeeded",
+                    "effective_tokens": 1,
+                    "effective_cost_usd": 1.0e308,
+                    "transport_provenance": "external",
+                    "usage": {"input_tokens": 1, "output_tokens": 0}
+                },
+                {
+                    "status": "succeeded",
+                    "effective_tokens": 1,
+                    "effective_cost_usd": 1.0e308,
+                    "transport_provenance": "external",
+                    "usage": {"input_tokens": 1, "output_tokens": 0}
+                }
+            ]
+        });
+        assert!(provider_execution_from_journal(&projection).is_none());
+    }
+
+    #[test]
+    fn incomplete_cell_journal_stays_unavailable() {
+        let projection = json!({
+            "provider_execution": null,
+            "provider_request_journal": [{
+                "transport_provenance": "external",
+                "usage": {"input_tokens": 10, "output_tokens": 5}
+            }]
+        });
+        assert!(provider_execution_from_journal(&projection).is_none());
+        assert!(store_evidence_transport_provenance(&projection).is_err());
+    }
 
     fn operator(store: &LocalProductStore, tenant: &str, key: &str) -> AuthenticatedPrincipal {
         store
@@ -4115,7 +4428,7 @@ mod tests {
         .unwrap();
         let rows = store.list_rwe_task_attempts_for_run("run-ferr").unwrap();
         assert!(!rows.is_empty());
-        assert_eq!(rows[0]["classification"], "timeout");
+        assert_eq!(rows[0]["classification"], "cleanup_failed");
         assert_ne!(rows[0]["classification"], "dispatched");
         // No second authorization consumed.
         assert!(store
