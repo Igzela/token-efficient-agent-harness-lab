@@ -171,6 +171,7 @@ def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object],
     frozen = manifest["frozen_rwe"]
     expected = frozen["frozen_task_source_tree_hash"]
     expected_commit = manifest["repository"]["source_commit"]
+    declared_tasks = {item["path"] for item in frozen["task_definitions"]}
     for item in frozen["task_definitions"]:
         verify_file(harness_root, item["path"], item["sha256"], failures)
     verify_file(harness_root, frozen["protocol_path"], frozen["protocol_file_sha256"], failures)
@@ -193,6 +194,12 @@ def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object],
     if not task_paths:
         failures.append("frozen task definitions are unavailable")
         return
+    actual_tasks = {
+        path.relative_to(harness_root).as_posix()
+        for path in task_paths
+    }
+    if actual_tasks != declared_tasks:
+        failures.append("frozen task definition path set differs from the manifest")
     for path in task_paths:
         try:
             task = json.loads(path.read_text(encoding="utf-8"))
