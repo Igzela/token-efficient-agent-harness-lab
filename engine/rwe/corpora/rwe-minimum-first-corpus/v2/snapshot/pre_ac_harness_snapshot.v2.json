@@ -2,7 +2,7 @@
   "schema_version": "pre_ac_harness_snapshot.v2",
   "snapshot_id": "pre-ac-harness-snapshot-v2",
   "packet_id": "PE7-RWE-DB-SNAPSHOT-RECONSTRUCT-1",
-  "manifest_sha256": "43997b9ac263df911760d10defbda9d10be959e5540283bce23d7e9ea5a97f71",
+  "manifest_sha256": "a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c",
   "status": "RECONSTRUCTABLE",
   "reconstructable": true,
   "preflight_promotion": "BLOCKED_UNTIL_ACCEPTED",
@@ -92,7 +92,7 @@
       },
       {
         "path": "rust-toolchain.toml",
-        "sha256": "66894b16254576f70fc56e3e3abf4d489c678e08feaec17e101ec405207b9d84"
+        "sha256": "e59c5da37d1f9f4e0f815bc188cb6056fc7410c9cdaa9673c2d44da557c75d12"
       }
     ],
     "source_configuration": [
@@ -118,7 +118,7 @@
       "status": "PRESENT",
       "path": "rust-toolchain.toml",
       "channel": "1.96.0",
-      "sha256": "66894b16254576f70fc56e3e3abf4d489c678e08feaec17e101ec405207b9d84"
+      "sha256": "e59c5da37d1f9f4e0f815bc188cb6056fc7410c9cdaa9673c2d44da557c75d12"
     }
   },
   "generated_active_baseline": {
