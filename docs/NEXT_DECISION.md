@@ -10,12 +10,12 @@ The repository improves verifiable task delivery only under hard quality, safety
 
 The repository-maintenance route is continuous only through the existing Plan Execution Ledger, dispatcher, worktree, PR, CI, review, merge, closeout, and context owners. It does not create product-runtime authority, auto-merge, an unauthorized Provider call, target write, release, deployment, EFFECT execution, or T3 authority.
 
-The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authorization.v2`. The v2 four-cell RUN and CLOSEOUT are accepted as lifecycle `CONTROLLED_FAILURE`, not a viable baseline. `PE7-RWE-MR-ESTIMANDS-1`, `PE7-RWE-MR-CORPUS-SAMPLING-1`, `PE7-RWE-MR-OPERATIONS-EVIDENCE-1`, and `PE7-RWE-MR-PROTOCOL-FREEZE-1` are accepted on main with their source-bound measurement, corpus, operations, and protocol contracts. The snapshot packet is merged and closed with an honest `UNAVAILABLE_NOW` reconstruction result; the preflight successor is the current blocked window and no external effect is authorized.
+The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authorization.v2`. The v2 four-cell RUN and CLOSEOUT are accepted as lifecycle `CONTROLLED_FAILURE`, not a viable baseline. `PE7-RWE-MR-ESTIMANDS-1`, `PE7-RWE-MR-CORPUS-SAMPLING-1`, `PE7-RWE-MR-OPERATIONS-EVIDENCE-1`, and `PE7-RWE-MR-PROTOCOL-FREEZE-1` are accepted on main with their source-bound measurement, corpus, operations, and protocol contracts. The reconstructable snapshot replacement is accepted on main; the provider-free preflight is the current executable window and no external effect is authorized.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-RWE-DB-PREFLIGHT-1 — BLOCKED_PREREQUISITE, snapshot reconstruction unavailable]
+[window: PE7-RWE-DB-PREFLIGHT-1 — READY_FOR_EXECUTION, provider-free preflight against accepted reconstructable snapshot]
 
 → `PE7-RWE-DB-RUN-1` only after a reconstructable preflight is accepted
 ```
@@ -24,9 +24,7 @@ Every successor remains routing-only until its accepted predecessor closes and t
 
 ## Active Routing
 
-1. `PE7-RWE-DB-PREFLIGHT-1` — `BLOCKED_PREREQUISITE`
-
-No `READY_FOR_EXECUTION` packet is active; the retained snapshot closeout is a completed lifecycle receipt, not a dispatch capsule.
+1. `PE7-RWE-DB-PREFLIGHT-1` — `READY_FOR_EXECUTION`
 
 ## Historical V2 Closeout
 
@@ -40,31 +38,39 @@ The accepted `PE7-RWE-DB-SNAPSHOT-CORPUS-1` packet is closed on main by PR #448 
 
 Its manifest sha256 is `d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310fe2837ce2`; the snapshot disposition is `UNAVAILABLE_NOW`, `reconstructable=false`. No Provider call, authority consumption, target write, or EFFECT occurred. The complete lifecycle receipt and unavailable disposition are owned by `docs/CURRENT_STATUS.md`; this document retains only the closeout binding needed for the current route.
 
+The accepted reconstructable replacement is bound by PR #451 exact head `d48e9853856714a964709956651fc0ac0961315c`, squash merge `e1ff80b7599d8aec8d64909f937f79c948010392`, canonical workflow `31790256137`, and manifest sha256 `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`. Its `preflight_promotion=BLOCKED_UNTIL_ACCEPTED` condition is satisfied by that accepted merge; this document now owns the current promotion to provider-free preflight.
+
 ## Packet PE7-RWE-DB-PREFLIGHT-1
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** PE7-RWE-DB-SNAPSHOT-CORPUS-1 — COMPLETE on accepted main `a4472b9a0aa9c78d1616e9d22c88c2f6a6405cb8`, but its manifest is `UNAVAILABLE_NOW` and `reconstructable=false`.
+**Prerequisite:** PE7-RWE-DB-SNAPSHOT-RECONSTRUCT-1 — COMPLETE on accepted main `e1ff80b7599d8aec8d64909f937f79c948010392`; manifest `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`, `reconstructable=true`.
 
 **Class:** `CONTRACT`
 
 **Outcome:** Validate the frozen corpus, snapshot, protocol, schedule, capacity, principals, target state, evidence destinations, and drift baseline before any external-effect authorization is considered.
 
-**Allowed delta:** Provider-free contract and evidence validation only. No Provider call, task execution, authority issue/admit/consume, target write, EFFECT, T3 action, release, deployment, or runtime/schema/store/evaluator change.
+**Allowed delta:** Provider-free contract and evidence validation only in `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md`. No Provider call, task execution, authority issue/admit/consume, target write, EFFECT, T3 action, release, deployment, or runtime/schema/store/evaluator change.
 
 **Owner/seam:** Reuse the existing RWE operator preflight, corpus/protocol/schedule integrity validators, `LocalProductStore` authority/evidence owners, and `live_baseline_coordinator`; add no parallel owner.
 
-**Required bindings:** Snapshot manifest `d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310fe2837ce2`, corpus `044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20`, protocol `bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db`, schedule `6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38`.
+**Required bindings:** Snapshot manifest `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`, corpus `044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20`, protocol `bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db`, schedule `6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38`.
 
 **Exit:** A zero-mismatch provider-free preflight receipt with every required binding reconstructable, and only then bounded operator authorization requests under the accepted experiment envelope.
 
 **Stop:** Any required snapshot field, source artifact, lockfile, toolchain pin, capacity, price, Provider identity, target safety, reviewer availability, retention destination, or drift binding is unavailable, stale, conflicting, or unverifiable. Preserve `UNAVAILABLE_NOW`; do not guess or proceed.
 
-**Current disposition:** `BLOCKED_PREREQUISITE`. The accepted snapshot explicitly lacks the exact source active YAML artifacts, a Python dependency lockfile, and a checked-in Rust toolchain pin. No preflight command, Provider call, authority consumption, or target interaction is permitted until a separately accepted reconstructable snapshot replaces this prerequisite.
+**Current disposition:** `READY_FOR_EXECUTION`. Run only the existing provider-free verifier and `rwe-live-baseline preflight`; record a bounded zero-mismatch receipt. This packet never issues or consumes authority, calls a Provider, executes a task, writes a target, or performs an EFFECT/T3 action.
 
 **Rollback:** Revert only this contract/promotion documentation; retain the snapshot manifest and its unavailable evidence.
 
-**Next permitted action:** Remain provider-free and await a new accepted reconstructable snapshot prerequisite; do not promote `PE7-RWE-DB-RUN-1`.
+**Next permitted action:** Run the provider-free snapshot verifier and existing operator preflight; do not promote `PE7-RWE-DB-RUN-1` until a zero-mismatch receipt is accepted.
+
+### 11. Weak-Agent Dispatch Capsule
+
+<!-- weak-agent-dispatch:v1
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-RWE-DB-PREFLIGHT-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"opencode_local_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Run the accepted provider-free snapshot verifier and RWE operator preflight, then record only a bounded zero-mismatch receipt.","rollback":"Revert this promotion and receipt documentation; retain the accepted snapshot manifest and all unavailable or failed evidence.","allowed_paths":["docs/CURRENT_STATUS.md","docs/NEXT_DECISION.md"],"allowed_outputs":["A bounded provider-free preflight receipt with identities, digests, status, and stop reasons only."],"prerequisites":["PE7-RWE-DB-SNAPSHOT-RECONSTRUCT-1"],"prerequisite_receipts":["PE7-RWE-DB-SNAPSHOT-RECONSTRUCT-1 COMPLETE: PR #451 exact head `d48e9853856714a964709956651fc0ac0961315c`; squash merge `e1ff80b7599d8aec8d64909f937f79c948010392`; exact-head review receipt comment `5292004476`; canonical workflow `31790256137`; exact-head checks `31790143998` and `31790256110`; manifest sha256 `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`; `RECONSTRUCTABLE=true`"],"forbidden_changes":["Any Provider call, credential access, target write, task execution, authority issue/admit/consume, EFFECT/T3 action, release, deployment, runtime, schema, evaluator, scheduler, store, budget, or new artifact owner.","Do not rewrite frozen corpus, protocol, schedule, or snapshot identities."],"forbidden_next_actions":["Do not call a Provider, read credentials, execute a task, rerun run-live-20260813-v2c, write a target default branch, or promote PE7-RWE-DB-RUN-1.","Do not guess missing capacity, pricing, identity, retention, or drift evidence."],"ordered_steps":["Refresh accepted main and verify the exact reconstructable snapshot manifest and frozen artifact bindings.","Run the existing provider-free snapshot verifier and operator preflight without issuing or consuming authority.","Record only bounded status, digests, and stop reasons; keep the RUN packet blocked until the receipt is accepted."],"read_paths":["docs/CURRENT_STATUS.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/REAL_WORLD_TESTING_PLAYBOOK.md","engine/src/rwe/live_baseline_coordinator.rs","engine/src/bin/rwe_live_baseline.rs","engine/src/storage/local_product_store/managed_acceptance.rs","scripts/verify_rwe_snapshot.py"],"verification":["uv run --no-project python scripts/check_agent_handoff.py","git diff --check"],"expected_artifacts":["A bounded provider-free preflight receipt in docs/CURRENT_STATUS.md and docs/NEXT_DECISION.md."],"pause_gates":["Stop before any Provider call, credential access, task execution, authority issue/admit/consume, target write, EFFECT, T3 action, release, deployment, or automatic merge.","Stop if any snapshot, corpus, protocol, schedule, capacity, pricing, principal, target, evidence, retention, or drift binding is unavailable, stale, conflicting, or unverifiable."]}
+-->
 
 ## Common Execution Protocol
 
