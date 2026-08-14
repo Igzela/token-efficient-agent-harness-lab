@@ -1401,6 +1401,16 @@ fn classify_execution_error(err: &str) -> &'static str {
     }
 }
 
+fn mark_cleanup_failed(outcome: &mut CellOutcome, detail: impl Into<String>) {
+    outcome.classification = "cleanup_failed".into();
+    outcome.cleanup_status = "failed".into();
+    outcome.note = format!(
+        "{}; delegated failure cleanup unavailable: {}",
+        outcome.note,
+        detail.into()
+    );
+}
+
 /// Store-owned transport provenance from the RWE cell evidence projection.
 ///
 /// Returns `external` only when the aggregated execution evidence and every
@@ -1459,6 +1469,13 @@ fn provider_execution_from_journal(projection: &Value) -> Option<Value> {
     let mut realized_cost_usd = 0.0_f64;
     let mut requests = Vec::with_capacity(journal.len());
     for entry in journal {
+        let status = entry.get("status").and_then(Value::as_str)?;
+        if !matches!(
+            status,
+            "succeeded" | "failed_before_send" | "failed_known_outcome" | "outcome_unknown"
+        ) {
+            return None;
+        }
         let entry_provenance = entry.get("transport_provenance").and_then(Value::as_str)?;
         if !matches!(entry_provenance, "external" | "injected")
             || provenance.is_some_and(|seen| seen != entry_provenance)
@@ -1466,18 +1483,22 @@ fn provider_execution_from_journal(projection: &Value) -> Option<Value> {
             return None;
         }
         provenance = Some(entry_provenance);
-        cumulative_tokens = cumulative_tokens.checked_add(
-            entry
-                .get("effective_tokens")
-                .or_else(|| entry.pointer("/usage/cumulative_tokens"))
-                .and_then(Value::as_u64)?,
-        )?;
         let cost = entry.get("effective_cost_usd").and_then(Value::as_f64)?;
         if !cost.is_finite() || cost < 0.0 {
             return None;
         }
-        realized_cost_usd += cost;
-        requests.push(entry.clone());
+        let effective_tokens = entry
+            .get("effective_tokens")
+            .or_else(|| entry.pointer("/usage/cumulative_tokens"))
+            .and_then(Value::as_u64)?;
+        if status == "succeeded" {
+            cumulative_tokens = cumulative_tokens.checked_add(effective_tokens)?;
+            realized_cost_usd += cost;
+            requests.push(entry.clone());
+        }
+    }
+    if requests.is_empty() {
+        return None;
     }
     Some(json!({
         "schema_version": "managed_deepseek_execution_evidence.v1",
@@ -1884,27 +1905,75 @@ pub fn run_frozen_schedule(
                 // after admission, the store owns a distinct generated task
                 // id. Resolve it before coupling failure usage to the durable
                 // delegated journal.
-                if let Ok(Some(task)) = store.get_product_task_by_idempotency(
+                let task = match store.get_product_task_by_idempotency(
                     principal.tenant_id(),
                     &ids.worktree_id,
                     &ids.product_task_id,
                 ) {
-                    if let Some(task_id) = task.get("task_id").and_then(Value::as_str) {
-                        o.product_task_id = task_id.to_string();
-                        match store
-                            .finalize_product_task_after_execution(task_id, "rwe-live-baseline")
-                        {
-                            Ok(_) => o.cleanup_status = "completed".into(),
-                            Err(cleanup_error) => {
-                                o.classification = "cleanup_failed".into();
-                                o.cleanup_status = "failed".into();
-                                o.note = format!(
-                                    "{}; delegated failure cleanup failed: {}",
-                                    o.note, cleanup_error
+                    Ok(Some(task)) => task,
+                    Ok(None) => {
+                        mark_cleanup_failed(&mut o, "admitted ProductTask identity was not found");
+                        Value::Null
+                    }
+                    Err(error) => {
+                        mark_cleanup_failed(
+                            &mut o,
+                            format!("ProductTask identity lookup failed: {error}"),
+                        );
+                        Value::Null
+                    }
+                };
+                if let Some(task_id) = task.get("task_id").and_then(Value::as_str) {
+                    o.product_task_id = task_id.to_string();
+                    let workspace_id = task
+                        .get("workspace_record_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    match store.finalize_product_task_after_execution(task_id, "rwe-live-baseline")
+                    {
+                        Ok(finalized) => {
+                            let phase = finalized.get("phase").and_then(Value::as_str);
+                            let terminal_phase = matches!(
+                                phase,
+                                Some(
+                                    "terminal_failure"
+                                        | "execution_failed"
+                                        | "verification_authority_lost"
+                                        | "verification_failed"
+                                        | "verification_outcome_unknown"
+                                )
+                            );
+                            let workspace_cleaned = workspace_id.as_deref().is_some_and(|id| {
+                                store
+                                    .get_supervised_patch_workspace(id)
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|workspace| {
+                                        workspace
+                                            .get("status")
+                                            .and_then(Value::as_str)
+                                            .map(|status| status == "cleaned")
+                                    })
+                                    .unwrap_or(false)
+                            });
+                            if terminal_phase && workspace_cleaned {
+                                o.cleanup_status = "cleaned".into();
+                            } else {
+                                mark_cleanup_failed(
+                                    &mut o,
+                                    format!(
+                                        "cleanup owner returned phase {} with workspace cleanup unproven",
+                                        phase.unwrap_or("missing")
+                                    ),
                                 );
                             }
                         }
+                        Err(cleanup_error) => {
+                            mark_cleanup_failed(&mut o, cleanup_error);
+                        }
                     }
+                } else if !task.is_null() {
+                    mark_cleanup_failed(&mut o, "ProductTask identity has no task_id");
                 }
                 if class == "outcome_unknown" {
                     o.cost_unknown = true;
@@ -2784,12 +2853,14 @@ mod tests {
             "provider_execution": null,
             "provider_request_journal": [
                 {
+                    "status": "succeeded",
                     "effective_tokens": 422,
                     "effective_cost_usd": 0.000120118,
                     "transport_provenance": "external",
                     "usage": {"input_tokens": 314, "output_tokens": 108}
                 },
                 {
+                    "status": "succeeded",
                     "effective_tokens": 4349,
                     "effective_cost_usd": 0.0011337368,
                     "transport_provenance": "external",
@@ -2806,6 +2877,21 @@ mod tests {
             store_evidence_transport_provenance(&projection),
             Ok("external".to_string())
         );
+    }
+
+    #[test]
+    fn failed_provider_journal_entries_do_not_become_live_requests() {
+        let projection = json!({
+            "provider_execution": null,
+            "provider_request_journal": [{
+                "status": "failed_before_send",
+                "effective_tokens": 0,
+                "effective_cost_usd": 0.0,
+                "transport_provenance": "external"
+            }]
+        });
+        assert!(provider_execution_from_journal(&projection).is_none());
+        assert!(store_evidence_transport_provenance(&projection).is_err());
     }
 
     #[test]
@@ -4258,7 +4344,7 @@ mod tests {
         .unwrap();
         let rows = store.list_rwe_task_attempts_for_run("run-ferr").unwrap();
         assert!(!rows.is_empty());
-        assert_eq!(rows[0]["classification"], "timeout");
+        assert_eq!(rows[0]["classification"], "cleanup_failed");
         assert_ne!(rows[0]["classification"], "dispatched");
         // No second authorization consumed.
         assert!(store
