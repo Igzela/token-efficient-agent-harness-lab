@@ -1407,9 +1407,11 @@ fn classify_execution_error(err: &str) -> &'static str {
 /// durable journal claim attest the production external transport. Missing,
 /// invalid, or mixed provenance fails closed with an error.
 fn store_evidence_transport_provenance(projection: &Value) -> Result<String, String> {
+    let journal_projection = provider_execution_from_journal(projection);
     let pe = projection
         .get("provider_execution")
         .filter(|value| !value.is_null())
+        .or(journal_projection.as_ref())
         .ok_or("RWE cell store evidence lacks provider execution")?;
     let aggregate = pe
         .get("transport_provenance")
@@ -1435,6 +1437,56 @@ fn store_evidence_transport_provenance(projection: &Value) -> Result<String, Str
         }
     }
     Ok(aggregate.to_string())
+}
+
+/// Failed delegated stages can stop before artifact confirmation, but the
+/// existing managed-acceptance owner still durably records every provider
+/// request in its journal. Reuse that receipt for accounting rather than
+/// reporting a false zero. Incomplete journal entries stay unavailable.
+fn provider_execution_from_journal(projection: &Value) -> Option<Value> {
+    if projection
+        .get("provider_execution")
+        .is_some_and(|value| !value.is_null())
+    {
+        return None;
+    }
+    let journal = projection
+        .get("provider_request_journal")
+        .and_then(Value::as_array)
+        .filter(|entries| !entries.is_empty())?;
+    let mut provenance: Option<&str> = None;
+    let mut cumulative_tokens = 0_u64;
+    let mut realized_cost_usd = 0.0_f64;
+    let mut requests = Vec::with_capacity(journal.len());
+    for entry in journal {
+        let entry_provenance = entry.get("transport_provenance").and_then(Value::as_str)?;
+        if !matches!(entry_provenance, "external" | "injected")
+            || provenance.is_some_and(|seen| seen != entry_provenance)
+        {
+            return None;
+        }
+        provenance = Some(entry_provenance);
+        cumulative_tokens = cumulative_tokens.checked_add(
+            entry
+                .get("effective_tokens")
+                .or_else(|| entry.pointer("/usage/cumulative_tokens"))
+                .and_then(Value::as_u64)?,
+        )?;
+        let cost = entry.get("effective_cost_usd").and_then(Value::as_f64)?;
+        if !cost.is_finite() || cost < 0.0 {
+            return None;
+        }
+        realized_cost_usd += cost;
+        requests.push(entry.clone());
+    }
+    Some(json!({
+        "schema_version": "managed_deepseek_execution_evidence.v1",
+        "provider_request_count": requests.len(),
+        "transport_provenance": provenance?,
+        "requests": requests,
+        "cumulative_tokens": cumulative_tokens,
+        "realized_cost_usd": realized_cost_usd,
+    }))
 }
 
 /// Couple final usage to canonical managed provider_execution / journal on store.
@@ -1467,7 +1519,11 @@ fn couple_usage_to_store_journal(store: &LocalProductStore, outcome: &mut CellOu
             return;
         }
     }
-    let pe = proj.get("provider_execution");
+    let journal_projection = provider_execution_from_journal(&proj);
+    let pe = proj
+        .get("provider_execution")
+        .filter(|value| !value.is_null())
+        .or(journal_projection.as_ref());
     if let Some(count) = pe
         .and_then(|p| p.get("provider_request_count"))
         .and_then(Value::as_u64)
@@ -1485,6 +1541,24 @@ fn couple_usage_to_store_journal(store: &LocalProductStore, outcome: &mut CellOu
         .and_then(Value::as_u64)
     {
         outcome.total_tokens = tok;
+    }
+    if let Some(requests) = pe.and_then(|p| p.get("requests")).and_then(Value::as_array) {
+        outcome.input_tokens = requests
+            .iter()
+            .filter_map(|request| {
+                request
+                    .pointer("/usage/input_tokens")
+                    .and_then(Value::as_u64)
+            })
+            .fold(0_u64, u64::saturating_add);
+        outcome.output_tokens = requests
+            .iter()
+            .filter_map(|request| {
+                request
+                    .pointer("/usage/output_tokens")
+                    .and_then(Value::as_u64)
+            })
+            .fold(0_u64, u64::saturating_add);
     }
     if let Some(cost) = pe
         .and_then(|p| p.get("realized_cost_usd"))
@@ -2677,6 +2751,49 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tempfile::tempdir;
+
+    #[test]
+    fn failed_cell_journal_usage_is_projected_without_false_zeroes() {
+        let projection = json!({
+            "provider_execution": null,
+            "provider_request_journal": [
+                {
+                    "effective_tokens": 422,
+                    "effective_cost_usd": 0.000120118,
+                    "transport_provenance": "external",
+                    "usage": {"input_tokens": 314, "output_tokens": 108}
+                },
+                {
+                    "effective_tokens": 4349,
+                    "effective_cost_usd": 0.0011337368,
+                    "transport_provenance": "external",
+                    "usage": {"input_tokens": 349, "output_tokens": 4000}
+                }
+            ]
+        });
+
+        let execution = provider_execution_from_journal(&projection).unwrap();
+        assert_eq!(execution["provider_request_count"], 2);
+        assert_eq!(execution["cumulative_tokens"], 4771);
+        assert_eq!(execution["transport_provenance"], "external");
+        assert_eq!(
+            store_evidence_transport_provenance(&projection),
+            Ok("external".to_string())
+        );
+    }
+
+    #[test]
+    fn incomplete_cell_journal_stays_unavailable() {
+        let projection = json!({
+            "provider_execution": null,
+            "provider_request_journal": [{
+                "transport_provenance": "external",
+                "usage": {"input_tokens": 10, "output_tokens": 5}
+            }]
+        });
+        assert!(provider_execution_from_journal(&projection).is_none());
+        assert!(store_evidence_transport_provenance(&projection).is_err());
+    }
 
     fn operator(store: &LocalProductStore, tenant: &str, key: &str) -> AuthenticatedPrincipal {
         store
