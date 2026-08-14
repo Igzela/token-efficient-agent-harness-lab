@@ -31,6 +31,7 @@ These are audited absences or unaccepted seams at the current main, not permissi
 | AC3 Golden Path split | `product_golden_path.rs` plus LocalProductStore product-task authority | no accepted pure orchestration/effect-port seam | store, approval, output, audit, or external effect ownership becomes ambiguous |
 | AC4 transaction views | sole LocalProductStore SQLite/PostgreSQL owners | no named borrowed transaction-view interfaces exist | atomic group, borrow/commit/rollback, parity, or recovery cannot be proved |
 | AC5 composition root | current Rust startup, config, HTTP state, provider, and store construction | no single accepted validated composition-root contract | config precedence conflicts, dependency cycle, or secret resolution broadens |
+| Context working-set projection | existing Repository Context Control Plane plus current prompt/runtime, artifact/evidence, execution-usage, and scorecard owners | no accepted model-visible evidence working-set/residency/rehydration contract; context is assembled through role/capsule/prompt paths and provider prompts without one canonical projection seam | projection would become a second memory/store/authority/evaluator, semantic relevance could evict authority/blocker evidence, or a reduced item cannot be exact-source-bound and safely rehydrated |
 | EC1 causal mutation evidence | existing HE artifact/store owner | `FailurePatternEvidenceV1`, `MutationHypothesisManifestV1`, and `PredictionOutcomeV1` are planned, not current accepted types | identity/causal source can be caller- or candidate-authored, mutable, or unaddressable |
 | EC2 real evaluator/holdout | accepted evaluator/evidence owner; current `harness_evolution_eval.rs` remains fixture/default-off | no managed sealed holdout, access mediation, or real acceptance evaluator evidence | fixture result, candidate-controlled rule, leakage, or label uncertainty would be reported as acceptance |
 | EC3-EC5 controls | existing budget/spend, HE, evaluator, artifact, lease, and store owners | no accepted total-lifecycle enforcement, diversity admission, immutable Pareto archive, or HE stop/recovery state machine | a second ledger/controller appears or crash/exactly-once/hidden-reject behavior is unresolved |
@@ -74,7 +75,7 @@ The checked manifest below binds the complete ordered packet ID list, class/tier
 The manifest rows are compact arrays of `packet_id`, `class`, `worker_tier`, `risk_class`, and `verification_family`. `execution_profile` is derived as `{packet_id}.v1`. `promotion_requirements` is the shared contract above plus `REFRESH_AT_PROMOTION` for owners, allowed paths, ordered steps, verification, and rollback.
 
 <!-- future-route-inventory:v1
-{"schema_version":"future_route_inventory.v1","packet_count":108,"ordered_packet_ids":["PE7-RWE-DB-RUN-1","PE7-RWE-DB-ANALYSIS-1","PE7-AC0-RUNTIME-INVENTORY-1","PE7-AC0-DATA-CONTRACT-INVENTORY-1","PE7-AC0-TRACE-ORDER-FREEZE-1","PE7-AC1-CONTRACT-1","PE7-AC1-SUPERVISOR-CORE-1","PE7-AC1-CALLER-MIGRATION-1","PE7-AC2-CONTRACT-1","PE7-AC2-BOUNDARY-CORE-1","PE7-AC2-CALLER-MIGRATION-1","PE7-AC3-CONTRACT-1","PE7-AC3-ORCHESTRATOR-CORE-1","PE7-AC3-PORT-MIGRATION-1","PE7-AC4-CONTRACT-1","PE7-AC4-VIEWS-CORE-1","PE7-AC4-CALLER-MIGRATION-1","PE7-AC5-CONTRACT-1","PE7-AC5-ROOT-CORE-1","PE7-AC5-MODULE-MIGRATION-1","PE7-AC6-CONTRACT-1","PE7-AC6-RUST-CODEGEN-1","PE7-AC6-SDK-MIGRATION-1","PE7-AC6-DASHBOARD-MIGRATION-1","PE7-AC6-COMPATIBILITY-CLOSEOUT-1","PE7-AC7-REMOVAL-MANIFEST-1","PE7-AC7-CLEANUP-1","PE7-AC7-CLOSEOUT-1","PE7-RWE-CR-RECONSTRUCTION-1","PE7-RWE-CR-PROTOCOL-PREFLIGHT-1","PE7-RWE-CR-RUN-1","PE7-RWE-CR-ANALYSIS-1","PE7-HE-EC1-CONTRACT-1","PE7-HE-EC1-IDENTITY-LINEAGE-1","PE7-HE-EC1-CAUSAL-MANIFEST-1","PE7-HE-EC1-MUTATION-REGISTRY-1","PE7-HE-EC2-CONTRACT-1","PE7-HE-EC2-HOLDOUT-SEAL-1","PE7-HE-EC2-SENTINEL-CONFORMANCE-1","PE7-HE-EC2-PREDICTION-OUTCOME-1","PE7-HE-EC3-CONTRACT-1","PE7-HE-EC3-INSTRUMENTATION-1","PE7-HE-EC3-ENFORCEMENT-1","PE7-HE-EC4-CONTRACT-1","PE7-HE-EC4-ADMISSION-1","PE7-HE-EC4-COVERAGE-CLOSEOUT-1","PE7-HE-EC5-CONTRACT-1","PE7-HE-EC5-SELECTION-ARCHIVE-1","PE7-HE-EC5-STOP-RECOVERY-1","PE7-HE-LEVEL1-PREFLIGHT-1","PE7-HE-LEVEL1-RUN-1","PE7-HE-LEVEL1-CLOSEOUT-1","PE7-HE-LEVEL1-TRANSFER-PROTOCOL-1","PE7-HE-LEVEL1-TRANSFER-RUN-1","PE7-HE-LEVEL1-TRANSFER-ANALYSIS-1","PE7-MEMORY-SKILL-CONTRACT-1","PE7-MEMORY-ADAPTER-1","PE7-SKILL-ADAPTER-1","PE7-MEMORY-SKILL-RUN-1","PE7-MEMORY-SKILL-ANALYSIS-1","PE7-HE-LEVEL2-RULE-AUDIT-1","PE7-HE-LEVEL2-EVIDENCE-ANALYSIS-1","PE7-HE-LEVEL2-DECISION-1","PE7-HE-LEVEL2-CONTROLLER-CONTRACT-1","PE7-HE-LEVEL2-STATE-PERSISTENCE-1","PE7-HE-LEVEL2-GENERATION-ORCHESTRATION-1","PE7-HE-LEVEL2-EVALUATION-SELECTION-1","PE7-HE-LEVEL2-STOP-RECOVERY-1","PE7-HE-LEVEL2-SIMULATION-1","PE7-HE-LEVEL2-PILOT-1","PE7-HE-LEVEL2-CLOSEOUT-1","PE7-HE-FINAL-TRANSFER-PROTOCOL-1","PE7-HE-FINAL-TRANSFER-RUN-1","PE7-HE-FINAL-TRANSFER-ANALYSIS-1","PE7-HE-ADOPTION-READINESS-1","PE7-HE-ADOPTION-DECISION-1","PE7-HE-META-CLAIM-PROTOCOL-1","PE7-HE-META-OPERATOR-CONTRACT-1","PE7-HE-META-CORPUS-EVALUATOR-1","PE7-HE-META-BUDGET-CONTRACT-1","PE7-HE-META-O0-BASELINE-1","PE7-HE-META-O1-CANDIDATE-1","PE7-HE-META-FIXTURE-PILOT-1","PE7-HE-META-PILOT-CLOSEOUT-1","PE7-HE-META-COMPARISON-RUN-1","PE7-HE-META-REPLICATION-RUN-1","PE7-HE-META-ANALYSIS-DECISION-1","PE7-HE-ADVANCED-RECURSION-GATE-1","PE7-HE-R4-METACOGNITIVE-CONTRACT-1","PE7-HE-R4-METACOGNITIVE-ADAPTER-1","PE7-HE-R4-COMPARISON-RUN-1","PE7-HE-R4-REPLICATION-RUN-1","PE7-HE-R4-ANALYSIS-DECISION-1","PE7-HE-R5-WEIGHT-CONTRACT-1","PE7-HE-R5-WEIGHT-ADAPTER-1","PE7-HE-R5-FACTORIAL-RUN-1","PE7-HE-R5-FACTORIAL-ANALYSIS-1","PE7-HE-R5-COEVOLUTION-RUN-1","PE7-HE-R5-TRANSFER-REPLICATION-1","PE7-HE-R5-ANALYSIS-DECISION-1","PE7-HE-R6-OUTER-POLICY-CONTRACT-1","PE7-HE-R6-OUTER-POLICY-ADAPTER-1","PE7-HE-R6-COMPARISON-RUN-1","PE7-HE-R6-REPLICATION-RUN-1","PE7-HE-R6-ANALYSIS-DECISION-1","PE7-DASHBOARD-DISPOSITION-1","PE7-DASHBOARD-REFRESH-1","PE7-DASHBOARD-CLOSEOUT-1"],"ordered_packet_ids_sha256":"9ec80f294cd5b83cbdde24b7ee8d15aca4348bb56e20bcc959674a945e3d7777","dependency_graph_sha256":"8c23336857a3cab060dc18b66fc88c3f97e9c1c42ad0d928abd69b6203c0c911","profiles_sha256":"30289cf094464dc0b2910fbfa67e1f8c370cd4906f9b8cd51f50a66176a5f116","profiles":[["PE7-RWE-DB-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-RWE-DB-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-AC0-RUNTIME-INVENTORY-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC0-DATA-CONTRACT-INVENTORY-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC0-TRACE-ORDER-FREEZE-1","CLOSEOUT","T2","none","evidence_review"],["PE7-AC1-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC1-SUPERVISOR-CORE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC1-CALLER-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC2-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC2-BOUNDARY-CORE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC2-CALLER-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC3-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC3-ORCHESTRATOR-CORE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC3-PORT-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC4-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC4-VIEWS-CORE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC4-CALLER-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC5-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC5-ROOT-CORE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC5-MODULE-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC6-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC6-RUST-CODEGEN-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC6-SDK-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC6-DASHBOARD-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC6-COMPATIBILITY-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"],["PE7-AC7-REMOVAL-MANIFEST-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC7-CLEANUP-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC7-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"],["PE7-RWE-CR-RECONSTRUCTION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-RWE-CR-PROTOCOL-PREFLIGHT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-RWE-CR-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-RWE-CR-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-EC1-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-EC1-IDENTITY-LINEAGE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC1-CAUSAL-MANIFEST-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC1-MUTATION-REGISTRY-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC2-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-EC2-HOLDOUT-SEAL-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC2-SENTINEL-CONFORMANCE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC2-PREDICTION-OUTCOME-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC3-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-EC3-INSTRUMENTATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC3-ENFORCEMENT-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC4-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-EC4-ADMISSION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC4-COVERAGE-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-EC5-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-EC5-SELECTION-ARCHIVE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC5-STOP-RECOVERY-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-LEVEL1-PREFLIGHT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-LEVEL1-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-LEVEL1-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-LEVEL1-TRANSFER-PROTOCOL-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-LEVEL1-TRANSFER-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-LEVEL1-TRANSFER-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-MEMORY-SKILL-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-MEMORY-ADAPTER-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-SKILL-ADAPTER-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-MEMORY-SKILL-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-MEMORY-SKILL-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-LEVEL2-RULE-AUDIT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-LEVEL2-EVIDENCE-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-LEVEL2-DECISION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-LEVEL2-CONTROLLER-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-LEVEL2-STATE-PERSISTENCE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-LEVEL2-GENERATION-ORCHESTRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-LEVEL2-EVALUATION-SELECTION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-LEVEL2-STOP-RECOVERY-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-LEVEL2-SIMULATION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-LEVEL2-PILOT-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-LEVEL2-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-FINAL-TRANSFER-PROTOCOL-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-FINAL-TRANSFER-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-FINAL-TRANSFER-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-ADOPTION-READINESS-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-ADOPTION-DECISION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-META-CLAIM-PROTOCOL-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-META-OPERATOR-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-META-CORPUS-EVALUATOR-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-META-BUDGET-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-META-O0-BASELINE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-META-O1-CANDIDATE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-META-FIXTURE-PILOT-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-META-PILOT-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-META-COMPARISON-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-META-REPLICATION-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-META-ANALYSIS-DECISION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-ADVANCED-RECURSION-GATE-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-R4-METACOGNITIVE-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-R4-METACOGNITIVE-ADAPTER-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-R4-COMPARISON-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R4-REPLICATION-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R4-ANALYSIS-DECISION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-R5-WEIGHT-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-R5-WEIGHT-ADAPTER-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-R5-FACTORIAL-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R5-FACTORIAL-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-R5-COEVOLUTION-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R5-TRANSFER-REPLICATION-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R5-ANALYSIS-DECISION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-R6-OUTER-POLICY-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-R6-OUTER-POLICY-ADAPTER-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-R6-COMPARISON-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R6-REPLICATION-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R6-ANALYSIS-DECISION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-DASHBOARD-DISPOSITION-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-DASHBOARD-REFRESH-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-DASHBOARD-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"]]}
+{"dependency_graph_sha256":"0aaad8c26da9355245046d45582d47cd65c7b7bee59c8c6940ef94c29f738b3d","ordered_packet_ids":["PE7-RWE-DB-RUN-1","PE7-RWE-DB-ANALYSIS-1","PE7-AC0-RUNTIME-INVENTORY-1","PE7-AC0-DATA-CONTRACT-INVENTORY-1","PE7-AC0-TRACE-ORDER-FREEZE-1","PE7-AC1-CONTRACT-1","PE7-AC1-SUPERVISOR-CORE-1","PE7-AC1-CALLER-MIGRATION-1","PE7-AC2-CONTRACT-1","PE7-AC2-BOUNDARY-CORE-1","PE7-AC2-CALLER-MIGRATION-1","PE7-AC3-CONTRACT-1","PE7-AC3-ORCHESTRATOR-CORE-1","PE7-AC3-PORT-MIGRATION-1","PE7-AC4-CONTRACT-1","PE7-AC4-VIEWS-CORE-1","PE7-AC4-CALLER-MIGRATION-1","PE7-AC5-CONTRACT-1","PE7-AC5-ROOT-CORE-1","PE7-AC5-MODULE-MIGRATION-1","PE7-AC6-CONTRACT-1","PE7-AC6-RUST-CODEGEN-1","PE7-AC6-SDK-MIGRATION-1","PE7-AC6-DASHBOARD-MIGRATION-1","PE7-AC6-COMPATIBILITY-CLOSEOUT-1","PE7-AC7-REMOVAL-MANIFEST-1","PE7-AC7-CLEANUP-1","PE7-AC7-CLOSEOUT-1","PE7-RWE-CR-RECONSTRUCTION-1","PE7-RWE-CR-PROTOCOL-PREFLIGHT-1","PE7-RWE-CR-RUN-1","PE7-RWE-CR-ANALYSIS-1","PE7-CWS-INGRESS-INVENTORY-1","PE7-CWS-PROJECTION-CONTRACT-1","PE7-CWS-REHYDRATION-CONTRACT-1","PE7-CWS-PROJECTOR-CORE-1","PE7-CWS-TOOL-RESULT-REDUCTION-1","PE7-CWS-REPOSITORY-INTEGRATION-1","PE7-CWS-RUNTIME-INTEGRATION-1","PE7-CWS-CACHE-PARTITION-1","PE7-CWS-BENCHMARK-PROTOCOL-1","PE7-CWS-BENCHMARK-PREFLIGHT-1","PE7-CWS-BENCHMARK-RUN-1","PE7-CWS-ANALYSIS-1","PE7-HE-EC1-CONTRACT-1","PE7-HE-EC1-IDENTITY-LINEAGE-1","PE7-HE-EC1-CAUSAL-MANIFEST-1","PE7-HE-EC1-MUTATION-REGISTRY-1","PE7-HE-EC2-CONTRACT-1","PE7-HE-EC2-HOLDOUT-SEAL-1","PE7-HE-EC2-SENTINEL-CONFORMANCE-1","PE7-HE-EC2-PREDICTION-OUTCOME-1","PE7-HE-EC3-CONTRACT-1","PE7-HE-EC3-INSTRUMENTATION-1","PE7-HE-EC3-ENFORCEMENT-1","PE7-HE-EC4-CONTRACT-1","PE7-HE-EC4-ADMISSION-1","PE7-HE-EC4-COVERAGE-CLOSEOUT-1","PE7-HE-EC5-CONTRACT-1","PE7-HE-EC5-SELECTION-ARCHIVE-1","PE7-HE-EC5-STOP-RECOVERY-1","PE7-HE-LEVEL1-PREFLIGHT-1","PE7-HE-LEVEL1-RUN-1","PE7-HE-LEVEL1-CLOSEOUT-1","PE7-HE-LEVEL1-TRANSFER-PROTOCOL-1","PE7-HE-LEVEL1-TRANSFER-RUN-1","PE7-HE-LEVEL1-TRANSFER-ANALYSIS-1","PE7-MEMORY-SKILL-CONTRACT-1","PE7-MEMORY-ADAPTER-1","PE7-SKILL-ADAPTER-1","PE7-MEMORY-SKILL-RUN-1","PE7-MEMORY-SKILL-ANALYSIS-1","PE7-HE-LEVEL2-RULE-AUDIT-1","PE7-HE-LEVEL2-EVIDENCE-ANALYSIS-1","PE7-HE-LEVEL2-DECISION-1","PE7-HE-LEVEL2-CONTROLLER-CONTRACT-1","PE7-HE-LEVEL2-STATE-PERSISTENCE-1","PE7-HE-LEVEL2-GENERATION-ORCHESTRATION-1","PE7-HE-LEVEL2-EVALUATION-SELECTION-1","PE7-HE-LEVEL2-STOP-RECOVERY-1","PE7-HE-LEVEL2-SIMULATION-1","PE7-HE-LEVEL2-PILOT-1","PE7-HE-LEVEL2-CLOSEOUT-1","PE7-HE-FINAL-TRANSFER-PROTOCOL-1","PE7-HE-FINAL-TRANSFER-RUN-1","PE7-HE-FINAL-TRANSFER-ANALYSIS-1","PE7-HE-ADOPTION-READINESS-1","PE7-HE-ADOPTION-DECISION-1","PE7-HE-META-CLAIM-PROTOCOL-1","PE7-HE-META-OPERATOR-CONTRACT-1","PE7-HE-META-CORPUS-EVALUATOR-1","PE7-HE-META-BUDGET-CONTRACT-1","PE7-HE-META-O0-BASELINE-1","PE7-HE-META-O1-CANDIDATE-1","PE7-HE-META-FIXTURE-PILOT-1","PE7-HE-META-PILOT-CLOSEOUT-1","PE7-HE-META-COMPARISON-RUN-1","PE7-HE-META-REPLICATION-RUN-1","PE7-HE-META-ANALYSIS-DECISION-1","PE7-HE-ADVANCED-RECURSION-GATE-1","PE7-HE-R4-METACOGNITIVE-CONTRACT-1","PE7-HE-R4-METACOGNITIVE-ADAPTER-1","PE7-HE-R4-COMPARISON-RUN-1","PE7-HE-R4-REPLICATION-RUN-1","PE7-HE-R4-ANALYSIS-DECISION-1","PE7-HE-R5-WEIGHT-CONTRACT-1","PE7-HE-R5-WEIGHT-ADAPTER-1","PE7-HE-R5-FACTORIAL-RUN-1","PE7-HE-R5-FACTORIAL-ANALYSIS-1","PE7-HE-R5-COEVOLUTION-RUN-1","PE7-HE-R5-TRANSFER-REPLICATION-1","PE7-HE-R5-ANALYSIS-DECISION-1","PE7-HE-R6-OUTER-POLICY-CONTRACT-1","PE7-HE-R6-OUTER-POLICY-ADAPTER-1","PE7-HE-R6-COMPARISON-RUN-1","PE7-HE-R6-REPLICATION-RUN-1","PE7-HE-R6-ANALYSIS-DECISION-1","PE7-DASHBOARD-DISPOSITION-1","PE7-DASHBOARD-REFRESH-1","PE7-DASHBOARD-CLOSEOUT-1"],"ordered_packet_ids_sha256":"736407c2e818ea8593c64e89437701bb70f616f2c5de57e9a94293812e5fc32c","packet_count":120,"profiles":[["PE7-RWE-DB-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-RWE-DB-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-AC0-RUNTIME-INVENTORY-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC0-DATA-CONTRACT-INVENTORY-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC0-TRACE-ORDER-FREEZE-1","CLOSEOUT","T2","none","evidence_review"],["PE7-AC1-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC1-SUPERVISOR-CORE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC1-CALLER-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC2-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC2-BOUNDARY-CORE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC2-CALLER-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC3-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC3-ORCHESTRATOR-CORE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC3-PORT-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC4-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC4-VIEWS-CORE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC4-CALLER-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC5-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC5-ROOT-CORE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC5-MODULE-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC6-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC6-RUST-CODEGEN-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC6-SDK-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC6-DASHBOARD-MIGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC6-COMPATIBILITY-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"],["PE7-AC7-REMOVAL-MANIFEST-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-AC7-CLEANUP-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-AC7-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"],["PE7-RWE-CR-RECONSTRUCTION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-RWE-CR-PROTOCOL-PREFLIGHT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-RWE-CR-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-RWE-CR-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-CWS-INGRESS-INVENTORY-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-CWS-PROJECTION-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-CWS-REHYDRATION-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-CWS-PROJECTOR-CORE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-CWS-TOOL-RESULT-REDUCTION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-CWS-REPOSITORY-INTEGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-CWS-RUNTIME-INTEGRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-CWS-CACHE-PARTITION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-CWS-BENCHMARK-PROTOCOL-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-CWS-BENCHMARK-PREFLIGHT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-CWS-BENCHMARK-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-CWS-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-EC1-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-EC1-IDENTITY-LINEAGE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC1-CAUSAL-MANIFEST-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC1-MUTATION-REGISTRY-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC2-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-EC2-HOLDOUT-SEAL-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC2-SENTINEL-CONFORMANCE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC2-PREDICTION-OUTCOME-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC3-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-EC3-INSTRUMENTATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC3-ENFORCEMENT-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC4-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-EC4-ADMISSION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC4-COVERAGE-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-EC5-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-EC5-SELECTION-ARCHIVE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-EC5-STOP-RECOVERY-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-LEVEL1-PREFLIGHT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-LEVEL1-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-LEVEL1-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-LEVEL1-TRANSFER-PROTOCOL-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-LEVEL1-TRANSFER-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-LEVEL1-TRANSFER-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-MEMORY-SKILL-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-MEMORY-ADAPTER-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-SKILL-ADAPTER-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-MEMORY-SKILL-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-MEMORY-SKILL-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-LEVEL2-RULE-AUDIT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-LEVEL2-EVIDENCE-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-LEVEL2-DECISION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-LEVEL2-CONTROLLER-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-LEVEL2-STATE-PERSISTENCE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-LEVEL2-GENERATION-ORCHESTRATION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-LEVEL2-EVALUATION-SELECTION-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-LEVEL2-STOP-RECOVERY-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-LEVEL2-SIMULATION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-LEVEL2-PILOT-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-LEVEL2-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-FINAL-TRANSFER-PROTOCOL-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-FINAL-TRANSFER-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-FINAL-TRANSFER-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-ADOPTION-READINESS-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-ADOPTION-DECISION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-META-CLAIM-PROTOCOL-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-META-OPERATOR-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-META-CORPUS-EVALUATOR-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-META-BUDGET-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-META-O0-BASELINE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-META-O1-CANDIDATE-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-META-FIXTURE-PILOT-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-META-PILOT-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-META-COMPARISON-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-META-REPLICATION-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-META-ANALYSIS-DECISION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-ADVANCED-RECURSION-GATE-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-R4-METACOGNITIVE-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-R4-METACOGNITIVE-ADAPTER-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-R4-COMPARISON-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R4-REPLICATION-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R4-ANALYSIS-DECISION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-R5-WEIGHT-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-R5-WEIGHT-ADAPTER-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-R5-FACTORIAL-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R5-FACTORIAL-ANALYSIS-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-R5-COEVOLUTION-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R5-TRANSFER-REPLICATION-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R5-ANALYSIS-DECISION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-HE-R6-OUTER-POLICY-CONTRACT-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-HE-R6-OUTER-POLICY-ADAPTER-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-HE-R6-COMPARISON-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R6-REPLICATION-RUN-1","EFFECT","T3","external_effect","external_effect_evidence"],["PE7-HE-R6-ANALYSIS-DECISION-1","CLOSEOUT","T2","none","evidence_review"],["PE7-DASHBOARD-DISPOSITION-1","CONTRACT","T2","none","docs_evidence_review"],["PE7-DASHBOARD-REFRESH-1","IMPLEMENT","T1","none","source_focused_full"],["PE7-DASHBOARD-CLOSEOUT-1","CLOSEOUT","T2","none","evidence_review"]],"profiles_sha256":"2f3a6441a28612b5782db145f8555b56e65b46bca740e84ebf02b88800d7ae92","schema_version":"future_route_inventory.v1"}
 -->
 
 # Future Route
@@ -617,6 +618,190 @@ The causal comparison uses reconstructable old/new Harnesses in one randomized/i
 **Exit:** Hard-gate-first uncertainty/Pareto receipt with GO, NO_GO, or INSUFFICIENT disposition and all drift/cost limitations.
 
 **Stop:** Non-inferiority, reliability, lifecycle cost, comparability, or evidence-completeness gate fails.
+## Stage Context working-set projection
+
+This stage adds a derived, rebuildable model-context working-set layer only after the contemporary AC comparison closes, so it cannot contaminate the registered AC treatment. Canonical documents, Git, LocalProductStore, artifacts, durable memory, and raw tool evidence remain owned by their existing sources; the working-set layer only chooses a bounded model-visible projection and never becomes truth, persistence, authority, evaluator, or retry policy.
+
+### Packet PE7-CWS-INGRESS-INVENTORY-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-RWE-CR-ANALYSIS-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Enumerate every production and repository-maintenance path that places context in front of a model, including session/project capsules, prompt builders, provider/executor requests, tool results, artifacts, durable-memory retrieval, and efficiency/scorecard evidence sinks.
+
+**Allowed delta:** Read-only owner/caller/data-flow inventory and bounded measurement only; no prompt, runtime, Provider, memory, store, schema, or artifact behavior change.
+
+**Exit:** A zero-unknown matrix binds each ingress to exact owner/caller paths, source identity, authority class, size/repetition behavior, sensitivity, current reduction rule, and whether exact recovery is possible.
+
+**Stop:** A model-visible input lacks a current owner/source identity, an effect path is hidden behind free-form prompt assembly, or inventory would require treating conversation text as durable truth.
+### Packet PE7-CWS-PROJECTION-CONTRACT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-INGRESS-INVENTORY-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze the evidence working-set contract: source/hash identity, item kind, token/byte estimates, active-path and unresolved status, supersession/consumption state, recoverability, residency, stable/dynamic partition, and deterministic promotion/demotion rules.
+
+**Allowed delta:** Contract and conformance vectors only. Residency is `PINNED`, `HOT`, `WARM`, or `COLD`; authority, unresolved blockers, outcome-unknown evidence, exact task/packet bindings, allowed/forbidden scope, and verification contracts cannot be evicted by relevance scoring.
+
+**Exit:** An exact lexicographic policy and bounded wire/internal shape prove that the projection is derived, deletable, rebuildable, non-authoritative, and independent of fuzzy semantic scoring for all safety-relevant decisions.
+
+**Stop:** The contract creates a second memory/store/evaluator, allows a model/embedding score to demote authority or blockers, or cannot distinguish raw evidence ownership from model-visible residency.
+### Packet PE7-CWS-REHYDRATION-CONTRACT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-PROJECTION-CONTRACT-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze exact rehydration semantics for reduced or cold context through source-bound artifact/range references or deterministic rerun recipes, including integrity, freshness, redaction, private/secret, unavailable, and outcome-unknown behavior.
+
+**Allowed delta:** Contract/test vectors only; no new artifact store, hidden transcript store, Provider call, rerun authority, or permission expansion.
+
+**Exit:** Every rehydratable class has an exact source identity/hash, bounded retrieval recipe, stale/integrity failure rule, and proof that rehydration never implies permission to repeat an external effect.
+
+**Stop:** A reduced item cannot recover the evidence needed for verification, recovery depends only on free-form summaries, sensitive raw content would gain a new durable location, or rerun semantics are ambiguous.
+### Packet PE7-CWS-PROJECTOR-CORE-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-REHYDRATION-CONTRACT-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Implement the pure deterministic working-set projector and residency transitions behind existing context owners, producing a stable prefix plus bounded dynamic working set from already-authorized source material.
+
+**Allowed delta:** Pure/rebuildable projection code, typed internal records, deterministic reducers, and focused tests only; no database table, durable queue, Provider effect, semantic model call, or new authority owner.
+
+**Exit:** Ordering, pinning, supersession, duplicate, token/byte bound, deterministic replay, delete/rebuild, stale-source, and forbidden-eviction tests pass with identical canonical source identities.
+
+**Stop:** Projector requires ambient credentials/network, persisted truth, nondeterministic scoring for a hard decision, or a source owner must move into the projection layer.
+### Packet PE7-CWS-TOOL-RESULT-REDUCTION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-PROJECTOR-CORE-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Add deterministic admission reduction for large tool results so raw evidence remains under existing artifact/evidence owners while the model sees bounded status, salient diagnostics, source bindings, and an exact rehydration handle.
+
+**Allowed delta:** Provider-free reducers and existing artifact references only; no LLM-generated summary authority, raw-evidence deletion, retry decision, hidden output suppression, or change to tool execution semantics.
+
+**Exit:** Large success/failure logs, compiler/test diagnostics, bounded reads/searches, malformed output, truncation, redaction, stale handle, and exact-rehydrate fixtures prove no required failure or blocker evidence disappears.
+
+**Stop:** Reduction can convert failure/unknown to success, cannot bind the retained projection to raw evidence, leaks sensitive material, or increases tool retries because required evidence is irrecoverable.
+### Packet PE7-CWS-REPOSITORY-INTEGRATION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-TOOL-RESULT-REDUCTION-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Integrate the projector with repository-maintenance session/project context, claim-bound prompt construction, review, CI-repair, and local-run paths so already-projected canonical context is not repeatedly re-expanded.
+
+**Allowed delta:** Existing Repository Context Control Plane and prompt-assembly adapters/tests only; accepted documents, GitHub observations, route authority, exact-head review, checkpoint semantics, and execution permissions remain unchanged.
+
+**Exit:** Fresh/resume/repair/review/CI-repair fixtures prove exact accepted-main/head/packet bindings, no duplicate canonical-document payload, bounded model-visible context, exact rehydration, and unchanged fail-closed decisions.
+
+**Stop:** Integration makes a capsule authoritative, hides a changed-head/blocker condition, broadens targeted reads, or requires a second session/checkpoint/context owner.
+### Packet PE7-CWS-RUNTIME-INTEGRATION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-REPOSITORY-INTEGRATION-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Integrate the accepted working-set projection seam with the post-AC runtime/provider/executor boundaries so production model requests consume the same source-bound residency semantics without replacing provider, scheduler, memory, artifact, or execution owners.
+
+**Allowed delta:** Current-main adapters, context composition, typed internal mappings, and focused tests only; no Provider credential/budget/retry change, public authority expansion, new persistence, or outcome-status reinterpretation.
+
+**Exit:** Stub/fake/provider-free runtime tests prove stable task/authority bindings, bounded dynamic context, exact tool-evidence rehydration, cancellation/unknown preservation, and compatibility with accepted executor/provider mappings.
+
+**Stop:** A provider adapter becomes the context truth owner, runtime behavior needs an unaccepted schema/authority change, cache state affects correctness, or any existing outcome loses semantic fidelity.
+### Packet PE7-CWS-CACHE-PARTITION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-RUNTIME-INTEGRATION-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Expose deterministic stable-prefix versus dynamic-working-set partitioning and cache telemetry so provider caching can reuse truly stable material without making cache presence, hit rate, or write state part of correctness.
+
+**Allowed delta:** Projection metadata, provider-reported cache usage observation when available, scorecard wiring, and tests only; no cache service, cache authority, provider-specific correctness branch, or invented usage value.
+
+**Exit:** Prefix-stability, mutation invalidation, unsupported-provider, cached-token/cache-write missingness, retry, and replay tests pass; identical tasks produce identical partitions independent of cache state.
+
+**Stop:** Cache identity can authorize work, missing provider telemetry is coerced to zero, dynamic evidence contaminates the stable prefix, or cache optimization changes model-visible safety bindings.
+### Packet PE7-CWS-BENCHMARK-PROTOCOL-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-CACHE-PARTITION-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Pre-register a hard-gate-first comparison of the exact post-AC baseline with the CWS treatment using existing token-efficiency, scorecard, artifact, review, and lifecycle-cost owners.
+
+**Allowed delta:** Measurement protocol only; no live Provider call, threshold tuning from observed CWS outcomes, new evaluator, or alternative cost ontology.
+
+**Exit:** Frozen tasks, seeds, provider/model/tool identities, baseline/treatment toggles, quality/non-inferiority gates, repeated and total context/input metrics, cache telemetry semantics, rehydration/tool-call/retry/latency/cost metrics, missingness, analysis, and stop rules.
+
+**Stop:** Treatment differs in anything beyond accepted context projection, baseline cannot be reconstructed, a decisive threshold is post hoc, or lifecycle cost/quality evidence is incomparable.
+### Packet PE7-CWS-BENCHMARK-PREFLIGHT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-BENCHMARK-PROTOCOL-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Bind the exact baseline/CWS Harness identities, corpus/tasks, provider/model, cache capability, capacity, pricing/usage semantics, evidence destinations, finite budgets, and immediate authorization request without executing the comparison.
+
+**Allowed delta:** Provider-free integrity/capacity checks and unissued finite authorization package only; no Provider request, target write, hidden warm-up, selective task replacement, or result inspection.
+
+**Exit:** Zero-mismatch preflight with every frozen identity reconstructable and one bounded T3 authorization package for the registered run.
+
+**Stop:** Any identity, provider capability, capacity, pricing/usage source, raw/redacted evidence path, rollback, or baseline/treatment isolation is stale, unavailable, conflicting, or unverifiable.
+### Packet PE7-CWS-BENCHMARK-RUN-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-BENCHMARK-PREFLIGHT-1
+
+**Class:** `EFFECT`
+
+**Outcome:** Execute the frozen baseline-versus-CWS comparison once under finite authorization, preferably randomized/interleaved when the registered protocol requires it.
+
+**Allowed delta:** Registered Provider effects and evidence capture only; no target-default-branch write, treatment repair, cache manipulation outside the protocol, selective rerun, threshold change, or authority expansion.
+
+**Exit:** Every scheduled arm/task reaches terminal evidence with exact request/model/context identities, provider usage when reported, tool/rehydration/retry events, quality, latency, cost, failures/unknowns, cleanup, and raw/redacted bindings.
+
+**Stop:** Authority expires, outcome becomes unknown, arm comparability breaks, cache/provider semantics drift, evidence capture fails, a hard global stop fires, or any selective treatment repair would be required.
+### Packet PE7-CWS-ANALYSIS-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-BENCHMARK-RUN-1
+
+**Class:** `CLOSEOUT`
+
+**Outcome:** Apply the frozen analysis and choose `ENABLE`, `DISABLE`, or `INSUFFICIENT_DEFAULT_OFF`, then bind the exact active Harness identity that all later Harness-Evolution packets must use.
+
+**Allowed delta:** Analysis, projection enable/default-off disposition, rollback evidence, and canonical identity synchronization only; no new Provider effect, retuning, post-hoc reducer change, or automatic claim beyond tested workloads.
+
+**Exit:** Independent hard-gate-first receipt preserves all failures/missingness, reports repeated/total context and lifecycle effects with uncertainty, proves exact rehydration and rollback, and names one exact CWS-enabled or baseline/default-off Harness identity for EC1.
+
+**Stop:** Quality/safety/authority/evidence hard gates fail without a proven disable rollback, analysis cannot be reproduced, active-Harness identity is ambiguous, or the conclusion depends on unregistered exclusions.
 ## Stage Experiment control EC1 - identity, lineage, mutation
 
 EC1 makes candidate provenance immutable before evaluator or selection work. It also freezes a causal-mutation evidence chain without creating a second failure-intelligence owner:
@@ -631,7 +816,7 @@ All three records are redacted, hash-bound, replayable, and must retain `unknown
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PE7-RWE-CR-ANALYSIS-1
+**Prerequisite:** PE7-CWS-ANALYSIS-1
 
 **Class:** `CONTRACT`
 
