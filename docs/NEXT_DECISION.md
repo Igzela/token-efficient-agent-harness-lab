@@ -15,16 +15,16 @@ The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authoriza
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-RWE-DB-ANALYSIS-1 — READY_FOR_EXECUTION, the DB RUN is closed `INSUFFICIENT` and the bounded T2 analysis contract is accepted]
+[window: PE7-RWE-DB-RUN-1 — DECISION_REQUIRED, the effect is durably failed but its route T3/owner-outcome binding is not proved]
 
-→ `PE7-RWE-DB-ANALYSIS-1` — execute the bounded evidence analysis only; leave AC0 blocked
+→ `PE7-RWE-DB-RUN-1` — reconcile the existing effect binding; do not replay the run or promote analysis
 ```
 
 Every successor remains routing-only until its accepted predecessor closes and the promotion planner proves a bounded current-main contract. A negative, insufficient, unknown, or authority-required disposition is `DECISION_REQUIRED` and rewrites or pauses the route; it never silently follows the nominal order.
 
 ## Active Routing
 
-1. `PE7-RWE-DB-ANALYSIS-1` — `READY_FOR_EXECUTION`
+1. `PE7-RWE-DB-RUN-1` — `DECISION_REQUIRED`
 
 ## Historical V2 Closeout
 
@@ -40,37 +40,36 @@ Its manifest sha256 is `d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310f
 
 The accepted reconstructable replacement is bound by PR #451 exact head `d48e9853856714a964709956651fc0ac0961315c`, squash merge `e1ff80b7599d8aec8d64909f937f79c948010392`, canonical workflow `31790256137`, and manifest sha256 `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`. Its `preflight_promotion=BLOCKED_UNTIL_ACCEPTED` condition is satisfied by that accepted merge; this document now owns the current promotion to provider-free preflight.
 
-## Packet PE7-RWE-DB-ANALYSIS-1
+## Packet PE7-RWE-DB-RUN-1
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `DECISION_REQUIRED`
 
-**Prerequisite:** PE7-RWE-DB-RUN-1 — COMPLETE with `INSUFFICIENT` disposition; the four-cell controlled-failure receipt is recorded in `docs/CURRENT_STATUS.md`.
+**Prerequisite:** PE7-RWE-DB-PREFLIGHT-1 — COMPLETE after provider-free `rwe_operator_preflight.v1` returned `ready=true` with zero blockers and no authority/provider/target effect; the receipt is recorded in `docs/CURRENT_STATUS.md`.
 
-**Class:** `CLOSEOUT`
+**Class:** `EFFECT`
 
-**Outcome:** Apply the frozen decision-baseline analysis to the exact DB RUN evidence and decide whether any pre-AC baseline claim is supported.
+**Outcome:** Execute the frozen pre-AC decision baseline under the accepted allocation and finite authorizations.
 
-**Allowed delta:** Analysis and redacted evidence sealing only. Preserve every failure, missing reviewer/verification field, usage/cost limitation, and cleanup result; do not modify the frozen protocol or rerun the effect.
+**Allowed delta:** Only the registered baseline task executions, their reviews, and store-owned evidence receipts. No selective rerun, hidden failure, task substitution, threshold change, mid-run protocol repair, release, deployment, or default-branch write.
 
-**Owner/seam:** Reuse the existing `LocalProductStore` evidence/usage owners and the accepted measurement-readiness contracts; write only the canonical status and route documents. Add no evaluator, budget, store, or analysis owner.
+**Owner/seam:** Reuse the existing `live_baseline_coordinator`, `LocalProductStore` authority/evidence owners, frozen corpus/protocol/schedule validators, managed worker, and target-output owners; add no parallel owner.
 
-**Required bindings:** Snapshot manifest `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`, corpus `044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20`, protocol `bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db`, schedule `6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38`, DB RUN evidence `a841e6d092d2946de2ee96bef03409ab8c276111c3ace53aef827bd0c00c277e`, and old-Harness target revision `6240768506320a324d68787b9eaa86971c8c930c`.
+**Required bindings:** Snapshot manifest `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`, corpus `044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20`, protocol `bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db`, schedule `6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38`, and preflight projection sha256 `b8c35d4060d98598ce3e3bc3977a84d125b1df09ff66b2b9f6d9aa4303c03954`.
 
-**Exit:** A redacted, reproducible receipt with `GO`, `NO_GO`, or `INSUFFICIENT`, explicit hard-gate/missingness/cost limits, and the exact old-Harness identity; `INSUFFICIENT` is valid completion and keeps AC0 blocked.
+**Exit:** Every scheduled unit is terminal with attempts, failures, usage, lifecycle cost, reviewer evidence, drift covariates, cleanup, and raw/redacted bundle bindings.
 
-**Stop:** The store evidence cannot be reproduced, a hard gate is unresolvable, cost provenance is ineligible, or analysis would require post-hoc exclusions or protocol changes.
+**Stop:** A registered global stop rule fires, comparability breaks, finite authority expires, an outcome becomes unknown, contamination occurs, or evidence capture fails. Preserve the exact failure and do not rerun selectively.
 
-**Current disposition:** `READY_FOR_EXECUTION`. The latest run is already terminal and must be analyzed from durable evidence; no Provider, authority, target, PR, or external effect is permitted.
+**Current disposition:** `DECISION_REQUIRED`. A separately authorized RWE run did execute and is durably terminal as `controlled_failure`, with usage and cleanup evidence recorded in `docs/CURRENT_STATUS.md`; however, no route-controller T3 request, authorized receipt, or independent owner-outcome receipt binds that effect. Preserve the evidence, do not replay it, and do not promote the analysis packet yet.
 
-**Rollback:** Revert only the redacted status/route-document change; retain the original store receipts and all failure/missingness evidence. Never delete or rewrite the run.
+**Rollback:** Stop before authority issue; if a registered unit reaches an unknown external outcome, enter the existing reconciliation path and preserve the outcome-unknown receipt. Do not delete evidence or retry speculatively.
 
-**Next permitted action:** Read the bound durable evidence, produce the bounded uncertainty-aware disposition, update the canonical closeout, and leave downstream AC0 unchanged unless a separate accepted decision permits it.
+**Next permitted action:** Reconcile the already-executed effect through the existing route T3/owner-outcome bridge or record the smallest planning decision that closes this discrepancy. Do not replay the effect, infer a route receipt from RWE rows, or promote the analysis packet.
 
 ### 11. Weak-Agent Dispatch Capsule
 
-<!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-RWE-DB-ANALYSIS-1","dispatch_lane":"t2-evidence-analysis","plan_lane_state":"plan_lane_active","goal":"Analyze the exact DB RUN receipts and publish only a bounded redacted sufficiency disposition.","rollback":"Revert only canonical redacted status and route-document edits while retaining all LocalProductStore receipts and failure evidence.","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"allowed_paths":["docs/CURRENT_STATUS.md","docs/NEXT_DECISION.md"],"read_paths":["docs/CURRENT_STATUS.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/REAL_WORLD_TESTING_PLAYBOOK.md"],"allowed_outputs":["redacted analysis receipt","canonical packet disposition","route state update"],"prerequisites":["PE7-RWE-DB-RUN-1 is COMPLETE with INSUFFICIENT disposition","all four frozen cells are terminal controlled failures"],"prerequisite_receipts":["a841e6d092d2946de2ee96bef03409ab8c276111c3ace53aef827bd0c00c277e","e6ab1a1f5516ad52c0d1b431a5b1d52e990f90d7"],"forbidden_changes":["Provider calls","authority consumption","target writes","protocol edits","evaluator or budget changes","raw prompts or outputs","private paths or credentials"],"ordered_steps":["Read the bound store-owned run and task receipts","Check hard gates, missingness, usage/cost provenance, and old-Harness identity","Publish one redacted GO/NO_GO/INSUFFICIENT disposition","Run the handoff and diff checks"],"verification":["uv run --no-project python scripts/check_agent_handoff.py","git diff --check"],"pause_gates":["missing or conflicting durable evidence","unreproducible analysis","ineligible cost provenance","post-hoc protocol change"],"expected_artifacts":["redacted uncertainty-aware analysis receipt","updated canonical packet state","unchanged AC0 blocked state"],"forbidden_next_actions":["Do not rerun the DB effect","Do not issue or consume authority","Do not call a Provider","Do not start AC0","Do not claim a viable baseline"],"known_store_mutations":["No LocalProductStore mutation; read-only evidence analysis only"]}
--->
+No executable dispatch capsule is present while this packet is `DECISION_REQUIRED`; generate one only after the T3 contract is expanded and revalidated on accepted main.
+
 
 
 ## Common Execution Protocol
