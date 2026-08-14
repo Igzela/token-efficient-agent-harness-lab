@@ -40,7 +40,7 @@ Every successor remains routing-only until its accepted predecessor closes and t
 
 **Class:** `CONTRACT`
 
-**Outcome:** Freeze the finite RWE task population, coverage strata, contamination screen, nested repetition rule, precision method, maximum experiment envelope, and outcome-independent replacement rule before any new outcome is observed.
+**Outcome:** Freeze the finite RWE task population, coverage strata, contamination screen, nested repetition rule, precision method, maximum experiment envelope, and no-replacement rule before any new outcome is observed.
 
 **Allowed delta:** `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, `docs/MODULE_MAP.md`, `docs/NEXT_DECISION.md` only. No runtime, schema, migration, fixture, Provider, credential, target, evaluator, scheduler, store, or external-effect change.
 
@@ -67,10 +67,10 @@ Every successor remains routing-only until its accepted predecessor closes and t
 
 | Stratum | Registered task | Selection rule | Replacement rule |
 |---|---|---|---|
-| focused_bug_repair | rwe-minimum-t1-fix_flow_linkage | Include only with source commit/tree and task-definition hash above; required pytest command and bounded mutable paths must remain available | Before first outcome only, same stratum and source identity class, reason/hash recorded; never outcome-driven |
-| small_test_addition | rwe-minimum-t2-draft_contract_tests | Include only with source commit/tree and task-definition hash above; required pytest command and bounded mutable paths must remain available | Before first outcome only, same stratum and source identity class, reason/hash recorded; never outcome-driven |
+| focused_bug_repair | rwe-minimum-t1-fix_flow_linkage | Include only with source commit/tree and task-definition hash above; required pytest command and bounded mutable paths must remain available | No replacement is permitted; if unavailable, retain unavailable and stop |
+| small_test_addition | rwe-minimum-t2-draft_contract_tests | Include only with source commit/tree and task-definition hash above; required pytest command and bounded mutable paths must remain available | No replacement is permitted; if unavailable, retain unavailable and stop |
 
-Contamination screening is pre-outcome and hash-bound: the source commit/tree and task definitions must match the manifest, task selection must precede candidate outcomes, candidate output cannot amend the task/protocol/schedule, and raw prompts/outputs/transcripts are not retained. Any failed screen makes the task unavailable; it does not authorize a substitute after unblinding.
+Contamination screening is pre-outcome and hash-bound: the source commit/tree and task definitions must match the manifest, task selection must precede candidate outcomes, candidate output cannot amend the task/protocol/schedule, and raw prompts/outputs/transcripts are not retained. Any failed screen makes the task unavailable; it does not authorize a substitute before or after unblinding.
 
 The finite-census precision statement is deliberately modest. The two registered tasks are the complete population for this packet, with two nested repetitions each. The primary analysis uses the already frozen task-level paired bootstrap 95% interval and the estimand margins; the pre-registered leave-one-task-out sensitivity is descriptive and cannot turn an unavailable or unresolved result into a pass. No additional minimum meaningful effect, post-outcome expansion, or favorable-task replacement is introduced.
 
