@@ -1494,6 +1494,14 @@ fn provider_execution_from_journal(projection: &Value) -> Option<Value> {
             .get("effective_tokens")
             .or_else(|| entry.pointer("/usage/cumulative_tokens"))
             .and_then(Value::as_u64)?;
+        if status == "succeeded" {
+            entry
+                .pointer("/usage/input_tokens")
+                .and_then(Value::as_u64)?;
+            entry
+                .pointer("/usage/output_tokens")
+                .and_then(Value::as_u64)?;
+        }
         if matches!(status, "succeeded" | "outcome_unknown") {
             cumulative_tokens = cumulative_tokens.checked_add(effective_tokens)?;
             if status == "succeeded" {
@@ -1503,9 +1511,6 @@ fn provider_execution_from_journal(projection: &Value) -> Option<Value> {
             }
             requests.push(entry.clone());
         }
-    }
-    if requests.is_empty() {
-        return None;
     }
     Some(json!({
         "schema_version": "managed_deepseek_execution_evidence.v1",
@@ -1532,6 +1537,19 @@ fn couple_usage_to_store_journal(store: &LocalProductStore, outcome: &mut CellOu
     let Ok(proj) = store.project_rwe_cell_store_evidence(&outcome.product_task_id, attempt) else {
         return;
     };
+    let journal_has_outcome_unknown = proj
+        .get("provider_request_journal")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry.get("status").and_then(Value::as_str) == Some("outcome_unknown"))
+        });
+    if journal_has_outcome_unknown {
+        outcome.classification = "outcome_unknown".into();
+        outcome.cost_unknown = true;
+        outcome.monetary_cost = None;
+    }
     // Store-owned provenance gate: live provider claims require the durable
     // journal to attest the external transport; anything else stays non-live.
     match store_evidence_transport_provenance(&proj) {
@@ -1596,12 +1614,13 @@ fn couple_usage_to_store_journal(store: &LocalProductStore, outcome: &mut CellOu
     {
         outcome.cost_unknown = true;
         outcome.monetary_cost = None;
-    } else if let Some(cost) = pe
-        .and_then(|p| p.get("realized_cost_usd"))
-        .and_then(Value::as_f64)
-    {
-        outcome.monetary_cost = Some(cost);
-        outcome.cost_unknown = false;
+    } else if !outcome.cost_unknown {
+        if let Some(cost) = pe
+            .and_then(|p| p.get("realized_cost_usd"))
+            .and_then(Value::as_f64)
+        {
+            outcome.monetary_cost = Some(cost);
+        }
     }
     if let Ok(te) = store.get_product_task_terminal_evidence(&outcome.product_task_id) {
         if let Some(id) = te.get("evidence_id").and_then(Value::as_str) {
@@ -2905,8 +2924,13 @@ mod tests {
                 "transport_provenance": "external"
             }]
         });
-        assert!(provider_execution_from_journal(&projection).is_none());
-        assert!(store_evidence_transport_provenance(&projection).is_err());
+        let execution = provider_execution_from_journal(&projection).unwrap();
+        assert_eq!(execution["provider_request_count"], 0);
+        assert_eq!(execution["realized_cost_usd"], 0.0);
+        assert_eq!(
+            store_evidence_transport_provenance(&projection),
+            Ok("external".to_string())
+        );
     }
 
     #[test]
