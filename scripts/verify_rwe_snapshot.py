@@ -102,7 +102,14 @@ def required_manifest_failures(manifest: dict[str, object]) -> list[str]:
         "reconstruction_recipe": ("base_commit", "recipe_commit", "recipe_paths", "recipe_sha256"),
         "build_inputs": ("dependency_lockfiles", "tracked_configuration", "source_configuration", "source_dependency_lockfiles"),
         "generated_active_baseline": ("files",),
-        "frozen_rwe": ("frozen_task_source_tree_hash",),
+        "frozen_rwe": (
+            "frozen_task_source_tree_hash",
+            "protocol_path",
+            "protocol_file_sha256",
+            "schedule_path",
+            "schedule_file_sha256",
+            "task_definitions",
+        ),
     }
     for section, fields in required.items():
         value = manifest.get(section)
@@ -125,7 +132,10 @@ def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures:
     recipe_commit = recipe["recipe_commit"]
     if git_output(source_root, "rev-parse", "HEAD") != base_commit:
         failures.append("source checkout HEAD differs from the bound base commit")
-    if git_tree_hash(source_root, base_commit) != repository["reconstruction_base_tree_hash"]:
+    base_tree_hash = git_tree_hash(source_root, base_commit)
+    if base_tree_hash != repository["source_tree_hash"]:
+        failures.append("source tree hash differs from the bound source_tree_hash")
+    if base_tree_hash != repository["reconstruction_base_tree_hash"]:
         failures.append("source base tree hash differs from the bound reconstruction hash")
     if git_tree_hash(source_root, recipe_commit) != repository["reconstruction_recipe_tree_hash"]:
         failures.append("recipe tree hash differs from the bound reconstruction hash")
@@ -158,8 +168,26 @@ def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures:
 
 
 def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object], failures: list[str]) -> None:
-    expected = manifest["frozen_rwe"]["frozen_task_source_tree_hash"]
+    frozen = manifest["frozen_rwe"]
+    expected = frozen["frozen_task_source_tree_hash"]
     expected_commit = manifest["repository"]["source_commit"]
+    for item in frozen["task_definitions"]:
+        verify_file(harness_root, item["path"], item["sha256"], failures)
+    verify_file(harness_root, frozen["protocol_path"], frozen["protocol_file_sha256"], failures)
+    verify_file(harness_root, frozen["schedule_path"], frozen["schedule_file_sha256"], failures)
+    try:
+        protocol = json.loads((harness_root / frozen["protocol_path"]).read_text(encoding="utf-8"))
+        schedule = json.loads((harness_root / frozen["schedule_path"]).read_text(encoding="utf-8"))
+        if protocol.get("authority_corpus_sha256") != manifest["frozen_rwe"]["corpus_sha256"]:
+            failures.append("protocol corpus binding differs")
+        if schedule.get("corpus_sha256") != manifest["frozen_rwe"]["corpus_sha256"]:
+            failures.append("schedule corpus binding differs")
+        if schedule.get("protocol_sha256") != manifest["frozen_rwe"]["protocol_sha256"]:
+            failures.append("schedule protocol binding differs")
+        if schedule.get("schedule_sha256") != manifest["frozen_rwe"]["schedule_sha256"]:
+            failures.append("schedule identity binding differs")
+    except (OSError, json.JSONDecodeError):
+        failures.append("frozen protocol or schedule is unreadable")
     task_root = harness_root / "engine/rwe/corpora/rwe-minimum-first-corpus/v2/tasks"
     task_paths = sorted(task_root.glob("*.json"))
     if not task_paths:
