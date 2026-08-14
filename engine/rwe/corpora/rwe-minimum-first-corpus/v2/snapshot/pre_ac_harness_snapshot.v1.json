@@ -2,7 +2,7 @@
   "schema_version": "pre_ac_harness_snapshot.v1",
   "snapshot_id": "pre-ac-harness-snapshot-v1",
   "packet_id": "PE7-RWE-DB-SNAPSHOT-CORPUS-1",
-  "manifest_sha256": "b3ad16b6f0bf99920c5181719d57a975e227cc82cc45cbd2817318b467d61585",
+  "manifest_sha256": "d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310fe2837ce2",
   "status": "UNAVAILABLE_NOW",
   "reconstructable": false,
   "preflight_promotion": "BLOCKED",
@@ -69,6 +69,17 @@
         "sha256": "3fe689959702b7f9fc59051ac2c5697e28c66bbf73b7df609c32328584b75f05"
       }
     ],
+    "source_configuration": [
+      {
+        "path": "apps/api/pyproject.toml",
+        "sha256": "3128e7282f2947a9061d9b01105d0f0957112f1a5167df2bf5fc9dda86caa319"
+      }
+    ],
+    "source_dependency_lockfiles": {
+      "status": "UNAVAILABLE_NOW",
+      "paths": [],
+      "reason": "the exact source commit declares Python dependencies but contains no Python lockfile"
+    },
     "observed_toolchain": {
       "rustc": "1.96.0 (ac68faa20 2026-05-25)",
       "cargo": "1.96.0 (30a34c682 2026-05-25)",
@@ -95,28 +106,29 @@
       "trace_id": "accepted-main-rwe-operator-corpus-contracts",
       "command": "cargo test -p engine rwe::operator_corpus::tests --lib",
       "result": "PASS",
-      "observed": "11 passed, 0 failed"
+      "evidence_scope": "local_command_observation_only; not managed CI or release acceptance"
     },
     {
       "trace_id": "accepted-main-current-contract-binding",
       "command": "cargo test -p engine current_contract_set_binds_candidate_freeze_point_and_hashes --lib",
       "result": "PASS",
-      "observed": "1 passed, 0 failed"
+      "evidence_scope": "local_command_observation_only; not managed CI or release acceptance"
     },
     {
       "trace_id": "frozen-source-task-verification",
       "command": "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q",
       "result": "UNAVAILABLE_NOW",
-      "observed": "1933 passed, 47 failed, 25 skipped, 1 xfailed",
+      "evidence_scope": "local_command_observation_only; not managed CI or release acceptance",
       "reason": "The exact frozen source commit does not contain the active YAML artifacts required by the failing tests; dirty working-tree data is not an admissible snapshot input."
     }
   ],
   "unavailable": [
     "A checked-in Rust toolchain pin is absent from accepted main.",
-    "The frozen source-task verification requires active YAML artifacts absent from the exact source commit."
+    "The frozen source-task verification requires active YAML artifacts absent from the exact source commit.",
+    "The frozen source commit has no Python lockfile for the dependencies declared by apps/api/pyproject.toml."
   ],
   "retention": {
-    "stored": "identities, digests, commands, bounded test counts, and stop reasons only",
+    "stored": "identities, digests, commands, bounded status, and stop reasons only",
     "excluded": "raw prompts, outputs, transcripts, credentials, private paths, and host-specific secrets"
   },
   "rollback": "remove this manifest and revert the packet documentation; retain prior frozen artifacts and failure evidence",
