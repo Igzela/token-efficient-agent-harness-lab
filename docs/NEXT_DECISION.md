@@ -58,6 +58,10 @@ Every successor remains routing-only until its accepted predecessor closes and t
 
 **Primary value basis:** `verified_delivery_points`, using the existing protocol scale. No new conversion, normalization, or scalar value basis is introduced.
 
+**Threshold and uncertainty source:** accepted `PE7-RWE-V2-REFREEZE-1` (PR #370 merge `3b4afb3e5ab4254904aa5a63473ab6ae0eac1e82`) and `engine/rwe/corpora/rwe-minimum-first-corpus/v2/protocol/rwe_economic_protocol.v1.json`, `protocol_id=rwe-minimum-first-protocol-v2`. The binding is protocol hash `bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db`, corpus hash `044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20`, schedule hash `6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38`, and frozen artifact main `ee43eac853644266614da09de764a3bf19f2d281`. The paired-bootstrap method is `paired-bootstrap-95` with method hash `0942b62fb4b864332bef8fa95d149cc59718d13428a120f3559672f8f00b6c63`. These are source bindings, not new thresholds.
+
+**Nested-repetition aggregation:** for each condition, the task-level value is the arithmetic mean of that task's registered terminal repetitions. Fewer than the registered minimum of two repetitions makes that task-level estimand unavailable; no partial repetition is promoted to a task success.
+
 | Estimand | Task-level definition | Non-inferiority direction |
 |---|---|---|
 | Verified delivery | Per-task repeated-measure value on `verified_delivery_points` | Candidate minus baseline lower 95% bound must be at least `-0.10` |
@@ -90,7 +94,7 @@ The uncertainty interval is a paired bootstrap 95% interval. Resampling is at th
 
 - Refresh accepted main, the current packet, exact PR heads, CI, review, and ledger receipts before every transition.
 - Derive a route action only from the accepted current window, the checked inventory, current-main evidence, and existing durable owners.
-- The sole exception is the current packet's dispatch-capsule-authorized, one-per-claim local OpenCode weak-worker Provider invocation; it cannot make the controller read, pass, persist, or report a credential. This packet's external-effect limit is zero and does not use that exception.
+- Existing route boundary (quoted for compatibility, not new packet authority): The sole exception is the current packet's dispatch-capsule-authorized, one-per-claim local OpenCode weak-worker Provider invocation; it cannot make the controller read, pass, persist, or report a credential. This packet's external-effect limit is zero and does not use that exception.
 - Keep changing PRs Draft; require stable-head independent review and canonical exact-head CI before governed manual merge.
 - Treat ordinary worker, CI, review, checkpoint, duplicate, restart, and main-drift failures as bounded recovery transitions through their existing owners.
 - Preserve exact receipt bindings and failed/unknown evidence; never convert absence, stale evidence, or an unproven external outcome to success.
