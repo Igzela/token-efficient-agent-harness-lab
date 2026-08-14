@@ -1505,7 +1505,11 @@ fn provider_execution_from_journal(projection: &Value) -> Option<Value> {
         if matches!(status, "succeeded" | "outcome_unknown") {
             cumulative_tokens = cumulative_tokens.checked_add(effective_tokens)?;
             if status == "succeeded" {
-                realized_cost_usd += cost;
+                let next_cost = realized_cost_usd + cost;
+                if !next_cost.is_finite() {
+                    return None;
+                }
+                realized_cost_usd = next_cost;
             } else {
                 cost_unknown = true;
             }
@@ -2948,6 +2952,30 @@ mod tests {
         assert_eq!(execution["provider_request_count"], 1);
         assert_eq!(execution["cumulative_tokens"], 512);
         assert_eq!(execution["cost_unknown"], true);
+    }
+
+    #[test]
+    fn journal_cost_overflow_stays_unavailable() {
+        let projection = json!({
+            "provider_execution": null,
+            "provider_request_journal": [
+                {
+                    "status": "succeeded",
+                    "effective_tokens": 1,
+                    "effective_cost_usd": 1.0e308,
+                    "transport_provenance": "external",
+                    "usage": {"input_tokens": 1, "output_tokens": 0}
+                },
+                {
+                    "status": "succeeded",
+                    "effective_tokens": 1,
+                    "effective_cost_usd": 1.0e308,
+                    "transport_provenance": "external",
+                    "usage": {"input_tokens": 1, "output_tokens": 0}
+                }
+            ]
+        });
+        assert!(provider_execution_from_journal(&projection).is_none());
     }
 
     #[test]
