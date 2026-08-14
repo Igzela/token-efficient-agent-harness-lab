@@ -159,6 +159,7 @@ def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures:
 
 def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object], failures: list[str]) -> None:
     expected = manifest["frozen_rwe"]["frozen_task_source_tree_hash"]
+    expected_commit = manifest["repository"]["source_commit"]
     task_root = harness_root / "engine/rwe/corpora/rwe-minimum-first-corpus/v2/tasks"
     task_paths = sorted(task_root.glob("*.json"))
     if not task_paths:
@@ -170,6 +171,8 @@ def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object],
         except (OSError, json.JSONDecodeError):
             failures.append(f"frozen task definition is unreadable: {path.name}")
             continue
+        if task.get("source_commit") != expected_commit:
+            failures.append(f"frozen task source commit differs: {path.name}")
         if task.get("source_tree_hash") != expected:
             failures.append(f"frozen task source tree binding differs: {path.name}")
 
