@@ -31,7 +31,7 @@ These are audited absences or unaccepted seams at the current main, not permissi
 | AC3 Golden Path split | `product_golden_path.rs` plus LocalProductStore product-task authority | no accepted pure orchestration/effect-port seam | store, approval, output, audit, or external effect ownership becomes ambiguous |
 | AC4 transaction views | sole LocalProductStore SQLite/PostgreSQL owners | no named borrowed transaction-view interfaces exist | atomic group, borrow/commit/rollback, parity, or recovery cannot be proved |
 | AC5 composition root | current Rust startup, config, HTTP state, provider, and store construction | no single accepted validated composition-root contract | config precedence conflicts, dependency cycle, or secret resolution broadens |
-| Context working-set projection | existing Repository Context Control Plane plus current prompt/runtime, artifact/evidence, execution-usage, and scorecard owners | no accepted model-visible evidence working-set/residency/rehydration contract; context is assembled through role/capsule/prompt paths and provider prompts without one canonical projection seam | projection would become a second memory/store/authority/evaluator, semantic relevance could evict authority/blocker evidence, or a reduced item cannot be exact-source-bound and safely rehydrated |
+| Context working-set projection | existing Repository Context Control Plane plus current prompt/runtime, artifact/evidence, execution-usage, and scorecard owners; then-current accepted license/SBOM/NOTICE owners for any later third-party provenance | no accepted model-visible evidence working-set/residency/rehydration contract; context is assembled through role/capsule/prompt paths and provider prompts without one canonical projection seam; no accepted source-reuse/transplant disposition | projection would become a second memory/store/authority/evaluator, semantic relevance could evict authority/blocker evidence, a reduced item cannot be exact-source-bound and safely rehydrated, license/provenance is unclear or required attribution cannot be retained, a transplant would introduce a second runtime/store/provider/session owner, or upstream semantics cannot map losslessly onto this repository's contract |
 | EC1 causal mutation evidence | existing HE artifact/store owner | `FailurePatternEvidenceV1`, `MutationHypothesisManifestV1`, and `PredictionOutcomeV1` are planned, not current accepted types | identity/causal source can be caller- or candidate-authored, mutable, or unaddressable |
 | EC2 real evaluator/holdout | accepted evaluator/evidence owner; current `harness_evolution_eval.rs` remains fixture/default-off | no managed sealed holdout, access mediation, or real acceptance evaluator evidence | fixture result, candidate-controlled rule, leakage, or label uncertainty would be reported as acceptance |
 | EC3-EC5 controls | existing budget/spend, HE, evaluator, artifact, lease, and store owners | no accepted total-lifecycle enforcement, diversity admission, immutable Pareto archive, or HE stop/recovery state machine | a second ledger/controller appears or crash/exactly-once/hidden-reject behavior is unresolved |
@@ -620,7 +620,7 @@ The causal comparison uses reconstructable old/new Harnesses in one randomized/i
 **Stop:** Non-inferiority, reliability, lifecycle cost, comparability, or evidence-completeness gate fails.
 ## Stage Context working-set projection
 
-This stage adds a derived, rebuildable model-context working-set layer only after the contemporary AC comparison closes, so it cannot contaminate the registered AC treatment. Canonical documents, Git, LocalProductStore, artifacts, durable memory, and raw tool evidence remain owned by their existing sources; the working-set layer only chooses a bounded model-visible projection and never becomes truth, persistence, authority, evaluator, or retry policy.
+This stage adds a derived, rebuildable model-context working-set layer only after the contemporary AC comparison closes, so it cannot contaminate the registered AC treatment. Canonical documents, Git, LocalProductStore, artifacts, durable memory, and raw tool evidence remain owned by their existing sources; the working-set layer only chooses a bounded model-visible projection and never becomes truth, persistence, authority, evaluator, or retry policy. Implementation selection is reuse-first: license-compatible, provenance-bound, contract-compatible upstream mechanism cores may be transplanted or adapted through thin adapters; local reimplementation is the fallback when no qualified source exists. Wholesale vendoring or forking of another harness, and any second runtime, store, provider, session, scheduler, or evaluator owner, remain forbidden. Future routing for this family stays in this document; third-party provenance at implementation time uses the then-current accepted license/SBOM/NOTICE owner, and promotion is `DECISION_REQUIRED` if no suitable existing owner is found.
 
 ### Packet PE7-CWS-INGRESS-INVENTORY-1
 
@@ -630,13 +630,13 @@ This stage adds a derived, rebuildable model-context working-set layer only afte
 
 **Class:** `CONTRACT`
 
-**Outcome:** Enumerate every production and repository-maintenance path that places context in front of a model, including session/project capsules, prompt builders, provider/executor requests, tool results, artifacts, durable-memory retrieval, and efficiency/scorecard evidence sinks.
+**Outcome:** Enumerate every production and repository-maintenance path that places context in front of a model, including session/project capsules, prompt builders, provider/executor requests, tool results, artifacts, durable-memory retrieval, and efficiency/scorecard evidence sinks, and establish an upstream source-harvest matrix for mature public harness mechanisms.
 
-**Allowed delta:** Read-only owner/caller/data-flow inventory and bounded measurement only; no prompt, runtime, Provider, memory, store, schema, or artifact behavior change.
+**Allowed delta:** Read-only owner/caller/data-flow inventory, bounded measurement, and provenance-bound source-harvest only; no prompt, runtime, Provider, memory, store, schema, or artifact behavior change; no new license, SBOM, NOTICE, or source-registry owner.
 
-**Exit:** A zero-unknown matrix binds each ingress to exact owner/caller paths, source identity, authority class, size/repetition behavior, sensitivity, current reduction rule, and whether exact recovery is possible.
+**Exit:** A zero-unknown ingress matrix binds each path to exact owner/caller paths, source identity, authority class, size/repetition behavior, sensitivity, current reduction rule, and whether exact recovery is possible. A second harvest matrix binds every candidate mechanism that still has real public source at promotion time to exact repository, commit SHA, source paths, license, NOTICE/attribution obligations, language/runtime dependencies, implementation LOC, upstream tests, semantic fit, owner collision, security/recovery gaps, adaptation cost, and a `TRANSPLANT` | `ADAPT` | `REIMPLEMENT` | `REJECT` disposition. Priority review is Gemini CLI, OpenAI Codex, Aider, and any other mature harness that still has valid complete source then. Command Code, while its actual harness source remains unpublished, is architecture/behavior reference only and must not be recorded as a source-transplant candidate. Every harvest identity is `REFRESH_AT_PROMOTION` and must be re-verified then; today's commit, path, or license snapshot is not future authority. Required third-party provenance uses the then-current accepted license/SBOM/NOTICE owner; absence of a suitable existing owner is `DECISION_REQUIRED` rather than a new parallel owner.
 
-**Stop:** A model-visible input lacks a current owner/source identity, an effect path is hidden behind free-form prompt assembly, or inventory would require treating conversation text as durable truth.
+**Stop:** A model-visible input lacks a current owner/source identity, an effect path is hidden behind free-form prompt assembly, inventory would require treating conversation text as durable truth, a public-source candidate is recorded without a re-verified identity and disposition, unpublished source is treated as a transplant candidate, or harvest work would create a second source-registry or license owner.
 ### Packet PE7-CWS-PROJECTION-CONTRACT-1
 
 **State:** `BLOCKED_PREREQUISITE`
@@ -645,13 +645,13 @@ This stage adds a derived, rebuildable model-context working-set layer only afte
 
 **Class:** `CONTRACT`
 
-**Outcome:** Freeze the evidence working-set contract: source/hash identity, item kind, token/byte estimates, active-path and unresolved status, supersession/consumption state, recoverability, residency, stable/dynamic partition, and deterministic promotion/demotion rules.
+**Outcome:** Freeze the repository-owned evidence working-set contract before any implementation selection: source/hash identity, item kind, token/byte estimates, active-path and unresolved status, supersession/consumption state, recoverability, residency, stable/dynamic partition, and deterministic promotion/demotion rules.
 
-**Allowed delta:** Contract and conformance vectors only. Residency is `PINNED`, `HOT`, `WARM`, or `COLD`; authority, unresolved blockers, outcome-unknown evidence, exact task/packet bindings, allowed/forbidden scope, and verification contracts cannot be evicted by relevance scoring.
+**Allowed delta:** Contract and conformance vectors only. Residency is `PINNED`, `HOT`, `WARM`, or `COLD`; authority, unresolved blockers, outcome-unknown evidence, exact task/packet bindings, allowed/forbidden scope, and verification contracts cannot be evicted by relevance scoring. Upstream source may not define, replace, or weaken this repository's authority, evidence, recovery, residency, pinning, or unknown semantics; it is an implementation source only after this contract exists and remains compatible.
 
-**Exit:** An exact lexicographic policy and bounded wire/internal shape prove that the projection is derived, deletable, rebuildable, non-authoritative, and independent of fuzzy semantic scoring for all safety-relevant decisions.
+**Exit:** An exact lexicographic policy and bounded wire/internal shape prove that the projection is derived, deletable, rebuildable, non-authoritative, independent of fuzzy semantic scoring for all safety-relevant decisions, and that any later `TRANSPLANT` / `ADAPT` / `REIMPLEMENT` choice is subordinate to this contract.
 
-**Stop:** The contract creates a second memory/store/evaluator, allows a model/embedding score to demote authority or blockers, or cannot distinguish raw evidence ownership from model-visible residency.
+**Stop:** The contract creates a second memory/store/evaluator, allows a model/embedding score to demote authority or blockers, cannot distinguish raw evidence ownership from model-visible residency, or lets an upstream implementation dictate safety-related residency, pinning, or unknown semantics.
 ### Packet PE7-CWS-REHYDRATION-CONTRACT-1
 
 **State:** `BLOCKED_PREREQUISITE`
@@ -675,13 +675,13 @@ This stage adds a derived, rebuildable model-context working-set layer only afte
 
 **Class:** `IMPLEMENT`
 
-**Outcome:** Implement the pure deterministic working-set projector and residency transitions behind existing context owners, producing a stable prefix plus bounded dynamic working set from already-authorized source material.
+**Outcome:** Implement the pure deterministic working-set projector and residency transitions behind existing context owners, producing a stable prefix plus bounded dynamic working set from already-authorized source material, preferring transplant, port, or adapt of a qualified upstream mechanism core.
 
-**Allowed delta:** Pure/rebuildable projection code, typed internal records, deterministic reducers, and focused tests only; no database table, durable queue, Provider effect, semantic model call, or new authority owner.
+**Allowed delta:** Pure/rebuildable projection code, typed internal records, deterministic reducers, focused tests, and thin contract adapters only; no database table, durable queue, Provider effect, semantic model call, or new authority owner. Reuse-first: when a license-compatible, provenance-bound, contract-compatible, dependency-bounded mature pure mechanism exists, transplant, port, or adapt its minimal algorithm core, retain exact upstream provenance plus required attribution/modification notices and portable upstream regression tests, and map it through a thin adapter into the accepted CWS contract. Local reimplementation is allowed only when no qualified upstream implementation exists, semantics are incompatible, dependency or owner collision is too large, or transplant cost is not better.
 
-**Exit:** Ordering, pinning, supersession, duplicate, token/byte bound, deterministic replay, delete/rebuild, stale-source, and forbidden-eviction tests pass with identical canonical source identities.
+**Exit:** Ordering, pinning, supersession, duplicate, token/byte bound, deterministic replay, delete/rebuild, stale-source, and forbidden-eviction tests pass with identical canonical source identities; retained or adapted upstream tests plus adapter tests prove contract fidelity without a second owner.
 
-**Stop:** Projector requires ambient credentials/network, persisted truth, nondeterministic scoring for a hard decision, or a source owner must move into the projection layer.
+**Stop:** Projector requires ambient credentials/network, persisted truth, nondeterministic scoring for a hard decision, a source owner must move into the projection layer, a transplant would vendor or fork another harness or create a parallel owner, license/provenance/attribution cannot be satisfied through the then-current accepted owner, or upstream semantics cannot map losslessly onto the accepted contract.
 ### Packet PE7-CWS-TOOL-RESULT-REDUCTION-1
 
 **State:** `BLOCKED_PREREQUISITE`
@@ -690,13 +690,13 @@ This stage adds a derived, rebuildable model-context working-set layer only afte
 
 **Class:** `IMPLEMENT`
 
-**Outcome:** Add deterministic admission reduction for large tool results so raw evidence remains under existing artifact/evidence owners while the model sees bounded status, salient diagnostics, source bindings, and an exact rehydration handle.
+**Outcome:** Add deterministic admission reduction for large tool results so raw evidence remains under existing artifact/evidence owners while the model sees bounded status, salient diagnostics, source bindings, and an exact rehydration handle, preferring reuse of mature truncation, masking, bounded-read, and reducer algorithms.
 
-**Allowed delta:** Provider-free reducers and existing artifact references only; no LLM-generated summary authority, raw-evidence deletion, retry decision, hidden output suppression, or change to tool execution semantics.
+**Allowed delta:** Provider-free reducers, existing artifact references, and thin adapters around qualified upstream pure algorithms and regression fixtures only; no LLM-generated summary authority, raw-evidence deletion, retry decision, hidden output suppression, change to tool execution semantics, or import of another tool runtime, provider, session owner, store, scheduler, or permission/retry controller.
 
-**Exit:** Large success/failure logs, compiler/test diagnostics, bounded reads/searches, malformed output, truncation, redaction, stale handle, and exact-rehydrate fixtures prove no required failure or blocker evidence disappears.
+**Exit:** Large success/failure logs, compiler/test diagnostics, bounded reads/searches, malformed output, truncation, redaction, stale handle, and exact-rehydrate fixtures prove no required failure or blocker evidence disappears; retained or adapted upstream reducer fixtures remain contract-compatible.
 
-**Stop:** Reduction can convert failure/unknown to success, cannot bind the retained projection to raw evidence, leaks sensitive material, or increases tool retries because required evidence is irrecoverable.
+**Stop:** Reduction can convert failure/unknown to success, cannot bind the retained projection to raw evidence, leaks sensitive material, increases tool retries because required evidence is irrecoverable, or a transplant would import another tool runtime, provider, session owner, store, scheduler, or permission/retry controller.
 ### Packet PE7-CWS-REPOSITORY-INTEGRATION-1
 
 **State:** `BLOCKED_PREREQUISITE`
@@ -707,11 +707,11 @@ This stage adds a derived, rebuildable model-context working-set layer only afte
 
 **Outcome:** Integrate the projector with repository-maintenance session/project context, claim-bound prompt construction, review, CI-repair, and local-run paths so already-projected canonical context is not repeatedly re-expanded.
 
-**Allowed delta:** Existing Repository Context Control Plane and prompt-assembly adapters/tests only; accepted documents, GitHub observations, route authority, exact-head review, checkpoint semantics, and execution permissions remain unchanged.
+**Allowed delta:** Existing Repository Context Control Plane and prompt-assembly thin adapters/tests only; accepted documents, GitHub observations, route authority, exact-head review, checkpoint semantics, and execution permissions remain unchanged; wholesale vendoring or forking of another harness is forbidden.
 
 **Exit:** Fresh/resume/repair/review/CI-repair fixtures prove exact accepted-main/head/packet bindings, no duplicate canonical-document payload, bounded model-visible context, exact rehydration, and unchanged fail-closed decisions.
 
-**Stop:** Integration makes a capsule authoritative, hides a changed-head/blocker condition, broadens targeted reads, or requires a second session/checkpoint/context owner.
+**Stop:** Integration makes a capsule authoritative, hides a changed-head/blocker condition, broadens targeted reads, requires a second session/checkpoint/context owner, or vendors/forks another harness as a parallel owner.
 ### Packet PE7-CWS-RUNTIME-INTEGRATION-1
 
 **State:** `BLOCKED_PREREQUISITE`
@@ -722,11 +722,11 @@ This stage adds a derived, rebuildable model-context working-set layer only afte
 
 **Outcome:** Integrate the accepted working-set projection seam with the post-AC runtime/provider/executor boundaries so production model requests consume the same source-bound residency semantics without replacing provider, scheduler, memory, artifact, or execution owners.
 
-**Allowed delta:** Current-main adapters, context composition, typed internal mappings, and focused tests only; no Provider credential/budget/retry change, public authority expansion, new persistence, or outcome-status reinterpretation.
+**Allowed delta:** Current-main thin adapters, context composition, typed internal mappings, and focused tests only; no Provider credential/budget/retry change, public authority expansion, new persistence, outcome-status reinterpretation, or wholesale vendoring/forking of another harness.
 
 **Exit:** Stub/fake/provider-free runtime tests prove stable task/authority bindings, bounded dynamic context, exact tool-evidence rehydration, cancellation/unknown preservation, and compatibility with accepted executor/provider mappings.
 
-**Stop:** A provider adapter becomes the context truth owner, runtime behavior needs an unaccepted schema/authority change, cache state affects correctness, or any existing outcome loses semantic fidelity.
+**Stop:** A provider adapter becomes the context truth owner, runtime behavior needs an unaccepted schema/authority change, cache state affects correctness, any existing outcome loses semantic fidelity, or integration vendors/forks another harness as a parallel owner.
 ### Packet PE7-CWS-CACHE-PARTITION-1
 
 **State:** `BLOCKED_PREREQUISITE`
@@ -737,11 +737,11 @@ This stage adds a derived, rebuildable model-context working-set layer only afte
 
 **Outcome:** Expose deterministic stable-prefix versus dynamic-working-set partitioning and cache telemetry so provider caching can reuse truly stable material without making cache presence, hit rate, or write state part of correctness.
 
-**Allowed delta:** Projection metadata, provider-reported cache usage observation when available, scorecard wiring, and tests only; no cache service, cache authority, provider-specific correctness branch, or invented usage value.
+**Allowed delta:** Projection metadata, provider-reported cache usage observation when available, scorecard wiring, tests, and optional reuse of provider/cache helper pure mechanisms only; no cache service, cache authority, provider-specific correctness branch, invented usage value, or promotion of cache state into correctness or authority.
 
 **Exit:** Prefix-stability, mutation invalidation, unsupported-provider, cached-token/cache-write missingness, retry, and replay tests pass; identical tasks produce identical partitions independent of cache state.
 
-**Stop:** Cache identity can authorize work, missing provider telemetry is coerced to zero, dynamic evidence contaminates the stable prefix, or cache optimization changes model-visible safety bindings.
+**Stop:** Cache identity can authorize work, missing provider telemetry is coerced to zero, dynamic evidence contaminates the stable prefix, cache optimization changes model-visible safety bindings, or reused cache helpers make cache state part of correctness or authority.
 ### Packet PE7-CWS-BENCHMARK-PROTOCOL-1
 
 **State:** `BLOCKED_PREREQUISITE`
@@ -750,13 +750,13 @@ This stage adds a derived, rebuildable model-context working-set layer only afte
 
 **Class:** `CONTRACT`
 
-**Outcome:** Pre-register a hard-gate-first comparison of the exact post-AC baseline with the CWS treatment using existing token-efficiency, scorecard, artifact, review, and lifecycle-cost owners.
+**Outcome:** Pre-register a hard-gate-first comparison of the exact post-AC baseline with the CWS treatment using existing token-efficiency, scorecard, artifact, review, and lifecycle-cost owners, plus post-gate implementation-maintenance-burden evidence.
 
-**Allowed delta:** Measurement protocol only; no live Provider call, threshold tuning from observed CWS outcomes, new evaluator, or alternative cost ontology.
+**Allowed delta:** Measurement protocol only; no live Provider call, threshold tuning from observed CWS outcomes, new evaluator, alternative cost ontology, or promotion of maintenance-burden metrics into evaluator authority.
 
-**Exit:** Frozen tasks, seeds, provider/model/tool identities, baseline/treatment toggles, quality/non-inferiority gates, repeated and total context/input metrics, cache telemetry semantics, rehydration/tool-call/retry/latency/cost metrics, missingness, analysis, and stop rules.
+**Exit:** Frozen tasks, seeds, provider/model/tool identities, baseline/treatment toggles, quality/non-inferiority gates, repeated and total context/input metrics, cache telemetry semantics, rehydration/tool-call/retry/latency/cost metrics, missingness, analysis, and stop rules; after hard gates, record implementation-maintenance burden as decision evidence only: upstream-derived LOC, adapter LOC, new project-specific LOC, upstream tests retained or adapted, dependency delta, exact upstream source identities, divergence/patch burden, and upgrade/maintenance cost.
 
-**Stop:** Treatment differs in anything beyond accepted context projection, baseline cannot be reconstructed, a decisive threshold is post hoc, or lifecycle cost/quality evidence is incomparable.
+**Stop:** Treatment differs in anything beyond accepted context projection, baseline cannot be reconstructed, a decisive threshold is post hoc, lifecycle cost/quality evidence is incomparable, or maintenance-burden metrics are treated as evaluator or acceptance authority.
 ### Packet PE7-CWS-BENCHMARK-PREFLIGHT-1
 
 **State:** `BLOCKED_PREREQUISITE`
@@ -795,13 +795,13 @@ This stage adds a derived, rebuildable model-context working-set layer only afte
 
 **Class:** `CLOSEOUT`
 
-**Outcome:** Apply the frozen analysis and choose `ENABLE`, `DISABLE`, or `INSUFFICIENT_DEFAULT_OFF`, then bind the exact active Harness identity that all later Harness-Evolution packets must use.
+**Outcome:** Apply the frozen analysis and choose `ENABLE`, `DISABLE`, or `INSUFFICIENT_DEFAULT_OFF`, then bind the exact active Harness identity that all later Harness-Evolution packets must use; include implementation-maintenance burden as post-gate decision evidence only.
 
-**Allowed delta:** Analysis, projection enable/default-off disposition, rollback evidence, and canonical identity synchronization only; no new Provider effect, retuning, post-hoc reducer change, or automatic claim beyond tested workloads.
+**Allowed delta:** Analysis, projection enable/default-off disposition, rollback evidence, canonical identity synchronization, and post-gate maintenance-burden reporting only; no new Provider effect, retuning, post-hoc reducer change, automatic claim beyond tested workloads, or new evaluator authority.
 
-**Exit:** Independent hard-gate-first receipt preserves all failures/missingness, reports repeated/total context and lifecycle effects with uncertainty, proves exact rehydration and rollback, and names one exact CWS-enabled or baseline/default-off Harness identity for EC1.
+**Exit:** Independent hard-gate-first receipt preserves all failures/missingness, reports repeated/total context and lifecycle effects with uncertainty, proves exact rehydration and rollback, names one exact CWS-enabled or baseline/default-off Harness identity for EC1, and records implementation-maintenance burden after hard gates pass: upstream-derived LOC, adapter LOC, new project-specific LOC, upstream tests retained or adapted, dependency delta, exact upstream source identities, divergence/patch burden, and upgrade/maintenance cost.
 
-**Stop:** Quality/safety/authority/evidence hard gates fail without a proven disable rollback, analysis cannot be reproduced, active-Harness identity is ambiguous, or the conclusion depends on unregistered exclusions.
+**Stop:** Quality/safety/authority/evidence hard gates fail without a proven disable rollback, analysis cannot be reproduced, active-Harness identity is ambiguous, the conclusion depends on unregistered exclusions, or maintenance-burden numbers are used as evaluator or acceptance authority.
 ## Stage Experiment control EC1 - identity, lineage, mutation
 
 EC1 makes candidate provenance immutable before evaluator or selection work. It also freezes a causal-mutation evidence chain without creating a second failure-intelligence owner:
