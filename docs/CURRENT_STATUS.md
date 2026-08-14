@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-13.
+Last updated: 2026-08-14.
 
 This document owns accepted repository truth and confirmed capability gaps only. It separates two states that must not be conflated:
 
@@ -43,6 +43,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-RWE-V2-VIABILITY-PREFLIGHT-1` | `COMPLETE` | PR #437 exact head `4bf6f33c9318369c99a0920eac2048527bea2e83`; merge `97ca257345460e1939662b8ffaf602c0a668028a`; exact-head `PASS`; canonical workflow `31698417170`; unissued request sha256 `015c94e9d65a902f3aba5eae4f3da6cba6d534cc3c57af3a6faf89125663469a` |
 | `PE7-RWE-V2-VIABILITY-RUN-1` | `COMPLETE` | PR #441 exact head `ba47462d6cd200d28cb55b1f547924b52afa0584`; merge `2933ba1353f1cda3fc82209b6025094afb79b29e`; exact-head `PASS`; canonical workflow `31704360890`; 4/4 controlled_failure run-live-20260813-v2c auth-live-v2-003 |
 | `PE7-RWE-V2-VIABILITY-CLOSEOUT-1` | `COMPLETE` | Disposition `CONTROLLED_FAILURE`; run `run-live-20260813-v2c`; authorization `auth-live-v2-003`; cells `cell-rwe-minimum-t1-fix_flow_linkage-r1-bp-standard-s2026080601`, `cell-rwe-minimum-t1-fix_flow_linkage-r2-bp-standard-s2026080602`, `cell-rwe-minimum-t2-draft_contract_tests-r1-bp-standard-s2026080601`, `cell-rwe-minimum-t2-draft_contract_tests-r2-bp-standard-s2026080602`; restricted-bundle sha256 `9b345faf744c14d67157856a512b39d90c6e03ff1081783c793b987d6f93bf82`; redacted-bundle sha256 `e2eafa226700061cb000b35dec776ef0b49417aa5faece0b065923b49ee83d3f`; promotion PR #442 exact head `50e18540f40a8d47c384f2cac74683618f93c273`; merge `8c5c2f85bc5d66c08d730b7d0c69d914af19540c`; canonical workflow `31710478692` |
+| `PE7-RWE-MR-ESTIMANDS-1` | `COMPLETE` | PR #444 exact head `c3b61d1ecd898abfab910f0c2f5c33fa6692acef`; merge `4a0048fcb6785adfb3614769298519c95a01de2f`; exact-head `PASS`; canonical workflow `31765676789`; exact-head check `31765676776` |
 
 ## Accepted Product and Control-Plane State
 
