@@ -10,21 +10,21 @@ The repository improves verifiable task delivery only under hard quality, safety
 
 The repository-maintenance route is continuous only through the existing Plan Execution Ledger, dispatcher, worktree, PR, CI, review, merge, closeout, and context owners. It does not create product-runtime authority, auto-merge, an unauthorized Provider call, target write, release, deployment, EFFECT execution, or T3 authority.
 
-The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authorization.v2`. The v2 four-cell RUN and CLOSEOUT are accepted as lifecycle `CONTROLLED_FAILURE`, not a viable baseline. `PE7-RWE-MR-ESTIMANDS-1`, `PE7-RWE-MR-CORPUS-SAMPLING-1`, `PE7-RWE-MR-OPERATIONS-EVIDENCE-1`, and `PE7-RWE-MR-PROTOCOL-FREEZE-1` are accepted on main with their source-bound measurement, corpus, operations, and protocol contracts. The reconstructable snapshot replacement is accepted on main; the provider-free preflight remains the current window but is blocked by unavailable real store-owned principal/evidence, and no external effect is authorized.
+The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authorization.v2`. The v2 four-cell RUN and CLOSEOUT are accepted as lifecycle `CONTROLLED_FAILURE`, not a viable baseline. `PE7-RWE-MR-ESTIMANDS-1`, `PE7-RWE-MR-CORPUS-SAMPLING-1`, `PE7-RWE-MR-OPERATIONS-EVIDENCE-1`, and `PE7-RWE-MR-PROTOCOL-FREEZE-1` are accepted on main with their source-bound measurement, corpus, operations, and protocol contracts. The reconstructable snapshot replacement and the provider-free DB preflight are now closed; no DB RUN effect is authorized by that preflight closeout.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-RWE-DB-PREFLIGHT-1 — BLOCKED_PREREQUISITE, real store-owned preflight principal/evidence unavailable]
+[window: PE7-RWE-DB-RUN-1 — BLOCKED_PREREQUISITE, T3 execution contract and authorization promotion are still required]
 
-→ `PE7-RWE-DB-RUN-1` only after a reconstructable preflight is accepted
+→ `PE7-RWE-DB-ANALYSIS-1` only after the DB RUN closes with terminal evidence
 ```
 
 Every successor remains routing-only until its accepted predecessor closes and the promotion planner proves a bounded current-main contract. A negative, insufficient, unknown, or authority-required disposition is `DECISION_REQUIRED` and rewrites or pauses the route; it never silently follows the nominal order.
 
 ## Active Routing
 
-1. `PE7-RWE-DB-PREFLIGHT-1` — `BLOCKED_PREREQUISITE`
+1. `PE7-RWE-DB-RUN-1` — `BLOCKED_PREREQUISITE`
 
 ## Historical V2 Closeout
 
@@ -40,35 +40,35 @@ Its manifest sha256 is `d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310f
 
 The accepted reconstructable replacement is bound by PR #451 exact head `d48e9853856714a964709956651fc0ac0961315c`, squash merge `e1ff80b7599d8aec8d64909f937f79c948010392`, canonical workflow `31790256137`, and manifest sha256 `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`. Its `preflight_promotion=BLOCKED_UNTIL_ACCEPTED` condition is satisfied by that accepted merge; this document now owns the current promotion to provider-free preflight.
 
-## Packet PE7-RWE-DB-PREFLIGHT-1
+## Packet PE7-RWE-DB-RUN-1
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PE7-RWE-DB-SNAPSHOT-RECONSTRUCT-1 — COMPLETE on accepted main `e1ff80b7599d8aec8d64909f937f79c948010392`; manifest `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`, `reconstructable=true`.
+**Prerequisite:** PE7-RWE-DB-PREFLIGHT-1 — COMPLETE after provider-free `rwe_operator_preflight.v1` returned `ready=true` with zero blockers and no authority/provider/target effect; the receipt is recorded in `docs/CURRENT_STATUS.md`.
 
-**Class:** `CONTRACT`
+**Class:** `EFFECT`
 
-**Outcome:** Validate the frozen corpus, snapshot, protocol, schedule, capacity, principals, target state, evidence destinations, and drift baseline before any external-effect authorization is considered.
+**Outcome:** Execute the frozen pre-AC decision baseline under the accepted allocation and finite authorizations.
 
-**Allowed delta:** Provider-free contract and evidence validation only in `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md`. No Provider call, task execution, authority issue/admit/consume, target write, EFFECT, T3 action, release, deployment, or runtime/schema/store/evaluator change.
+**Allowed delta:** Only the registered baseline task executions, their reviews, and store-owned evidence receipts. No selective rerun, hidden failure, task substitution, threshold change, mid-run protocol repair, release, deployment, or default-branch write.
 
-**Owner/seam:** Reuse the existing RWE operator preflight, corpus/protocol/schedule integrity validators, `LocalProductStore` authority/evidence owners, and `live_baseline_coordinator`; add no parallel owner.
+**Owner/seam:** Reuse the existing `live_baseline_coordinator`, `LocalProductStore` authority/evidence owners, frozen corpus/protocol/schedule validators, managed worker, and target-output owners; add no parallel owner.
 
-**Required bindings:** Snapshot manifest `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`, corpus `044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20`, protocol `bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db`, schedule `6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38`.
+**Required bindings:** Snapshot manifest `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`, corpus `044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20`, protocol `bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db`, schedule `6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38`, and preflight projection sha256 `b8c35d4060d98598ce3e3bc3977a84d125b1df09ff66b2b9f6d9aa4303c03954`.
 
-**Exit:** A zero-mismatch provider-free preflight receipt with every required binding reconstructable, and only then bounded operator authorization requests under the accepted experiment envelope.
+**Exit:** Every scheduled unit is terminal with attempts, failures, usage, lifecycle cost, reviewer evidence, drift covariates, cleanup, and raw/redacted bundle bindings.
 
-**Stop:** Any required snapshot field, source artifact, lockfile, toolchain pin, capacity, price, Provider identity, target safety, reviewer availability, retention destination, or drift binding is unavailable, stale, conflicting, or unverifiable. Preserve `UNAVAILABLE_NOW`; do not guess or proceed.
+**Stop:** A registered global stop rule fires, comparability breaks, finite authority expires, an outcome becomes unknown, contamination occurs, or evidence capture fails. Preserve the exact failure and do not rerun selectively.
 
-**Current disposition:** `UNAVAILABLE_NOW` / `BLOCKED_PREREQUISITE`. The snapshot verifier passed and the existing owner test passed, but the real `rwe-live-baseline preflight` stopped before `operator_preflight` because its isolated `LocalProductStore` had no store-owned operator API-key/tenant binding. No real managed store with the required same-tenant completed Golden Path evidence is available in the current workspace. Do not use fixture/dry-run stores, invent a principal, read credentials, or claim a zero-mismatch receipt. This packet never issues or consumes authority, calls a Provider, executes a task, writes a target, or performs an EFFECT/T3 action.
+**Current disposition:** `BLOCKED_PREREQUISITE`. The provider-free preflight is complete, but this T3 packet has not yet been expanded and accepted on current main with a finite authorization, registered evidence destination, rollback contract, and executable dispatch capsule. No RWE authority was issued or consumed, and no RWE effect was executed.
 
-**Rollback:** Revert only this contract/promotion documentation; retain the snapshot manifest and its unavailable evidence.
+**Rollback:** Stop before authority issue; if a registered unit reaches an unknown external outcome, enter the existing reconciliation path and preserve the outcome-unknown receipt. Do not delete evidence or retry speculatively.
 
-**Next permitted action:** Preserve this unavailable receipt and keep `PE7-RWE-DB-RUN-1` blocked. Resume only when an existing authoritative store-owned operator principal and same-tenant completed Golden Path terminal evidence are available for the existing preflight; then rerun the verifier and CLI without synthetic setup or authority consumption.
+**Next permitted action:** Expand and accept this T3 packet on current main, then derive one executable dispatch capsule from the accepted contract. Do not infer authorization from the preflight or from the Golden Path Draft PR.
 
 ### 11. Weak-Agent Dispatch Capsule
 
-No executable dispatch capsule is present while this packet is `BLOCKED_PREREQUISITE`. Regenerate one only after the real store-owned principal and same-tenant completed Golden Path evidence are available and the packet is revalidated on accepted main.
+No executable dispatch capsule is present while this packet is `BLOCKED_PREREQUISITE`; generate one only after the T3 contract is expanded and revalidated on accepted main.
 
 ## Common Execution Protocol
 
