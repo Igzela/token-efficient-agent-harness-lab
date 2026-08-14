@@ -1010,7 +1010,11 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
 
-        let mut command = Command::new(&probe);
+        // Interpret the just-written probe explicitly. Directly exec'ing a
+        // freshly-created script can race with CI filesystems and report
+        // ETXTBSY even though the file has already been closed.
+        let mut command = Command::new("/bin/sh");
+        command.arg(&probe);
         command
             .env("ACP_CODEX_UPSTREAM_API_KEY", "synthetic-parent-key")
             .env("OPENAI_API_KEY", "synthetic-fallback-key")
