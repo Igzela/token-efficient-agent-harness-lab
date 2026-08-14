@@ -446,7 +446,16 @@ fn validate_golden_path_prerequisite_for_rwe_v2(
         .pointer("/verification/status")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if !trustworthy || !matches!(verification_status, "accepted" | "passed") {
+    // LocalProductStore's canonical ProductTask verification owner records a
+    // trustworthy successful receipt as `evidence_recorded`. Accept that
+    // owner-owned status alongside the wire-compatible accepted/passed forms;
+    // trust still requires the boolean and all receipt checks below.
+    if !trustworthy
+        || !matches!(
+            verification_status,
+            "accepted" | "passed" | "evidence_recorded"
+        )
+    {
         return Err(
             "golden_path_prerequisite requires trustworthy accepted/passed verification".into(),
         );
@@ -4322,6 +4331,10 @@ mod operator_v2_authority_tests {
         let ev = gp_prerequisite_evidence("ptask-1", "tenant-1");
         // GP codex identity is intentionally allowed (not bound to RWE deepseek).
         validate_golden_path_prerequisite_for_rwe_v2(&ev, "ptask-1", "tenant-1").unwrap();
+        let mut ev = gp_prerequisite_evidence("ptask-owner-status", "tenant-1");
+        ev["verification"]["status"] = json!("evidence_recorded");
+        validate_golden_path_prerequisite_for_rwe_v2(&ev, "ptask-owner-status", "tenant-1")
+            .unwrap();
     }
 
     #[test]
