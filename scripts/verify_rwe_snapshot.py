@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -41,6 +42,65 @@ def verify_file(root: Path, relative: str, expected: str, failures: list[str]) -
         failures.append(f"snapshot hash mismatch: {relative}")
 
 
+def git_output(root: Path, *args: str) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        return None
+    return result.stdout.strip()
+
+
+def git_blob(root: Path, revision: str, relative: str) -> bytes | None:
+    result = subprocess.run(
+        ["git", "-C", str(root), "show", f"{revision}:{relative}"],
+        check=False,
+        capture_output=True,
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures: list[str]) -> None:
+    repository = manifest["repository"]
+    recipe = manifest["reconstruction_recipe"]
+    base_commit = repository["source_commit"]
+    if recipe["base_commit"] != base_commit:
+        failures.append("recipe base commit differs from source commit")
+        return
+    recipe_commit = recipe["recipe_commit"]
+    if git_output(source_root, "rev-parse", "HEAD") != base_commit:
+        failures.append("source checkout HEAD differs from the bound base commit")
+    if git_output(source_root, "cat-file", "-e", f"{recipe_commit}^{{commit}}") is None:
+        failures.append("bound recipe commit is unavailable")
+        return
+    if git_output(source_root, "merge-base", "--is-ancestor", base_commit, recipe_commit) is not None:
+        pass
+    else:
+        failures.append("recipe commit is not descended from the bound base commit")
+    paths = sorted(recipe["recipe_paths"])
+    recipe_changed = git_output(source_root, "diff", "--name-only", base_commit, recipe_commit)
+    if recipe_changed is None or sorted(filter(None, recipe_changed.splitlines())) != paths:
+        failures.append("recipe commit changes differ from the recipe path set")
+    tracked = git_output(source_root, "diff", "--name-only") or ""
+    untracked = git_output(source_root, "ls-files", "--others", "--exclude-standard") or ""
+    generated_prefix = "apps/api/src/alters_lab_api.egg-info/"
+    changed = sorted(
+        path
+        for path in {*tracked.splitlines(), *untracked.splitlines()}
+        if path and not path.startswith(generated_prefix)
+    )
+    if changed != paths:
+        failures.append("source checkout overlay paths differ from the recipe path set")
+    for relative in paths:
+        candidate = source_root / relative
+        expected = git_blob(source_root, recipe_commit, relative)
+        if expected is None or not candidate.is_file() or candidate.read_bytes() != expected:
+            failures.append(f"source checkout overlay differs from the bound recipe commit: {relative}")
+
+
 def verify(manifest_path: Path, source_root: Path, harness_root: Path) -> list[str]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     failures: list[str] = []
@@ -49,6 +109,11 @@ def verify(manifest_path: Path, source_root: Path, harness_root: Path) -> list[s
         failures.append("manifest_sha256 is missing")
     elif canonical_manifest_digest(manifest) != expected_manifest:
         failures.append("snapshot manifest canonical digest mismatch")
+
+    try:
+        verify_git_overlay(source_root, manifest, failures)
+    except (KeyError, TypeError):
+        failures.append("snapshot Git overlay binding is malformed")
 
     build_inputs = manifest.get("build_inputs", {})
     for section in ("dependency_lockfiles", "tracked_configuration"):
