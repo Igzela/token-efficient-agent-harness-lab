@@ -10,12 +10,12 @@ The repository improves verifiable task delivery only under hard quality, safety
 
 The repository-maintenance route is continuous only through the existing Plan Execution Ledger, dispatcher, worktree, PR, CI, review, merge, closeout, and context owners. It does not create product-runtime authority, auto-merge, an unauthorized Provider call, target write, release, deployment, EFFECT execution, or T3 authority.
 
-The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authorization.v2`. Provider-free viability preflight is accepted. The four-cell RUN is complete with honest `controlled_failure`. The current window is `PE7-RWE-V2-VIABILITY-CLOSEOUT-1` `READY_FOR_EXECUTION`: independently validate, redact, digest, and classify that run without another Provider request. Do not rerun a failed cell or upgrade the claim.
+The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authorization.v2`. The v2 four-cell RUN and CLOSEOUT are accepted as lifecycle `CONTROLLED_FAILURE`, not a viable baseline. The current window is `PE7-RWE-MR-ESTIMANDS-1` `DECISION_REQUIRED`: minimum meaningful effects and other authority-critical value judgments still lack an explicit T2/human owner. This window is not `READY_FOR_EXECUTION`.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-RWE-V2-VIABILITY-CLOSEOUT-1 — READY_FOR_EXECUTION, evidence_review]
+[window: PE7-RWE-MR-ESTIMANDS-1 — DECISION_REQUIRED, human value judgments]
 
 → remaining ordered FUTURE_ROUTE packets
 ```
@@ -24,41 +24,33 @@ Every successor remains routing-only until its accepted predecessor closes and t
 
 ## Active Routing
 
-1. `PE7-RWE-V2-VIABILITY-CLOSEOUT-1` — `READY_FOR_EXECUTION`
+1. `PE7-RWE-MR-ESTIMANDS-1` — `DECISION_REQUIRED`
 
-## Completed (PE7-RWE-V2-VIABILITY-RUN-1)
+## Completed (PE7-RWE-V2-VIABILITY-CLOSEOUT-1)
 
 **Historical state:** `COMPLETE`
 
-**Historical evidence:** PR #441 exact head `ba47462d6cd200d28cb55b1f547924b52afa0584`; merge `2933ba1353f1cda3fc82209b6025094afb79b29e`; exact-head `PASS`; canonical workflow `31704360890`; 4/4 controlled_failure `run-live-20260813-v2c` / `auth-live-v2-003`.
+**Historical evidence:** Disposition `CONTROLLED_FAILURE`. Run `run-live-20260813-v2c`; authorization `auth-live-v2-003`; cells `cell-rwe-minimum-t1-fix_flow_linkage-r1-bp-standard-s2026080601`, `cell-rwe-minimum-t1-fix_flow_linkage-r2-bp-standard-s2026080602`, `cell-rwe-minimum-t2-draft_contract_tests-r1-bp-standard-s2026080601`, `cell-rwe-minimum-t2-draft_contract_tests-r2-bp-standard-s2026080602`. Restricted-bundle sha256 `9b345faf744c14d67157856a512b39d90c6e03ff1081783c793b987d6f93bf82`; redacted-bundle sha256 `e2eafa226700061cb000b35dec776ef0b49417aa5faece0b065923b49ee83d3f`. No seal; no target-default-branch write. Promotion PR #442 exact head `50e18540f40a8d47c384f2cac74683618f93c273`; merge `8c5c2f85bc5d66c08d730b7d0c69d914af19540c`; canonical workflow `31710478692`.
 
-## Packet PE7-RWE-V2-VIABILITY-CLOSEOUT-1
+## Packet PE7-RWE-MR-ESTIMANDS-1
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `DECISION_REQUIRED`
 
-**Prerequisite:** PE7-RWE-V2-VIABILITY-RUN-1 — COMPLETE on accepted main `2933ba1353f1cda3fc82209b6025094afb79b29e` (PR #441 exact head `ba47462d6cd200d28cb55b1f547924b52afa0584`; merge `2933ba1353f1cda3fc82209b6025094afb79b29e`; exact-head `PASS`; canonical workflow `31704360890`; 4/4 controlled_failure `run-live-20260813-v2c` / `auth-live-v2-003`).
+**Prerequisite:** PE7-RWE-V2-VIABILITY-CLOSEOUT-1
 
-**Class:** `CLOSEOUT`
+**Class:** `CONTRACT`
 
-**Worker tier:** `T2`
+**Outcome:** Park the measurement-readiness estimand freeze until a T2/human owner supplies every authority-critical value. Accepted protocol non-inferiority margins are not silently adopted as the estimand ledger.
 
-**Risk class:** `none`
+**Allowed delta:** `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, `docs/MODULE_MAP.md`, `docs/NEXT_DECISION.md` only while parked.
 
-**Verification family:** `evidence_review`
+**Exit:** An independently reviewed estimand ledger with every threshold source, uncertainty target, and human value judgment explicit, or an accepted pause that keeps measurement readiness unfrozen.
 
-**Outcome:** Independently validate, redact, digest, and classify the v2 run without another Provider request.
+**Stop:** Inventing a minimum meaningful effect, choosing a threshold from the observed `controlled_failure` direction, or treating protocol margins as a complete estimand ledger without an owner.
 
-**Allowed delta:** `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, `docs/MODULE_MAP.md`, `docs/NEXT_DECISION.md` only. Evidence validation and canonical status only. Do not rerun a failed cell, retune the envelope, repair code, or upgrade the claim.
+### Decision required
 
-**Exit:** A durable redacted receipt bound to the restricted bundle digest and exact run/cell identities, with `VIABLE`, `CONTROLLED_FAILURE`, `OUTCOME_UNKNOWN`, or `INSUFFICIENT` disposition.
-
-**Stop:** Raw/redacted mismatch, missing failure/cost evidence, unverifiable cleanup, or any claim stronger than lifecycle viability.
-
-### 11. Weak-Agent Dispatch Capsule
-
-<!-- weak-agent-dispatch:v1
-{"allowed_outputs": ["A durable redacted v2 closeout receipt with an honest CONTROLLED_FAILURE, VIABLE, OUTCOME_UNKNOWN, or INSUFFICIENT disposition.", "Canonical status and routing synchronized to that receipt."], "allowed_paths": ["docs/CURRENT_STATUS.md", "docs/FUTURE_ROUTE.md", "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md"], "authority_consumption_allowed": false, "dispatch_lane": "provider_free_repository_maintenance", "expected_artifacts": ["Accepted packet receipt index. (docs/CURRENT_STATUS.md:Accepted)"], "external_effect_limit": 0, "forbidden_changes": ["Do not use FUTURE_ROUTE static paths as current-main authority.", "Do not create a second controller, ledger, queue, lease, store, or workflow owner.", "Do not write the target default branch.", "Do not auto-merge."], "forbidden_next_actions": ["Do not treat missing, conflicting, stale, or outcome-unknown routing or receipts as success.", "Do not start a successor whose promotion candidate has not been independently accepted.", "Do not invent a B2 duration freeze constant.", "Do not rerun a failed cell, retune the envelope, repair code, or upgrade the claim."], "goal": "Independently validate, redact, digest, and classify the v2 four-cell run without another Provider request.", "ordered_steps": ["docs/CURRENT_STATUS.md, docs/NEXT_DECISION.md: Bind exact run/cell identities, redacted cost/failure evidence, and a restricted-bundle digest.", "docs/CURRENT_STATUS.md, docs/FUTURE_ROUTE.md, docs/NEXT_DECISION.md: Record the closeout disposition without promoting measurement-readiness."], "packet_id": "PE7-RWE-V2-VIABILITY-CLOSEOUT-1", "packet_state": "READY_FOR_EXECUTION", "pause_gates": ["Stop when an owner, caller, test, path, operation, destination, or decision cannot be re-proved from accepted main.", "Stop when exact-head review or canonical CI is missing, stale, failed, or conflicting.", "Do not retry a possibly executed external effect whose outcome is unknown."], "plan_lane_state": "plan_lane_active", "prerequisite_receipts": ["PR #441 exact head `ba47462d6cd200d28cb55b1f547924b52afa0584`; merge `2933ba1353f1cda3fc82209b6025094afb79b29e`; exact-head `PASS`; canonical workflow `31704360890`; 4/4 controlled_failure run-live-20260813-v2c auth-live-v2-003"], "prerequisites": ["PE7-RWE-V2-VIABILITY-RUN-1"], "private_paths_allowed": false, "promotion_evidence_sha256": "1052578b6d415bf6dceccadd7396eea3e59080d9b00b0ef29e6f38d9ab1c2fb5", "read_paths": ["docs/CURRENT_STATUS.md", "docs/FUTURE_ROUTE.md", "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md"], "risk_class": "none", "rollback": "Revert the current window and retain detailed lifecycle evidence. (proved by docs/NEXT_DECISION.md:Emergency-stop)", "route_manifest_sha256": "bd4a3701dcac388672f1e1b2694d4361646503502cb62e6f8be1307361a24937", "schema_version": "weak_agent_dispatch.v1", "secret_values_allowed": false, "verification": ["git diff --check", "python scripts/check_agent_handoff.py"], "verification_family": "evidence_review", "worker_tier": "T2"}
--->
+This parked window carries no weak-agent dispatch capsule and is not `READY_FOR_EXECUTION`. Needed before unpark: decision question, inferential unit, eligible value bases, minimum meaningful effects, hard-gate outcomes, and missing/outcome-unknown rules, each with a named T2/human owner. The accepted v2 protocol non-inferiority numbers remain protocol facts, not this packet's freeze.
 
 ## Common Execution Protocol
 
