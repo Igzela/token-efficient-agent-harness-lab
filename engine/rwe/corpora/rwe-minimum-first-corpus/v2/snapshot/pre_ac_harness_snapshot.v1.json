@@ -1,0 +1,136 @@
+{
+  "schema_version": "pre_ac_harness_snapshot.v1",
+  "snapshot_id": "pre-ac-harness-snapshot-v1",
+  "packet_id": "PE7-RWE-DB-SNAPSHOT-CORPUS-1",
+  "manifest_sha256": "d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310fe2837ce2",
+  "status": "UNAVAILABLE_NOW",
+  "reconstructable": false,
+  "preflight_promotion": "BLOCKED",
+  "authority": {
+    "provider_calls": false,
+    "external_effects": false,
+    "target_writes": false,
+    "rwe_authority_consumed": false
+  },
+  "repository": {
+    "harness_repository": "Igzela/token-efficient-agent-harness-lab",
+    "accepted_main_sha": "f575b10a6de617bf3dab5611900bf0a48727c0c6",
+    "rwe_artifact_freeze_sha": "ee43eac853644266614da09de764a3bf19f2d281",
+    "operator_target_repository": "Igzela/alters-lab",
+    "source_commit": "6240768506320a324d68787b9eaa86971c8c930c",
+    "source_tree_hash": "137e912f416a3a8d5be307e91bb2580154fc8fc34c6de52c2441ef3e3f93a064",
+    "source_commit_verified": true,
+    "source_basis": "exact_source_commit_object_only"
+  },
+  "frozen_rwe": {
+    "corpus_id": "rwe-minimum-first-corpus-v2",
+    "corpus_sha256": "044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20",
+    "protocol_id": "rwe-minimum-first-protocol-v2",
+    "protocol_sha256": "bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db",
+    "schedule_id": "rwe-minimum-first-schedule-v2",
+    "schedule_sha256": "6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38",
+    "tasks": [
+      {
+        "task_id": "rwe-minimum-t1-fix_flow_linkage",
+        "task_definition_sha256": "fcd13b6f7a970c048fd09e1f723a315b8e03d221cad1555bf694ca95115438f8"
+      },
+      {
+        "task_id": "rwe-minimum-t2-draft_contract_tests",
+        "task_definition_sha256": "f49e374d8b818d9e2cf4566d6fb3323c472a3dd449ebc71413eab96891124e7d"
+      }
+    ]
+  },
+  "admitted_executor": {
+    "executor": "managed_deepseek",
+    "implementer_model": "deepseek-v4-flash",
+    "planner_model": "deepseek-v4-pro",
+    "reviewer_model": "deepseek-v4-pro",
+    "binary_version": "0.1.0",
+    "binary_identity": "in-process:managed_deepseek"
+  },
+  "build_inputs": {
+    "dependency_lockfiles": [
+      {
+        "path": "Cargo.lock",
+        "sha256": "cf68982734f8a72148950f119408b676dd5b42ce65d7af69c02eca017a551653"
+      }
+    ],
+    "tracked_configuration": [
+      {
+        "path": "Cargo.toml",
+        "sha256": "0289ff341d25bfea24536ae9d55dce99a28d36bba65fbe1fa71f70bb995180ae"
+      },
+      {
+        "path": "engine/Cargo.toml",
+        "sha256": "d99a8fe792f510e8daa7cb435d45bc7c409b34e12a9f6981b09c36f2247bbbf1"
+      },
+      {
+        "path": "docs/provider_profiles/deepseek-v4-managed.v1.json",
+        "sha256": "3fe689959702b7f9fc59051ac2c5697e28c66bbf73b7df609c32328584b75f05"
+      }
+    ],
+    "source_configuration": [
+      {
+        "path": "apps/api/pyproject.toml",
+        "sha256": "3128e7282f2947a9061d9b01105d0f0957112f1a5167df2bf5fc9dda86caa319"
+      }
+    ],
+    "source_dependency_lockfiles": {
+      "status": "UNAVAILABLE_NOW",
+      "paths": [],
+      "reason": "the exact source commit declares Python dependencies but contains no Python lockfile"
+    },
+    "observed_toolchain": {
+      "rustc": "1.96.0 (ac68faa20 2026-05-25)",
+      "cargo": "1.96.0 (30a34c682 2026-05-25)",
+      "python": "3.14.4",
+      "uv": "0.11.17",
+      "git": "2.53.0"
+    },
+    "toolchain_pin": {
+      "status": "UNAVAILABLE_NOW",
+      "reason": "accepted main has no checked-in rust-toolchain or equivalent Rust pin"
+    }
+  },
+  "rebuild": {
+    "provider_free": true,
+    "commands": [
+      "cargo test -p engine rwe::operator_corpus::tests --lib",
+      "cargo test -p engine current_contract_set_binds_candidate_freeze_point_and_hashes --lib",
+      "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q"
+    ],
+    "source_checkout_rule": "materialize the exact source_commit; never use a dirty source worktree"
+  },
+  "golden_traces": [
+    {
+      "trace_id": "accepted-main-rwe-operator-corpus-contracts",
+      "command": "cargo test -p engine rwe::operator_corpus::tests --lib",
+      "result": "PASS",
+      "evidence_scope": "local_command_observation_only; not managed CI or release acceptance"
+    },
+    {
+      "trace_id": "accepted-main-current-contract-binding",
+      "command": "cargo test -p engine current_contract_set_binds_candidate_freeze_point_and_hashes --lib",
+      "result": "PASS",
+      "evidence_scope": "local_command_observation_only; not managed CI or release acceptance"
+    },
+    {
+      "trace_id": "frozen-source-task-verification",
+      "command": "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/ -q",
+      "result": "UNAVAILABLE_NOW",
+      "evidence_scope": "local_command_observation_only; not managed CI or release acceptance",
+      "reason": "The exact frozen source commit does not contain the active YAML artifacts required by the failing tests; dirty working-tree data is not an admissible snapshot input."
+    }
+  ],
+  "unavailable": [
+    "A checked-in Rust toolchain pin is absent from accepted main.",
+    "The frozen source-task verification requires active YAML artifacts absent from the exact source commit.",
+    "The frozen source commit has no Python lockfile for the dependencies declared by apps/api/pyproject.toml."
+  ],
+  "retention": {
+    "stored": "identities, digests, commands, bounded status, and stop reasons only",
+    "excluded": "raw prompts, outputs, transcripts, credentials, private paths, and host-specific secrets"
+  },
+  "rollback": "remove this manifest and revert the packet documentation; retain prior frozen artifacts and failure evidence",
+  "digest_scope": "manifest_sha256 is the SHA-256 of canonical sorted JSON with the manifest_sha256 field omitted"
+}
