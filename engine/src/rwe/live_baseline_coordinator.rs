@@ -1891,6 +1891,19 @@ pub fn run_frozen_schedule(
                 ) {
                     if let Some(task_id) = task.get("task_id").and_then(Value::as_str) {
                         o.product_task_id = task_id.to_string();
+                        match store
+                            .finalize_product_task_after_execution(task_id, "rwe-live-baseline")
+                        {
+                            Ok(_) => o.cleanup_status = "completed".into(),
+                            Err(cleanup_error) => {
+                                o.classification = "cleanup_failed".into();
+                                o.cleanup_status = "failed".into();
+                                o.note = format!(
+                                    "{}; delegated failure cleanup failed: {}",
+                                    o.note, cleanup_error
+                                );
+                            }
+                        }
                     }
                 }
                 if class == "outcome_unknown" {
