@@ -9230,7 +9230,7 @@ impl LocalProductStore {
         {
             return Err("workspace action metadata does not match persisted ProductTask".into());
         }
-        let action: Value = serde_json::from_str(model_output)
+        let action = Self::parse_managed_workspace_action(model_output)
             .map_err(|_| "implementer output must be one JSON workspace action".to_string())?;
         if action.get("schema_version").and_then(Value::as_str)
             != Some("managed_workspace_action.v1")
@@ -9348,6 +9348,19 @@ impl LocalProductStore {
             "bytes": after_text.len(),
             "changed_line_budget": changed_line_budget,
         }))
+    }
+
+    /// Accept the exact action object either bare or inside one complete JSON
+    /// markdown fence. No prose extraction is allowed; the downstream owner
+    /// still validates the parsed action against every persisted boundary.
+    fn parse_managed_workspace_action(model_output: &str) -> Result<Value, serde_json::Error> {
+        let trimmed = model_output.trim();
+        let candidate = if let Some(body) = trimmed.strip_prefix("```json") {
+            body.strip_suffix("```").map(str::trim).unwrap_or("")
+        } else {
+            trimmed
+        };
+        serde_json::from_str(candidate)
     }
 
     pub(crate) fn claim_delegated_provider_request(
@@ -13275,6 +13288,22 @@ mod tests {
         )
         .unwrap_err()
         .contains("provider request"));
+    }
+
+    #[test]
+    fn managed_workspace_action_parser_allows_only_one_json_fence() {
+        let action = r#"{"schema_version":"managed_workspace_action.v1","action":"replace_text"}"#;
+        let fenced = format!("```json\n{action}\n```");
+        assert_eq!(
+            LocalProductStore::parse_managed_workspace_action(&fenced).unwrap()["schema_version"],
+            "managed_workspace_action.v1"
+        );
+        assert!(
+            LocalProductStore::parse_managed_workspace_action("before\n```json\n{}\n```").is_err()
+        );
+        assert!(
+            LocalProductStore::parse_managed_workspace_action("```json\n{}\n```\nafter").is_err()
+        );
     }
 
     #[test]
