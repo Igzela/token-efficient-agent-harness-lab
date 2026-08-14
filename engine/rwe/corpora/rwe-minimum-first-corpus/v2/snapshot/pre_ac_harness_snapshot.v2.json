@@ -2,7 +2,7 @@
   "schema_version": "pre_ac_harness_snapshot.v2",
   "snapshot_id": "pre-ac-harness-snapshot-v2",
   "packet_id": "PE7-RWE-DB-SNAPSHOT-RECONSTRUCT-1",
-  "manifest_sha256": "e02449f57bc8ff9e703e6a1fa9ca1e63507d825b3596421b88348eb4ca25b05b",
+  "manifest_sha256": "ace2d124965c017337ed2547ec8fdfe5b08a7990dbf6b73f525af000fc8a3a2a",
   "status": "RECONSTRUCTABLE",
   "reconstructable": true,
   "preflight_promotion": "READY",
@@ -124,7 +124,8 @@
       "git clone https://github.com/Igzela/alters-lab.git source && git -C source checkout 6240768506320a324d68787b9eaa86971c8c930c",
       "git -C source fetch origin de0b3bb5158f07100d9ee3846b0555193503629d && git -C source diff --binary 6240768506320a324d68787b9eaa86971c8c930c de0b3bb5158f07100d9ee3846b0555193503629d -- .github/workflows/ci.yml apps/api/uv.lock tools/materialize_sample_baseline.py | git -C source apply",
       "uv run --locked --project source/apps/api/pyproject.toml --extra dev python source/tools/materialize_sample_baseline.py",
-      "PYTHONPATH=source/apps/api/src uv run --locked --project source/apps/api pytest source/apps/api/tests/ -q"
+      "PYTHONPATH=source/apps/api/src uv run --locked --project source/apps/api pytest source/apps/api/tests/ -q",
+      "uv run --no-project python scripts/verify_rwe_snapshot.py --manifest engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v2.json --source-root source --harness-root ."
     ],
     "source_checkout_rule": "materialize the exact source_commit, then apply only the hash-bound recipe overlay; never use a dirty target worktree"
   },
