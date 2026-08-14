@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -32,6 +33,27 @@ class VerifyRweSnapshotTests(unittest.TestCase):
             failures: list[str] = []
             verify_rwe_snapshot.verify_file(root, "input.txt", hashlib.sha256(b"other").hexdigest(), failures)
         self.assertEqual(failures, ["snapshot hash mismatch: input.txt"])
+
+    def test_git_overlay_paths_include_staged_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for args in (
+                ("init", "-b", "main"),
+                ("config", "user.name", "Test"),
+                ("config", "user.email", "test@example.invalid"),
+            ):
+                subprocess.run(("git", *args), cwd=root, check=True, capture_output=True)
+            (root / "base.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(("git", "add", "base.txt"), cwd=root, check=True)
+            subprocess.run(("git", "commit", "-m", "base"), cwd=root, check=True, capture_output=True)
+            (root / "recipe.txt").write_text("recipe\n", encoding="utf-8")
+            (root / "staged.txt").write_text("staged\n", encoding="utf-8")
+            subprocess.run(("git", "add", "staged.txt"), cwd=root, check=True)
+
+            self.assertEqual(
+                verify_rwe_snapshot.git_overlay_paths(root),
+                ["recipe.txt", "staged.txt"],
+            )
 
 
 if __name__ == "__main__":

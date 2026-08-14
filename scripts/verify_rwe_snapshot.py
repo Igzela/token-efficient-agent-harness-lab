@@ -95,6 +95,22 @@ def git_tree_hash(root: Path, revision: str) -> str | None:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def git_overlay_paths(root: Path) -> list[str]:
+    tracked = git_output(root, "diff", "--name-only") or ""
+    staged = git_output(root, "diff", "--cached", "--name-only") or ""
+    untracked = git_output(root, "ls-files", "--others", "--exclude-standard") or ""
+    generated_prefix = "apps/api/src/alters_lab_api.egg-info/"
+    return sorted(
+        path
+        for path in {
+            *tracked.splitlines(),
+            *staged.splitlines(),
+            *untracked.splitlines(),
+        }
+        if path and not path.startswith(generated_prefix)
+    )
+
+
 def required_manifest_failures(manifest: dict[str, object]) -> list[str]:
     failures: list[str] = []
     required = {
@@ -150,15 +166,7 @@ def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures:
     recipe_changed = git_output(source_root, "diff", "--name-only", base_commit, recipe_commit)
     if recipe_changed is None or sorted(filter(None, recipe_changed.splitlines())) != paths:
         failures.append("recipe commit changes differ from the recipe path set")
-    tracked = git_output(source_root, "diff", "--name-only") or ""
-    untracked = git_output(source_root, "ls-files", "--others", "--exclude-standard") or ""
-    generated_prefix = "apps/api/src/alters_lab_api.egg-info/"
-    changed = sorted(
-        path
-        for path in {*tracked.splitlines(), *untracked.splitlines()}
-        if path and not path.startswith(generated_prefix)
-    )
-    if changed != paths:
+    if git_overlay_paths(source_root) != paths:
         failures.append("source checkout overlay paths differ from the recipe path set")
     for relative in paths:
         candidate = source_root / relative
