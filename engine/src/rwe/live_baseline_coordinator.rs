@@ -1880,6 +1880,19 @@ pub fn run_frozen_schedule(
                 let class = classify_execution_error(&e);
                 let mut o = CellOutcome::blocked(class, &e, &ids);
                 o.evidence_source = "product_golden_path_owner".into();
+                // The schedule identity is the ProductTask idempotency key;
+                // after admission, the store owns a distinct generated task
+                // id. Resolve it before coupling failure usage to the durable
+                // delegated journal.
+                if let Ok(Some(task)) = store.get_product_task_by_idempotency(
+                    principal.tenant_id(),
+                    &ids.worktree_id,
+                    &ids.product_task_id,
+                ) {
+                    if let Some(task_id) = task.get("task_id").and_then(Value::as_str) {
+                        o.product_task_id = task_id.to_string();
+                    }
+                }
                 if class == "outcome_unknown" {
                     o.cost_unknown = true;
                     o.monetary_cost = None;
