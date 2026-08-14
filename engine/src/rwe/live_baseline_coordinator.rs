@@ -1402,7 +1402,9 @@ fn classify_execution_error(err: &str) -> &'static str {
 }
 
 fn mark_cleanup_failed(outcome: &mut CellOutcome, detail: impl Into<String>) {
-    outcome.classification = "cleanup_failed".into();
+    if outcome.classification != "outcome_unknown" {
+        outcome.classification = "cleanup_failed".into();
+    }
     outcome.cleanup_status = "failed".into();
     outcome.note = format!(
         "{}; delegated failure cleanup unavailable: {}",
@@ -1467,6 +1469,7 @@ fn provider_execution_from_journal(projection: &Value) -> Option<Value> {
     let mut provenance: Option<&str> = None;
     let mut cumulative_tokens = 0_u64;
     let mut realized_cost_usd = 0.0_f64;
+    let mut cost_unknown = false;
     let mut requests = Vec::with_capacity(journal.len());
     for entry in journal {
         let status = entry.get("status").and_then(Value::as_str)?;
@@ -1491,9 +1494,13 @@ fn provider_execution_from_journal(projection: &Value) -> Option<Value> {
             .get("effective_tokens")
             .or_else(|| entry.pointer("/usage/cumulative_tokens"))
             .and_then(Value::as_u64)?;
-        if status == "succeeded" {
+        if matches!(status, "succeeded" | "outcome_unknown") {
             cumulative_tokens = cumulative_tokens.checked_add(effective_tokens)?;
-            realized_cost_usd += cost;
+            if status == "succeeded" {
+                realized_cost_usd += cost;
+            } else {
+                cost_unknown = true;
+            }
             requests.push(entry.clone());
         }
     }
@@ -1507,6 +1514,7 @@ fn provider_execution_from_journal(projection: &Value) -> Option<Value> {
         "requests": requests,
         "cumulative_tokens": cumulative_tokens,
         "realized_cost_usd": realized_cost_usd,
+        "cost_unknown": cost_unknown,
     }))
 }
 
@@ -1581,7 +1589,14 @@ fn couple_usage_to_store_journal(store: &LocalProductStore, outcome: &mut CellOu
             })
             .fold(0_u64, u64::saturating_add);
     }
-    if let Some(cost) = pe
+    if pe
+        .and_then(|p| p.get("cost_unknown"))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        outcome.cost_unknown = true;
+        outcome.monetary_cost = None;
+    } else if let Some(cost) = pe
         .and_then(|p| p.get("realized_cost_usd"))
         .and_then(Value::as_f64)
     {
@@ -2892,6 +2907,23 @@ mod tests {
         });
         assert!(provider_execution_from_journal(&projection).is_none());
         assert!(store_evidence_transport_provenance(&projection).is_err());
+    }
+
+    #[test]
+    fn outcome_unknown_journal_entries_preserve_unknown_effect_evidence() {
+        let projection = json!({
+            "provider_execution": null,
+            "provider_request_journal": [{
+                "status": "outcome_unknown",
+                "effective_tokens": 512,
+                "effective_cost_usd": 0.0002,
+                "transport_provenance": "external"
+            }]
+        });
+        let execution = provider_execution_from_journal(&projection).unwrap();
+        assert_eq!(execution["provider_request_count"], 1);
+        assert_eq!(execution["cumulative_tokens"], 512);
+        assert_eq!(execution["cost_unknown"], true);
     }
 
     #[test]
