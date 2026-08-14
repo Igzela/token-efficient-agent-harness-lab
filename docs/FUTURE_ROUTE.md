@@ -80,7 +80,7 @@ The manifest rows are compact arrays of `packet_id`, `class`, `worker_tier`, `ri
 
 # Future Route
 
-Last updated: 2026-08-14.
+Last updated: 2026-08-15.
 
 This document is the sole long-horizon routing index. Every packet here is `BLOCKED_PREREQUISITE` and routing-only: its order, prerequisite, intended class, and bounded sketch are accepted planning context, not implementation or external-effect authority.
 

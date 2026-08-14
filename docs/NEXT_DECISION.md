@@ -10,7 +10,7 @@ The repository improves verifiable task delivery only under hard quality, safety
 
 The repository-maintenance route is continuous only through the existing Plan Execution Ledger, dispatcher, worktree, PR, CI, review, merge, closeout, and context owners. It does not create product-runtime authority, auto-merge, an unauthorized Provider call, target write, release, deployment, EFFECT execution, or T3 authority.
 
-The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authorization.v2`. The v2 four-cell RUN and CLOSEOUT are accepted as lifecycle `CONTROLLED_FAILURE`, not a viable baseline. `PE7-RWE-MR-ESTIMANDS-1`, `PE7-RWE-MR-CORPUS-SAMPLING-1`, `PE7-RWE-MR-OPERATIONS-EVIDENCE-1`, and `PE7-RWE-MR-PROTOCOL-FREEZE-1` are accepted on main with their source-bound measurement, corpus, operations, and protocol contracts. The reconstructable snapshot replacement, provider-free DB preflight, and separately authorized DB RUN are now closed; the DB RUN disposition is `INSUFFICIENT`, with no decision-grade baseline or downstream AC authorization.
+The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authorization.v2`. The v2 four-cell RUN and CLOSEOUT are accepted as lifecycle `CONTROLLED_FAILURE`, not a viable baseline. `PE7-RWE-MR-ESTIMANDS-1`, `PE7-RWE-MR-CORPUS-SAMPLING-1`, `PE7-RWE-MR-OPERATIONS-EVIDENCE-1`, and `PE7-RWE-MR-PROTOCOL-FREEZE-1` are accepted on main with their source-bound measurement, corpus, operations, and protocol contracts. The reconstructable snapshot replacement and provider-free DB preflight are accepted; the separately authorized DB RUN effect is durably `controlled_failure`, but its packet closeout remains `DECISION_REQUIRED` because the route T3/owner-outcome binding is not proved. There is no decision-grade baseline or downstream AC authorization.
 
 ## Authoritative Forward Order
 
@@ -60,7 +60,7 @@ The accepted reconstructable replacement is bound by PR #451 exact head `d48e985
 
 **Stop:** A registered global stop rule fires, comparability breaks, finite authority expires, an outcome becomes unknown, contamination occurs, or evidence capture fails. Preserve the exact failure and do not rerun selectively.
 
-**Current disposition:** `DECISION_REQUIRED`. A separately authorized RWE run did execute and is durably terminal as `controlled_failure`, with usage and cleanup evidence recorded in `docs/CURRENT_STATUS.md`; however, no route-controller T3 request, authorized receipt, or independent owner-outcome receipt binds that effect. Preserve the evidence, do not replay it, and do not promote the analysis packet yet.
+**Current disposition:** `DECISION_REQUIRED`. The observed effect is uniquely bound to run `run-goal-db-baseline-20260814-2340`, authorization `auth-goal-db-run-20260814`, and run-evidence sha256 `a841e6d092d2946de2ee96bef03409ab8c276111c3ace53aef827bd0c00c277e`; it covered four frozen cells and ProductTasks `ptask-20260814154014-18cbb634bffe42c2`, `ptask-20260814154055-18cbb63e1d04419d`, `ptask-20260814154136-18cbb647bf8562c7`, and `ptask-20260814154219-18cbb651c35d869f`, with all four workspaces reconciled to `cleaned`. No route-controller T3 request, authorized receipt, or independent owner-outcome receipt binds that effect. Preserve the evidence, do not replay it, and do not promote the analysis packet yet.
 
 **Rollback:** Stop before authority issue; if a registered unit reaches an unknown external outcome, enter the existing reconciliation path and preserve the outcome-unknown receipt. Do not delete evidence or retry speculatively.
 
