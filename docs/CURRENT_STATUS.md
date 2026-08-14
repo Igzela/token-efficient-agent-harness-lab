@@ -49,6 +49,8 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-RWE-MR-PROTOCOL-FREEZE-1` | `COMPLETE` | PR #447 exact head `00c8592676c5f73447f94b3abc1361087b371196`; merge `f575b10a6de617bf3dab5611900bf0a48727c0c6`; exact-head review receipt comment `5289552091`; canonical workflow `31770551762`; exact-head check `31770551749`; manifest sha256 `b5e37c7c2419a3acb42a8f21dbf2ba56aa8ddabb995b84b644f1b116a3321c12` |
 | `PE7-RWE-DB-SNAPSHOT-CORPUS-1` | `COMPLETE` | PR #448 exact head `923d9f750c652a268b3d7944be35f34c2a2f9fac`; merge `a4472b9a0aa9c78d1616e9d22c88c2f6a6405cb8`; exact-head review receipt comment `5289908799`; canonical workflow `31773697000`; exact-head check `31773696854`; manifest sha256 `d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310fe2837ce2`; disposition `UNAVAILABLE_NOW`, `reconstructable=false`, preflight blocked |
 
+| `PE7-RWE-DB-SNAPSHOT-RECONSTRUCT-1` | `COMPLETE` | PR #451; manifest sha256 `e02449f57bc8ff9e703e6a1fa9ca1e63507d825b3596421b88348eb4ca25b05b`; exact source commit `6240768506320a324d68787b9eaa86971c8c930c`; immutable target recipe PR #46 head `de0b3bb5158f07100d9ee3846b0555193503629d`; reconstructable provider-free overlay; no target-default-branch write |
+
 ## Accepted Product and Control-Plane State
 
 Accepted `main` contains:
@@ -126,7 +128,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | `PE7-RWE-MR-OPERATIONS-EVIDENCE-1` | `COMPLETE` | PR #446 exact head `34c68d94c1737769c60fb7ea1722b464a5d764aa`; exact-head review receipt comment `5289427966`; canonical workflow `31769511015`; exact-head check `31769511065`; squash merge `e34d1ae3c3ecf5e6c919c71a3d26d6690a66444`; provider-free field-owner and explicit-unavailable manifest accepted |
 | `PE7-RWE-MR-PROTOCOL-FREEZE-1` | `COMPLETE` | PR #447 exact head `00c8592676c5f73447f94b3abc1361087b371196`; merge `f575b10a6de617bf3dab5611900bf0a48727c0c6`; manifest sha256 `b5e37c7c2419a3acb42a8f21dbf2ba56aa8ddabb995b84b644f1b116a3321c12` |
 | `PE7-RWE-DB-SNAPSHOT-CORPUS-1` | `COMPLETE` | PR #448 merged with canonical exact-head evidence; the snapshot is explicitly unavailable and non-reconstructable, so no preflight or external effect was authorized |
-| Measurement readiness | `BLOCKED_PREREQUISITE` | Estimands, finite corpus/sampling, operations/evidence, protocol freeze, and snapshot closeout are recorded; snapshot reconstruction is `UNAVAILABLE_NOW`, so preflight and decision-grade baseline remain blocked |
+| Measurement readiness | `READY_FOR_EXECUTION` | The replacement snapshot is reconstructable from the exact frozen source plus the hash-bound target recipe overlay; provider-free preflight is the next gate |
 | Decision-grade pre-AC baseline | `BLOCKED_PREREQUISITE` | 4 packets: snapshot/corpus, preflight, run, analysis |
 | AC0 inventory/freeze | `BLOCKED_PREREQUISITE` | 3 packets: runtime, data/contracts, trace/order freeze |
 | AC1–AC5 | `BLOCKED_PREREQUISITE` | Each stage has contract, additive core, and enumerated migration/closeout |
