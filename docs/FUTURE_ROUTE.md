@@ -25,7 +25,7 @@ These are audited absences or unaccepted seams at the current main, not permissi
 
 | Route family | Accepted owner to extend | Missing or not-yet-accepted seam | Promotion stop condition |
 |---|---|---|---|
-| RWE measurement/decision baseline | existing RWE corpus, protocol, schedule, artifact, and evidence owners | no accepted estimand/sample/reviewer/retention contract or decision-grade corpus | any threshold, reviewer, retention, or evidence-access value lacks a T2/human owner |
+| RWE measurement/decision baseline | existing RWE corpus, protocol, schedule, artifact, usage, review, and evidence owners | no accepted operations/evidence manifest, protocol-freeze closeout, or decision-grade corpus | any required field lacks a named existing owner, explicit unavailable state, or fail-closed stop rule |
 | AC1 process supervision | AC0-enumerated subprocess/executor callers | no `ProcessSupervisor` module/interface exists today | placement would create a second runtime/executor owner or child cleanup cannot be proved |
 | AC2 typed execution | current executor adapter/node/provider/CLI owners | no accepted cross-executor typed state/outcome/usage contract | any existing outcome cannot map without semantic loss or unknown-as-success coercion |
 | AC3 Golden Path split | `product_golden_path.rs` plus LocalProductStore product-task authority | no accepted pure orchestration/effect-port seam | store, approval, output, audit, or external effect ownership becomes ambiguous |
