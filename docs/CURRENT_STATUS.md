@@ -47,6 +47,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-RWE-MR-CORPUS-SAMPLING-1` | `COMPLETE` | PR #445 exact head `2ddec8d5e2afce104ee718d64eb517219ecdf888`; merge `3f88d985af3f7701ab9f3c382becb84f73364c9b`; exact-head `PASS`; canonical workflow `31766911605`; exact-head check `31766911606` |
 | `PE7-RWE-MR-OPERATIONS-EVIDENCE-1` | `COMPLETE` | PR #446 exact head `34c68d94c1737769c60fb7ea1722b464a5d764aa`; merge `e34d1ae3c3ecf5e6c919c71a3d26d6690a66444`; exact-head review receipt comment `5289427966`; canonical workflow `31769511015`; exact-head check `31769511065` |
 | `PE7-RWE-MR-PROTOCOL-FREEZE-1` | `COMPLETE` | PR #447 exact head `00c8592676c5f73447f94b3abc1361087b371196`; merge `f575b10a6de617bf3dab5611900bf0a48727c0c6`; exact-head review receipt comment `5289552091`; canonical workflow `31770551762`; exact-head check `31770551749`; manifest sha256 `b5e37c7c2419a3acb42a8f21dbf2ba56aa8ddabb995b84b644f1b116a3321c12` |
+| `PE7-RWE-DB-SNAPSHOT-CORPUS-1` | `COMPLETE` | PR #448 exact head `923d9f750c652a268b3d7944be35f34c2a2f9fac`; merge `a4472b9a0aa9c78d1616e9d22c88c2f6a6405cb8`; exact-head review receipt comment `5289908799`; canonical workflow `31773697000`; exact-head check `31773696854`; manifest sha256 `d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310fe2837ce2`; disposition `UNAVAILABLE_NOW`, `reconstructable=false`, preflight blocked |
 
 ## Accepted Product and Control-Plane State
 
@@ -124,7 +125,8 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Measurement-readiness estimands | `COMPLETE` | PR #444 accepted the source-bound task-level value, gate, margin, repetition, and paired-bootstrap contract |
 | `PE7-RWE-MR-OPERATIONS-EVIDENCE-1` | `COMPLETE` | PR #446 exact head `34c68d94c1737769c60fb7ea1722b464a5d764aa`; exact-head review receipt comment `5289427966`; canonical workflow `31769511015`; exact-head check `31769511065`; squash merge `e34d1ae3c3ecf5e6c919c71a3d26d6690a66444`; provider-free field-owner and explicit-unavailable manifest accepted |
 | `PE7-RWE-MR-PROTOCOL-FREEZE-1` | `COMPLETE` | PR #447 exact head `00c8592676c5f73447f94b3abc1361087b371196`; merge `f575b10a6de617bf3dab5611900bf0a48727c0c6`; manifest sha256 `b5e37c7c2419a3acb42a8f21dbf2ba56aa8ddabb995b84b644f1b116a3321c12` |
-| Measurement readiness | `BLOCKED_PREREQUISITE` | Estimands, finite corpus/sampling, operations/evidence, and protocol freeze are accepted; snapshot/corpus is the current gate and decision-grade baseline remains blocked |
+| `PE7-RWE-DB-SNAPSHOT-CORPUS-1` | `COMPLETE` | PR #448 merged with canonical exact-head evidence; the snapshot is explicitly unavailable and non-reconstructable, so no preflight or external effect was authorized |
+| Measurement readiness | `BLOCKED_PREREQUISITE` | Estimands, finite corpus/sampling, operations/evidence, protocol freeze, and snapshot closeout are recorded; snapshot reconstruction is `UNAVAILABLE_NOW`, so preflight and decision-grade baseline remain blocked |
 | Decision-grade pre-AC baseline | `BLOCKED_PREREQUISITE` | 4 packets: snapshot/corpus, preflight, run, analysis |
 | AC0 inventory/freeze | `BLOCKED_PREREQUISITE` | 3 packets: runtime, data/contracts, trace/order freeze |
 | AC1–AC5 | `BLOCKED_PREREQUISITE` | Each stage has contract, additive core, and enumerated migration/closeout |

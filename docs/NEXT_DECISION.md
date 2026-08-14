@@ -10,21 +10,23 @@ The repository improves verifiable task delivery only under hard quality, safety
 
 The repository-maintenance route is continuous only through the existing Plan Execution Ledger, dispatcher, worktree, PR, CI, review, merge, closeout, and context owners. It does not create product-runtime authority, auto-merge, an unauthorized Provider call, target write, release, deployment, EFFECT execution, or T3 authority.
 
-The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authorization.v2`. The v2 four-cell RUN and CLOSEOUT are accepted as lifecycle `CONTROLLED_FAILURE`, not a viable baseline. `PE7-RWE-MR-ESTIMANDS-1`, `PE7-RWE-MR-CORPUS-SAMPLING-1`, `PE7-RWE-MR-OPERATIONS-EVIDENCE-1`, and `PE7-RWE-MR-PROTOCOL-FREEZE-1` are accepted on main with their source-bound measurement, corpus, operations, and protocol contracts. The human value owner for the measurement-readiness route is Igzela, the repository owner; this session's implementation agent is explicitly delegated to record and execute the remaining T2 value judgments for this route. The current window is `PE7-RWE-DB-SNAPSHOT-CORPUS-1` `READY_FOR_EXECUTION` for provider-free snapshot and corpus production only.
+The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authorization.v2`. The v2 four-cell RUN and CLOSEOUT are accepted as lifecycle `CONTROLLED_FAILURE`, not a viable baseline. `PE7-RWE-MR-ESTIMANDS-1`, `PE7-RWE-MR-CORPUS-SAMPLING-1`, `PE7-RWE-MR-OPERATIONS-EVIDENCE-1`, and `PE7-RWE-MR-PROTOCOL-FREEZE-1` are accepted on main with their source-bound measurement, corpus, operations, and protocol contracts. The snapshot packet is merged and closed with an honest `UNAVAILABLE_NOW` reconstruction result; the preflight successor is the current blocked window and no external effect is authorized.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-RWE-DB-SNAPSHOT-CORPUS-1 — READY_FOR_EXECUTION, delegated pre-AC snapshot/corpus production]
+[window: PE7-RWE-DB-PREFLIGHT-1 — BLOCKED_PREREQUISITE, snapshot reconstruction unavailable]
 
-→ `PE7-RWE-DB-PREFLIGHT-1` after this packet is merged and closed
+→ `PE7-RWE-DB-RUN-1` only after a reconstructable preflight is accepted
 ```
 
 Every successor remains routing-only until its accepted predecessor closes and the promotion planner proves a bounded current-main contract. A negative, insufficient, unknown, or authority-required disposition is `DECISION_REQUIRED` and rewrites or pauses the route; it never silently follows the nominal order.
 
 ## Active Routing
 
-1. `PE7-RWE-DB-SNAPSHOT-CORPUS-1` — `READY_FOR_EXECUTION`
+1. `PE7-RWE-DB-PREFLIGHT-1` — `BLOCKED_PREREQUISITE`
+
+No `READY_FOR_EXECUTION` packet is active; the retained snapshot closeout is a completed lifecycle receipt, not a dispatch capsule.
 
 ## Historical V2 Closeout
 
@@ -32,39 +34,37 @@ Every successor remains routing-only until its accepted predecessor closes and t
 
 **Evidence:** Disposition `CONTROLLED_FAILURE`; run `run-live-20260813-v2c`; authorization `auth-live-v2-003`; four frozen cells; restricted-bundle sha256 `9b345faf744c14d67157856a512b39d90c6e03ff1081783c793b987d6f93bf82`; redacted-bundle sha256 `e2eafa226700061cb000b35dec776ef0b49417aa5faece0b065923b49ee83d3f`; no seal and no target-default-branch write. Do not rerun this effect.
 
-## Packet PE7-RWE-DB-SNAPSHOT-CORPUS-1
+## Completed snapshot closeout
 
-**State:** `READY_FOR_EXECUTION`
+The accepted `PE7-RWE-DB-SNAPSHOT-CORPUS-1` packet is closed on main by PR #448 exact head `923d9f750c652a268b3d7944be35f34c2a2f9fac`, squash merge `a4472b9a0aa9c78d1616e9d22c88c2f6a6405cb8`, exact-head review receipt `5289908799`, canonical workflow `31773697000`, and final exact-head check `31773696854`.
 
-**Prerequisite:** PE7-RWE-MR-PROTOCOL-FREEZE-1 — COMPLETE on accepted main f575b10a6de617bf3dab5611900bf0a48727c0c6; PR #447 exact head 00c8592676c5f73447f94b3abc1361087b371196; exact-head review receipt comment 5289552091; canonical workflow 31770551762; exact-head check 31770551749; manifest sha256 b5e37c7c2419a3acb42a8f21dbf2ba56aa8ddabb995b84b644f1b116a3321c12.
+Its manifest sha256 is `d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310fe2837ce2`; the snapshot disposition is `UNAVAILABLE_NOW`, `reconstructable=false`. No Provider call, authority consumption, target write, or EFFECT occurred. The complete lifecycle receipt and unavailable disposition are owned by `docs/CURRENT_STATUS.md`; this document retains only the closeout binding needed for the current route.
 
-**Class:** `IMPLEMENT`
+## Packet PE7-RWE-DB-PREFLIGHT-1
 
-**Outcome:** Materialize the frozen task artifacts and a reconstructable pre-AC Harness/config/toolchain snapshot under existing RWE artifact owners.
+**State:** `BLOCKED_PREREQUISITE`
 
-**Allowed delta:** `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, `docs/MODULE_MAP.md`, `docs/NEXT_DECISION.md`, and `engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v1.json` only. Provider-free artifact production; no task-semantic, evaluator, budget, runtime-owner, or accepted-Harness behavior change.
+**Prerequisite:** PE7-RWE-DB-SNAPSHOT-CORPUS-1 — COMPLETE on accepted main `a4472b9a0aa9c78d1616e9d22c88c2f6a6405cb8`, but its manifest is `UNAVAILABLE_NOW` and `reconstructable=false`.
 
-**Exit:** A hash-verified snapshot manifest and corpus binding whose declared rebuild commands and provider-free golden traces match accepted main; otherwise record the exact unavailable/mismatch stop and do not promote preflight.
+**Class:** `CONTRACT`
 
-**Stop:** A task cannot be legally retained/replayed, snapshot reconstruction is nondeterministic, a required digest or trace is unavailable, or artifact storage would create a second owner.
+**Outcome:** Validate the frozen corpus, snapshot, protocol, schedule, capacity, principals, target state, evidence destinations, and drift baseline before any external-effect authorization is considered.
 
-### Snapshot manifest — pre_ac_harness_snapshot.v1
+**Allowed delta:** Provider-free contract and evidence validation only. No Provider call, task execution, authority issue/admit/consume, target write, EFFECT, T3 action, release, deployment, or runtime/schema/store/evaluator change.
 
-1. **Scope and authority.** This is provider-free artifact production. It grants no spend, execution, output, merge, release, deployment, adoption, EFFECT, or T3 authority. It never rewrites the frozen v2 corpus, protocol, schedule, estimands, or decision rule.
-2. **Frozen bindings.** Bind accepted main f575b10a6de617bf3dab5611900bf0a48727c0c6, RWE artifact freeze point ee43eac853644266614da09de764a3bf19f2d281, source commit 6240768506320a324d68787b9eaa86971c8c930c, source tree 137e912f416a3a8d5be307e91bb2580154fc8fc34c6de52c2441ef3e3f93a064, corpus 044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20, protocol bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db, schedule 6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38, and both task-definition hashes.
-3. **Snapshot contents.** The manifest must record normalized repository identity, exact source/tree bindings, RWE artifact hashes, task-definition hashes, Rust/toolchain identity, dependency-lockfile digests, tracked configuration digests, admitted executor/model/binary identity, bounded rebuild commands, and provider-free golden-trace commands/results. It must exclude raw prompts/outputs, credentials, private paths, and host-specific secrets.
-4. **Existing owners and paths.** Frozen corpus/protocol/schedule identity remains under engine/src/rwe/operator_corpus.rs, corpus.rs, economic_protocol.rs, execution_schedule.rs, and engine/rwe/corpora/. Artifact capture, integrity, redaction, and persistence reuse the existing artifact and LocalProductStore owners; this snapshot adds no store, schema, ledger, or parallel artifact owner.
-5. **Reconstruction rule.** Rebuild only from the accepted main checkout, declared lockfiles/configuration, pinned toolchain identity, and bounded provider-free commands. Any absent or conflicting value is UNAVAILABLE_NOW, sets reconstructable=false, and blocks preflight; no caller assertion or guessed environment fills it.
-6. **Golden traces.** Compare only provider-free traces produced from the exact accepted main and frozen task artifacts. A missing, nondeterministic, or semantically different trace is a hard stop; fixture success is not live-baseline evidence.
-7. **Retention and recovery.** Keep only bounded redacted/digest evidence through existing artifact owners. Do not copy/delete restricted raw bundles; preserve prior digests and failure evidence. Rollback is removal of the new snapshot manifest plus documentation revert.
-8. **Next action.** Keep the PR Draft while changing; complete the focused artifact/reconstruction checks, obtain stable-head two-axis PASS, mark Ready once, wait for exact-head canonical CI, manually squash-merge, record closeout, refresh main, and only then promote PE7-RWE-DB-PREFLIGHT-1.
-9. **Current reconstruction result.** Manifest sha256 `d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310fe2837ce2`. Local provider-free command observations are non-acceptance evidence. Exact frozen source-task verification is `UNAVAILABLE_NOW` because required active YAML artifacts are absent from the exact source commit; the source `apps/api/pyproject.toml` has no lockfile; and accepted main has no checked-in Rust toolchain pin. The manifest is `UNAVAILABLE_NOW`, `reconstructable=false`, and preflight promotion remains blocked.
+**Owner/seam:** Reuse the existing RWE operator preflight, corpus/protocol/schedule integrity validators, `LocalProductStore` authority/evidence owners, and `live_baseline_coordinator`; add no parallel owner.
 
-### 11. Weak-Agent Dispatch Capsule
+**Required bindings:** Snapshot manifest `d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310fe2837ce2`, corpus `044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20`, protocol `bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db`, schedule `6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38`.
 
-<!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-RWE-DB-SNAPSHOT-CORPUS-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"opencode_local_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Materialize a provider-free, hash-verified pre-AC Harness and corpus snapshot under existing RWE artifact owners.","rollback":"Revert the single snapshot/documentation commit and retain prior frozen protocol and evidence.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v1.json"],"allowed_outputs":["The bounded pre_ac_harness_snapshot.v1 manifest and its provider-free verification evidence."],"prerequisites":["PE7-RWE-MR-PROTOCOL-FREEZE-1"],"prerequisite_receipts":["PE7-RWE-MR-PROTOCOL-FREEZE-1 COMPLETE: PR #447 exact head `00c8592676c5f73447f94b3abc1361087b371196`; merge `f575b10a6de617bf3dab5611900bf0a48727c0c6`; exact-head review receipt comment `5289552091`; canonical workflow `31770551762`; exact-head check `31770551749`; manifest sha256 `b5e37c7c2419a3acb42a8f21dbf2ba56aa8ddabb995b84b644f1b116a3321c12`"],"forbidden_changes":["Any Provider call, credential access, target write, EFFECT/T3 action, release, deployment, runtime, schema, evaluator, scheduler, store, budget, or accepted Harness behavior change.","Do not rewrite frozen corpus/protocol/schedule artifacts or include raw/private environment content."],"forbidden_next_actions":["Do not call a Provider, read credentials, execute a task, or rerun run-live-20260813-v2c.","Do not write a target default branch, issue/admit/consume RWE authority, or start PE7-RWE-DB-PREFLIGHT-1 before this packet is merged and closed.","Do not guess unavailable toolchain, dependency, runner, or golden-trace evidence."],"ordered_steps":["Bind the accepted protocol-freeze receipt and exact v2 artifact hashes.","Materialize the bounded snapshot manifest under the existing RWE artifact owner.","Run provider-free reconstruction and golden-trace checks; fail closed on unavailable evidence; prepare the governed Draft PR."],"read_paths":["docs/NEXT_DECISION.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/ARCHITECTURE_BOOK.md","docs/REAL_WORLD_TESTING_PLAYBOOK.md","engine/src/rwe/operator_corpus.rs","engine/src/rwe/corpus.rs","engine/src/rwe/economic_protocol.rs","engine/src/rwe/execution_schedule.rs","engine/src/rwe/runner.rs","engine/src/rwe/live_baseline_coordinator.rs","engine/src/storage/local_product_store/rwe_authority.rs","engine/rwe/corpora/rwe-minimum-first-corpus/v2/protocol/rwe_economic_protocol.v1.json","engine/rwe/corpora/rwe-minimum-first-corpus/v2/schedule/execution_schedule.v1.json"],"verification":["PYTHONPATH=src uv run --no-project python -m unittest tests.test_session_context.CheckpointTests.test_current_repository_packet_binds_safe_live_capsule","uv run --no-project python scripts/check_agent_handoff.py","git diff --check"],"expected_artifacts":["engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v1.json","Provider-free reconstruction and golden-trace verification evidence."],"pause_gates":["Stop before any Provider call, credential access, task execution, authority issue/admit/consume, target write, EFFECT, T3 action, release, deployment, or automatic merge.","Stop if any snapshot identity, lockfile/toolchain digest, rebuild command, or golden-trace comparison is unavailable or conflicting."]}
--->
+**Exit:** A zero-mismatch provider-free preflight receipt with every required binding reconstructable, and only then bounded operator authorization requests under the accepted experiment envelope.
+
+**Stop:** Any required snapshot field, source artifact, lockfile, toolchain pin, capacity, price, Provider identity, target safety, reviewer availability, retention destination, or drift binding is unavailable, stale, conflicting, or unverifiable. Preserve `UNAVAILABLE_NOW`; do not guess or proceed.
+
+**Current disposition:** `BLOCKED_PREREQUISITE`. The accepted snapshot explicitly lacks the exact source active YAML artifacts, a Python dependency lockfile, and a checked-in Rust toolchain pin. No preflight command, Provider call, authority consumption, or target interaction is permitted until a separately accepted reconstructable snapshot replaces this prerequisite.
+
+**Rollback:** Revert only this contract/promotion documentation; retain the snapshot manifest and its unavailable evidence.
+
+**Next permitted action:** Remain provider-free and await a new accepted reconstructable snapshot prerequisite; do not promote `PE7-RWE-DB-RUN-1`.
 
 ## Common Execution Protocol
 
