@@ -49,7 +49,6 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-RWE-MR-PROTOCOL-FREEZE-1` | `COMPLETE` | PR #447 exact head `00c8592676c5f73447f94b3abc1361087b371196`; merge `f575b10a6de617bf3dab5611900bf0a48727c0c6`; exact-head review receipt comment `5289552091`; canonical workflow `31770551762`; exact-head check `31770551749`; manifest sha256 `b5e37c7c2419a3acb42a8f21dbf2ba56aa8ddabb995b84b644f1b116a3321c12` |
 | `PE7-RWE-DB-SNAPSHOT-CORPUS-1` | `COMPLETE` | PR #448 exact head `923d9f750c652a268b3d7944be35f34c2a2f9fac`; merge `a4472b9a0aa9c78d1616e9d22c88c2f6a6405cb8`; exact-head review receipt comment `5289908799`; canonical workflow `31773697000`; exact-head check `31773696854`; manifest sha256 `d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310fe2837ce2`; disposition `UNAVAILABLE_NOW`, `reconstructable=false`, preflight blocked |
 
-
 ## Accepted Product and Control-Plane State
 
 Accepted `main` contains:
