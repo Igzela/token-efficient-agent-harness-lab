@@ -1356,6 +1356,10 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "struct\nTypedBoundary {}\n",
             "fn build() ->\nTypedBoundary {}\n",
             "fn build() ->\nTypedBoundary::Assoc {}\n",
+            "fn build() -> Option<TypedBoundary::Assoc> {}\n",
+            "type Alias = TypedBoundary::Assoc;\n",
+            "fn build(value: TypedBoundary::Assoc) {}\n",
+            "fn build() { let value: Option<TypedBoundary::Assoc> = value; }\n",
         ):
             self.assertFalse(
                 route_driver.CurrentMainEvidenceVerifier._consumes_symbol(

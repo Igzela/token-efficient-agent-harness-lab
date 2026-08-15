@@ -1624,6 +1624,24 @@ class CurrentMainEvidenceVerifier:
             return False
         return re.search(pattern, source) is not None
 
+    @staticmethod
+    def _rust_type_context(prefix: str) -> bool:
+        """Reject Rust paths that occur in a type/signature context."""
+
+        boundary = max(prefix.rfind(";"), prefix.rfind("{"), prefix.rfind("}"))
+        segment = prefix[boundary + 1 :]
+        if re.search(r"->", segment):
+            return True
+        if re.match(r"\s*(?:pub(?:\([^)]*\))?\s+)?(?:type|use)\b", segment):
+            return True
+        if re.match(r"\s*(?:fn|extern\b)", segment) and segment.count("(") > segment.count(")"):
+            return True
+        if re.match(r"\s*(?:let|const|static)\b", segment) and "=" not in segment:
+            return True
+        if re.search(r":\s*(?:&\s*(?:'[A-Za-z_][A-Za-z0-9_]*\s*)?(?:mut\s*)?)?$", segment):
+            return True
+        return False
+
     @classmethod
     def _consumes_symbol(cls, source: str, symbol: str, language: str) -> bool:
         escaped = re.escape(symbol)
@@ -1641,16 +1659,11 @@ class CurrentMainEvidenceVerifier:
             for pattern in patterns:
                 for match in pattern.finditer(code):
                     prefix = code[: match.start()]
-                    if re.search(
+                    if cls._rust_type_context(prefix) or re.search(
                         r"\b(?:fn|struct|enum|trait|type|mod|const|static)\s*$",
                         prefix,
                     ) or re.search(
                         r"\b(?:impl|for|macro_rules!)\s*(?:<[^>\n]*>)?\s*$",
-                        prefix,
-                    ):
-                        continue
-                    if re.search(
-                        r"->\s*(?:&\s*(?:'[A-Za-z_][A-Za-z0-9_]*\s*)?(?:mut\s*)?)?$",
                         prefix,
                     ):
                         continue
