@@ -1392,6 +1392,8 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "for Some(typed_boundary(code)) in values {}\n",
             "|Some(typed_boundary(code))| value\n",
             "fn caller() { let f = |(typed_boundary(code), other)| code; }\n",
+            "fn caller() { let f = move |Some(typed_boundary(code))| code; }\n",
+            "fn caller() { let f = async move |Some(typed_boundary(code))| code; }\n",
         ):
             self.assertFalse(
                 route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
