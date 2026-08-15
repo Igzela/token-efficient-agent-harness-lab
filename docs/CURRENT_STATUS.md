@@ -28,6 +28,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 
 | Packet | State | Accepted evidence |
 |---|---|---|
+| `PE7-AC0-DATA-CONTRACT-INVENTORY-1` | `COMPLETE` | PR #466 exact head `1662bde29a53d942a28a9982cc5e9a999ff44c12`; merge `e17767e6ebe1a0d6c6031dec61349deeb3ef9585`; exact-head `PASS`; canonical workflow `31868206197` |
 | `PE7-RWE-V2-REFREEZE-1` | `COMPLETE` | PR #370 exact head `36c92b93975366c3f85471f247a3afb128e5351c`; merge `3b4afb3e5ab4254904aa5a63473ab6ae0eac1e82`; exact-head `PASS`; canonical workflow `31312135471`; redacted calibration and restricted-bundle digests bound in the PR evidence |
 | `PE7-CTRL-ROUTE-CONTRACT-1` | `COMPLETE` | PR #380 exact head `e905cf6ec7a989b54e60f913657ca306f33ebf49`; merge `546cabc1ceb98b49b543d0bd90a62fc228e67338`; exact-head `PASS`; canonical workflow `31386777810`; route-contract receipt bound to the accepted main merge |
 | `PE7-PLAN-LANE-ACTIVATION-1` | `COMPLETE` | PR #382 exact head `dde26f884ce8a85b776b5933c84c4e6cfd73cb19`; merge `e55e19f1b7c353b4baa2b40ee7b5b16af8918a6c`; exact-head `PASS`; canonical workflow `31395404498` (native-runtime rerun after a confirmed infra-only OpenSSL linker flake); Plan lane active behind real terminal-owner readiness; Plan Execution Ledger Issue #383 provisioned |
@@ -133,7 +134,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Measurement readiness | `BLOCKED_PREREQUISITE` | Estimands, finite corpus/sampling, operations/evidence, protocol freeze, and reconstructable snapshot are accepted; the observed DB RUN is retained as a non-baseline controlled failure |
 | Decision-grade pre-AC baseline | `DEFERRED` | The failed DB RUN and its analysis are parked and are not an AC prerequisite; no decision-grade baseline is claimed |
 | AC0 runtime inventory and AC1 ProcessSupervisor | `DEFERRED` | Optional hardening; existing runtime-specific owners retain timeout, cancellation, kill/reap, failure, and outcome-unknown boundaries |
-| AC0 data/trace freeze | `IN_PROGRESS` | The bounded provider-free owner/caller/transaction/projection/legacy inventory is recorded below; trace/order closeout remains the next route step |
+| AC0 data/trace freeze | `COMPLETE` | The bounded provider-free owner/caller/transaction/projection/legacy inventory and trace/order closeout are recorded below; no ownership move was made |
 | AC2–AC5 | `BLOCKED_PREREQUISITE` | Each stage remains behind the minimal AC0 freeze and its focused implementation/closeout; AC1 shared supervision is deferred optional hardening |
 | AC6 schema convergence | `BLOCKED_PREREQUISITE` | Contract, Rust/codegen, SDK, Dashboard data migration, compatibility closeout |
 | AC7 cleanup | `BLOCKED_PREREQUISITE` | Removal manifest, deletion-only implementation, independent closeout |
@@ -176,6 +177,17 @@ The minimum trace set is already exercised by existing tests and remains read-on
 | Delegation, approval, output, projections | `prepare_delegated_managed_product_task` → activation/terminal evidence → `api_approve_product_task`/`api_output_product_task` or `api_approve_and_output_product_task`; public projection remains redacted | `engine/tests/test_product_golden_path_evidence.rs` (`drive_to_awaiting_approval`, `approval_and_output_are_separate_and_missing_confirmation_has_zero_side_effects`, `terminal_evidence_links_task_owners_without_fabricated_cost`, `duplicate_concurrent_output_calls_reuse_one_canonical_terminal_evidence`), `test_managed_acceptance_delegation.rs` (`bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_restart`), and `test_product_golden_path_evidence.rs`/`test_local_product_store.rs` projection tests; backend-specific projection parity is not claimed until the trace/order closeout |
 
 The inventory is intentionally not a claim of a successful live DeepSeek run or a decision-grade RWE baseline. SQLite is the default provider-free evidence backend; PostgreSQL evidence is limited to the named `ACP_TEST_DATABASE_URL` anchors, and API/SDK/Dashboard projection parity across both backends remains unmapped. Reverting this document-only inventory and the packet-status note is the rollback; existing failure evidence is retained and no parked effect is replayed.
+
+## AC0 provider-free trace/order closeout
+
+The accepted inventory stabilizes the minimum route without adding a runtime owner:
+
+1. Intake/admission/status remains `api_create_product_task` → `validate_intake` → `LocalProductStore` admission/reservation, with invalid gates rejected before admission.
+2. Compile/execute/verify remains `api_compile_and_schedule_product_task` → existing scheduler/executor/store owners → verification and terminal classification; `outcome_unknown` enters reconciliation and is never a speculative retry.
+3. Recovery/compensation remains `recover_product_task_workspace_for_tenant` and `fail_product_task_and_compensate`, with existing receipt/version, CAS, idempotency, audit, restart, and rollback owners.
+4. Delegation/approval/output remains store-owned activation and terminal evidence followed by separate approval/output confirmation; public projections remain redacted projections, not authorities.
+
+The dependency order is frozen as `AC0 inventory → AC0 trace/order closeout → AC2 contract → AC2 typed boundary → AC2 caller migration → AC3 → AC4 → AC5 → AC6 → AC7`. AC1 shared `ProcessSupervisor` remains deferred optional hardening and is not a prerequisite. The AC2 contract may only tighten existing state/outcome mappings and must not move admission, lease, spend, verification, approval, output, audit, recovery, or target authority. No unknown production caller was found in the bounded inventory; a later owner contradiction or cross-backend parity gap stops the next packet rather than widening scope.
 
 ## Primary-route scope decision
 
