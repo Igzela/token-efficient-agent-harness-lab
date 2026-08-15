@@ -22,6 +22,8 @@ The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authoriza
 
 Every successor remains routing-only until its accepted predecessor closes and the promotion planner proves a bounded current-main contract. A negative, insufficient, unknown, or authority-required disposition is `DECISION_REQUIRED` and rewrites or pauses the route; it never silently follows the nominal order.
 
+**Closeout synchronization boundary:** When a packet is accepted, its closeout may make the smallest control-plane synchronization required by the promotion procedure: remove exactly that packet from `docs/FUTURE_ROUTE.md` and refresh the checked manifest, and update only routing-projection assertions in `tests/test_session_context.py`. This does not authorize runtime behavior, authority, schema, provider, target, or external-effect changes; any other path remains outside the packet.
+
 ## Active Routing
 
 1. `PE7-AC0-DATA-CONTRACT-INVENTORY-1` — `DECISION_REQUIRED`
