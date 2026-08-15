@@ -44,10 +44,12 @@ NEXT_DECISION_MAX_BYTES = 64 * 1024
 MAX_SKETCH_FIELD_CHARS = 8 * 1024
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_PROMOTION_EVIDENCE_BYTES = 64 * 1024
-MAX_CURRENT_MAIN_SOURCE_BYTES = 512 * 1024
+# The accepted managed-acceptance caller is a single 634 KiB Rust source file;
+# keep the proof bounded while allowing that existing owner to be re-read.
+MAX_CURRENT_MAIN_SOURCE_BYTES = 768 * 1024
 _MAX_PROMOTION_LIST_ITEMS = 50
 MAX_T3_RECEIPT_WINDOW = timedelta(minutes=15)
-_ROUTE_EVIDENCE_SCHEMA = "route_promotion_evidence.v1"
+_ROUTE_EVIDENCE_SCHEMA = "route_promotion_evidence.v2"
 _DECISION_KINDS = frozenset({"schema", "evaluator", "authority", "recovery"})
 _SAFE_PROPOSAL_TOKEN = re.compile(r"^[A-Za-z0-9_./:-]{3,160}$")
 _CODE_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
@@ -414,6 +416,62 @@ def accepted_complete_receipt(status_document: str, packet_id: str) -> str:
     return match.group("canonical")
 
 
+def _status_with_bound_receipt(
+    status_document: str, packet_id: str, predecessor_receipt: str
+) -> str | None:
+    """Add one transient, packet-bound receipt row for an already-proved route."""
+
+    try:
+        accepted_complete_receipt(status_document, packet_id)
+        return None
+    except RouteDriverError as exc:
+        if exc.reason != "route_bootstrap_receipt_missing_or_ambiguous":
+            return None
+    match = plan_lifecycle.canonical_closeout_reference_match(predecessor_receipt)
+    detail = (
+        _ROUTE_CLOSEOUT_PACKET_DETAIL.fullmatch(match.group("detail") or "")
+        if match is not None
+        else None
+    )
+    if detail is None or detail.group("packet") != packet_id:
+        return None
+    section = re.search(
+        r"^## Accepted Packet Receipts\s*(?P<body>.*?)(?=^## |\Z)",
+        status_document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if section is None:
+        return None
+    row = f"| `{packet_id}` | `COMPLETE` | {match.group('canonical')} |\n"
+    end = section.end("body")
+    return status_document[:end] + row + status_document[end:]
+
+
+def _merge_is_ancestor(
+    merge_sha: str, accepted_main_sha: str, repo_path: Path | None = None
+) -> bool:
+    """Prove a predecessor merge is reachable from accepted main."""
+
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path or Path(__file__).resolve().parents[2]),
+                "merge-base",
+                "--is-ancestor",
+                merge_sha,
+                accepted_main_sha,
+            ],
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def route_bound_closeout_reference(packet_id: str, closeout_reference: object) -> str:
     """Bind a ledger-proved closeout to its packet during the status-row gap.
 
@@ -430,11 +488,25 @@ def route_bound_closeout_reference(packet_id: str, closeout_reference: object) -
     return f"{match.group('canonical')}; route closeout packet `{packet_id}`"
 
 
+def _require_ancestor_receipt(
+    receipt: str, accepted_main_sha: str, repo_path: Path | None = None
+) -> str:
+    """Require a canonical receipt merge to be reachable from accepted main."""
+
+    match = plan_lifecycle.canonical_closeout_reference_match(receipt)
+    if match is None or not _merge_is_ancestor(
+        match.group("merge"), accepted_main_sha, repo_path
+    ):
+        raise RouteDriverError("promotion_predecessor_receipt_unproved")
+    return match.group("canonical")
+
+
 def verified_predecessor_receipt(
     status_document: str,
     closed_packet_id: str,
     predecessor_receipt: str,
     accepted_main_sha: str,
+    repo_path: Path | None = None,
 ) -> str:
     """Prove the just-closed prerequisite before it enters a candidate."""
 
@@ -456,7 +528,7 @@ def verified_predecessor_receipt(
         else:
             if accepted != canonical:
                 raise RouteDriverError("promotion_predecessor_receipt_mismatch")
-            return canonical
+            return _require_ancestor_receipt(canonical, accepted_main_sha, repo_path)
     detail = match.group("detail")
     packet_detail = (
         _ROUTE_CLOSEOUT_PACKET_DETAIL.fullmatch(detail)
@@ -478,6 +550,7 @@ def bound_prerequisite_receipts(
     predecessor_receipt: str,
     status_document: str,
     accepted_main_sha: str,
+    repo_path: Path | None = None,
 ) -> tuple[str, ...]:
     """Bind every prerequisite to its exact accepted receipt.
 
@@ -507,10 +580,17 @@ def bound_prerequisite_receipts(
                     closed_packet_id,
                     predecessor_receipt,
                     accepted_main_sha,
+                    repo_path,
                 )
             )
         else:
-            receipts.append(accepted_complete_receipt(status_document, prerequisite))
+            receipts.append(
+                _require_ancestor_receipt(
+                    accepted_complete_receipt(status_document, prerequisite),
+                    accepted_main_sha,
+                    repo_path,
+                )
+            )
     return tuple(receipts)
 
 
@@ -641,6 +721,25 @@ def compile_successor(
     manifest_sha256 = _json_sha256(
         inventory_manifest(refreshed_future_document)
     )
+    if closed_packet_state == "COMPLETE":
+        predecessor_match = plan_lifecycle.canonical_closeout_reference_match(
+            predecessor_evidence
+        )
+        if predecessor_match is None or not _merge_is_ancestor(
+            predecessor_match.group("merge"), accepted_main_sha
+        ):
+            raise RouteDriverError("promotion_predecessor_receipt_unproved")
+    predecessor_status_document = _status_with_bound_receipt(
+        status_document, closed_packet_id, predecessor_evidence
+    )
+    if predecessor_status_document is not None:
+        predecessor_match = plan_lifecycle.canonical_closeout_reference_match(
+            predecessor_evidence
+        )
+        if predecessor_match is None or not _merge_is_ancestor(
+            predecessor_match.group("merge"), accepted_main_sha
+        ):
+            raise RouteDriverError("promotion_predecessor_receipt_unproved")
     planned = RoutePromotionPlanner().plan(
         successor,
         accepted_main_sha,
@@ -649,6 +748,7 @@ def compile_successor(
         manifest_sha256,
         closed_packet_id=closed_packet_id,
         status_document=status_document,
+        predecessor_status_document=predecessor_status_document,
         retained_t3_request=retained_t3_request,
         retained_t3_receipt=retained_t3_receipt,
     )
@@ -755,6 +855,7 @@ class CurrentMainEvidence:
     caller_paths: tuple[str, ...]
     test_paths: tuple[str, ...]
     allowed_paths: tuple[str, ...]
+    read_paths: tuple[str, ...]
     ordered_slices: tuple[str, ...]
     verification: tuple[str, ...]
     rollback: str
@@ -1284,6 +1385,7 @@ def _evidence_payload(evidence: CurrentMainEvidence) -> dict[str, object]:
         "caller_paths": list(evidence.caller_paths),
         "test_paths": list(evidence.test_paths),
         "allowed_paths": list(evidence.allowed_paths),
+        "read_paths": list(evidence.read_paths),
         "ordered_slices": list(evidence.ordered_slices),
         "verification": list(evidence.verification),
         "rollback": evidence.rollback,
@@ -1314,6 +1416,7 @@ def _evidence_problem(
         evidence.caller_paths,
         evidence.test_paths,
         evidence.allowed_paths,
+        evidence.read_paths,
         evidence.ordered_slices,
         evidence.verification,
         evidence.evidence_destinations,
@@ -1330,12 +1433,23 @@ def _evidence_problem(
         return "promotion_allowed_paths_invalid"
     if tuple(allowed) != evidence.allowed_paths:
         return "promotion_allowed_paths_noncanonical"
+    try:
+        read_paths = tuple(artifact_contract.validate_allowed_paths(list(evidence.read_paths)))
+    except artifact_contract.ArtifactContractError:
+        return "promotion_read_paths_invalid"
+    if read_paths != evidence.read_paths:
+        return "promotion_read_paths_noncanonical"
     allowed_set = set(evidence.allowed_paths)
+    read_set = set(evidence.read_paths)
+    if not allowed_set.issubset(read_set):
+        return "promotion_allowed_paths_outside_read_paths"
     closure = set(evidence.owner_paths + evidence.caller_paths + evidence.test_paths)
-    if not closure.issubset(allowed_set):
-        return "promotion_owner_caller_test_outside_allowed_paths"
+    if not closure.issubset(read_set):
+        return "promotion_owner_caller_test_outside_read_paths"
     if len(allowed_set) != len(evidence.allowed_paths):
         return "promotion_allowed_paths_duplicated"
+    if len(read_set) != len(evidence.read_paths):
+        return "promotion_read_paths_duplicated"
     return None
 
 
@@ -1374,7 +1488,7 @@ tests, allowed-path closure, ordered slices, precise allowlisted verification,
 rollback, cleanup, retention, evidence destinations, and the schema,
 evaluator, authority, and recovery decisions.
 
-Treat `allowed_paths` as a closed, machine-validated file list.
+Treat `allowed_paths` as the closed, machine-validated edit list.
 Each `allowed_paths` entry must be a literal repository-relative path:
 - Return a non-empty list of at most {_MAX_PROMOTION_LIST_ITEMS} entries, with no duplicates and no
   glob characters.
@@ -1385,12 +1499,17 @@ Each `allowed_paths` entry must be a literal repository-relative path:
   absolute path, or a path containing `..`.
 - The verifier hard-rejects workflow and hidden paths: never include any
   path under `.github/workflows/`, `.github/actions/`, `.git/`, or `.codex/`.
-- Every path named elsewhere in the proposal must also appear in `allowed_paths`;
-  do not use the list to smuggle a static route hint.
+- Every mutable path (ordered slice, operation, destination, or decision) must
+  appear in `allowed_paths`; do not use the list to smuggle a static route hint.
+
+Treat `read_paths` as the closed, machine-validated read-only evidence scope.
+It must contain every `allowed_paths` entry plus every owner, caller, and test
+path. The verifier reads those paths from the exact accepted tree, but the
+worker may not edit them unless they are also in `allowed_paths`.
 
 Each `caller_evidence` row must be independently machine-verifiable:
-- `owner_path` must be in both `owner_evidence` and `allowed_paths`.
-- `caller_path` must be in `allowed_paths`.
+- `owner_path` must be in both `owner_evidence` and `read_paths`.
+- `caller_path` must be in `read_paths`.
 - For `.py` paths, `symbol` must match a Python `def` or `class` declaration in `owner_path`
   and a verifier-recognized `symbol(` reference in `caller_path`.
 - For `.rs` paths, `symbol` must match a Rust `fn`, `struct`, `enum`, `trait`,
@@ -1419,7 +1538,7 @@ Otherwise return this schema (no extra keys):
  "accepted_main_sha":"...", "owner_evidence":[{{"path":"...","module_map_token":"..."}}],
  "caller_evidence":[{{"owner_path":"...","caller_path":"...","symbol":"..."}}],
  "test_evidence":[{{"target_path":"...","test_path":"...","symbol":"..."}}],
- "allowed_paths":["docs/MODULE_MAP.md"],
+ "allowed_paths":["docs/MODULE_MAP.md"], "read_paths":["docs/MODULE_MAP.md"],
  "ordered_slices":[{{"paths":["docs/MODULE_MAP.md"],"description":"precise bounded slice"}}],
  "verification":["one repository allowlisted command"],
  "operations":{{
@@ -1484,6 +1603,34 @@ class CurrentMainEvidenceVerifier:
             raise RouteDriverError("promotion_evidence_source_unavailable")
         self._cache[path] = result.stdout
         return result.stdout
+
+    def _status_with_ancestor_receipt(
+        self, status_document: str, packet_id: str, predecessor_receipt: str
+    ) -> str | None:
+        """Return a transient prerequisite index when an accepted row lagged main.
+
+        The receipt is still required to be canonical and its merge must be an
+        ancestor of accepted main.  The synthetic row is never persisted and is
+        used only by the existing prerequisite validator.
+        """
+
+        try:
+            accepted_complete_receipt(status_document, packet_id)
+            return None
+        except RouteDriverError as exc:
+            if exc.reason != "route_bootstrap_receipt_missing_or_ambiguous":
+                return None
+        match = plan_lifecycle.canonical_closeout_reference_match(predecessor_receipt)
+        if match is None:
+            return None
+        detail = _ROUTE_CLOSEOUT_PACKET_DETAIL.fullmatch(match.group("detail") or "")
+        if detail is None or detail.group("packet") != packet_id:
+            return None
+        if not _merge_is_ancestor(
+            match.group("merge"), self.accepted_main_sha, self.repo_path
+        ):
+            return None
+        return _status_with_bound_receipt(status_document, packet_id, predecessor_receipt)
 
     @staticmethod
     def _text(value: object, reason: str, *, maximum: int = 512) -> str:
@@ -1743,7 +1890,7 @@ class CurrentMainEvidenceVerifier:
             return PromotionPlanResult("DECISION_REQUIRED", f"promotion_planner:{reason}")
         required = {
             "schema_version", "packet_id", "accepted_main_sha", "owner_evidence",
-            "caller_evidence", "test_evidence", "allowed_paths", "ordered_slices",
+            "caller_evidence", "test_evidence", "allowed_paths", "read_paths", "ordered_slices",
             "verification", "operations", "evidence_destinations", "decisions",
         }
         if set(value) != required:
@@ -1796,12 +1943,25 @@ class CurrentMainEvidenceVerifier:
             raise RouteDriverError("promotion_allowed_paths_invalid") from exc
         if len(set(allowed_paths)) != len(allowed_paths):
             raise RouteDriverError("promotion_allowed_paths_noncanonical")
+        raw_read = self._list(proposal["read_paths"], "promotion_read_paths_invalid")
+        if any(not isinstance(path, str) for path in raw_read):
+            raise RouteDriverError("promotion_read_paths_invalid")
+        try:
+            read_paths = tuple(sorted(artifact_contract.validate_allowed_paths(raw_read)))
+        except artifact_contract.ArtifactContractError as exc:
+            raise RouteDriverError("promotion_read_paths_invalid") from exc
+        if len(set(read_paths)) != len(read_paths):
+            raise RouteDriverError("promotion_read_paths_noncanonical")
+        if not set(allowed_paths).issubset(read_paths):
+            raise RouteDriverError("promotion_allowed_paths_outside_read_paths")
         required_documents = {
             "docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md", "docs/CURRENT_STATUS.md",
         }
         if not required_documents.issubset(allowed_paths):
             raise RouteDriverError("promotion_allowed_paths_missing_canonical_documents")
         for path in allowed_paths:
+            self._source(path)
+        for path in read_paths:
             self._source(path)
 
         module_map = self._source("docs/MODULE_MAP.md")
@@ -1812,7 +1972,7 @@ class CurrentMainEvidenceVerifier:
             token = self._token(entry["module_map_token"], "promotion_owner_evidence_invalid")
             source = self._source(path)
             if (
-                path not in allowed_paths
+                path not in read_paths
                 or not self._module_map_owns(module_map, path, token)
                 or token not in source and token not in path
             ):
@@ -1827,7 +1987,7 @@ class CurrentMainEvidenceVerifier:
             owner = self._text(entry["owner_path"], "promotion_caller_evidence_invalid")
             caller = self._text(entry["caller_path"], "promotion_caller_evidence_invalid")
             symbol = self._symbol(entry["symbol"], "promotion_caller_evidence_invalid")
-            if owner not in owner_paths or caller not in allowed_paths:
+            if owner not in owner_paths or caller not in read_paths:
                 raise RouteDriverError("promotion_caller_not_proved")
             if not self._declares_symbol(self._source(owner), symbol, self._language(owner)) or not self._consumes_symbol(
                 self._source(caller), symbol, self._language(caller)
@@ -1843,7 +2003,7 @@ class CurrentMainEvidenceVerifier:
             target = self._text(entry["target_path"], "promotion_test_evidence_invalid")
             test = self._text(entry["test_path"], "promotion_test_evidence_invalid")
             symbol = self._symbol(entry["symbol"], "promotion_test_evidence_invalid")
-            if target not in set(owner_paths + caller_paths) or test not in allowed_paths:
+            if target not in set(owner_paths + caller_paths) or test not in read_paths:
                 raise RouteDriverError("promotion_test_not_proved")
             if not self._declares_symbol(self._source(target), symbol, self._language(target)) or not self._consumes_symbol(
                 self._source(test), symbol, self._language(test)
@@ -1932,6 +2092,7 @@ class CurrentMainEvidenceVerifier:
             caller_paths=tuple(caller_paths),
             test_paths=tuple(test_paths),
             allowed_paths=allowed_paths,
+            read_paths=read_paths,
             ordered_slices=tuple(ordered_slices),
             verification=verification,
             rollback=operation_text["rollback"],
@@ -1945,6 +2106,9 @@ class CurrentMainEvidenceVerifier:
             if len(successor.sketch.prerequisites) != 1:
                 raise RouteDriverError("promotion_prerequisite_receipts_missing_or_invalid")
             closed_packet_id = successor.sketch.prerequisites[0]
+        predecessor_status_document = self._status_with_ancestor_receipt(
+            status_document, closed_packet_id, predecessor_receipt
+        )
         return RoutePromotionPlanner().plan(
             successor,
             self.accepted_main_sha,
@@ -1953,6 +2117,8 @@ class CurrentMainEvidenceVerifier:
             manifest_sha256,
             closed_packet_id=closed_packet_id,
             status_document=status_document,
+            predecessor_status_document=predecessor_status_document,
+            repo_path=self.repo_path,
             retained_t3_request=retained_t3_request,
             retained_t3_receipt=retained_t3_receipt,
         )
@@ -1979,6 +2145,8 @@ class RoutePromotionPlanner:
         status_document: str | None = None,
         retained_t3_request: T3Request | None = None,
         retained_t3_receipt: T3Receipt | None = None,
+        predecessor_status_document: str | None = None,
+        repo_path: Path | None = None,
     ) -> PromotionPlanResult:
         if not isinstance(predecessor_receipt, str) or not predecessor_receipt.strip():
             return PromotionPlanResult("DECISION_REQUIRED", "promotion_predecessor_receipt_missing")
@@ -2043,6 +2211,7 @@ class RoutePromotionPlanner:
                         successor.sketch.prerequisites[0],
                         predecessor_receipt,
                         accepted_main_sha,
+                        repo_path,
                     ),
                 )
             except RouteDriverError as exc:
@@ -2053,8 +2222,11 @@ class RoutePromotionPlanner:
                     successor,
                     closed_packet_id,
                     predecessor_receipt,
-                    status_document,
+                    predecessor_status_document
+                    if predecessor_status_document is not None
+                    else status_document,
                     accepted_main_sha,
+                    repo_path,
                 )
             except RouteDriverError as exc:
                 if len(successor.sketch.prerequisites) > 1 or exc.reason in {
@@ -2074,6 +2246,7 @@ class RoutePromotionPlanner:
             "caller_paths": list(evidence.caller_paths),
             "test_paths": list(evidence.test_paths),
             "allowed_paths": list(evidence.allowed_paths),
+            "read_paths": list(evidence.read_paths),
             "ordered_slices": list(evidence.ordered_slices),
             "verification": list(evidence.verification),
             "rollback": evidence.rollback,
@@ -2112,7 +2285,7 @@ class RoutePromotionPlanner:
             "plan_lane_state": plan_lane.PLAN_LANE_ACTIVE,
             "goal": successor.sketch.outcome,
             "allowed_paths": list(evidence.allowed_paths),
-            "read_paths": list(evidence.allowed_paths),
+            "read_paths": list(evidence.read_paths),
             "allowed_outputs": [
                 "A provider-free change limited to the independently proved current-main allowed paths.",
                 "Exact-head verification and review evidence through the existing lifecycle owners.",

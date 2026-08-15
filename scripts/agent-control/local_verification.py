@@ -62,6 +62,13 @@ _ALLOWLIST: dict[str, list[str]] = {
         sys.executable,
         "scripts/check_agent_handoff.py",
     ],
+    "uv run --no-project python scripts/check_agent_handoff.py": [
+        "uv",
+        "run",
+        "--no-project",
+        "python",
+        "scripts/check_agent_handoff.py",
+    ],
     "bash scripts/check_wire_codegen_drift.sh": [
         "bash",
         "scripts/check_wire_codegen_drift.sh",

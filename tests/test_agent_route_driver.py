@@ -407,6 +407,11 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
                 "scripts/agent-control/local_run_once.py",
                 "tests/test_agent_plan_lifecycle.py",
             ),
+            read_paths=(
+                "scripts/agent-control/plan_lifecycle.py",
+                "scripts/agent-control/local_run_once.py",
+                "tests/test_agent_plan_lifecycle.py",
+            ),
             ordered_slices=("Add the bounded route transition through the existing owner.",),
             verification=("PYTHONPATH=src uv run --no-project python -m unittest tests.test_agent_plan_lifecycle",),
             rollback="Revert the bounded route transition and retain ledger receipts.",
@@ -426,15 +431,16 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             route_driver.inventory_manifest(source_future)
         )
 
-        compiled = route_driver.compile_successor(
-            source_future,
-            next_document(),
-            status_document(),
-            CLOSED,
-            BOUND_EVIDENCE,
-            MAIN,
-            self._evidence(packet_id=SUCCESSOR),
-        )
+        with mock.patch.object(route_driver, "_merge_is_ancestor", return_value=True):
+            compiled = route_driver.compile_successor(
+                source_future,
+                next_document(),
+                status_document(),
+                CLOSED,
+                BOUND_EVIDENCE,
+                MAIN,
+                self._evidence(packet_id=SUCCESSOR),
+            )
 
         remaining_manifest_sha256 = route_driver._json_sha256(
             route_driver.inventory_manifest(compiled.future_document)
@@ -449,6 +455,33 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             f'"route_manifest_sha256": "{remaining_manifest_sha256}"',
             compiled.next_document,
         )
+
+    def test_compiled_successor_rejects_nonancestor_existing_receipt(self):
+        successor_sketch = SKETCH.replace(
+            "**Prerequisite:** PE7-PLAN-LANE-ACTIVATION-1",
+            f"**Prerequisite:** {CLOSED}",
+        )
+        source_future = future_document([successor_sketch, BLOCKED_SKETCH])
+        accepted_status = status_document().replace(
+            "## Accepted Packet Receipts\n\n",
+            "## Accepted Packet Receipts\n\n"
+            f"| `{CLOSED}` | `COMPLETE` | {EVIDENCE} |\n",
+            1,
+        )
+        with mock.patch.object(route_driver, "_merge_is_ancestor", return_value=False):
+            with self.assertRaisesRegex(
+                route_driver.RouteDriverError,
+                "promotion_predecessor_receipt_unproved",
+            ):
+                route_driver.compile_successor(
+                    source_future,
+                    next_document(),
+                    accepted_status,
+                    CLOSED,
+                    EVIDENCE,
+                    MAIN,
+                    self._evidence(packet_id=SUCCESSOR),
+                )
 
     def test_static_future_paths_are_hints_not_promotion_evidence(self):
         result = route_driver.RoutePromotionPlanner().plan(
@@ -505,6 +538,7 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             caller_paths=evidence.caller_paths,
             test_paths=evidence.test_paths,
             allowed_paths=evidence.allowed_paths,
+            read_paths=evidence.read_paths,
             ordered_slices=evidence.ordered_slices,
             verification=evidence.verification,
             rollback="Revert.",
@@ -547,15 +581,16 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         bound_closed_receipt = route_driver.route_bound_closeout_reference(
             CLOSED, closed_receipt
         )
-        complete = route_driver.RoutePromotionPlanner().plan(
-            successor,
-            MAIN,
-            bound_closed_receipt,
-            self._evidence(status_text=status),
-            MANIFEST,
-            closed_packet_id=CLOSED,
-            status_document=status,
-        )
+        with mock.patch.object(route_driver, "_merge_is_ancestor", return_value=True):
+            complete = route_driver.RoutePromotionPlanner().plan(
+                successor,
+                MAIN,
+                bound_closed_receipt,
+                self._evidence(status_text=status),
+                MANIFEST,
+                closed_packet_id=CLOSED,
+                status_document=status,
+            )
         self.assertEqual(complete.state, "READY_FOR_EXECUTION")
         assert complete.candidate is not None
         self.assertEqual(
@@ -581,12 +616,13 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         bound_closed_receipt = route_driver.route_bound_closeout_reference(
             CLOSED, closed_receipt
         )
-        self.assertEqual(
-            route_driver.bound_prerequisite_receipts(
-                successor, CLOSED, bound_closed_receipt, status, MAIN
-            ),
-            (closed_receipt, second_receipt),
-        )
+        with mock.patch.object(route_driver, "_merge_is_ancestor", return_value=True):
+            self.assertEqual(
+                route_driver.bound_prerequisite_receipts(
+                    successor, CLOSED, bound_closed_receipt, status, MAIN
+                ),
+                (closed_receipt, second_receipt),
+            )
         self.assertEqual(
             route_driver._status_readiness_rows(
                 CLOSED,
@@ -598,6 +634,42 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             )[0],
             f"| `{CLOSED}` | `COMPLETE` | {closed_receipt} |\n",
         )
+
+    def test_existing_status_receipts_require_accepted_main_ancestry(self):
+        successor = self._successor(prerequisites=(CLOSED, "PE7-OTHER-1"))
+        closed_receipt = (
+            f"PR #400 exact head `{'b' * 40}`; merge `{MAIN}`; "
+            "exact-head `PASS`; canonical workflow `31467821767`"
+        )
+        prior_receipt = (
+            f"PR #401 exact head `{'d' * 40}`; merge `{'e' * 40}`; "
+            "exact-head `PASS`; canonical workflow `31467821768`"
+        )
+        status = status_document().replace(
+            "|---|---|---|\n\n",
+            "|---|---|---|\n"
+            f"| `{CLOSED}` | `COMPLETE` | {closed_receipt} |\n"
+            f"| `PE7-OTHER-1` | `COMPLETE` | {prior_receipt} |\n\n",
+            1,
+        )
+        bound_closed_receipt = route_driver.route_bound_closeout_reference(
+            CLOSED, closed_receipt
+        )
+        with mock.patch.object(route_driver, "_merge_is_ancestor", return_value=False):
+            with self.assertRaisesRegex(
+                route_driver.RouteDriverError,
+                "promotion_predecessor_receipt_unproved",
+            ):
+                route_driver.verified_predecessor_receipt(
+                    status, CLOSED, bound_closed_receipt, MAIN
+                )
+            with self.assertRaisesRegex(
+                route_driver.RouteDriverError,
+                "promotion_predecessor_receipt_unproved",
+            ):
+                route_driver.bound_prerequisite_receipts(
+                    successor, CLOSED, bound_closed_receipt, status, MAIN
+                )
 
     def test_status_gap_rejects_an_unbound_or_wrongly_bound_receipt(self):
         successor = self._successor()
@@ -782,6 +854,32 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             ),
             [],
         )
+
+    def test_handoff_rejects_invalid_or_incomplete_read_scope(self):
+        successor = self._successor()
+        evidence = self._evidence()
+        result = route_driver.RoutePromotionPlanner().plan(
+            successor, MAIN, BOUND_EVIDENCE, evidence, MANIFEST
+        )
+        assert result.candidate is not None
+        for read_paths in (["../outside"], ["scripts/"]):
+            with self.subTest(read_paths=read_paths):
+                capsule = dict(result.candidate.capsule)
+                capsule["read_paths"] = read_paths
+                document = (
+                    "## Active Routing\n\n"
+                    f"1. {chr(96)}{successor.packet_id}{chr(96)} — {chr(96)}READY_FOR_EXECUTION{chr(96)}\n\n"
+                    f"## Packet {successor.packet_id}\n\n"
+                    "**State:** `READY_FOR_EXECUTION`\n\n"
+                    "### 11. Weak-Agent Dispatch Capsule\n\n"
+                    "<!-- weak-agent-dispatch:v1\n"
+                    f"{json.dumps(capsule, sort_keys=True)}\n-->\n"
+                )
+                failures = check_agent_handoff.weak_agent_dispatch_failures(
+                    document,
+                    {successor.packet_id: {"state": "READY_FOR_EXECUTION"}},
+                )
+                self.assertTrue(any("read_paths" in failure for failure in failures))
 
     def test_manifest_is_required_and_changes_the_immutable_candidate_digest(self):
         missing = route_driver.RoutePromotionPlanner().plan(
@@ -1205,7 +1303,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "scripts/agent-control/local_run_once.py", "tests/test_route_driver.py",
         ]
         return {
-            "schema_version": "route_promotion_evidence.v1",
+            "schema_version": "route_promotion_evidence.v2",
             "packet_id": self.successor.packet_id,
             "accepted_main_sha": self.main,
             "owner_evidence": [{
@@ -1223,6 +1321,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
                 "symbol": "RoutePromotionPlanner",
             }],
             "allowed_paths": allowed,
+            "read_paths": allowed,
             "ordered_slices": [{
                 "paths": ["scripts/agent-control/route_driver.py", "tests/test_route_driver.py"],
                 "description": "Keep the promotion boundary and its exact test aligned.",
@@ -1272,6 +1371,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "docs/CURRENT_STATUS.md", "engine/src/typed.rs", "engine/src/caller.rs",
             "engine/tests/typed.rs",
         ]
+        proposal["read_paths"] = list(proposal["allowed_paths"])
         proposal["ordered_slices"] = [{
             "paths": ["engine/src/typed.rs", "engine/src/caller.rs", "engine/tests/typed.rs"],
             "description": "Keep the Rust boundary and its exact caller/test evidence aligned.",
@@ -1283,6 +1383,36 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         for decision in proposal["decisions"].values():
             decision["source_path"] = "docs/NEXT_DECISION.md"
         return proposal
+
+    def test_read_only_evidence_paths_are_not_edit_scope(self):
+        proposal = self._proposal()
+        docs = [
+            "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md",
+            "docs/CURRENT_STATUS.md",
+        ]
+        evidence_paths = docs + [
+            "scripts/agent-control/route_driver.py",
+            "scripts/agent-control/local_run_once.py",
+            "tests/test_route_driver.py",
+        ]
+        proposal["allowed_paths"] = docs
+        proposal["read_paths"] = evidence_paths
+        proposal["ordered_slices"] = [{
+            "paths": docs,
+            "description": "Update only the canonical route documents.",
+        }]
+        result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
+            json.dumps(proposal), self.successor, self._predecessor_receipt()
+        )
+        self.assertEqual(result.state, "READY_FOR_EXECUTION")
+        self.assertIsNotNone(result.evidence)
+        assert result.evidence is not None
+        self.assertEqual(result.evidence.allowed_paths, tuple(sorted(docs)))
+        self.assertEqual(result.evidence.read_paths, tuple(sorted(evidence_paths)))
+        self.assertIsNotNone(result.candidate)
+        assert result.candidate is not None
+        self.assertEqual(result.candidate.capsule["allowed_paths"], sorted(docs))
+        self.assertEqual(result.candidate.capsule["read_paths"], sorted(evidence_paths))
 
     def test_exact_tree_proves_all_refreshed_fields(self):
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
@@ -1494,7 +1624,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
     def test_worker_can_explicitly_escalate_without_a_generic_fallback(self):
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
             json.dumps({
-                "schema_version": "route_promotion_evidence.v1",
+                "schema_version": "route_promotion_evidence.v2",
                 "state": "DECISION_REQUIRED",
                 "reason": "owner_ambiguous",
             }),
@@ -1524,7 +1654,8 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.assertIn("existing regular, non-symlink accepted-tree file", prompt)
         self.assertIn("with no duplicates", prompt)
         self.assertIn("glob characters", prompt)
-        self.assertIn("Every path named elsewhere in the proposal must also appear in `allowed_paths`", prompt)
+        self.assertIn("Every mutable path (ordered slice, operation, destination, or decision) must", prompt)
+        self.assertIn("Treat `read_paths` as the closed, machine-validated read-only evidence scope.", prompt)
         self.assertIn(".github/workflows/", prompt)
         self.assertIn(".github/actions/", prompt)
         self.assertIn("row whose owner/caller/symbol cannot be proven is rejected", prompt)
@@ -1534,8 +1665,8 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             self.successor, self.main, EVIDENCE
         )
         self.assertIn("Each `caller_evidence` row must", prompt)
-        self.assertIn("owner_path` must be in both `owner_evidence` and `allowed_paths`", prompt)
-        self.assertIn("caller_path` must be in `allowed_paths`", prompt)
+        self.assertIn("owner_path` must be in both `owner_evidence` and `read_paths`", prompt)
+        self.assertIn("caller_path` must be in `read_paths`", prompt)
         self.assertIn("Python `def` or `class` declaration in `owner_path`", prompt)
         self.assertIn("verifier-recognized `symbol(` reference in `caller_path`", prompt)
         self.assertIn("git grep -nE", prompt)

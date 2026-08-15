@@ -134,7 +134,10 @@ def dispatch_capsule(**overrides) -> dict:
             "Run the declared verification commands.",
         ],
         "read_paths": [
+            "docs/",
+            "scripts/",
             "scripts/session_context.py",
+            "tests/",
             "tests/test_session_context.py",
         ],
         "verification": [VERIFY],
@@ -368,7 +371,7 @@ class PacketExtractionTests(unittest.TestCase):
             "prerequisites": ["TOOL-PREREQUISITE-1"],
             "prerequisite_receipts": [ACCEPTED_RECEIPT],
             "forbidden_next_actions": ["Do not start a successor packet."],
-            "read_paths": ["scripts/session_context.py"],
+            "read_paths": ["docs/", "scripts/", "tests/", "scripts/session_context.py"],
             "verification": [VERIFY],
         }
         document = (
@@ -717,7 +720,13 @@ class CheckpointTests(unittest.TestCase):
         )
         self.assertEqual(
             entry["targeted_reads"],
-            ["scripts/session_context.py", "tests/test_session_context.py"],
+            [
+                "docs/",
+                "scripts/",
+                "scripts/session_context.py",
+                "tests/",
+                "tests/test_session_context.py",
+            ],
         )
         self.assertIn("do not reread", entry["context_policy"].lower())
         commands = entry["checkpoint_write_commands"]
@@ -826,11 +835,27 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(
             session_context.SessionContextError, "dispatch_capsule_fields_invalid"
         ):
-            session_context.build_session_entry(
-                **arguments,
-                dispatch_capsule=dispatch_capsule(
-                    extra_private="/tmp/private/secret",
-                ),
+                session_context.build_session_entry(
+                    **arguments,
+                    dispatch_capsule=dispatch_capsule(
+                        extra_private="/tmp/private/secret",
+                    ),
+                )
+
+    def test_dispatch_read_scope_is_a_safe_superset_of_edit_scope(self):
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "dispatch_read_paths_invalid",
+        ):
+            session_context._canonical_dispatch_capsule(
+                dispatch_capsule(read_paths=["../outside"])
+            )
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "dispatch_read_paths_scope_invalid",
+        ):
+            session_context._canonical_dispatch_capsule(
+                dispatch_capsule(read_paths=["scripts/"])
             )
 
     def test_entry_accepts_complete_promoted_evidence_and_rejects_partial_or_bad_fields(self):
@@ -1134,9 +1159,8 @@ class CheckpointTests(unittest.TestCase):
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         status_document = (root / "docs/CURRENT_STATUS.md").read_text(encoding="utf-8")
         self.assertIn(
-            "The sole exception is the current packet's dispatch-capsule-authorized, "
-            "one-per-claim local OpenCode weak-worker Provider invocation; it cannot make "
-            "the controller read, pass, persist, or report a credential",
+            "No Provider call, credential read/output/persistence, target write, "
+            "EFFECT/T3 action, auto-merge, or second runtime/store/authority owner",
             next_document,
         )
         packet = session_context.current_packet_binding(
@@ -1147,7 +1171,7 @@ class CheckpointTests(unittest.TestCase):
         capsule = session_context.current_dispatch_capsule(next_document, packet)
         self.assertEqual(capsule["packet_id"], packet["packet_id"])
         self.assertEqual(capsule["packet_state"], packet["state"])
-        self.assertEqual(capsule["dispatch_lane"], "opencode_local_repository_maintenance")
+        self.assertEqual(capsule["dispatch_lane"], "provider_free_repository_maintenance")
         self.assertEqual(capsule["external_effect_limit"], 0)
         self.assertIs(capsule["authority_consumption_allowed"], False)
         self.assertIs(capsule["secret_values_allowed"], False)
@@ -1204,13 +1228,13 @@ class CheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-AC0-RUNTIME-INVENTORY-1",
+            packet_id="PE7-AC4-CONTRACT-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertFalse(extract["execution_authorized"])
         self.assertEqual(
-            extract["profile_id"], "PE7-AC0-RUNTIME-INVENTORY-1.v1"
+            extract["profile_id"], "PE7-AC4-CONTRACT-1.v1"
         )
         self.assertEqual(extract["worker_tier"], "T2")
 
@@ -1651,7 +1675,7 @@ class AdversarialCheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-RWE-V2-VIABILITY-RUN-1",
+            packet_id="PE7-RWE-CR-RUN-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )

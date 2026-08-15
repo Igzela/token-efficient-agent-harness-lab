@@ -141,6 +141,8 @@ def _safe_verification_argv(command: str) -> tuple[str, ...] | None:
             ("scripts/check_agent_handoff.py",),
         }:
             return argv
+    if argv == ("python", "scripts/check_agent_handoff.py"):
+        return argv
     if argv == ("git", "diff", "--check"):
         return argv
     if len(argv) == 2 and argv[0] == "bash":
@@ -273,6 +275,18 @@ def _path_list(value: object, field: str, *, allow_empty: bool = True) -> list[s
         raise SessionContextError(f"{field}_invalid")
     if result != sorted(set(result)):
         raise SessionContextError(f"{field}_not_sorted_or_unique")
+    return result
+
+
+def _dispatch_path_list(value: object, field: str) -> list[str]:
+    if not isinstance(value, list) or not value or len(value) > 50:
+        raise SessionContextError(f"{field}_invalid")
+    try:
+        result = sorted({_repo_path(item, field) for item in value})
+    except SessionContextError as exc:
+        raise SessionContextError(f"{field}_invalid") from exc
+    if len(result) != len(value):
+        raise SessionContextError(f"{field}_invalid")
     return result
 
 
@@ -2358,27 +2372,19 @@ def _canonical_dispatch_capsule(value: object) -> dict[str, object]:
             max_chars=128,
         )
     _bounded_text(capsule.get("dispatch_lane"), "dispatch_lane", max_chars=128)
-    raw_allowed = capsule.get("allowed_paths")
-    if not isinstance(raw_allowed, list) or not raw_allowed:
-        raise SessionContextError("dispatch_allowed_paths_invalid")
-    try:
-        allowed_paths = sorted(
-            {_repo_path(item, "dispatch_allowed_path") for item in raw_allowed}
-        )
-    except SessionContextError as exc:
-        raise SessionContextError("dispatch_allowed_paths_invalid") from exc
-    if len(allowed_paths) != len(raw_allowed):
-        raise SessionContextError("dispatch_allowed_paths_invalid")
+    allowed_paths = _dispatch_path_list(
+        capsule.get("allowed_paths"), "dispatch_allowed_paths"
+    )
     _bounded_string_list(
         capsule.get("forbidden_next_actions"),
         "dispatch_forbidden_next_actions",
         allow_empty=True,
     )
-    _bounded_string_list(
-        capsule.get("read_paths"),
-        "dispatch_read_paths",
-        max_items=50,
+    read_paths = _dispatch_path_list(
+        capsule.get("read_paths"), "dispatch_read_paths"
     )
+    if not set(allowed_paths).issubset(read_paths):
+        raise SessionContextError("dispatch_read_paths_scope_invalid")
     _bounded_string_list(
         capsule.get("verification"),
         "dispatch_verification",
