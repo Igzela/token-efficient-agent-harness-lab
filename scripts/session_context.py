@@ -141,6 +141,8 @@ def _safe_verification_argv(command: str) -> tuple[str, ...] | None:
             ("scripts/check_agent_handoff.py",),
         }:
             return argv
+    if argv == ("python", "scripts/check_agent_handoff.py"):
+        return argv
     if argv == ("git", "diff", "--check"):
         return argv
     if len(argv) == 2 and argv[0] == "bash":

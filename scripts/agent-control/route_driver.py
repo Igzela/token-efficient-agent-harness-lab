@@ -416,6 +416,37 @@ def accepted_complete_receipt(status_document: str, packet_id: str) -> str:
     return match.group("canonical")
 
 
+def _status_with_bound_receipt(
+    status_document: str, packet_id: str, predecessor_receipt: str
+) -> str | None:
+    """Add one transient, packet-bound receipt row for an already-proved route."""
+
+    try:
+        accepted_complete_receipt(status_document, packet_id)
+        return None
+    except RouteDriverError as exc:
+        if exc.reason != "route_bootstrap_receipt_missing_or_ambiguous":
+            return None
+    match = plan_lifecycle.canonical_closeout_reference_match(predecessor_receipt)
+    detail = (
+        _ROUTE_CLOSEOUT_PACKET_DETAIL.fullmatch(match.group("detail") or "")
+        if match is not None
+        else None
+    )
+    if detail is None or detail.group("packet") != packet_id:
+        return None
+    section = re.search(
+        r"^## Accepted Packet Receipts\s*(?P<body>.*?)(?=^## |\Z)",
+        status_document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if section is None:
+        return None
+    row = f"| `{packet_id}` | `COMPLETE` | {match.group('canonical')} |\n"
+    end = section.end("body")
+    return status_document[:end] + row + status_document[end:]
+
+
 def route_bound_closeout_reference(packet_id: str, closeout_reference: object) -> str:
     """Bind a ledger-proved closeout to its packet during the status-row gap.
 
@@ -643,6 +674,9 @@ def compile_successor(
     manifest_sha256 = _json_sha256(
         inventory_manifest(refreshed_future_document)
     )
+    predecessor_status_document = _status_with_bound_receipt(
+        status_document, closed_packet_id, predecessor_evidence
+    )
     planned = RoutePromotionPlanner().plan(
         successor,
         accepted_main_sha,
@@ -651,6 +685,7 @@ def compile_successor(
         manifest_sha256,
         closed_packet_id=closed_packet_id,
         status_document=status_document,
+        predecessor_status_document=predecessor_status_document,
         retained_t3_request=retained_t3_request,
         retained_t3_receipt=retained_t3_receipt,
     )
@@ -1525,6 +1560,9 @@ class CurrentMainEvidenceVerifier:
         match = plan_lifecycle.canonical_closeout_reference_match(predecessor_receipt)
         if match is None:
             return None
+        detail = _ROUTE_CLOSEOUT_PACKET_DETAIL.fullmatch(match.group("detail") or "")
+        if detail is None or detail.group("packet") != packet_id:
+            return None
         try:
             ancestry = subprocess.run(
                 [
@@ -1544,18 +1582,7 @@ class CurrentMainEvidenceVerifier:
             return None
         if ancestry.returncode != 0:
             return None
-        section = re.search(
-            r"^## Accepted Packet Receipts\s*(?P<body>.*?)(?=^## |\Z)",
-            status_document,
-            re.MULTILINE | re.DOTALL,
-        )
-        if section is None:
-            return None
-        row = (
-            f"| `{packet_id}` | `COMPLETE` | {match.group('canonical')} |\n"
-        )
-        end = section.end("body")
-        return status_document[:end] + row + status_document[end:]
+        return _status_with_bound_receipt(status_document, packet_id, predecessor_receipt)
 
     @staticmethod
     def _text(value: object, reason: str, *, maximum: int = 512) -> str:
