@@ -1656,7 +1656,10 @@ class CurrentMainEvidenceVerifier:
             return True
         if re.search(r"\bfor\b", segment) and " in " not in segment:
             return True
-        if segment.lstrip().startswith("|") and segment.count("|") == 1:
+        has_open_closure = segment.count("|") % 2 == 1 and re.search(
+            r"(?:^|=\s*|[,(]\s*)\|", segment
+        )
+        if has_open_closure:
             return True
         macro_rules = prefix.rfind("macro_rules!")
         if macro_rules > max(prefix.rfind("}"), prefix.rfind(";")):
