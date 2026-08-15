@@ -139,7 +139,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | AC0 runtime inventory and AC1 ProcessSupervisor | `DEFERRED` | Optional hardening; existing runtime-specific owners retain timeout, cancellation, kill/reap, failure, and outcome-unknown boundaries |
 | AC0 data/trace freeze | `COMPLETE` | The bounded provider-free owner/caller/transaction/projection/legacy inventory and trace/order closeout are recorded below; no ownership move was made |
 | AC2 typed execution contract | `COMPLETE` | Provider-free typed state/outcome/usage contract and executor mappings are recorded below; PR #469 and the additive boundary-core PR #472 are merge-backed; this contract and boundary core authorize no caller-wide migration, wire/schema change, or authority move |
-| AC2 typed boundary and caller migration | `BLOCKED_PREREQUISITE` | Additive boundary core is complete in PR #472; enumerated caller migration remains behind a separately accepted AC2 packet. AC1 shared supervision remains deferred optional hardening |
+| AC2 typed boundary and caller migration | `READY_FOR_EXECUTION` | Additive boundary core is complete in PR #472; the enumerated caller-migration packet is promoted with a provider-free contract and capsule. AC1 shared supervision remains deferred optional hardening |
 | AC3–AC5 | `BLOCKED_PREREQUISITE` | Each stage remains behind its immediately preceding accepted AC contract and closeout |
 | AC6 schema convergence | `BLOCKED_PREREQUISITE` | Contract, Rust/codegen, SDK, Dashboard data migration, compatibility closeout |
 | AC7 cleanup | `BLOCKED_PREREQUISITE` | Removal manifest, deletion-only implementation, independent closeout |
