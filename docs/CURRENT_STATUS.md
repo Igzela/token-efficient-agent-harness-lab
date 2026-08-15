@@ -132,8 +132,9 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Provider-free RWE DB preflight | `COMPLETE` | Real same-tenant Store-owned Golden Path prerequisite completed; `rwe-live-baseline preflight` returned `rwe_operator_preflight.v1` `ready=true` with zero blockers, no authority consumption, Provider call, or target write; projection sha256 `b8c35d4060d98598ce3e3bc3977a84d125b1df09ff66b2b9f6d9aa4303c03954` |
 | Measurement readiness | `BLOCKED_PREREQUISITE` | Estimands, finite corpus/sampling, operations/evidence, protocol freeze, and reconstructable snapshot are accepted; the observed DB RUN is retained as a non-baseline controlled failure |
 | Decision-grade pre-AC baseline | `DEFERRED` | The failed DB RUN and its analysis are parked and are not an AC prerequisite; no decision-grade baseline is claimed |
-| AC0 inventory/freeze | `BLOCKED_PREREQUISITE` | Provider-free route now starts with 3 packets: runtime, data/contracts, trace/order freeze |
-| AC1–AC5 | `BLOCKED_PREREQUISITE` | Each stage has contract, additive core, and enumerated migration/closeout |
+| AC0 runtime inventory and AC1 ProcessSupervisor | `DEFERRED` | Optional hardening; existing runtime-specific owners retain timeout, cancellation, kill/reap, failure, and outcome-unknown boundaries |
+| AC0 data/trace freeze | `BLOCKED_PREREQUISITE` | Current execution window is owned by `docs/NEXT_DECISION.md`; freeze only the necessary owner/caller/transaction/trace matrix |
+| AC2–AC5 | `BLOCKED_PREREQUISITE` | Each stage remains behind the minimal AC0 freeze and its focused implementation/closeout; AC1 shared supervision is deferred optional hardening |
 | AC6 schema convergence | `BLOCKED_PREREQUISITE` | Contract, Rust/codegen, SDK, Dashboard data migration, compatibility closeout |
 | AC7 cleanup | `BLOCKED_PREREQUISITE` | Removal manifest, deletion-only implementation, independent closeout |
 | Contemporary old/new replay | `BLOCKED_PREREQUISITE` | Reconstruction, protocol/preflight, authorized run, analysis |
@@ -148,6 +149,10 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Meta Improver branch | `BLOCKED_PREREQUISITE` | 11 packets from claim GO/NO-GO through O0/O1 comparison, replication, and claim decision |
 | Optional advanced R4–R6 research | `BLOCKED_PREREQUISITE` | Supported Meta result plus separate human GO; bounded metacognitive, weight-adapter, then one outer-policy family |
 | Dashboard #225 / successor | `DEFERRED` | Disposition, presentation refresh, closeout; always last |
+
+## Primary-route scope decision
+
+The repository's primary product is the exact-head, fail-closed coding-agent control plane: Rust-owned runtime/scheduler/ProductTask execution, LocalProductStore authority, bounded provider/CLI adapters, auditable patch/PR output, and truthful recovery evidence. The repository-wide subprocess inventory and a new shared `ProcessSupervisor` are not required to run that product and are parked as optional hardening. The smaller AC0 data/trace freeze remains because it protects existing owner and recovery boundaries without changing production behavior. Existing OpenCode, LangGraph, managed CLI, command, and target-Git owners remain authoritative; this decision does not weaken their existing timeout, cancellation, cleanup, failure, or outcome-unknown behavior.
 
 ## Recursive-Improvement Classification
 
