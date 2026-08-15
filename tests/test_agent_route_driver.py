@@ -1127,7 +1127,12 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="route-evidence-test-")
         self.repo = Path(self.temporary.name)
         for relative, content in {
-            "docs/MODULE_MAP.md": "| Route | `scripts/agent-control/route_driver.py` | `route_driver.py` is the route promotion owner |\n",
+            "docs/MODULE_MAP.md": (
+                "| Route | `scripts/agent-control/route_driver.py` | "
+                "`route_driver.py` is the route promotion owner |\n"
+                "| Typed boundary | `engine/src/typed.rs` and `engine/src/caller.rs` | "
+                "`typed.rs` is the Rust boundary owner |\n"
+            ),
             "docs/CURRENT_STATUS.md": status_document(),
             "docs/NEXT_DECISION.md": (
                 "rollback-marker cleanup-marker retention-marker evidence-marker "
@@ -1137,6 +1142,22 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "scripts/agent-control/route_driver.py": "class RoutePromotionPlanner: pass\n",
             "scripts/agent-control/local_run_once.py": "from route_driver import RoutePromotionPlanner\nRoutePromotionPlanner()\n",
             "tests/test_route_driver.py": "from route_driver import RoutePromotionPlanner\nRoutePromotionPlanner()\n",
+            "engine/src/typed.rs": (
+                "pub struct TypedBoundary;\n"
+                "impl TypedBoundary {\n"
+                "    pub fn new() -> Self { Self }\n"
+                "}\n"
+            ),
+            "engine/src/caller.rs": (
+                "use crate::typed::TypedBoundary;\n"
+                "pub fn build_boundary<'a>() -> TypedBoundary { TypedBoundary::new() }\n"
+            ),
+            "engine/tests/typed.rs": (
+                "#[test]\n"
+                "fn boundary_is_constructible() {\n"
+                "    let _ = TypedBoundary::new();\n"
+                "}\n"
+            ),
         }.items():
             path = self.repo / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1230,6 +1251,39 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             },
         }
 
+    def _rust_proposal(self):
+        proposal = self._proposal()
+        proposal["owner_evidence"] = [{
+            "path": "engine/src/typed.rs",
+            "module_map_token": "typed.rs",
+        }]
+        proposal["caller_evidence"] = [{
+            "owner_path": "engine/src/typed.rs",
+            "caller_path": "engine/src/caller.rs",
+            "symbol": "TypedBoundary",
+        }]
+        proposal["test_evidence"] = [{
+            "target_path": "engine/src/typed.rs",
+            "test_path": "engine/tests/typed.rs",
+            "symbol": "TypedBoundary",
+        }]
+        proposal["allowed_paths"] = [
+            "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md",
+            "docs/CURRENT_STATUS.md", "engine/src/typed.rs", "engine/src/caller.rs",
+            "engine/tests/typed.rs",
+        ]
+        proposal["ordered_slices"] = [{
+            "paths": ["engine/src/typed.rs", "engine/src/caller.rs", "engine/tests/typed.rs"],
+            "description": "Keep the Rust boundary and its exact caller/test evidence aligned.",
+        }]
+        for operation in proposal["operations"].values():
+            operation["source_path"] = "docs/NEXT_DECISION.md"
+        for destination in proposal["evidence_destinations"]:
+            destination["source_path"] = "docs/NEXT_DECISION.md"
+        for decision in proposal["decisions"].values():
+            decision["source_path"] = "docs/NEXT_DECISION.md"
+        return proposal
+
     def test_exact_tree_proves_all_refreshed_fields(self):
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
             json.dumps(self._proposal()), self.successor, self._predecessor_receipt()
@@ -1243,6 +1297,52 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.assertEqual(
             result.evidence.decisions[0],
             "authority unchanged (docs/NEXT_DECISION.md:authority-marker)",
+        )
+
+    def test_exact_tree_proves_rust_owner_caller_and_test(self):
+        result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
+            json.dumps(self._rust_proposal()), self.successor, self._predecessor_receipt()
+        )
+        self.assertEqual(result.state, "READY_FOR_EXECUTION")
+        self.assertIsNotNone(result.evidence)
+        self.assertEqual(result.evidence.owner_paths, ("engine/src/typed.rs",))
+        self.assertEqual(result.evidence.caller_paths, ("engine/src/caller.rs",))
+        self.assertEqual(result.evidence.test_paths, ("engine/tests/typed.rs",))
+
+    def test_rust_comments_and_strings_do_not_prove_consumption(self):
+        proposal = self._rust_proposal()
+        caller = self.repo / "engine/src/caller.rs"
+        caller.write_text(
+            "// TypedBoundary::new()\n"
+            "const NOTE: &str = \"TypedBoundary::new()\";\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=self.repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "replace caller fixture"], cwd=self.repo, check=True)
+        self.main = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, text=True
+        ).strip()
+        proposal["accepted_main_sha"] = self.main
+        result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
+            json.dumps(proposal), self.successor, self._predecessor_receipt()
+        )
+        self.assertEqual(result.state, "DECISION_REQUIRED")
+        self.assertEqual(result.reason, "promotion_caller_not_proved")
+
+    def test_rust_struct_literals_count_but_impl_blocks_do_not(self):
+        self.assertTrue(
+            route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
+                "fn build() { let _value = TypedBoundary {}; }\n",
+                "TypedBoundary",
+                "rust",
+            )
+        )
+        self.assertFalse(
+            route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
+                "impl TypedBoundary { fn new() -> Self { Self {} } }\n",
+                "TypedBoundary",
+                "rust",
+            )
         )
 
     def test_equivalent_worker_path_orders_compile_one_canonical_candidate(self):
@@ -1355,7 +1455,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.assertIn("verifier-recognized `symbol(` reference in `caller_path`", prompt)
         self.assertIn("git grep -nE", prompt)
         self.assertIn("git grep -nF", prompt)
-        self.assertIn("return the row only when both commands prove it", prompt)
+        self.assertIn("Return the row only when both commands prove it", prompt)
 
     def test_worker_prompt_symbol_proof_commands_are_executable(self):
         prompt = route_driver.promotion_planner_prompt(
