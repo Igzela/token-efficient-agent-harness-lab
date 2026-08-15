@@ -62,7 +62,7 @@ Promotion procedure, exactly one packet at a time:
 1. prove the accepted predecessor's receipt and disposition in `docs/CURRENT_STATUS.md`; a merely closed PR or nominally completed packet is insufficient;
 2. refresh remote `main` and rerun owner/caller inventory; replace globs and planned-seam references with exact files;
 3. expand the complete twelve-field contract in `docs/NEXT_DECISION.md`, resolving every `REFRESH_AT_PROMOTION` fact from then-current `main`; if a value still has no accepted owner, stop `DECISION_REQUIRED`;
-4. author the machine-readable `weak-agent-dispatch:v1` capsule inside the promoted packet block (allowed paths, ordered steps, verification, rollback, forbidden next actions, external-effect limit);
+4. author the bounded autonomous worker dispatch capsule inside the promoted packet block (legacy machine identifier: `weak-agent-dispatch:v1`; allowed paths, ordered steps, verification, rollback, forbidden next actions, external-effect limit);
 5. remove the packet from this index and refresh this manifest;
 6. have the routing change independently reviewed; a profile alone never starts a coding session.
 

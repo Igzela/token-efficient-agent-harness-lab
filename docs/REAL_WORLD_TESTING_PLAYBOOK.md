@@ -24,7 +24,7 @@ The repository-owned route controller is permitted to advance only
 repository-maintenance packets through the existing Issue/PR lifecycle:
 
 ```text
-reconcile accepted packet → bounded weak worker → local verification
+reconcile accepted packet → bounded autonomous worker → local verification
 → Draft PR → exact-head CI → independent exact PASS
 → bounded repair if required → strict maintenance merge owner
 → post-merge closeout → predecessor disposition → successor promotion

@@ -51,8 +51,11 @@ digest, subject identity, branch, PR, exact head, CI run/check set, review
 receipt, merge commit, and closeout receipt. A changed head invalidates CI and
 review; main drift forces reconciliation; an unavailable or conflicting
 external observation is `OUTCOME_UNKNOWN` or `DECISION_REQUIRED`, never a
-successful self-report. A weak worker may produce only an untrusted patch or
-proposal. It receives one compiled packet capsule and no GitHub merge token,
+successful self-report. A bounded autonomous worker is autonomous packet-internal
+execution under a fixed authority/scope envelope; this describes its authority,
+not model capability. Luna, Codex, Claude, OpenCode, or another model may fill
+the role when it satisfies the same contract. It may produce only an untrusted
+patch or proposal. It receives one compiled packet capsule and no GitHub merge token,
 provider credential, T3 authority, or arbitrary command execution capability.
 
 The route controller may request a repository-maintenance merge only through

@@ -1,6 +1,6 @@
 """Provider-free tests for deterministic session routing and recovery.
 
-Covers the bounded route contract, the weak-agent dispatch capsule, the
+Covers the bounded route contract, the bounded autonomous worker dispatch capsule,
 digest-bound checkpoint with its verification-contract binding, the
 fail-closed resume classifier, and the adversarial rehash/evidence-substitution
 matrix that closed the earlier review blocker.
