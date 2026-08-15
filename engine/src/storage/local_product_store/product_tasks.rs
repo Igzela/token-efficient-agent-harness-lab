@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use crate::node_executor::{
     CommandNodeExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor,
-    ProcessBoundaryMapping, ProcessOutcome,
+    ProcessBoundaryMapping, ProcessEffectState, ProcessOutcome, ProcessOutcomeState,
 };
 use crate::product_golden_path::{
     compile_product_executable_graph, fingerprint_objective, is_valid_product_task_transition,
@@ -8240,15 +8240,20 @@ fn product_verification_failure_status(
     error_domain: Option<&str>,
     process_outcome: Option<&ProcessOutcome>,
 ) -> &'static str {
-    if matches!(
+    let process_outcome_unknown = process_outcome.is_some_and(|outcome| {
+        let mapping = outcome.boundary_mapping();
+        matches!(mapping.effect, ProcessEffectState::Unknown)
+            || matches!(mapping.outcome, ProcessOutcomeState::Unknown)
+    });
+    let error_domain_unknown = matches!(
         error_domain,
         Some(
             "tool_execution_outcome_unknown"
                 | "tool_effect_outcome_unknown"
                 | "tool_execution_receipt_error"
         )
-    ) && process_outcome.is_none()
-    {
+    );
+    if process_outcome_unknown || (error_domain_unknown && process_outcome.is_none()) {
         "outcome_unknown"
     } else {
         "verification_failed"
@@ -9401,6 +9406,26 @@ mod product_verification_failure_tests {
                     "exited",
                     Some(7),
                     "known non-zero exit",
+                )),
+            ),
+            "verification_failed"
+        );
+        assert_eq!(
+            product_verification_failure_status(
+                Some("command_exit_nonzero"),
+                Some(&ProcessOutcome::unavailable(
+                    "provider has no process owner"
+                )),
+            ),
+            "outcome_unknown"
+        );
+        assert_eq!(
+            product_verification_failure_status(
+                Some("command_exit_nonzero"),
+                Some(&ProcessOutcome::failure(
+                    "spawn_failed",
+                    None,
+                    "known pre-spawn refusal",
                 )),
             ),
             "verification_failed"
