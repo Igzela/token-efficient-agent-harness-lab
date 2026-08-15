@@ -1615,9 +1615,9 @@ class CurrentMainEvidenceVerifier:
             pattern = rf"\b(?:def|class)\s+{escaped}\b"
         elif language == "rust":
             pattern = (
-                rf"(?m)^[ \t]*(?:(?:pub(?:\([^)]*\))?|async|const|unsafe|"
-                rf"extern(?:[ \t]+\"[^\"]+\")?)[ \t]+)*"
-                rf"(?:fn|struct|enum|trait|type|mod|const|static)[ \t]+{escaped}\b"
+                rf"(?m)^\s*(?:(?:pub(?:\([^)]*\))?|async|const|unsafe|"
+                rf"extern(?:\s+\"[^\"]+\")?)\s+)*"
+                rf"(?:fn|struct|enum|trait|type|mod|const|static)\s+{escaped}\b"
             )
             source = cls._rust_code(source)
         else:
@@ -1640,8 +1640,7 @@ class CurrentMainEvidenceVerifier:
             )
             for pattern in patterns:
                 for match in pattern.finditer(code):
-                    line_start = code.rfind("\n", 0, match.start()) + 1
-                    prefix = code[line_start : match.start()]
+                    prefix = code[: match.start()]
                     if re.search(
                         r"\b(?:fn|struct|enum|trait|type|mod|const|static)\s*$",
                         prefix,

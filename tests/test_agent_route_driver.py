@@ -1353,6 +1353,9 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "macro_rules! TypedBoundary {}\n",
             "fn build() -> TypedBoundary {}\n",
             "fn build() -> TypedBoundary::Assoc {}\n",
+            "struct\nTypedBoundary {}\n",
+            "fn build() ->\nTypedBoundary {}\n",
+            "fn build() ->\nTypedBoundary::Assoc {}\n",
         ):
             self.assertFalse(
                 route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
