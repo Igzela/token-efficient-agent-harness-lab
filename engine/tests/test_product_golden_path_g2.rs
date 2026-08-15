@@ -335,6 +335,32 @@ fn process_boundary_mapping_does_not_change_process_outcome_serialization() {
     assert_eq!(decoded, outcome);
 }
 
+#[test]
+fn serialized_process_outcome_caller_gate_remains_fail_closed() {
+    let cases = [
+        (ProcessOutcome::exited(0), true),
+        (
+            ProcessOutcome::failure("spawn_failed", None, "did not start"),
+            false,
+        ),
+        (
+            ProcessOutcome::unavailable("provider has no process owner"),
+            false,
+        ),
+    ];
+
+    for (outcome, expected_success) in cases {
+        let decoded: ProcessOutcome =
+            serde_json::from_value(serde_json::to_value(outcome).unwrap()).unwrap();
+        assert_eq!(
+            decoded.boundary_mapping().is_known_success(),
+            expected_success,
+            "state={}",
+            decoded.state
+        );
+    }
+}
+
 struct CapturingManagedExecutor {
     prompt: Arc<Mutex<Option<String>>>,
 }

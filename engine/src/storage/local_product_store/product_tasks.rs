@@ -6434,13 +6434,15 @@ impl LocalProductStore {
             .ok_or_else(|| "terminal evidence verification receipt set missing".to_string())?
             .iter()
             .map(|attempt| {
-                let process_outcome = attempt
+                let process_outcome_value = attempt
                     .get("process_outcome")
                     .filter(|value| value.is_object())
                     .ok_or_else(|| "verification process outcome missing".to_string())?;
+                let process_outcome =
+                    serde_json::from_value::<ProcessOutcome>(process_outcome_value.clone())
+                        .map_err(|_| "verification process outcome is invalid".to_string())?;
                 if attempt.get("result_status").and_then(Value::as_str) != Some("completed")
-                    || process_outcome.get("state").and_then(Value::as_str) != Some("exited")
-                    || process_outcome.get("exit_code").and_then(Value::as_i64) != Some(0)
+                    || !process_outcome.boundary_mapping().is_known_success()
                 {
                     return Err(
                         "verification receipt lacks a successful OS process outcome".to_string()
@@ -6451,7 +6453,7 @@ impl LocalProductStore {
                     "node_id": attempt.get("node_id"),
                     "executor_type": attempt.get("executor_type"),
                     "result_status": attempt.get("result_status"),
-                    "process_outcome": process_outcome,
+                    "process_outcome": process_outcome_value,
                     "output_sha256": attempt.pointer("/output_digest/sha256"),
                     "started_at": attempt.get("started_at"),
                     "completed_at": attempt.get("completed_at"),
