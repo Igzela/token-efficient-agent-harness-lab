@@ -1337,11 +1337,11 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
                 "rust",
             )
         )
-        for macro_call in ("TypedBoundary!();", "TypedBoundary![];", "TypedBoundary! {};"):
+        for macro_call in ("typed_boundary!();", "typed_boundary![];", "typed_boundary! {};"):
             self.assertTrue(
                 route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
                     f"fn build() {{ {macro_call} }}\n",
-                    "TypedBoundary",
+                    "typed_boundary",
                     "rust",
                 )
             )
@@ -1362,6 +1362,10 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "fn build() { let value: Option<TypedBoundary::Assoc> = value; }\n",
             "fn build() { let value = TypedBoundary {}; }\n",
             "enum Wrapper { TypedBoundary(i32) }\n",
+            "match value { TypedBoundary::Exited(code) => {} }\n",
+            "macro_rules! wrapper { (TypedBoundary::Exited($value:expr)) => {} }\n",
+            "fn build() { TypedBoundary(code); }\n",
+            "fn build() { TypedBoundary! {}; }\n",
         ):
             self.assertFalse(
                 route_driver.CurrentMainEvidenceVerifier._consumes_symbol(

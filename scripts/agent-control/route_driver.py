@@ -1395,8 +1395,8 @@ Each `caller_evidence` row must be independently machine-verifiable:
   and a verifier-recognized `symbol(` reference in `caller_path`.
 - For `.rs` paths, `symbol` must match a Rust `fn`, `struct`, `enum`, `trait`,
   `type`, `mod`, `const`, or `static` declaration in `owner_path` and a
-  verifier-recognized function call, associated constructor/call path, or
-  `symbol!` macro reference in
+  verifier-recognized function call, lower-case associated constructor/call
+  path, or lower-case `symbol!` macro reference in
   `caller_path`.
 - Prove Python symbols against the exact accepted tree with
   `git grep -nE '^[[:space:]]*(def|class)[[:space:]]+<symbol>' {accepted_main_sha} -- <owner_path>`
@@ -1655,14 +1655,19 @@ class CurrentMainEvidenceVerifier:
             ) is not None
         if language == "rust":
             code = cls._rust_code(source)
-            patterns = (
+            patterns = [
                 re.compile(
-                    rf"\b{escaped}\s*::\s*[A-Za-z_][A-Za-z0-9_]*\s*"
+                    rf"\b{escaped}\s*::\s*[a-z_][A-Za-z0-9_]*\s*"
                     rf"(?:\(|!\s*(?:\(|\[|\{{))"
-                ),
-                re.compile(rf"\b{escaped}\s*\("),
-                re.compile(rf"\b{escaped}\s*!\s*(?:\(|\[|\{{)"),
-            )
+                )
+            ]
+            if symbol[:1].islower():
+                patterns.extend(
+                    (
+                        re.compile(rf"\b{escaped}\s*\("),
+                        re.compile(rf"\b{escaped}\s*!\s*(?:\(|\[|\{{)"),
+                    )
+                )
             for pattern in patterns:
                 for match in pattern.finditer(code):
                     prefix = code[: match.start()]
