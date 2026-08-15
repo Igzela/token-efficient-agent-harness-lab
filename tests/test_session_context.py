@@ -134,7 +134,10 @@ def dispatch_capsule(**overrides) -> dict:
             "Run the declared verification commands.",
         ],
         "read_paths": [
+            "docs/",
+            "scripts/",
             "scripts/session_context.py",
+            "tests/",
             "tests/test_session_context.py",
         ],
         "verification": [VERIFY],
@@ -368,7 +371,7 @@ class PacketExtractionTests(unittest.TestCase):
             "prerequisites": ["TOOL-PREREQUISITE-1"],
             "prerequisite_receipts": [ACCEPTED_RECEIPT],
             "forbidden_next_actions": ["Do not start a successor packet."],
-            "read_paths": ["scripts/session_context.py"],
+            "read_paths": ["docs/", "scripts/", "tests/", "scripts/session_context.py"],
             "verification": [VERIFY],
         }
         document = (
@@ -717,7 +720,13 @@ class CheckpointTests(unittest.TestCase):
         )
         self.assertEqual(
             entry["targeted_reads"],
-            ["scripts/session_context.py", "tests/test_session_context.py"],
+            [
+                "docs/",
+                "scripts/",
+                "scripts/session_context.py",
+                "tests/",
+                "tests/test_session_context.py",
+            ],
         )
         self.assertIn("do not reread", entry["context_policy"].lower())
         commands = entry["checkpoint_write_commands"]
@@ -826,11 +835,27 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(
             session_context.SessionContextError, "dispatch_capsule_fields_invalid"
         ):
-            session_context.build_session_entry(
-                **arguments,
-                dispatch_capsule=dispatch_capsule(
-                    extra_private="/tmp/private/secret",
-                ),
+                session_context.build_session_entry(
+                    **arguments,
+                    dispatch_capsule=dispatch_capsule(
+                        extra_private="/tmp/private/secret",
+                    ),
+                )
+
+    def test_dispatch_read_scope_is_a_safe_superset_of_edit_scope(self):
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "dispatch_read_paths_invalid",
+        ):
+            session_context._canonical_dispatch_capsule(
+                dispatch_capsule(read_paths=["../outside"])
+            )
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "dispatch_read_paths_scope_invalid",
+        ):
+            session_context._canonical_dispatch_capsule(
+                dispatch_capsule(read_paths=["scripts/"])
             )
 
     def test_entry_accepts_complete_promoted_evidence_and_rejects_partial_or_bad_fields(self):

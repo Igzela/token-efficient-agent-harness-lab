@@ -44,10 +44,12 @@ NEXT_DECISION_MAX_BYTES = 64 * 1024
 MAX_SKETCH_FIELD_CHARS = 8 * 1024
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_PROMOTION_EVIDENCE_BYTES = 64 * 1024
-MAX_CURRENT_MAIN_SOURCE_BYTES = 512 * 1024
+# The accepted managed-acceptance caller is a single 634 KiB Rust source file;
+# keep the proof bounded while allowing that existing owner to be re-read.
+MAX_CURRENT_MAIN_SOURCE_BYTES = 768 * 1024
 _MAX_PROMOTION_LIST_ITEMS = 50
 MAX_T3_RECEIPT_WINDOW = timedelta(minutes=15)
-_ROUTE_EVIDENCE_SCHEMA = "route_promotion_evidence.v1"
+_ROUTE_EVIDENCE_SCHEMA = "route_promotion_evidence.v2"
 _DECISION_KINDS = frozenset({"schema", "evaluator", "authority", "recovery"})
 _SAFE_PROPOSAL_TOKEN = re.compile(r"^[A-Za-z0-9_./:-]{3,160}$")
 _CODE_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
@@ -1504,6 +1506,57 @@ class CurrentMainEvidenceVerifier:
         self._cache[path] = result.stdout
         return result.stdout
 
+    def _status_with_ancestor_receipt(
+        self, status_document: str, packet_id: str, predecessor_receipt: str
+    ) -> str | None:
+        """Return a transient prerequisite index when an accepted row lagged main.
+
+        The receipt is still required to be canonical and its merge must be an
+        ancestor of accepted main.  The synthetic row is never persisted and is
+        used only by the existing prerequisite validator.
+        """
+
+        try:
+            accepted_complete_receipt(status_document, packet_id)
+            return None
+        except RouteDriverError as exc:
+            if exc.reason != "route_bootstrap_receipt_missing_or_ambiguous":
+                return None
+        match = plan_lifecycle.canonical_closeout_reference_match(predecessor_receipt)
+        if match is None:
+            return None
+        try:
+            ancestry = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.repo_path),
+                    "merge-base",
+                    "--is-ancestor",
+                    match.group("merge"),
+                    self.accepted_main_sha,
+                ],
+                capture_output=True,
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if ancestry.returncode != 0:
+            return None
+        section = re.search(
+            r"^## Accepted Packet Receipts\s*(?P<body>.*?)(?=^## |\Z)",
+            status_document,
+            re.MULTILINE | re.DOTALL,
+        )
+        if section is None:
+            return None
+        row = (
+            f"| `{packet_id}` | `COMPLETE` | {match.group('canonical')} |\n"
+        )
+        end = section.end("body")
+        return status_document[:end] + row + status_document[end:]
+
     @staticmethod
     def _text(value: object, reason: str, *, maximum: int = 512) -> str:
         if not isinstance(value, str) or not value.strip() or len(value) > maximum:
@@ -1978,6 +2031,9 @@ class CurrentMainEvidenceVerifier:
             if len(successor.sketch.prerequisites) != 1:
                 raise RouteDriverError("promotion_prerequisite_receipts_missing_or_invalid")
             closed_packet_id = successor.sketch.prerequisites[0]
+        predecessor_status_document = self._status_with_ancestor_receipt(
+            status_document, closed_packet_id, predecessor_receipt
+        )
         return RoutePromotionPlanner().plan(
             successor,
             self.accepted_main_sha,
@@ -1986,6 +2042,7 @@ class CurrentMainEvidenceVerifier:
             manifest_sha256,
             closed_packet_id=closed_packet_id,
             status_document=status_document,
+            predecessor_status_document=predecessor_status_document,
             retained_t3_request=retained_t3_request,
             retained_t3_receipt=retained_t3_receipt,
         )
@@ -2012,6 +2069,7 @@ class RoutePromotionPlanner:
         status_document: str | None = None,
         retained_t3_request: T3Request | None = None,
         retained_t3_receipt: T3Receipt | None = None,
+        predecessor_status_document: str | None = None,
     ) -> PromotionPlanResult:
         if not isinstance(predecessor_receipt, str) or not predecessor_receipt.strip():
             return PromotionPlanResult("DECISION_REQUIRED", "promotion_predecessor_receipt_missing")
@@ -2086,7 +2144,9 @@ class RoutePromotionPlanner:
                     successor,
                     closed_packet_id,
                     predecessor_receipt,
-                    status_document,
+                    predecessor_status_document
+                    if predecessor_status_document is not None
+                    else status_document,
                     accepted_main_sha,
                 )
             except RouteDriverError as exc:

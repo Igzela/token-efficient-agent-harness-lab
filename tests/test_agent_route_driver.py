@@ -789,6 +789,32 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             [],
         )
 
+    def test_handoff_rejects_invalid_or_incomplete_read_scope(self):
+        successor = self._successor()
+        evidence = self._evidence()
+        result = route_driver.RoutePromotionPlanner().plan(
+            successor, MAIN, BOUND_EVIDENCE, evidence, MANIFEST
+        )
+        assert result.candidate is not None
+        for read_paths in (["../outside"], ["scripts/"]):
+            with self.subTest(read_paths=read_paths):
+                capsule = dict(result.candidate.capsule)
+                capsule["read_paths"] = read_paths
+                document = (
+                    "## Active Routing\n\n"
+                    f"1. {chr(96)}{successor.packet_id}{chr(96)} — {chr(96)}READY_FOR_EXECUTION{chr(96)}\n\n"
+                    f"## Packet {successor.packet_id}\n\n"
+                    "**State:** `READY_FOR_EXECUTION`\n\n"
+                    "### 11. Weak-Agent Dispatch Capsule\n\n"
+                    "<!-- weak-agent-dispatch:v1\n"
+                    f"{json.dumps(capsule, sort_keys=True)}\n-->\n"
+                )
+                failures = check_agent_handoff.weak_agent_dispatch_failures(
+                    document,
+                    {successor.packet_id: {"state": "READY_FOR_EXECUTION"}},
+                )
+                self.assertTrue(any("read_paths" in failure for failure in failures))
+
     def test_manifest_is_required_and_changes_the_immutable_candidate_digest(self):
         missing = route_driver.RoutePromotionPlanner().plan(
             self._successor(), MAIN, EVIDENCE, self._evidence(), None
@@ -1211,7 +1237,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "scripts/agent-control/local_run_once.py", "tests/test_route_driver.py",
         ]
         return {
-            "schema_version": "route_promotion_evidence.v1",
+            "schema_version": "route_promotion_evidence.v2",
             "packet_id": self.successor.packet_id,
             "accepted_main_sha": self.main,
             "owner_evidence": [{
@@ -1532,7 +1558,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
     def test_worker_can_explicitly_escalate_without_a_generic_fallback(self):
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
             json.dumps({
-                "schema_version": "route_promotion_evidence.v1",
+                "schema_version": "route_promotion_evidence.v2",
                 "state": "DECISION_REQUIRED",
                 "reason": "owner_ambiguous",
             }),

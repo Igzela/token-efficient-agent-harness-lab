@@ -8,7 +8,7 @@ import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
@@ -276,6 +276,34 @@ WEAK_AGENT_DISPATCH_LIST_FIELDS = (
     "expected_artifacts",
     "forbidden_next_actions",
 )
+
+
+def _dispatch_scope_paths(value: object) -> list[str] | None:
+    if not isinstance(value, list) or not value or len(value) > 50:
+        return None
+    normalized: list[str] = []
+    for item in value:
+        if (
+            not isinstance(item, str)
+            or not item
+            or any(character.isspace() for character in item)
+            or "\x00" in item
+        ):
+            return None
+        directory = item.endswith("/")
+        candidate = item[:-1] if directory else item
+        path = PurePosixPath(candidate)
+        if (
+            not candidate
+            or path.is_absolute()
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or str(path) != candidate
+        ):
+            return None
+        normalized.append(candidate + ("/" if directory else ""))
+    if len(normalized) != len(set(normalized)):
+        return None
+    return normalized
 PROFILE_WORKER_TIERS = frozenset({"T0", "T1", "T2", "T3"})
 PROFILE_RISK_CLASSES = frozenset(
     {"none", "store_mutation", "authority", "external_effect", "evaluator"}
@@ -855,6 +883,18 @@ def weak_agent_dispatch_failures(
             isinstance(item, str) and item.strip() for item in value
         ):
             failures.append(f"weak-agent dispatch {field} must be a non-empty string list")
+    allowed_scope = _dispatch_scope_paths(payload.get("allowed_paths"))
+    if allowed_scope is None:
+        failures.append(
+            "weak-agent dispatch allowed_paths must be safe repository-relative paths"
+        )
+    read_scope = _dispatch_scope_paths(payload.get("read_paths"))
+    if read_scope is None:
+        failures.append(
+            "weak-agent dispatch read_paths must be safe repository-relative paths"
+        )
+    elif allowed_scope is not None and not set(allowed_scope).issubset(read_scope):
+        failures.append("weak-agent dispatch read_paths must contain allowed_paths")
     known_store_mutations = payload.get("known_store_mutations")
     if known_store_mutations is not None and (
         not isinstance(known_store_mutations, list)
