@@ -1329,10 +1329,10 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.assertEqual(result.state, "DECISION_REQUIRED")
         self.assertEqual(result.reason, "promotion_caller_not_proved")
 
-    def test_rust_struct_literals_count_but_impl_blocks_do_not(self):
+    def test_rust_constructor_and_macro_calls_count_but_declarations_do_not(self):
         self.assertTrue(
             route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
-                "fn build() { let _value = TypedBoundary {}; }\n",
+                "fn build() { TypedBoundary::new(); }\n",
                 "TypedBoundary",
                 "rust",
             )
@@ -1360,6 +1360,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "type Alias = TypedBoundary::Assoc;\n",
             "fn build(value: TypedBoundary::Assoc) {}\n",
             "fn build() { let value: Option<TypedBoundary::Assoc> = value; }\n",
+            "fn build() { let value = TypedBoundary {}; }\n",
         ):
             self.assertFalse(
                 route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
