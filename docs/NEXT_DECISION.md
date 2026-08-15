@@ -17,16 +17,16 @@ The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authoriza
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-AC0-DATA-CONTRACT-INVENTORY-1 — READY_FOR_EXECUTION, freeze the minimal owner/caller/data/trace map without introducing a shared process owner]
+[window: PE7-AC0-DATA-CONTRACT-INVENTORY-1 — IN_PROGRESS, bounded provider-free owner/caller/data/trace inventory is recorded without introducing a shared process owner]
 
-→ `PE7-AC0-DATA-CONTRACT-INVENTORY-1` — freeze the minimal owner/caller/data/trace map; do not execute an external effect
+→ `PE7-AC0-DATA-CONTRACT-INVENTORY-1` — retain the bounded inventory and prepare its independent trace/order closeout; do not execute an external effect
 ```
 
 Every successor remains routing-only until its accepted predecessor closes and the promotion planner proves a bounded current-main contract. A negative, insufficient, unknown, or authority-required disposition is `DECISION_REQUIRED` and rewrites or pauses the route; it never silently follows the nominal order.
 
 ## Active Routing
 
-1. `PE7-AC0-DATA-CONTRACT-INVENTORY-1` — `READY_FOR_EXECUTION`
+1. `PE7-AC0-DATA-CONTRACT-INVENTORY-1` — `IN_PROGRESS`
 
 ## Historical V2 Closeout
 
@@ -44,13 +44,15 @@ The accepted reconstructable replacement is bound by PR #451 exact head `d48e985
 
 ## Packet PE7-AC0-DATA-CONTRACT-INVENTORY-1
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `IN_PROGRESS`
 
 **Prerequisite:** PE7-RWE-DB-PREFLIGHT-1 — COMPLETE; the provider-free preflight returned `ready=true` with zero blockers and no authority/provider/target effect.
 
 **Class:** `CONTRACT`
 
 **Outcome:** Enumerate the minimal Golden Path owners, store transaction entries, schema/codegen/SDK/Dashboard projections, config construction, legacy callers, and provider-free golden traces needed before any ownership move.
+
+**Current evidence:** The bounded owner/caller/transaction/projection/legacy and provider-free golden-trace matrix is recorded in `docs/CURRENT_STATUS.md`. This packet remains `IN_PROGRESS` until the independent trace/order closeout promotes the next packet through the existing route owner; that promotion is intentionally not performed by this packet.
 
 **Allowed delta:** Provider-free inventory and decision evidence only; update only `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md`; no source refactor, wire/schema migration, Provider call, target write, or external effect.
 
