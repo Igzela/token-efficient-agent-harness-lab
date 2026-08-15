@@ -1391,14 +1391,21 @@ Each `allowed_paths` entry must be a literal repository-relative path:
 Each `caller_evidence` row must be independently machine-verifiable:
 - `owner_path` must be in both `owner_evidence` and `allowed_paths`.
 - `caller_path` must be in `allowed_paths`.
-- `symbol` must match a Python `def` or `class` declaration in `owner_path`
+- For `.py` paths, `symbol` must match a Python `def` or `class` declaration in `owner_path`
   and a verifier-recognized `symbol(` reference in `caller_path`.
-- Prove each symbol against the exact accepted tree by running
+- For `.rs` paths, `symbol` must match a Rust `fn`, `struct`, `enum`, `trait`,
+  `type`, `mod`, `const`, or `static` declaration in `owner_path` and a
+  verifier-recognized function call, lower-case associated constructor/call
+  path, or lower-case `symbol!` macro reference in
+  `caller_path`.
+- Prove Python symbols against the exact accepted tree with
   `git grep -nE '^[[:space:]]*(def|class)[[:space:]]+<symbol>' {accepted_main_sha} -- <owner_path>`
-  for the declaration and
-  `git grep -nF '<symbol>(' {accepted_main_sha} -- <caller_path>`
-  for the consumption, and return the row only when both commands prove it;
-  a row whose owner/caller/symbol cannot be proven is rejected.
+  and `git grep -nF '<symbol>(' {accepted_main_sha} -- <caller_path>`.
+  For Rust, use equivalent language-appropriate `git grep -nE` checks for the
+  declaration and `git grep -nE '<symbol>[[:space:]]*(\\(|::|!)'` for the
+  reference. Rust comments and literals are not evidence. Return the row only when both commands prove it.
+  Declaration and consumption must both be
+  provable; row whose owner/caller/symbol cannot be proven is rejected.
 Do not include a speculative caller row; return the bounded decision object
 instead when no such exact caller fact can be proved.
 
@@ -1499,6 +1506,14 @@ class CurrentMainEvidenceVerifier:
         return symbol
 
     @staticmethod
+    def _language(path: str) -> str:
+        if path.endswith(".py"):
+            return "python"
+        if path.endswith(".rs"):
+            return "rust"
+        return "unknown"
+
+    @staticmethod
     def _module_map_owns(module_map: str, path: str, token: str) -> bool:
         """Prove a path/token pairing from one current MODULE_MAP row.
 
@@ -1515,14 +1530,182 @@ class CurrentMainEvidenceVerifier:
         )
 
     @staticmethod
-    def _declares_symbol(source: str, symbol: str) -> bool:
-        return re.search(rf"\b(?:def|class)\s+{re.escape(symbol)}\b", source) is not None
+    def _rust_code(source: str) -> str:
+        """Remove Rust comments and literals while preserving line boundaries."""
+
+        output: list[str] = []
+        index = 0
+        block_depth = 0
+        length = len(source)
+        while index < length:
+            if block_depth:
+                if source.startswith("/*", index):
+                    block_depth += 1
+                    output.extend("  ")
+                    index += 2
+                elif source.startswith("*/", index):
+                    block_depth -= 1
+                    output.extend("  ")
+                    index += 2
+                else:
+                    output.append("\n" if source[index] == "\n" else " ")
+                    index += 1
+                continue
+            if source.startswith("//", index):
+                newline = source.find("\n", index)
+                if newline == -1:
+                    output.extend(" " * (length - index))
+                    break
+                output.extend(" " * (newline - index))
+                output.append("\n")
+                index = newline + 1
+                continue
+            if source.startswith("/*", index):
+                block_depth = 1
+                output.extend("  ")
+                index += 2
+                continue
+            raw = re.match(r"(?:br|r)(#+)?\"", source[index:])
+            if raw is not None:
+                marker = raw.group(1) or ""
+                start = index + len(raw.group(0))
+                closing = '"' + marker
+                end = source.find(closing, start)
+                if end == -1:
+                    output.extend("\n" if char == "\n" else " " for char in source[index:])
+                    break
+                literal = source[index : end + len(closing)]
+                output.extend("\n" if char == "\n" else " " for char in literal)
+                index = end + len(closing)
+                continue
+            if source[index] == "'" and not (
+                index + 2 < length
+                and (source[index + 2] == "'" or source[index + 1] == "\\")
+            ):
+                output.append(source[index])
+                index += 1
+                continue
+            if source[index] in {'"', "'"} or (
+                source[index] in {"b", "c"}
+                and index + 1 < length
+                and source[index + 1] in {'"', "'"}
+            ):
+                quote_index = index + 1 if source[index] in {"b", "c"} else index
+                quote = source[quote_index]
+                cursor = quote_index + 1
+                while cursor < length:
+                    if source[cursor] == "\\":
+                        cursor += 2
+                        continue
+                    if source[cursor] == quote:
+                        cursor += 1
+                        break
+                    cursor += 1
+                literal = source[index:cursor]
+                output.extend("\n" if char == "\n" else " " for char in literal)
+                index = cursor
+                continue
+            output.append(source[index])
+            index += 1
+        return "".join(output)
+
+    @classmethod
+    def _declares_symbol(cls, source: str, symbol: str, language: str) -> bool:
+        escaped = re.escape(symbol)
+        if language == "python":
+            pattern = rf"\b(?:def|class)\s+{escaped}\b"
+        elif language == "rust":
+            pattern = (
+                rf"(?m)^\s*(?:(?:pub(?:\([^)]*\))?|async|const|unsafe|"
+                rf"extern(?:\s+\"[^\"]+\")?)\s+)*"
+                rf"(?:fn|struct|enum|trait|type|mod|const|static)\s+{escaped}\b"
+            )
+            source = cls._rust_code(source)
+        else:
+            return False
+        return re.search(pattern, source) is not None
 
     @staticmethod
-    def _consumes_symbol(source: str, symbol: str) -> bool:
-        return re.search(
-            rf"(?<!def )(?<!class )\b{re.escape(symbol)}\s*\(", source
-        ) is not None
+    def _rust_type_context(prefix: str) -> bool:
+        """Reject Rust paths that occur in a type/signature context."""
+
+        boundary = max(prefix.rfind(";"), prefix.rfind("{"), prefix.rfind("}"))
+        segment = prefix[boundary + 1 :]
+        arrow = segment.rfind("->")
+        if arrow >= 0 and "=" not in segment[arrow + 2 :]:
+            return True
+        if re.search(r"\b(?:enum|struct|trait)\b[^{;]*\{\s*$", prefix):
+            return True
+        if re.match(r"\s*(?:pub(?:\([^)]*\))?\s+)?(?:type|use)\b", segment):
+            return True
+        if re.match(r"\s*(?:fn|extern\b)", segment) and segment.count("(") > segment.count(")"):
+            return True
+        if re.match(r"\s*(?:let|const|static)\b", segment) and "=" not in segment:
+            return True
+        if re.search(r":\s*(?:&\s*(?:'[A-Za-z_][A-Za-z0-9_]*\s*)?(?:mut\s*)?)?$", segment):
+            return True
+        match_pos = prefix.rfind("match")
+        opening = prefix.rfind("{")
+        if (
+            match_pos > prefix.rfind("}")
+            and opening > match_pos
+            and "=>" not in prefix[opening + 1 :]
+        ):
+            match_segment = prefix[opening + 1 :]
+            if not re.search(r"\bif\b", match_segment) or re.search(
+                r"\bif\s+let\b", match_segment
+            ):
+                return True
+        if re.search(r"\b(?:if|while|for)\s+let\b[^{};]*$", prefix):
+            return True
+        if re.search(r"\bfor\b", segment) and " in " not in segment:
+            return True
+        has_open_closure = segment.count("|") % 2 == 1 and re.search(
+            r"(?:^|=\s*(?:(?:async\s+)?(?:move\s+)?)?|[,(]\s*)\|", segment
+        )
+        if has_open_closure:
+            return True
+        macro_rules = prefix.rfind("macro_rules!")
+        if macro_rules > max(prefix.rfind("}"), prefix.rfind(";")):
+            return True
+        return False
+
+    @classmethod
+    def _consumes_symbol(cls, source: str, symbol: str, language: str) -> bool:
+        escaped = re.escape(symbol)
+        if language == "python":
+            return re.search(
+                rf"(?<!def )(?<!class )\b{escaped}\s*\(", source
+            ) is not None
+        if language == "rust":
+            code = cls._rust_code(source)
+            patterns = [
+                re.compile(
+                    rf"\b{escaped}\s*::\s*[a-z_][A-Za-z0-9_]*\s*"
+                    rf"(?:\(|!\s*(?:\(|\[|\{{))"
+                )
+            ]
+            if symbol[:1].islower():
+                patterns.extend(
+                    (
+                        re.compile(rf"\b{escaped}\s*\("),
+                        re.compile(rf"\b{escaped}\s*!\s*(?:\(|\[|\{{)"),
+                    )
+                )
+            for pattern in patterns:
+                for match in pattern.finditer(code):
+                    prefix = code[: match.start()]
+                    if cls._rust_type_context(prefix) or re.search(
+                        r"\b(?:fn|struct|enum|trait|type|mod|const|static)\s*$",
+                        prefix,
+                    ) or re.search(
+                        r"\b(?:impl|for|macro_rules!)\s*(?:<[^>\n]*>)?\s*$",
+                        prefix,
+                    ):
+                        continue
+                    return True
+            return False
+        return False
 
     @staticmethod
     def _list(
@@ -1646,8 +1829,8 @@ class CurrentMainEvidenceVerifier:
             symbol = self._symbol(entry["symbol"], "promotion_caller_evidence_invalid")
             if owner not in owner_paths or caller not in allowed_paths:
                 raise RouteDriverError("promotion_caller_not_proved")
-            if not self._declares_symbol(self._source(owner), symbol) or not self._consumes_symbol(
-                self._source(caller), symbol
+            if not self._declares_symbol(self._source(owner), symbol, self._language(owner)) or not self._consumes_symbol(
+                self._source(caller), symbol, self._language(caller)
             ):
                 raise RouteDriverError("promotion_caller_not_proved")
             caller_paths.append(caller)
@@ -1662,8 +1845,8 @@ class CurrentMainEvidenceVerifier:
             symbol = self._symbol(entry["symbol"], "promotion_test_evidence_invalid")
             if target not in set(owner_paths + caller_paths) or test not in allowed_paths:
                 raise RouteDriverError("promotion_test_not_proved")
-            if not self._declares_symbol(self._source(target), symbol) or not self._consumes_symbol(
-                self._source(test), symbol
+            if not self._declares_symbol(self._source(target), symbol, self._language(target)) or not self._consumes_symbol(
+                self._source(test), symbol, self._language(test)
             ):
                 raise RouteDriverError("promotion_test_not_proved")
             test_paths.append(test)
