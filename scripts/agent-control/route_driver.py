@@ -1661,7 +1661,7 @@ class CurrentMainEvidenceVerifier:
         if re.search(r"\bfor\b", segment) and " in " not in segment:
             return True
         has_open_closure = segment.count("|") % 2 == 1 and re.search(
-            r"(?:^|=\s*(?:(?:async\s+)?move\s+)?|[,(]\s*)\|", segment
+            r"(?:^|=\s*(?:(?:async\s+)?(?:move\s+)?)?|[,(]\s*)\|", segment
         )
         if has_open_closure:
             return True

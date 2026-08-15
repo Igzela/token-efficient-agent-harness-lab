@@ -1393,6 +1393,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "|Some(typed_boundary(code))| value\n",
             "fn caller() { let f = |(typed_boundary(code), other)| code; }\n",
             "fn caller() { let f = move |Some(typed_boundary(code))| code; }\n",
+            "fn caller() { let f = async |Some(typed_boundary(code))| code; }\n",
             "fn caller() { let f = async move |Some(typed_boundary(code))| code; }\n",
         ):
             self.assertFalse(
