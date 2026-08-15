@@ -116,6 +116,8 @@ AC1 remains deferred optional hardening. It is not an executable successor and d
 
 AC2 distinguishes effect and outcome states while leaving admission, leases, spend, verification, approval, output, and adoption with existing owners.
 
+The AC2 contract sketch was removed and the inventory manifest refreshed by accepted PR #468; the remaining first AC2 sketch below is the typed boundary-core successor.
+
 ### Packet PE7-AC2-BOUNDARY-CORE-1
 
 **State:** `BLOCKED_PREREQUISITE`
