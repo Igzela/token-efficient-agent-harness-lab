@@ -1646,6 +1646,10 @@ class CurrentMainEvidenceVerifier:
             return True
         if re.search(r"\bmatch\b[^{};]*\{\s*$", prefix):
             return True
+        if re.search(r"\b(?:if|while|for)\s+let\b[^{};]*$", prefix):
+            return True
+        if re.search(r"\|\s*$", segment):
+            return True
         macro_rules = prefix.rfind("macro_rules!")
         if macro_rules > max(prefix.rfind("}"), prefix.rfind(";")):
             return True

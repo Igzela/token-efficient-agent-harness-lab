@@ -1368,6 +1368,10 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "fn build() { TypedBoundary! {}; }\n",
             "match value { typed_boundary(code) => {} }\n",
             "macro_rules! wrapper { (typed_boundary($value:expr)) => {} }\n",
+            "if let typed_boundary(code) = value {}\n",
+            "while let typed_boundary(code) = value {}\n",
+            "for typed_boundary(code) in values {}\n",
+            "|typed_boundary(code)| value\n",
         ):
             self.assertFalse(
                 route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
