@@ -431,15 +431,16 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             route_driver.inventory_manifest(source_future)
         )
 
-        compiled = route_driver.compile_successor(
-            source_future,
-            next_document(),
-            status_document(),
-            CLOSED,
-            BOUND_EVIDENCE,
-            MAIN,
-            self._evidence(packet_id=SUCCESSOR),
-        )
+        with mock.patch.object(route_driver, "_merge_is_ancestor", return_value=True):
+            compiled = route_driver.compile_successor(
+                source_future,
+                next_document(),
+                status_document(),
+                CLOSED,
+                BOUND_EVIDENCE,
+                MAIN,
+                self._evidence(packet_id=SUCCESSOR),
+            )
 
         remaining_manifest_sha256 = route_driver._json_sha256(
             route_driver.inventory_manifest(compiled.future_document)

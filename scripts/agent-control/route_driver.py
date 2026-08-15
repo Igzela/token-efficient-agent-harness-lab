@@ -447,6 +447,31 @@ def _status_with_bound_receipt(
     return status_document[:end] + row + status_document[end:]
 
 
+def _merge_is_ancestor(
+    merge_sha: str, accepted_main_sha: str, repo_path: Path | None = None
+) -> bool:
+    """Prove a predecessor merge is reachable from accepted main."""
+
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path or Path(__file__).resolve().parents[2]),
+                "merge-base",
+                "--is-ancestor",
+                merge_sha,
+                accepted_main_sha,
+            ],
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def route_bound_closeout_reference(packet_id: str, closeout_reference: object) -> str:
     """Bind a ledger-proved closeout to its packet during the status-row gap.
 
@@ -677,6 +702,14 @@ def compile_successor(
     predecessor_status_document = _status_with_bound_receipt(
         status_document, closed_packet_id, predecessor_evidence
     )
+    if predecessor_status_document is not None:
+        predecessor_match = plan_lifecycle.canonical_closeout_reference_match(
+            predecessor_evidence
+        )
+        if predecessor_match is None or not _merge_is_ancestor(
+            predecessor_match.group("merge"), accepted_main_sha
+        ):
+            raise RouteDriverError("promotion_predecessor_receipt_unproved")
     planned = RoutePromotionPlanner().plan(
         successor,
         accepted_main_sha,
@@ -1563,24 +1596,9 @@ class CurrentMainEvidenceVerifier:
         detail = _ROUTE_CLOSEOUT_PACKET_DETAIL.fullmatch(match.group("detail") or "")
         if detail is None or detail.group("packet") != packet_id:
             return None
-        try:
-            ancestry = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.repo_path),
-                    "merge-base",
-                    "--is-ancestor",
-                    match.group("merge"),
-                    self.accepted_main_sha,
-                ],
-                capture_output=True,
-                timeout=20,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        if ancestry.returncode != 0:
+        if not _merge_is_ancestor(
+            match.group("merge"), self.accepted_main_sha, self.repo_path
+        ):
             return None
         return _status_with_bound_receipt(status_document, packet_id, predecessor_receipt)
 
