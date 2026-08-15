@@ -29,6 +29,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | Packet | State | Accepted evidence |
 |---|---|---|
 | `PE7-AC0-DATA-CONTRACT-INVENTORY-1` | `COMPLETE` | PR #466 exact head `1662bde29a53d942a28a9982cc5e9a999ff44c12`; merge `e17767e6ebe1a0d6c6031dec61349deeb3ef9585`; exact-head `PASS`; canonical workflow `31868206197` |
+| `PE7-AC0-TRACE-ORDER-FREEZE-1` | `COMPLETE` | PR #467 exact head `19cc238fec27236873262c12998eabe2eda26ac4`; merge `a4879fc60f1c080579df7ba942793a4c94367ff5`; exact-head `PASS`; canonical workflow `31869014363` |
 | `PE7-RWE-V2-REFREEZE-1` | `COMPLETE` | PR #370 exact head `36c92b93975366c3f85471f247a3afb128e5351c`; merge `3b4afb3e5ab4254904aa5a63473ab6ae0eac1e82`; exact-head `PASS`; canonical workflow `31312135471`; redacted calibration and restricted-bundle digests bound in the PR evidence |
 | `PE7-CTRL-ROUTE-CONTRACT-1` | `COMPLETE` | PR #380 exact head `e905cf6ec7a989b54e60f913657ca306f33ebf49`; merge `546cabc1ceb98b49b543d0bd90a62fc228e67338`; exact-head `PASS`; canonical workflow `31386777810`; route-contract receipt bound to the accepted main merge |
 | `PE7-PLAN-LANE-ACTIVATION-1` | `COMPLETE` | PR #382 exact head `dde26f884ce8a85b776b5933c84c4e6cfd73cb19`; merge `e55e19f1b7c353b4baa2b40ee7b5b16af8918a6c`; exact-head `PASS`; canonical workflow `31395404498` (native-runtime rerun after a confirmed infra-only OpenSSL linker flake); Plan lane active behind real terminal-owner readiness; Plan Execution Ledger Issue #383 provisioned |
@@ -135,7 +136,9 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Decision-grade pre-AC baseline | `DEFERRED` | The failed DB RUN and its analysis are parked and are not an AC prerequisite; no decision-grade baseline is claimed |
 | AC0 runtime inventory and AC1 ProcessSupervisor | `DEFERRED` | Optional hardening; existing runtime-specific owners retain timeout, cancellation, kill/reap, failure, and outcome-unknown boundaries |
 | AC0 data/trace freeze | `COMPLETE` | The bounded provider-free owner/caller/transaction/projection/legacy inventory and trace/order closeout are recorded below; no ownership move was made |
-| AC2–AC5 | `BLOCKED_PREREQUISITE` | Each stage remains behind the minimal AC0 freeze and its focused implementation/closeout; AC1 shared supervision is deferred optional hardening |
+| AC2 typed execution contract | `IN_PROGRESS` | Active provider-free contract packet freezes typed state/outcome/usage variants and executor-specific mappings; no runtime, wire, or schema change is authorized |
+| AC2 typed boundary and caller migration | `BLOCKED_PREREQUISITE` | Additive boundary and caller migration remain behind the accepted AC2 contract; AC1 shared supervision is deferred optional hardening |
+| AC3–AC5 | `BLOCKED_PREREQUISITE` | Each stage remains behind its immediately preceding accepted AC contract and closeout |
 | AC6 schema convergence | `BLOCKED_PREREQUISITE` | Contract, Rust/codegen, SDK, Dashboard data migration, compatibility closeout |
 | AC7 cleanup | `BLOCKED_PREREQUISITE` | Removal manifest, deletion-only implementation, independent closeout |
 | Contemporary old/new replay | `BLOCKED_PREREQUISITE` | Reconstruction, protocol/preflight, authorized run, analysis |
