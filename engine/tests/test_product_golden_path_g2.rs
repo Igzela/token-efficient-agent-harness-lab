@@ -274,6 +274,21 @@ fn process_boundary_mapping_is_exhaustive_and_fail_closed() {
             ProcessOutcomeState::Unknown,
         ),
         (
+            ProcessOutcome::unavailable("command rejected before process spawn"),
+            ProcessEffectState::NotStarted,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::unavailable("empty command rejected before process spawn"),
+            ProcessEffectState::NotStarted,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::unavailable("workspace rejected before process spawn"),
+            ProcessEffectState::NotStarted,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
             ProcessOutcome::failure("future_state", None, "not in this contract"),
             ProcessEffectState::Unknown,
             ProcessOutcomeState::Unknown,
@@ -294,6 +309,12 @@ fn process_boundary_mapping_is_exhaustive_and_fail_closed() {
     assert_eq!(missing.effect, ProcessEffectState::Unknown);
     assert_eq!(missing.outcome, ProcessOutcomeState::Unknown);
     assert!(!missing.is_known_success());
+
+    let contradictory = ProcessBoundaryMapping {
+        effect: ProcessEffectState::Unknown,
+        outcome: ProcessOutcomeState::KnownSuccess,
+    };
+    assert!(!contradictory.is_known_success());
 }
 
 #[test]
