@@ -19,11 +19,6 @@ AC0 data/trace freeze and the AC2 typed contract, boundary repair, and caller mi
 
 1. `PE7-AC3-CONTRACT-1` — `READY_FOR_EXECUTION`
 
-## Completed (PE7-AC2-CALLER-MIGRATION-1)
-
-**Historical state:** `COMPLETE`
-
-**Historical evidence:** PR #478 exact head `4c748ce5f7988da9f61dd1e4650351b5d6c8bf72`; merge `36d7b33a5483cff63715b7981794aff1de614ae2`; exact-head `PASS`; canonical workflow `31886172712`.
 ## Packet PE7-AC3-CONTRACT-1
 
 **State:** `READY_FOR_EXECUTION`

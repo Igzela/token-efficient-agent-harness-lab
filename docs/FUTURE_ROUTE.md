@@ -116,7 +116,7 @@ AC1 remains deferred optional hardening. It is not an executable successor and d
 
 AC2 distinguishes effect and outcome states while leaving admission, leases, spend, verification, approval, output, and adoption with existing owners.
 
-The AC2 contract and typed boundary-core sketches remain closed or repair-owned; the next caller-migration route remains routing-only until the boundary repair is accepted, and is recorded below.
+The AC2 contract, typed boundary repair, and enumerated caller migration are accepted; AC1 shared supervision remains deferred optional hardening. The next executable successor is the promoted AC3 Golden Path responsibility contract.
 
 ## Stage Architecture Convergence AC3 - Golden Path responsibility split
 
