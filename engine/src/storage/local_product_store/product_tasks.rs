@@ -16,7 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::node_executor::{
-    CommandNodeExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor, ProcessOutcome,
+    CommandNodeExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor,
+    ProcessBoundaryMapping, ProcessOutcome,
 };
 use crate::product_golden_path::{
     compile_product_executable_graph, fingerprint_objective, is_valid_product_task_transition,
@@ -4513,7 +4514,9 @@ impl LocalProductStore {
                 && output
                     .process_outcome
                     .as_ref()
-                    .is_some_and(crate::node_executor::ProcessOutcome::successful_exit);
+                    .map(ProcessOutcome::boundary_mapping)
+                    .unwrap_or_else(ProcessBoundaryMapping::unknown)
+                    .is_known_success();
             if !passed {
                 all_passed = false;
                 if lost_after_effect.is_none() {

@@ -2,7 +2,8 @@
 //! Finalize must not drive executor ticks; the existing tick/scheduler path does.
 
 use engine::node_executor::{
-    NodeExecutionInput, NodeExecutionOutput, NodeExecutor, ProcessOutcome,
+    NodeExecutionInput, NodeExecutionOutput, NodeExecutor, ProcessBoundaryMapping,
+    ProcessEffectState, ProcessOutcome, ProcessOutcomeState,
 };
 use engine::product_golden_path::{
     validate_intake, ProductExecutorPolicy, ProductTaskBudget, ProductTaskIntakeRequest,
@@ -170,6 +171,147 @@ fn admit_bound(
     let intake = sample_intake(repo, rev, key);
     let validated = validate_intake(&intake, "local", "default").unwrap();
     store.admit_product_task(&validated, "tester").unwrap()
+}
+
+#[test]
+fn process_boundary_mapping_is_exhaustive_and_fail_closed() {
+    let cases = [
+        (
+            ProcessOutcome::exited(0),
+            ProcessEffectState::Started,
+            ProcessOutcomeState::KnownSuccess,
+        ),
+        (
+            ProcessOutcome::exited(7),
+            ProcessEffectState::Started,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::signaled(None),
+            ProcessEffectState::Started,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure("spawn_failed", None, "refused before spawn"),
+            ProcessEffectState::NotStarted,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure(
+                "process_tree_containment_unavailable",
+                None,
+                "containment unavailable",
+            ),
+            ProcessEffectState::NotStarted,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure(
+                "process_tree_containment_unsupported",
+                None,
+                "containment unsupported",
+            ),
+            ProcessEffectState::NotStarted,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure("invalid_output_limits", None, "invalid limits"),
+            ProcessEffectState::NotStarted,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure("timed_out", None, "deadline exceeded"),
+            ProcessEffectState::Started,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure("output_read_failed", Some(1), "reader failed"),
+            ProcessEffectState::Started,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure("timeout", None, "deadline exceeded"),
+            ProcessEffectState::Started,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure("wait_failed", None, "wait failed"),
+            ProcessEffectState::Started,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure("stdout_reader_failed", None, "stdout reader failed"),
+            ProcessEffectState::Started,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure("stderr_reader_failed", None, "stderr reader failed"),
+            ProcessEffectState::Started,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure("combined_reader_failed", None, "combined reader failed"),
+            ProcessEffectState::Started,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure(
+                "process_tree_cleanup_failed",
+                None,
+                "process cleanup failed",
+            ),
+            ProcessEffectState::Started,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::failure("output_limit_exceeded", None, "output limit exceeded"),
+            ProcessEffectState::Started,
+            ProcessOutcomeState::KnownFailure,
+        ),
+        (
+            ProcessOutcome::unavailable("provider has no process owner"),
+            ProcessEffectState::Unknown,
+            ProcessOutcomeState::Unknown,
+        ),
+        (
+            ProcessOutcome::failure("future_state", None, "not in this contract"),
+            ProcessEffectState::Unknown,
+            ProcessOutcomeState::Unknown,
+        ),
+    ];
+
+    for (outcome, effect, state) in cases {
+        let mapping = outcome.boundary_mapping();
+        assert_eq!(mapping.effect, effect, "state={}", outcome.state);
+        assert_eq!(mapping.outcome, state, "state={}", outcome.state);
+        assert_eq!(
+            mapping.is_known_success(),
+            state == ProcessOutcomeState::KnownSuccess
+        );
+    }
+
+    let missing = ProcessBoundaryMapping::unknown();
+    assert_eq!(missing.effect, ProcessEffectState::Unknown);
+    assert_eq!(missing.outcome, ProcessOutcomeState::Unknown);
+    assert!(!missing.is_known_success());
+}
+
+#[test]
+fn process_boundary_mapping_does_not_change_process_outcome_serialization() {
+    let outcome = ProcessOutcome::failure("spawn_failed", None, "bounded reason");
+    let encoded = serde_json::to_value(&outcome).unwrap();
+    assert_eq!(
+        encoded,
+        serde_json::json!({
+            "schema_version": "process_outcome.v1",
+            "state": "spawn_failed",
+            "exit_code": null,
+            "signal": null,
+            "unavailable_reason": "bounded reason"
+        })
+    );
+    let decoded: ProcessOutcome = serde_json::from_value(encoded).unwrap();
+    assert_eq!(decoded, outcome);
 }
 
 struct CapturingManagedExecutor {
