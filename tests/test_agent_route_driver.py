@@ -581,15 +581,16 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         bound_closed_receipt = route_driver.route_bound_closeout_reference(
             CLOSED, closed_receipt
         )
-        complete = route_driver.RoutePromotionPlanner().plan(
-            successor,
-            MAIN,
-            bound_closed_receipt,
-            self._evidence(status_text=status),
-            MANIFEST,
-            closed_packet_id=CLOSED,
-            status_document=status,
-        )
+        with mock.patch.object(route_driver, "_merge_is_ancestor", return_value=True):
+            complete = route_driver.RoutePromotionPlanner().plan(
+                successor,
+                MAIN,
+                bound_closed_receipt,
+                self._evidence(status_text=status),
+                MANIFEST,
+                closed_packet_id=CLOSED,
+                status_document=status,
+            )
         self.assertEqual(complete.state, "READY_FOR_EXECUTION")
         assert complete.candidate is not None
         self.assertEqual(
@@ -615,12 +616,13 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         bound_closed_receipt = route_driver.route_bound_closeout_reference(
             CLOSED, closed_receipt
         )
-        self.assertEqual(
-            route_driver.bound_prerequisite_receipts(
-                successor, CLOSED, bound_closed_receipt, status, MAIN
-            ),
-            (closed_receipt, second_receipt),
-        )
+        with mock.patch.object(route_driver, "_merge_is_ancestor", return_value=True):
+            self.assertEqual(
+                route_driver.bound_prerequisite_receipts(
+                    successor, CLOSED, bound_closed_receipt, status, MAIN
+                ),
+                (closed_receipt, second_receipt),
+            )
         self.assertEqual(
             route_driver._status_readiness_rows(
                 CLOSED,
@@ -632,6 +634,42 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             )[0],
             f"| `{CLOSED}` | `COMPLETE` | {closed_receipt} |\n",
         )
+
+    def test_existing_status_receipts_require_accepted_main_ancestry(self):
+        successor = self._successor(prerequisites=(CLOSED, "PE7-OTHER-1"))
+        closed_receipt = (
+            f"PR #400 exact head `{'b' * 40}`; merge `{MAIN}`; "
+            "exact-head `PASS`; canonical workflow `31467821767`"
+        )
+        prior_receipt = (
+            f"PR #401 exact head `{'d' * 40}`; merge `{'e' * 40}`; "
+            "exact-head `PASS`; canonical workflow `31467821768`"
+        )
+        status = status_document().replace(
+            "|---|---|---|\n\n",
+            "|---|---|---|\n"
+            f"| `{CLOSED}` | `COMPLETE` | {closed_receipt} |\n"
+            f"| `PE7-OTHER-1` | `COMPLETE` | {prior_receipt} |\n\n",
+            1,
+        )
+        bound_closed_receipt = route_driver.route_bound_closeout_reference(
+            CLOSED, closed_receipt
+        )
+        with mock.patch.object(route_driver, "_merge_is_ancestor", return_value=False):
+            with self.assertRaisesRegex(
+                route_driver.RouteDriverError,
+                "promotion_predecessor_receipt_unproved",
+            ):
+                route_driver.verified_predecessor_receipt(
+                    status, CLOSED, bound_closed_receipt, MAIN
+                )
+            with self.assertRaisesRegex(
+                route_driver.RouteDriverError,
+                "promotion_predecessor_receipt_unproved",
+            ):
+                route_driver.bound_prerequisite_receipts(
+                    successor, CLOSED, bound_closed_receipt, status, MAIN
+                )
 
     def test_status_gap_rejects_an_unbound_or_wrongly_bound_receipt(self):
         successor = self._successor()

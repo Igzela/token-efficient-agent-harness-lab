@@ -488,11 +488,25 @@ def route_bound_closeout_reference(packet_id: str, closeout_reference: object) -
     return f"{match.group('canonical')}; route closeout packet `{packet_id}`"
 
 
+def _require_ancestor_receipt(
+    receipt: str, accepted_main_sha: str, repo_path: Path | None = None
+) -> str:
+    """Require a canonical receipt merge to be reachable from accepted main."""
+
+    match = plan_lifecycle.canonical_closeout_reference_match(receipt)
+    if match is None or not _merge_is_ancestor(
+        match.group("merge"), accepted_main_sha, repo_path
+    ):
+        raise RouteDriverError("promotion_predecessor_receipt_unproved")
+    return match.group("canonical")
+
+
 def verified_predecessor_receipt(
     status_document: str,
     closed_packet_id: str,
     predecessor_receipt: str,
     accepted_main_sha: str,
+    repo_path: Path | None = None,
 ) -> str:
     """Prove the just-closed prerequisite before it enters a candidate."""
 
@@ -514,7 +528,7 @@ def verified_predecessor_receipt(
         else:
             if accepted != canonical:
                 raise RouteDriverError("promotion_predecessor_receipt_mismatch")
-            return canonical
+            return _require_ancestor_receipt(canonical, accepted_main_sha, repo_path)
     detail = match.group("detail")
     packet_detail = (
         _ROUTE_CLOSEOUT_PACKET_DETAIL.fullmatch(detail)
@@ -536,6 +550,7 @@ def bound_prerequisite_receipts(
     predecessor_receipt: str,
     status_document: str,
     accepted_main_sha: str,
+    repo_path: Path | None = None,
 ) -> tuple[str, ...]:
     """Bind every prerequisite to its exact accepted receipt.
 
@@ -565,10 +580,17 @@ def bound_prerequisite_receipts(
                     closed_packet_id,
                     predecessor_receipt,
                     accepted_main_sha,
+                    repo_path,
                 )
             )
         else:
-            receipts.append(accepted_complete_receipt(status_document, prerequisite))
+            receipts.append(
+                _require_ancestor_receipt(
+                    accepted_complete_receipt(status_document, prerequisite),
+                    accepted_main_sha,
+                    repo_path,
+                )
+            )
     return tuple(receipts)
 
 
@@ -2096,6 +2118,7 @@ class CurrentMainEvidenceVerifier:
             closed_packet_id=closed_packet_id,
             status_document=status_document,
             predecessor_status_document=predecessor_status_document,
+            repo_path=self.repo_path,
             retained_t3_request=retained_t3_request,
             retained_t3_receipt=retained_t3_receipt,
         )
@@ -2123,6 +2146,7 @@ class RoutePromotionPlanner:
         retained_t3_request: T3Request | None = None,
         retained_t3_receipt: T3Receipt | None = None,
         predecessor_status_document: str | None = None,
+        repo_path: Path | None = None,
     ) -> PromotionPlanResult:
         if not isinstance(predecessor_receipt, str) or not predecessor_receipt.strip():
             return PromotionPlanResult("DECISION_REQUIRED", "promotion_predecessor_receipt_missing")
@@ -2187,6 +2211,7 @@ class RoutePromotionPlanner:
                         successor.sketch.prerequisites[0],
                         predecessor_receipt,
                         accepted_main_sha,
+                        repo_path,
                     ),
                 )
             except RouteDriverError as exc:
@@ -2201,6 +2226,7 @@ class RoutePromotionPlanner:
                     if predecessor_status_document is not None
                     else status_document,
                     accepted_main_sha,
+                    repo_path,
                 )
             except RouteDriverError as exc:
                 if len(successor.sketch.prerequisites) > 1 or exc.reason in {
