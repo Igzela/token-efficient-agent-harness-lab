@@ -1802,7 +1802,13 @@ def _terminal_plan(
     valid, reason = sm.plan_claim_binding_valid(
         ledger_issue, details, packet_id, attempt, token, source_main_sha,
         details.get("task_spec_sha256") if isinstance(details, dict) else "",
-        require_lease_live=status != "failed_unknown_output",
+        # An exact block-plan request is the fail-closed recovery path for a
+        # worker whose handoff may have been lost, including after its lease
+        # expires.  It never releases the claim as successful: the terminal
+        # state remains failed_unknown_output and the old output stays
+        # unproved.  Normal release and every non-terminal operation still
+        # require a live lease.
+        require_lease_live=status != "failed_unknown_output" and not unknown,
     )
     if not valid or not isinstance(details, dict) or details.get("claim_nonce") != claim_nonce:
         return {"released": False, "blocked": False, "reason": reason or "claim_nonce_mismatch"}
