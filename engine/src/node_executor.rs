@@ -648,6 +648,47 @@ pub struct NodeExecutionInput {
     pub node_metadata: Value,
 }
 
+/// Whether the executor can prove that the external effect crossed its start
+/// boundary. This is an internal classification and is deliberately not
+/// serialized into the existing process-outcome evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessEffectState {
+    NotStarted,
+    Started,
+    Unknown,
+}
+
+/// Typed classification of the executor's observed outcome. Unknown is
+/// intentionally separate from failure so callers cannot turn incomplete
+/// evidence into a retry or success decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessOutcomeState {
+    KnownSuccess,
+    KnownFailure,
+    Unknown,
+}
+
+/// Additive, non-wire mapping from the existing process evidence into the
+/// closed AC2 boundary vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessBoundaryMapping {
+    pub effect: ProcessEffectState,
+    pub outcome: ProcessOutcomeState,
+}
+
+impl ProcessBoundaryMapping {
+    pub const fn unknown() -> Self {
+        Self {
+            effect: ProcessEffectState::Unknown,
+            outcome: ProcessOutcomeState::Unknown,
+        }
+    }
+
+    pub const fn is_known_success(self) -> bool {
+        matches!(self.outcome, ProcessOutcomeState::KnownSuccess)
+    }
+}
+
 /// Output from node-level execution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessOutcome {
@@ -697,6 +738,45 @@ impl ProcessOutcome {
 
     pub fn successful_exit(&self) -> bool {
         self.state == "exited" && self.exit_code == Some(0)
+    }
+
+    /// Map existing executor evidence into the additive AC2 typed boundary.
+    ///
+    /// `unavailable` and unrecognized states remain unknown because this
+    /// record alone cannot prove that no effect was sent. The explicit
+    /// pre-spawn states are the only states that prove `NotStarted` here.
+    pub fn boundary_mapping(&self) -> ProcessBoundaryMapping {
+        let effect = match self.state.as_str() {
+            "spawn_failed"
+            | "process_tree_containment_unavailable"
+            | "process_tree_containment_unsupported"
+            | "invalid_output_limits" => ProcessEffectState::NotStarted,
+            "exited"
+            | "signaled"
+            | "output_read_failed"
+            | "timed_out"
+            | "timeout"
+            | "wait_failed"
+            | "stdout_reader_failed"
+            | "stderr_reader_failed"
+            | "combined_reader_failed"
+            | "process_tree_cleanup_failed"
+            | "output_limit_exceeded" => ProcessEffectState::Started,
+            "unavailable" => ProcessEffectState::Unknown,
+            _ => return ProcessBoundaryMapping::unknown(),
+        };
+
+        let outcome = match effect {
+            ProcessEffectState::Unknown => ProcessOutcomeState::Unknown,
+            ProcessEffectState::NotStarted | ProcessEffectState::Started => {
+                if self.successful_exit() {
+                    ProcessOutcomeState::KnownSuccess
+                } else {
+                    ProcessOutcomeState::KnownFailure
+                }
+            }
+        };
+        ProcessBoundaryMapping { effect, outcome }
     }
 }
 
