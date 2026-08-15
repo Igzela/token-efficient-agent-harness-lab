@@ -27,11 +27,6 @@ Every successor remains routing-only until its accepted predecessor closes and t
 
 1. `PE7-AC0-TRACE-ORDER-FREEZE-1` — `READY_FOR_EXECUTION`
 
-## Completed (PE7-AC0-DATA-CONTRACT-INVENTORY-1)
-
-**Historical state:** `COMPLETE`
-
-**Historical evidence:** PR #466 exact head `1662bde29a53d942a28a9982cc5e9a999ff44c12`; merge `e17767e6ebe1a0d6c6031dec61349deeb3ef9585`; exact-head `PASS`; canonical workflow `31868206197`.
 ## Packet PE7-AC0-TRACE-ORDER-FREEZE-1
 
 **State:** `READY_FOR_EXECUTION`
@@ -42,9 +37,9 @@ Every successor remains routing-only until its accepted predecessor closes and t
 
 **Outcome:** Freeze provider-free golden traces, AC dependency order, rollback points, and the exact file-level AC2 contract; bound the candidate surfaces for AC3-AC7.
 
-**Allowed delta:** docs/CURRENT_STATUS.md, docs/FUTURE_ROUTE.md, docs/MODULE_MAP.md, docs/NEXT_DECISION.md, scripts/agent-control/local_run_once.py, scripts/agent-control/route_driver.py, tests/test_agent_route_driver.py.
+**Allowed delta:** Documentation-only edits to `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, and `docs/NEXT_DECISION.md`; the route-controller and test paths listed below are read-only proof inputs, not edit targets.
 
-**Exit:** An independently reviewed AC manifest with zero unknown production caller and an execution-ready AC2 contract.
+**Exit:** An independently reviewed AC manifest with zero unknown production caller within the enumerated Golden Path and legacy/advisory caller closure, plus an execution-ready AC2 contract; any caller outside that closure is a stop condition.
 
 **Stop:** Inventory contradicts the planned order, a golden trace cannot be stabilized, or a boundary would require a second owner.
 
