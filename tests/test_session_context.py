@@ -1134,9 +1134,8 @@ class CheckpointTests(unittest.TestCase):
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         status_document = (root / "docs/CURRENT_STATUS.md").read_text(encoding="utf-8")
         self.assertIn(
-            "The sole exception is the current packet's dispatch-capsule-authorized, "
-            "one-per-claim local OpenCode weak-worker Provider invocation; it cannot make "
-            "the controller read, pass, persist, or report a credential",
+            "No Provider call, credential read/output/persistence, target write, "
+            "EFFECT/T3 action, auto-merge, or second runtime/store/authority owner",
             next_document,
         )
         packet = session_context.current_packet_binding(
@@ -1147,7 +1146,7 @@ class CheckpointTests(unittest.TestCase):
         capsule = session_context.current_dispatch_capsule(next_document, packet)
         self.assertEqual(capsule["packet_id"], packet["packet_id"])
         self.assertEqual(capsule["packet_state"], packet["state"])
-        self.assertEqual(capsule["dispatch_lane"], "opencode_local_repository_maintenance")
+        self.assertEqual(capsule["dispatch_lane"], "provider_free_repository_maintenance")
         self.assertEqual(capsule["external_effect_limit"], 0)
         self.assertIs(capsule["authority_consumption_allowed"], False)
         self.assertIs(capsule["secret_values_allowed"], False)
@@ -1204,13 +1203,13 @@ class CheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-AC0-RUNTIME-INVENTORY-1",
+            packet_id="PE7-AC4-CONTRACT-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertFalse(extract["execution_authorized"])
         self.assertEqual(
-            extract["profile_id"], "PE7-AC0-RUNTIME-INVENTORY-1.v1"
+            extract["profile_id"], "PE7-AC4-CONTRACT-1.v1"
         )
         self.assertEqual(extract["worker_tier"], "T2")
 
@@ -1651,7 +1650,7 @@ class AdversarialCheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-RWE-V2-VIABILITY-RUN-1",
+            packet_id="PE7-RWE-CR-RUN-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )

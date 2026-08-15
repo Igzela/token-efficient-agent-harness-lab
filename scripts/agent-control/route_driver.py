@@ -755,6 +755,7 @@ class CurrentMainEvidence:
     caller_paths: tuple[str, ...]
     test_paths: tuple[str, ...]
     allowed_paths: tuple[str, ...]
+    read_paths: tuple[str, ...]
     ordered_slices: tuple[str, ...]
     verification: tuple[str, ...]
     rollback: str
@@ -1284,6 +1285,7 @@ def _evidence_payload(evidence: CurrentMainEvidence) -> dict[str, object]:
         "caller_paths": list(evidence.caller_paths),
         "test_paths": list(evidence.test_paths),
         "allowed_paths": list(evidence.allowed_paths),
+        "read_paths": list(evidence.read_paths),
         "ordered_slices": list(evidence.ordered_slices),
         "verification": list(evidence.verification),
         "rollback": evidence.rollback,
@@ -1314,6 +1316,7 @@ def _evidence_problem(
         evidence.caller_paths,
         evidence.test_paths,
         evidence.allowed_paths,
+        evidence.read_paths,
         evidence.ordered_slices,
         evidence.verification,
         evidence.evidence_destinations,
@@ -1330,12 +1333,23 @@ def _evidence_problem(
         return "promotion_allowed_paths_invalid"
     if tuple(allowed) != evidence.allowed_paths:
         return "promotion_allowed_paths_noncanonical"
+    try:
+        read_paths = tuple(artifact_contract.validate_allowed_paths(list(evidence.read_paths)))
+    except artifact_contract.ArtifactContractError:
+        return "promotion_read_paths_invalid"
+    if read_paths != evidence.read_paths:
+        return "promotion_read_paths_noncanonical"
     allowed_set = set(evidence.allowed_paths)
+    read_set = set(evidence.read_paths)
+    if not allowed_set.issubset(read_set):
+        return "promotion_allowed_paths_outside_read_paths"
     closure = set(evidence.owner_paths + evidence.caller_paths + evidence.test_paths)
-    if not closure.issubset(allowed_set):
-        return "promotion_owner_caller_test_outside_allowed_paths"
+    if not closure.issubset(read_set):
+        return "promotion_owner_caller_test_outside_read_paths"
     if len(allowed_set) != len(evidence.allowed_paths):
         return "promotion_allowed_paths_duplicated"
+    if len(read_set) != len(evidence.read_paths):
+        return "promotion_read_paths_duplicated"
     return None
 
 
@@ -1374,7 +1388,7 @@ tests, allowed-path closure, ordered slices, precise allowlisted verification,
 rollback, cleanup, retention, evidence destinations, and the schema,
 evaluator, authority, and recovery decisions.
 
-Treat `allowed_paths` as a closed, machine-validated file list.
+Treat `allowed_paths` as the closed, machine-validated edit list.
 Each `allowed_paths` entry must be a literal repository-relative path:
 - Return a non-empty list of at most {_MAX_PROMOTION_LIST_ITEMS} entries, with no duplicates and no
   glob characters.
@@ -1385,12 +1399,17 @@ Each `allowed_paths` entry must be a literal repository-relative path:
   absolute path, or a path containing `..`.
 - The verifier hard-rejects workflow and hidden paths: never include any
   path under `.github/workflows/`, `.github/actions/`, `.git/`, or `.codex/`.
-- Every path named elsewhere in the proposal must also appear in `allowed_paths`;
-  do not use the list to smuggle a static route hint.
+- Every mutable path (ordered slice, operation, destination, or decision) must
+  appear in `allowed_paths`; do not use the list to smuggle a static route hint.
+
+Treat `read_paths` as the closed, machine-validated read-only evidence scope.
+It must contain every `allowed_paths` entry plus every owner, caller, and test
+path. The verifier reads those paths from the exact accepted tree, but the
+worker may not edit them unless they are also in `allowed_paths`.
 
 Each `caller_evidence` row must be independently machine-verifiable:
-- `owner_path` must be in both `owner_evidence` and `allowed_paths`.
-- `caller_path` must be in `allowed_paths`.
+- `owner_path` must be in both `owner_evidence` and `read_paths`.
+- `caller_path` must be in `read_paths`.
 - For `.py` paths, `symbol` must match a Python `def` or `class` declaration in `owner_path`
   and a verifier-recognized `symbol(` reference in `caller_path`.
 - For `.rs` paths, `symbol` must match a Rust `fn`, `struct`, `enum`, `trait`,
@@ -1419,7 +1438,7 @@ Otherwise return this schema (no extra keys):
  "accepted_main_sha":"...", "owner_evidence":[{{"path":"...","module_map_token":"..."}}],
  "caller_evidence":[{{"owner_path":"...","caller_path":"...","symbol":"..."}}],
  "test_evidence":[{{"target_path":"...","test_path":"...","symbol":"..."}}],
- "allowed_paths":["docs/MODULE_MAP.md"],
+ "allowed_paths":["docs/MODULE_MAP.md"], "read_paths":["docs/MODULE_MAP.md"],
  "ordered_slices":[{{"paths":["docs/MODULE_MAP.md"],"description":"precise bounded slice"}}],
  "verification":["one repository allowlisted command"],
  "operations":{{
@@ -1743,7 +1762,7 @@ class CurrentMainEvidenceVerifier:
             return PromotionPlanResult("DECISION_REQUIRED", f"promotion_planner:{reason}")
         required = {
             "schema_version", "packet_id", "accepted_main_sha", "owner_evidence",
-            "caller_evidence", "test_evidence", "allowed_paths", "ordered_slices",
+            "caller_evidence", "test_evidence", "allowed_paths", "read_paths", "ordered_slices",
             "verification", "operations", "evidence_destinations", "decisions",
         }
         if set(value) != required:
@@ -1796,12 +1815,25 @@ class CurrentMainEvidenceVerifier:
             raise RouteDriverError("promotion_allowed_paths_invalid") from exc
         if len(set(allowed_paths)) != len(allowed_paths):
             raise RouteDriverError("promotion_allowed_paths_noncanonical")
+        raw_read = self._list(proposal["read_paths"], "promotion_read_paths_invalid")
+        if any(not isinstance(path, str) for path in raw_read):
+            raise RouteDriverError("promotion_read_paths_invalid")
+        try:
+            read_paths = tuple(sorted(artifact_contract.validate_allowed_paths(raw_read)))
+        except artifact_contract.ArtifactContractError as exc:
+            raise RouteDriverError("promotion_read_paths_invalid") from exc
+        if len(set(read_paths)) != len(read_paths):
+            raise RouteDriverError("promotion_read_paths_noncanonical")
+        if not set(allowed_paths).issubset(read_paths):
+            raise RouteDriverError("promotion_allowed_paths_outside_read_paths")
         required_documents = {
             "docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md", "docs/CURRENT_STATUS.md",
         }
         if not required_documents.issubset(allowed_paths):
             raise RouteDriverError("promotion_allowed_paths_missing_canonical_documents")
         for path in allowed_paths:
+            self._source(path)
+        for path in read_paths:
             self._source(path)
 
         module_map = self._source("docs/MODULE_MAP.md")
@@ -1812,7 +1844,7 @@ class CurrentMainEvidenceVerifier:
             token = self._token(entry["module_map_token"], "promotion_owner_evidence_invalid")
             source = self._source(path)
             if (
-                path not in allowed_paths
+                path not in read_paths
                 or not self._module_map_owns(module_map, path, token)
                 or token not in source and token not in path
             ):
@@ -1827,7 +1859,7 @@ class CurrentMainEvidenceVerifier:
             owner = self._text(entry["owner_path"], "promotion_caller_evidence_invalid")
             caller = self._text(entry["caller_path"], "promotion_caller_evidence_invalid")
             symbol = self._symbol(entry["symbol"], "promotion_caller_evidence_invalid")
-            if owner not in owner_paths or caller not in allowed_paths:
+            if owner not in owner_paths or caller not in read_paths:
                 raise RouteDriverError("promotion_caller_not_proved")
             if not self._declares_symbol(self._source(owner), symbol, self._language(owner)) or not self._consumes_symbol(
                 self._source(caller), symbol, self._language(caller)
@@ -1843,7 +1875,7 @@ class CurrentMainEvidenceVerifier:
             target = self._text(entry["target_path"], "promotion_test_evidence_invalid")
             test = self._text(entry["test_path"], "promotion_test_evidence_invalid")
             symbol = self._symbol(entry["symbol"], "promotion_test_evidence_invalid")
-            if target not in set(owner_paths + caller_paths) or test not in allowed_paths:
+            if target not in set(owner_paths + caller_paths) or test not in read_paths:
                 raise RouteDriverError("promotion_test_not_proved")
             if not self._declares_symbol(self._source(target), symbol, self._language(target)) or not self._consumes_symbol(
                 self._source(test), symbol, self._language(test)
@@ -1932,6 +1964,7 @@ class CurrentMainEvidenceVerifier:
             caller_paths=tuple(caller_paths),
             test_paths=tuple(test_paths),
             allowed_paths=allowed_paths,
+            read_paths=read_paths,
             ordered_slices=tuple(ordered_slices),
             verification=verification,
             rollback=operation_text["rollback"],
@@ -2074,6 +2107,7 @@ class RoutePromotionPlanner:
             "caller_paths": list(evidence.caller_paths),
             "test_paths": list(evidence.test_paths),
             "allowed_paths": list(evidence.allowed_paths),
+            "read_paths": list(evidence.read_paths),
             "ordered_slices": list(evidence.ordered_slices),
             "verification": list(evidence.verification),
             "rollback": evidence.rollback,
@@ -2112,7 +2146,7 @@ class RoutePromotionPlanner:
             "plan_lane_state": plan_lane.PLAN_LANE_ACTIVE,
             "goal": successor.sketch.outcome,
             "allowed_paths": list(evidence.allowed_paths),
-            "read_paths": list(evidence.allowed_paths),
+            "read_paths": list(evidence.read_paths),
             "allowed_outputs": [
                 "A provider-free change limited to the independently proved current-main allowed paths.",
                 "Exact-head verification and review evidence through the existing lifecycle owners.",

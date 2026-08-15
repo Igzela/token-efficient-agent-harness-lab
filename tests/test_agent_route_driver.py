@@ -407,6 +407,11 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
                 "scripts/agent-control/local_run_once.py",
                 "tests/test_agent_plan_lifecycle.py",
             ),
+            read_paths=(
+                "scripts/agent-control/plan_lifecycle.py",
+                "scripts/agent-control/local_run_once.py",
+                "tests/test_agent_plan_lifecycle.py",
+            ),
             ordered_slices=("Add the bounded route transition through the existing owner.",),
             verification=("PYTHONPATH=src uv run --no-project python -m unittest tests.test_agent_plan_lifecycle",),
             rollback="Revert the bounded route transition and retain ledger receipts.",
@@ -505,6 +510,7 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             caller_paths=evidence.caller_paths,
             test_paths=evidence.test_paths,
             allowed_paths=evidence.allowed_paths,
+            read_paths=evidence.read_paths,
             ordered_slices=evidence.ordered_slices,
             verification=evidence.verification,
             rollback="Revert.",
@@ -1223,6 +1229,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
                 "symbol": "RoutePromotionPlanner",
             }],
             "allowed_paths": allowed,
+            "read_paths": allowed,
             "ordered_slices": [{
                 "paths": ["scripts/agent-control/route_driver.py", "tests/test_route_driver.py"],
                 "description": "Keep the promotion boundary and its exact test aligned.",
@@ -1272,6 +1279,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "docs/CURRENT_STATUS.md", "engine/src/typed.rs", "engine/src/caller.rs",
             "engine/tests/typed.rs",
         ]
+        proposal["read_paths"] = list(proposal["allowed_paths"])
         proposal["ordered_slices"] = [{
             "paths": ["engine/src/typed.rs", "engine/src/caller.rs", "engine/tests/typed.rs"],
             "description": "Keep the Rust boundary and its exact caller/test evidence aligned.",
@@ -1283,6 +1291,36 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         for decision in proposal["decisions"].values():
             decision["source_path"] = "docs/NEXT_DECISION.md"
         return proposal
+
+    def test_read_only_evidence_paths_are_not_edit_scope(self):
+        proposal = self._proposal()
+        docs = [
+            "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md",
+            "docs/CURRENT_STATUS.md",
+        ]
+        evidence_paths = docs + [
+            "scripts/agent-control/route_driver.py",
+            "scripts/agent-control/local_run_once.py",
+            "tests/test_route_driver.py",
+        ]
+        proposal["allowed_paths"] = docs
+        proposal["read_paths"] = evidence_paths
+        proposal["ordered_slices"] = [{
+            "paths": docs,
+            "description": "Update only the canonical route documents.",
+        }]
+        result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
+            json.dumps(proposal), self.successor, self._predecessor_receipt()
+        )
+        self.assertEqual(result.state, "READY_FOR_EXECUTION")
+        self.assertIsNotNone(result.evidence)
+        assert result.evidence is not None
+        self.assertEqual(result.evidence.allowed_paths, tuple(sorted(docs)))
+        self.assertEqual(result.evidence.read_paths, tuple(sorted(evidence_paths)))
+        self.assertIsNotNone(result.candidate)
+        assert result.candidate is not None
+        self.assertEqual(result.candidate.capsule["allowed_paths"], sorted(docs))
+        self.assertEqual(result.candidate.capsule["read_paths"], sorted(evidence_paths))
 
     def test_exact_tree_proves_all_refreshed_fields(self):
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
@@ -1524,7 +1562,8 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.assertIn("existing regular, non-symlink accepted-tree file", prompt)
         self.assertIn("with no duplicates", prompt)
         self.assertIn("glob characters", prompt)
-        self.assertIn("Every path named elsewhere in the proposal must also appear in `allowed_paths`", prompt)
+        self.assertIn("Every mutable path (ordered slice, operation, destination, or decision) must", prompt)
+        self.assertIn("Treat `read_paths` as the closed, machine-validated read-only evidence scope.", prompt)
         self.assertIn(".github/workflows/", prompt)
         self.assertIn(".github/actions/", prompt)
         self.assertIn("row whose owner/caller/symbol cannot be proven is rejected", prompt)
@@ -1534,8 +1573,8 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             self.successor, self.main, EVIDENCE
         )
         self.assertIn("Each `caller_evidence` row must", prompt)
-        self.assertIn("owner_path` must be in both `owner_evidence` and `allowed_paths`", prompt)
-        self.assertIn("caller_path` must be in `allowed_paths`", prompt)
+        self.assertIn("owner_path` must be in both `owner_evidence` and `read_paths`", prompt)
+        self.assertIn("caller_path` must be in `read_paths`", prompt)
         self.assertIn("Python `def` or `class` declaration in `owner_path`", prompt)
         self.assertIn("verifier-recognized `symbol(` reference in `caller_path`", prompt)
         self.assertIn("git grep -nE", prompt)
