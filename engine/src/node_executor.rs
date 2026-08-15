@@ -685,7 +685,13 @@ impl ProcessBoundaryMapping {
     }
 
     pub const fn is_known_success(self) -> bool {
-        matches!(self.outcome, ProcessOutcomeState::KnownSuccess)
+        matches!(
+            (self.effect, self.outcome),
+            (
+                ProcessEffectState::Started,
+                ProcessOutcomeState::KnownSuccess
+            )
+        )
     }
 }
 
@@ -736,15 +742,24 @@ impl ProcessOutcome {
         Self::failure("unavailable", None, reason)
     }
 
+    fn is_owner_proven_pre_spawn_refusal(&self) -> bool {
+        matches!(
+            self.unavailable_reason.as_deref(),
+            Some("command rejected before process spawn")
+                | Some("empty command rejected before process spawn")
+                | Some("workspace rejected before process spawn")
+        )
+    }
+
     pub fn successful_exit(&self) -> bool {
         self.state == "exited" && self.exit_code == Some(0)
     }
 
     /// Map existing executor evidence into the additive AC2 typed boundary.
     ///
-    /// `unavailable` and unrecognized states remain unknown because this
-    /// record alone cannot prove that no effect was sent. The explicit
-    /// pre-spawn states are the only states that prove `NotStarted` here.
+    /// An `unavailable` record remains unknown unless its exact reason is an
+    /// owner-proven pre-spawn refusal. Unrecognized states remain unknown
+    /// because this record cannot prove that no effect was sent.
     pub fn boundary_mapping(&self) -> ProcessBoundaryMapping {
         let effect = match self.state.as_str() {
             "spawn_failed"
@@ -762,6 +777,9 @@ impl ProcessOutcome {
             | "combined_reader_failed"
             | "process_tree_cleanup_failed"
             | "output_limit_exceeded" => ProcessEffectState::Started,
+            "unavailable" if self.is_owner_proven_pre_spawn_refusal() => {
+                ProcessEffectState::NotStarted
+            }
             "unavailable" => ProcessEffectState::Unknown,
             _ => return ProcessBoundaryMapping::unknown(),
         };
