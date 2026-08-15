@@ -1644,11 +1644,19 @@ class CurrentMainEvidenceVerifier:
             return True
         if re.search(r":\s*(?:&\s*(?:'[A-Za-z_][A-Za-z0-9_]*\s*)?(?:mut\s*)?)?$", segment):
             return True
-        if re.search(r"\bmatch\b[^{};]*\{\s*$", prefix):
+        match_pos = prefix.rfind("match")
+        opening = prefix.rfind("{")
+        if (
+            match_pos > prefix.rfind("}")
+            and opening > match_pos
+            and "=>" not in prefix[opening + 1 :]
+        ):
             return True
         if re.search(r"\b(?:if|while|for)\s+let\b[^{};]*$", prefix):
             return True
-        if re.search(r"\|\s*$", segment):
+        if re.search(r"\bfor\b", segment) and " in " not in segment:
+            return True
+        if segment.lstrip().startswith("|") and segment.count("|") == 1:
             return True
         macro_rules = prefix.rfind("macro_rules!")
         if macro_rules > max(prefix.rfind("}"), prefix.rfind(";")):

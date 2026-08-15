@@ -1376,7 +1376,26 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             self.assertFalse(
                 route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
                     declaration,
+                    "typed_boundary",
+                    "rust",
+                )
+            )
+            self.assertFalse(
+                route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
+                    declaration,
                     "TypedBoundary",
+                    "rust",
+                )
+            )
+        for pattern in (
+            "match value { Some(typed_boundary(code)) => {} }\n",
+            "for Some(typed_boundary(code)) in values {}\n",
+            "|Some(typed_boundary(code))| value\n",
+        ):
+            self.assertFalse(
+                route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
+                    pattern,
+                    "typed_boundary",
                     "rust",
                 )
             )
