@@ -1651,7 +1651,11 @@ class CurrentMainEvidenceVerifier:
             and opening > match_pos
             and "=>" not in prefix[opening + 1 :]
         ):
-            return True
+            match_segment = prefix[opening + 1 :]
+            if not re.search(r"\bif\b", match_segment) or re.search(
+                r"\bif\s+let\b", match_segment
+            ):
+                return True
         if re.search(r"\b(?:if|while|for)\s+let\b[^{};]*$", prefix):
             return True
         if re.search(r"\bfor\b", segment) and " in " not in segment:

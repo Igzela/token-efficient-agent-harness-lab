@@ -1400,6 +1400,18 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
                     "rust",
                 )
             )
+        for guard in (
+            "match value { item if typed_boundary(code) => {} }\n",
+            "match value { item if ProcessOutcome::exited(1).successful_exit() => {} }\n",
+        ):
+            symbol = "ProcessOutcome" if "ProcessOutcome" in guard else "typed_boundary"
+            self.assertTrue(
+                route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
+                    guard,
+                    symbol,
+                    "rust",
+                )
+            )
         self.assertTrue(
             route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
                 "fn build() { let _f: fn() -> TypedBoundary = TypedBoundary::new(); }\n",
