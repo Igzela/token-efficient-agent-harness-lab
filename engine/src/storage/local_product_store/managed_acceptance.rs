@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::infrastructure::auth::{LOCAL_BOOTSTRAP_API_KEY_ID, LOCAL_BOOTSTRAP_TENANT_ID};
+use crate::node_executor::ProcessOutcome;
 
 /// Required scopes for managed-acceptance authority operations.
 pub const SCOPE_RISK_ACKNOWLEDGE: &str = "managed_acceptance:risk_acknowledge";
@@ -10042,16 +10043,18 @@ impl LocalProductStore {
             let result = node
                 .get("result")
                 .ok_or("managed reviewer deterministic verifier result is missing")?;
+            let process_outcome = result
+                .get("process_outcome")
+                .filter(|value| value.is_object())
+                .ok_or("managed reviewer deterministic verifier process outcome is missing")
+                .and_then(|value| {
+                    serde_json::from_value::<ProcessOutcome>(value.clone()).map_err(|_| {
+                        "managed reviewer deterministic verifier process outcome is invalid"
+                    })
+                })?;
             if node.get("status").and_then(Value::as_str) != Some("completed")
                 || result.get("status").and_then(Value::as_str) != Some("completed")
-                || result
-                    .pointer("/process_outcome/state")
-                    .and_then(Value::as_str)
-                    != Some("exited")
-                || result
-                    .pointer("/process_outcome/exit_code")
-                    .and_then(Value::as_i64)
-                    != Some(0)
+                || !process_outcome.boundary_mapping().is_known_success()
             {
                 return Err(
                     "managed reviewer requires successful deterministic verification".into(),

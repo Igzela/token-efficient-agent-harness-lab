@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use crate::node_executor::{
     CommandNodeExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor,
-    ProcessBoundaryMapping, ProcessOutcome,
+    ProcessBoundaryMapping, ProcessEffectState, ProcessOutcome, ProcessOutcomeState,
 };
 use crate::product_golden_path::{
     compile_product_executable_graph, fingerprint_objective, is_valid_product_task_transition,
@@ -6434,13 +6434,15 @@ impl LocalProductStore {
             .ok_or_else(|| "terminal evidence verification receipt set missing".to_string())?
             .iter()
             .map(|attempt| {
-                let process_outcome = attempt
+                let process_outcome_value = attempt
                     .get("process_outcome")
                     .filter(|value| value.is_object())
                     .ok_or_else(|| "verification process outcome missing".to_string())?;
+                let process_outcome =
+                    serde_json::from_value::<ProcessOutcome>(process_outcome_value.clone())
+                        .map_err(|_| "verification process outcome is invalid".to_string())?;
                 if attempt.get("result_status").and_then(Value::as_str) != Some("completed")
-                    || process_outcome.get("state").and_then(Value::as_str) != Some("exited")
-                    || process_outcome.get("exit_code").and_then(Value::as_i64) != Some(0)
+                    || !process_outcome.boundary_mapping().is_known_success()
                 {
                     return Err(
                         "verification receipt lacks a successful OS process outcome".to_string()
@@ -6451,7 +6453,7 @@ impl LocalProductStore {
                     "node_id": attempt.get("node_id"),
                     "executor_type": attempt.get("executor_type"),
                     "result_status": attempt.get("result_status"),
-                    "process_outcome": process_outcome,
+                    "process_outcome": process_outcome_value,
                     "output_sha256": attempt.pointer("/output_digest/sha256"),
                     "started_at": attempt.get("started_at"),
                     "completed_at": attempt.get("completed_at"),
@@ -8238,15 +8240,20 @@ fn product_verification_failure_status(
     error_domain: Option<&str>,
     process_outcome: Option<&ProcessOutcome>,
 ) -> &'static str {
-    if matches!(
+    let process_outcome_unknown = process_outcome.is_some_and(|outcome| {
+        let mapping = outcome.boundary_mapping();
+        matches!(mapping.effect, ProcessEffectState::Unknown)
+            || matches!(mapping.outcome, ProcessOutcomeState::Unknown)
+    });
+    let error_domain_unknown = matches!(
         error_domain,
         Some(
             "tool_execution_outcome_unknown"
                 | "tool_effect_outcome_unknown"
                 | "tool_execution_receipt_error"
         )
-    ) && process_outcome.is_none()
-    {
+    );
+    if process_outcome_unknown || (error_domain_unknown && process_outcome.is_none()) {
         "outcome_unknown"
     } else {
         "verification_failed"
@@ -9399,6 +9406,26 @@ mod product_verification_failure_tests {
                     "exited",
                     Some(7),
                     "known non-zero exit",
+                )),
+            ),
+            "verification_failed"
+        );
+        assert_eq!(
+            product_verification_failure_status(
+                Some("command_exit_nonzero"),
+                Some(&ProcessOutcome::unavailable(
+                    "provider has no process owner"
+                )),
+            ),
+            "outcome_unknown"
+        );
+        assert_eq!(
+            product_verification_failure_status(
+                Some("command_exit_nonzero"),
+                Some(&ProcessOutcome::failure(
+                    "spawn_failed",
+                    None,
+                    "known pre-spawn refusal",
                 )),
             ),
             "verification_failed"
