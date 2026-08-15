@@ -1361,6 +1361,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "fn build(value: TypedBoundary::Assoc) {}\n",
             "fn build() { let value: Option<TypedBoundary::Assoc> = value; }\n",
             "fn build() { let value = TypedBoundary {}; }\n",
+            "enum Wrapper { TypedBoundary(i32) }\n",
         ):
             self.assertFalse(
                 route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
@@ -1369,6 +1370,13 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
                     "rust",
                 )
             )
+        self.assertTrue(
+            route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
+                "fn build() { let _f: fn() -> TypedBoundary = TypedBoundary::new(); }\n",
+                "TypedBoundary",
+                "rust",
+            )
+        )
         self.assertFalse(
             route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
                 "impl TypedBoundary { fn new() -> Self { Self {} } }\n",

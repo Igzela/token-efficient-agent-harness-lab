@@ -1631,7 +1631,10 @@ class CurrentMainEvidenceVerifier:
 
         boundary = max(prefix.rfind(";"), prefix.rfind("{"), prefix.rfind("}"))
         segment = prefix[boundary + 1 :]
-        if re.search(r"->", segment):
+        arrow = segment.rfind("->")
+        if arrow >= 0 and "=" not in segment[arrow + 2 :]:
+            return True
+        if re.search(r"\b(?:enum|struct|trait)\b[^{;]*\{\s*$", prefix):
             return True
         if re.match(r"\s*(?:pub(?:\([^)]*\))?\s+)?(?:type|use)\b", segment):
             return True
