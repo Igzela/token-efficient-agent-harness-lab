@@ -27,7 +27,7 @@ These are audited absences or unaccepted seams at the current main, not permissi
 |---|---|---|---|
 | RWE measurement/decision baseline | existing RWE corpus, protocol, schedule, artifact, usage, review, and evidence owners | no accepted decision-grade corpus | any required field lacks a named existing owner, explicit unavailable state, or fail-closed stop rule |
 | AC1 process supervision | AC0-enumerated subprocess/executor callers | no `ProcessSupervisor` module/interface exists today | placement would create a second runtime/executor owner or child cleanup cannot be proved |
-| AC2 typed execution | current executor adapter/node/provider/CLI owners | no accepted cross-executor typed state/outcome/usage contract | any existing outcome cannot map without semantic loss or unknown-as-success coercion |
+| AC2 typed execution | current executor adapter/node/provider/CLI owners | AC2 contract and additive boundary core are accepted; caller-wide migration remains unaccepted | any caller has unclassified semantics, loses usage uncertainty, or coerces outcome-unknown into success |
 | AC3 Golden Path split | `product_golden_path.rs` plus LocalProductStore product-task authority | no accepted pure orchestration/effect-port seam | store, approval, output, audit, or external effect ownership becomes ambiguous |
 | AC4 transaction views | sole LocalProductStore SQLite/PostgreSQL owners | no named borrowed transaction-view interfaces exist | atomic group, borrow/commit/rollback, parity, or recovery cannot be proved |
 | AC5 composition root | current Rust startup, config, HTTP state, provider, and store construction | no single accepted validated composition-root contract | config precedence conflicts, dependency cycle, or secret resolution broadens |
