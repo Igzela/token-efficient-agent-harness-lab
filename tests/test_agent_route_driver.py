@@ -456,6 +456,33 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
             compiled.next_document,
         )
 
+    def test_compiled_successor_rejects_nonancestor_existing_receipt(self):
+        successor_sketch = SKETCH.replace(
+            "**Prerequisite:** PE7-PLAN-LANE-ACTIVATION-1",
+            f"**Prerequisite:** {CLOSED}",
+        )
+        source_future = future_document([successor_sketch, BLOCKED_SKETCH])
+        accepted_status = status_document().replace(
+            "## Accepted Packet Receipts\n\n",
+            "## Accepted Packet Receipts\n\n"
+            f"| `{CLOSED}` | `COMPLETE` | {EVIDENCE} |\n",
+            1,
+        )
+        with mock.patch.object(route_driver, "_merge_is_ancestor", return_value=False):
+            with self.assertRaisesRegex(
+                route_driver.RouteDriverError,
+                "promotion_predecessor_receipt_unproved",
+            ):
+                route_driver.compile_successor(
+                    source_future,
+                    next_document(),
+                    accepted_status,
+                    CLOSED,
+                    EVIDENCE,
+                    MAIN,
+                    self._evidence(packet_id=SUCCESSOR),
+                )
+
     def test_static_future_paths_are_hints_not_promotion_evidence(self):
         result = route_driver.RoutePromotionPlanner().plan(
             self._successor(), MAIN, EVIDENCE, None, MANIFEST

@@ -699,6 +699,14 @@ def compile_successor(
     manifest_sha256 = _json_sha256(
         inventory_manifest(refreshed_future_document)
     )
+    if closed_packet_state == "COMPLETE":
+        predecessor_match = plan_lifecycle.canonical_closeout_reference_match(
+            predecessor_evidence
+        )
+        if predecessor_match is None or not _merge_is_ancestor(
+            predecessor_match.group("merge"), accepted_main_sha
+        ):
+            raise RouteDriverError("promotion_predecessor_receipt_unproved")
     predecessor_status_document = _status_with_bound_receipt(
         status_document, closed_packet_id, predecessor_evidence
     )
