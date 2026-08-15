@@ -1632,12 +1632,26 @@ class CurrentMainEvidenceVerifier:
                 rf"(?<!def )(?<!class )\b{escaped}\s*\(", source
             ) is not None
         if language == "rust":
-            source = cls._rust_code(source)
-            return re.search(
-                rf"\b{escaped}\s*(?:\(|::|!\s*[(\[])", source
-            ) is not None or re.search(
-                rf"(?m)^(?![ \t]*impl\b).*\b{escaped}\s*\{{", source
-            ) is not None
+            code = cls._rust_code(source)
+            patterns = (
+                re.compile(rf"\b{escaped}\s*(?:\(|::)"),
+                re.compile(rf"\b{escaped}\s*!\s*(?:\(|\[|\{{)"),
+                re.compile(rf"\b{escaped}\s*\{{"),
+            )
+            for pattern in patterns:
+                for match in pattern.finditer(code):
+                    line_start = code.rfind("\n", 0, match.start()) + 1
+                    prefix = code[line_start : match.start()]
+                    if re.search(
+                        r"\b(?:fn|struct|enum|trait|type|mod|const|static)\s*$",
+                        prefix,
+                    ) or re.search(
+                        r"\b(?:impl|for|macro_rules!)\s*(?:<[^>\n]*>)?\s*$",
+                        prefix,
+                    ):
+                        continue
+                    return True
+            return False
         return False
 
     @staticmethod
