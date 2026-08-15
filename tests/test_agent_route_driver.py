@@ -1337,13 +1337,14 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
                 "rust",
             )
         )
-        self.assertTrue(
-            route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
-                "fn build() { TypedBoundary! {}; }\n",
-                "TypedBoundary",
-                "rust",
+        for macro_call in ("TypedBoundary!();", "TypedBoundary![];", "TypedBoundary! {};"):
+            self.assertTrue(
+                route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
+                    f"fn build() {{ {macro_call} }}\n",
+                    "TypedBoundary",
+                    "rust",
+                )
             )
-        )
         for declaration in (
             "fn TypedBoundary() {}\n",
             "struct TypedBoundary {}\n",
@@ -1351,6 +1352,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "unsafe impl TypedBoundary {}\n",
             "macro_rules! TypedBoundary {}\n",
             "fn build() -> TypedBoundary {}\n",
+            "fn build() -> TypedBoundary::Assoc {}\n",
         ):
             self.assertFalse(
                 route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
