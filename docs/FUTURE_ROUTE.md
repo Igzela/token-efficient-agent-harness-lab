@@ -116,7 +116,7 @@ AC1 remains deferred optional hardening. It is not an executable successor and d
 
 AC2 distinguishes effect and outcome states while leaving admission, leases, spend, verification, approval, output, and adoption with existing owners.
 
-The AC2 contract and typed boundary-core sketches were removed from this planning-only document after acceptance; the remaining first AC2 route is the blocked caller-migration window recorded in `docs/NEXT_DECISION.md`.
+The AC2 contract and typed boundary-core sketches were removed from this planning-only document after acceptance; the remaining first AC2 route is the READY caller-migration window recorded in `docs/NEXT_DECISION.md`.
 ## Stage Architecture Convergence AC3 - Golden Path responsibility split
 
 AC3 separates orchestration, store mutation, and external effects without changing state-machine or authority order.
