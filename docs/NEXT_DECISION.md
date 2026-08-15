@@ -17,60 +17,52 @@ The durable B2 rule is caller-supplied finite `expires_at` on `rwe_run_authoriza
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-AC0-DATA-CONTRACT-INVENTORY-1 — IN_PROGRESS, bounded provider-free owner/caller/data/trace inventory is recorded without introducing a shared process owner]
+[window: PE7-AC0-TRACE-ORDER-FREEZE-1 — READY_FOR_EXECUTION, provider-free]
 
-→ `PE7-AC0-DATA-CONTRACT-INVENTORY-1` — retain the bounded inventory and prepare its independent trace/order closeout; do not execute an external effect
 ```
 
 Every successor remains routing-only until its accepted predecessor closes and the promotion planner proves a bounded current-main contract. A negative, insufficient, unknown, or authority-required disposition is `DECISION_REQUIRED` and rewrites or pauses the route; it never silently follows the nominal order.
 
 ## Active Routing
 
-1. `PE7-AC0-DATA-CONTRACT-INVENTORY-1` — `IN_PROGRESS`
+1. `PE7-AC0-TRACE-ORDER-FREEZE-1` — `READY_FOR_EXECUTION`
 
-## Historical V2 Closeout
+## Packet PE7-AC0-TRACE-ORDER-FREEZE-1
 
-**State:** `COMPLETE`
+**State:** `READY_FOR_EXECUTION`
 
-**Evidence:** Disposition `CONTROLLED_FAILURE`; run `run-live-20260813-v2c`; authorization `auth-live-v2-003`; four frozen cells; restricted-bundle sha256 `9b345faf744c14d67157856a512b39d90c6e03ff1081783c793b987d6f93bf82`; redacted-bundle sha256 `e2eafa226700061cb000b35dec776ef0b49417aa5faece0b065923b49ee83d3f`; no seal and no target-default-branch write. Do not rerun this effect.
+**Prerequisite:** PE7-AC0-DATA-CONTRACT-INVENTORY-1 — COMPLETE on accepted main `e17767e6ebe1a0d6c6031dec61349deeb3ef9585` (PR #466 exact head `1662bde29a53d942a28a9982cc5e9a999ff44c12`; merge `e17767e6ebe1a0d6c6031dec61349deeb3ef9585`; exact-head `PASS`; canonical workflow `31868206197`).
 
-## Completed snapshot closeout
+**Class:** `CLOSEOUT`
 
-The accepted `PE7-RWE-DB-SNAPSHOT-CORPUS-1` packet is closed on main by PR #448 exact head `923d9f750c652a268b3d7944be35f34c2a2f9fac`, squash merge `a4472b9a0aa9c78d1616e9d22c88c2f6a6405cb8`, exact-head review receipt `5289908799`, canonical workflow `31773697000`, and final exact-head check `31773696854`.
+**Outcome:** Freeze provider-free golden traces, AC dependency order, rollback points, and the exact file-level AC2 contract; bound the candidate surfaces for AC3-AC7.
 
-Its manifest sha256 is `d13834c8ad41376f2884c906b335dce3a397fa0464ba83da0af6310fe2837ce2`; the snapshot disposition is `UNAVAILABLE_NOW`, `reconstructable=false`. No Provider call, authority consumption, target write, or EFFECT occurred. The complete lifecycle receipt and unavailable disposition are owned by `docs/CURRENT_STATUS.md`; this document retains only the closeout binding needed for the current route.
+**Allowed delta:** Documentation-only edits to `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, and `docs/NEXT_DECISION.md`; the route-controller and test paths listed below are read-only proof inputs, not edit targets.
 
-The accepted reconstructable replacement is bound by PR #451 exact head `d48e9853856714a964709956651fc0ac0961315c`, squash merge `e1ff80b7599d8aec8d64909f937f79c948010392`, canonical workflow `31790256137`, and manifest sha256 `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`. Its `preflight_promotion=BLOCKED_UNTIL_ACCEPTED` condition is satisfied by that accepted merge; this document now owns the current promotion to provider-free preflight.
+**Exit:** An independently reviewed AC manifest with zero unknown production caller within the enumerated Golden Path and legacy/advisory caller closure, plus an execution-ready AC2 contract; any caller outside that closure is a stop condition.
 
-## Packet PE7-AC0-DATA-CONTRACT-INVENTORY-1
+**Stop:** Inventory contradicts the planned order, a golden trace cannot be stabilized, or a boundary would require a second owner.
 
-**State:** `IN_PROGRESS`
+### Twelve-field contract
 
-**Prerequisite:** PE7-RWE-DB-PREFLIGHT-1 — COMPLETE; the provider-free preflight returned `ready=true` with zero blockers and no authority/provider/target effect.
-
-**Class:** `CONTRACT`
-
-**Outcome:** Enumerate the minimal Golden Path owners, store transaction entries, schema/codegen/SDK/Dashboard projections, config construction, legacy callers, and provider-free golden traces needed before any ownership move.
-
-**Current evidence:** The bounded owner/caller/transaction/projection/legacy and provider-free golden-trace matrix is recorded in `docs/CURRENT_STATUS.md`. This packet remains `IN_PROGRESS` until the independent trace/order closeout promotes the next packet through the existing route owner; that promotion is intentionally not performed by this packet.
-
-**Allowed delta:** Provider-free inventory and decision evidence only; update only `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md`; no source refactor, wire/schema migration, Provider call, target write, or external effect.
-
-**Owner/seam:** Reuse the existing Rust runtime, scheduler, ProductTask, LocalProductStore, schema/codegen, SDK, Dashboard, and test owners; add no second runtime, scheduler, store, evaluator, or persistence owner.
-
-**Exit:** One bounded owner/caller/transaction/projection/legacy and golden-trace matrix with compatibility and rollback obligations for AC1–AC7.
-
-**Stop:** A current owner is ambiguous, a legacy surface has unknown callers, or SQLite/PostgreSQL behavior or a golden trace cannot be mapped. Return `DECISION_REQUIRED`; do not widen into subprocess census or ProcessSupervisor work.
-
-**Rollback:** Revert this planning-only route change and restore the parked route pointers; retain all DB failure evidence and do not replay the run.
+1. **Outcome and non-goals.** Freeze provider-free golden traces, AC dependency order, rollback points, and the exact file-level AC2 contract; bound the candidate surfaces for AC3-AC7.
+2. **Prerequisites and evidence.** Accepted main `e17767e6ebe1a0d6c6031dec61349deeb3ef9585`; checked route manifest SHA `6fca8a540b89011984e65bc272e7eef8b6b38293d819a44a616157477b409821`; predecessor receipt PR #466 exact head `1662bde29a53d942a28a9982cc5e9a999ff44c12`; merge `e17767e6ebe1a0d6c6031dec61349deeb3ef9585`; exact-head `PASS`; canonical workflow `31868206197`; current-main evidence SHA `f14ecd608e2e25117320ce878aba5ab200b3feb07a0790f69c3216b14caf7611`.
+3. **Owners and paths.** Owners: scripts/agent-control/route_driver.py; callers: scripts/agent-control/local_run_once.py; tests: tests/test_agent_route_driver.py.
+4. **Frozen invariants.** Packet identity, route manifest SHA `6fca8a540b89011984e65bc272e7eef8b6b38293d819a44a616157477b409821`, accepted-main SHA, predecessor receipt, and current-main evidence digest are immutable for this candidate.
+5. **Only semantic delta.** Execute only the independently reviewed candidate contract.
+6. **Forbidden changes.** No static route hint is authority; no effect, T3 action, provider, target, automatic merge, or second owner.
+7. **Ordered implementation slices.** docs/CURRENT_STATUS.md: record the frozen provider-free traces, order, and AC2 boundary; docs/NEXT_DECISION.md: promote the next packet with the complete bounded contract; docs/FUTURE_ROUTE.md: remove the promoted packet and refresh the checked manifest
+8. **Failure, recovery, and stop taxonomy.** Cleanup: No runtime or external cleanup is required; retain existing owner-managed recovery and rollback paths.; retention: Keep the merged PR, exact-head review, canonical CI, trace matrix, and redacted route evidence in the existing canonical documents.; decisions: schema unchanged (docs/CURRENT_STATUS.md: No wire/schema migration in AC0); evaluator unchanged (docs/CURRENT_STATUS.md: not a claim of a successful live DeepSeek run); authority unchanged (docs/CURRENT_STATUS.md: This packet makes no Provider call and consumes no authority); recovery unchanged (docs/CURRENT_STATUS.md: outcome_unknown never enters a speculative retry).
+9. **Verification.** uv run --no-project python scripts/check_agent_handoff.py; git diff --check
+10. **Compatibility, rollback, and retention.** Revert the three-document route promotion and retain the accepted AC0 inventory and its existing failure evidence.
+11. **Exit artifact.** Evidence destinations: docs/CURRENT_STATUS.md: Provider-free golden traces and parity anchors.
+12. **Next action.** Governed PR, exact-head review/CI, manual merge, closeout, then repeat evidence-backed promotion.
 
 ### 11. Weak-Agent Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-AC0-DATA-CONTRACT-INVENTORY-1","dispatch_lane":"t2-contract-inventory","plan_lane_state":"plan_lane_active","goal":"Build a provider-free bounded owner, caller, data, and trace inventory for AC0 without changing ownership or source behavior.","rollback":"Revert only the canonical inventory and packet-status document edits while retaining existing failure evidence; do not delete or rewrite DB evidence.","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"allowed_paths":["docs/CURRENT_STATUS.md","docs/NEXT_DECISION.md"],"read_paths":["START_HERE.md","AGENTS.md","docs/CURRENT_STATUS.md","docs/NEXT_DECISION.md","docs/MODULE_MAP.md","docs/ARCHITECTURE_BOOK.md","docs/REAL_WORLD_TESTING_PLAYBOOK.md","engine","src","tests","tools","scripts"],"allowed_outputs":["owner/caller/transaction/projection/legacy matrix","provider-free golden traces and rollback obligations","canonical status and route updates"],"prerequisites":["PE7-RWE-DB-PREFLIGHT-1"],"prerequisite_receipts":["Real same-tenant Store-owned Golden Path prerequisite completed by ProductTask `ptask-20260814135947-18cbb0b9731e62bf`, run `run-0007`, terminal evidence `product-terminal-ptask-20260814135947-18cbb0b9731e62bf-9-44d49301c781`; Draft PR-only output `Igzela/alters-lab#47`, target main `6240768506320a324d68787b9eaa86971c8c930c`; provider-free `rwe_operator_preflight.v1` `ready=true`, zero blockers, no authority/provider/target effect; projection sha256 `b8c35d4060d98598ce3e3bc3977a84d125b1df09ff66b2b9f6d9aa4303c03954`"],"forbidden_changes":["Provider calls","authority consumption","target writes","source refactors or deletions","schema or migration changes","new runtime, scheduler, store, evaluator, or persistence owner","raw prompts, outputs, credentials, or private paths"],"ordered_steps":["Read the accepted owner and architecture contracts","Map current owners, callers, transactions, projections, legacy surfaces, and golden traces","Record only the bounded inventory and compatibility/rollback obligations","Run the handoff and diff checks"],"verification":["uv run --no-project python scripts/check_agent_handoff.py","git diff --check"],"pause_gates":["current owner or caller is ambiguous","SQLite/PostgreSQL behavior cannot be mapped","a golden trace cannot be stabilized","inventory requires source behavior, authority, or a new owner"],"expected_artifacts":["provider-free AC0 owner/caller/data/trace matrix","compatibility and rollback obligations","updated accepted status and next-packet handoff"],"forbidden_next_actions":["Do not call a Provider","Do not consume authority","Do not write a target branch","Do not refactor or delete source","Do not start AC1 or ProcessSupervisor work","Do not replay the parked DB RUN","Do not claim a decision-grade baseline"],"known_store_mutations":["No LocalProductStore mutation; inventory is read-only"]}
+{"allowed_outputs": ["A provider-free change limited to the independently proved current-main allowed paths.", "Exact-head verification and review evidence through the existing lifecycle owners."], "allowed_paths": ["docs/CURRENT_STATUS.md", "docs/FUTURE_ROUTE.md", "docs/NEXT_DECISION.md"], "authority_consumption_allowed": false, "dispatch_lane": "provider_free_repository_maintenance", "expected_artifacts": ["docs/CURRENT_STATUS.md: Provider-free golden traces and parity anchors"], "external_effect_limit": 0, "forbidden_changes": ["Do not use FUTURE_ROUTE static paths as current-main authority.", "Do not create a second controller, ledger, queue, lease, store, or workflow owner.", "Do not mint T3 authority, execute an EFFECT, auto-merge, call a Provider, or write a target."], "forbidden_next_actions": ["Do not skip an EFFECT node or execute an EFFECT or T3 path without its exact valid finite receipt.", "Do not treat missing, conflicting, stale, or outcome-unknown routing or receipts as success.", "Do not start a successor whose promotion candidate has not been independently accepted.", "Do not use FUTURE_ROUTE static paths as current-main authority.", "Do not create a second controller, ledger, queue, lease, store, or workflow owner.", "Do not mint T3 authority, execute an EFFECT, auto-merge, call a Provider, or write a target."], "goal": "Freeze provider-free golden traces, AC dependency order, rollback points, and the exact file-level AC2 contract; bound the candidate surfaces for AC3-AC7.", "ordered_steps": ["docs/CURRENT_STATUS.md: record the frozen provider-free traces, order, and AC2 boundary", "docs/NEXT_DECISION.md: promote the next packet with the complete bounded contract", "docs/FUTURE_ROUTE.md: remove the promoted packet and refresh the checked manifest"], "packet_id": "PE7-AC0-TRACE-ORDER-FREEZE-1", "packet_state": "READY_FOR_EXECUTION", "pause_gates": ["Stop when an owner, caller, test, path, operation, destination, or decision cannot be re-proved from accepted main.", "Stop when exact-head review or canonical CI is missing, stale, failed, or conflicting.", "Recover ordinary worker, CI, review, checkpoint, duplicate, restart, and main-drift failures through existing owners; stop if recovery evidence is unproved.", "Stop before a Provider, target, automatic merge, authority consumption, or external effect.", "Do not retry a possibly executed external effect whose outcome is unknown."], "plan_lane_state": "plan_lane_active", "prerequisite_receipts": ["PR #466 exact head `1662bde29a53d942a28a9982cc5e9a999ff44c12`; merge `e17767e6ebe1a0d6c6031dec61349deeb3ef9585`; exact-head `PASS`; canonical workflow `31868206197`"], "prerequisites": ["PE7-AC0-DATA-CONTRACT-INVENTORY-1"], "private_paths_allowed": false, "promotion_evidence_sha256": "f14ecd608e2e25117320ce878aba5ab200b3feb07a0790f69c3216b14caf7611", "read_paths": ["docs/CURRENT_STATUS.md", "docs/FUTURE_ROUTE.md", "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md", "scripts/agent-control/local_run_once.py", "scripts/agent-control/route_driver.py", "tests/test_agent_route_driver.py"], "risk_class": "none", "rollback": "Revert the three-document route promotion and retain the accepted AC0 inventory and its existing failure evidence.", "route_manifest_sha256": "6fca8a540b89011984e65bc272e7eef8b6b38293d819a44a616157477b409821", "schema_version": "weak_agent_dispatch.v1", "secret_values_allowed": false, "verification": ["uv run --no-project python scripts/check_agent_handoff.py", "git diff --check"], "verification_family": "evidence_review", "worker_tier": "T2"}
 -->
-
-
 
 ## Common Execution Protocol
 
