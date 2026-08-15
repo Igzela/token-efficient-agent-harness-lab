@@ -1812,6 +1812,8 @@ def _terminal_plan(
     )
     if not valid or not isinstance(details, dict) or details.get("claim_nonce") != claim_nonce:
         return {"released": False, "blocked": False, "reason": reason or "claim_nonce_mismatch"}
+    if status == "failed_unknown_output" and details.get("reason") != reason_code:
+        return {"released": False, "blocked": False, "reason": "conflicting_terminal_state"}
     outcome, payload = sm.release_local_claim_outcome(
         ledger_issue, dispatch_id, claim_nonce, repo
     )

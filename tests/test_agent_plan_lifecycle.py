@@ -829,10 +829,13 @@ class TestReadPlanLifecycle(unittest.TestCase):
 
 
 class TestExpiredPlanClaimRecovery(unittest.TestCase):
-    def _claim(self, status="dispatched"):
-        return dispatch_state(status, expired_claim_details())
+    def _claim(self, status="dispatched", reason=None):
+        details = expired_claim_details()
+        if reason is not None:
+            details["reason"] = reason
+        return dispatch_state(status, details)
 
-    def _patches(self, status="dispatched"):
+    def _patches(self, status="dispatched", reason=None):
         return [
             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"),
             mock.patch.object(dispatcher.control_state, "require_live", return_value=None),
@@ -844,7 +847,7 @@ class TestExpiredPlanClaimRecovery(unittest.TestCase):
             mock.patch.object(
                 state_manager,
                 "read_dispatch_state",
-                return_value=self._claim(status),
+                return_value=self._claim(status, reason),
             ),
             mock.patch.object(
                 state_manager,
@@ -895,6 +898,25 @@ class TestExpiredPlanClaimRecovery(unittest.TestCase):
             "reason": "claim_lease_expired",
         })
         state_manager.record_dispatch_state.assert_not_called()
+
+    def test_block_plan_rejects_conflicting_unknown_terminal_reason(self):
+        for reason in (None, "different_reason"):
+            patches = self._patches("failed_unknown_output", reason)
+            for patch in patches:
+                patch.start()
+            try:
+                result = dispatcher.block_plan(
+                    PACKET, ATTEMPT, MAIN, DETAILS["claim_nonce"]
+                )
+                self.assertEqual(result, {
+                    "released": False,
+                    "blocked": False,
+                    "reason": "conflicting_terminal_state",
+                })
+                state_manager.release_failed_capacity.assert_not_called()
+            finally:
+                for patch in reversed(patches):
+                    patch.stop()
 
 
 class TestRecordPlanLifecycleDispatcher(unittest.TestCase):
