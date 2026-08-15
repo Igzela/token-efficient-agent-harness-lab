@@ -2,7 +2,8 @@
 //! Finalize must not drive executor ticks; the existing tick/scheduler path does.
 
 use engine::node_executor::{
-    NodeExecutionInput, NodeExecutionOutput, NodeExecutor, ProcessOutcome,
+    EffectBoundary, ExecutionDisposition, NodeExecutionInput, NodeExecutionOutput, NodeExecutor,
+    ProcessOutcome,
 };
 use engine::product_golden_path::{
     validate_intake, ProductExecutorPolicy, ProductTaskBudget, ProductTaskIntakeRequest,
@@ -872,4 +873,193 @@ fn workflow_scheduler_advances_product_run_without_finalize_ticks() {
         .unwrap();
         assert_eq!(content, FIXTURE_DETERMINISTIC_NOTE_CONTENT);
     });
+}
+
+// AC2 typed boundary: exhaustive process-outcome disposition mapping. The
+// closed vocabulary is classification only; it never terminalizes a
+// ProductTask, authorizes retry, or mints approval/output/spend authority.
+
+fn failure_state(state: &str) -> ProcessOutcome {
+    ProcessOutcome::failure(state, None, "typed boundary fixture")
+}
+
+#[test]
+fn process_outcome_disposition_is_exhaustive_and_closed() {
+    use ExecutionDisposition::*;
+
+    assert_eq!(ProcessOutcome::exited(0).disposition(), KnownSuccess);
+
+    let effect_started_failures: [ProcessOutcome; 12] = [
+        ProcessOutcome::exited(7),
+        ProcessOutcome::signaled(Some(9)),
+        ProcessOutcome::signaled(None),
+        failure_state("output_read_failed"),
+        failure_state("timed_out"),
+        failure_state("timeout"),
+        failure_state("wait_failed"),
+        failure_state("stdout_reader_failed"),
+        failure_state("stderr_reader_failed"),
+        failure_state("combined_reader_failed"),
+        failure_state("process_tree_cleanup_failed"),
+        failure_state("output_limit_exceeded"),
+    ];
+    for outcome in &effect_started_failures {
+        assert_eq!(
+            outcome.disposition(),
+            KnownFailureEffectStarted,
+            "state={} exit_code={:?} signal={:?}",
+            outcome.state,
+            outcome.exit_code,
+            outcome.signal
+        );
+        assert!(!outcome.successful_exit());
+    }
+
+    let effect_not_started_failures: [ProcessOutcome; 4] = [
+        failure_state("spawn_failed"),
+        failure_state("process_tree_containment_unavailable"),
+        failure_state("process_tree_containment_unsupported"),
+        failure_state("invalid_output_limits"),
+    ];
+    for outcome in &effect_not_started_failures {
+        assert_eq!(outcome.disposition(), KnownFailureEffectNotStarted);
+        assert!(!outcome.successful_exit());
+    }
+}
+
+#[test]
+fn process_outcome_unknown_is_never_success_or_known_failure() {
+    let unknown = ProcessOutcome::unavailable("executor has no OS process owner");
+    assert_eq!(unknown.disposition(), ExecutionDisposition::Unknown);
+    assert!(!unknown.successful_exit());
+
+    // An exited observation without an exit code is incomplete evidence.
+    let exited_without_code = ProcessOutcome::failure("exited", None, "no exit code");
+    assert_eq!(
+        exited_without_code.disposition(),
+        ExecutionDisposition::Unknown
+    );
+
+    // A future/unknown state string fails closed to unknown, not success.
+    let unknown_state = ProcessOutcome::failure("future_executor_state", None, "unmapped");
+    assert_eq!(unknown_state.disposition(), ExecutionDisposition::Unknown);
+    assert!(!unknown_state.successful_exit());
+}
+
+#[test]
+fn process_outcome_effect_boundary_is_closed() {
+    assert_eq!(
+        ProcessOutcome::exited(0).effect_boundary(),
+        Some(EffectBoundary::EffectStarted)
+    );
+    assert_eq!(
+        ProcessOutcome::signaled(None).effect_boundary(),
+        Some(EffectBoundary::EffectStarted)
+    );
+    assert_eq!(
+        failure_state("spawn_failed").effect_boundary(),
+        Some(EffectBoundary::EffectNotStarted)
+    );
+    assert_eq!(
+        failure_state("process_tree_containment_unavailable").effect_boundary(),
+        Some(EffectBoundary::EffectNotStarted)
+    );
+    assert_eq!(
+        failure_state("invalid_output_limits").effect_boundary(),
+        Some(EffectBoundary::EffectNotStarted)
+    );
+    assert_eq!(
+        failure_state("timed_out").effect_boundary(),
+        Some(EffectBoundary::EffectStarted)
+    );
+    assert_eq!(
+        ProcessOutcome::unavailable("no process owner").effect_boundary(),
+        None
+    );
+}
+
+#[test]
+fn node_execution_output_disposition_is_process_evidence_only() {
+    let command = NodeExecutionOutput {
+        status: "completed".to_string(),
+        executor_type: "command".to_string(),
+        output: None,
+        error_domain: None,
+        error_message: None,
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost: None,
+        latency_ms: None,
+        process_outcome: Some(ProcessOutcome::exited(0)),
+        resolved_model: None,
+    };
+    assert_eq!(command.disposition(), ExecutionDisposition::KnownSuccess);
+
+    let provider = NodeExecutionOutput {
+        status: "completed".to_string(),
+        executor_type: "provider".to_string(),
+        output: None,
+        error_domain: None,
+        error_message: None,
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost: None,
+        latency_ms: None,
+        process_outcome: None,
+        resolved_model: None,
+    };
+    // A provider result has no OS-process owner; its disposition from process
+    // evidence is unknown, never a fabricated success.
+    assert_eq!(provider.disposition(), ExecutionDisposition::Unknown);
+}
+
+#[test]
+fn process_outcome_serialization_round_trips_unchanged() {
+    for outcome in [
+        ProcessOutcome::exited(0),
+        ProcessOutcome::exited(7),
+        ProcessOutcome::signaled(Some(9)),
+        ProcessOutcome::unavailable("no process owner"),
+        failure_state("spawn_failed"),
+        failure_state("timed_out"),
+    ] {
+        let encoded = serde_json::to_string(&outcome).expect("serialize");
+        let decoded: ProcessOutcome = serde_json::from_str(&encoded).expect("deserialize");
+        assert_eq!(outcome, decoded, "round trip for {}", outcome.state);
+        assert_eq!(decoded.schema_version, "process_outcome.v1");
+    }
+}
+
+#[test]
+fn execution_disposition_and_effect_boundary_serialize_snake_case() {
+    use ExecutionDisposition::*;
+    for (disposition, expected) in [
+        (KnownSuccess, "known_success"),
+        (
+            KnownFailureEffectNotStarted,
+            "known_failure_effect_not_started",
+        ),
+        (KnownFailureEffectStarted, "known_failure_effect_started"),
+        (Unknown, "unknown"),
+    ] {
+        assert_eq!(
+            serde_json::to_value(disposition).unwrap(),
+            serde_json::json!(expected)
+        );
+        let decoded: ExecutionDisposition =
+            serde_json::from_value(serde_json::json!(expected)).unwrap();
+        assert_eq!(decoded, disposition);
+    }
+
+    for (boundary, expected) in [
+        (EffectBoundary::EffectNotStarted, "effect_not_started"),
+        (EffectBoundary::EffectStarted, "effect_started"),
+    ] {
+        assert_eq!(
+            serde_json::to_value(boundary).unwrap(),
+            serde_json::json!(expected)
+        );
+        let decoded: EffectBoundary = serde_json::from_value(serde_json::json!(expected)).unwrap();
+        assert_eq!(decoded, boundary);
+    }
 }

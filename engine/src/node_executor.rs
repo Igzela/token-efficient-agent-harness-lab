@@ -698,6 +698,98 @@ impl ProcessOutcome {
     pub fn successful_exit(&self) -> bool {
         self.state == "exited" && self.exit_code == Some(0)
     }
+
+    /// AC2 typed boundary: the closed effect-boundary axis for a process
+    /// observation. `None` when the observation is success or when the effect
+    /// boundary cannot be determined (incomplete/unknown evidence).
+    pub fn effect_boundary(&self) -> Option<EffectBoundary> {
+        match self.state.as_str() {
+            // The process never started: admission/containment/limits refused
+            // before any child could observe an effect.
+            "spawn_failed"
+            | "process_tree_containment_unavailable"
+            | "process_tree_containment_unsupported"
+            | "invalid_output_limits" => Some(EffectBoundary::EffectNotStarted),
+            // The process started (or the observation is post-spawn).
+            "exited"
+            | "signaled"
+            | "output_read_failed"
+            | "timed_out"
+            | "timeout"
+            | "wait_failed"
+            | "stdout_reader_failed"
+            | "stderr_reader_failed"
+            | "combined_reader_failed"
+            | "process_tree_cleanup_failed"
+            | "output_limit_exceeded" => Some(EffectBoundary::EffectStarted),
+            // "unavailable" and any unknown state carry no effect-boundary
+            // proof and must fail closed.
+            _ => None,
+        }
+    }
+
+    /// AC2 typed boundary: the closed execution disposition derived from this
+    /// process observation.
+    ///
+    /// Classification only: it is the narrow process-success/process-failure
+    /// predicate, never a ProductTask terminalization, retry authorization,
+    /// approval, output, spend, or target authority. `ProcessOutcome::unavailable`
+    /// and unknown states are incomplete process evidence and remain `Unknown`.
+    pub fn disposition(&self) -> ExecutionDisposition {
+        match self.state.as_str() {
+            "exited" => match self.exit_code {
+                Some(0) => ExecutionDisposition::KnownSuccess,
+                Some(_) => ExecutionDisposition::KnownFailureEffectStarted,
+                None => ExecutionDisposition::Unknown,
+            },
+            // A signal is a known termination with incomplete detail, but the
+            // process demonstrably ran.
+            "signaled" => ExecutionDisposition::KnownFailureEffectStarted,
+            "spawn_failed"
+            | "process_tree_containment_unavailable"
+            | "process_tree_containment_unsupported"
+            | "invalid_output_limits" => ExecutionDisposition::KnownFailureEffectNotStarted,
+            "output_read_failed"
+            | "timed_out"
+            | "timeout"
+            | "wait_failed"
+            | "stdout_reader_failed"
+            | "stderr_reader_failed"
+            | "combined_reader_failed"
+            | "process_tree_cleanup_failed"
+            | "output_limit_exceeded" => ExecutionDisposition::KnownFailureEffectStarted,
+            // "unavailable" means no OS-process evidence is present; the
+            // possible effect stays unknown and non-retryable without proof.
+            _ => ExecutionDisposition::Unknown,
+        }
+    }
+}
+
+/// AC2 typed boundary: closed effect-boundary axis shared by every executor
+/// mapping. `effect_not_started` is a pre-send/pre-child refusal with no
+/// observable effect; `effect_started` is any observation after the effect may
+/// have begun.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectBoundary {
+    EffectNotStarted,
+    EffectStarted,
+}
+
+/// AC2 typed boundary: closed execution disposition for executor evidence.
+///
+/// This is the typed projection of the closed outcome vocabulary, not a state
+/// machine or authority. `KnownFailureEffectNotStarted` and
+/// `KnownFailureEffectStarted` encode the effect-boundary axis inside the
+/// known-failure cell; `Unknown` is never success, never complete evidence, and
+/// never retry authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionDisposition {
+    KnownSuccess,
+    KnownFailureEffectNotStarted,
+    KnownFailureEffectStarted,
+    Unknown,
 }
 
 pub(crate) fn exit_status_signal(status: &std::process::ExitStatus) -> Option<i32> {
@@ -752,6 +844,20 @@ pub struct NodeExecutionOutput {
 }
 
 impl NodeExecutionOutput {
+    /// AC2 typed boundary: the closed execution disposition from the process
+    /// evidence carried by this node output.
+    ///
+    /// This reflects process evidence only. Provider/managed results without an
+    /// OS-process owner therefore classify as `Unknown` here and must be
+    /// classified by the provider's own pre-send/definitive/unknown evidence,
+    /// never forced through an OS-process variant.
+    pub fn disposition(&self) -> ExecutionDisposition {
+        self.process_outcome
+            .as_ref()
+            .map(ProcessOutcome::disposition)
+            .unwrap_or(ExecutionDisposition::Unknown)
+    }
+
     pub fn to_value(&self) -> Value {
         let mut value = json!({
             "status": self.status,

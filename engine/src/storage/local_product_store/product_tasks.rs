@@ -4508,12 +4508,17 @@ impl LocalProductStore {
                 all_passed = false;
                 final_status = "authority_lost";
             }
+            // AC2 typed boundary: process success is the narrow typed
+            // `KnownSuccess` disposition, never a fabricated success. The
+            // existing store-owned verification/terminal owner still decides
+            // terminalization; this predicate only classifies the process
+            // evidence.
             let passed = lost_after_effect.is_none()
                 && output.status == "completed"
-                && output
-                    .process_outcome
-                    .as_ref()
-                    .is_some_and(crate::node_executor::ProcessOutcome::successful_exit);
+                && output.process_outcome.as_ref().is_some_and(|outcome| {
+                    outcome.disposition()
+                        == crate::node_executor::ExecutionDisposition::KnownSuccess
+                });
             if !passed {
                 all_passed = false;
                 if lost_after_effect.is_none() {
