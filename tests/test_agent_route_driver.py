@@ -1366,6 +1366,8 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "macro_rules! wrapper { (TypedBoundary::Exited($value:expr)) => {} }\n",
             "fn build() { TypedBoundary(code); }\n",
             "fn build() { TypedBoundary! {}; }\n",
+            "match value { typed_boundary(code) => {} }\n",
+            "macro_rules! wrapper { (typed_boundary($value:expr)) => {} }\n",
         ):
             self.assertFalse(
                 route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
