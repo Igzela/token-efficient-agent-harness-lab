@@ -1634,11 +1634,11 @@ class CurrentMainEvidenceVerifier:
         if language == "rust":
             code = cls._rust_code(source)
             patterns = (
-                re.compile(rf"\b{escaped}\s*(?:\(|::)"),
-                re.compile(rf"\b{escaped}\s*!\s*(?:\(|\[|\{{)"),
-                re.compile(rf"\b{escaped}\s*\{{"),
+                (re.compile(rf"\b{escaped}\s*(?:\(|::)"), False),
+                (re.compile(rf"\b{escaped}\s*!\s*(?:\(|\[|\{{)"), False),
+                (re.compile(rf"\b{escaped}\s*\{{"), True),
             )
-            for pattern in patterns:
+            for pattern, struct_literal in patterns:
                 for match in pattern.finditer(code):
                     line_start = code.rfind("\n", 0, match.start()) + 1
                     prefix = code[line_start : match.start()]
@@ -1647,6 +1647,11 @@ class CurrentMainEvidenceVerifier:
                         prefix,
                     ) or re.search(
                         r"\b(?:impl|for|macro_rules!)\s*(?:<[^>\n]*>)?\s*$",
+                        prefix,
+                    ):
+                        continue
+                    if struct_literal and re.search(
+                        r"->\s*(?:&\s*(?:'[A-Za-z_][A-Za-z0-9_]*\s*)?(?:mut\s*)?)?$",
                         prefix,
                     ):
                         continue

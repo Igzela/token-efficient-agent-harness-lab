@@ -1350,6 +1350,7 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "pub struct TypedBoundary {}\n",
             "unsafe impl TypedBoundary {}\n",
             "macro_rules! TypedBoundary {}\n",
+            "fn build() -> TypedBoundary {}\n",
         ):
             self.assertFalse(
                 route_driver.CurrentMainEvidenceVerifier._consumes_symbol(
