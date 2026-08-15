@@ -800,7 +800,7 @@ def compile_successor(
         f"10. **Compatibility, rollback, and retention.** {contract['rollback']}\n"
         f"11. **Exit artifact.** Evidence destinations: {', '.join(contract['evidence_destinations'])}.\n"
         "12. **Next action.** Governed PR, exact-head review/CI, manual merge, closeout, then repeat evidence-backed promotion.\n\n"
-        "### 11. Weak-Agent Dispatch Capsule\n\n"
+        "### 11. Bounded Autonomous Worker Dispatch Capsule\n\n"
         f"<!-- weak-agent-dispatch:v1\n{capsule_json}\n-->{t3_marker}"
     )
     next_document = compact_next_window(
@@ -1557,7 +1557,7 @@ Otherwise return this schema (no extra keys):
 
 
 class CurrentMainEvidenceVerifier:
-    """Turn a weak worker proposal into verified current-main evidence.
+    """Turn a bounded autonomous worker proposal into verified current-main evidence.
 
     This is deliberately a small deep module: model text can suggest a finite
     closure, but this module is the sole place that parses it, reads the exact

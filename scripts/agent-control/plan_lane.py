@@ -3,8 +3,9 @@
 The canonical document is the only source of plan authority.  A poll result is
 bounded transport only; callers must re-read the accepted-main document before
 claiming or mutating anything.  Plan subjects consume the accepted
-``weak-agent-dispatch:v1`` / session-context representation; no second semantic
-plan contract may be invented.
+bounded autonomous worker / session-context representation (legacy machine
+identifier: ``weak-agent-dispatch:v1``); no second semantic plan contract may
+be invented.
 """
 
 from __future__ import annotations
@@ -299,8 +300,9 @@ def _parse(
 ) -> PlanCandidate:
     """Parse exactly one explicit READY packet from accepted canonical prose.
 
-    The candidate is derived from the accepted ``weak-agent-dispatch:v1``
-    capsule inside the current packet block — the same representation the
+    The candidate is derived from the accepted bounded autonomous worker
+    capsule inside the current packet block (legacy machine identifier:
+    ``weak-agent-dispatch:v1``) — the same representation the
     session entry and handoff checker consume.  ``task_spec_sha256`` remains
     the canonical digest of the derived spec so a mutated capsule can never
     mint a new binding.

@@ -824,7 +824,9 @@ def weak_agent_dispatch_failures(
         return failures
     current_packet_id = next(iter(executable))
     if not re.search(
-        r"^### 11\. Weak-Agent Dispatch Capsule$", next_text, re.MULTILINE
+        r"^### 11\. (?:Bounded Autonomous Worker Dispatch Capsule|Weak-Agent Dispatch Capsule)$",
+        next_text,
+        re.MULTILINE,
     ):
         failures.append("NEXT_DECISION is missing Weak-Agent Dispatch Capsule section")
     markers = list(WEAK_AGENT_DISPATCH_RE.finditer(next_text))
