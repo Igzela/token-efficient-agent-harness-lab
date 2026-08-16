@@ -229,7 +229,7 @@ if [ "$OPENCODE_EXIT" -ne 0 ]; then
   if [ "$OPENCODE_EXIT" -eq 124 ] || [ "$OPENCODE_EXIT" -eq 137 ]; then
     fail_closed "model_execution_timeout" "OpenCode execution exceeded its bounded timeout"
   fi
-  if grep -Eq '402|payment required|insufficient balance|insufficient funds|credit|usage|quota|rate limit' <<<"$LOWER_OUTPUT"; then
+  if grep -Eiq 'http[^[:alnum:]]*402([^[:alnum:]]|$)|status(code)?[^0-9]{0,8}402([^0-9]|$)|payment required|insufficient balance|insufficient funds|credit|usage|quota|rate limit' <<<"$LOWER_OUTPUT"; then
     fail_closed "usage_or_credit_exhaustion" "OpenCode usage or credit limit rejected execution"
   fi
   if grep -Eq 'auth|login|unauthorized|forbidden' <<<"$LOWER_OUTPUT"; then
