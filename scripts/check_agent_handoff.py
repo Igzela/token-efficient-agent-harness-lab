@@ -216,11 +216,11 @@ HISTORICAL_PACKET_SOURCE_RE = re.compile(
 )
 ROUTED_PACKET_STATE_RE = re.compile(
     rf"`(?P<packet>{PACKET_ID_PATTERN})`\s*(?:\u2014|-)\s*"
-    r"`(?P<state>[A-Z_]+)`",
+    r"`(?P<state>[A-Z0-9_]+)`",
     re.MULTILINE,
 )
 PACKET_STATE_RE = re.compile(
-    r"^\*\*State:\*\* `(?P<state>[A-Z_]+)`(?:[ \t]+.*)?$", re.MULTILINE
+    r"^\*\*State:\*\* `(?P<state>[A-Z0-9_]+)`(?:[ \t]+.*)?$", re.MULTILINE
 )
 STAGE_ROW_RE = re.compile(
     r"^\|\s*(?P<stage>PE-\d+)\s*\|[^|]*\|[^|]*\|\s*(?P<summary>[^|]+?)\s*\|$",
@@ -232,6 +232,7 @@ VALID_PACKET_STATES = {
     "DECISION_REQUIRED",
     "IN_PROGRESS",
     "COMPLETE",
+    "T3_REQUIRED",
 }
 
 ACCEPTED_PACKET_RECEIPT_RE = re.compile(
@@ -948,7 +949,7 @@ def _packet_dependency_cycle(
 
 
 FORWARD_ORDER_WINDOW_RE = re.compile(
-    r"\[window:\s*(?P<label>[^\]]*?)\s*—\s*(?P<state>[A-Z_]+)\s*,\s*(?P<detail>[^\]]*)\]",
+    r"\[window:\s*(?P<label>[^\]]*?)\s*—\s*(?P<state>[A-Z0-9_]+)\s*,\s*(?P<detail>[^\]]*)\]",
     re.MULTILINE,
 )
 

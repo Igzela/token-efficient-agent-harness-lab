@@ -40,9 +40,9 @@ PACKET_HISTORICAL_HEADING = re.compile(
     rf"^#{{2,3}} (?:Completed|Retained) .*?\((?P<packet>{PACKET_TOKEN})\)\s*$",
     re.MULTILINE,
 )
-PACKET_STATE = re.compile(r"^\*\*State:\*\* `(?P<state>[A-Z_]+)`", re.MULTILINE)
+PACKET_STATE = re.compile(r"^\*\*State:\*\* `(?P<state>[A-Z0-9_]+)`", re.MULTILINE)
 PACKET_HISTORICAL_STATE = re.compile(
-    r"^\*\*Historical state:\*\* `(?P<state>[A-Z_]+)`", re.MULTILINE
+    r"^\*\*Historical state:\*\* `(?P<state>[A-Z0-9_]+)`", re.MULTILINE
 )
 ACTIVE_ROUTING = re.compile(r"^\s*\d+\.\s+`(?P<packet>[A-Za-z0-9-]+)`", re.MULTILINE)
 _ACCEPTED_RECEIPT_ROW = re.compile(
