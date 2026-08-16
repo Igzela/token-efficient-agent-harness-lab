@@ -184,6 +184,8 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
             "Verify exact requested head",
             "Report documentation-only lane",
             "Report accepted PR reuse lane",
+            "Report non-Rust diff lane",
+            "Report non-TypeScript diff lane",
         }
         for name in (
             "rust-tests",

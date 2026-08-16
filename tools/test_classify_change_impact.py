@@ -18,17 +18,34 @@ class ClassifyChangeImpactTests(unittest.TestCase):
         self.assertEqual(result["mode"], "docs_only")
         self.assertTrue(result["docs_only"])
         self.assertFalse(result["fast_only"])
+        self.assertFalse(result["has_rust"])
+        self.assertFalse(result["has_ts"])
 
     def test_draft_code_uses_noncanonical_fast_lane(self) -> None:
         result = module.classify(["engine/src/lib.rs"], draft=True)
         self.assertEqual(result["mode"], "fast_draft")
         self.assertFalse(result["docs_only"])
         self.assertTrue(result["fast_only"])
+        self.assertTrue(result["has_rust"])
 
     def test_ready_code_requires_full_matrix(self) -> None:
         result = module.classify(["engine/src/lib.rs"], draft=False)
         self.assertEqual(result["mode"], "full")
         self.assertFalse(result["fast_only"])
+        self.assertTrue(result["has_rust"])
+        self.assertFalse(result["has_ts"])
+
+    def test_frontend_only_diff_has_no_rust_impact(self) -> None:
+        result = module.classify(["dashboard/src/App.tsx", "dashboard/package.json"], draft=False)
+        self.assertEqual(result["mode"], "full")
+        self.assertFalse(result["has_rust"])
+        self.assertTrue(result["has_ts"])
+
+    def test_python_sdk_only_diff_has_no_rust_or_ts_impact(self) -> None:
+        result = module.classify(["sdk/python/src/client.py"], draft=False)
+        self.assertEqual(result["mode"], "full")
+        self.assertFalse(result["has_rust"])
+        self.assertFalse(result["has_ts"])
 
     def test_mixed_or_executable_diff_requires_full_matrix(self) -> None:
         for paths in (
@@ -43,6 +60,7 @@ class ClassifyChangeImpactTests(unittest.TestCase):
 
     def test_empty_or_unsafe_path_fails_closed(self) -> None:
         self.assertEqual(module.classify([], draft=False)["mode"], "full")
+        self.assertTrue(module.classify([], draft=False)["has_rust"])
         self.assertFalse(module.is_documentation_path("../README.md"))
         self.assertFalse(module.is_documentation_path("/README.md"))
 

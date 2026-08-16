@@ -46,6 +46,8 @@ jobs:
       docs_only: ${{ steps.classify.outputs.docs_only }}
       mode: ${{ steps.classify.outputs.mode }}
       reused_pr: ${{ steps.classify.outputs.reused_pr }}
+      has_rust: ${{ steps.classify.outputs.has_rust }}
+      has_ts: ${{ steps.classify.outputs.has_ts }}
     steps:
       - name: Check out classifier candidate
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -78,6 +80,8 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
             echo "mode=full" >> "$GITHUB_OUTPUT"
             echo "reused_pr=false" >> "$GITHUB_OUTPUT"
+            echo "has_rust=true" >> "$GITHUB_OUTPUT"
+            echo "has_ts=true" >> "$GITHUB_OUTPUT"
           }
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
             full_mode
@@ -109,6 +113,8 @@ jobs:
               echo "docs_only=false" >> "$GITHUB_OUTPUT"
               echo "mode=reused_pr" >> "$GITHUB_OUTPUT"
               echo "reused_pr=true" >> "$GITHUB_OUTPUT"
+              echo "has_rust=false" >> "$GITHUB_OUTPUT"
+              echo "has_ts=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "Trusted PR reuse proof unavailable; continuing with exact diff classification."
@@ -138,9 +144,13 @@ jobs:
               new_mode = fields[1]
               if old_mode not in allowed_modes or new_mode not in allowed_modes:
                   docs_only = False
+          has_rust = data.get("has_rust", True) if not docs_only else False
+          has_ts = data.get("has_ts", True) if not docs_only else False
           print(f"docs_only={str(docs_only).lower()}")
           print(f"mode={'docs_only' if docs_only else 'full'}")
           print("reused_pr=false")
+          print(f"has_rust={str(has_rust).lower()}")
+          print(f"has_ts={str(has_ts).lower()}")
           PY
       - name: Upload main CI reuse receipt
         if: steps.classify.outputs.reused_pr == 'true'
@@ -294,8 +304,11 @@ jobs:
       - name: Report accepted PR reuse lane
         if: needs.classify-change-impact.outputs.mode == 'reused_pr'
         run: echo "rust-tests reused from the accepted tree-identical PR head"
+      - name: Report non-Rust diff lane
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust == 'false'
+        run: echo "rust-tests not applicable to a diff with zero Rust impact"
       - name: Install bubblewrap and mold linker
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: |
           set -euo pipefail
           sudo apt-get install -y --no-install-recommends bubblewrap mold clang
@@ -303,16 +316,16 @@ jobs:
           /usr/bin/bwrap --version
           mold --version
       - name: Install Rust toolchain
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Set up sccache
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: "v0.15.0"
           disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -325,32 +338,32 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Install pytest for the frozen RWE verifier shape
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --user pytest
           python3 -m pytest --version
       - name: Run cargo test
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: scripts/ci/run_rust_tests.py
       - name: Check formatting
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: cargo fmt --check
       - name: Run clippy
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: cargo clippy -p engine --all-targets --all-features -- -D warnings
       - name: Install cargo-audit
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
         with:
           tool: cargo-audit@0.22.2
       - name: Audit Rust dependencies
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: |
           CARGO_TERM_COLOR=never cargo audit --version | grep -F 'cargo-audit-audit 0.22.2'
           cargo audit --deny warnings
       - name: Report sccache statistics
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         continue-on-error: true
         run: '"${SCCACHE_PATH}" --show-stats'
 
@@ -389,8 +402,11 @@ jobs:
       - name: Report accepted PR reuse lane
         if: needs.classify-change-impact.outputs.mode == 'reused_pr'
         run: echo "pg-integration-tests reused from the accepted tree-identical PR head"
+      - name: Report non-Rust diff lane
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust == 'false'
+        run: echo "pg-integration-tests not applicable to a diff with zero Rust impact"
       - name: Start PostgreSQL service
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: |
           set -euo pipefail
           docker run --detach --name "${PG_CONTAINER}" \
@@ -408,23 +424,23 @@ jobs:
           docker logs "${PG_CONTAINER}"
           exit 1
       - name: Install bubblewrap and mold linker
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: |
           set -euo pipefail
           sudo apt-get install -y --no-install-recommends bubblewrap mold clang
           test -x /usr/bin/bwrap
           mold --version
       - name: Install Rust toolchain
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Set up sccache
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: "v0.15.0"
           disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -437,23 +453,23 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Install pytest for the frozen RWE verifier shape
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --user pytest
           python3 -m pytest --version
       - name: Run PostgreSQL integration tests
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: bash scripts/ci/run_postgres_tests.sh
       - name: Verify PostgreSQL owner evidence through the PE-6 harness
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: PYTHONPATH=. python3 tools/run_fault_drills.py --suite storage --seed 0 --worker 0 --require-supported --output /tmp/acp-pe6-storage.json --format human
       - name: Report sccache statistics
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         continue-on-error: true
         run: '"${SCCACHE_PATH}" --show-stats'
       - name: Stop PostgreSQL service
-        if: always() && needs.classify-change-impact.outputs.mode == 'full'
+        if: always() && needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: docker rm --force "${PG_CONTAINER}" || true
 
   typescript-tests:
@@ -483,11 +499,14 @@ jobs:
       - name: Report accepted PR reuse lane
         if: needs.classify-change-impact.outputs.mode == 'reused_pr'
         run: echo "typescript-tests reused from the accepted tree-identical PR head"
+      - name: Report non-TypeScript diff lane
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts == 'false'
+        run: echo "typescript-tests not applicable to a diff with zero TypeScript impact"
       - name: Set up Bun
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts != 'false'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Cache Bun downloads
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts != 'false'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
@@ -495,25 +514,25 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
       - name: Install SDK dependencies
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts != 'false'
         run: cd sdk/typescript && bun install --frozen-lockfile
       - name: Run SDK tests
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts != 'false'
         run: cd sdk/typescript && bun run test
       - name: Build SDK package
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts != 'false'
         run: cd sdk/typescript && bun run build
       - name: Audit SDK dependencies
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts != 'false'
         run: cd sdk/typescript && bun audit
       - name: Install dashboard dependencies
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts != 'false'
         run: cd dashboard && bun install --frozen-lockfile
       - name: Check dashboard
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts != 'false'
         run: cd dashboard && bun run lint && bun run typecheck && bun run build
       - name: Audit dashboard dependencies
-        if: needs.classify-change-impact.outputs.mode == 'full'
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts != 'false'
         run: cd dashboard && bun audit
 
   native-runtime:
