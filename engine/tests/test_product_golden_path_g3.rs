@@ -969,3 +969,194 @@ fn workspace_missing_during_verification_fails_closed() {
         );
     });
 }
+
+#[test]
+fn test_product_task_status_transition_table_exhaustive() {
+    use engine::product_golden_path::is_valid_product_task_transition;
+
+    let all_statuses = [
+        ProductTaskStatus::Admitted,
+        ProductTaskStatus::WorkspacePreparing,
+        ProductTaskStatus::WorkspaceBound,
+        ProductTaskStatus::GraphReady,
+        ProductTaskStatus::Running,
+        ProductTaskStatus::Verifying,
+        ProductTaskStatus::RepairPending,
+        ProductTaskStatus::AwaitingApproval,
+        ProductTaskStatus::OutputPending,
+        ProductTaskStatus::Completed,
+        ProductTaskStatus::Failed,
+        ProductTaskStatus::Killed,
+        ProductTaskStatus::Paused,
+        ProductTaskStatus::BudgetExhausted,
+        ProductTaskStatus::Blocked,
+        ProductTaskStatus::OutcomeUnknown,
+    ];
+
+    let strict_final = [
+        ProductTaskStatus::Completed,
+        ProductTaskStatus::Failed,
+        ProductTaskStatus::Killed,
+        ProductTaskStatus::BudgetExhausted,
+        ProductTaskStatus::Blocked,
+    ];
+
+    for from in strict_final {
+        for to in all_statuses {
+            assert!(
+                !is_valid_product_task_transition(from, to),
+                "Strict final state {from:?} cannot transition to {to:?}"
+            );
+        }
+    }
+
+    // OutcomeUnknown can only transition to reconciliation states
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::OutcomeUnknown,
+        ProductTaskStatus::OutputPending
+    ));
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::OutcomeUnknown,
+        ProductTaskStatus::Completed
+    ));
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::OutcomeUnknown,
+        ProductTaskStatus::Failed
+    ));
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::OutcomeUnknown,
+        ProductTaskStatus::Killed
+    ));
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::OutcomeUnknown,
+        ProductTaskStatus::Blocked
+    ));
+    assert!(!is_valid_product_task_transition(
+        ProductTaskStatus::OutcomeUnknown,
+        ProductTaskStatus::Running
+    ));
+    assert!(!is_valid_product_task_transition(
+        ProductTaskStatus::OutcomeUnknown,
+        ProductTaskStatus::Admitted
+    ));
+
+    // Admitted can only transition to WorkspacePreparing, Failed, Killed, Blocked
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::Admitted,
+        ProductTaskStatus::WorkspacePreparing
+    ));
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::Admitted,
+        ProductTaskStatus::Failed
+    ));
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::Admitted,
+        ProductTaskStatus::Killed
+    ));
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::Admitted,
+        ProductTaskStatus::Blocked
+    ));
+    assert!(!is_valid_product_task_transition(
+        ProductTaskStatus::Admitted,
+        ProductTaskStatus::Running
+    ));
+    assert!(!is_valid_product_task_transition(
+        ProductTaskStatus::Admitted,
+        ProductTaskStatus::Completed
+    ));
+}
+
+#[test]
+fn test_pure_orchestrator_graph_compilation_and_validation_golden_traces() {
+    use engine::product_golden_path::{
+        compile_product_executable_graph, validate_intake, ProductExecutorPolicy,
+        ProductOutputIntent, ProductTaskIntakeRequest, ProductVerificationCommand,
+        PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION,
+    };
+    use serde_json::json;
+
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+
+    let req = ProductTaskIntakeRequest {
+        objective: "Golden trace test for pure orchestrator core extraction.".to_string(),
+        target_id: "repo-1".to_string(),
+        target_repo_path: "/tmp/repo-1".to_string(),
+        source_kind: None,
+        source_revision: "1234567890abcdef1234567890abcdef12345678".to_string(),
+        source_tree_hash: None,
+        allowed_paths: vec!["README.md".to_string(), "docs/USER_GUIDE.md".to_string()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: "test -f README.md".to_string(),
+            timeout_ms: 5_000,
+        }],
+        output_intent: "artifact_only".to_string(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["command".to_string(), "managed_deepseek".to_string()],
+            prefer: Some("command".to_string()),
+        },
+        budget: None,
+        risk_class: "low".to_string(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: None,
+        idempotency_key: "pure-orch-key-1".to_string(),
+        expected_version: None,
+        tenant_id: Some("local".to_string()),
+        workspace_id: Some("default".to_string()),
+        workspace_mode: Some("git_worktree".to_string()),
+    };
+
+    let validated = validate_intake(&req, "local", "default").unwrap();
+    assert_eq!(validated.tenant_id, "local");
+    assert_eq!(validated.workspace_id, "default");
+    assert_eq!(validated.output_intent, ProductOutputIntent::ArtifactOnly);
+    assert_eq!(validated.intake_contract_sha256.len(), 64);
+    assert_eq!(validated.objective_fingerprint.len(), 64);
+
+    let task_json = json!({
+        "task_id": "product-task-pure-1",
+        "status": "workspace_bound",
+        "tenant_id": "local",
+        "workspace_id": "default",
+        "objective_fingerprint": validated.objective_fingerprint,
+        "intake_contract_sha256": validated.intake_contract_sha256,
+        "output_intent": "artifact_only",
+        "workspace_binding": {
+            "workspace_path": "/tmp/workspace-1",
+            "workspace_id": "default",
+            "source_revision": "1234567890abcdef1234567890abcdef12345678",
+            "allowed_paths": ["README.md", "docs/USER_GUIDE.md"]
+        },
+        "intake": {
+            "objective_preview": "Golden trace test for pure orchestrator core extraction.",
+            "budget": {
+                "total_tokens": 5000,
+                "total_calls": 5
+            },
+            "verification_commands": [{
+                "command": "test -f README.md",
+                "timeout_ms": 5000
+            }]
+        }
+    });
+
+    let plan_ids = engine::read_only_planner::WorkflowPlanIds::for_sequence(42);
+    let graph =
+        compile_product_executable_graph(&task_json, "2026-08-16T12:00:00Z", &plan_ids, "command")
+            .expect("compile command graph");
+
+    assert_eq!(graph["schema_version"], "workflow_graph.v1");
+    assert_eq!(
+        graph["product_graph_schema_version"],
+        PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION
+    );
+    assert_eq!(graph["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(graph["nodes"][0]["executor"], "command");
+    assert_eq!(graph["nodes"][0]["task_type"], "command");
+
+    std::env::remove_var(PRODUCT_TASK_GATE);
+}
