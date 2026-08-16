@@ -460,17 +460,26 @@ document, not a new runtime or persistence schema. Its v1 bindings are:
 
 | Manifest field | Frozen v1 binding |
 |---|---|
-| Contract/evaluator | `PE7-HE-EC2-CONTRACT-1`; evaluator owner `engine/src/harness_evolution_eval.rs`; `EVAL_SCHEMA_VERSION = harness_evolution_eval.v1`; evaluator identity is the active identity's stored `evaluator_identity_hash`. |
+| Contract/evaluator | `manifest_id = harness_evolution_ec2_contract.v1`; `contract_id = PE7-HE-EC2-CONTRACT-1`; evaluator owner `engine/src/harness_evolution_eval.rs`; `EVAL_SCHEMA_VERSION = harness_evolution_eval.v1`; evaluator identity is the active identity's stored `evaluator_identity_hash`. |
 | Task/holdout | Task-family manifest with `development`, `validation`, and `sealed_holdout`; `SEALED_SCHEMA_VERSION = harness_evolution_sealed_holdout.v1`; task membership digest `sha256("sealed|task_id|family_id|label_sha256")`, vault digest `sha256(join(sealed_task_hashes, "|"))`; plaintext tasks/labels remain evaluator-only. |
 | Labels/rubric | Every task binds `task_id`, `family_id`, `label_sha256`, and an immutable rubric/version digest; a label or rubric change creates a new family/contract epoch. |
 | Access | `ec2-access-policy.v1` with exactly the candidate/worker, evaluator, reviewer, and operator/controller classes defined above; no class may write another class's inputs or outcome. |
-| Sentinels/invalidation | `ec2-sentinel-policy.v1` with contamination, gaming, and safety input-owner classes and receipts defined below; statuses are `PASS`, `FAIL`, and `UNKNOWN`; `FAIL`/`UNKNOWN` invalidates. |
+| Sentinels/invalidation | `ec2-sentinel-policy.v1` with contamination, gaming, and safety input-owner classes and `harness_evolution_sentinel_receipt.v1` receipts defined below; statuses are `PASS`, `FAIL`, and `UNKNOWN`; `FAIL`/`UNKNOWN` invalidates. |
 | Outcome | `PredictionOutcomeV1` evaluator derivation bound to hypothesis-manifest, evaluation/bundle, evaluator-identity, and evidence digests; statuses are `correct`, `incorrect`, `partially_supported`, `contradicted`, and `unavailable`. |
-| Review | `ec2-review-policy.v1`: independent reviewer identity class; immutable evidence/hard-gate rubric; sealed-label/rubric blinding; no repair after evaluation; preserve-and-escalate disagreement; record review duration and rework timestamps as non-authoritative evidence. |
+| Review | `ec2-review-policy.v1` and `reviewer_policy_sha256`: independent reviewer identity class; immutable evidence/hard-gate rubric; sealed-label/rubric blinding; no repair after evaluation; preserve-and-escalate disagreement; record review duration and rework timestamps as non-authoritative evidence. |
 | Existing owners | Verification, replay, scorecard, review, output, audit, and `LocalProductStore` owner identities listed in the table above; no parallel owner is admitted. |
 
 A candidate, reviewer, or worker cannot rewrite this manifest; changing any
 field creates a new contract epoch and requires a separately accepted packet.
+The manifest is canonical UTF-8 JSON with sorted object keys, no insignificant
+whitespace, fixed array order (`evaluator`, `task`, `holdout`, `labels`,
+`access`, `sentinels`, `invalidation`, `outcome`, `review`, `owners`), and no
+unlisted optional fields. `manifest_sha256` is
+`sha256(canonical_json(manifest with manifest_sha256=""))`; component policy
+digests use the same rule. The per-epoch task-family, vault, evaluator, and
+reviewer-policy digest values are recorded by implementation successors; this
+contract freezes their identity, encoding, and derivation rather than
+inventing runtime values before those packets exist.
 
 The evaluator constellation and holdout are immutable for one evaluation
 epoch. A task family has development, validation, and sealed-holdout splits;
@@ -484,6 +493,28 @@ eligibility. Development and validation evidence may be recorded, but only
 complete validation evidence with a passing hard gate, all three sentinel
 receipts equal to `PASS`, and no invalidation can enter the existing
 Pareto/archive path.
+
+The archive predicate is one conjunctive rule:
+
+```text
+archive_eligible(candidate, evaluation) :=
+  consumed_one_use_selection_receipt.family_id == evaluation.family_id
+  ∧ consumed_one_use_selection_receipt.candidate_ids contains candidate.id
+  ∧ evaluation.terminal == COMPLETE
+  ∧ evaluation.candidate_id == candidate.id
+  ∧ evaluation.evaluator_identity_hash == active.evaluator_identity_hash
+  ∧ evaluation.active_version_hash == candidate.active_version_hash
+  ∧ evaluation.content_hash == candidate.content_hash
+  ∧ every validation record is complete
+  ∧ every validation hard_gate == PASSED
+  ∧ sentinel[contamination].status == PASS
+  ∧ sentinel[gaming].status == PASS
+  ∧ sentinel[safety].status == PASS
+  ∧ invalidation == false
+```
+
+Any missing, mismatched, stale, or outcome-unknown term makes the predicate
+false and retains the rejected evidence under existing owners.
 
 After the separate entrant-admission receipt and evaluation, three independent
 sentinel classes are required before eligible archive or parent selection:
@@ -500,9 +531,13 @@ The sentinel inputs are independent of candidate-authored status: contamination
 uses access/audit and sealed-vault boundary evidence; gaming uses evaluator
 configuration, evidence-completeness, and tool-policy cross-checks; and safety
 uses the existing scope, authority, secret, target-output, and recovery
-verification receipts. Each class has an owner-derived policy/input digest and
-a receipt bound to the candidate, evaluation, evaluator identity, and source
-evidence. No class can disable another, and a missing, conflicting, or
+verification receipts. The contamination input owner is the existing
+workspace/access/audit and `LocalProductStore` owner; the gaming input owner is
+the evaluator and verification owner; the safety input owner is the existing
+Product Golden Path, tool-policy, and output-boundary owner. Each class emits
+one `harness_evolution_sentinel_receipt.v1` with its policy digest, input-owner
+class, candidate/evaluation/evaluator identities, source-evidence digest, and
+status. No class can disable another, and a missing, conflicting, or
 candidate-controlled input makes independence `UNKNOWN`, not `PASS`.
 Each sentinel is evaluator/owner-derived and returns a fail-closed invalidation
 on `FAIL` or `UNKNOWN`. Invalidation keeps the candidate, rejection reason,
