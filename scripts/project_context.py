@@ -137,7 +137,7 @@ def parse_first_routed_packet(next_text: str) -> dict[str, str | None]:
         next_heading = re.search(r"^#{2,3} Packet ", next_text[heading.end() :], re.MULTILINE)
         end = heading.end() + next_heading.start() if next_heading else len(next_text)
         block = next_text[heading.start() : end]
-    state_match = re.search(r"^\*\*State:\*\* `([A-Z_]+)`", block, re.MULTILINE)
+    state_match = re.search(r"^\*\*State:\*\* `([A-Z0-9_]+)`", block, re.MULTILINE)
     structured_owner = re.search(
         r"^\*\*(?:Owned PR|Review surface):\*\*\s*(?P<value>.*?)\s*$",
         block,

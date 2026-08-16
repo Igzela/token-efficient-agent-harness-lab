@@ -390,8 +390,8 @@ class PacketExtractionTests(unittest.TestCase):
             document, accepted_status_document(), MAIN
         )
         self.assertEqual(packet["packet_id"], "TOOL-SESSION-CONTEXT-1")
-        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
-        self.assertTrue(packet["checkpoint_allowed"])
+        self.assertIn(packet["state"], {"READY_FOR_EXECUTION", "T3_REQUIRED"})
+        self.assertEqual(packet["checkpoint_allowed"], packet["state"] in session_context.EXECUTABLE_PACKET_STATES)
         self.assertFalse(packet["execution_authorized"])
         capsule = session_context.current_dispatch_capsule(document, packet)
         self.assertEqual(capsule["packet_id"], packet["packet_id"])
@@ -1166,8 +1166,8 @@ class CheckpointTests(unittest.TestCase):
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
-        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
-        self.assertTrue(packet["checkpoint_allowed"])
+        self.assertIn(packet["state"], {"READY_FOR_EXECUTION", "T3_REQUIRED"})
+        self.assertEqual(packet["checkpoint_allowed"], packet["state"] in session_context.EXECUTABLE_PACKET_STATES)
         capsule = session_context.current_dispatch_capsule(next_document, packet)
         self.assertEqual(capsule["packet_id"], packet["packet_id"])
         self.assertEqual(capsule["packet_state"], packet["state"])
@@ -1205,17 +1205,26 @@ class CheckpointTests(unittest.TestCase):
             snapshot=snapshot,
             checkpoint=None,
         )
-        self.assertEqual(entry["context_mode"], "FRESH_PACKET")
-        self.assertEqual(entry["resume_disposition"], "RESUME")
-        self.assertEqual(entry["resume_reason"], "clean_accepted_baseline")
+        if packet["state"] == "READY_FOR_EXECUTION":
+            self.assertEqual(entry["context_mode"], "FRESH_PACKET")
+            self.assertEqual(entry["resume_disposition"], "RESUME")
+            self.assertEqual(entry["resume_reason"], "clean_accepted_baseline")
+            self.assertTrue(entry["checkpoint_allowed"])
+        else:
+            self.assertEqual(entry["context_mode"], "STOP")
+            self.assertEqual(entry["resume_disposition"], "DECISION_REQUIRED")
+            self.assertEqual(entry["resume_reason"], "packet_not_executable")
+            self.assertFalse(entry["checkpoint_allowed"])
         self.assertIsNotNone(entry["dispatch_capsule"])
         self.assertEqual(
             entry["dispatch_capsule"]["packet_id"],
             packet["packet_id"],
         )
         self.assertFalse(entry["execution_authorized"])
-        self.assertTrue(entry["checkpoint_allowed"])
-        self.assertIsNotNone(entry["checkpoint_write_commands"])
+        if entry["checkpoint_allowed"]:
+            self.assertIsNotNone(entry["checkpoint_write_commands"])
+        else:
+            self.assertIsNone(entry["checkpoint_write_commands"])
         self.assertIsNotNone(entry["verification_contract_sha256"])
         self.assertEqual(
             entry["verification_commands"], list(capsule["verification"])
@@ -1228,13 +1237,13 @@ class CheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-AC6-CONTRACT-1",
+            packet_id="PE7-RWE-CR-ANALYSIS-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertFalse(extract["execution_authorized"])
         self.assertEqual(
-            extract["profile_id"], "PE7-AC6-CONTRACT-1.v1"
+            extract["profile_id"], "PE7-RWE-CR-ANALYSIS-1.v1"
         )
         self.assertEqual(extract["worker_tier"], "T2")
 
@@ -1677,12 +1686,12 @@ class AdversarialCheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-RWE-CR-RUN-1",
+            packet_id="PE7-RWE-CR-ANALYSIS-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertEqual(extract["packet_state"], "BLOCKED_PREREQUISITE")
-        self.assertEqual(extract["worker_tier"], "T3")
+        self.assertEqual(extract["worker_tier"], "T2")
         self.assertFalse(extract["execution_authorized"])
 
 

@@ -64,7 +64,7 @@ PACKET_HEADING = re.compile(
     r"^#{2,3} Packet (?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)(?:\b.*)?$",
     re.MULTILINE,
 )
-PACKET_STATE = re.compile(r"^\*\*State:\*\*\s*`(?P<state>[A-Z_]+)`", re.MULTILINE)
+PACKET_STATE = re.compile(r"^\*\*State:\*\*\s*`(?P<state>[A-Z0-9_]+)`", re.MULTILINE)
 STAGE_HEADING = re.compile(r"^## Stage .+$", re.MULTILINE)
 
 ROLES = frozenset({"planning", "coding", "review", "ci-repair", "operator", "contributor"})
@@ -183,6 +183,7 @@ DISPATCH_CAPSULE_FIELDS = frozenset(
         "verification",
         "verification_family",
         "worker_tier",
+        "t3_request_digest",
     }
 )
 CANONICAL_DOCUMENTS = frozenset(
@@ -383,7 +384,7 @@ class PacketBinding:
         if not isinstance(packet_id, str) or not PACKET_ID.fullmatch(packet_id):
             raise SessionContextError("packet_id_invalid")
         state = _bounded_text(wire.get("state"), "packet_state", max_chars=64)
-        if not re.fullmatch(r"[A-Z_]+", state):
+        if not re.fullmatch(r"[A-Z0-9_]+", state):
             raise SessionContextError("packet_state_invalid")
         source_path = _repo_path(wire.get("source_path"), "packet_source_path")
         packet_sha256 = _validate_sha(
@@ -980,7 +981,7 @@ class SessionEntry:
         packet_state = _bounded_text(
             wire.get("packet_state"), "session_entry_packet_state", max_chars=64
         )
-        if not re.fullmatch(r"[A-Z_]+", packet_state):
+        if not re.fullmatch(r"[A-Z0-9_]+", packet_state):
             raise SessionContextError("session_entry_packet_state_invalid")
         packet_sha256 = _validate_sha(
             wire.get("packet_sha256"), "session_entry_packet_sha256", SHA256
