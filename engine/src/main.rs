@@ -1621,4 +1621,23 @@ mod tests {
         assert!(scopes.contains("audit:read"));
         assert!(scopes.contains("dispatch:write"));
     }
+
+    #[test]
+    fn test_module_composition_injection_without_mutable_globals() {
+        let _guard = main_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        clear_trusted_provider_env();
+
+        // 1. Isolated local store and circuit breaker registry construction
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+        let registry = Arc::new(CircuitBreakerRegistry::new());
+
+        // 2. Explicit dependency injection without mutable globals
+        let provider_result = build_provider_for_engine(&store, &registry);
+        assert!(provider_result.is_err()); // Default-off when env is unconfigured
+
+        // 3. Admin scope list is deterministic and independent
+        let admin_scopes = local_admin_scope_list();
+        assert!(!admin_scopes.is_empty());
+        assert_eq!(admin_scopes.len(), local_admin_scopes().len());
+    }
 }
