@@ -434,7 +434,7 @@ The existing owners remain canonical:
 |---|---|---|
 | Active identity, candidate, lineage, mutable surface, and content binding | `engine/src/harness_evolution.rs` | Candidate identity and source-bound content are immutable inputs; candidates cannot replace the active Harness, evaluator identity, or policy. |
 | Task family, labels, rubric identity, sealed vault, budgets, hard gates, metrics, evaluation bundle, and archive projection | `engine/src/harness_evolution_eval.rs` | The evaluator derives results from evaluator-owned task and evidence inputs; fixture helpers are not authoritative acceptance. |
-| One-use sealed selection, evaluation persistence, receipts, archive, audit, replay, and rollback | `engine/src/storage/local_product_store/harness_evolution.rs` plus existing migration/audit owners | `LocalProductStore` remains the sole durable owner; no evaluator, queue, ledger, or parallel evidence store is introduced. |
+| One-use sealed selection, evaluation persistence, receipts, archive, audit, replay, and rollback | `engine/src/storage/local_product_store/harness_evolution.rs` plus existing migration/audit owners | The evaluator supplies entrant IDs under the frozen policy; `LocalProductStore` alone validates, persists, and consumes the one-use receipt. It does not choose policy or create a competing evaluator. |
 | Review, verification, scorecard, and PR-ready evidence | Existing repository review, verification, scorecard, replay, and output owners | These owners consume immutable redacted evaluator evidence; none can rewrite labels, rubric, outcomes, or evaluator identity. |
 
 The access envelope is fixed:
@@ -444,9 +444,10 @@ The access envelope is fixed:
    cannot read plaintext labels, sealed membership, rubric internals, sentinel
    state, or prior sealed outcomes, and it cannot write an evaluation outcome.
 2. The evaluator owns the frozen task-family manifest, plaintext labels and
-   rubric, sealed vault, one-use entrant selection, sentinel disposition, and
-   derivation of evaluation and prediction outcomes. Label and rubric changes
-   require a new versioned manifest; an in-place edit is invalid.
+   rubric, sealed vault, entrant-selection policy/request, sentinel
+   disposition, and derivation of evaluation and prediction outcomes. Label
+   and rubric changes require a new versioned manifest; an in-place edit is
+   invalid.
 3. A reviewer receives only the immutable, redacted evidence needed for review.
    Reviewer disagreement is evidence for the existing review owner; it is not
    permission to edit evaluator inputs or convert missingness into a pass.
@@ -454,16 +455,27 @@ The access envelope is fixed:
    later T3 effect, but cannot alter the evaluator constellation, labels,
    rubric, holdout, sentinel rules, or outcome derivation.
 
+The exact EC2 contract manifest is one versioned, digest-bound control-plane
+document, not a new runtime or persistence schema. It must name the evaluator
+identity and task-family manifest, holdout-vault identity, label/rubric version
+and digests, access-policy version and classes, each sentinel policy/version
+and input-owner class, the invalidation vocabulary, the
+`PredictionOutcomeV1` derivation version, and the existing
+verification/replay/scorecard/review owner identities. A candidate, reviewer,
+or worker cannot rewrite this manifest; changing any field creates a new
+contract epoch and requires a separately accepted packet.
+
 The evaluator constellation and holdout are immutable for one evaluation
 epoch. A task family has development, validation, and sealed-holdout splits;
 each task is bound to a stable task identity, family identity, label digest,
 and rubric/version digest. The sealed vault exposes only membership hashes and
 its canonical digest outside the evaluator. A store-owned, one-use selection
-   receipt may admit only the preselected bounded entrant set under the
-   existing evaluator/store limit; this contract does not change that limit.
-   Sealed execution never feeds mutation, prediction, parent selection, or
-   archive eligibility. Development and validation evidence may be recorded,
-but only complete, hard-gate-passing validation evidence can enter the existing
+receipt may admit only the preselected bounded entrant set under the existing
+evaluator/store limit; this contract does not change that limit. Sealed
+execution never feeds mutation, prediction, parent selection, or archive
+eligibility. Development and validation evidence may be recorded, but only
+complete validation evidence with a passing hard gate, all three sentinel
+receipts equal to `PASS`, and no invalidation can enter the existing
 Pareto/archive path.
 
 After the separate entrant-admission receipt and evaluation, three independent
