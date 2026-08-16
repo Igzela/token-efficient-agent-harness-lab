@@ -1959,6 +1959,13 @@ class CurrentMainEvidenceVerifier:
         }
         if not required_documents.issubset(allowed_paths):
             raise RouteDriverError("promotion_allowed_paths_missing_canonical_documents")
+        if successor.sketch.packet_class == "IMPLEMENT":
+            source_allowed = [
+                p for p in allowed_paths
+                if not (p.startswith("docs/") or p.endswith(".md") or p in {"START_HERE.md", "AGENTS.md", "README.md", "CLAUDE.md"})
+            ]
+            if not source_allowed:
+                raise RouteDriverError("promotion_implement_allowed_paths_lack_source")
         for path in allowed_paths:
             self._source(path)
         for path in read_paths:

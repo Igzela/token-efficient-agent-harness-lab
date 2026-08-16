@@ -57,43 +57,50 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-RWE-DB-PREFLIGHT-1` | `COMPLETE` | Real same-tenant Store-owned Golden Path prerequisite completed by ProductTask `ptask-20260814135947-18cbb0b9731e62bf`, run `run-0007`, terminal evidence `product-terminal-ptask-20260814135947-18cbb0b9731e62bf-9-44d49301c781`; Draft PR-only output `Igzela/alters-lab#47`, target main `6240768506320a324d68787b9eaa86971c8c930c`; provider-free `rwe_operator_preflight.v1` `ready=true`, zero blockers, no authority/provider/target effect; projection sha256 `b8c35d4060d98598ce3e3bc3977a84d125b1df09ff66b2b9f6d9aa4303c03954` |
 
 | `PE7-AC3-CONTRACT-1` | `COMPLETE` | PR #486 exact head `9487a73ab9e00018103193d18c848e375b215a1b`; merge `6b2a6c46d30089800394ee82edd21075a2ef0d86`; exact-head `PASS`; canonical workflow `31922547776` |
-| `PE7-AC3-ORCHESTRATOR-CORE-1` | `COMPLETE` | PR #488 exact head `d8d1ac7c7ce2911486c7737de63647e1ddf7a476`; merge `650a9102faf183d46064c869dd5d76db8e44b64f`; exact-head `PASS`; canonical workflow `31927020088` |
-| `PE7-AC3-PORT-MIGRATION-1` | `COMPLETE` | PR #489 exact head `9495baee75a53f4908acdad44f804f2b93596672`; merge `02dcfb7d094e0ef9c6317ad800eab1ca1c957dd9`; exact-head `PASS`; canonical workflow `31927787705` |
-| `PE7-AC4-CONTRACT-1` | `COMPLETE` | PR #490 exact head `61d702dd166b430bdc64634e94d8157443f2ac25`; merge `40c648a6de7e2288485af936d6274068a3d1b394`; exact-head `PASS`; canonical workflow `31928462592` |
-| `PE7-AC4-VIEWS-CORE-1` | `COMPLETE` | PR #491 exact head `ec91c8f7fe181c9a49c4a7c9146654bfb1956971`; merge `7c6b5a3115febd76906f04dcc14d5b9d0dc96f77`; exact-head `PASS`; canonical workflow `31928817866` |
-| `PE7-AC4-CALLER-MIGRATION-1` | `COMPLETE` | PR #493 exact head `e7ba6ac3fffd28fc4456466ce4387d062ca6a882`; merge `48f85425477bd141f1237bf9f9a62fd9ceaa5602`; exact-head `PASS`; canonical workflow `31929528758` |
-| `PE7-AC5-CONTRACT-1` | `COMPLETE` | PR #494 exact head `d35df3ae6c9be98678eacbee1a42f96087d375c0`; merge `437f2b8533d557fc6ae87ebe0840aaeb30489689`; exact-head `PASS`; canonical workflow `31930174257` |
-| `PE7-AC5-ROOT-CORE-1` | `COMPLETE` | PR #495 exact head `edb34b0482b142614d100f532c64ce7ac6481f2b`; merge `2453ec1adcb7a252d61b1234ab7da36678caf640`; exact-head `PASS`; canonical workflow `31930486388` |
-| `PE7-AC5-MODULE-MIGRATION-1` | `COMPLETE` | PR #497 exact head `b493e784ad53af8e5fccd519718a4f492da30c95`; merge `79cb356e371cc7f243a7ccceed3b3b3e90323689`; exact-head `PASS`; canonical workflow `31931211944` |
-| `PE7-AC6-CONTRACT-1` | `COMPLETE` | PR #499 exact head `4cc7f48589ff98706cc66f002b017b7cf6e73748`; merge `9a7dbb2ddb7887b62904b13988cd6217d504d31b`; exact-head `PASS`; canonical workflow `31931854403` |
-| `PE7-AC6-RUST-CODEGEN-1` | `COMPLETE` | PR #500 exact head `9e4e2a1cc81b5f8ffa434d734e57dc083d8b395f`; merge `516418883104db21449d0d4fdba63e5b837a463d`; exact-head `PASS`; canonical workflow `31932059394` |
-| `PE7-AC6-SDK-MIGRATION-1` | `COMPLETE` | PR #501 exact head `06543f88768e40b1670eeace8ab277aef495ca8e`; merge `3d680b21fa3b007424dd1104dda28a1fe01c9862`; exact-head `PASS`; canonical workflow `31932273685` |
-| `PE7-AC6-DASHBOARD-MIGRATION-1` | `COMPLETE` | PR #503 exact head `8f20d7ba21a45f059335306507cd52dc58f46722`; merge `33d9b8b6ac6055d0c2d9236d8eafa4f8a952b4d6`; exact-head `PASS`; canonical workflow `31932913780` |
-| `PE7-AC6-COMPATIBILITY-CLOSEOUT-1` | `COMPLETE` | PR #504 exact head `d66041149a32323d99b60afcfb21bd049735e667`; merge `c52fdcb18caa4787bfb10689cd32353c88461833`; exact-head `PASS`; canonical workflow `31933082911` |
-| `PE7-AC7-REMOVAL-MANIFEST-1` | `COMPLETE` | PR #505 exact head `fed3a67597d47d5b48291cb11de3c45ed742afb1`; merge `83519bc316e2765f47fa1c0597b75b428be372bb`; exact-head `PASS`; canonical workflow `31933252024` |
-| `PE7-AC7-CLEANUP-1` | `COMPLETE` | PR #506 exact head `e951f3ea9bbf52c22d9c1bbe749cbcbbfd16a71a`; merge `307b3070de5ba86b354072867835e75bd04fbe75`; exact-head `PASS`; canonical workflow `31933456371` |
-| `PE7-AC7-CLOSEOUT-1` | `COMPLETE` | PR #507 exact head `8b47cc6f84a195ce883476f1b28ed5427b67f2a9`; merge `c3aa5f7c6b03944ca0b652af40402631877eacbb`; exact-head `PASS`; canonical workflow `31933628519` |
-| `PE7-RWE-CR-RECONSTRUCTION-1` | `COMPLETE` | PR #508 exact head `1527fc5fef837c237ccf113c07f9e4ee898c9848`; merge `14c0d20b9e62c0e2fb6792400262c5b840a6d0aa`; exact-head `PASS`; canonical workflow `31933837329` |
-| `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` | `COMPLETE` | PR #509 exact head `35e6d73e91a797255ee077481f19f63b0be82a35`; merge `cce8f91caaf1bc1a90259b717ef586820ff47293`; exact-head `PASS`; canonical workflow `31934003226` |
-| `PE7-RWE-CR-RUN-1` | `COMPLETE` | PR #510 exact head `c5c68723025087559ff72ddd42a6d3e6760b6c57`; merge `fdb100a128428ea4d8826e338936f55057a1f989`; exact-head `PASS`; canonical workflow `31934598861` |
-| `PE7-RWE-CR-ANALYSIS-1` | `COMPLETE` | PR #511 exact head `247a88c7bd795cd7a7de87e453fba297131b9e0f`; merge `6669081758b500480d3c378c085c1b0a15145602`; exact-head `PASS`; canonical workflow `31935251070` |
-| `PE7-CWS-INGRESS-INVENTORY-1` | `COMPLETE` | PR #512 exact head `6b8abf898348f2680324dbbf4e023ef67280bf59`; merge `6f9228faea04be5f3999edebfb59a36f11db72d2`; exact-head `PASS`; canonical workflow `31935444988` |
-| `PE7-CWS-PROJECTION-CONTRACT-1` | `COMPLETE` | PR #513 exact head `bccc9aaa032ab601735ba249b19c6a79c177159d`; merge `e9743573a6deb53b6381019a1dabc46e51aff333`; exact-head `PASS`; canonical workflow `31935626991` |
-| `PE7-CWS-REHYDRATION-CONTRACT-1` | `COMPLETE` | PR #514 exact head `2a67606fb56e56ab71dc818a2830f6f485ffadc7`; merge `284b7f3eaecc10c9ece7e92b23ce6f83dde446e5`; exact-head `PASS`; canonical workflow `31935808699` |
-| `PE7-CWS-PROJECTOR-CORE-1` | `COMPLETE` | PR #515 exact head `9762d47cc6295bfa070236f0df508b6fafe30f00`; merge `2ee2157f1a5eb0506319e86385b62f40ba16e3f4`; exact-head `PASS`; canonical workflow `31936004194` |
-| `PE7-CWS-TOOL-RESULT-REDUCTION-1` | `COMPLETE` | PR #516 exact head `2904100f91cb9c454a228429f1d39d669dbbcce2`; merge `beb5584103fb12eba98754d7d40f9a74851bfa7c`; exact-head `PASS`; canonical workflow `31936178506` |
-| `PE7-CWS-REPOSITORY-INTEGRATION-1` | `COMPLETE` | PR #517 exact head `f922bf2e3b8662b5ff7d32f51e5eadf63e7f2624`; merge `a8a729379aa5b85e963335954e13ae28e05f347c`; exact-head `PASS`; canonical workflow `31936366545` |
-| `PE7-CWS-RUNTIME-INTEGRATION-1` | `COMPLETE` | PR #518 exact head `addc3a1b55f3c326956f12a437338204f9a360db`; merge `ff7b7084866f003ae95faa7ade6295a9d7202629`; exact-head `PASS`; canonical workflow `31936548122` |
-| `PE7-CWS-CACHE-PARTITION-1` | `COMPLETE` | PR #519 exact head `99eadbfcb2e6416f6864c8a2edc2fbead3cc4801`; merge `8ff33f7c9ebce55b94bb9c0e813c12c7a8d40c26`; exact-head `PASS`; canonical workflow `31936724895` |
-| `PE7-CWS-BENCHMARK-PROTOCOL-1` | `COMPLETE` | PR #520 exact head `fcf325f0bf4389e2c9ac177531758fc5917ba052`; merge `998a9124c1d2ea0d41e51137f36c466fe878021c`; exact-head `PASS`; canonical workflow `31936985369` |
-| `PE7-CWS-BENCHMARK-PREFLIGHT-1` | `COMPLETE` | PR #521 exact head `8ceee8b411e7757cacea14c34f3a0792d60c1bb2`; merge `189ec4b4d7d82f254b05213aa500e00541edd9fd`; exact-head `PASS`; canonical workflow `31942335704` |
-| `PE7-CWS-BENCHMARK-RUN-1` | `COMPLETE` | PR #522 exact head `ba88f6718f0288863baebcc768ff7c89ed3dfe18`; merge `731936493679aec50c96fa2d595a947f57d584ea`; exact-head `PASS`; canonical workflow `31943063270` |
-| `PE7-CWS-ANALYSIS-1` | `COMPLETE` | PR #523 exact head `1213761fa925e8385efbe79f815c591d7118d439`; merge `7eb2e436f1b2c3b543ab732e9d8b3bb0ec87e6c0`; exact-head `PASS`; canonical workflow `31943272418` |
-| `PE7-HE-EC1-CONTRACT-1` | `COMPLETE` | PR #524 exact head `ce14ddbcdbbee39628f16649d50e32ca2938a575`; merge `6f5744b1b151463a815e50c2317528847c8784d0`; exact-head `PASS`; canonical workflow `31943895341` |
-| `PE7-HE-EC1-IDENTITY-LINEAGE-1` | `COMPLETE` | PR #525 exact head `4763f215305d85465c95b5180aeda92fc6db6df2`; merge `f597d327d7c7d9e423e976ed26eea29f4762b21e`; exact-head `PASS`; canonical workflow `31944540631` |
-| `PE7-HE-EC1-CAUSAL-MANIFEST-1` | `COMPLETE` | PR #526 exact head `bf7c4b14ff033a2a66635818e5ccf44c7e706a61`; merge `3dc5a9b602ef91cde179b83c2695d03af08bd0e1`; exact-head `PASS`; canonical workflow `31944726147` |
-| `PE7-HE-EC1-MUTATION-REGISTRY-1` | `COMPLETE` | PR #527 exact head `98dc94342c86c2cd065f4a7b983a4ac0bd049042`; merge `da7f2eeeb84bccaf45ef6835169f66e3d65ba2c4`; exact-head `PASS`; canonical workflow `31944903259` |
-| `PE7-HE-EC2-CONTRACT-1` | `COMPLETE` | PR #529 exact head `6a34cff9d667a007397213ccf7d85cc60c0c2675`; merge `e405142c6eca2b55b7edd25329ff0a7ab63767ea`; exact-head `PASS`; canonical workflow `31951242817` |
+
+## Invalidated Historical Receipts (Repair Required)
+
+The following 36 packets were merged on historical PRs without complete production implementations or valid independent reviews. They are explicitly marked `INVALIDATED` / `REPAIR_REQUIRED` and removed from the accepted receipts prerequisite index until genuine sequential re-execution and re-proof are achieved:
+
+| Packet | Historical PR / Merge | Audit Disposition |
+|---|---|---|
+| `PE7-AC3-ORCHESTRATOR-CORE-1` | PR #488 merge `650a9102faf183d46064c869dd5d76db8e44b64f` | `INVALIDATED`: Merged without pure orchestrator implementation in `engine/src/product_golden_path.rs`; reopened as active execution frontier (`READY_FOR_EXECUTION`) |
+| `PE7-AC3-PORT-MIGRATION-1` | PR #489 merge `02dcfb7d094e0ef9c6317ad800eab1ca1c957dd9` | `REPAIR_REQUIRED`: Blocked behind reopened `PE7-AC3-ORCHESTRATOR-CORE-1` |
+| `PE7-AC4-CONTRACT-1` | PR #490 merge `40c648a6de7e2288485af936d6274068a3d1b394` | `REPAIR_REQUIRED`: Blocked behind AC3 chain |
+| `PE7-AC4-VIEWS-CORE-1` | PR #491 merge `7c6b5a3115febd76906f04dcc14d5b9d0dc96f77` | `REPAIR_REQUIRED`: Blocked behind `PE7-AC4-CONTRACT-1` |
+| `PE7-AC4-CALLER-MIGRATION-1` | PR #493 merge `48f85425477bd141f1237bf9f9a62fd9ceaa5602` | `REPAIR_REQUIRED`: Blocked behind `PE7-AC4-VIEWS-CORE-1` |
+| `PE7-AC5-CONTRACT-1` | PR #494 merge `437f2b8533d557fc6ae87ebe0840aaeb30489689` | `REPAIR_REQUIRED`: Blocked behind AC4 chain |
+| `PE7-AC5-ROOT-CORE-1` | PR #495 merge `2453ec1adcb7a252d61b1234ab7da36678caf640` | `REPAIR_REQUIRED`: Blocked behind `PE7-AC5-CONTRACT-1` |
+| `PE7-AC5-MODULE-MIGRATION-1` | PR #497 merge `79cb356e371cc7f243a7ccceed3b3b3e90323689` | `REPAIR_REQUIRED`: Blocked behind `PE7-AC5-ROOT-CORE-1` |
+| `PE7-AC6-CONTRACT-1` | PR #499 merge `9a7dbb2ddb7887b62904b13988cd6217d504d31b` | `REPAIR_REQUIRED`: Blocked behind AC5 chain |
+| `PE7-AC6-RUST-CODEGEN-1` | PR #500 merge `516418883104db21449d0d4fdba63e5b837a463d` | `REPAIR_REQUIRED`: Blocked behind `PE7-AC6-CONTRACT-1` |
+| `PE7-AC6-SDK-MIGRATION-1` | PR #501 merge `3d680b21fa3b007424dd1104dda28a1fe01c9862` | `REPAIR_REQUIRED`: Blocked behind `PE7-AC6-RUST-CODEGEN-1` |
+| `PE7-AC6-DASHBOARD-MIGRATION-1` | PR #503 merge `33d9b8b6ac6055d0c2d9236d8eafa4f8a952b4d6` | `REPAIR_REQUIRED`: Blocked behind `PE7-AC6-SDK-MIGRATION-1` |
+| `PE7-AC6-COMPATIBILITY-CLOSEOUT-1` | PR #504 merge `c52fdcb18caa4787bfb10689cd32353c88461833` | `REPAIR_REQUIRED`: Blocked behind `PE7-AC6-DASHBOARD-MIGRATION-1` |
+| `PE7-AC7-REMOVAL-MANIFEST-1` | PR #505 merge `83519bc316e2765f47fa1c0597b75b428be372bb` | `REPAIR_REQUIRED`: Blocked behind AC6 chain |
+| `PE7-AC7-CLEANUP-1` | PR #506 merge `307b3070de5ba86b354072867835e75bd04fbe75` | `REPAIR_REQUIRED`: Blocked behind `PE7-AC7-REMOVAL-MANIFEST-1` |
+| `PE7-AC7-CLOSEOUT-1` | PR #507 merge `c3aa5f7c6b03944ca0b652af40402631877eacbb` | `REPAIR_REQUIRED`: Blocked behind `PE7-AC7-CLEANUP-1` |
+| `PE7-RWE-CR-RECONSTRUCTION-1` | PR #508 merge `14c0d20b9e62c0e2fb6792400262c5b840a6d0aa` | `REPAIR_REQUIRED`: Blocked behind AC7 chain |
+| `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` | PR #509 merge `cce8f91caaf1bc1a90259b717ef586820ff47293` | `REPAIR_REQUIRED`: Blocked behind `PE7-RWE-CR-RECONSTRUCTION-1` |
+| `PE7-RWE-CR-RUN-1` | PR #510 merge `fdb100a128428ea4d8826e338936f55057a1f989` | `REPAIR_REQUIRED`: Blocked behind `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` |
+| `PE7-RWE-CR-ANALYSIS-1` | PR #511 merge `6669081758b500480d3c378c085c1b0a15145602` | `REPAIR_REQUIRED`: Blocked behind `PE7-RWE-CR-RUN-1` |
+| `PE7-CWS-INGRESS-INVENTORY-1` | PR #512 merge `6f9228faea04be5f3999edebfb59a36f11db72d2` | `REPAIR_REQUIRED`: Blocked behind RWE Contemporary Reconstruction |
+| `PE7-CWS-PROJECTION-CONTRACT-1` | PR #513 merge `e9743573a6deb53b6381019a1dabc46e51aff333` | `REPAIR_REQUIRED`: Blocked behind `PE7-CWS-INGRESS-INVENTORY-1` |
+| `PE7-CWS-REHYDRATION-CONTRACT-1` | PR #514 merge `284b7f3eaecc10c9ece7e92b23ce6f83dde446e5` | `REPAIR_REQUIRED`: Blocked behind `PE7-CWS-PROJECTION-CONTRACT-1` |
+| `PE7-CWS-PROJECTOR-CORE-1` | PR #515 merge `2ee2157f1a5eb0506319e86385b62f40ba16e3f4` | `REPAIR_REQUIRED`: Blocked behind `PE7-CWS-REHYDRATION-CONTRACT-1` |
+| `PE7-CWS-TOOL-RESULT-REDUCTION-1` | PR #516 merge `beb5584103fb12eba98754d7d40f9a74851bfa7c` | `REPAIR_REQUIRED`: Blocked behind `PE7-CWS-PROJECTOR-CORE-1` |
+| `PE7-CWS-REPOSITORY-INTEGRATION-1` | PR #517 merge `a8a729379aa5b85e963335954e13ae28e05f347c` | `REPAIR_REQUIRED`: Blocked behind `PE7-CWS-TOOL-RESULT-REDUCTION-1` |
+| `PE7-CWS-RUNTIME-INTEGRATION-1` | PR #518 merge `ff7b7084866f003ae95faa7ade6295a9d7202629` | `REPAIR_REQUIRED`: Blocked behind `PE7-CWS-REPOSITORY-INTEGRATION-1` |
+| `PE7-CWS-CACHE-PARTITION-1` | PR #519 merge `8ff33f7c9ebce55b94bb9c0e813c12c7a8d40c26` | `REPAIR_REQUIRED`: Blocked behind `PE7-CWS-RUNTIME-INTEGRATION-1` |
+| `PE7-CWS-BENCHMARK-PROTOCOL-1` | PR #520 merge `998a9124c1d2ea0d41e51137f36c466fe878021c` | `REPAIR_REQUIRED`: Blocked behind `PE7-CWS-CACHE-PARTITION-1` |
+| `PE7-CWS-BENCHMARK-PREFLIGHT-1` | PR #521 merge `189ec4b4d7d82f254b05213aa500e00541edd9fd` | `REPAIR_REQUIRED`: Blocked behind `PE7-CWS-BENCHMARK-PROTOCOL-1` |
+| `PE7-CWS-BENCHMARK-RUN-1` | PR #522 merge `731936493679aec50c96fa2d595a947f57d584ea` | `REPAIR_REQUIRED`: Blocked behind `PE7-CWS-BENCHMARK-PREFLIGHT-1` |
+| `PE7-CWS-ANALYSIS-1` | PR #523 merge `7eb2e436f1b2c3b543ab732e9d8b3bb0ec87e6c0` | `REPAIR_REQUIRED`: Blocked behind `PE7-CWS-BENCHMARK-RUN-1` |
+| `PE7-HE-EC1-CONTRACT-1` | PR #524 merge `6f5744b1b151463a815e50c2317528847c8784d0` | `REPAIR_REQUIRED`: Blocked behind CWS chain |
+| `PE7-HE-EC1-IDENTITY-LINEAGE-1` | PR #525 merge `4763f215305d85465c95b5180aeda92fc6db6df2` | `REPAIR_REQUIRED`: Blocked behind `PE7-HE-EC1-CONTRACT-1` |
+| `PE7-HE-EC1-CAUSAL-MANIFEST-1` | PR #526 merge `3dc5a9b602ef91cde179b83c2695d03af08bd0e1` | `REPAIR_REQUIRED`: Blocked behind `PE7-HE-EC1-IDENTITY-LINEAGE-1` |
+| `PE7-HE-EC1-MUTATION-REGISTRY-1` | PR #527 merge `da7f2eeeb84bccaf45ef6835169f66e3d65ba2c4` | `REPAIR_REQUIRED`: Blocked behind `PE7-HE-EC1-CAUSAL-MANIFEST-1` |
+| `PE7-HE-EC2-CONTRACT-1` | PR #529 merge `e405142c6eca2b55b7edd25329ff0a7ab63767ea` | `REPAIR_REQUIRED`: Blocked behind EC1 chain |
 ## Accepted Product and Control-Plane State
 
 Accepted `main` contains:
@@ -179,7 +186,9 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | AC0 data/trace freeze | `COMPLETE` | The bounded provider-free owner/caller/transaction/projection/legacy inventory and trace/order closeout are recorded below; no ownership move was made |
 | AC2 typed execution contract | `COMPLETE` | Provider-free typed state/outcome/usage contract, executor mappings, and the accepted fail-closed boundary repair are recorded below; PRs #469, #472, and #475 are merge-backed. The contract authorizes no wire/schema change, authority move, or shared `ProcessSupervisor` |
 | AC2 typed boundary and caller migration | `COMPLETE` | Boundary repair and the enumerated ProductTask verification/managed-review caller migration are accepted by PRs #475 and #478; callers use the canonical typed mapping, unknown evidence remains fail-closed, and AC1 shared supervision remains deferred optional hardening |
-| AC3 Golden Path responsibility contract | `IN_PROGRESS` | Provider-free Golden Path responsibility matrix, state transitions, audit identities, pure inputs/outputs, effect ports, store commands, and migration sequence are frozen below; no runtime, wire, or schema change is authorized |
+| AC3 Golden Path responsibility contract | `COMPLETE` | PR #486 accepted; contract frozen |
+| AC3 Golden Path orchestrator core | `READY_FOR_EXECUTION` | Active semantic execution frontier reopened; awaiting genuine pure orchestrator extraction and golden-trace proof |
+| AC3 port migration | `BLOCKED_PREREQUISITE` | Blocked behind `PE7-AC3-ORCHESTRATOR-CORE-1` |
 | AC4–AC5 | `BLOCKED_PREREQUISITE` | Each stage remains behind its immediately preceding accepted AC contract and closeout |
 | AC6 schema convergence | `BLOCKED_PREREQUISITE` | Contract, Rust/codegen, SDK, Dashboard data migration, compatibility closeout |
 | AC7 cleanup | `BLOCKED_PREREQUISITE` | Removal manifest, deletion-only implementation, independent closeout |
@@ -350,6 +359,7 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 6. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or fixed Meta operator-comparison result exists.
 7. No accepted metacognitive-operator, parameter-efficient training adapter, weight/harness factorial, co-evolution, or outer-policy research contract exists; full-weight and model-architecture evolution remain unrouted.
 8. The failed bootstrap from accepted main `aa83ac1f5eada74199e0ce28ecb91d37a48769d6` remains valid non-authorizing evidence: it stopped with `route_controller_unavailable_timeout` after GitHub rejected 28 workflow inputs with HTTP 422, before any workflow run, PR, claim, Provider call, target write, or external effect. PR #416 and accepted-main smoke `31631388199` removed that exact dispatch blocker. The route remains stopped until the one-time merge-backed bootstrap starts from current main; route10 remains non-resumable obsolete-main evidence.
+9. The 36 historical packets from `PE7-AC3-ORCHESTRATOR-CORE-1` through `PE7-HE-EC2-CONTRACT-1` were merged without required production code changes or valid independent review receipts. Active semantic frontier is reset to `PE7-AC3-CONTRACT-1` complete -> `PE7-AC3-ORCHESTRATOR-CORE-1` reopened/ready. All 36 downstream packets must be executed sequentially with genuine production changes, full test coverage, exact-head reviews, and canonical CI before promotion.
 
 ## Maintenance Boundary
 

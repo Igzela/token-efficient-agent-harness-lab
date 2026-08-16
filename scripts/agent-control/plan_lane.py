@@ -365,6 +365,15 @@ def _parse(
         )
     except artifact_contract.ArtifactContractError as exc:
         raise PlanLaneError("plan_allowed_paths_invalid") from exc
+    packet_class_match = re.search(r"^\*\*Class:\*\*\s*`?(?P<class>[A-Z0-9_]+)`?", packet_block, re.MULTILINE)
+    packet_class = packet_class_match.group("class") if packet_class_match else None
+    if packet_class == "IMPLEMENT":
+        source_paths = [
+            p for p in allowed_paths
+            if not (p.startswith("docs/") or p.endswith(".md") or p in {"START_HERE.md", "AGENTS.md", "README.md", "CLAUDE.md"})
+        ]
+        if not source_paths:
+            raise PlanLaneError("plan_implement_allowed_paths_lack_source")
     prerequisites = _bounded_strings(payload["prerequisites"], "prerequisites", allow_empty=True)
     if any(not PACKET_ID.fullmatch(item) for item in prerequisites):
         raise PlanLaneError("plan_prerequisites_invalid")

@@ -455,8 +455,10 @@ def parse_packet_contracts(
         prerequisite = re.search(
             r"^\*\*Prerequisite:\*\* (?P<value>.+)$", block, re.MULTILINE
         )
+        packet_class = _packet_class(block)
         packets[packet] = {
             "state": states[0],
+            "class": packet_class,
             "prerequisites": (
                 re.findall(PACKET_ID_PATTERN, prerequisite.group("value"))
                 if prerequisite
@@ -669,6 +671,14 @@ def future_route_profile_failures(future_text: str) -> list[str]:
     """Validate the bounded promotion-profile dossier for every future packet."""
 
     failures: list[str] = []
+    seen_headings: set[str] = set()
+    for line in future_text.splitlines():
+        if line.startswith("#"):
+            heading = line.strip()
+            if heading in seen_headings:
+                failures.append(f"FUTURE_ROUTE contains duplicate heading {heading!r}")
+            seen_headings.add(heading)
+
     for heading in FUTURE_ROUTE_REQUIRED_SECTIONS:
         if heading not in future_text:
             failures.append(f"FUTURE_ROUTE is missing future-route section {heading!r}")
@@ -898,6 +908,23 @@ def weak_agent_dispatch_failures(
         )
     elif allowed_scope is not None and not set(allowed_scope).issubset(read_scope):
         failures.append("weak-agent dispatch read_paths must contain allowed_paths")
+    if allowed_scope is not None:
+        packet_info = current_packets.get(current_packet_id, {})
+        packet_cls = packet_info.get("class")
+        if packet_cls == "IMPLEMENT":
+            source_paths = [
+                p
+                for p in allowed_scope
+                if not (
+                    p.startswith("docs/")
+                    or p.endswith(".md")
+                    or p in {"START_HERE.md", "AGENTS.md", "README.md", "CLAUDE.md"}
+                )
+            ]
+            if not source_paths:
+                failures.append(
+                    f"weak-agent dispatch for IMPLEMENT packet {current_packet_id} allowed_paths must contain production code or test paths, found only documentation paths: {allowed_scope}"
+                )
     known_store_mutations = payload.get("known_store_mutations")
     if known_store_mutations is not None and (
         not isinstance(known_store_mutations, list)

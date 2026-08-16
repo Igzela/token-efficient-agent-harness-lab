@@ -33,7 +33,7 @@ These are audited absences or unaccepted seams at the current main, not permissi
 | AC5 composition root | current Rust startup, config, HTTP state, provider, and store construction | no single accepted validated composition-root contract | config precedence conflicts, dependency cycle, or secret resolution broadens |
 | Context working-set projection | existing Repository Context Control Plane plus current prompt/runtime, artifact/evidence, execution-usage, and scorecard owners; then-current accepted license/SBOM/NOTICE owners for any later third-party provenance | no accepted model-visible evidence working-set/residency/rehydration contract; context is assembled through role/capsule/prompt paths and provider prompts without one canonical projection seam; no accepted source-reuse/transplant disposition | projection would become a second memory/store/authority/evaluator, semantic relevance could evict authority/blocker evidence, a reduced item cannot be exact-source-bound and safely rehydrated, license/provenance is unclear or required attribution cannot be retained, a transplant would introduce a second runtime/store/provider/session owner, or upstream semantics cannot map losslessly onto this repository's contract |
 | EC1 causal mutation evidence | existing HE artifact/store owner | `FailurePatternEvidenceV1`, `MutationHypothesisManifestV1`, and `PredictionOutcomeV1` are planned, not current accepted types | identity/causal source can be caller- or candidate-authored, mutable, or unaddressable |
-| EC2 real evaluator/holdout | accepted evaluator/evidence owner; current `harness_evolution_eval.rs` and `LocalProductStore` remain default-off owners | EC2 evaluator/holdout contract is accepted; managed holdout seal, access mediation, sentinel wiring, and real acceptance evidence remain unimplemented successors | fixture result, candidate-controlled rule, leakage, or label uncertainty would be reported as acceptance |
+| EC2 real evaluator/holdout | accepted evaluator/evidence owner; current `harness_evolution_eval.rs` remains fixture/default-off | no managed sealed holdout, access mediation, or real acceptance evaluator evidence | fixture result, candidate-controlled rule, leakage, or label uncertainty would be reported as acceptance |
 | EC3-EC5 controls | existing budget/spend, HE, evaluator, artifact, lease, and store owners | no accepted total-lifecycle enforcement, diversity admission, immutable Pareto archive, or HE stop/recovery state machine | a second ledger/controller appears or crash/exactly-once/hidden-reject behavior is unresolved |
 | HE memory/skill factor | existing HE experimental artifact/store owner | no HE projection adapter/authority exists | product `durable_memory.rs`, global skills, or summaries would become experiment authority |
 | Level-2 | existing HE/scheduler/evaluator/budget/store owners | no bounded Level-2 controller exists | `recursive_execution.rs` task-tree recursion is proposed as controller, or evaluator/budget/stops become mutable |
@@ -77,14 +77,10 @@ The checked manifest below binds the complete ordered packet ID list, class/tier
 The manifest rows are compact arrays of `packet_id`, `class`, `worker_tier`, `risk_class`, and `verification_family`. `execution_profile` is derived as `{packet_id}.v1`. `promotion_requirements` is the shared contract above plus `REFRESH_AT_PROMOTION` for owners, allowed paths, ordered steps, verification, and rollback.
 
 <!-- future-route-inventory:v1
-{"dependency_graph_sha256": "3a21e5bd07e367f9f9689fe4404c1605659d8e70357e658a7a6ad2a65319782e", "ordered_packet_ids": ["PE7-HE-EC2-SENTINEL-CONFORMANCE-1", "PE7-HE-EC2-PREDICTION-OUTCOME-1", "PE7-HE-EC3-CONTRACT-1", "PE7-HE-EC3-INSTRUMENTATION-1", "PE7-HE-EC3-ENFORCEMENT-1", "PE7-HE-EC4-CONTRACT-1", "PE7-HE-EC4-ADMISSION-1", "PE7-HE-EC4-COVERAGE-CLOSEOUT-1", "PE7-HE-EC5-CONTRACT-1", "PE7-HE-EC5-SELECTION-ARCHIVE-1", "PE7-HE-EC5-STOP-RECOVERY-1", "PE7-HE-LEVEL1-PREFLIGHT-1", "PE7-HE-LEVEL1-RUN-1", "PE7-HE-LEVEL1-CLOSEOUT-1", "PE7-HE-LEVEL1-TRANSFER-PROTOCOL-1", "PE7-HE-LEVEL1-TRANSFER-RUN-1", "PE7-HE-LEVEL1-TRANSFER-ANALYSIS-1", "PE7-MEMORY-SKILL-CONTRACT-1", "PE7-MEMORY-ADAPTER-1", "PE7-SKILL-ADAPTER-1", "PE7-MEMORY-SKILL-RUN-1", "PE7-MEMORY-SKILL-ANALYSIS-1", "PE7-HE-LEVEL2-RULE-AUDIT-1", "PE7-HE-LEVEL2-EVIDENCE-ANALYSIS-1", "PE7-HE-LEVEL2-DECISION-1", "PE7-HE-LEVEL2-CONTROLLER-CONTRACT-1", "PE7-HE-LEVEL2-STATE-PERSISTENCE-1", "PE7-HE-LEVEL2-GENERATION-ORCHESTRATION-1", "PE7-HE-LEVEL2-EVALUATION-SELECTION-1", "PE7-HE-LEVEL2-STOP-RECOVERY-1", "PE7-HE-LEVEL2-SIMULATION-1", "PE7-HE-LEVEL2-PILOT-1", "PE7-HE-LEVEL2-CLOSEOUT-1", "PE7-HE-FINAL-TRANSFER-PROTOCOL-1", "PE7-HE-FINAL-TRANSFER-RUN-1", "PE7-HE-FINAL-TRANSFER-ANALYSIS-1", "PE7-HE-ADOPTION-READINESS-1", "PE7-HE-ADOPTION-DECISION-1", "PE7-HE-META-CLAIM-PROTOCOL-1", "PE7-HE-META-OPERATOR-CONTRACT-1", "PE7-HE-META-CORPUS-EVALUATOR-1", "PE7-HE-META-BUDGET-CONTRACT-1", "PE7-HE-META-O0-BASELINE-1", "PE7-HE-META-O1-CANDIDATE-1", "PE7-HE-META-FIXTURE-PILOT-1", "PE7-HE-META-PILOT-CLOSEOUT-1", "PE7-HE-META-COMPARISON-RUN-1", "PE7-HE-META-REPLICATION-RUN-1", "PE7-HE-META-ANALYSIS-DECISION-1", "PE7-HE-ADVANCED-RECURSION-GATE-1", "PE7-HE-R4-METACOGNITIVE-CONTRACT-1", "PE7-HE-R4-METACOGNITIVE-ADAPTER-1", "PE7-HE-R4-COMPARISON-RUN-1", "PE7-HE-R4-REPLICATION-RUN-1", "PE7-HE-R4-ANALYSIS-DECISION-1", "PE7-HE-R5-WEIGHT-CONTRACT-1", "PE7-HE-R5-WEIGHT-ADAPTER-1", "PE7-HE-R5-FACTORIAL-RUN-1", "PE7-HE-R5-FACTORIAL-ANALYSIS-1", "PE7-HE-R5-COEVOLUTION-RUN-1", "PE7-HE-R5-TRANSFER-REPLICATION-1", "PE7-HE-R5-ANALYSIS-DECISION-1", "PE7-HE-R6-OUTER-POLICY-CONTRACT-1", "PE7-HE-R6-OUTER-POLICY-ADAPTER-1", "PE7-HE-R6-COMPARISON-RUN-1", "PE7-HE-R6-REPLICATION-RUN-1", "PE7-HE-R6-ANALYSIS-DECISION-1", "PE7-DASHBOARD-DISPOSITION-1", "PE7-DASHBOARD-REFRESH-1", "PE7-DASHBOARD-CLOSEOUT-1"], "ordered_packet_ids_sha256": "274e4359cbbbd22e8d2f9e6186fc028721280eb0a2c72a20cb6c0728b67105c3", "packet_count": 70, "profiles": [["PE7-HE-EC2-SENTINEL-CONFORMANCE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC2-PREDICTION-OUTCOME-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC3-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-EC3-INSTRUMENTATION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC3-ENFORCEMENT-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC4-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-EC4-ADMISSION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC4-COVERAGE-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-EC5-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-EC5-SELECTION-ARCHIVE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC5-STOP-RECOVERY-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-LEVEL1-PREFLIGHT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-LEVEL1-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-LEVEL1-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-LEVEL1-TRANSFER-PROTOCOL-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-LEVEL1-TRANSFER-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-LEVEL1-TRANSFER-ANALYSIS-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-MEMORY-SKILL-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-MEMORY-ADAPTER-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-SKILL-ADAPTER-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-MEMORY-SKILL-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-MEMORY-SKILL-ANALYSIS-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-LEVEL2-RULE-AUDIT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-LEVEL2-EVIDENCE-ANALYSIS-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-LEVEL2-DECISION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-LEVEL2-CONTROLLER-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-LEVEL2-STATE-PERSISTENCE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-LEVEL2-GENERATION-ORCHESTRATION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-LEVEL2-EVALUATION-SELECTION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-LEVEL2-STOP-RECOVERY-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-LEVEL2-SIMULATION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-LEVEL2-PILOT-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-LEVEL2-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-FINAL-TRANSFER-PROTOCOL-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-FINAL-TRANSFER-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-FINAL-TRANSFER-ANALYSIS-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-ADOPTION-READINESS-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-ADOPTION-DECISION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-META-CLAIM-PROTOCOL-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-META-OPERATOR-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-META-CORPUS-EVALUATOR-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-META-BUDGET-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-META-O0-BASELINE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-META-O1-CANDIDATE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-META-FIXTURE-PILOT-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-META-PILOT-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-META-COMPARISON-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-META-REPLICATION-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-META-ANALYSIS-DECISION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-ADVANCED-RECURSION-GATE-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-R4-METACOGNITIVE-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-R4-METACOGNITIVE-ADAPTER-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-R4-COMPARISON-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R4-REPLICATION-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R4-ANALYSIS-DECISION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-R5-WEIGHT-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-R5-WEIGHT-ADAPTER-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-R5-FACTORIAL-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R5-FACTORIAL-ANALYSIS-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-R5-COEVOLUTION-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R5-TRANSFER-REPLICATION-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R5-ANALYSIS-DECISION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-R6-OUTER-POLICY-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-R6-OUTER-POLICY-ADAPTER-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-R6-COMPARISON-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R6-REPLICATION-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R6-ANALYSIS-DECISION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-DASHBOARD-DISPOSITION-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-DASHBOARD-REFRESH-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-DASHBOARD-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"]], "profiles_sha256": "75acf21f5813c3d283f79d60b485a447497f4563fa9e56abeba55cdca9c73a86", "schema_version": "future_route_inventory.v1"}
+{"dependency_graph_sha256": "5bada9443510e9c029472f9500f913fdf807297b92feb00344989b0c854edb02", "ordered_packet_ids": ["PE7-AC3-PORT-MIGRATION-1", "PE7-AC4-CONTRACT-1", "PE7-AC4-VIEWS-CORE-1", "PE7-AC4-CALLER-MIGRATION-1", "PE7-AC5-CONTRACT-1", "PE7-AC5-ROOT-CORE-1", "PE7-AC5-MODULE-MIGRATION-1", "PE7-AC6-CONTRACT-1", "PE7-AC6-RUST-CODEGEN-1", "PE7-AC6-SDK-MIGRATION-1", "PE7-AC6-DASHBOARD-MIGRATION-1", "PE7-AC6-COMPATIBILITY-CLOSEOUT-1", "PE7-AC7-REMOVAL-MANIFEST-1", "PE7-AC7-CLEANUP-1", "PE7-AC7-CLOSEOUT-1", "PE7-RWE-CR-RECONSTRUCTION-1", "PE7-RWE-CR-PROTOCOL-PREFLIGHT-1", "PE7-RWE-CR-RUN-1", "PE7-RWE-CR-ANALYSIS-1", "PE7-CWS-INGRESS-INVENTORY-1", "PE7-CWS-PROJECTION-CONTRACT-1", "PE7-CWS-REHYDRATION-CONTRACT-1", "PE7-CWS-PROJECTOR-CORE-1", "PE7-CWS-TOOL-RESULT-REDUCTION-1", "PE7-CWS-REPOSITORY-INTEGRATION-1", "PE7-CWS-RUNTIME-INTEGRATION-1", "PE7-CWS-CACHE-PARTITION-1", "PE7-CWS-BENCHMARK-PROTOCOL-1", "PE7-CWS-BENCHMARK-PREFLIGHT-1", "PE7-CWS-BENCHMARK-RUN-1", "PE7-CWS-ANALYSIS-1", "PE7-HE-EC1-CONTRACT-1", "PE7-HE-EC1-IDENTITY-LINEAGE-1", "PE7-HE-EC1-CAUSAL-MANIFEST-1", "PE7-HE-EC1-MUTATION-REGISTRY-1", "PE7-HE-EC2-CONTRACT-1", "PE7-HE-EC2-HOLDOUT-SEAL-1", "PE7-HE-EC2-SENTINEL-CONFORMANCE-1", "PE7-HE-EC2-PREDICTION-OUTCOME-1", "PE7-HE-EC3-CONTRACT-1", "PE7-HE-EC3-INSTRUMENTATION-1", "PE7-HE-EC3-ENFORCEMENT-1", "PE7-HE-EC4-CONTRACT-1", "PE7-HE-EC4-ADMISSION-1", "PE7-HE-EC4-COVERAGE-CLOSEOUT-1", "PE7-HE-EC5-CONTRACT-1", "PE7-HE-EC5-SELECTION-ARCHIVE-1", "PE7-HE-EC5-STOP-RECOVERY-1", "PE7-HE-LEVEL1-PREFLIGHT-1", "PE7-HE-LEVEL1-RUN-1", "PE7-HE-LEVEL1-CLOSEOUT-1", "PE7-HE-LEVEL1-TRANSFER-PROTOCOL-1", "PE7-HE-LEVEL1-TRANSFER-RUN-1", "PE7-HE-LEVEL1-TRANSFER-ANALYSIS-1", "PE7-MEMORY-SKILL-CONTRACT-1", "PE7-MEMORY-ADAPTER-1", "PE7-SKILL-ADAPTER-1", "PE7-MEMORY-SKILL-RUN-1", "PE7-MEMORY-SKILL-ANALYSIS-1", "PE7-HE-LEVEL2-RULE-AUDIT-1", "PE7-HE-LEVEL2-EVIDENCE-ANALYSIS-1", "PE7-HE-LEVEL2-DECISION-1", "PE7-HE-LEVEL2-CONTROLLER-CONTRACT-1", "PE7-HE-LEVEL2-STATE-PERSISTENCE-1", "PE7-HE-LEVEL2-GENERATION-ORCHESTRATION-1", "PE7-HE-LEVEL2-EVALUATION-SELECTION-1", "PE7-HE-LEVEL2-STOP-RECOVERY-1", "PE7-HE-LEVEL2-SIMULATION-1", "PE7-HE-LEVEL2-PILOT-1", "PE7-HE-LEVEL2-CLOSEOUT-1", "PE7-HE-FINAL-TRANSFER-PROTOCOL-1", "PE7-HE-FINAL-TRANSFER-RUN-1", "PE7-HE-FINAL-TRANSFER-ANALYSIS-1", "PE7-HE-ADOPTION-READINESS-1", "PE7-HE-ADOPTION-DECISION-1", "PE7-HE-META-CLAIM-PROTOCOL-1", "PE7-HE-META-OPERATOR-CONTRACT-1", "PE7-HE-META-CORPUS-EVALUATOR-1", "PE7-HE-META-BUDGET-CONTRACT-1", "PE7-HE-META-O0-BASELINE-1", "PE7-HE-META-O1-CANDIDATE-1", "PE7-HE-META-FIXTURE-PILOT-1", "PE7-HE-META-PILOT-CLOSEOUT-1", "PE7-HE-META-COMPARISON-RUN-1", "PE7-HE-META-REPLICATION-RUN-1", "PE7-HE-META-ANALYSIS-DECISION-1", "PE7-HE-ADVANCED-RECURSION-GATE-1", "PE7-HE-R4-METACOGNITIVE-CONTRACT-1", "PE7-HE-R4-METACOGNITIVE-ADAPTER-1", "PE7-HE-R4-COMPARISON-RUN-1", "PE7-HE-R4-REPLICATION-RUN-1", "PE7-HE-R4-ANALYSIS-DECISION-1", "PE7-HE-R5-WEIGHT-CONTRACT-1", "PE7-HE-R5-WEIGHT-ADAPTER-1", "PE7-HE-R5-FACTORIAL-RUN-1", "PE7-HE-R5-FACTORIAL-ANALYSIS-1", "PE7-HE-R5-COEVOLUTION-RUN-1", "PE7-HE-R5-TRANSFER-REPLICATION-1", "PE7-HE-R5-ANALYSIS-DECISION-1", "PE7-HE-R6-OUTER-POLICY-CONTRACT-1", "PE7-HE-R6-OUTER-POLICY-ADAPTER-1", "PE7-HE-R6-COMPARISON-RUN-1", "PE7-HE-R6-REPLICATION-RUN-1", "PE7-HE-R6-ANALYSIS-DECISION-1", "PE7-DASHBOARD-DISPOSITION-1", "PE7-DASHBOARD-REFRESH-1", "PE7-DASHBOARD-CLOSEOUT-1"], "ordered_packet_ids_sha256": "994f7597c61ee77208eaa71c8f1aadf12bb271be75707841993c634fcd10c936", "packet_count": 107, "profiles": [["PE7-AC3-PORT-MIGRATION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-AC4-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-AC4-VIEWS-CORE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-AC4-CALLER-MIGRATION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-AC5-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-AC5-ROOT-CORE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-AC5-MODULE-MIGRATION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-AC6-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-AC6-RUST-CODEGEN-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-AC6-SDK-MIGRATION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-AC6-DASHBOARD-MIGRATION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-AC6-COMPATIBILITY-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-AC7-REMOVAL-MANIFEST-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-AC7-CLEANUP-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-AC7-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-RWE-CR-RECONSTRUCTION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-RWE-CR-PROTOCOL-PREFLIGHT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-RWE-CR-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-RWE-CR-ANALYSIS-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-CWS-INGRESS-INVENTORY-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-CWS-PROJECTION-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-CWS-REHYDRATION-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-CWS-PROJECTOR-CORE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-CWS-TOOL-RESULT-REDUCTION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-CWS-REPOSITORY-INTEGRATION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-CWS-RUNTIME-INTEGRATION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-CWS-CACHE-PARTITION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-CWS-BENCHMARK-PROTOCOL-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-CWS-BENCHMARK-PREFLIGHT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-CWS-BENCHMARK-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-CWS-ANALYSIS-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-EC1-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-EC1-IDENTITY-LINEAGE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC1-CAUSAL-MANIFEST-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC1-MUTATION-REGISTRY-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC2-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-EC2-HOLDOUT-SEAL-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC2-SENTINEL-CONFORMANCE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC2-PREDICTION-OUTCOME-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC3-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-EC3-INSTRUMENTATION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC3-ENFORCEMENT-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC4-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-EC4-ADMISSION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC4-COVERAGE-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-EC5-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-EC5-SELECTION-ARCHIVE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-EC5-STOP-RECOVERY-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-LEVEL1-PREFLIGHT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-LEVEL1-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-LEVEL1-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-LEVEL1-TRANSFER-PROTOCOL-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-LEVEL1-TRANSFER-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-LEVEL1-TRANSFER-ANALYSIS-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-MEMORY-SKILL-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-MEMORY-ADAPTER-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-SKILL-ADAPTER-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-MEMORY-SKILL-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-MEMORY-SKILL-ANALYSIS-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-LEVEL2-RULE-AUDIT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-LEVEL2-EVIDENCE-ANALYSIS-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-LEVEL2-DECISION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-LEVEL2-CONTROLLER-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-LEVEL2-STATE-PERSISTENCE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-LEVEL2-GENERATION-ORCHESTRATION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-LEVEL2-EVALUATION-SELECTION-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-LEVEL2-STOP-RECOVERY-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-LEVEL2-SIMULATION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-LEVEL2-PILOT-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-LEVEL2-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-FINAL-TRANSFER-PROTOCOL-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-FINAL-TRANSFER-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-FINAL-TRANSFER-ANALYSIS-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-ADOPTION-READINESS-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-ADOPTION-DECISION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-META-CLAIM-PROTOCOL-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-META-OPERATOR-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-META-CORPUS-EVALUATOR-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-META-BUDGET-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-META-O0-BASELINE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-META-O1-CANDIDATE-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-META-FIXTURE-PILOT-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-META-PILOT-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-META-COMPARISON-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-META-REPLICATION-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-META-ANALYSIS-DECISION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-ADVANCED-RECURSION-GATE-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-R4-METACOGNITIVE-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-R4-METACOGNITIVE-ADAPTER-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-R4-COMPARISON-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R4-REPLICATION-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R4-ANALYSIS-DECISION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-R5-WEIGHT-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-R5-WEIGHT-ADAPTER-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-R5-FACTORIAL-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R5-FACTORIAL-ANALYSIS-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-R5-COEVOLUTION-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R5-TRANSFER-REPLICATION-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R5-ANALYSIS-DECISION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-HE-R6-OUTER-POLICY-CONTRACT-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-HE-R6-OUTER-POLICY-ADAPTER-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-HE-R6-COMPARISON-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R6-REPLICATION-RUN-1", "EFFECT", "T3", "external_effect", "external_effect_evidence"], ["PE7-HE-R6-ANALYSIS-DECISION-1", "CLOSEOUT", "T2", "none", "evidence_review"], ["PE7-DASHBOARD-DISPOSITION-1", "CONTRACT", "T2", "none", "docs_evidence_review"], ["PE7-DASHBOARD-REFRESH-1", "IMPLEMENT", "T1", "none", "source_focused_full"], ["PE7-DASHBOARD-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"]], "profiles_sha256": "07b6258c009b0472ef2ba3a9e6a770569230174908a19b51ea3acb9a4e79a46c", "schema_version": "future_route_inventory.v1"}
 -->
 
-# Future Route
-
-Last updated: 2026-08-15.
-
-This document is the sole long-horizon routing index. Every packet here is `BLOCKED_PREREQUISITE` and routing-only: its order, prerequisite, intended class, and bounded sketch are accepted planning context, not implementation or external-effect authority.
+Every packet here is `BLOCKED_PREREQUISITE` and routing-only: its order, prerequisite, intended class, and bounded sketch are accepted planning context, not implementation or external-effect authority.
 
 The current executable window and common execution contracts live in `docs/NEXT_DECISION.md`. Accepted truth lives in `docs/CURRENT_STATUS.md`; durable architecture and authority invariants live in `docs/ARCHITECTURE_BOOK.md`; current owners live in `docs/MODULE_MAP.md`; live PR, CI, and review facts come only from a fresh context capsule.
 
@@ -122,6 +118,599 @@ The AC2 contract, typed boundary repair, and enumerated caller migration are acc
 
 AC3 separates orchestration, store mutation, and external effects without changing state-machine or authority order.
 
+### Packet PE7-AC3-PORT-MIGRATION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC3-ORCHESTRATOR-CORE-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Route store mutations and external effects through the accepted ports and migrate existing entrypoints.
+
+**Allowed delta:** Adapter/migration only; existing store/effect owners retain authority and public behavior.
+
+**Exit:** End-to-end, restart, idempotency, audit, terminal, cleanup, and output traces remain equivalent with no duplicate path.
+
+**Stop:** An adapter becomes a policy owner, transaction ordering changes, or old and new effect paths can both execute.
+## Stage Architecture Convergence AC4 - transaction views
+
+AC4 adds borrowed domain views over one underlying LocalProductStore transaction; views never become repositories or stores.
+
+### Packet PE7-AC4-CONTRACT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC3-PORT-MIGRATION-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze only the repeated cross-domain mutation groups that justify transaction views, including borrow/commit/rollback rules and backend parity.
+
+**Allowed delta:** No schema or transaction behavior change.
+
+**Exit:** Exact WorkflowTx/ProductTaskTx/ManagedAcceptanceTx/RweTx method list, call sites, invariants, and forbidden nested commits.
+
+**Stop:** A proposed view owns policy, caching, queuing, independent connection/commit, or cannot map across both backends.
+### Packet PE7-AC4-VIEWS-CORE-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC4-CONTRACT-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Implement the accepted borrowed transaction views for SQLite and PostgreSQL.
+
+**Allowed delta:** Additive internal API only; same underlying transaction/connection, locks, audit, and rollback semantics.
+
+**Exit:** Backend-focused atomicity, rollback, failure injection, idempotency, and no-nested-commit tests.
+
+**Stop:** Backend semantics diverge, a view can outlive/commit independently, or migration would require destructive schema change.
+### Packet PE7-AC4-CALLER-MIGRATION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC4-VIEWS-CORE-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Migrate only the contract-enumerated cross-domain callers and close redundant transaction plumbing.
+
+**Allowed delta:** Mechanical migration; no new repository abstraction or broad store rewrite.
+
+**Exit:** SQLite/PostgreSQL parity, concurrent/restart traces, one atomic commit boundary, and no remaining approved duplicate mutation path.
+
+**Stop:** A caller requires different atomicity, a compatibility path stays active, or lock ordering/deadlock risk changes.
+## Stage Architecture Convergence AC5 - composition root
+
+AC5 centralizes parsing, validation, and dependency construction while keeping external-effect modes explicit and default-off.
+
+### Packet PE7-AC5-CONTRACT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC4-CALLER-MIGRATION-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze configuration sources, precedence, validated types, dependency graph, runtime modes, secret-resolution boundary, and module migration batches.
+
+**Allowed delta:** No configuration behavior change and no new environment variable.
+
+**Exit:** One composition manifest with exact defaults, conflicts, validation errors, owner paths, and staged rollback.
+
+**Stop:** Two accepted sources conflict, a secret would move earlier than the send boundary, or a module requires service-locator/global-registry behavior.
+### Packet PE7-AC5-ROOT-CORE-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC5-CONTRACT-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Implement validated configuration/dependency construction in the existing Rust startup composition surface.
+
+**Allowed delta:** Additive root and compatibility injection only; no module migration or mode-default change beyond the contract.
+
+**Exit:** Deterministic parse/validation/conflict/default-off tests and no credential persistence/logging.
+
+**Stop:** Root takes runtime policy owned elsewhere, requires mutable globals, or cannot reproduce accepted startup behavior.
+### Packet PE7-AC5-MODULE-MIGRATION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC5-ROOT-CORE-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Migrate contract-enumerated modules off independent shared environment/config interpretation and remove approved legacy reads.
+
+**Allowed delta:** Mechanical dependency injection and local cleanup only.
+
+**Exit:** Negative environment-read search, all runtime modes/golden traces pass, defaults stay off, and rollback restores the compatibility injection layer.
+
+**Stop:** An unlisted module, hidden precedence rule, credential exposure, or externally visible mode change appears.
+## Stage Architecture Convergence AC6 - schema projections
+
+AC6 makes affected Rust contracts authoritative and migrates each consumer family separately.
+
+### Packet PE7-AC6-CONTRACT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC5-MODULE-MIGRATION-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze authoritative Rust types, wire/schema projections, compatibility matrix, version/deprecation window, migration ordering, and rollback.
+
+**Allowed delta:** No field/type change until old-reader/new-writer and consumer impact are explicit.
+
+**Exit:** Exact type/field/version manifest and generated-artifact ownership with no consumer-defined authority.
+
+**Stop:** A consumer has incompatible semantics, destructive migration lacks recovery, or two schema owners remain.
+### Packet PE7-AC6-RUST-CODEGEN-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC6-CONTRACT-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Implement the Rust source types and deterministic schema/codegen projections.
+
+**Allowed delta:** Only contract-approved additive/versioned type changes and generator updates; consumers remain compatibility-backed.
+
+**Exit:** Drift guard, deterministic regeneration, Rust/wire validation, and old-reader/new-writer tests pass.
+
+**Stop:** Generated output is nondeterministic, hand-edited projection is required, or rollback cannot read persisted/API data.
+### Packet PE7-AC6-SDK-MIGRATION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC6-RUST-CODEGEN-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Migrate SDK consumers to generated/versioned contracts.
+
+**Allowed delta:** SDK projection/adapters/tests only; no backend authority or Dashboard change.
+
+**Exit:** SDK compatibility and type tests pass with deprecated paths explicitly bounded.
+
+**Stop:** SDK requires a divergent type owner, silent field reinterpretation, or immediate incompatible removal.
+### Packet PE7-AC6-DASHBOARD-MIGRATION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC6-SDK-MIGRATION-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Migrate Dashboard data projections to the accepted generated/versioned contracts without presentation redesign.
+
+**Allowed delta:** Data/type adapters and tests only; no workflow, evaluator, spend, approval, adoption, or output authority.
+
+**Exit:** Typecheck/build/projection tests and representative old/new payload fixtures pass.
+
+**Stop:** UI needs backend policy, schema ownership, or presentation-only PR #225 content to complete the migration.
+### Packet PE7-AC6-COMPATIBILITY-CLOSEOUT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC6-DASHBOARD-MIGRATION-1
+
+**Class:** `CLOSEOUT`
+
+**Outcome:** Verify every affected producer/consumer, deprecation window, migration, rollback, and drift guard before AC7.
+
+**Allowed delta:** Evidence and status only; no legacy deletion.
+
+**Exit:** Zero unexplained drift, complete consumer matrix, accepted compatibility receipt, and exact AC7 removal candidates.
+
+**Stop:** Any active reader/writer remains unknown or rollback cannot restore service/data compatibility.
+## Stage Architecture Convergence AC7 - obsolete cleanup
+
+AC7 deletes only surfaces proven obsolete by accepted inventory and completed migrations.
+
+### Packet PE7-AC7-REMOVAL-MANIFEST-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC6-COMPATIBILITY-CLOSEOUT-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze a deletion manifest grouped by one canonical owner and rollback point, with zero-caller proof and compatibility disposition per item.
+
+**Allowed delta:** Reference searches and evidence only; no deletion.
+
+**Exit:** Exact files/symbols/tests/docs to delete, replacement owner, negative searches, fixture/script/SDK/Dashboard/replay checks, and batch order.
+
+**Stop:** Any production, recovery, replay, fixture, script, or consumer dependency remains.
+### Packet PE7-AC7-CLEANUP-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC7-REMOVAL-MANIFEST-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Delete the approved obsolete batches and mechanically repair references.
+
+**Allowed delta:** Deletion only; no new feature, owner, schema, abstraction, or behavior.
+
+**Exit:** Every manifest item is removed or explicitly deferred; security/dead-surface, full tests, parity, and golden traces pass.
+
+**Stop:** A hidden caller appears, deletion changes behavior, or one PR would cross owner/rollback groups not authorized for consolidation.
+### Packet PE7-AC7-CLOSEOUT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC7-CLEANUP-1
+
+**Class:** `CLOSEOUT`
+
+**Outcome:** Independently verify convergence completeness and preserve the reconstructable pre/post Harness identities.
+
+**Allowed delta:** Evidence/status only.
+
+**Exit:** Accepted AC closeout receipt, zero unowned compatibility island, implementation-cost aggregation, rollback index, and contemporary-replay inputs.
+
+**Stop:** An obsolete path still executes, golden traces differ without accepted reason, or old/new Harness reconstruction is incomplete.
+## Stage Contemporary old/new RWE replay
+
+The causal comparison uses reconstructable old/new Harnesses in one randomized/interleaved controlled time window.
+
+### Packet PE7-RWE-CR-RECONSTRUCTION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-AC7-CLOSEOUT-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Rebuild and provider-free validate the frozen pre-AC Harness beside the accepted post-AC Harness under isolated identities.
+
+**Allowed delta:** Reconstruction adapters/artifacts only; neither Harness behavior, corpus, evaluator, or Provider route changes.
+
+**Exit:** Both Harnesses pass registered provider-free traces and bind exact binaries/config/toolchains without shared mutable state.
+
+**Stop:** Old Harness cannot be reproduced, isolation fails, or compatibility shims change the measured behavior.
+### Packet PE7-RWE-CR-PROTOCOL-PREFLIGHT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-RWE-CR-RECONSTRUCTION-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze randomization/interleaving, allocation concealment, drift covariates, capacity, finite authorizations, and immediate preflight.
+
+**Allowed delta:** No live execution or post-AC threshold change; reuse the pre-registered measurement protocol.
+
+**Exit:** Zero-mismatch preflight and operator authorization packages for both arms in the same bounded window.
+
+**Stop:** Provider/model/environment identity cannot be kept comparable, capacity causes arm-time confounding, or old/new evidence paths can collide.
+### Packet PE7-RWE-CR-RUN-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-RWE-CR-PROTOCOL-PREFLIGHT-1
+
+**Class:** `EFFECT`
+
+**Outcome:** Execute the randomized/interleaved old/new replay exactly once under accepted global stop rules.
+
+**Allowed delta:** Registered effects only; no arm-specific retry, schedule change, or protocol repair.
+
+**Exit:** Complete blinded arm assignments, attempts, lifecycle costs, drift, review, failures, cleanup, and restricted/redacted evidence.
+
+**Stop:** Allocation integrity breaks, drift exceeds registered bounds, one arm loses authority/capacity, outcome unknown occurs, or global stop fires.
+### Packet PE7-RWE-CR-ANALYSIS-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-RWE-CR-RUN-1
+
+**Class:** `CLOSEOUT`
+
+**Outcome:** Estimate the registered AC effect and decide Harness-Evolution eligibility.
+
+**Allowed delta:** Frozen analysis only; historical before/after evidence remains secondary.
+
+**Exit:** Hard-gate-first uncertainty/Pareto receipt with GO, NO_GO, or INSUFFICIENT disposition and all drift/cost limitations.
+
+**Stop:** Non-inferiority, reliability, lifecycle cost, comparability, or evidence-completeness gate fails.
+## Stage Context working-set projection
+
+This stage adds a derived, rebuildable model-context working-set layer only after the contemporary AC comparison closes, so it cannot contaminate the registered AC treatment. Canonical documents, Git, LocalProductStore, artifacts, durable memory, and raw tool evidence remain owned by their existing sources; the working-set layer only chooses a bounded model-visible projection and never becomes truth, persistence, authority, evaluator, or retry policy. Implementation selection is reuse-first, but the ingress harvest is factual and non-authoritative: final `TRANSPLANT` | `ADAPT` | `REIMPLEMENT` | `REJECT` decisions occur only when the relevant IMPLEMENT packets (`PE7-CWS-PROJECTOR-CORE-1`, `PE7-CWS-TOOL-RESULT-REDUCTION-1`, and when needed `PE7-CWS-CACHE-PARTITION-1`) are promoted, after the Projection and Rehydration contracts freeze. A qualified, license-acceptable, contract-compatible, collision-acceptable upstream implementation may then be transplanted or adapted through thin adapters; otherwise the IMPLEMENT packet reimplements or rejects. Wholesale vendoring or forking of another harness, and any second runtime, store, provider, session, scheduler, or evaluator owner, remain forbidden. Future routing for this family stays in this document; third-party provenance at implementation time uses the then-current accepted license/SBOM/NOTICE owner, and promotion is `DECISION_REQUIRED` if no suitable existing owner is found.
+
+### Packet PE7-CWS-INGRESS-INVENTORY-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-RWE-CR-ANALYSIS-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Enumerate every production and repository-maintenance path that places context in front of a model, including session/project capsules, prompt builders, provider/executor requests, tool results, artifacts, durable-memory retrieval, and efficiency/scorecard evidence sinks, and establish a factual, preparatory upstream source-harvest matrix for mature public harness mechanisms.
+
+**Allowed delta:** Read-only owner/caller/data-flow inventory, bounded measurement, and provenance-bound source-harvest only; no prompt, runtime, Provider, memory, store, schema, or artifact behavior change; no new license, SBOM, NOTICE, or source-registry owner; no implementation-selection disposition.
+
+**Exit:** A zero-unknown ingress matrix binds each path to exact owner/caller paths, source identity, authority class, size/repetition behavior, sensitivity, current reduction rule, and whether exact recovery is possible. A second harvest matrix records factual candidate facts only: exact repository, commit SHA, source paths, license, NOTICE/attribution obligations, language/runtime dependencies, implementation LOC, upstream tests, semantic surfaces / apparent fit, owner collision, security/recovery gaps, adaptation cost, and source completeness/public availability. Each candidate may carry a non-authoritative `candidate_status` of `ELIGIBLE_FOR_CONTRACT_REVIEW`, `INELIGIBLE_SOURCE`, or `UNKNOWN`; this is not an implementation disposition and does not authorize transplant, adapt, or reimplement. Apparent semantic mismatch must not become `REJECT` or any other final selection. Priority review is Gemini CLI, OpenAI Codex, Aider, and any other mature harness that still has valid complete source then. Command Code, while its actual harness source remains unpublished, is architecture/behavior reference only and must not be recorded as a source-transplant candidate. Every harvest identity is `REFRESH_AT_PROMOTION` and must be re-verified then; today's commit, path, or license snapshot is not future authority. Required third-party provenance uses the then-current accepted license/SBOM/NOTICE owner; absence of a suitable existing owner is `DECISION_REQUIRED` rather than a new parallel owner. Final `TRANSPLANT` | `ADAPT` | `REIMPLEMENT` | `REJECT` selection is deferred to later IMPLEMENT packets after the Projection and Rehydration contracts freeze.
+
+**Stop:** A model-visible input lacks a current owner/source identity, an effect path is hidden behind free-form prompt assembly, inventory would require treating conversation text as durable truth, a public-source candidate is recorded without a re-verified identity and non-final `candidate_status`, harvest records a final `TRANSPLANT` | `ADAPT` | `REIMPLEMENT` | `REJECT` disposition, unpublished source is treated as a transplant-source candidate, or harvest work would create a second source-registry or license owner.
+### Packet PE7-CWS-PROJECTION-CONTRACT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-INGRESS-INVENTORY-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze the repository-owned evidence working-set contract before any implementation selection: source/hash identity, item kind, token/byte estimates, active-path and unresolved status, supersession/consumption state, recoverability, residency, stable/dynamic partition, and deterministic promotion/demotion rules.
+
+**Allowed delta:** Contract and conformance vectors only. Residency is `PINNED`, `HOT`, `WARM`, or `COLD`; authority, unresolved blockers, outcome-unknown evidence, exact task/packet bindings, allowed/forbidden scope, and verification contracts cannot be evicted by relevance scoring. Upstream source may not define, replace, or weaken this repository's authority, evidence, recovery, residency, pinning, or unknown semantics; it is an implementation source only after this contract exists and remains compatible.
+
+**Exit:** An exact lexicographic policy and bounded wire/internal shape prove that the projection is derived, deletable, rebuildable, non-authoritative, independent of fuzzy semantic scoring for all safety-relevant decisions, and that any later `TRANSPLANT` | `ADAPT` | `REIMPLEMENT` | `REJECT` choice is made only by later IMPLEMENT packets after this contract and `PE7-CWS-REHYDRATION-CONTRACT-1` freeze, remaining subordinate to those contracts.
+
+**Stop:** The contract creates a second memory/store/evaluator, allows a model/embedding score to demote authority or blockers, cannot distinguish raw evidence ownership from model-visible residency, or lets an upstream implementation dictate safety-related residency, pinning, or unknown semantics.
+### Packet PE7-CWS-REHYDRATION-CONTRACT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-PROJECTION-CONTRACT-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze exact rehydration semantics for reduced or cold context through source-bound artifact/range references or deterministic rerun recipes, including integrity, freshness, redaction, private/secret, unavailable, and outcome-unknown behavior.
+
+**Allowed delta:** Contract/test vectors only; no new artifact store, hidden transcript store, Provider call, rerun authority, or permission expansion.
+
+**Exit:** Every rehydratable class has an exact source identity/hash, bounded retrieval recipe, stale/integrity failure rule, and proof that rehydration never implies permission to repeat an external effect.
+
+**Stop:** A reduced item cannot recover the evidence needed for verification, recovery depends only on free-form summaries, sensitive raw content would gain a new durable location, or rerun semantics are ambiguous.
+### Packet PE7-CWS-PROJECTOR-CORE-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-REHYDRATION-CONTRACT-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Implement the pure deterministic working-set projector and residency transitions behind existing context owners, producing a stable prefix plus bounded dynamic working set from already-authorized source material, preferring transplant, port, or adapt of a qualified upstream mechanism core.
+
+**Allowed delta:** Pure/rebuildable projection code, typed internal records, deterministic reducers, focused tests, and thin contract adapters only; no database table, durable queue, Provider effect, semantic model call, or new authority owner. At promotion, record a deterministic projector-core `TRANSPLANT` | `ADAPT` | `REIMPLEMENT` | `REJECT` decision by reading the accepted upstream harvest facts, accepted Projection Contract, accepted Rehydration Contract, then-current main, and then-current license/provenance/dependency state; an INGRESS `candidate_status` is not that decision. Reuse-first: a qualified, license-acceptable, contract-compatible, collision-acceptable upstream pure mechanism yields `TRANSPLANT` or `ADAPT` of its minimal algorithm core through a thin adapter, retaining exact upstream provenance, required attribution/modification notices, and portable upstream regression tests; otherwise `REIMPLEMENT` or `REJECT`.
+
+**Exit:** Ordering, pinning, supersession, duplicate, token/byte bound, deterministic replay, delete/rebuild, stale-source, and forbidden-eviction tests pass with identical canonical source identities; retained or adapted upstream tests plus adapter tests prove contract fidelity without a second owner; the exact implementation-selection disposition is bound to the frozen contracts rather than to INGRESS candidate status.
+
+**Stop:** Projector requires ambient credentials/network, persisted truth, nondeterministic scoring for a hard decision, a source owner must move into the projection layer, a transplant would vendor or fork another harness or create a parallel owner, license/provenance/attribution cannot be satisfied through the then-current accepted owner, upstream semantics cannot map losslessly onto the accepted contract, or an INGRESS `candidate_status` is treated as the implementation disposition.
+### Packet PE7-CWS-TOOL-RESULT-REDUCTION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-PROJECTOR-CORE-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Add deterministic admission reduction for large tool results so raw evidence remains under existing artifact/evidence owners while the model sees bounded status, salient diagnostics, source bindings, and an exact rehydration handle, preferring reuse of mature truncation, masking, bounded-read, and reducer algorithms.
+
+**Allowed delta:** Provider-free reducers, existing artifact references, and thin adapters around qualified upstream pure algorithms and regression fixtures only; no LLM-generated summary authority, raw-evidence deletion, retry decision, hidden output suppression, change to tool execution semantics, or import of another tool runtime, provider, session owner, store, scheduler, or permission/retry controller. At promotion, record a deterministic reducer `TRANSPLANT` | `ADAPT` | `REIMPLEMENT` | `REJECT` decision by reading the accepted upstream harvest facts, accepted Projection Contract, accepted Rehydration Contract, then-current main, and then-current license/provenance/dependency state; an INGRESS `candidate_status` is not that decision. Reuse-first: a qualified, license-acceptable, contract-compatible, collision-acceptable truncation, masking, bounded-read, or reducer algorithm yields `TRANSPLANT` or `ADAPT`; otherwise `REIMPLEMENT` or `REJECT`.
+
+**Exit:** Large success/failure logs, compiler/test diagnostics, bounded reads/searches, malformed output, truncation, redaction, stale handle, and exact-rehydrate fixtures prove no required failure or blocker evidence disappears; retained or adapted upstream reducer fixtures remain contract-compatible; the exact implementation-selection disposition is bound to the frozen contracts rather than to INGRESS candidate status.
+
+**Stop:** Reduction can convert failure/unknown to success, cannot bind the retained projection to raw evidence, leaks sensitive material, increases tool retries because required evidence is irrecoverable, a transplant would import another tool runtime, provider, session owner, store, scheduler, or permission/retry controller, or an INGRESS `candidate_status` is treated as the implementation disposition.
+### Packet PE7-CWS-REPOSITORY-INTEGRATION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-TOOL-RESULT-REDUCTION-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Integrate the projector with repository-maintenance session/project context, claim-bound prompt construction, review, CI-repair, and local-run paths so already-projected canonical context is not repeatedly re-expanded.
+
+**Allowed delta:** Existing Repository Context Control Plane and prompt-assembly thin adapters/tests only; accepted documents, GitHub observations, route authority, exact-head review, checkpoint semantics, and execution permissions remain unchanged; wholesale vendoring or forking of another harness is forbidden.
+
+**Exit:** Fresh/resume/repair/review/CI-repair fixtures prove exact accepted-main/head/packet bindings, no duplicate canonical-document payload, bounded model-visible context, exact rehydration, and unchanged fail-closed decisions.
+
+**Stop:** Integration makes a capsule authoritative, hides a changed-head/blocker condition, broadens targeted reads, requires a second session/checkpoint/context owner, or vendors/forks another harness as a parallel owner.
+### Packet PE7-CWS-RUNTIME-INTEGRATION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-REPOSITORY-INTEGRATION-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Integrate the accepted working-set projection seam with the post-AC runtime/provider/executor boundaries so production model requests consume the same source-bound residency semantics without replacing provider, scheduler, memory, artifact, or execution owners.
+
+**Allowed delta:** Current-main thin adapters, context composition, typed internal mappings, and focused tests only; no Provider credential/budget/retry change, public authority expansion, new persistence, outcome-status reinterpretation, or wholesale vendoring/forking of another harness.
+
+**Exit:** Stub/fake/provider-free runtime tests prove stable task/authority bindings, bounded dynamic context, exact tool-evidence rehydration, cancellation/unknown preservation, and compatibility with accepted executor/provider mappings.
+
+**Stop:** A provider adapter becomes the context truth owner, runtime behavior needs an unaccepted schema/authority change, cache state affects correctness, any existing outcome loses semantic fidelity, or integration vendors/forks another harness as a parallel owner.
+### Packet PE7-CWS-CACHE-PARTITION-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-RUNTIME-INTEGRATION-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Expose deterministic stable-prefix versus dynamic-working-set partitioning and cache telemetry so provider caching can reuse truly stable material without making cache presence, hit rate, or write state part of correctness.
+
+**Allowed delta:** Projection metadata, provider-reported cache usage observation when available, scorecard wiring, tests, and optional reuse of provider/cache helper pure mechanisms only; no cache service, cache authority, provider-specific correctness branch, invented usage value, or promotion of cache state into correctness or authority. When a cache-helper source is considered, record a deterministic `TRANSPLANT` | `ADAPT` | `REIMPLEMENT` | `REJECT` decision at this packet's promotion by reading the accepted upstream harvest facts, accepted Projection Contract, accepted Rehydration Contract, then-current main, and then-current license/provenance/dependency state; an INGRESS `candidate_status` is not that decision, and cache state still cannot enter correctness or authority.
+
+**Exit:** Prefix-stability, mutation invalidation, unsupported-provider, cached-token/cache-write missingness, retry, and replay tests pass; identical tasks produce identical partitions independent of cache state.
+
+**Stop:** Cache identity can authorize work, missing provider telemetry is coerced to zero, dynamic evidence contaminates the stable prefix, cache optimization changes model-visible safety bindings, reused cache helpers make cache state part of correctness or authority, or an INGRESS `candidate_status` is treated as the implementation disposition.
+### Packet PE7-CWS-BENCHMARK-PROTOCOL-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-CACHE-PARTITION-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Pre-register a hard-gate-first comparison of the exact post-AC baseline with the CWS treatment using existing token-efficiency, scorecard, artifact, review, and lifecycle-cost owners, plus post-gate implementation-maintenance-burden evidence.
+
+**Allowed delta:** Measurement protocol only; no live Provider call, threshold tuning from observed CWS outcomes, new evaluator, alternative cost ontology, or promotion of maintenance-burden metrics into evaluator authority.
+
+**Exit:** Frozen tasks, seeds, provider/model/tool identities, baseline/treatment toggles, quality/non-inferiority gates, repeated and total context/input metrics, cache telemetry semantics, rehydration/tool-call/retry/latency/cost metrics, missingness, analysis, and stop rules; after hard gates, record implementation-maintenance burden as decision evidence only: upstream-derived LOC, adapter LOC, new project-specific LOC, upstream tests retained or adapted, dependency delta, exact upstream source identities, divergence/patch burden, and upgrade/maintenance cost.
+
+**Stop:** Treatment differs in anything beyond accepted context projection, baseline cannot be reconstructed, a decisive threshold is post hoc, lifecycle cost/quality evidence is incomparable, or maintenance-burden metrics are treated as evaluator or acceptance authority.
+### Packet PE7-CWS-BENCHMARK-PREFLIGHT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-BENCHMARK-PROTOCOL-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Bind the exact baseline/CWS Harness identities, corpus/tasks, provider/model, cache capability, capacity, pricing/usage semantics, evidence destinations, finite budgets, and immediate authorization request without executing the comparison.
+
+**Allowed delta:** Provider-free integrity/capacity checks and unissued finite authorization package only; no Provider request, target write, hidden warm-up, selective task replacement, or result inspection.
+
+**Exit:** Zero-mismatch preflight with every frozen identity reconstructable and one bounded T3 authorization package for the registered run.
+
+**Stop:** Any identity, provider capability, capacity, pricing/usage source, raw/redacted evidence path, rollback, or baseline/treatment isolation is stale, unavailable, conflicting, or unverifiable.
+### Packet PE7-CWS-BENCHMARK-RUN-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-BENCHMARK-PREFLIGHT-1
+
+**Class:** `EFFECT`
+
+**Outcome:** Execute the frozen baseline-versus-CWS comparison once under finite authorization, preferably randomized/interleaved when the registered protocol requires it.
+
+**Allowed delta:** Registered Provider effects and evidence capture only; no target-default-branch write, treatment repair, cache manipulation outside the protocol, selective rerun, threshold change, or authority expansion.
+
+**Exit:** Every scheduled arm/task reaches terminal evidence with exact request/model/context identities, provider usage when reported, tool/rehydration/retry events, quality, latency, cost, failures/unknowns, cleanup, and raw/redacted bindings.
+
+**Stop:** Authority expires, outcome becomes unknown, arm comparability breaks, cache/provider semantics drift, evidence capture fails, a hard global stop fires, or any selective treatment repair would be required.
+### Packet PE7-CWS-ANALYSIS-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-BENCHMARK-RUN-1
+
+**Class:** `CLOSEOUT`
+
+**Outcome:** Apply the frozen analysis and choose `ENABLE`, `DISABLE`, or `INSUFFICIENT_DEFAULT_OFF`, then bind the exact active Harness identity that all later Harness-Evolution packets must use; include implementation-maintenance burden as post-gate decision evidence only.
+
+**Allowed delta:** Analysis, projection enable/default-off disposition, rollback evidence, canonical identity synchronization, and post-gate maintenance-burden reporting only; no new Provider effect, retuning, post-hoc reducer change, automatic claim beyond tested workloads, or new evaluator authority.
+
+**Exit:** Independent hard-gate-first receipt preserves all failures/missingness, reports repeated/total context and lifecycle effects with uncertainty, proves exact rehydration and rollback, names one exact CWS-enabled or baseline/default-off Harness identity for EC1, and records implementation-maintenance burden after hard gates pass: upstream-derived LOC, adapter LOC, new project-specific LOC, upstream tests retained or adapted, dependency delta, exact upstream source identities, divergence/patch burden, and upgrade/maintenance cost.
+
+**Stop:** Quality/safety/authority/evidence hard gates fail without a proven disable rollback, analysis cannot be reproduced, active-Harness identity is ambiguous, the conclusion depends on unregistered exclusions, or maintenance-burden numbers are used as evaluator or acceptance authority.
+## Stage Experiment control EC1 - identity, lineage, mutation
+
+EC1 makes candidate provenance immutable before evaluator or selection work. It also freezes a causal-mutation evidence chain without creating a second failure-intelligence owner:
+
+- `FailurePatternEvidenceV1` separates observed verifier/runtime facts, causal status (`unknown`, `hypothesized`, `supported`, or `disputed`), counterevidence, Harness addressability, and the exact mutable surface. Existing feedback traces, pattern detection, and outcome attribution are inputs, not causal authority.
+- `MutationHypothesisManifestV1` binds one candidate to the failure evidence, exact proposed delta, expected improvement and regression surfaces, metric direction and threshold, preserved invariants, and a pre-registered evaluation plan before candidate execution.
+- `PredictionOutcomeV1` is written only after evaluation by the existing evaluator path. It records actual deltas, missing or contradictory evidence, prediction error, and calibration. It is derived audit evidence, never admission, safety, Pareto-selection, parent-selection, or adoption authority.
+
+All three records are redacted, hash-bound, replayable, and must retain `unknown` or `disputed` rather than converting uncertainty or model confidence into fact.
+
+### Packet PE7-HE-EC1-CONTRACT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CWS-ANALYSIS-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze active-Harness, candidate, parent, generator, lineage, mutation-family, identity-hash, invalidation, budget, `FailurePatternEvidenceV1`, `MutationHypothesisManifestV1`, and `PredictionOutcomeV1` bindings.
+
+**Allowed delta:** No candidate generation, evaluation, or persistence change.
+
+**Exit:** Exact identity/lineage and causal-evidence schemas plus a pre-registered mutation registry with ownership, redaction, counterevidence, addressability, and non-authority rules.
+
+**Stop:** Identity or cause can be caller/model asserted, lineage can be rewritten, uncertainty cannot be represented, or mutation scope can reach evaluator/authority policy.
+### Packet PE7-HE-EC1-IDENTITY-LINEAGE-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-EC1-CONTRACT-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Implement immutable identity and lineage recording under existing artifact/store owners, including source identities for later causal manifests.
+
+**Allowed delta:** Contract-approved records, hashes, validation, and projections only; no selection or adoption.
+
+**Exit:** Tamper/replay/duplicate/restart/parity tests prove immutable ancestry, exact active-Harness binding, and no orphan causal-evidence reference.
+
+**Stop:** Requires a second store, mutable ancestry, candidate-controlled identity, or destructive migration.
+### Packet PE7-HE-EC1-CAUSAL-MANIFEST-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-EC1-IDENTITY-LINEAGE-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Implement validation and immutable persistence for source-bound failure-pattern evidence and pre-execution mutation hypotheses by extending the existing Harness-Evolution artifact/store owner.
+
+**Allowed delta:** Redacted records, hashes, validation, and feedback-evidence adapters only; no candidate execution, evaluator result, selection, or admission-policy change.
+
+**Exit:** Unknown/disputed cause, counterevidence, addressability, invariant, prediction, tamper, duplicate, restart, SQLite/PostgreSQL parity, forbidden-sensitive-field, and proposal-binding tests pass.
+
+**Stop:** Requires a parallel failure-intelligence store, treats confidence as causal proof, permits post-execution hypothesis edits, or cannot distinguish observation from inference.
+### Packet PE7-HE-EC1-MUTATION-REGISTRY-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-EC1-CAUSAL-MANIFEST-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Implement the accepted mutation-family registry and bounded generator adapters, requiring each generated candidate to bind an addressable causal manifest.
+
+**Allowed delta:** Registry/adapters/tests only; no evaluator, parent-selection, spend, merge, or production authority.
+
+**Exit:** Unknown family rejection, unaddressable-pattern rejection, hypothesis/delta digest binding, scope containment, deterministic seed binding, and complete lineage tests pass.
+
+**Stop:** Generator can edit registry/policy/evaluator or escape its admitted Harness surface.
+## Stage Experiment control EC2 - evaluator and holdout
+
+EC2 seals evaluation authority and threat controls before candidate experiments.
+
+### Packet PE7-HE-EC2-CONTRACT-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-EC1-MUTATION-REGISTRY-1
+
+**Class:** `CONTRACT`
+
+**Outcome:** Freeze evaluator constellation, sealed holdout, reviewer policy, immutable labels, access classes, contamination/gaming/safety sentinels, invalidation, and evaluator-owned `PredictionOutcomeV1` derivation rules.
+
+**Allowed delta:** No evaluator implementation or holdout access.
+
+**Exit:** Threat model and exact evaluator/label/access/outcome manifest reusing existing verification/replay/scorecard/review owners, with prediction accuracy explicitly non-authoritative.
+
+**Stop:** Candidate path can observe or mutate labels/rubric, sentinel independence is unprovable, or a second evaluator owner is proposed.
+### Packet PE7-HE-EC2-HOLDOUT-SEAL-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HE-EC2-CONTRACT-1
+
+**Class:** `IMPLEMENT`
+
+**Outcome:** Materialize sealed holdout identities, labels, access mediation, audit, and invalidation controls.
+
+**Allowed delta:** Access/seal/audit controls only; no candidate run or evaluator rule change.
+
+**Exit:** Unauthorized-read, label-tamper, leakage, restart, audit, and deletion/rotation tests pass.
+
+**Stop:** Raw sensitive content would be committed, candidate identity gains access, or seal cannot survive restart.
 ### Packet PE7-HE-EC2-SENTINEL-CONFORMANCE-1
 
 **State:** `BLOCKED_PREREQUISITE`
