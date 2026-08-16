@@ -459,13 +459,15 @@ epoch. A task family has development, validation, and sealed-holdout splits;
 each task is bound to a stable task identity, family identity, label digest,
 and rubric/version digest. The sealed vault exposes only membership hashes and
 its canonical digest outside the evaluator. A store-owned, one-use selection
-receipt may admit only the preselected bounded entrant set (currently one to
-three); sealed execution never feeds mutation, prediction, parent selection,
-or archive eligibility. Development and validation evidence may be recorded,
+   receipt may admit only the preselected bounded entrant set under the
+   existing evaluator/store limit; this contract does not change that limit.
+   Sealed execution never feeds mutation, prediction, parent selection, or
+   archive eligibility. Development and validation evidence may be recorded,
 but only complete, hard-gate-passing validation evidence can enter the existing
 Pareto/archive path.
 
-Three independent sentinel classes are required before archive or selection:
+After the separate entrant-admission receipt and evaluation, three independent
+sentinel classes are required before eligible archive or parent selection:
 
 - contamination detects access to sealed tasks, labels, rubric, restricted
   corpus, or post-result information;
@@ -475,12 +477,20 @@ Three independent sentinel classes are required before archive or selection:
 - safety detects scope, authority, secret, target-output, compatibility, or
   recovery-boundary violations.
 
-Each sentinel is evaluator/owner-derived, cannot be candidate-disabled, and
-returns a fail-closed invalidation on `FAIL` or `UNKNOWN`. Invalidation keeps
-the candidate, rejection reason, evidence digests, cleanup, and replay binding
-under existing owners, but prevents acceptance, archive entry, PR-ready output,
-adoption, or a claim of safety. Sentinel results never mutate labels or act as
-a scalar quality override.
+The sentinel inputs are independent of candidate-authored status: contamination
+uses access/audit and sealed-vault boundary evidence; gaming uses evaluator
+configuration, evidence-completeness, and tool-policy cross-checks; and safety
+uses the existing scope, authority, secret, target-output, and recovery
+verification receipts. Each class has an owner-derived policy/input digest and
+a receipt bound to the candidate, evaluation, evaluator identity, and source
+evidence. No class can disable another, and a missing, conflicting, or
+candidate-controlled input makes independence `UNKNOWN`, not `PASS`.
+Each sentinel is evaluator/owner-derived and returns a fail-closed invalidation
+on `FAIL` or `UNKNOWN`. Invalidation keeps the candidate, rejection reason,
+evidence digests, cleanup, and replay binding under existing owners, but
+prevents acceptance, archive entry, PR-ready output, adoption, or a claim of
+safety. Sentinel results never mutate labels or act as a scalar quality
+override.
 
 `PredictionOutcomeV1` is an evaluator-owned immutable derivation. For every
 addressable prediction in the pre-execution
@@ -499,7 +509,7 @@ model confidence are calibration/audit evidence only: they cannot satisfy a
 hard gate, select a Pareto parent, grant safety, authorize adoption, or change
 the evaluator.
 
-Candidate generation uses one source-bound causal-mutation evidence chain. `FailurePatternEvidenceV1` separates observed verifier/runtime facts, causal status, counterevidence, Harness addressability, and the admitted mutable surface; existing feedback traces, pattern detection, and outcome attribution remain observation inputs rather than a second failure-intelligence authority. `MutationHypothesisManifestV1` freezes the exact candidate delta, predicted improvements and regressions, invariants, thresholds, and evaluation plan before execution. The existing evaluator path alone derives `PredictionOutcomeV1` after evaluation. Prediction accuracy and model confidence are audit/calibration evidence only: they cannot admit a candidate, imply safety, override a hard gate, select a Pareto parent, or authorize adoption.
+Candidate generation uses one source-bound causal-mutation evidence chain. `FailurePatternEvidenceV1` separates observed verifier/runtime facts, causal status, counterevidence, Harness addressability, and the admitted mutable surface; existing feedback traces, pattern detection, and outcome attribution remain observation inputs rather than a second failure-intelligence authority. `MutationHypothesisManifestV1` freezes the exact candidate delta, predicted improvements and regressions, invariants, thresholds, and evaluation plan before execution. The existing evaluator path alone derives `PredictionOutcomeV1` after evaluation under the binding above.
 
 Level-1 core is a default-off one-generation laboratory with immutable active-Harness identity, candidate lineage, total-lifecycle-budget evaluation, hard gates, sealed holdout, Pareto archive, operator acknowledgement, and PR_READY output. Memory and skill projections are disabled in the core comparison so attribution remains identifiable. Optional memory-only and skill-only factor experiments may follow Level-1 but do not block the core Level-2 route. VDE does not rewrite or silently broaden the current evaluator or `MetricVector`.
 
