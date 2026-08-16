@@ -696,7 +696,7 @@ def _opencode_probe_script(*, record: Path | None = None, run_body: str) -> str:
         "if sys.argv[1:3] == ['auth', 'list']:\n"
         "    raise SystemExit(0)\n"
         "if sys.argv[1:3] == ['run', '--help']:\n"
-        "    print('--format json --dir --file'); raise SystemExit(0)\n"
+        "    print('--format json --model --dir --file'); raise SystemExit(0)\n"
         "if sys.argv[1:3] == ['session', 'delete']:\n"
         "    raise SystemExit(0)\n"
         "if sys.argv[1:2] == ['run']:\n"
@@ -748,6 +748,19 @@ class TestCodexWrapperEnvironment(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
             records = [json.loads(line) for line in record.read_text().splitlines()]
             self.assertGreaterEqual(len(records), 12)
+            run_args = [
+                item["args"]
+                for item in records
+                if item["args"][:1] == ["run"] and "--file" in item["args"]
+            ]
+            self.assertEqual(
+                [args[args.index("--model") + 1] for args in run_args],
+                [
+                    "deepseek/deepseek-v4-flash",
+                    "deepseek/deepseek-v4-flash",
+                    "deepseek/deepseek-v4-pro",
+                ],
+            )
             allowed = {
                 "HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE",
                 "TMPDIR", "TMP", "TEMP", "TERM", "USER", "LOGNAME", "SHELL",

@@ -1969,7 +1969,7 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
                 "if sys.argv[1:3] == ['auth', 'list']:\n"
                 "    raise SystemExit(0)\n"
                 "if sys.argv[1:3] == ['run', '--help']:\n"
-                "    print('--format json --dir --file'); raise SystemExit(0)\n"
+                "    print('--format json --model --dir --file'); raise SystemExit(0)\n"
                 "if sys.argv[1:3] == ['session', 'delete']:\n"
                 "    raise SystemExit(0)\n"
                 "if sys.argv[1:2] == ['run']:\n"
@@ -2025,6 +2025,8 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
         args = run_calls[0]["args"]
         self.assertIn("--format", args)
         self.assertEqual(args[args.index("--format") + 1], "json")
+        self.assertIn("--model", args)
+        self.assertEqual(args[args.index("--model") + 1], "deepseek/deepseek-v4-flash")
         self.assertIn("--dir", args)
         self.assertEqual(args[args.index("--dir") + 1], str(worktree))
         self.assertIn("--file", args)
@@ -2065,7 +2067,7 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
             "if sys.argv[1:2] == ['--version']:\n"
             "    print('1.18.16'); raise SystemExit(0)\n"
             "if sys.argv[1:3] == ['run', '--help']:\n"
-            "    print('--format json --dir --file'); raise SystemExit(0)\n"
+            "    print('--format json --model --dir --file'); raise SystemExit(0)\n"
             "if sys.argv[1:3] == ['auth', 'list']:\n"
             "    print('login required for secret-token-xyz'); raise SystemExit(1)\n"
             "raise SystemExit(2)\n"
@@ -2083,12 +2085,12 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
             "if sys.argv[1:3] == ['auth', 'list']:\n"
             "    raise SystemExit(0)\n"
             "if sys.argv[1:3] == ['run', '--help']:\n"
-            "    print('--format json --dir --file'); raise SystemExit(0)\n"
+            "    print('--format json --model --dir --file'); raise SystemExit(0)\n"
             "if sys.argv[1:3] == ['session', 'delete']:\n"
             "    raise SystemExit(0)\n"
             "if sys.argv[1:2] == ['run']:\n"
-            "    print(json.dumps({'type':'error','sessionID':'ses_failquota','error':{'data':{'message':'quota exceeded token-abc'}}}))\n"
-            "    print('quota exceeded token-abc', file=sys.stderr); raise SystemExit(2)\n"
+            "    print(json.dumps({'type':'error','sessionID':'ses_failquota','error':{'data':{'statusCode':402,'message':'payment required token-abc'}}}))\n"
+            "    print('HTTP 402 payment required token-abc', file=sys.stderr); raise SystemExit(2)\n"
             "raise SystemExit(2)\n"
         )
         _root, _prompt, output, _wt, result, records = self._run_wrapper(fake_body=usage_body)

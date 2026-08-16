@@ -12,7 +12,8 @@ OUTPUT_DIR="${3:?Missing output dir}"
 WORKSPACE="${4:-$PWD}"
 
 case "$WORKER_TYPE" in
-  implement|ci-repair|review) ;;
+  implement|ci-repair) OPENCODE_MODEL="deepseek/deepseek-v4-flash" ;;
+  review) OPENCODE_MODEL="deepseek/deepseek-v4-pro" ;;
   *)
     mkdir -p "$OUTPUT_DIR"
     printf '%s\n' '{"kind":"agent-orchestrator-failure","reason":"unsupported_worker_type"}' > "$OUTPUT_DIR/failure_reason.json"
@@ -184,7 +185,7 @@ HELP_OUTPUT="$INVOKE_TMP/opencode-run-help.txt"
 if ! run_opencode run --help >"$HELP_OUTPUT" 2>&1; then
   fail_closed "unsupported_flags" "opencode run help is unavailable"
 fi
-for flag in --format --dir --file; do
+for flag in --format --dir --file --model; do
   grep -Fq -- "$flag" "$HELP_OUTPUT" || fail_closed "unsupported_flags" "opencode run does not advertise required flags"
 done
 
@@ -197,6 +198,7 @@ EXIT_CODE_OUTPUT="$OUTPUT_DIR/codex-exit-code.txt"
 set +e
 run_opencode_bounded run \
   --format json \
+  --model "$OPENCODE_MODEL" \
   --dir "$WORKSPACE" \
   "$FIXED_RUN_MESSAGE" \
   --file "$CLAIM_PROMPT" \
@@ -227,7 +229,7 @@ if [ "$OPENCODE_EXIT" -ne 0 ]; then
   if [ "$OPENCODE_EXIT" -eq 124 ] || [ "$OPENCODE_EXIT" -eq 137 ]; then
     fail_closed "model_execution_timeout" "OpenCode execution exceeded its bounded timeout"
   fi
-  if grep -Eq 'credit|usage|quota|rate limit' <<<"$LOWER_OUTPUT"; then
+  if grep -Eq '402|payment required|insufficient balance|insufficient funds|credit|usage|quota|rate limit' <<<"$LOWER_OUTPUT"; then
     fail_closed "usage_or_credit_exhaustion" "OpenCode usage or credit limit rejected execution"
   fi
   if grep -Eq 'auth|login|unauthorized|forbidden' <<<"$LOWER_OUTPUT"; then
