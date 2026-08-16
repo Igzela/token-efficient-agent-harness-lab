@@ -420,7 +420,256 @@ Each AC stage changes one coherent ownership boundary, preserves compatibility a
 
 Experiment control is established in separate bounded layers: identity/lineage/mutation registry; evaluator/holdout/contamination/gaming boundary; equal total-lifecycle budget; diversity/exploration controls; and hard-gate-first Pareto/stop/restart/recovery behavior. No layer creates a second evaluator, budget, store, scheduler, or adoption owner.
 
-Candidate generation uses one source-bound causal-mutation evidence chain. `FailurePatternEvidenceV1` separates observed verifier/runtime facts, causal status, counterevidence, Harness addressability, and the admitted mutable surface; existing feedback traces, pattern detection, and outcome attribution remain observation inputs rather than a second failure-intelligence authority. `MutationHypothesisManifestV1` freezes the exact candidate delta, predicted improvements and regressions, invariants, thresholds, and evaluation plan before execution. The existing evaluator path alone derives `PredictionOutcomeV1` after evaluation. Prediction accuracy and model confidence are audit/calibration evidence only: they cannot admit a candidate, imply safety, override a hard gate, select a Pareto parent, or authorize adoption.
+### EC2 evaluator and holdout contract
+
+`PE7-HE-EC2-CONTRACT-1` freezes the evaluator boundary before the holdout,
+sentinel, and prediction-outcome implementation packets. The contract is
+provider-free and does not enable the default-off laboratory, authorize a
+candidate run, or change selection, adoption, merge, release, deployment, or
+production authority.
+
+The existing owners remain canonical:
+
+| Concern | Existing owner | Contract boundary |
+|---|---|---|
+| Active identity, candidate, lineage, mutable surface, and content binding | `engine/src/harness_evolution.rs` | Candidate identity and source-bound content are immutable inputs; candidates cannot replace the active Harness, evaluator identity, or policy. |
+| Task family, labels, rubric identity, sealed vault, budgets, hard gates, metrics, evaluation bundle, and archive projection | `engine/src/harness_evolution_eval.rs` | The evaluator derives results from evaluator-owned task and evidence inputs; fixture helpers are not authoritative acceptance. |
+| One-use sealed selection, evaluation persistence, receipts, archive, audit, replay, and rollback | `engine/src/storage/local_product_store/harness_evolution.rs` plus existing migration/audit owners | The evaluator supplies entrant IDs under the frozen policy; `LocalProductStore` alone validates, persists, and consumes the one-use receipt. It does not choose policy or create a competing evaluator. |
+| Review, verification, scorecard, and PR-ready evidence | Existing repository review, verification, scorecard, replay, and output owners | These owners consume immutable redacted evaluator evidence; none can rewrite labels, rubric, outcomes, or evaluator identity. |
+
+The access envelope is fixed:
+
+1. A candidate or bounded autonomous worker may access only its admitted
+   workspace and the explicitly permitted development/validation inputs. It
+   cannot read plaintext labels, sealed membership, rubric internals, sentinel
+   state, or prior sealed outcomes, and it cannot write an evaluation outcome.
+2. The evaluator owns the frozen task-family manifest, plaintext labels and
+   rubric, sealed vault, entrant-selection policy/request, sentinel
+   disposition, and derivation of evaluation and prediction outcomes. Label
+   and rubric changes require a new versioned manifest; an in-place edit is
+   invalid.
+3. A reviewer receives only the immutable, redacted evidence needed for review.
+   Reviewer disagreement is evidence for the existing review owner; it is not
+   permission to edit evaluator inputs or convert missingness into a pass.
+4. The operator/controller may acknowledge receipts or separately authorize a
+   later T3 effect, but cannot alter the evaluator constellation, labels,
+   rubric, holdout, sentinel rules, or outcome derivation.
+
+The exact EC2 contract manifest is one versioned, digest-bound control-plane
+document, not a new runtime or persistence schema. Its v1 bindings are:
+
+| Manifest field | Frozen v1 binding |
+|---|---|
+| Contract/evaluator | `manifest_id = harness_evolution_ec2_contract.v1`; `contract_id = PE7-HE-EC2-CONTRACT-1`; evaluator owner `engine/src/harness_evolution_eval.rs`; `EVAL_SCHEMA_VERSION = harness_evolution_eval.v1`; evaluator identity is the active identity's stored `evaluator_identity_hash`. |
+| Task/holdout | Task-family manifest with `development`, `validation`, and `sealed_holdout`; `SEALED_SCHEMA_VERSION = harness_evolution_sealed_holdout.v1`; task membership digest `sha256("sealed|task_id|family_id|label_sha256")`, vault digest `sha256(join(sealed_task_hashes, "|"))`; plaintext tasks/labels remain evaluator-only. |
+| Labels/rubric | Every task binds `task_id`, `family_id`, `label_sha256`, and an immutable rubric/version digest; a label or rubric change creates a new family/contract epoch. |
+| Access | `ec2-access-policy.v1` with exactly the candidate/worker, evaluator, reviewer, and operator/controller classes defined above; no class may write another class's inputs or outcome. |
+| Sentinels/invalidation | `ec2-sentinel-policy.v1` with contamination, gaming, and safety input-owner classes and `harness_evolution_sentinel_receipt.v1` receipts defined below; sentinel statuses are `PASS`, `FAIL`, and `UNKNOWN`; the separate invalidation state is `VALID`, `INVALIDATED`, or `UNKNOWN`, and only `VALID` may proceed. |
+| Outcome | `PredictionOutcomeV1` evaluator derivation bound to hypothesis-manifest, evaluation/bundle, evaluator-identity, and evidence digests; statuses are `correct`, `incorrect`, `partially_supported`, `contradicted`, and `unavailable`. |
+| Review | `ec2-review-policy.v1` and `reviewer_policy_sha256`: independent reviewer identity class; immutable evidence/hard-gate rubric; sealed-label/rubric blinding; no repair after evaluation; preserve-and-escalate disagreement; record review duration and rework timestamps as non-authoritative evidence. |
+| Existing owners | Verification, replay, scorecard, review, output, audit, and `LocalProductStore` owner identities listed in the table above; no parallel owner is admitted. |
+
+A candidate, reviewer, or worker cannot rewrite this manifest; changing any
+field creates a new contract epoch and requires a separately accepted packet.
+The manifest is canonical UTF-8 JSON with lexicographically sorted object
+keys, no insignificant whitespace, no unlisted optional fields, access classes
+in `[candidate_worker, evaluator, reviewer, operator_controller]`, and
+sentinels in `[contamination, gaming, safety]`. `manifest_sha256` is
+`sha256(canonical_json(manifest with manifest_sha256=""))`. Every component
+policy digest is `sha256(canonical_json({component_id, version, payload,
+digest:""}))`, with the component's declared payload and no hidden fields.
+The per-epoch task-family, vault, evaluator, and reviewer-policy values are
+required materialized fields; an empty value is invalid, not a deferred
+placeholder.
+
+The canonical manifest shape is fixed; every listed value is required and
+must be non-null in a materialized epoch. The `task` object is the sole
+manifest owner of the label-policy and rubric digests; there is no second
+`labels` object that repeats those facts:
+
+```json
+{
+  "manifest_id": "harness_evolution_ec2_contract.v1",
+  "contract_id": "PE7-HE-EC2-CONTRACT-1",
+  "manifest_sha256": "",
+  "evaluator": {"schema_version": "harness_evolution_eval.v1", "identity_hash": ""},
+  "task": {"family_id": "<family_id>", "family_sha256": "<sha256>", "label_policy_sha256": "<sha256>", "rubric_sha256": "<sha256>"},
+  "holdout": {"schema_version": "harness_evolution_sealed_holdout.v1", "vault_sha256": "<sha256>", "selection_policy_sha256": "<sha256>"},
+  "access": {"policy_version": "ec2-access-policy.v1", "classes": ["candidate_worker", "evaluator", "reviewer", "operator_controller"], "policy_sha256": "<sha256>"},
+  "sentinels": [{"id": "contamination", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "workspace-access-audit+LocalProductStore", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": "<sha256>"}, {"id": "gaming", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "harness_evolution_eval+verification", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": "<sha256>"}, {"id": "safety", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "product_golden_path+tool_policy+output_boundary", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": "<sha256>"}],
+  "invalidation": {"states": ["VALID", "INVALIDATED", "UNKNOWN"], "policy_sha256": "<sha256>"},
+  "outcome": {"schema_version": "PredictionOutcomeV1", "rule_version": "prediction-outcome-rule.v1", "rule_sha256": "<sha256>"},
+  "review": {"policy_version": "ec2-review-policy.v1", "identity_class": "independent_reviewer", "rubric": "immutable_evidence_hard_gate.v1", "blinding": "sealed_label_and_rubric_blind", "permitted_repair": "none_after_evaluation", "disagreement": "preserve_and_escalate", "time_measurement": "record_duration_and_rework", "policy_sha256": "<sha256>"},
+  "owners": {"verification": "engine/src/product_golden_path.rs", "replay": "engine/src/storage/local_product_store/harness_evolution.rs", "scorecard": "engine/src/harness_evolution_eval.rs", "review": "scripts/agent-control/review_convergence.py+docs/REAL_WORLD_TESTING_PLAYBOOK.md", "output": "engine/src/harness_evolution_pr_ready.rs", "audit": "engine/src/storage/local_product_store/harness_evolution.rs", "persistence": "engine/src/storage/local_product_store/harness_evolution.rs"}
+}
+```
+
+The `<sha256>` values above are required epoch-bound digests, not caller
+claims; each is computed by the component rule and then included in the
+manifest digest. The contract freezes the exact names and sources; the
+holdout/sentinel/outcome implementation packets materialize and validate the
+values before any archive or effect.
+
+The evaluator constellation and holdout are immutable for one evaluation
+epoch. A task family has development, validation, and sealed-holdout splits;
+each task is bound to a stable task identity, family identity, label digest,
+and rubric/version digest. The sealed vault exposes only membership hashes and
+its canonical digest outside the evaluator. A store-owned, one-use selection
+receipt may admit only the preselected bounded entrant set under the existing
+evaluator/store limit; this contract does not change that limit. Sealed
+execution never feeds mutation, prediction, parent selection, or archive
+eligibility. Development and validation evidence may be recorded, but only
+complete validation evidence with a passing hard gate, all three sentinel
+receipts equal to `PASS`, and no invalidation can enter the existing
+Pareto/archive path.
+
+The archive predicate is one conjunctive rule:
+
+The existing `harness_evolution_sealed_selection.v1` receipt is preserved
+byte-for-byte with its current fields: `schema_version`, `receipt_id`,
+`family_id`, ordered `candidate_ids`, and `used`. The EC2 contract does not
+add manifest, policy, evaluator, or digest fields to that v1 receipt. A
+separate evaluator-owned EC2 selection binding associates its stable
+`receipt_id` with the manifest, selection policy, and evaluator identity; that
+binding is future implementation evidence and is not a replacement or an
+extension of the existing v1 persistence record.
+
+```text
+archive_eligible(candidate, evaluation) :=
+  evaluation.manifest_sha256 == manifest.manifest_sha256
+  ∧ consumed_one_use_selection_receipt.schema_version == harness_evolution_sealed_selection.v1
+  ∧ consumed_one_use_selection_receipt.receipt_id == evaluation.selection_receipt_id
+  ∧ consumed_one_use_selection_receipt.family_id == evaluation.family_id
+  ∧ consumed_one_use_selection_receipt.candidate_ids contains candidate.id
+  ∧ consumed_one_use_selection_receipt.used == true
+  ∧ selection_binding.receipt_id == consumed_one_use_selection_receipt.receipt_id
+  ∧ selection_binding.manifest_sha256 == manifest.manifest_sha256
+  ∧ selection_binding.selection_policy_sha256 == manifest.holdout.selection_policy_sha256
+  ∧ selection_binding.evaluator_identity_hash == manifest.evaluator.identity_hash
+  ∧ selection_binding.digest == sha256(canonical_json(selection_binding with digest=""))
+  ∧ evaluation.terminal == COMPLETE
+  ∧ evaluation.candidate_id == candidate.id
+  ∧ evaluation.evaluator_identity_hash == active.evaluator_identity_hash
+  ∧ evaluation.active_version_hash == candidate.active_version_hash
+  ∧ evaluation.content_hash == candidate.content_hash
+  ∧ evaluation.task_family_sha256 == manifest.task.family_sha256
+  ∧ evaluation.vault_sha256 == manifest.holdout.vault_sha256
+  ∧ evaluation.label_policy_sha256 == manifest.task.label_policy_sha256
+  ∧ evaluation.rubric_sha256 == manifest.task.rubric_sha256
+  ∧ evaluation.hypothesis_manifest_sha256 is bound to evaluation
+  ∧ evaluation.bundle_sha256 is bound to evaluation
+  ∧ evaluation.evidence_sha256 is bound to evaluation
+  ∧ every validation record is complete
+  ∧ every validation hard_gate == PASSED
+  ∧ sentinel_receipts have exactly the ids [contamination, gaming, safety]
+  ∧ for each id, sentinel_receipt[id].manifest_sha256 == manifest.manifest_sha256
+  ∧ for each id, sentinel_receipt[id].policy_version == manifest.sentinels[id].policy_version
+  ∧ for each id, sentinel_receipt[id].policy_sha256 == manifest.sentinels[id].policy_sha256
+  ∧ for each id, sentinel_receipt[id].input_owner == manifest.sentinels[id].input_owner
+  ∧ for each id, sentinel_receipt[id].receipt_schema == manifest.sentinels[id].receipt_schema
+  ∧ for each id, sentinel_receipt[id].candidate_id == candidate.id
+  ∧ for each id, sentinel_receipt[id].evaluation_id == evaluation.evaluation_id
+  ∧ for each id, sentinel_receipt[id].evaluator_identity_hash == manifest.evaluator.identity_hash
+  ∧ for each id, sentinel_receipt[id].source_evidence_digest is bound to evaluation
+  ∧ for each id, sentinel_receipt[id].receipt_sha256 == sha256(canonical_json(sentinel_receipt[id] with receipt_sha256=""))
+  ∧ sentinel_receipt[contamination].status == PASS
+  ∧ sentinel_receipt[gaming].status == PASS
+  ∧ sentinel_receipt[safety].status == PASS
+  ∧ evaluation.reviewer_policy_sha256 == manifest.review.policy_sha256
+  ∧ review_receipt.schema_version == harness_evolution_review_receipt.v1
+  ∧ review_receipt.manifest_sha256 == manifest.manifest_sha256
+  ∧ review_receipt.policy_sha256 == manifest.review.policy_sha256
+  ∧ review_receipt.candidate_id == evaluation.candidate_id
+  ∧ review_receipt.evaluation_id == evaluation.evaluation_id
+  ∧ review_receipt.evidence_sha256 == evaluation.evidence_sha256
+  ∧ review_receipt.reviewer_session_id is authenticated and non-empty
+  ∧ review_receipt.reviewer_session_id resolves through the existing review owner to identity_class == manifest.review.identity_class
+  ∧ review_receipt.reviewer_session_id is distinct from the evaluator and implementation sessions
+  ∧ review_receipt.receipt_sha256 == sha256(canonical_json(review_receipt with receipt_sha256=""))
+  ∧ review_receipt.disposition == PASS
+  ∧ invalidation.state == VALID
+```
+
+Any missing, mismatched, stale, or outcome-unknown term makes the predicate
+false and retains the rejected evidence under existing owners.
+
+Receipt bindings are also fixed. The existing selection receipt contains only
+`schema_version`, `receipt_id`, `family_id`, ordered `candidate_ids`, and
+`used`; its v1 shape and persistence semantics remain unchanged. The separate
+EC2 selection binding contains `receipt_id`, `manifest_sha256`,
+`selection_policy_sha256`, `evaluator_identity_hash`, and `digest`; its digest
+is the canonical JSON digest with only `digest` blanked. It is evaluator-owned
+evidence keyed to the unchanged v1 `receipt_id`, not a new field in that
+receipt. A future implementation packet must version that binding separately
+if it makes it durable. A sentinel receipt contains
+`schema_version`, `sentinel_id`, `policy_version`, `receipt_schema`,
+`manifest_sha256`, `policy_sha256`, `input_owner`, `candidate_id`,
+`evaluation_id`, `evaluator_identity_hash`, `source_evidence_digest`, `status`,
+and `receipt_sha256`, using the same blanked-self digest rule. A reviewer receipt uses
+`harness_evolution_review_receipt.v1` and contains `manifest_sha256`,
+`policy_sha256`, `candidate_id`, `evaluation_id`, `evidence_sha256`,
+`reviewer_session_id`, `disposition`, `disagreement_digest`, and
+`receipt_sha256`. Missing authentication/session identity, digest, or owner
+binding is `UNKNOWN`, never an implicit pass.
+
+After the separate entrant-admission receipt and evaluation, three independent
+sentinel classes are required before eligible archive or parent selection:
+
+- contamination detects access to sealed tasks, labels, rubric, restricted
+  corpus, or post-result information;
+- gaming detects candidate control of evaluator inputs, selective evidence,
+  metric/rubric manipulation, hidden rejection, or attempts to disable a
+  sentinel; and
+- safety detects scope, authority, secret, target-output, compatibility, or
+  recovery-boundary violations.
+
+The sentinel inputs are independent of candidate-authored status: contamination
+uses access/audit and sealed-vault boundary evidence; gaming uses evaluator
+configuration, evidence-completeness, and tool-policy cross-checks; and safety
+uses the existing scope, authority, secret, target-output, and recovery
+verification receipts. The contamination input owner is the existing
+workspace/access/audit and `LocalProductStore` owner; the gaming input owner is
+the evaluator and verification owner; the safety input owner is the existing
+Product Golden Path, tool-policy, and output-boundary owner. Each class emits
+one `harness_evolution_sentinel_receipt.v1` with its policy digest, input-owner
+class, candidate/evaluation/evaluator identities, source-evidence digest, and
+status. No class can disable another, and a missing, conflicting, or
+candidate-controlled input makes independence `UNKNOWN`, not `PASS`.
+Each sentinel is evaluator/owner-derived and returns a fail-closed invalidation
+on `FAIL` or `UNKNOWN`. Invalidation keeps the candidate, rejection reason,
+evidence digests, cleanup, and replay binding under existing owners, but
+prevents acceptance, archive entry, PR-ready output, adoption, or a claim of
+safety. Sentinel results never mutate labels or act as a scalar quality
+override.
+
+`PredictionOutcomeV1` is an evaluator-owned immutable derivation. For every
+addressable prediction in the pre-execution
+`MutationHypothesisManifestV1`, the evaluator joins the frozen prediction to
+the candidate/lineage, task and metric or invariant identity, actual
+verification/runtime evidence, and explicit missingness. The derived record
+is bound to the hypothesis-manifest digest, evaluation/bundle digest,
+evaluator identity, and evidence digest, then content-hashed before durable
+recording. Its outcome is exactly one of `correct`, `incorrect`,
+`partially_supported`, `contradicted`, or `unavailable`; incomplete, tampered,
+invalidated, or otherwise missing evidence is `unavailable` and never a pass.
+An absent regression prediction is not evidence that no regression occurred.
+The fixed derivation precedence is: `unavailable` when required evidence is
+missing, incomplete, tampered, or invalidated; `contradicted` when complete
+evidence violates an invariant or crosses the opposite-direction threshold;
+`correct` when every declared assertion meets its direction and threshold;
+`partially_supported` when at least one assertion meets its threshold and at
+least one remains unsupported without contradiction; and `incorrect` when
+complete evidence supports none of the declared assertions without crossing an
+opposite-direction threshold. An unpredicted regression is recorded as
+counterevidence/invalidation input and never silently becomes `correct` or
+safe.
+The candidate may provide predictions as immutable input, but cannot author,
+revise, suppress, or finalize the derived outcome. Prediction accuracy and
+model confidence are calibration/audit evidence only: they cannot satisfy a
+hard gate, select a Pareto parent, grant safety, authorize adoption, or change
+the evaluator.
+
+Candidate generation uses one source-bound causal-mutation evidence chain. `FailurePatternEvidenceV1` separates observed verifier/runtime facts, causal status, counterevidence, Harness addressability, and the admitted mutable surface; existing feedback traces, pattern detection, and outcome attribution remain observation inputs rather than a second failure-intelligence authority. `MutationHypothesisManifestV1` freezes the exact candidate delta, predicted improvements and regressions, invariants, thresholds, and evaluation plan before execution. The existing evaluator path alone derives `PredictionOutcomeV1` after evaluation under the binding above.
 
 Level-1 core is a default-off one-generation laboratory with immutable active-Harness identity, candidate lineage, total-lifecycle-budget evaluation, hard gates, sealed holdout, Pareto archive, operator acknowledgement, and PR_READY output. Memory and skill projections are disabled in the core comparison so attribution remains identifiable. Optional memory-only and skill-only factor experiments may follow Level-1 but do not block the core Level-2 route. VDE does not rewrite or silently broaden the current evaluator or `MetricVector`.
 
