@@ -35,6 +35,8 @@ For a public repository, the preferred host interaction is an outbound local wor
 
 The local adapter must reuse the existing `state_manager`, dispatcher, worktree, prompt, artifact, PR-binding, CI, review, and merge owners. It may not form a second controller or output authority. Before the self-hosted workflow path can be retired, `run-once` must prove remote serialization/lease recovery, exact accepted-main binding, one worktree per task, process-tree timeout/cancellation, validated patch artifact finalization, Draft-PR-only output, CI/review handoff, bounded repair, and safe restart after every externally visible transition.
 
+An exact, claim-bound `block-plan` request may terminalize an expired plan lease only as `failed_unknown_output`; it frees capacity without treating the old worker output or handoff as proven. Successful release and all other claim transitions still require a live lease.
+
 ### Repository-maintenance route transition
 
 The repository-maintenance route controller is an extension of the existing
