@@ -1,6 +1,7 @@
 //! Durable storage for PE7 Harness Evolution B1 evidence + B2 evaluation/archive.
 
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
+use std::collections::BTreeSet;
 
 use super::{append_audit_locked, LocalProductStore};
 use crate::harness_evolution::{
@@ -21,6 +22,66 @@ use crate::harness_evolution_pr_ready::{
     finalize_pr_ready_bundle, redacted_pr_ready_evidence, PrReadyCandidateBundle, PrReadyReceipt,
     PR_READY_RECEIPT_SCHEMA, PR_READY_SCHEMA_VERSION,
 };
+
+const SEALED_SELECTION_SCHEMA: &str = "harness_evolution_sealed_selection.v1";
+
+fn parse_sealed_selection(
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<(String, String, Vec<String>, bool), String> {
+    let prefix = "harness_evolution.sealed_selection.";
+    let receipt_id = key
+        .strip_prefix(prefix)
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| "evolution_eval_sealed_selection_key_malformed".to_string())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "evolution_eval_sealed_selection_malformed".to_string())?;
+    if object.len() != 5
+        || !object.contains_key("schema_version")
+        || !object.contains_key("receipt_id")
+        || !object.contains_key("family_id")
+        || !object.contains_key("candidate_ids")
+        || !object.contains_key("used")
+    {
+        return Err("evolution_eval_sealed_selection_malformed".to_string());
+    }
+    if object.get("schema_version").and_then(|v| v.as_str()) != Some(SEALED_SELECTION_SCHEMA)
+        || object.get("receipt_id").and_then(|v| v.as_str()) != Some(receipt_id)
+    {
+        return Err("evolution_eval_sealed_selection_schema".to_string());
+    }
+    let family_id = object
+        .get("family_id")
+        .and_then(|v| v.as_str())
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| "evolution_eval_sealed_selection_family".to_string())?
+        .to_string();
+    let ids = object
+        .get("candidate_ids")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "evolution_eval_sealed_selection_candidates".to_string())?;
+    if !(MIN_SEALED_ENTRANTS..=MAX_SEALED_ENTRANTS).contains(&ids.len()) {
+        return Err("evolution_eval_sealed_selection_entrants".to_string());
+    }
+    let mut seen = BTreeSet::new();
+    let mut candidate_ids = Vec::with_capacity(ids.len());
+    for id in ids {
+        let id = id
+            .as_str()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| "evolution_eval_sealed_selection_candidates".to_string())?;
+        if !seen.insert(id) {
+            return Err("evolution_eval_sealed_selection_duplicate".to_string());
+        }
+        candidate_ids.push(id.to_string());
+    }
+    let used = object
+        .get("used")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| "evolution_eval_sealed_selection_used".to_string())?;
+    Ok((receipt_id.to_string(), family_id, candidate_ids, used))
+}
 
 impl LocalProductStore {
     /// Register an immutable active-Harness + evaluator epoch (insert-only).
@@ -626,17 +687,42 @@ impl LocalProductStore {
         &self,
         vault: &SealedHoldoutVault,
     ) -> Result<SealedHoldoutVault, String> {
-        if vault.schema_version != SEALED_SCHEMA_VERSION {
-            return Err("sealed holdout schema_version mismatch".into());
-        }
+        crate::harness_evolution_eval::validate_sealed_vault(vault)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
         let body = serde_json::to_string(vault).map_err(|e| e.to_string())?;
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         self.with_conn(|conn| {
-            conn.execute(
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let existing: Option<(String, i64, String)> = tx
+                .query_row(
+                    "SELECT family_id, preselected_entrant_limit, body_json
+                     FROM harness_evolution_sealed_holdouts WHERE vault_sha256=?1",
+                    params![vault.vault_sha256],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some((family_id, entrant_limit, stored_body)) = existing {
+                let stored: SealedHoldoutVault =
+                    serde_json::from_str(&stored_body).map_err(|e| e.to_string())?;
+                crate::harness_evolution_eval::validate_sealed_vault(&stored)
+                    .map_err(|e| format!("{}: {}", e.code, e.message))?;
+                if stored != *vault
+                    || family_id != vault.family_id
+                    || entrant_limit != vault.preselected_entrant_limit as i64
+                {
+                    return Err(
+                        "evolution_eval_sealed_immutable: vault identity is already registered with different data".into(),
+                    );
+                }
+                tx.commit().map_err(|e| e.to_string())?;
+                return Ok(stored);
+            }
+            tx.execute(
                 "INSERT INTO harness_evolution_sealed_holdouts
                     (vault_sha256, family_id, preselected_entrant_limit, body_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(vault_sha256) DO NOTHING",
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     vault.vault_sha256,
                     vault.family_id,
@@ -646,6 +732,19 @@ impl LocalProductStore {
                 ],
             )
             .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &now,
+                "system",
+                "harness_evolution.sealed_holdout_stored",
+                &vault.vault_sha256,
+                &serde_json::json!({
+                    "schema_version": SEALED_SCHEMA_VERSION,
+                    "family_id": vault.family_id,
+                    "vault_sha256": vault.vault_sha256,
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
             Ok(vault.clone())
         })
     }
@@ -654,19 +753,34 @@ impl LocalProductStore {
         &self,
         vault_sha256: &str,
     ) -> Result<Option<SealedHoldoutVault>, String> {
+        crate::harness_evolution::validate_sha256_hex(vault_sha256)
+            .map_err(|_| "sealed vault digest must be 64 lowercase hex".to_string())?;
         self.with_conn(|conn| {
-            let row: Option<String> = conn
+            let row: Option<(String, i64, String)> = conn
                 .query_row(
-                    "SELECT body_json FROM harness_evolution_sealed_holdouts WHERE vault_sha256=?1",
+                    "SELECT family_id, preselected_entrant_limit, body_json
+                     FROM harness_evolution_sealed_holdouts WHERE vault_sha256=?1",
                     params![vault_sha256],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()
                 .map_err(|e| e.to_string())?;
             match row {
-                Some(body) => Ok(Some(
-                    serde_json::from_str(&body).map_err(|e| e.to_string())?,
-                )),
+                Some((family_id, entrant_limit, body)) => {
+                    let vault: SealedHoldoutVault =
+                        serde_json::from_str(&body).map_err(|e| e.to_string())?;
+                    crate::harness_evolution_eval::validate_sealed_vault(&vault)
+                        .map_err(|e| format!("{}: {}", e.code, e.message))?;
+                    if vault.vault_sha256 != vault_sha256
+                        || vault.family_id != family_id
+                        || vault.preselected_entrant_limit as i64 != entrant_limit
+                    {
+                        return Err(
+                            "evolution_eval_sealed_corrupt: stored vault identity mismatch".into(),
+                        );
+                    }
+                    Ok(Some(vault))
+                }
                 None => Ok(None),
             }
         })
@@ -683,6 +797,15 @@ impl LocalProductStore {
         }
         crate::harness_evolution_eval::validate_task_family(family)
             .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        if let Some(existing) = self.get_harness_evolution_task_family(&family.family_id)? {
+            if existing == *family {
+                return Ok(existing);
+            }
+            return Err(format!(
+                "evolution_eval_family_immutable: family {} is already registered; create a new family_id",
+                family.family_id
+            ));
+        }
         let key = format!("harness_evolution.task_family.{}", family.family_id);
         let value = serde_json::to_value(family).map_err(|e| e.to_string())?;
         self.set_config_value(&key, value, actor_id)?;
@@ -722,6 +845,13 @@ impl LocalProductStore {
             value.clone()
         };
         let family: TaskFamilyManifest = serde_json::from_value(body).map_err(|e| e.to_string())?;
+        if family.family_id != family_id {
+            return Err(
+                "evolution_eval_family_corrupt: config key does not match family_id".into(),
+            );
+        }
+        crate::harness_evolution_eval::validate_task_family(&family)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
         Ok(Some(family))
     }
 
@@ -743,18 +873,24 @@ impl LocalProductStore {
         self.with_conn(|conn| {
             let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                 .map_err(|e| e.to_string())?;
-            let existing: Option<String> = tx
+            let existing: Option<(String, i64, String)> = tx
                 .query_row(
-                    "SELECT body_json FROM harness_evolution_sealed_holdouts WHERE vault_sha256=?1",
+                    "SELECT family_id, preselected_entrant_limit, body_json
+                     FROM harness_evolution_sealed_holdouts WHERE vault_sha256=?1",
                     params![vault.vault_sha256],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()
                 .map_err(|e| e.to_string())?;
-            if let Some(body) = existing {
+            if let Some((stored_family_id, entrant_limit, body)) = existing {
                 let stored: SealedHoldoutVault =
                     serde_json::from_str(&body).map_err(|e| e.to_string())?;
-                if stored == vault {
+                crate::harness_evolution_eval::validate_sealed_vault(&stored)
+                    .map_err(|e| format!("{}: {}", e.code, e.message))?;
+                if stored == vault
+                    && stored_family_id == vault.family_id
+                    && entrant_limit == vault.preselected_entrant_limit as i64
+                {
                     tx.commit().map_err(|e| e.to_string())?;
                     return Ok(stored);
                 }
@@ -831,7 +967,16 @@ impl LocalProductStore {
             .get("vault_sha256")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "evolution_eval_sealed_index_malformed".to_string())?;
-        self.get_harness_evolution_sealed_holdout(vault_sha)
+        let vault = self.get_harness_evolution_sealed_holdout(vault_sha)?;
+        if let Some(ref vault) = vault {
+            if vault.family_id != family_id {
+                return Err(
+                    "evolution_eval_sealed_family_mismatch: index family does not match vault"
+                        .into(),
+                );
+            }
+        }
+        Ok(vault)
     }
 
     /// Issue a one-use sealed selection for 1–3 preselected candidate IDs (evaluator-owned).
@@ -844,10 +989,19 @@ impl LocalProductStore {
         if actor_id.trim().is_empty() {
             return Err("evolution_eval_actor: authenticated actor_id is required".into());
         }
+        if family_id.trim().is_empty() {
+            return Err("evolution_eval_family_id: family_id is required".into());
+        }
         if candidate_ids.len() < MIN_SEALED_ENTRANTS || candidate_ids.len() > MAX_SEALED_ENTRANTS {
             return Err(
                 "evolution_eval_sealed_entrants: sealed selection must name 1–3 candidates".into(),
             );
+        }
+        let mut unique_candidate_ids = BTreeSet::new();
+        for id in candidate_ids {
+            if id.trim().is_empty() || !unique_candidate_ids.insert(id) {
+                return Err("evolution_eval_sealed_selection_duplicate_or_empty_candidate".into());
+            }
         }
         let _vault = self
             .get_registered_harness_evolution_sealed_vault(family_id)?
@@ -871,25 +1025,52 @@ impl LocalProductStore {
         );
         let key = format!("harness_evolution.sealed_selection.{receipt_id}");
         let value = serde_json::json!({
-            "schema_version": "harness_evolution_sealed_selection.v1",
-            "receipt_id": receipt_id,
+            "schema_version": SEALED_SELECTION_SCHEMA,
+            "receipt_id": receipt_id.clone(),
             "family_id": family_id,
             "candidate_ids": candidate_ids,
             "used": false,
         });
-        // Refuse overwrite of existing selection.
-        let snap = self.config_snapshot()?;
-        if snap
-            .as_object()
-            .map(|m| m.contains_key(&key))
-            .unwrap_or(false)
-        {
-            return Err(format!(
-                "evolution_eval_sealed_selection_exists: {receipt_id}"
-            ));
-        }
-        self.set_config_value(&key, value, actor_id)?;
-        Ok(receipt_id)
+        let value_json = value.to_string();
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let exists: Option<i64> = tx
+                .query_row(
+                    "SELECT 1 FROM local_config WHERE key=?1",
+                    params![key],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if exists.is_some() {
+                return Err(format!(
+                    "evolution_eval_sealed_selection_exists: {receipt_id}"
+                ));
+            }
+            tx.execute(
+                "INSERT INTO local_config (key, value_json, updated_at, updated_by)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![key, value_json, now, actor_id],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.sealed_selection_issued",
+                &receipt_id,
+                &serde_json::json!({
+                    "schema_version": SEALED_SELECTION_SCHEMA,
+                    "family_id": family_id,
+                    "receipt_id": receipt_id,
+                    "candidate_count": candidate_ids.len(),
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(receipt_id.clone())
+        })
     }
 
     fn consume_sealed_selection_for_candidate(
@@ -898,46 +1079,73 @@ impl LocalProductStore {
         candidate_id: &str,
         actor_id: &str,
     ) -> Result<bool, String> {
-        let snap = self.config_snapshot()?;
-        let Some(map) = snap.as_object() else {
-            return Ok(false);
-        };
         let prefix = "harness_evolution.sealed_selection.";
-        for (key, value) in map {
-            if !key.starts_with(prefix) {
-                continue;
-            }
-            let body = if let Some(inner) = value.get("value") {
-                inner.clone()
-            } else {
-                value.clone()
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let rows: Vec<(String, String)> = {
+                let mut stmt = tx
+                    .prepare("SELECT key, value_json FROM local_config ORDER BY key")
+                    .map_err(|e| e.to_string())?;
+                let mapped = stmt
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map_err(|e| e.to_string())?;
+                mapped
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?
             };
-            let used = body.get("used").and_then(|v| v.as_bool()).unwrap_or(true);
-            if used {
-                continue;
+            for (key, value_json) in rows {
+                if !key.starts_with(prefix) {
+                    continue;
+                }
+                let value: serde_json::Value =
+                    serde_json::from_str(&value_json).map_err(|e| e.to_string())?;
+                let (receipt_id, selection_family_id, candidate_ids, used) =
+                    parse_sealed_selection(&key, &value)?;
+                if used
+                    || selection_family_id != family_id
+                    || !candidate_ids.iter().any(|id| id == candidate_id)
+                {
+                    continue;
+                }
+                let updated = serde_json::json!({
+                    "schema_version": SEALED_SELECTION_SCHEMA,
+                    "receipt_id": receipt_id,
+                    "family_id": selection_family_id,
+                    "candidate_ids": candidate_ids,
+                    "used": true,
+                });
+                let updated_json = updated.to_string();
+                let changed = tx
+                    .execute(
+                        "UPDATE local_config
+                         SET value_json=?1, updated_at=?2, updated_by=?3
+                         WHERE key=?4 AND value_json=?5",
+                        params![updated_json, self.now(), actor_id, key, value_json],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if changed != 1 {
+                    return Err("evolution_eval_sealed_selection_race".into());
+                }
+                append_audit_locked(
+                    &tx,
+                    &self.now(),
+                    actor_id,
+                    "harness_evolution.sealed_selection_consumed",
+                    &receipt_id,
+                    &serde_json::json!({
+                        "schema_version": SEALED_SELECTION_SCHEMA,
+                        "family_id": family_id,
+                        "candidate_id": candidate_id,
+                        "receipt_id": receipt_id,
+                    }),
+                )?;
+                tx.commit().map_err(|e| e.to_string())?;
+                return Ok(true);
             }
-            let fid = body.get("family_id").and_then(|v| v.as_str()).unwrap_or("");
-            if fid != family_id {
-                continue;
-            }
-            let ids = body
-                .get("candidate_ids")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let matches = ids.iter().any(|v| v.as_str() == Some(candidate_id));
-            if !matches {
-                continue;
-            }
-            let mut updated = body;
-            updated
-                .as_object_mut()
-                .ok_or_else(|| "evolution_eval_sealed_selection_malformed".to_string())?
-                .insert("used".into(), serde_json::json!(true));
-            self.set_config_value(key, updated, actor_id)?;
-            return Ok(true);
-        }
-        Ok(false)
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(false)
+        })
     }
 
     /// Exactly-once workspace-bound evaluation + Pareto archive under equal budgets.
@@ -1899,6 +2107,139 @@ mod tests {
     }
 
     #[test]
+    fn sealed_holdout_registration_is_immutable_hash_only_and_restart_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sealed.db");
+        let db_s = db.to_str().unwrap();
+        let (family_id, vault_sha256) = {
+            let store = LocalProductStore::new(db_s).unwrap();
+            let family = crate::harness_evolution_eval::sample_task_family("fam-sealed");
+            store
+                .register_harness_evolution_task_family(&family, "evaluator-owner")
+                .unwrap();
+            let vault = store
+                .register_harness_evolution_sealed_vault(&family.family_id, "evaluator-owner")
+                .unwrap();
+            assert_eq!(
+                store
+                    .register_harness_evolution_sealed_vault(&family.family_id, "evaluator-owner")
+                    .unwrap(),
+                vault
+            );
+            let mut changed = family.clone();
+            changed.development[0].label_sha256 = sha256_hex("changed-label");
+            let err = store
+                .register_harness_evolution_task_family(&changed, "evaluator-owner")
+                .unwrap_err();
+            assert!(err.contains("immutable"), "unexpected error: {err}");
+            let stored_body: String = store
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT body_json FROM harness_evolution_sealed_holdouts
+                         WHERE vault_sha256=?1",
+                        params![vault.vault_sha256],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .unwrap();
+            assert!(!stored_body.contains("changed-label"));
+            assert!(!stored_body.contains("label|fam-sealed|"));
+            (family.family_id, vault.vault_sha256)
+        };
+        let store = LocalProductStore::new(db_s).unwrap();
+        let loaded = store
+            .get_harness_evolution_sealed_holdout(&vault_sha256)
+            .unwrap()
+            .expect("sealed vault survives restart");
+        assert_eq!(loaded.family_id, family_id);
+        assert_eq!(loaded.vault_sha256, vault_sha256);
+    }
+
+    #[test]
+    fn sealed_holdout_read_and_family_index_fail_closed_on_corruption() {
+        let store = LocalProductStore::new(":memory:").unwrap();
+        let family_a = register_family_and_vault(&store, "fam-index-a");
+        let family_b = register_family_and_vault(&store, "fam-index-b");
+        let vault_b = store
+            .get_registered_harness_evolution_sealed_vault(&family_b.family_id)
+            .unwrap()
+            .unwrap();
+        let index_key = format!(
+            "harness_evolution.sealed_vault_index.{}",
+            family_a.family_id
+        );
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE local_config SET value_json=?1 WHERE key=?2",
+                    params![
+                        serde_json::json!({"vault_sha256": vault_b.vault_sha256}).to_string(),
+                        index_key
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let err = store
+            .get_registered_harness_evolution_sealed_vault(&family_a.family_id)
+            .unwrap_err();
+        assert!(err.contains("family_mismatch"), "unexpected error: {err}");
+
+        let vault_a = build_sealed_vault(&family_a).unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE harness_evolution_sealed_holdouts
+                     SET body_json=?1 WHERE vault_sha256=?2",
+                    params![
+                        serde_json::json!({
+                            "schema_version": SEALED_SCHEMA_VERSION,
+                            "family_id": vault_a.family_id,
+                            "sealed_task_hashes": vault_a.sealed_task_hashes,
+                            "vault_sha256": vault_a.vault_sha256,
+                            "preselected_entrant_limit": 1
+                        })
+                        .to_string(),
+                        vault_a.vault_sha256
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let err = store
+            .get_harness_evolution_sealed_holdout(&vault_a.vault_sha256)
+            .unwrap_err();
+        assert!(
+            err.contains("entrants") || err.contains("corrupt"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn sealed_selection_shape_is_exact_and_consumption_is_audited() {
+        let key = "harness_evolution.sealed_selection.hess-test";
+        let value = serde_json::json!({
+            "schema_version": SEALED_SELECTION_SCHEMA,
+            "receipt_id": "hess-test",
+            "family_id": "family",
+            "candidate_ids": ["candidate"],
+            "used": false
+        });
+        let parsed = parse_sealed_selection(key, &value).unwrap();
+        assert_eq!(parsed.0, "hess-test");
+        assert_eq!(parsed.1, "family");
+        assert_eq!(parsed.2, vec!["candidate"]);
+        assert!(!parsed.3);
+
+        let mut extra = value.clone();
+        extra["label_sha256"] = serde_json::json!("must-not-be-stored");
+        assert!(parse_sealed_selection(key, &extra).is_err());
+    }
+
+    #[test]
     fn records_equal_budget_evaluation_and_pareto_exactly_once() {
         let env = LabEnvGuard::enable();
         use crate::harness_evolution_eval::sample_budget;
@@ -1941,6 +2282,21 @@ mod tests {
             .baselines
             .iter()
             .any(|b| b.usage.calls > 0 && !b.usage.incomplete));
+        let snapshot = store.config_snapshot().unwrap();
+        let selection = snapshot
+            .as_object()
+            .and_then(|values| {
+                values
+                    .iter()
+                    .find(|(key, _)| key.starts_with("harness_evolution.sealed_selection."))
+            })
+            .map(|(_, value)| value)
+            .expect("selection receipt remains durable");
+        assert_eq!(selection.get("used").and_then(|v| v.as_bool()), Some(true));
+        assert!(!store
+            .search_audit_events(20, 0, Some("sealed_selection_consumed"))
+            .unwrap()
+            .is_empty());
         let loaded = store
             .get_harness_evolution_evaluation(&bundle.evaluation_id)
             .unwrap()

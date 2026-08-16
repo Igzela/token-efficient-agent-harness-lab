@@ -314,29 +314,109 @@ pub fn validate_task_family(manifest: &TaskFamilyManifest) -> Result<(), Evoluti
             "task family size out of bounds",
         ));
     }
-    for task in manifest
-        .development
-        .iter()
-        .chain(manifest.validation.iter())
-        .chain(manifest.sealed_holdout.iter())
-    {
-        validate_sha256_hex(&task.label_sha256).map_err(|_| {
-            EvolutionAdmissionError::new(
-                "evolution_eval_label_hash",
-                "label_sha256 must be 64 lowercase hex",
-            )
-        })?;
-        if task.family_id != manifest.family_id {
-            return Err(EvolutionAdmissionError::new(
-                "evolution_eval_family_mismatch",
-                "task family_id must match manifest",
-            ));
+    let mut task_ids = BTreeSet::new();
+    for (expected_split, tasks) in [
+        (TaskSplit::Development, &manifest.development),
+        (TaskSplit::Validation, &manifest.validation),
+        (TaskSplit::SealedHoldout, &manifest.sealed_holdout),
+    ] {
+        for task in tasks {
+            if task.task_id.trim().is_empty() {
+                return Err(EvolutionAdmissionError::new(
+                    "evolution_eval_task_id",
+                    "task_id required",
+                ));
+            }
+            if !task_ids.insert(task.task_id.clone()) {
+                return Err(EvolutionAdmissionError::new(
+                    "evolution_eval_task_duplicate",
+                    "task_id must be unique across task family splits",
+                ));
+            }
+            if task.split != expected_split {
+                return Err(EvolutionAdmissionError::new(
+                    "evolution_eval_task_split",
+                    "task split must match its manifest section",
+                ));
+            }
+            validate_sha256_hex(&task.label_sha256).map_err(|_| {
+                EvolutionAdmissionError::new(
+                    "evolution_eval_label_hash",
+                    "label_sha256 must be 64 lowercase hex",
+                )
+            })?;
+            if task.family_id != manifest.family_id {
+                return Err(EvolutionAdmissionError::new(
+                    "evolution_eval_family_mismatch",
+                    "task family_id must match manifest",
+                ));
+            }
         }
     }
     if !(MIN_SEALED_ENTRANTS..=MAX_SEALED_ENTRANTS).contains(&manifest.sealed_holdout.len()) {
         return Err(EvolutionAdmissionError::new(
             "evolution_eval_sealed_count",
             "sealed holdout must preselect 1–3 entrants",
+        ));
+    }
+    Ok(())
+}
+
+/// Validate the hash-only sealed vault before it crosses an evaluator/store boundary.
+///
+/// The vault digest binds the ordered membership list. The entrant limit is kept
+/// consistent with that list so a caller cannot alter the admitted count without
+/// changing the same immutable identity.
+pub fn validate_sealed_vault(vault: &SealedHoldoutVault) -> Result<(), EvolutionAdmissionError> {
+    if vault.schema_version != SEALED_SCHEMA_VERSION {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_sealed_schema",
+            "sealed vault schema mismatch",
+        ));
+    }
+    if vault.family_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_sealed_family_id",
+            "sealed vault family_id required",
+        ));
+    }
+    if !(MIN_SEALED_ENTRANTS..=MAX_SEALED_ENTRANTS).contains(&vault.sealed_task_hashes.len()) {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_sealed_count",
+            "sealed vault membership must contain 1–3 task hashes",
+        ));
+    }
+    if vault.preselected_entrant_limit as usize != vault.sealed_task_hashes.len() {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_sealed_entrants",
+            "sealed entrant limit must match sealed membership count",
+        ));
+    }
+    let mut hashes = BTreeSet::new();
+    for hash in &vault.sealed_task_hashes {
+        validate_sha256_hex(hash).map_err(|_| {
+            EvolutionAdmissionError::new(
+                "evolution_eval_sealed_hash",
+                "sealed task membership must be 64 lowercase hex",
+            )
+        })?;
+        if !hashes.insert(hash) {
+            return Err(EvolutionAdmissionError::new(
+                "evolution_eval_sealed_duplicate",
+                "sealed task membership hashes must be unique",
+            ));
+        }
+    }
+    validate_sha256_hex(&vault.vault_sha256).map_err(|_| {
+        EvolutionAdmissionError::new(
+            "evolution_eval_sealed_tamper",
+            "sealed vault digest must be 64 lowercase hex",
+        )
+    })?;
+    if sha256_hex(&vault.sealed_task_hashes.join("|")) != vault.vault_sha256 {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_sealed_tamper",
+            "sealed vault digest does not bind its membership",
         ));
     }
     Ok(())
@@ -364,6 +444,7 @@ pub fn build_sealed_vault(
         vault_sha256: sha256_hex(&vault_material),
         preselected_entrant_limit: manifest.sealed_holdout.len() as u8,
     };
+    validate_sealed_vault(&vault)?;
     Ok(vault)
 }
 
@@ -676,26 +757,12 @@ pub fn evaluate_candidate_from_workspace(
             "sealed vault family must match task family",
         ));
     }
-    if sealed_vault.schema_version != SEALED_SCHEMA_VERSION {
-        return Err(EvolutionAdmissionError::new(
-            "evolution_eval_sealed_schema",
-            "sealed vault schema mismatch",
-        ));
-    }
+    validate_sealed_vault(sealed_vault)?;
     let expected = build_sealed_vault(family)?;
-    if expected.vault_sha256 != sealed_vault.vault_sha256 {
+    if expected != *sealed_vault {
         return Err(EvolutionAdmissionError::new(
             "evolution_eval_sealed_tamper",
-            "sealed vault hash mismatch",
-        ));
-    }
-    if sealed_selected
-        && !(MIN_SEALED_ENTRANTS as u8..=MAX_SEALED_ENTRANTS as u8)
-            .contains(&sealed_vault.preselected_entrant_limit)
-    {
-        return Err(EvolutionAdmissionError::new(
-            "evolution_eval_sealed_entrants",
-            "sealed entrant count must be 1–3",
+            "sealed vault identity does not match the task family",
         ));
     }
 
@@ -836,11 +903,12 @@ pub fn evaluate_candidate_fixture(
     }
     validate_budget(budget)?;
     validate_task_family(family)?;
+    validate_sealed_vault(sealed_vault)?;
     let expected = build_sealed_vault(family)?;
-    if expected.vault_sha256 != sealed_vault.vault_sha256 {
+    if expected != *sealed_vault {
         return Err(EvolutionAdmissionError::new(
             "evolution_eval_sealed_tamper",
-            "sealed vault hash mismatch",
+            "sealed vault identity does not match the task family",
         ));
     }
     let mut baselines = Vec::new();
@@ -1281,6 +1349,54 @@ mod tests {
             &family,
             &vault,
             true,
+            "2026-07-21T00:00:00Z",
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "evolution_eval_sealed_tamper");
+    }
+
+    #[test]
+    fn task_family_and_vault_identities_bind_all_membership_fields() {
+        let mut family = sample_task_family("fam-identity");
+        family.development[0].task_id.clear();
+        assert_eq!(
+            validate_task_family(&family).unwrap_err().code,
+            "evolution_eval_task_id"
+        );
+
+        let mut family = sample_task_family("fam-identity-split");
+        family.validation[0].split = TaskSplit::Development;
+        assert_eq!(
+            validate_task_family(&family).unwrap_err().code,
+            "evolution_eval_task_split"
+        );
+
+        let mut family = sample_task_family("fam-identity-duplicate");
+        family.sealed_holdout[0].task_id = family.development[0].task_id.clone();
+        assert_eq!(
+            validate_task_family(&family).unwrap_err().code,
+            "evolution_eval_task_duplicate"
+        );
+
+        let family = sample_task_family("fam-vault-identity");
+        let vault = build_sealed_vault(&family).unwrap();
+        validate_sealed_vault(&vault).unwrap();
+
+        let mut reordered = vault.clone();
+        reordered.sealed_task_hashes.reverse();
+        reordered.vault_sha256 = sha256_hex(&reordered.sealed_task_hashes.join("|"));
+        validate_sealed_vault(&reordered).unwrap();
+        let _g = EnvGuard::enable_lab();
+        let err = evaluate_candidate_fixture(
+            "candidate",
+            "lineage",
+            "active",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &sample_budget(1),
+            &family,
+            &reordered,
+            false,
             "2026-07-21T00:00:00Z",
         )
         .unwrap_err();
