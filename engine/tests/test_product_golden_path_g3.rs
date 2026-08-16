@@ -1160,3 +1160,49 @@ fn test_pure_orchestrator_graph_compilation_and_validation_golden_traces() {
 
     std::env::remove_var(PRODUCT_TASK_GATE);
 }
+
+#[test]
+fn test_port_migration_idempotency_and_audit_traces() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+
+        let mut request = intake(&repo, &rev, "port-migration-1", pass_verify());
+        request.confirm_output = Some(true);
+        let validated = validate_intake(&request, "local", "default").unwrap();
+
+        // 1. First admission through store port
+        let task1 = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task1["task_id"].as_str().unwrap();
+
+        // 2. Idempotent second admission returns same task record
+        let task2 = store.admit_product_task(&validated, "tester").unwrap();
+        assert_eq!(task1["task_id"], task2["task_id"]);
+
+        // 3. Compile and schedule through port
+        let compiled = store
+            .compile_and_schedule_product_task(task_id, "tester", &["command".into()])
+            .unwrap();
+        let run_id = compiled["task"]["run_id"].as_str().unwrap();
+        run_scheduler_ticks(&store, run_id);
+
+        // 4. Finalize execution through port
+        let finalized = store
+            .finalize_product_task_after_execution(task_id, "tester")
+            .expect("finalize");
+        assert_eq!(
+            finalized["task"]["status"].as_str(),
+            Some(ProductTaskStatus::AwaitingApproval.as_str())
+        );
+
+        // 5. Approve and output through port
+        let output = store
+            .approve_and_output_product_task(task_id, "tester", true)
+            .expect("approve and output");
+        assert_eq!(
+            output["task"]["status"].as_str(),
+            Some(ProductTaskStatus::Completed.as_str())
+        );
+    });
+}
