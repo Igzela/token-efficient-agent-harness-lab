@@ -57,6 +57,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-RWE-DB-PREFLIGHT-1` | `COMPLETE` | Real same-tenant Store-owned Golden Path prerequisite completed by ProductTask `ptask-20260814135947-18cbb0b9731e62bf`, run `run-0007`, terminal evidence `product-terminal-ptask-20260814135947-18cbb0b9731e62bf-9-44d49301c781`; Draft PR-only output `Igzela/alters-lab#47`, target main `6240768506320a324d68787b9eaa86971c8c930c`; provider-free `rwe_operator_preflight.v1` `ready=true`, zero blockers, no authority/provider/target effect; projection sha256 `b8c35d4060d98598ce3e3bc3977a84d125b1df09ff66b2b9f6d9aa4303c03954` |
 
 | `PE7-AC3-CONTRACT-1` | `COMPLETE` | PR #486 exact head `9487a73ab9e00018103193d18c848e375b215a1b`; merge `6b2a6c46d30089800394ee82edd21075a2ef0d86`; exact-head `PASS`; canonical workflow `31922547776` |
+| `PE7-AC3-ORCHESTRATOR-CORE-1` | `COMPLETE` | PR #488 exact head `d8d1ac7c7ce2911486c7737de63647e1ddf7a476`; merge `650a9102faf183d46064c869dd5d76db8e44b64f`; exact-head `PASS`; canonical workflow `31927020088` |
 ## Accepted Product and Control-Plane State
 
 Accepted `main` contains:
