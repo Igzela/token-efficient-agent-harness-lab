@@ -122,7 +122,8 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         ):
             self.assertIn(target, runner)
         self.assertIn("actual_targets", runner)
-        self.assertIn("cargo test -p engine --features pg-tests --no-run", runner)
+        self.assertIn("cargo test \"${compile_args[@]}\"", runner)
+        self.assertIn("--features pg-tests --lib --no-run", runner)
         self.assertIn("CREATE DATABASE", runner)
         self.assertIn('pids+=("$!")', runner)
         self.assertIn("trap cleanup EXIT", runner)

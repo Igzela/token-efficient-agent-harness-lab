@@ -34,7 +34,11 @@ if [[ -z "${PG_CONTAINER:-}" ]]; then
   exit 1
 fi
 
-cargo test -p engine --features pg-tests --no-run
+compile_args=(-p engine --features pg-tests --lib --no-run)
+for target in "${expected_targets[@]}"; do
+  compile_args+=(--test "${target}")
+done
+cargo test "${compile_args[@]}"
 
 targets=(engine_lib "${expected_targets[@]}")
 log_dir="$(mktemp -d -t acp-pg-targets.XXXXXX)"
