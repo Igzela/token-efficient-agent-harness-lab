@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-15.
+Last updated: 2026-08-16.
 
 This document owns accepted repository truth and confirmed capability gaps only. It separates two states that must not be conflated:
 
@@ -141,7 +141,8 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | AC0 data/trace freeze | `COMPLETE` | The bounded provider-free owner/caller/transaction/projection/legacy inventory and trace/order closeout are recorded below; no ownership move was made |
 | AC2 typed execution contract | `COMPLETE` | Provider-free typed state/outcome/usage contract, executor mappings, and the accepted fail-closed boundary repair are recorded below; PRs #469, #472, and #475 are merge-backed. The contract authorizes no wire/schema change, authority move, or shared `ProcessSupervisor` |
 | AC2 typed boundary and caller migration | `COMPLETE` | Boundary repair and the enumerated ProductTask verification/managed-review caller migration are accepted by PRs #475 and #478; callers use the canonical typed mapping, unknown evidence remains fail-closed, and AC1 shared supervision remains deferred optional hardening |
-| AC3–AC5 | `BLOCKED_PREREQUISITE` | Each stage remains behind its immediately preceding accepted AC contract and closeout |
+| AC3 Golden Path responsibility contract | `IN_PROGRESS` | Provider-free Golden Path responsibility matrix, state transitions, audit identities, pure inputs/outputs, effect ports, store commands, and migration sequence are frozen below; no runtime, wire, or schema change is authorized |
+| AC4–AC5 | `BLOCKED_PREREQUISITE` | Each stage remains behind its immediately preceding accepted AC contract and closeout |
 | AC6 schema convergence | `BLOCKED_PREREQUISITE` | Contract, Rust/codegen, SDK, Dashboard data migration, compatibility closeout |
 | AC7 cleanup | `BLOCKED_PREREQUISITE` | Removal manifest, deletion-only implementation, independent closeout |
 | Contemporary old/new replay | `BLOCKED_PREREQUISITE` | Reconstruction, protocol/preflight, authorized run, analysis |
@@ -235,6 +236,44 @@ The focused current evidence is `engine/tests/test_product_golden_path_g1.rs`, `
 ## AC2 caller migration closeout
 
 `PE7-AC2-CALLER-MIGRATION-1` migrated the two accepted callers—`engine/src/storage/local_product_store/product_tasks.rs` and `engine/src/storage/local_product_store/managed_acceptance.rs`—to `ProcessBoundaryMapping::is_known_success()`. Raw serialized `process_outcome.v1` evidence remains preserved; malformed, unknown, ambiguous, and not-started outcomes remain non-success, and the existing pre-spawn refusal classification remains a verification failure. Focused evidence passed with `cargo test -p engine product_verification_failure_tests` and `cargo test -p engine --test test_product_golden_path_g2`; the full `cargo test -p engine`, clippy, wire-drift, security-baseline, handoff, formatting, and diff checks also passed locally. The exact stable-head review receipt is comment `5302349955` for head `4c748ce5f7988da9f61dd1e4650351b5d6c8bf72`; canonical workflow `31886172712` completed all required jobs; PR #478 was squash-merged as `36d7b33a5483cff63715b7981794aff1de614ae2`, and refreshed `main` is that merge with a clean checkout. No wire/schema, provider, target, runtime, store, or authority owner changed.
+
+## AC3 Golden Path responsibility contract (provider-free contract freeze)
+
+This is the closed file-level extraction contract for the next additive AC3 boundary work. It freezes the Golden Path responsibility matrix, state transitions, audit identities, pure inputs/outputs, effect ports, store commands, and migration sequence; it does not add a runtime, scheduler, store, budget, approval, output, audit, rollback, or authority owner, and it makes no wire/schema or ProductTask runtime change.
+
+### Responsibility matrix
+
+| Contract axis | Frozen binding |
+|---|---|
+| Orchestration | `engine/src/product_golden_path.rs` (`validate_intake`, `compile_product_executable_graph`, `intake_contract_sha256`, `redacted_intake_json`) is the pure orchestration/projection side; it remains distinct from the sole `LocalProductStore` mutation authority. |
+| Store mutation | `engine/src/storage/local_product_store/product_tasks.rs` remains the sole ProductTask mutation owner for the commands below. |
+| External effects | Scheduler leases, node attempts, executor/provider calls, verification, artifact, approval, output, and target-output owners remain separate effect owners; they must not mutate ProductTask lifecycle or mint authority. |
+
+### State transitions and golden traces
+
+The `Provider-free golden traces and parity anchors` table above is the accepted trace set: intake/admission/status, compile/execute/verify, recovery/compensation, and delegation/approval/output. `ProductTaskStatus` remains the canonical lifecycle vocabulary and the existing transition table remains the sole legal transition relation. No new state or transition is introduced; later AC3 code packets must prove golden-trace equivalence against these anchors before changing code.
+
+### Audit identities
+
+Every stage binds to the exact current identities named in `docs/ARCHITECTURE_BOOK.md`: tenant/workspace, ProductTask version, plan/run/node attempt, lease/owner token, executable/provider/model, budget, source/tree, artifact, approval, output receipt, and audit. A ProductTask status/version transition and its transition-audit record commit atomically in each supported storage backend.
+
+### Pure inputs and outputs
+
+Existing `ProductTaskIntakeRequest`/`ValidatedProductTaskIntake`, the executable-graph projection, the verification result, and redacted task projections are the pure inputs/outputs. No new durable field or public projection is added by this contract.
+
+### Effect ports and store commands
+
+The existing scheduler/executor/provider/output ports remain effect ports. The store commands `admit_product_task`, `reserve_product_task`, `transition_product_task`, `compile_and_schedule_product_task`, `finalize_product_task_after_execution`, `approve_product_task_for_tenant`, `approve_product_task`, `output_product_task_for_tenant`, `output_product_task`, `approve_and_output_product_task_for_tenant`, `recover_product_task_workspace_for_tenant`, and `fail_product_task_and_compensate` remain the sole store mutation surface. This contract invokes none and adds no mutation path.
+
+### Migration sequence
+
+`PE7-AC3-CONTRACT-1` → `PE7-AC3-ORCHESTRATOR-CORE-1` → `PE7-AC3-PORT-MIGRATION-1`. Later packets must preserve the bindings above and prove golden-trace equivalence before changing code.
+
+### Forbidden ownership imports
+
+`engine/src/product_golden_path.rs` must not import or call the store mutation commands above, provider adapters under `engine/src/provider/`, HTTP approval/output handlers, or target-output owners; handlers and callers remain adapters, and `engine/src/storage/local_product_store/product_tasks.rs` remains the sole ProductTask mutation owner. Effect owners must not mutate ProductTask lifecycle or mint authority. Any required ownership move is `DECISION_REQUIRED`.
+
+The read-only evidence bindings for this packet are `engine/src/product_golden_path.rs`, `engine/src/http_server/handlers/product_tasks.rs`, `engine/src/storage/local_product_store/managed_acceptance.rs`, `engine/src/storage/local_product_store/product_tasks.rs`, `engine/tests/test_product_golden_path_g3.rs`, and `engine/tests/test_product_golden_path_recovery.rs`; they were re-proved as owner, caller, and recovery anchors without edits. The six route-control/test paths and five canonical documents are the only allowed edits; `allowed_paths` is the closed edit scope and `read_paths` is its safe superset.
 
 ## Primary-route scope decision
 
