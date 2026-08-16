@@ -1601,4 +1601,24 @@ mod tests {
             "should mention cert env var: {err}"
         );
     }
+
+    #[test]
+    fn test_composition_root_startup_validation_and_default_off() {
+        let _guard = main_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        clear_trusted_provider_env();
+
+        // 1. In default environment, provider execution is disabled (default off)
+        assert!(!single_provider_execution_enabled());
+
+        // 2. TLS config validation fail-closed on asymmetric setting
+        assert!(validate_tls_config(None, None).is_ok());
+        assert!(validate_tls_config(Some("/path/cert"), None).is_err());
+        assert!(validate_tls_config(None, Some("/path/key")).is_err());
+        assert!(validate_tls_config(Some("/path/cert"), Some("/path/key")).is_ok());
+
+        // 3. Local admin scopes cover required operations
+        let scopes = local_admin_scopes();
+        assert!(scopes.contains("audit:read"));
+        assert!(scopes.contains("dispatch:write"));
+    }
 }
