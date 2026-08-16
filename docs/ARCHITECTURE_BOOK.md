@@ -456,14 +456,21 @@ The access envelope is fixed:
    rubric, holdout, sentinel rules, or outcome derivation.
 
 The exact EC2 contract manifest is one versioned, digest-bound control-plane
-document, not a new runtime or persistence schema. It must name the evaluator
-identity and task-family manifest, holdout-vault identity, label/rubric version
-and digests, access-policy version and classes, each sentinel policy/version
-and input-owner class, the invalidation vocabulary, the
-`PredictionOutcomeV1` derivation version, and the existing
-verification/replay/scorecard/review owner identities. A candidate, reviewer,
-or worker cannot rewrite this manifest; changing any field creates a new
-contract epoch and requires a separately accepted packet.
+document, not a new runtime or persistence schema. Its v1 bindings are:
+
+| Manifest field | Frozen v1 binding |
+|---|---|
+| Contract/evaluator | `PE7-HE-EC2-CONTRACT-1`; evaluator owner `engine/src/harness_evolution_eval.rs`; `EVAL_SCHEMA_VERSION = harness_evolution_eval.v1`; evaluator identity is the active identity's stored `evaluator_identity_hash`. |
+| Task/holdout | Task-family manifest with `development`, `validation`, and `sealed_holdout`; `SEALED_SCHEMA_VERSION = harness_evolution_sealed_holdout.v1`; task membership digest `sha256("sealed|task_id|family_id|label_sha256")`, vault digest `sha256(join(sealed_task_hashes, "|"))`; plaintext tasks/labels remain evaluator-only. |
+| Labels/rubric | Every task binds `task_id`, `family_id`, `label_sha256`, and an immutable rubric/version digest; a label or rubric change creates a new family/contract epoch. |
+| Access | `ec2-access-policy.v1` with exactly the candidate/worker, evaluator, reviewer, and operator/controller classes defined above; no class may write another class's inputs or outcome. |
+| Sentinels/invalidation | `ec2-sentinel-policy.v1` with contamination, gaming, and safety input-owner classes and receipts defined below; statuses are `PASS`, `FAIL`, and `UNKNOWN`; `FAIL`/`UNKNOWN` invalidates. |
+| Outcome | `PredictionOutcomeV1` evaluator derivation bound to hypothesis-manifest, evaluation/bundle, evaluator-identity, and evidence digests; statuses are `correct`, `incorrect`, `partially_supported`, `contradicted`, and `unavailable`. |
+| Review | `ec2-review-policy.v1`: independent reviewer identity class; immutable evidence/hard-gate rubric; sealed-label/rubric blinding; no repair after evaluation; preserve-and-escalate disagreement; record review duration and rework timestamps as non-authoritative evidence. |
+| Existing owners | Verification, replay, scorecard, review, output, audit, and `LocalProductStore` owner identities listed in the table above; no parallel owner is admitted. |
+
+A candidate, reviewer, or worker cannot rewrite this manifest; changing any
+field creates a new contract epoch and requires a separately accepted packet.
 
 The evaluator constellation and holdout are immutable for one evaluation
 epoch. A task family has development, validation, and sealed-holdout splits;
