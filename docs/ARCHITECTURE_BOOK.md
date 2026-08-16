@@ -483,7 +483,9 @@ required materialized fields; an empty value is invalid, not a deferred
 placeholder.
 
 The canonical manifest shape is fixed; every listed value is required and
-must be non-null in a materialized epoch:
+must be non-null in a materialized epoch. The `task` object is the sole
+manifest owner of the label-policy and rubric digests; there is no second
+`labels` object that repeats those facts:
 
 ```json
 {
@@ -493,7 +495,6 @@ must be non-null in a materialized epoch:
   "evaluator": {"schema_version": "harness_evolution_eval.v1", "identity_hash": ""},
   "task": {"family_id": "<family_id>", "family_sha256": "<sha256>", "label_policy_sha256": "<sha256>", "rubric_sha256": "<sha256>"},
   "holdout": {"schema_version": "harness_evolution_sealed_holdout.v1", "vault_sha256": "<sha256>", "selection_policy_sha256": "<sha256>"},
-  "labels": {"label_policy_sha256": "<sha256>", "rubric_sha256": "<sha256>"},
   "access": {"policy_version": "ec2-access-policy.v1", "classes": ["candidate_worker", "evaluator", "reviewer", "operator_controller"], "policy_sha256": "<sha256>"},
   "sentinels": [{"id": "contamination", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "workspace-access-audit+LocalProductStore", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": "<sha256>"}, {"id": "gaming", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "harness_evolution_eval+verification", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": "<sha256>"}, {"id": "safety", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "product_golden_path+tool_policy+output_boundary", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": "<sha256>"}],
   "invalidation": {"states": ["VALID", "INVALIDATED", "UNKNOWN"], "policy_sha256": "<sha256>"},
@@ -541,24 +542,32 @@ archive_eligible(candidate, evaluation) :=
   ∧ evaluation.content_hash == candidate.content_hash
   ∧ evaluation.task_family_sha256 == manifest.task.family_sha256
   ∧ evaluation.vault_sha256 == manifest.holdout.vault_sha256
-  ∧ evaluation.label_policy_sha256 == manifest.labels.label_policy_sha256
-  ∧ evaluation.rubric_sha256 == manifest.labels.rubric_sha256
+  ∧ evaluation.label_policy_sha256 == manifest.task.label_policy_sha256
+  ∧ evaluation.rubric_sha256 == manifest.task.rubric_sha256
   ∧ evaluation.hypothesis_manifest_sha256 is bound to evaluation
   ∧ evaluation.bundle_sha256 is bound to evaluation
   ∧ evaluation.evidence_sha256 is bound to evaluation
   ∧ every validation record is complete
   ∧ every validation hard_gate == PASSED
-  ∧ every sentinel.policy_sha256 is one of manifest.sentinels.policy_sha256
-  ∧ every sentinel.manifest_sha256 == manifest.manifest_sha256
-  ∧ every sentinel.source_evidence_digest is bound to evaluation
-  ∧ sentinel[contamination].status == PASS
-  ∧ sentinel[gaming].status == PASS
-  ∧ sentinel[safety].status == PASS
+  ∧ sentinel_receipts have exactly the ids [contamination, gaming, safety]
+  ∧ for each id, sentinel_receipt[id].manifest_sha256 == manifest.manifest_sha256
+  ∧ for each id, sentinel_receipt[id].policy_version == manifest.sentinels[id].policy_version
+  ∧ for each id, sentinel_receipt[id].policy_sha256 == manifest.sentinels[id].policy_sha256
+  ∧ for each id, sentinel_receipt[id].input_owner == manifest.sentinels[id].input_owner
+  ∧ for each id, sentinel_receipt[id].receipt_schema == manifest.sentinels[id].receipt_schema
+  ∧ for each id, sentinel_receipt[id].source_evidence_digest is bound to evaluation
+  ∧ sentinel_receipt[contamination].status == PASS
+  ∧ sentinel_receipt[gaming].status == PASS
+  ∧ sentinel_receipt[safety].status == PASS
   ∧ evaluation.reviewer_policy_sha256 == manifest.review.policy_sha256
   ∧ review_receipt.schema_version == harness_evolution_review_receipt.v1
   ∧ review_receipt.manifest_sha256 == manifest.manifest_sha256
   ∧ review_receipt.policy_sha256 == manifest.review.policy_sha256
+  ∧ review_receipt.candidate_id == evaluation.candidate_id
+  ∧ review_receipt.evaluation_id == evaluation.evaluation_id
   ∧ review_receipt.evidence_sha256 == evaluation.evidence_sha256
+  ∧ review_receipt.reviewer_session_id is authenticated and non-empty
+  ∧ review_receipt.disposition == PASS
   ∧ invalidation.state == VALID
 ```
 
@@ -570,10 +579,10 @@ Receipt bindings are also fixed. A selection receipt contains
 `evaluator_identity_hash`, `family_id`, ordered `candidate_ids`, `used`, and
 `receipt_sha256`; its digest is the canonical JSON digest with only
 `receipt_sha256` blanked. A sentinel receipt contains
-`schema_version`, `sentinel_id`, `manifest_sha256`, `policy_sha256`,
-`input_owner`, `candidate_id`, `evaluation_id`, `evaluator_identity_hash`,
-`source_evidence_digest`, `status`, and `receipt_sha256`, using the same
-blanked-self digest rule. A reviewer receipt uses
+`schema_version`, `sentinel_id`, `policy_version`, `receipt_schema`,
+`manifest_sha256`, `policy_sha256`, `input_owner`, `candidate_id`,
+`evaluation_id`, `evaluator_identity_hash`, `source_evidence_digest`, `status`,
+and `receipt_sha256`, using the same blanked-self digest rule. A reviewer receipt uses
 `harness_evolution_review_receipt.v1` and contains `manifest_sha256`,
 `policy_sha256`, `candidate_id`, `evaluation_id`, `evidence_sha256`,
 `reviewer_session_id`, `disposition`, `disagreement_digest`, and
