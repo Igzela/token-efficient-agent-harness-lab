@@ -56,6 +56,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-RWE-DB-SNAPSHOT-RECONSTRUCT-1` | `COMPLETE` | PR #451 exact head `d48e9853856714a964709956651fc0ac0961315c`; squash merge `e1ff80b7599d8aec8d64909f937f79c948010392`; exact-head review receipt comment `5292004476`; canonical workflow `31790256137`; exact-head checks `31790143998` and `31790256110`; manifest sha256 `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`; `RECONSTRUCTABLE=true` |
 | `PE7-RWE-DB-PREFLIGHT-1` | `COMPLETE` | Real same-tenant Store-owned Golden Path prerequisite completed by ProductTask `ptask-20260814135947-18cbb0b9731e62bf`, run `run-0007`, terminal evidence `product-terminal-ptask-20260814135947-18cbb0b9731e62bf-9-44d49301c781`; Draft PR-only output `Igzela/alters-lab#47`, target main `6240768506320a324d68787b9eaa86971c8c930c`; provider-free `rwe_operator_preflight.v1` `ready=true`, zero blockers, no authority/provider/target effect; projection sha256 `b8c35d4060d98598ce3e3bc3977a84d125b1df09ff66b2b9f6d9aa4303c03954` |
 
+| `PE7-AC3-CONTRACT-1` | `COMPLETE` | PR #486 exact head `9487a73ab9e00018103193d18c848e375b215a1b`; merge `6b2a6c46d30089800394ee82edd21075a2ef0d86`; exact-head `PASS`; canonical workflow `31922547776` |
 ## Accepted Product and Control-Plane State
 
 Accepted `main` contains:
