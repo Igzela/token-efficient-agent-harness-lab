@@ -1,6 +1,6 @@
 # Future Route
 
-Last updated: 2026-08-15.
+Last updated: 2026-08-16.
 
 This document is the sole long-horizon routing index. Every packet here is `BLOCKED_PREREQUISITE` and routing-only: its order, prerequisite, intended class, bounded sketch, and promotion profile are accepted planning context, not implementation or external-effect authority.
 
@@ -116,7 +116,7 @@ AC1 remains deferred optional hardening. It is not an executable successor and d
 
 AC2 distinguishes effect and outcome states while leaving admission, leases, spend, verification, approval, output, and adoption with existing owners.
 
-The AC2 contract, typed boundary repair, and enumerated caller migration are accepted; AC1 shared supervision remains deferred optional hardening. The next executable successor is the promoted AC3 Golden Path responsibility contract.
+The AC2 contract, typed boundary repair, and enumerated caller migration are accepted; AC1 shared supervision remains deferred optional hardening. The AC3 Golden Path responsibility contract was promoted and its sketch removed from this index with the checked manifest refreshed by accepted PR #479; it is the current provider-free contract-freeze window in `docs/NEXT_DECISION.md`, and the remaining AC3 sketches below are its orchestrator-core and port-migration successors.
 
 ## Stage Architecture Convergence AC3 - Golden Path responsibility split
 

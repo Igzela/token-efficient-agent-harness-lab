@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-08-11.
+Last updated: 2026-08-16.
 
 This is the concise ownership map for accepted `main`. Accepted facts are in `docs/CURRENT_STATUS.md`; the current executable window is in `docs/NEXT_DECISION.md`; the routing-only horizon is in `docs/FUTURE_ROUTE.md`; architecture invariants are in `docs/ARCHITECTURE_BOOK.md`.
 
@@ -93,7 +93,7 @@ Architecture Convergence reuses these owners and changes boundaries incrementall
 1. AC0 — runtime inventory, data/contract inventory, then trace/order freeze; no ownership move.
 2. AC1 — ProcessSupervisor contract, additive core, then enumerated caller migration.
 3. AC2 — typed-execution contract, additive boundary/adapters, then enumerated caller migration.
-4. AC3 — responsibility contract, pure orchestrator extraction, then store/effect-port migration without state-semantic change.
+4. AC3 — responsibility contract (frozen provider-free in `docs/CURRENT_STATUS.md` as `PE7-AC3-CONTRACT-1`), pure orchestrator extraction, then store/effect-port migration without state-semantic change.
 5. AC4 — transaction-view contract, borrowed view core on both backends, then enumerated caller migration.
 6. AC5 — configuration/composition contract, additive root, then module migration and approved legacy-read cleanup.
 7. AC6 — schema contract, Rust/codegen source, SDK migration, Dashboard data migration, then compatibility closeout.

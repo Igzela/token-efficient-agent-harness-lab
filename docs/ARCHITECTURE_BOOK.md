@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-08-09.
+Last updated: 2026-08-16.
 
 Current version: v36.
 
@@ -235,6 +235,8 @@ intake
 Every stage binds to exact current identities: tenant/workspace, ProductTask version, plan/run/node attempt, lease/owner token, executable/provider/model, budget, worktree/source revision/tree, allowed mutable paths, verification result, artifact, approval, output operation/receipt, and audit. A ProductTask status/version transition and its transition-audit record commit atomically in each supported storage backend.
 
 Missing, stale, conflicting, duplicate, late, revoked, expired, paused, killed, over-budget, lost-lease, or outcome-unknown state fails closed. Fixture completion proves wiring only; it is not managed acceptance, live RWE, or product capability proof.
+
+The accepted AC3 Golden Path responsibility contract is owned by the `PE7-AC3-CONTRACT-1` section in `docs/CURRENT_STATUS.md`; later AC3 implementation must preserve that contract and the architecture invariants here.
 
 The accepted v35 change makes physical worktree preparation explicitly recoverable without creating another authority owner. Fresh intake completes read-only target/root/overlap checks, then atomically publishes `admitted → workspace_preparing`, the transition audit, and one ProductTask-owned receipt. The receipt pins the canonical configured local root, deterministic workspace path, marker hash/state, and receipt hash before any root creation, marker, lock, Git, or supervised-workspace effect. Only that receipt may authorize subsequent root creation, marker validation, physical preparation, or compensation.
 

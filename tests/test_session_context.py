@@ -1166,7 +1166,7 @@ class CheckpointTests(unittest.TestCase):
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
-        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
+        self.assertEqual(packet["state"], "IN_PROGRESS")
         self.assertTrue(packet["checkpoint_allowed"])
         capsule = session_context.current_dispatch_capsule(next_document, packet)
         self.assertEqual(capsule["packet_id"], packet["packet_id"])
