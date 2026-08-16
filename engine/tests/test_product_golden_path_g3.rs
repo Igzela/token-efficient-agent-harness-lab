@@ -1246,3 +1246,36 @@ fn test_transaction_views_core_atomicity_and_rollback() {
         );
     });
 }
+
+#[test]
+fn test_caller_migration_atomic_commit_boundary() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+
+        let mut request = intake(&repo, &rev, "caller-migration-1", pass_verify());
+        request.confirm_output = Some(true);
+        let validated = validate_intake(&request, "local", "default").unwrap();
+
+        // 1. Single atomic admission
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+
+        // 2. Cross-domain caller validation and state parity
+        let phase = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect("validate managed acceptance");
+        assert_eq!(
+            phase["task"]["status"],
+            ProductTaskStatus::WorkspaceBound.as_str()
+        );
+        assert_eq!(phase["stage"], "pre_execution_admission");
+
+        // 3. Execution compile under single transaction boundary
+        let compiled = store
+            .compile_and_schedule_product_task(task_id, "tester", &["command".into()])
+            .unwrap();
+        assert_eq!(compiled["task"]["task_id"], task_id);
+    });
+}
