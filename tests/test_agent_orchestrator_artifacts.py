@@ -696,7 +696,7 @@ def _opencode_probe_script(*, record: Path | None = None, run_body: str) -> str:
         "if sys.argv[1:3] == ['auth', 'list']:\n"
         "    raise SystemExit(0)\n"
         "if sys.argv[1:3] == ['run', '--help']:\n"
-        "    print('--format json --dir --file'); raise SystemExit(0)\n"
+        "    print('--format json --model --dir --file'); raise SystemExit(0)\n"
         "if sys.argv[1:3] == ['session', 'delete']:\n"
         "    raise SystemExit(0)\n"
         "if sys.argv[1:2] == ['run']:\n"
