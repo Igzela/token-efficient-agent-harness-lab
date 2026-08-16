@@ -481,6 +481,31 @@ reviewer-policy digest values are recorded by implementation successors; this
 contract freezes their identity, encoding, and derivation rather than
 inventing runtime values before those packets exist.
 
+The canonical manifest shape is fixed; every listed value is required and
+must be non-null in a materialized epoch:
+
+```json
+{
+  "manifest_id": "harness_evolution_ec2_contract.v1",
+  "contract_id": "PE7-HE-EC2-CONTRACT-1",
+  "manifest_sha256": "",
+  "evaluator": {"schema_version": "harness_evolution_eval.v1", "identity_hash": ""},
+  "task": {"family_id": "", "family_sha256": "", "label_policy_sha256": "", "rubric_sha256": ""},
+  "holdout": {"schema_version": "harness_evolution_sealed_holdout.v1", "vault_sha256": "", "selection_policy_sha256": ""},
+  "access": {"policy_version": "ec2-access-policy.v1", "classes": ["candidate_worker", "evaluator", "reviewer", "operator_controller"], "policy_sha256": ""},
+  "sentinels": [{"id": "contamination", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": ""}, {"id": "gaming", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": ""}, {"id": "safety", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": ""}],
+  "invalidation": {"statuses": ["PASS", "FAIL", "UNKNOWN"], "policy_sha256": ""},
+  "outcome": {"schema_version": "PredictionOutcomeV1", "rule_version": "prediction-outcome-rule.v1", "rule_sha256": ""},
+  "review": {"policy_version": "ec2-review-policy.v1", "identity_class": "independent_reviewer", "rubric": "immutable_evidence_hard_gate.v1", "blinding": "sealed_label_and_rubric_blind", "permitted_repair": "none_after_evaluation", "disagreement": "preserve_and_escalate", "time_measurement": "record_duration_and_rework", "policy_sha256": ""},
+  "owners": {"verification": "", "replay": "", "scorecard": "", "review": "", "output": "", "audit": "", "persistence": ""}
+}
+```
+
+The empty strings above are required epoch-bound digests or canonical owner
+identities, not optional values or caller-provided claims. The contract
+freezes their names and sources; the holdout/sentinel/outcome implementation
+packets materialize and validate the values before any archive or effect.
+
 The evaluator constellation and holdout are immutable for one evaluation
 epoch. A task family has development, validation, and sealed-holdout splits;
 each task is bound to a stable task identity, family identity, label digest,
@@ -498,18 +523,28 @@ The archive predicate is one conjunctive rule:
 
 ```text
 archive_eligible(candidate, evaluation) :=
-  consumed_one_use_selection_receipt.family_id == evaluation.family_id
+  evaluation.manifest_sha256 == active.ec2_manifest_sha256
+  ∧ consumed_one_use_selection_receipt.schema_version == harness_evolution_sealed_selection.v1
+  ∧ consumed_one_use_selection_receipt.receipt_sha256 == evaluation.selection_receipt_sha256
+  ∧ consumed_one_use_selection_receipt.family_id == evaluation.family_id
   ∧ consumed_one_use_selection_receipt.candidate_ids contains candidate.id
   ∧ evaluation.terminal == COMPLETE
   ∧ evaluation.candidate_id == candidate.id
   ∧ evaluation.evaluator_identity_hash == active.evaluator_identity_hash
   ∧ evaluation.active_version_hash == candidate.active_version_hash
   ∧ evaluation.content_hash == candidate.content_hash
+  ∧ evaluation.task_family_sha256 == active.ec2_task_family_sha256
+  ∧ evaluation.vault_sha256 == active.ec2_vault_sha256
+  ∧ evaluation.label_policy_sha256 == active.ec2_label_policy_sha256
+  ∧ evaluation.rubric_sha256 == active.ec2_rubric_sha256
   ∧ every validation record is complete
   ∧ every validation hard_gate == PASSED
+  ∧ every sentinel.policy_sha256 == active.ec2_sentinel_policy_sha256
+  ∧ every sentinel.source_evidence_digest is bound to evaluation
   ∧ sentinel[contamination].status == PASS
   ∧ sentinel[gaming].status == PASS
   ∧ sentinel[safety].status == PASS
+  ∧ evaluation.reviewer_policy_sha256 == active.ec2_reviewer_policy_sha256
   ∧ invalidation == false
 ```
 
@@ -557,6 +592,16 @@ recording. Its outcome is exactly one of `correct`, `incorrect`,
 `partially_supported`, `contradicted`, or `unavailable`; incomplete, tampered,
 invalidated, or otherwise missing evidence is `unavailable` and never a pass.
 An absent regression prediction is not evidence that no regression occurred.
+The fixed derivation precedence is: `unavailable` when required evidence is
+missing, incomplete, tampered, or invalidated; `contradicted` when complete
+evidence violates an invariant or crosses the opposite-direction threshold;
+`correct` when every declared assertion meets its direction and threshold;
+`partially_supported` when at least one assertion meets its threshold and at
+least one remains unsupported without contradiction; and `incorrect` when
+complete evidence supports none of the declared assertions without crossing an
+opposite-direction threshold. An unpredicted regression is recorded as
+counterevidence/invalidation input and never silently becomes `correct` or
+safe.
 The candidate may provide predictions as immutable input, but cannot author,
 revise, suppress, or finalize the derived outcome. Prediction accuracy and
 model confidence are calibration/audit evidence only: they cannot satisfy a
