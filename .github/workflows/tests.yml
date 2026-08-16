@@ -297,8 +297,7 @@ jobs:
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
+          sudo apt-get install -y --no-install-recommends bubblewrap
           test -x /usr/bin/bwrap
           /usr/bin/bwrap --version
       - name: Install Rust toolchain
@@ -338,20 +337,11 @@ jobs:
       - name: Run clippy
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: cargo clippy -p engine --all-targets --all-features -- -D warnings
-      - name: Cache cargo-audit binary
+      - name: Install cargo-audit
         if: needs.classify-change-impact.outputs.mode == 'full'
-        id: cache-cargo-audit
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
         with:
-          path: ~/.cargo/bin/cargo-audit
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2
-      - name: Ensure cargo-audit
-        if: needs.classify-change-impact.outputs.mode == 'full'
-        run: |
-          # cargo-audit 0.22.2 intentionally reports this nested command name.
-          if ! CARGO_TERM_COLOR=never cargo audit --version 2>/dev/null | grep -Fq 'cargo-audit-audit 0.22.2'; then
-            cargo install cargo-audit --version 0.22.2 --locked --force
-          fi
+          tool: cargo-audit@0.22.2
       - name: Audit Rust dependencies
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
@@ -418,8 +408,7 @@ jobs:
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
+          sudo apt-get install -y --no-install-recommends bubblewrap
           test -x /usr/bin/bwrap
       - name: Install Rust toolchain
         if: needs.classify-change-impact.outputs.mode == 'full'

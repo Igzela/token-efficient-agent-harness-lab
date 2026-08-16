@@ -130,21 +130,16 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         rust = self.job_source("rust-tests")
         self.assertIn("run: scripts/ci/run_rust_tests.py", rust)
 
-    def test_cargo_audit_install_is_versioned_and_cached(self) -> None:
+    def test_cargo_audit_install_is_versioned_and_prebuilt(self) -> None:
         rust = self.job_source("rust-tests")
-        self.assertIn("name: Cache cargo-audit binary", rust)
-        self.assertIn("cargo-audit-0.22.2", rust)
-        self.assertIn("name: Ensure cargo-audit", rust)
+        self.assertIn("name: Install cargo-audit", rust)
         self.assertIn(
-            "cargo install cargo-audit --version 0.22.2 --locked --force",
+            "taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d",
             rust,
         )
-        self.assertEqual(
-            rust.count(
-                "CARGO_TERM_COLOR=never cargo audit --version"
-            ),
-            2,
-        )
+        self.assertIn("tool: cargo-audit@0.22.2", rust)
+        self.assertNotIn("cargo install cargo-audit", rust)
+        self.assertNotIn("name: Cache cargo-audit binary", rust)
         self.assertIn(
             "CARGO_TERM_COLOR=never cargo audit --version"
             " | grep -F 'cargo-audit-audit 0.22.2'",
