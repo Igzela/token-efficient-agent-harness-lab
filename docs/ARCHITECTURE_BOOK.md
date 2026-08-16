@@ -464,22 +464,23 @@ document, not a new runtime or persistence schema. Its v1 bindings are:
 | Task/holdout | Task-family manifest with `development`, `validation`, and `sealed_holdout`; `SEALED_SCHEMA_VERSION = harness_evolution_sealed_holdout.v1`; task membership digest `sha256("sealed|task_id|family_id|label_sha256")`, vault digest `sha256(join(sealed_task_hashes, "|"))`; plaintext tasks/labels remain evaluator-only. |
 | Labels/rubric | Every task binds `task_id`, `family_id`, `label_sha256`, and an immutable rubric/version digest; a label or rubric change creates a new family/contract epoch. |
 | Access | `ec2-access-policy.v1` with exactly the candidate/worker, evaluator, reviewer, and operator/controller classes defined above; no class may write another class's inputs or outcome. |
-| Sentinels/invalidation | `ec2-sentinel-policy.v1` with contamination, gaming, and safety input-owner classes and `harness_evolution_sentinel_receipt.v1` receipts defined below; statuses are `PASS`, `FAIL`, and `UNKNOWN`; `FAIL`/`UNKNOWN` invalidates. |
+| Sentinels/invalidation | `ec2-sentinel-policy.v1` with contamination, gaming, and safety input-owner classes and `harness_evolution_sentinel_receipt.v1` receipts defined below; sentinel statuses are `PASS`, `FAIL`, and `UNKNOWN`; the separate invalidation state is `VALID`, `INVALIDATED`, or `UNKNOWN`, and only `VALID` may proceed. |
 | Outcome | `PredictionOutcomeV1` evaluator derivation bound to hypothesis-manifest, evaluation/bundle, evaluator-identity, and evidence digests; statuses are `correct`, `incorrect`, `partially_supported`, `contradicted`, and `unavailable`. |
 | Review | `ec2-review-policy.v1` and `reviewer_policy_sha256`: independent reviewer identity class; immutable evidence/hard-gate rubric; sealed-label/rubric blinding; no repair after evaluation; preserve-and-escalate disagreement; record review duration and rework timestamps as non-authoritative evidence. |
 | Existing owners | Verification, replay, scorecard, review, output, audit, and `LocalProductStore` owner identities listed in the table above; no parallel owner is admitted. |
 
 A candidate, reviewer, or worker cannot rewrite this manifest; changing any
 field creates a new contract epoch and requires a separately accepted packet.
-The manifest is canonical UTF-8 JSON with sorted object keys, no insignificant
-whitespace, fixed array order (`evaluator`, `task`, `holdout`, `labels`,
-`access`, `sentinels`, `invalidation`, `outcome`, `review`, `owners`), and no
-unlisted optional fields. `manifest_sha256` is
-`sha256(canonical_json(manifest with manifest_sha256=""))`; component policy
-digests use the same rule. The per-epoch task-family, vault, evaluator, and
-reviewer-policy digest values are recorded by implementation successors; this
-contract freezes their identity, encoding, and derivation rather than
-inventing runtime values before those packets exist.
+The manifest is canonical UTF-8 JSON with lexicographically sorted object
+keys, no insignificant whitespace, no unlisted optional fields, access classes
+in `[candidate_worker, evaluator, reviewer, operator_controller]`, and
+sentinels in `[contamination, gaming, safety]`. `manifest_sha256` is
+`sha256(canonical_json(manifest with manifest_sha256=""))`. Every component
+policy digest is `sha256(canonical_json({component_id, version, payload,
+digest:""}))`, with the component's declared payload and no hidden fields.
+The per-epoch task-family, vault, evaluator, and reviewer-policy values are
+required materialized fields; an empty value is invalid, not a deferred
+placeholder.
 
 The canonical manifest shape is fixed; every listed value is required and
 must be non-null in a materialized epoch:
@@ -490,21 +491,23 @@ must be non-null in a materialized epoch:
   "contract_id": "PE7-HE-EC2-CONTRACT-1",
   "manifest_sha256": "",
   "evaluator": {"schema_version": "harness_evolution_eval.v1", "identity_hash": ""},
-  "task": {"family_id": "", "family_sha256": "", "label_policy_sha256": "", "rubric_sha256": ""},
-  "holdout": {"schema_version": "harness_evolution_sealed_holdout.v1", "vault_sha256": "", "selection_policy_sha256": ""},
-  "access": {"policy_version": "ec2-access-policy.v1", "classes": ["candidate_worker", "evaluator", "reviewer", "operator_controller"], "policy_sha256": ""},
-  "sentinels": [{"id": "contamination", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": ""}, {"id": "gaming", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": ""}, {"id": "safety", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": ""}],
-  "invalidation": {"statuses": ["PASS", "FAIL", "UNKNOWN"], "policy_sha256": ""},
-  "outcome": {"schema_version": "PredictionOutcomeV1", "rule_version": "prediction-outcome-rule.v1", "rule_sha256": ""},
-  "review": {"policy_version": "ec2-review-policy.v1", "identity_class": "independent_reviewer", "rubric": "immutable_evidence_hard_gate.v1", "blinding": "sealed_label_and_rubric_blind", "permitted_repair": "none_after_evaluation", "disagreement": "preserve_and_escalate", "time_measurement": "record_duration_and_rework", "policy_sha256": ""},
-  "owners": {"verification": "", "replay": "", "scorecard": "", "review": "", "output": "", "audit": "", "persistence": ""}
+  "task": {"family_id": "<family_id>", "family_sha256": "<sha256>", "label_policy_sha256": "<sha256>", "rubric_sha256": "<sha256>"},
+  "holdout": {"schema_version": "harness_evolution_sealed_holdout.v1", "vault_sha256": "<sha256>", "selection_policy_sha256": "<sha256>"},
+  "labels": {"label_policy_sha256": "<sha256>", "rubric_sha256": "<sha256>"},
+  "access": {"policy_version": "ec2-access-policy.v1", "classes": ["candidate_worker", "evaluator", "reviewer", "operator_controller"], "policy_sha256": "<sha256>"},
+  "sentinels": [{"id": "contamination", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "workspace-access-audit+LocalProductStore", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": "<sha256>"}, {"id": "gaming", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "harness_evolution_eval+verification", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": "<sha256>"}, {"id": "safety", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "product_golden_path+tool_policy+output_boundary", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": "<sha256>"}],
+  "invalidation": {"states": ["VALID", "INVALIDATED", "UNKNOWN"], "policy_sha256": "<sha256>"},
+  "outcome": {"schema_version": "PredictionOutcomeV1", "rule_version": "prediction-outcome-rule.v1", "rule_sha256": "<sha256>"},
+  "review": {"policy_version": "ec2-review-policy.v1", "identity_class": "independent_reviewer", "rubric": "immutable_evidence_hard_gate.v1", "blinding": "sealed_label_and_rubric_blind", "permitted_repair": "none_after_evaluation", "disagreement": "preserve_and_escalate", "time_measurement": "record_duration_and_rework", "policy_sha256": "<sha256>"},
+  "owners": {"verification": "engine/src/product_golden_path.rs", "replay": "engine/src/storage/local_product_store/harness_evolution.rs", "scorecard": "engine/src/harness_evolution_eval.rs", "review": "scripts/agent-control/review_convergence.py+docs/REAL_WORLD_TESTING_PLAYBOOK.md", "output": "engine/src/harness_evolution_pr_ready.rs", "audit": "engine/src/storage/local_product_store/harness_evolution.rs", "persistence": "engine/src/storage/local_product_store/harness_evolution.rs"}
 }
 ```
 
-The empty strings above are required epoch-bound digests or canonical owner
-identities, not optional values or caller-provided claims. The contract
-freezes their names and sources; the holdout/sentinel/outcome implementation
-packets materialize and validate the values before any archive or effect.
+The `<sha256>` values above are required epoch-bound digests, not caller
+claims; each is computed by the component rule and then included in the
+manifest digest. The contract freezes the exact names and sources; the
+holdout/sentinel/outcome implementation packets materialize and validate the
+values before any archive or effect.
 
 The evaluator constellation and holdout are immutable for one evaluation
 epoch. A task family has development, validation, and sealed-holdout splits;
@@ -523,9 +526,12 @@ The archive predicate is one conjunctive rule:
 
 ```text
 archive_eligible(candidate, evaluation) :=
-  evaluation.manifest_sha256 == active.ec2_manifest_sha256
+  evaluation.manifest_sha256 == manifest.manifest_sha256
   ∧ consumed_one_use_selection_receipt.schema_version == harness_evolution_sealed_selection.v1
   ∧ consumed_one_use_selection_receipt.receipt_sha256 == evaluation.selection_receipt_sha256
+  ∧ consumed_one_use_selection_receipt.manifest_sha256 == manifest.manifest_sha256
+  ∧ consumed_one_use_selection_receipt.selection_policy_sha256 == manifest.holdout.selection_policy_sha256
+  ∧ consumed_one_use_selection_receipt.evaluator_identity_hash == manifest.evaluator.identity_hash
   ∧ consumed_one_use_selection_receipt.family_id == evaluation.family_id
   ∧ consumed_one_use_selection_receipt.candidate_ids contains candidate.id
   ∧ evaluation.terminal == COMPLETE
@@ -533,23 +539,46 @@ archive_eligible(candidate, evaluation) :=
   ∧ evaluation.evaluator_identity_hash == active.evaluator_identity_hash
   ∧ evaluation.active_version_hash == candidate.active_version_hash
   ∧ evaluation.content_hash == candidate.content_hash
-  ∧ evaluation.task_family_sha256 == active.ec2_task_family_sha256
-  ∧ evaluation.vault_sha256 == active.ec2_vault_sha256
-  ∧ evaluation.label_policy_sha256 == active.ec2_label_policy_sha256
-  ∧ evaluation.rubric_sha256 == active.ec2_rubric_sha256
+  ∧ evaluation.task_family_sha256 == manifest.task.family_sha256
+  ∧ evaluation.vault_sha256 == manifest.holdout.vault_sha256
+  ∧ evaluation.label_policy_sha256 == manifest.labels.label_policy_sha256
+  ∧ evaluation.rubric_sha256 == manifest.labels.rubric_sha256
+  ∧ evaluation.hypothesis_manifest_sha256 is bound to evaluation
+  ∧ evaluation.bundle_sha256 is bound to evaluation
+  ∧ evaluation.evidence_sha256 is bound to evaluation
   ∧ every validation record is complete
   ∧ every validation hard_gate == PASSED
-  ∧ every sentinel.policy_sha256 == active.ec2_sentinel_policy_sha256
+  ∧ every sentinel.policy_sha256 is one of manifest.sentinels.policy_sha256
+  ∧ every sentinel.manifest_sha256 == manifest.manifest_sha256
   ∧ every sentinel.source_evidence_digest is bound to evaluation
   ∧ sentinel[contamination].status == PASS
   ∧ sentinel[gaming].status == PASS
   ∧ sentinel[safety].status == PASS
-  ∧ evaluation.reviewer_policy_sha256 == active.ec2_reviewer_policy_sha256
-  ∧ invalidation == false
+  ∧ evaluation.reviewer_policy_sha256 == manifest.review.policy_sha256
+  ∧ review_receipt.schema_version == harness_evolution_review_receipt.v1
+  ∧ review_receipt.manifest_sha256 == manifest.manifest_sha256
+  ∧ review_receipt.policy_sha256 == manifest.review.policy_sha256
+  ∧ review_receipt.evidence_sha256 == evaluation.evidence_sha256
+  ∧ invalidation.state == VALID
 ```
 
 Any missing, mismatched, stale, or outcome-unknown term makes the predicate
 false and retains the rejected evidence under existing owners.
+
+Receipt bindings are also fixed. A selection receipt contains
+`schema_version`, `receipt_id`, `manifest_sha256`, `selection_policy_sha256`,
+`evaluator_identity_hash`, `family_id`, ordered `candidate_ids`, `used`, and
+`receipt_sha256`; its digest is the canonical JSON digest with only
+`receipt_sha256` blanked. A sentinel receipt contains
+`schema_version`, `sentinel_id`, `manifest_sha256`, `policy_sha256`,
+`input_owner`, `candidate_id`, `evaluation_id`, `evaluator_identity_hash`,
+`source_evidence_digest`, `status`, and `receipt_sha256`, using the same
+blanked-self digest rule. A reviewer receipt uses
+`harness_evolution_review_receipt.v1` and contains `manifest_sha256`,
+`policy_sha256`, `candidate_id`, `evaluation_id`, `evidence_sha256`,
+`reviewer_session_id`, `disposition`, `disagreement_digest`, and
+`receipt_sha256`. Missing authentication/session identity, digest, or owner
+binding is `UNKNOWN`, never an implicit pass.
 
 After the separate entrant-admission receipt and evaluation, three independent
 sentinel classes are required before eligible archive or parent selection:
