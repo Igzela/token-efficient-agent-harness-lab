@@ -83,6 +83,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-CWS-PROJECTOR-CORE-1` | `COMPLETE` | PR #515 exact head `9762d47cc6295bfa070236f0df508b6fafe30f00`; merge `2ee2157f1a5eb0506319e86385b62f40ba16e3f4`; exact-head `PASS`; canonical workflow `31936004194` |
 | `PE7-CWS-TOOL-RESULT-REDUCTION-1` | `COMPLETE` | PR #516 exact head `2904100f91cb9c454a228429f1d39d669dbbcce2`; merge `beb5584103fb12eba98754d7d40f9a74851bfa7c`; exact-head `PASS`; canonical workflow `31936178506` |
 | `PE7-CWS-REPOSITORY-INTEGRATION-1` | `COMPLETE` | PR #517 exact head `f922bf2e3b8662b5ff7d32f51e5eadf63e7f2624`; merge `a8a729379aa5b85e963335954e13ae28e05f347c`; exact-head `PASS`; canonical workflow `31936366545` |
+| `PE7-CWS-RUNTIME-INTEGRATION-1` | `COMPLETE` | PR #518 exact head `addc3a1b55f3c326956f12a437338204f9a360db`; merge `ff7b7084866f003ae95faa7ade6295a9d7202629`; exact-head `PASS`; canonical workflow `31936548122` |
 ## Accepted Product and Control-Plane State
 
 Accepted `main` contains:
