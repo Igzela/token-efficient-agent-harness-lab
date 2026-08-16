@@ -525,18 +525,28 @@ Pareto/archive path.
 
 The archive predicate is one conjunctive rule:
 
+The existing `harness_evolution_sealed_selection.v1` receipt is preserved
+byte-for-byte with its current fields: `schema_version`, `receipt_id`,
+`family_id`, ordered `candidate_ids`, and `used`. The EC2 contract does not
+add manifest, policy, evaluator, or digest fields to that v1 receipt. A
+separate evaluator-owned EC2 selection binding associates its stable
+`receipt_id` with the manifest, selection policy, and evaluator identity; that
+binding is future implementation evidence and is not a replacement or an
+extension of the existing v1 persistence record.
+
 ```text
 archive_eligible(candidate, evaluation) :=
   evaluation.manifest_sha256 == manifest.manifest_sha256
   ∧ consumed_one_use_selection_receipt.schema_version == harness_evolution_sealed_selection.v1
-  ∧ consumed_one_use_selection_receipt.receipt_sha256 == evaluation.selection_receipt_sha256
-  ∧ consumed_one_use_selection_receipt.manifest_sha256 == manifest.manifest_sha256
-  ∧ consumed_one_use_selection_receipt.selection_policy_sha256 == manifest.holdout.selection_policy_sha256
-  ∧ consumed_one_use_selection_receipt.evaluator_identity_hash == manifest.evaluator.identity_hash
+  ∧ consumed_one_use_selection_receipt.receipt_id == evaluation.selection_receipt_id
   ∧ consumed_one_use_selection_receipt.family_id == evaluation.family_id
   ∧ consumed_one_use_selection_receipt.candidate_ids contains candidate.id
   ∧ consumed_one_use_selection_receipt.used == true
-  ∧ consumed_one_use_selection_receipt.receipt_sha256 == sha256(canonical_json(consumed_one_use_selection_receipt with receipt_sha256=""))
+  ∧ selection_binding.receipt_id == consumed_one_use_selection_receipt.receipt_id
+  ∧ selection_binding.manifest_sha256 == manifest.manifest_sha256
+  ∧ selection_binding.selection_policy_sha256 == manifest.holdout.selection_policy_sha256
+  ∧ selection_binding.evaluator_identity_hash == manifest.evaluator.identity_hash
+  ∧ selection_binding.digest == sha256(canonical_json(selection_binding with digest=""))
   ∧ evaluation.terminal == COMPLETE
   ∧ evaluation.candidate_id == candidate.id
   ∧ evaluation.evaluator_identity_hash == active.evaluator_identity_hash
@@ -583,11 +593,15 @@ archive_eligible(candidate, evaluation) :=
 Any missing, mismatched, stale, or outcome-unknown term makes the predicate
 false and retains the rejected evidence under existing owners.
 
-Receipt bindings are also fixed. A selection receipt contains
-`schema_version`, `receipt_id`, `manifest_sha256`, `selection_policy_sha256`,
-`evaluator_identity_hash`, `family_id`, ordered `candidate_ids`, `used`, and
-`receipt_sha256`; its digest is the canonical JSON digest with only
-`receipt_sha256` blanked. A sentinel receipt contains
+Receipt bindings are also fixed. The existing selection receipt contains only
+`schema_version`, `receipt_id`, `family_id`, ordered `candidate_ids`, and
+`used`; its v1 shape and persistence semantics remain unchanged. The separate
+EC2 selection binding contains `receipt_id`, `manifest_sha256`,
+`selection_policy_sha256`, `evaluator_identity_hash`, and `digest`; its digest
+is the canonical JSON digest with only `digest` blanked. It is evaluator-owned
+evidence keyed to the unchanged v1 `receipt_id`, not a new field in that
+receipt. A future implementation packet must version that binding separately
+if it makes it durable. A sentinel receipt contains
 `schema_version`, `sentinel_id`, `policy_version`, `receipt_schema`,
 `manifest_sha256`, `policy_sha256`, `input_owner`, `candidate_id`,
 `evaluation_id`, `evaluator_identity_hash`, `source_evidence_digest`, `status`,
