@@ -65,6 +65,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-AC5-CONTRACT-1` | `COMPLETE` | PR #494 exact head `d35df3ae6c9be98678eacbee1a42f96087d375c0`; merge `437f2b8533d557fc6ae87ebe0840aaeb30489689`; exact-head `PASS`; canonical workflow `31930174257` |
 | `PE7-AC5-ROOT-CORE-1` | `COMPLETE` | PR #495 exact head `edb34b0482b142614d100f532c64ce7ac6481f2b`; merge `2453ec1adcb7a252d61b1234ab7da36678caf640`; exact-head `PASS`; canonical workflow `31930486388` |
 | `PE7-AC5-MODULE-MIGRATION-1` | `COMPLETE` | PR #497 exact head `b493e784ad53af8e5fccd519718a4f492da30c95`; merge `79cb356e371cc7f243a7ccceed3b3b3e90323689`; exact-head `PASS`; canonical workflow `31931211944` |
+| `PE7-AC6-CONTRACT-1` | `COMPLETE` | PR #499 exact head `4cc7f48589ff98706cc66f002b017b7cf6e73748`; merge `9a7dbb2ddb7887b62904b13988cd6217d504d31b`; exact-head `PASS`; canonical workflow `31931854403` |
 ## Accepted Product and Control-Plane State
 
 Accepted `main` contains:
