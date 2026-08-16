@@ -420,6 +420,85 @@ Each AC stage changes one coherent ownership boundary, preserves compatibility a
 
 Experiment control is established in separate bounded layers: identity/lineage/mutation registry; evaluator/holdout/contamination/gaming boundary; equal total-lifecycle budget; diversity/exploration controls; and hard-gate-first Pareto/stop/restart/recovery behavior. No layer creates a second evaluator, budget, store, scheduler, or adoption owner.
 
+### EC2 evaluator and holdout contract
+
+`PE7-HE-EC2-CONTRACT-1` freezes the evaluator boundary before the holdout,
+sentinel, and prediction-outcome implementation packets. The contract is
+provider-free and does not enable the default-off laboratory, authorize a
+candidate run, or change selection, adoption, merge, release, deployment, or
+production authority.
+
+The existing owners remain canonical:
+
+| Concern | Existing owner | Contract boundary |
+|---|---|---|
+| Active identity, candidate, lineage, mutable surface, and content binding | `engine/src/harness_evolution.rs` | Candidate identity and source-bound content are immutable inputs; candidates cannot replace the active Harness, evaluator identity, or policy. |
+| Task family, labels, rubric identity, sealed vault, budgets, hard gates, metrics, evaluation bundle, and archive projection | `engine/src/harness_evolution_eval.rs` | The evaluator derives results from evaluator-owned task and evidence inputs; fixture helpers are not authoritative acceptance. |
+| One-use sealed selection, evaluation persistence, receipts, archive, audit, replay, and rollback | `engine/src/storage/local_product_store/harness_evolution.rs` plus existing migration/audit owners | `LocalProductStore` remains the sole durable owner; no evaluator, queue, ledger, or parallel evidence store is introduced. |
+| Review, verification, scorecard, and PR-ready evidence | Existing repository review, verification, scorecard, replay, and output owners | These owners consume immutable redacted evaluator evidence; none can rewrite labels, rubric, outcomes, or evaluator identity. |
+
+The access envelope is fixed:
+
+1. A candidate or bounded autonomous worker may access only its admitted
+   workspace and the explicitly permitted development/validation inputs. It
+   cannot read plaintext labels, sealed membership, rubric internals, sentinel
+   state, or prior sealed outcomes, and it cannot write an evaluation outcome.
+2. The evaluator owns the frozen task-family manifest, plaintext labels and
+   rubric, sealed vault, one-use entrant selection, sentinel disposition, and
+   derivation of evaluation and prediction outcomes. Label and rubric changes
+   require a new versioned manifest; an in-place edit is invalid.
+3. A reviewer receives only the immutable, redacted evidence needed for review.
+   Reviewer disagreement is evidence for the existing review owner; it is not
+   permission to edit evaluator inputs or convert missingness into a pass.
+4. The operator/controller may acknowledge receipts or separately authorize a
+   later T3 effect, but cannot alter the evaluator constellation, labels,
+   rubric, holdout, sentinel rules, or outcome derivation.
+
+The evaluator constellation and holdout are immutable for one evaluation
+epoch. A task family has development, validation, and sealed-holdout splits;
+each task is bound to a stable task identity, family identity, label digest,
+and rubric/version digest. The sealed vault exposes only membership hashes and
+its canonical digest outside the evaluator. A store-owned, one-use selection
+receipt may admit only the preselected bounded entrant set (currently one to
+three); sealed execution never feeds mutation, prediction, parent selection,
+or archive eligibility. Development and validation evidence may be recorded,
+but only complete, hard-gate-passing validation evidence can enter the existing
+Pareto/archive path.
+
+Three independent sentinel classes are required before archive or selection:
+
+- contamination detects access to sealed tasks, labels, rubric, restricted
+  corpus, or post-result information;
+- gaming detects candidate control of evaluator inputs, selective evidence,
+  metric/rubric manipulation, hidden rejection, or attempts to disable a
+  sentinel; and
+- safety detects scope, authority, secret, target-output, compatibility, or
+  recovery-boundary violations.
+
+Each sentinel is evaluator/owner-derived, cannot be candidate-disabled, and
+returns a fail-closed invalidation on `FAIL` or `UNKNOWN`. Invalidation keeps
+the candidate, rejection reason, evidence digests, cleanup, and replay binding
+under existing owners, but prevents acceptance, archive entry, PR-ready output,
+adoption, or a claim of safety. Sentinel results never mutate labels or act as
+a scalar quality override.
+
+`PredictionOutcomeV1` is an evaluator-owned immutable derivation. For every
+addressable prediction in the pre-execution
+`MutationHypothesisManifestV1`, the evaluator joins the frozen prediction to
+the candidate/lineage, task and metric or invariant identity, actual
+verification/runtime evidence, and explicit missingness. The derived record
+is bound to the hypothesis-manifest digest, evaluation/bundle digest,
+evaluator identity, and evidence digest, then content-hashed before durable
+recording. Its outcome is exactly one of `correct`, `incorrect`,
+`partially_supported`, `contradicted`, or `unavailable`; incomplete, tampered,
+invalidated, or otherwise missing evidence is `unavailable` and never a pass.
+An absent regression prediction is not evidence that no regression occurred.
+The candidate may provide predictions as immutable input, but cannot author,
+revise, suppress, or finalize the derived outcome. Prediction accuracy and
+model confidence are calibration/audit evidence only: they cannot satisfy a
+hard gate, select a Pareto parent, grant safety, authorize adoption, or change
+the evaluator.
+
 Candidate generation uses one source-bound causal-mutation evidence chain. `FailurePatternEvidenceV1` separates observed verifier/runtime facts, causal status, counterevidence, Harness addressability, and the admitted mutable surface; existing feedback traces, pattern detection, and outcome attribution remain observation inputs rather than a second failure-intelligence authority. `MutationHypothesisManifestV1` freezes the exact candidate delta, predicted improvements and regressions, invariants, thresholds, and evaluation plan before execution. The existing evaluator path alone derives `PredictionOutcomeV1` after evaluation. Prediction accuracy and model confidence are audit/calibration evidence only: they cannot admit a candidate, imply safety, override a hard gate, select a Pareto parent, or authorize adoption.
 
 Level-1 core is a default-off one-generation laboratory with immutable active-Harness identity, candidate lineage, total-lifecycle-budget evaluation, hard gates, sealed holdout, Pareto archive, operator acknowledgement, and PR_READY output. Memory and skill projections are disabled in the core comparison so attribution remains identifiable. Optional memory-only and skill-only factor experiments may follow Level-1 but do not block the core Level-2 route. VDE does not rewrite or silently broaden the current evaluator or `MetricVector`.
