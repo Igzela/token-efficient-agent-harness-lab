@@ -535,6 +535,8 @@ archive_eligible(candidate, evaluation) :=
   ∧ consumed_one_use_selection_receipt.evaluator_identity_hash == manifest.evaluator.identity_hash
   ∧ consumed_one_use_selection_receipt.family_id == evaluation.family_id
   ∧ consumed_one_use_selection_receipt.candidate_ids contains candidate.id
+  ∧ consumed_one_use_selection_receipt.used == true
+  ∧ consumed_one_use_selection_receipt.receipt_sha256 == sha256(canonical_json(consumed_one_use_selection_receipt with receipt_sha256=""))
   ∧ evaluation.terminal == COMPLETE
   ∧ evaluation.candidate_id == candidate.id
   ∧ evaluation.evaluator_identity_hash == active.evaluator_identity_hash
@@ -555,7 +557,11 @@ archive_eligible(candidate, evaluation) :=
   ∧ for each id, sentinel_receipt[id].policy_sha256 == manifest.sentinels[id].policy_sha256
   ∧ for each id, sentinel_receipt[id].input_owner == manifest.sentinels[id].input_owner
   ∧ for each id, sentinel_receipt[id].receipt_schema == manifest.sentinels[id].receipt_schema
+  ∧ for each id, sentinel_receipt[id].candidate_id == candidate.id
+  ∧ for each id, sentinel_receipt[id].evaluation_id == evaluation.evaluation_id
+  ∧ for each id, sentinel_receipt[id].evaluator_identity_hash == manifest.evaluator.identity_hash
   ∧ for each id, sentinel_receipt[id].source_evidence_digest is bound to evaluation
+  ∧ for each id, sentinel_receipt[id].receipt_sha256 == sha256(canonical_json(sentinel_receipt[id] with receipt_sha256=""))
   ∧ sentinel_receipt[contamination].status == PASS
   ∧ sentinel_receipt[gaming].status == PASS
   ∧ sentinel_receipt[safety].status == PASS
@@ -567,6 +573,9 @@ archive_eligible(candidate, evaluation) :=
   ∧ review_receipt.evaluation_id == evaluation.evaluation_id
   ∧ review_receipt.evidence_sha256 == evaluation.evidence_sha256
   ∧ review_receipt.reviewer_session_id is authenticated and non-empty
+  ∧ review_receipt.reviewer_session_id resolves through the existing review owner to identity_class == manifest.review.identity_class
+  ∧ review_receipt.reviewer_session_id is distinct from the evaluator and implementation sessions
+  ∧ review_receipt.receipt_sha256 == sha256(canonical_json(review_receipt with receipt_sha256=""))
   ∧ review_receipt.disposition == PASS
   ∧ invalidation.state == VALID
 ```
