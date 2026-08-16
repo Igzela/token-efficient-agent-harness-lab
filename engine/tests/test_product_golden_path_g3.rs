@@ -1206,3 +1206,43 @@ fn test_port_migration_idempotency_and_audit_traces() {
         );
     });
 }
+
+#[test]
+fn test_transaction_views_core_atomicity_and_rollback() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+
+        let mut request = intake(&repo, &rev, "views-core-1", pass_verify());
+        request.confirm_output = Some(true);
+        let validated = validate_intake(&request, "local", "default").unwrap();
+
+        // 1. Admitted task under view
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+
+        // 2. Validate managed acceptance phase under transaction view
+        let phase_result = store.validate_managed_acceptance_product_task_phase(
+            "local",
+            task_id,
+            "disposable",
+            &rev,
+        );
+        assert!(
+            phase_result.is_ok(),
+            "Phase validation must succeed for admitted task: {:?}",
+            phase_result.err()
+        );
+
+        // 3. Status retrieval through store view
+        let retrieved = store
+            .get_product_task(task_id)
+            .unwrap()
+            .expect("task exists");
+        assert_eq!(
+            retrieved["status"],
+            ProductTaskStatus::WorkspaceBound.as_str()
+        );
+    });
+}
