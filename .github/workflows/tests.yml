@@ -269,6 +269,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -293,13 +294,14 @@ jobs:
       - name: Report accepted PR reuse lane
         if: needs.classify-change-impact.outputs.mode == 'reused_pr'
         run: echo "rust-tests reused from the accepted tree-identical PR head"
-      - name: Install bubblewrap for Codex mediation isolation probes
+      - name: Install bubblewrap and mold linker
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           set -euo pipefail
-          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo apt-get install -y --no-install-recommends bubblewrap mold clang
           test -x /usr/bin/bwrap
           /usr/bin/bwrap --version
+          mold --version
       - name: Install Rust toolchain
         if: needs.classify-change-impact.outputs.mode == 'full'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
@@ -361,6 +363,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
       PG_CONTAINER: ci-postgres-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out repository
@@ -404,12 +407,13 @@ jobs:
           done
           docker logs "${PG_CONTAINER}"
           exit 1
-      - name: Install bubblewrap for Codex mediation isolation probes
+      - name: Install bubblewrap and mold linker
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           set -euo pipefail
-          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo apt-get install -y --no-install-recommends bubblewrap mold clang
           test -x /usr/bin/bwrap
+          mold --version
       - name: Install Rust toolchain
         if: needs.classify-change-impact.outputs.mode == 'full'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
@@ -519,6 +523,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -543,6 +548,12 @@ jobs:
       - name: Report accepted PR reuse lane
         if: needs.classify-change-impact.outputs.mode == 'reused_pr'
         run: echo "native-runtime reused from the accepted tree-identical PR head"
+      - name: Install mold linker
+        if: needs.classify-change-impact.outputs.mode == 'full'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends mold clang
+          mold --version
       - name: Install Rust toolchain
         if: needs.classify-change-impact.outputs.mode == 'full'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
