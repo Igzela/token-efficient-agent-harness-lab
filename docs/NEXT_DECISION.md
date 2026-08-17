@@ -85,7 +85,7 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
 ### Twelve-field contract
 
 1. **Outcome and non-goals.** Close out the already-merged deletion-only cleanup; do not change runtime code, schemas, migrations, authority, evaluator, corpus, protocol, or Provider routing, and do not run Contemporary RWE.
-2. **Prerequisites and evidence.** Accepted main `8142a447c1b9ca861978bd3392da5ccea4263924`; cleanup PR #562 exact head `84735a064466b81a5bf521cf20b1a924c80408e6`; merge `8142a447c1b9ca861978bd3392da5ccea4263924`; exact-head review receipt `5315606973`; canonical workflow `32026577558`; exact-head check `32026577560`; refreshed Future Route manifest SHA `7ea611f2ffa6f36d2fa7eb516270b78edbb6db8139ba812892ca7a8f95045b2f`.
+2. **Prerequisites and evidence.** Accepted main `8142a447c1b9ca861978bd3392da5ccea4263924`; cleanup PR #562 exact head `84735a064466b81a5bf521cf20b1a924c80408e6`; merge `8142a447c1b9ca861978bd3392da5ccea4263924`; exact-head review receipt `5315606973`; canonical workflow `32026577558`; exact-head check `32026577560`; refreshed Future Route inventory manifest SHA `1a26757d57ba1a232f1f605f1b4390005fb4924d30a2ae3af4354ba1617193bf`.
 3. **Owners and paths.** Evidence/status owners are `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`; pre-AC identity input is `engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v2.json` under the existing RWE snapshot owner; provider-free validation is `scripts/verify_rwe_snapshot.py`; post-AC identity is the accepted `token-efficient-agent-harness-lab@8142a447` tree.
 4. **Frozen invariants.** The AC7 manifest groups, separate approve/output authority order, audit/CAS/idempotency/recovery semantics, pre-cleanup rollback tree, and zero-match inventory remain unchanged; this packet adds evidence only.
 5. **Only semantic delta.** Replace stale route/status claims with the exact accepted cleanup receipt, cost, rollback, and replay-input identities.
@@ -161,7 +161,7 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
   ],
   "risk_class": "none",
   "rollback": "Revert the documentation/status PR; the accepted cleanup rollback point remains eb692703ab3b3d030478b539fff4496014e45c7a and no database migration or external effect is involved.",
-  "route_manifest_sha256": "7ea611f2ffa6f36d2fa7eb516270b78edbb6db8139ba812892ca7a8f95045b2f",
+  "route_manifest_sha256": "1a26757d57ba1a232f1f605f1b4390005fb4924d30a2ae3af4354ba1617193bf",
   "schema_version": "weak_agent_dispatch.v1",
   "secret_values_allowed": false,
   "verification": [
