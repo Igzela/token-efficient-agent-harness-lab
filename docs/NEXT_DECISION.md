@@ -44,13 +44,13 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
 
 1. **Outcome and non-goals.** Freeze a deletion manifest grouped by one canonical owner and rollback point, with zero-caller proof and compatibility disposition per item.
 2. **Prerequisites and evidence.** Accepted main `4ea5f7707fa8c1f370cb8a8323c0b017bfcb3443`; checked route manifest SHA `637bbc7b9c98021ce7af373fbfa04b7caa90a6024047bdd84b95dccb9ff5ac3e`; predecessor receipt PR #558 exact head `646e076cba8b349d45880dd84d4520109a11db69`; merge `4ea5f7707fa8c1f370cb8a8323c0b017bfcb3443`; exact-head `PASS`; canonical workflow `32006997709`; current-main evidence SHA `251c2c655078d715eb1dd954ffe2442426054f261d938b1b07390c3b3d9ac2f3`.
-3. **Owners and paths.** Canonical removal surface: `engine/src/http_server/routes.rs` (route registration), `engine/src/http_server/handlers/product_tasks.rs` (`api_approve_and_output_product_task`), and `engine/src/storage/local_product_store/product_tasks.rs` (`approve_and_output_product_task_for_tenant` and its compatibility helper). Consumer wrappers: `sdk/python/src/agent_control_plane_sdk/client.py` (`approve_and_output_product_task`), `sdk/typescript/src/index.ts` (`approveAndOutputProductTask`), and `dashboard/src/lib/api-client.ts` (`approveAndOutputProductTask`). Authority regression coverage: `engine/tests/test_product_golden_path_authority.rs` composite route assertions.
+3. **Owners and paths.** Canonical removal surface: `engine/src/http_server/routes.rs` (route registration), `engine/src/http_server/handlers/product_tasks.rs` (`api_approve_and_output_product_task`), and `engine/src/storage/local_product_store/product_tasks.rs` (`approve_and_output_product_task` and `approve_and_output_product_task_for_tenant`). Consumer wrappers: `sdk/python/src/agent_control_plane_sdk/client.py` (`approve_and_output_product_task`), `sdk/typescript/src/index.ts` (`approveAndOutputProductTask`), and `dashboard/src/lib/api-client.ts` (`approveAndOutputProductTask`). Test inventory: `engine/tests/test_product_golden_path_authority.rs` (unauthorized legacy-route assertion), `engine/tests/test_product_golden_path_evidence.rs` (store behavior cases), `engine/tests/test_product_golden_path_g3.rs` (G3 compatibility cases), and `engine/tests/test_product_golden_path_recovery.rs` (recovery/reuse cases).
 4. **Frozen invariants.** Packet identity, route manifest SHA `637bbc7b9c98021ce7af373fbfa04b7caa90a6024047bdd84b95dccb9ff5ac3e`, accepted-main SHA, predecessor receipt, and current-main evidence digest are immutable for this candidate.
 5. **Only semantic delta.** Execute only the independently reviewed candidate contract.
 6. **Forbidden changes.** No static route hint is authority; no effect, T3 action, provider, target, automatic merge, or second owner.
 7. **Ordered implementation slices.** docs/ARCHITECTURE_BOOK.md, docs/MODULE_MAP.md: Freeze AC7 removal manifest grouping obsolete symbols/routes by owner and rollback group
 8. **Failure, recovery, and stop taxonomy.** Cleanup: No temporary resources created (proved by docs/ARCHITECTURE_BOOK.md:cleanup); retention: Retain canonical schemas and audit trail invariants (proved by docs/ARCHITECTURE_BOOK.md:audit); decisions: authority unchanged (docs/ARCHITECTURE_BOOK.md:LocalProductStore); evaluator unchanged (docs/ARCHITECTURE_BOOK.md:evaluator); recovery unchanged (docs/ARCHITECTURE_BOOK.md:rollback); schema unchanged (docs/ARCHITECTURE_BOOK.md:LocalProductStore).
-9. **Verification.** Candidate inventory must bind the exact route, handler, LocalProductStore helper, Python/TypeScript/Dashboard wrappers, and authority-test assertions above with fixed-string searches and the accepted-main CodeGraph call path. Contract checks: `bash scripts/check_wire_codegen_drift.sh`; `bash scripts/verify_rust_typescript_stack.sh`; `uv run --no-project python tools/check_security_baseline.py`; `uv run --no-project python scripts/check_agent_handoff.py`; `git diff --check`. The successor `PE7-AC7-CLEANUP-1` must additionally prove a zero-match fixed-string search after deletion, run `cargo test -p engine --test test_product_golden_path_authority`, the Python SDK tests, the TypeScript/Dashboard checks, and the applicable fixture/script/replay checks before closeout.
+9. **Verification.** Candidate inventory must bind the exact route, handler, both LocalProductStore compatibility symbols, Python/TypeScript/Dashboard wrappers, and all four test files above. Run `codegraph explore "approve_and_output_product_task approve_and_output_product_task_for_tenant api_approve_and_output_product_task POST /api/v1/product/tasks/:task_id/approve-and-output"` against accepted `main` and bind its call path in the review evidence. Contract checks: `bash scripts/check_wire_codegen_drift.sh`; `bash scripts/verify_rust_typescript_stack.sh`; `uv run --no-project python tools/check_security_baseline.py`; `uv run --no-project python scripts/check_agent_handoff.py`; `git diff --check`. The successor `PE7-AC7-CLEANUP-1` must additionally prove a zero-match fixed-string search across `engine/src`, `engine/tests`, `sdk`, `dashboard`, `scripts`, `tools`, and `tests` after deletion, run the candidate-specific Rust authority/behavior/recovery tests, the Python SDK tests, the TypeScript/Dashboard checks, and the applicable fixture/script/replay checks before closeout.
 10. **Compatibility, rollback, and retention.** Revertable documentation diff with zero database migrations (proved by docs/ARCHITECTURE_BOOK.md:rollback)
 11. **Exit artifact.** Evidence destinations: Accepted closeout of PE7-AC6-COMPATIBILITY-CLOSEOUT-1 in Accepted Packet Receipts table (docs/CURRENT_STATUS.md:Accepted), Active window promotion for PE7-AC7-REMOVAL-MANIFEST-1 under Active Routing (docs/NEXT_DECISION.md:READY_FOR_EXECUTION).
 12. **Next action.** Governed PR, exact-head review/CI, manual merge, closeout, then repeat evidence-backed promotion.
@@ -75,7 +75,8 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
   "expected_artifacts": [
     "Accepted closeout of PE7-AC6-COMPATIBILITY-CLOSEOUT-1 in Accepted Packet Receipts table (docs/CURRENT_STATUS.md:Accepted)",
     "Active window promotion for PE7-AC7-REMOVAL-MANIFEST-1 under Active Routing (docs/NEXT_DECISION.md:READY_FOR_EXECUTION)",
-    "Exact AC7 candidate inventory, owner/path binding, zero-caller proof plan, and compatibility disposition in the canonical architecture/module documents."
+    "Exact AC7 candidate inventory, owner/path binding, zero-caller proof plan, and compatibility disposition in the canonical architecture/module documents.",
+    "Accepted-main CodeGraph call-path evidence bound to the exact candidate symbols and route."
   ],
   "external_effect_limit": 0,
   "forbidden_changes": [
@@ -127,7 +128,10 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
     "sdk/python/src/agent_control_plane_sdk/client.py",
     "sdk/typescript/src/index.ts",
     "dashboard/src/lib/api-client.ts",
-    "engine/tests/test_product_golden_path_authority.rs"
+    "engine/tests/test_product_golden_path_authority.rs",
+    "engine/tests/test_product_golden_path_evidence.rs",
+    "engine/tests/test_product_golden_path_g3.rs",
+    "engine/tests/test_product_golden_path_recovery.rs"
   ],
   "risk_class": "none",
   "rollback": "Revertable documentation diff with zero database migrations (proved by docs/ARCHITECTURE_BOOK.md:rollback)",
@@ -135,7 +139,8 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
   "schema_version": "weak_agent_dispatch.v1",
   "secret_values_allowed": false,
   "verification": [
-    "rg -n --fixed-strings -e 'approve-and-output' -e 'api_approve_and_output_product_task' -e 'approve_and_output_product_task' -e 'approveAndOutputProductTask' -- engine/src/http_server/routes.rs engine/src/http_server/handlers/product_tasks.rs engine/src/storage/local_product_store/product_tasks.rs sdk/python/src/agent_control_plane_sdk/client.py sdk/typescript/src/index.ts dashboard/src/lib/api-client.ts engine/tests/test_product_golden_path_authority.rs",
+    "rg -n --fixed-strings -e 'approve-and-output' -e 'api_approve_and_output_product_task' -e 'approve_and_output_product_task' -e 'approveAndOutputProductTask' -- engine/src engine/tests sdk dashboard scripts tools tests",
+    "codegraph explore \"approve_and_output_product_task approve_and_output_product_task_for_tenant api_approve_and_output_product_task POST /api/v1/product/tasks/:task_id/approve-and-output\"",
     "bash scripts/check_wire_codegen_drift.sh",
     "bash scripts/verify_rust_typescript_stack.sh",
     "uv run --no-project python tools/check_security_baseline.py",
