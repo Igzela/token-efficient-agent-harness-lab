@@ -416,6 +416,27 @@ Architecture Convergence is incremental compatibility work, not a rewrite:
 
 Each AC stage changes one coherent ownership boundary, preserves compatibility and rollback, and records implementation cost. AC0 separates runtime inventory, data/contract inventory, and trace/order freeze. AC1–AC6 each freeze a current-main contract before additive core work and enumerate caller/consumer migration separately; AC6 also separates Rust/codegen, SDK, and Dashboard consumer migration. AC7 freezes a zero-caller removal manifest before deletion-only work and independent closeout. A migration or cleanup packet cannot enlarge its preceding contract. After AC7, the frozen RWE corpus and protocol are replayed through reconstructable old/new Harnesses in the contemporary controlled comparison above.
 
+### AC4: Transaction-Scoped Domain Views Contract
+
+`PE7-AC4-CONTRACT-1` freezes the transaction view boundary, borrow rules, commit/rollback invariants, and backend parity before the views-core and caller-migration implementation packets. The contract is strictly provider-free, introduces zero schema alterations or migrations, and creates no second store or runtime authority.
+
+The transaction boundary rules are immutable:
+
+1. **Sole Transaction Authority**: `LocalProductStore` is the sole persistence authority and the only component authorized to open, manage, commit, or abort database transactions.
+2. **Borrowed View Lifetimes**: Transaction views (`WorkflowTx`, `ProductTaskTx`, `ManagedAcceptanceTx`, `RweTx`) are ephemeral wrappers borrowing the active database transaction (`&rusqlite::Transaction<'_>` on SQLite, `&mut postgres::Transaction<'_>` on PostgreSQL). Views cannot outlive the enclosing store transaction scope, hold connection pool handles, or open independent connections.
+3. **Forbidden Nested Commits**: Transaction views expose only domain-specific mutation methods; they possess no `commit()` or `rollback()` operations.
+4. **Single Atomic Commit Boundary**: Cross-domain operations execute beneath one unified store transaction. Commits occur exactly once when all operations succeed (`Ok(())`); any error (`Err(_)`) triggers an immediate full rollback of the entire atomic unit.
+5. **Backend Parity**: SQLite transactions run under `BEGIN IMMEDIATE` guarded by the store mutex; PostgreSQL transactions execute via `client.transaction()` with deterministic row-level `FOR UPDATE` locking order to prevent deadlocks and guarantee parity across storage backends.
+
+The four cross-domain transaction view groups:
+
+| Transaction View | Touched Relational Tables | Core Operations & Invariants |
+|---|---|---|
+| `WorkflowTx` | `workflow_plans`, `workflow_runs`, `workflow_run_nodes`, `workflow_run_approvals`, `audit_log` | Monotonic plan and run creation, exclusive node leasing with atomic status CAS, node execution outcome recording, DAG transition evaluation, approval unpause, and structured audit trail emission. |
+| `ProductTaskTx` | `product_tasks`, `supervised_patch_workspaces`, `supervised_patch_artifacts`, `audit_log` | Idempotent task admission, optimistic concurrency control via `version` CAS, atomic verification artifact capture coupling workspace status transition (`patch_prepared`), task state transition (`awaiting_approval`), and audit logging. |
+| `ManagedAcceptanceTx` | `managed_acceptance_delegations`, `managed_acceptance_spend_authorizations`, `audit_log` | One-use spend authorization issuance (`executions_used: 0 -> 1`), attempt admission with lease issuance, immutable proposal and manifest approval recording, artifact output confirmation, and terminal spend reconciliation. |
+| `RweTx` | `rwe_run_authorizations`, `rwe_cells`, `audit_log` | One-use RWE authorization issuance, run admission, realized cost and token spend deduction against authorized budget caps, cell fencing, and terminal store evidence projection. |
+
 ## Harness Evolution
 
 Experiment control is established in separate bounded layers: identity/lineage/mutation registry; evaluator/holdout/contamination/gaming boundary; equal total-lifecycle budget; diversity/exploration controls; and hard-gate-first Pareto/stop/restart/recovery behavior. No layer creates a second evaluator, budget, store, scheduler, or adoption owner.
