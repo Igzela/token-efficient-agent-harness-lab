@@ -870,9 +870,21 @@ impl<'b, 'a, 'c> ProductTaskTx<'b, 'a, 'c> {
         run_id: &str,
         actor: &str,
     ) -> Result<(), String> {
-        self.tx
-            .store
-            .bind_product_task_plan_run(task_id, plan_id, run_id, actor)
+        let now = self.tx.store.now();
+        match &mut self.tx.backend {
+            BackendTx::Sqlite(conn) => LocalProductStore::bind_product_task_plan_run_sqlite(
+                conn, &now, task_id, plan_id, run_id, actor,
+            ),
+            #[cfg(feature = "pg")]
+            BackendTx::Pg(tx_mutex) => {
+                let mut tx = tx_mutex.lock().map_err(|e| e.to_string())?;
+                LocalProductStore::bind_product_task_plan_run_pg(
+                    &mut tx, &now, task_id, plan_id, run_id, actor,
+                )
+            }
+            #[cfg(not(feature = "pg"))]
+            BackendTx::_PgPhantom(_) => unreachable!(),
+        }
     }
 
     pub fn append_audit(
