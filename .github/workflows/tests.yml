@@ -277,6 +277,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_TEST_DEBUG: "1"
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
@@ -343,9 +344,17 @@ jobs:
           set -euo pipefail
           python3 -m pip install --quiet --user pytest
           python3 -m pytest --version
+      - name: Install cargo-nextest
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
+        uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
+        with:
+          tool: cargo-nextest@0.9.143
       - name: Run cargo test
         if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: scripts/ci/run_rust_tests.py
+      - name: Run doctests
+        if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
+        run: cargo test --doc -p engine
       - name: Check formatting
         if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: cargo fmt --check
@@ -374,6 +383,7 @@ jobs:
       ACP_TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5432/testdb
       ACP_PRODUCT_GOLDEN_PATH: "1"
       CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_TEST_DEBUG: "1"
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
@@ -540,6 +550,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "1"
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"

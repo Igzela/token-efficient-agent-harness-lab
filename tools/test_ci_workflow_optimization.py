@@ -147,6 +147,40 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
             rust,
         )
 
+    def test_nextest_and_debug_info_optimizations(self) -> None:
+        rust = self.job_source("rust-tests")
+        # nextest is installed via prebuilt binary
+        self.assertIn("name: Install cargo-nextest", rust)
+        self.assertIn(
+            "taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d",
+            rust,
+        )
+        self.assertIn("tool: cargo-nextest@0.9.143", rust)
+        # run_rust_tests.py drives nextest execution
+        self.assertIn("run: scripts/ci/run_rust_tests.py", rust)
+        # doctests run separately (nextest does not support them)
+        self.assertIn("name: Run doctests", rust)
+        self.assertIn("cargo test --doc -p engine", rust)
+        # debug info is reduced to line-tables-only for faster linking
+        self.assertIn('CARGO_PROFILE_TEST_DEBUG: "1"', rust)
+        pg = self.job_source("pg-integration-tests")
+        self.assertIn('CARGO_PROFILE_TEST_DEBUG: "1"', pg)
+        native = self.job_source("native-runtime")
+        self.assertIn('CARGO_PROFILE_DEV_DEBUG: "1"', native)
+        # nextest config exists
+        config = (ROOT / ".config" / "nextest.toml").read_text(encoding="utf-8")
+        self.assertIn("[profile.ci]", config)
+        # run_rust_tests.py uses nextest
+        runner = (ROOT / "scripts" / "ci" / "run_rust_tests.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("cargo", runner)
+        self.assertIn("nextest", runner)
+        self.assertIn('"run"', runner)
+        self.assertNotIn(
+            'command = ["cargo", "test", "-p", "engine"]', runner
+        )
+
     def test_docker_build_uses_pinned_scoped_buildkit_caches(self) -> None:
         docker = self.job_source("docker-build")
         self.assertIn(
