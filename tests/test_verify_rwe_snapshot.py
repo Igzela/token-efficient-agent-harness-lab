@@ -69,6 +69,23 @@ class VerifyRweSnapshotTests(unittest.TestCase):
             verify_rwe_snapshot.verify_isolated_roots(nested, root, failures)
             self.assertIn("pre-AC source and post-AC harness roots must not be nested", failures)
 
+    def test_post_ac_identity_binding_rejects_wrong_head_tree_and_lockfiles(self) -> None:
+        failures: list[str] = []
+        verify_rwe_snapshot.verify_post_ac_harness(
+            Path.cwd(),
+            {
+                "main_sha": "0" * 40,
+                "tree_sha": "0" * 40,
+                "cargo_lock_sha256": "0" * 64,
+                "rust_toolchain_sha256": "0" * 64,
+            },
+            failures,
+        )
+        self.assertIn("post-AC harness HEAD differs from the bound accepted main", failures)
+        self.assertIn("post-AC harness tree differs from the bound accepted tree", failures)
+        self.assertIn("snapshot hash mismatch: Cargo.lock", failures)
+        self.assertIn("snapshot hash mismatch: rust-toolchain.toml", failures)
+
     def test_frozen_snapshot_metadata_is_provider_free(self) -> None:
         manifest_path = Path(
             "engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v2.json"

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -181,6 +182,98 @@ def verify_isolated_roots(source_root: Path, harness_root: Path, failures: list[
             failures.append("pre-AC source and post-AC harness resolve to one Git worktree")
 
 
+def verify_post_ac_harness(
+    harness_root: Path, expected: dict[str, str], failures: list[str]
+) -> None:
+    if git_output(harness_root, "rev-parse", "HEAD") != expected["main_sha"]:
+        failures.append("post-AC harness HEAD differs from the bound accepted main")
+    if git_output(harness_root, "rev-parse", "HEAD^{tree}") != expected["tree_sha"]:
+        failures.append("post-AC harness tree differs from the bound accepted tree")
+    verify_file(harness_root, "Cargo.lock", expected["cargo_lock_sha256"], failures)
+    verify_file(
+        harness_root,
+        "rust-toolchain.toml",
+        expected["rust_toolchain_sha256"],
+        failures,
+    )
+
+
+def _provider_free_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    for key in list(environment):
+        upper = key.upper()
+        if any(
+            marker in upper
+            for marker in (
+                "API_KEY",
+                "AUTH_TOKEN",
+                "ANTHROPIC_",
+                "DEEPSEEK_",
+                "OPENAI_",
+            )
+        ):
+            environment.pop(key, None)
+    environment["CARGO_TERM_COLOR"] = "never"
+    return environment
+
+
+def _run_provider_free_trace(
+    name: str,
+    command: list[str],
+    cwd: Path,
+    environment: dict[str, str],
+    failures: list[str],
+) -> None:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3_600,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        failures.append(f"provider-free trace unavailable: {name}: {type(error).__name__}")
+        return
+    if result.returncode:
+        failures.append(f"provider-free trace failed: {name}: exit={result.returncode}")
+
+
+def verify_provider_free_traces(
+    source_root: Path, harness_root: Path, failures: list[str]
+) -> None:
+    environment = _provider_free_environment()
+    source_environment = dict(environment)
+    source_environment["PYTHONPATH"] = str(source_root / "apps/api/src")
+    _run_provider_free_trace(
+        "pre_ac_source_pytest",
+        [
+            "uv",
+            "run",
+            "--locked",
+            "--project",
+            "apps/api/pyproject.toml",
+            "--extra",
+            "dev",
+            "pytest",
+            "apps/api/tests/",
+            "-q",
+        ],
+        source_root,
+        source_environment,
+        failures,
+    )
+    _run_provider_free_trace(
+        "post_ac_engine_tests",
+        ["cargo", "test", "-p", "engine"],
+        harness_root,
+        environment,
+        failures,
+    )
+
+
 def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures: list[str]) -> None:
     repository = manifest["repository"]
     recipe = manifest["reconstruction_recipe"]
@@ -282,7 +375,13 @@ def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object],
             failures.append(f"frozen task definition digest differs from protocol: {path.name}")
 
 
-def verify(manifest_path: Path, source_root: Path, harness_root: Path) -> list[str]:
+def verify(
+    manifest_path: Path,
+    source_root: Path,
+    harness_root: Path,
+    post_ac_identity: dict[str, str] | None = None,
+    execute_traces: bool = False,
+) -> list[str]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     failures: list[str] = []
     failures.extend(required_manifest_failures(manifest))
@@ -296,8 +395,16 @@ def verify(manifest_path: Path, source_root: Path, harness_root: Path) -> list[s
     if not failures:
         try:
             verify_isolated_roots(source_root, harness_root, failures)
+            if post_ac_identity is None:
+                failures.append("post-AC identity binding is required")
+            else:
+                verify_post_ac_harness(harness_root, post_ac_identity, failures)
             verify_git_overlay(source_root, manifest, failures)
             verify_frozen_task_bindings(harness_root, manifest, failures)
+            if execute_traces and not failures:
+                verify_provider_free_traces(source_root, harness_root, failures)
+            elif not execute_traces:
+                failures.append("provider-free trace execution is required")
         except (KeyError, TypeError):
             failures.append("snapshot Git overlay binding is malformed")
 
@@ -328,10 +435,24 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--harness-root", type=Path, default=Path.cwd())
+    parser.add_argument("--post-ac-main-sha", required=True)
+    parser.add_argument("--post-ac-tree-sha", required=True)
+    parser.add_argument("--post-ac-cargo-lock-sha256", required=True)
+    parser.add_argument("--post-ac-rust-toolchain-sha256", required=True)
+    parser.add_argument("--execute-traces", action="store_true")
     args = parser.parse_args()
     try:
         failures = verify(
-            args.manifest.resolve(), args.source_root.resolve(), args.harness_root.resolve()
+            args.manifest.resolve(),
+            args.source_root.resolve(),
+            args.harness_root.resolve(),
+            {
+                "main_sha": args.post_ac_main_sha,
+                "tree_sha": args.post_ac_tree_sha,
+                "cargo_lock_sha256": args.post_ac_cargo_lock_sha256,
+                "rust_toolchain_sha256": args.post_ac_rust_toolchain_sha256,
+            },
+            args.execute_traces,
         )
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
         print(f"snapshot verification failed: {error}", file=sys.stderr)

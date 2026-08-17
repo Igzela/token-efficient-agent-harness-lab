@@ -41,13 +41,11 @@ pub const FROZEN_RWE_PROTOCOL_SHA256: &str =
 pub const FROZEN_RWE_SCHEDULE_SHA256: &str =
     "6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38";
 
-/// Accepted post-AC runtime identity used as the comparison arm. This is a
+/// Accepted post-AC main identity used as the comparison arm. This is a
 /// binding only; it does not authorize a replay, Provider call, or target
 /// write.
-pub const FROZEN_RWE_POST_AC_RUNTIME_MAIN_SHA: &str = "8142a447c1b9ca861978bd3392da5ccea4263924";
-pub const FROZEN_RWE_POST_AC_RUNTIME_TREE_HASH: &str = "df6ede05fdc6f1a533793a17591478ac5ecc7b9d";
-pub const FROZEN_RWE_POST_AC_TRACKED_MANIFEST_SHA256: &str =
-    "6e883449d1beceb29c4cf114aad075ed6de0b3845f91d9e64059956173e2b7d";
+pub const FROZEN_RWE_POST_AC_MAIN_SHA: &str = "42fcfa5ad7e349d27d3caa815163340f9c0d5c0b";
+pub const FROZEN_RWE_POST_AC_TREE_HASH: &str = "c81a2e4e635da05a8a1c15630371e98943c70c86";
 pub const FROZEN_RWE_POST_AC_CARGO_LOCK_SHA256: &str =
     "cf68982734f8a72148950f119408b676dd5b42ce65d7af69c02eca017a551653";
 pub const FROZEN_RWE_POST_AC_RUST_TOOLCHAIN_SHA256: &str =
@@ -63,9 +61,8 @@ pub struct FrozenRweReconstructionBinding {
     pub corpus_sha256: &'static str,
     pub protocol_sha256: &'static str,
     pub schedule_sha256: &'static str,
-    pub post_ac_runtime_main_sha: &'static str,
-    pub post_ac_runtime_tree_hash: &'static str,
-    pub post_ac_tracked_manifest_sha256: &'static str,
+    pub post_ac_main_sha: &'static str,
+    pub post_ac_tree_hash: &'static str,
     pub post_ac_cargo_lock_sha256: &'static str,
     pub post_ac_rust_toolchain_sha256: &'static str,
 }
@@ -81,12 +78,8 @@ impl FrozenRweReconstructionBinding {
             ("corpus_sha256", self.corpus_sha256),
             ("protocol_sha256", self.protocol_sha256),
             ("schedule_sha256", self.schedule_sha256),
-            ("post_ac_runtime_main_sha", self.post_ac_runtime_main_sha),
-            ("post_ac_runtime_tree_hash", self.post_ac_runtime_tree_hash),
-            (
-                "post_ac_tracked_manifest_sha256",
-                self.post_ac_tracked_manifest_sha256,
-            ),
+            ("post_ac_main_sha", self.post_ac_main_sha),
+            ("post_ac_tree_hash", self.post_ac_tree_hash),
             ("post_ac_cargo_lock_sha256", self.post_ac_cargo_lock_sha256),
             (
                 "post_ac_rust_toolchain_sha256",
@@ -97,11 +90,11 @@ impl FrozenRweReconstructionBinding {
                 return Err(format!("reconstruction binding requires {name}"));
             }
         }
-        if self.pre_ac_source_commit == self.post_ac_runtime_main_sha {
-            return Err("pre-AC source and post-AC runtime identities must differ".into());
+        if self.pre_ac_source_commit == self.post_ac_main_sha {
+            return Err("pre-AC source and post-AC main identities must differ".into());
         }
-        if self.pre_ac_source_tree_hash == self.post_ac_runtime_tree_hash {
-            return Err("pre-AC source and post-AC runtime trees must differ".into());
+        if self.pre_ac_source_tree_hash == self.post_ac_tree_hash {
+            return Err("pre-AC source and post-AC trees must differ".into());
         }
         Ok(())
     }
@@ -117,9 +110,8 @@ pub const fn frozen_rwe_reconstruction_binding() -> FrozenRweReconstructionBindi
         corpus_sha256: FROZEN_RWE_CORPUS_SHA256,
         protocol_sha256: FROZEN_RWE_PROTOCOL_SHA256,
         schedule_sha256: FROZEN_RWE_SCHEDULE_SHA256,
-        post_ac_runtime_main_sha: FROZEN_RWE_POST_AC_RUNTIME_MAIN_SHA,
-        post_ac_runtime_tree_hash: FROZEN_RWE_POST_AC_RUNTIME_TREE_HASH,
-        post_ac_tracked_manifest_sha256: FROZEN_RWE_POST_AC_TRACKED_MANIFEST_SHA256,
+        post_ac_main_sha: FROZEN_RWE_POST_AC_MAIN_SHA,
+        post_ac_tree_hash: FROZEN_RWE_POST_AC_TREE_HASH,
         post_ac_cargo_lock_sha256: FROZEN_RWE_POST_AC_CARGO_LOCK_SHA256,
         post_ac_rust_toolchain_sha256: FROZEN_RWE_POST_AC_RUST_TOOLCHAIN_SHA256,
     }
@@ -501,11 +493,11 @@ mod tests {
         reconstruction.validate().unwrap();
         assert_ne!(
             reconstruction.pre_ac_source_commit,
-            reconstruction.post_ac_runtime_main_sha
+            reconstruction.post_ac_main_sha
         );
         assert_ne!(
             reconstruction.pre_ac_source_tree_hash,
-            reconstruction.post_ac_runtime_tree_hash
+            reconstruction.post_ac_tree_hash
         );
         let bindings = frozen_rwe_task_bindings().unwrap();
         assert_eq!(bindings.len(), 2);
