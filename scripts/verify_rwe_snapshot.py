@@ -26,6 +26,7 @@ FROZEN_POST_AC_IDENTITY = {
 }
 FROZEN_OBSERVED_TOOLCHAIN = {
     "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "rustdoc": "rustdoc 1.96.0 (ac68faa20 2026-05-25)",
     "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)",
     "python": "Python 3.14.4",
     "uv": "uv 0.11.17",
@@ -38,6 +39,13 @@ FROZEN_TRACE_BINARY_IDENTITIES = {
             / ".rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc"
         ),
         "sha256": "ba4b837efb6612dfa8d941c5a72b8a50d1d03a0f36216743b173949aa8d9eb75",
+    },
+    "rustdoc": {
+        "path": str(
+            Path.home()
+            / ".rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustdoc"
+        ),
+        "sha256": "ead78a0e00004d88ef7a3209a20552ba805cc9cb7cde7b061093a1b2dfb037c0",
     },
     "cargo": {
         "path": str(
@@ -63,6 +71,7 @@ FROZEN_TRACE_BINARY_IDENTITIES = {
         "sha256": "0abea81db798ebf6b4742ac0664802d97521547a353c2a0dbdc21d76cbbfd2c0",
     },
 }
+GIT_BINARY = FROZEN_TRACE_BINARY_IDENTITIES["git"]["path"]
 
 
 def sha256_file(path: Path) -> str:
@@ -98,7 +107,7 @@ def verify_file(root: Path, relative: str, expected: str, failures: list[str]) -
 
 def git_output(root: Path, *args: str) -> str | None:
     result = subprocess.run(
-        ["git", "-C", str(root), *args],
+        [GIT_BINARY, "-C", str(root), *args],
         check=False,
         capture_output=True,
         text=True,
@@ -110,7 +119,7 @@ def git_output(root: Path, *args: str) -> str | None:
 
 def git_blob(root: Path, revision: str, relative: str) -> bytes | None:
     result = subprocess.run(
-        ["git", "-C", str(root), "show", f"{revision}:{relative}"],
+        [GIT_BINARY, "-C", str(root), "show", f"{revision}:{relative}"],
         check=False,
         capture_output=True,
     )
@@ -119,7 +128,7 @@ def git_blob(root: Path, revision: str, relative: str) -> bytes | None:
 
 def git_tree_hash(root: Path, revision: str) -> str | None:
     result = subprocess.run(
-        ["git", "-C", str(root), "ls-tree", "-r", "-z", "--full-tree", revision],
+        [GIT_BINARY, "-C", str(root), "ls-tree", "-r", "-z", "--full-tree", revision],
         check=False,
         capture_output=True,
     )
@@ -167,7 +176,7 @@ def git_overlay_paths(root: Path) -> list[str]:
 
 def git_revision_paths(root: Path, revision: str) -> list[str]:
     result = subprocess.run(
-        ["git", "-C", str(root), "ls-tree", "-r", "-z", "--name-only", revision],
+        [GIT_BINARY, "-C", str(root), "ls-tree", "-r", "-z", "--name-only", revision],
         check=False,
         capture_output=True,
     )
@@ -176,9 +185,30 @@ def git_revision_paths(root: Path, revision: str) -> list[str]:
     return [item.decode("utf-8") for item in result.stdout.split(b"\0") if item]
 
 
+def git_revision_modes(root: Path, revision: str) -> dict[str, int]:
+    result = subprocess.run(
+        [GIT_BINARY, "-C", str(root), "ls-tree", "-r", "-z", "--full-tree", revision],
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode:
+        raise OSError(f"cannot enumerate Git revision modes: {revision}")
+    modes: dict[str, int] = {}
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        header, relative_bytes = record.split(b"\t", 1)
+        mode, object_type, _ = header.split()
+        if object_type != b"blob" or mode not in {b"100644", b"100755"}:
+            raise OSError(f"unsupported Git tree entry: {relative_bytes.decode('utf-8')}")
+        modes[relative_bytes.decode("utf-8")] = 0o755 if mode == b"100755" else 0o644
+    return modes
+
+
 def copy_git_revision(root: Path, revision: str, destination: Path) -> None:
     """Copy only the bound Git revision, excluding ignored host artifacts."""
     destination.mkdir(parents=True, exist_ok=True)
+    modes = git_revision_modes(root, revision)
     for relative in git_revision_paths(root, revision):
         content = git_blob(root, revision, relative)
         if content is None:
@@ -186,9 +216,12 @@ def copy_git_revision(root: Path, revision: str, destination: Path) -> None:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
+        target.chmod(modes[relative])
 
 
-def copy_recipe_overlay(root: Path, destination: Path, paths: list[str]) -> None:
+def copy_recipe_overlay(
+    root: Path, destination: Path, paths: list[str], modes: dict[str, int]
+) -> None:
     for relative in paths:
         source = root / relative
         if source.is_symlink() or not source.is_file():
@@ -196,6 +229,7 @@ def copy_recipe_overlay(root: Path, destination: Path, paths: list[str]) -> None
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+        target.chmod(modes[relative])
 
 
 def registered_source_commands(
@@ -322,6 +356,7 @@ def verify_post_ac_harness(
 def verify_observed_toolchain(failures: list[str]) -> None:
     commands = {
         "rustc": ["--version"],
+        "rustdoc": ["--version"],
         "cargo": ["--version"],
         "python": ["--version"],
         "uv": ["--version"],
@@ -392,7 +427,6 @@ def _provider_free_environment(home: Path, target: Path) -> dict[str, str]:
         "PATH": os.pathsep.join(
             [
                 str(Path.home() / ".local" / "bin"),
-                str(Path.home() / ".cargo" / "bin"),
                 "/usr/bin",
                 "/bin",
             ]
@@ -408,6 +442,10 @@ def _provider_free_environment(home: Path, target: Path) -> dict[str, str]:
         "UV_OFFLINE": "true",
         "UV_PYTHON": FROZEN_TRACE_BINARY_IDENTITIES["python"]["path"],
         "RUSTC": FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"],
+        "RUSTDOC": FROZEN_TRACE_BINARY_IDENTITIES["rustdoc"]["path"],
+        "LD_LIBRARY_PATH": str(
+            Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent / "lib"
+        ),
         "CARGO_TERM_COLOR": "never",
         "PYTHONDONTWRITEBYTECODE": "1",
         "NO_COLOR": "1",
@@ -424,6 +462,7 @@ def _run_provider_free_trace(
     writable_mounts: set[Path],
     sandbox: bool,
     failures: list[str],
+    forbidden_output: tuple[str, ...] = (),
 ) -> None:
     if not sandbox:
         try:
@@ -439,6 +478,10 @@ def _run_provider_free_trace(
         except (OSError, subprocess.TimeoutExpired) as error:
             failures.append(f"provider-free trace unavailable: {name}: {type(error).__name__}")
             return
+        output = f"{result.stdout}\n{result.stderr}"
+        for marker in forbidden_output:
+            if marker in output:
+                failures.append(f"provider-free trace emitted forbidden marker: {name}: {marker}")
         if result.returncode:
             failures.append(f"provider-free trace failed: {name}: exit={result.returncode}")
         return
@@ -455,6 +498,8 @@ def _run_provider_free_trace(
     mapped_environment = dict(environment)
     mapped_environment["HOME"] = "/tmp/rwe-home"
     mapped_environment["XDG_CONFIG_HOME"] = "/tmp/rwe-home/config"
+    mapped_environment["CARGO_HOME"] = "/tmp/rwe-cargo-home"
+    mapped_environment["RUSTUP_HOME"] = "/tmp/rwe-home/rustup"
     mapped_environment["CARGO_TARGET_DIR"] = "/tmp/rwe-target"
     mapped_environment["UV_CACHE_DIR"] = "/tmp/rwe-host-uv-cache"
     if "PYTHONPATH" in mapped_environment:
@@ -493,6 +538,10 @@ def _run_provider_free_trace(
         "--dir",
         "/tmp/rwe-home/config",
         "--dir",
+        "/tmp/rwe-home/rustup",
+        "--dir",
+        "/tmp/rwe-cargo-home",
+        "--dir",
         "/tmp/rwe-target",
         "--dir",
         "/tmp/rwe-source",
@@ -506,15 +555,22 @@ def _run_provider_free_trace(
         "/home",
         "--dir",
         str(Path.home()),
-        "--ro-bind",
-        str(Path.home() / ".cargo"),
-        str(Path.home() / ".cargo"),
-        "--ro-bind",
+        "--dir",
         str(Path.home() / ".rustup"),
-        str(Path.home() / ".rustup"),
+        "--dir",
+        str(Path.home() / ".rustup" / "toolchains"),
+        "--dir",
+        str(Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent),
         "--ro-bind",
+        str(Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent),
+        str(Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent),
+        "--dir",
         str(Path.home() / ".local"),
-        str(Path.home() / ".local"),
+        "--dir",
+        str(Path.home() / ".local" / "bin"),
+        "--ro-bind",
+        FROZEN_TRACE_BINARY_IDENTITIES["uv"]["path"],
+        FROZEN_TRACE_BINARY_IDENTITIES["uv"]["path"],
     ]
     for host, guest in mounts.items():
         mode = "--bind" if host in writable_mounts else "--ro-bind"
@@ -537,6 +593,10 @@ def _run_provider_free_trace(
     except (OSError, subprocess.TimeoutExpired) as error:
         failures.append(f"provider-free trace unavailable: {name}: {type(error).__name__}")
         return
+    output = f"{result.stdout}\n{result.stderr}"
+    for marker in forbidden_output:
+        if marker in output:
+            failures.append(f"provider-free trace emitted forbidden marker: {name}: {marker}")
     if result.returncode:
         detail = (result.stderr or result.stdout).strip().splitlines()
         suffix = f": {detail[-1][:300]}" if detail else ""
@@ -617,6 +677,9 @@ def verify_provider_free_traces(
             source_root,
             trace_source,
             manifest["reconstruction_recipe"]["recipe_paths"],
+            git_revision_modes(
+                source_root, manifest["reconstruction_recipe"]["recipe_commit"]
+            ),
         )
         (trace_source / "source").symlink_to(".")
         trace_harness = temporary / "harness"
@@ -625,6 +688,15 @@ def verify_provider_free_traces(
         target.mkdir()
         home = temporary / "home"
         home.mkdir()
+        trace_cargo = temporary / "cargo-home"
+        trace_cargo.mkdir()
+        host_cargo = Path.home() / ".cargo"
+        for relative in ("registry", "git"):
+            source_cache = host_cargo / relative
+            if not source_cache.is_dir():
+                failures.append(f"provider-free trace requires Cargo cache: {relative}")
+                return
+            shutil.copytree(source_cache, trace_cargo / relative, symlinks=True)
         uv_cache = Path.home() / ".cache/uv"
         if not uv_cache.is_dir():
             failures.append("provider-free trace requires the bound read-only uv cache")
@@ -632,10 +704,13 @@ def verify_provider_free_traces(
         trace_cache = temporary / "uv-cache"
         shutil.copytree(uv_cache, trace_cache, symlinks=True)
         environment = _provider_free_environment(home, target)
+        environment["CARGO_HOME"] = str(trace_cargo)
+        environment["RUSTUP_HOME"] = str(home / "rustup")
         environment["UV_CACHE_DIR"] = str(trace_cache)
         uv_binary = resolve_trace_binary("uv", environment, failures)
         cargo_binary = resolve_trace_binary("cargo", environment, failures)
-        if uv_binary is None or cargo_binary is None:
+        rustdoc_binary = resolve_trace_binary("rustdoc", environment, failures)
+        if uv_binary is None or cargo_binary is None or rustdoc_binary is None:
             return
         registered = registered_source_commands(manifest, uv_binary, failures)
         if registered is None:
@@ -652,6 +727,7 @@ def verify_provider_free_traces(
             trace_source: "/workspace/source",
             trace_harness: "/tmp/rwe-harness",
             target: "/tmp/rwe-target",
+            trace_cargo: "/tmp/rwe-cargo-home",
             trace_cache: "/tmp/rwe-host-uv-cache",
         }
         _run_provider_free_trace(
@@ -691,7 +767,7 @@ def verify_provider_free_traces(
             trace_harness,
             environment,
             mounts,
-            {trace_harness, target},
+            {trace_harness, target, trace_cargo},
             True,
             failures,
         )
@@ -721,6 +797,7 @@ def verify_provider_free_traces(
             {trace_harness, target},
             False,
             failures,
+            ("BLOCKED:bwrap_userns_unavailable",),
         )
 
 
@@ -754,10 +831,21 @@ def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures:
         failures.append("recipe commit changes differ from the recipe path set")
     if git_overlay_paths(source_root) != paths:
         failures.append("source checkout overlay paths differ from the recipe path set")
+    try:
+        recipe_modes = git_revision_modes(source_root, recipe_commit)
+    except OSError:
+        failures.append("bound recipe file modes are unavailable")
+        recipe_modes = {}
     for relative in paths:
         candidate = source_root / relative
         expected = git_blob(source_root, recipe_commit, relative)
-        if expected is None or not candidate.is_file() or candidate.read_bytes() != expected:
+        if (
+            expected is None
+            or candidate.is_symlink()
+            or not candidate.is_file()
+            or candidate.read_bytes() != expected
+            or relative not in recipe_modes
+        ):
             failures.append(f"source checkout overlay differs from the bound recipe commit: {relative}")
 
 
