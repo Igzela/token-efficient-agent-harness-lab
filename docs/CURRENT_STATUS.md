@@ -71,6 +71,28 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-AC6-COMPATIBILITY-CLOSEOUT-1` | `COMPLETE` | PR #558 exact head `646e076cba8b349d45880dd84d4520109a11db69`; merge `4ea5f7707fa8c1f370cb8a8323c0b017bfcb3443`; exact-head `PASS`; canonical workflow `32006997709` |
 | `PE7-AC7-REMOVAL-MANIFEST-1` | `COMPLETE` | PR #560 exact head `5567c670cb0338bf3bf089db95757714365829ec`; squash merge `eb692703ab3b3d030478b539fff4496014e45c7a`; exact-head review receipt comment `5314324232`; canonical workflow `32015963930`; exact-head check `32015963768`; no runtime deletion, Provider call, or target effect |
 | `PE7-AC7-CLEANUP-1` | `COMPLETE` | PR #562 exact head `84735a064466b81a5bf521cf20b1a924c80408e6`; squash merge `8142a447c1b9ca861978bd3392da5ccea4263924`; exact-head review receipt comment `5315606973`; canonical workflow `32026577558`; exact-head check `32026577560`; merged-tree fixed-string inventory zero matches; 10 files, `+65/-206`; no schema/migration, Provider call, target write, or effect |
+
+**PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
+
+```yaml
+packet: PE7-AC7-CLEANUP-1
+agent_sessions: 1 bounded implementation session observed in the cleanup worktree
+review_cycles: 1 final independent two-axis cycle (Standards + Spec), exact-head PASS
+repair_iterations: 0 after the final cleanup review
+ci_runs: 1 canonical workflow (32026577558) plus 1 exact-head check (32026577560)
+ci_compute_minutes: unavailable as a normalized aggregate; no canonical aggregate receipt was persisted
+files_changed: 10
+schema_migrations: 0
+compatibility_adapters_added: 0
+authority_boundaries_touched: 0
+external_dependencies_added: 0
+rollback_complexity: low/bounded; revert PR #562 to the pre-cleanup tree eb692703ab3b3d030478b539fff4496014e45c7a; no migration or durable-data mutation
+known_maintenance_surface: 3 owner groups across 10 files; no runtime compatibility island after the zero-match inventory
+expected_reuse_count: 1
+cost_or_measurement_unavailable_fields: exact project-wide agent-session count, normalized CI compute minutes, reviewer/operator wall-clock, and observed downstream reuse count
+```
+
+`expected_reuse_count` is a forecast for the downstream Contemporary RWE input handoff; it is not observed reuse evidence.
 ## Invalidated Historical Receipts (Repair Required)
 
 The following 34 packets from the AC3 through EC2 chain (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), were merged on historical PRs without complete production implementations, valid independent reviews, or required gate enforcement. They are explicitly marked `INVALIDATED` / `SUPERSEDED` / `REPAIR_REQUIRED` and removed from the accepted receipts prerequisite index until genuine sequential re-execution and re-proof are achieved:
