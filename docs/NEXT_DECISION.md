@@ -76,7 +76,7 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
     "Accepted closeout of PE7-AC6-COMPATIBILITY-CLOSEOUT-1 in Accepted Packet Receipts table (docs/CURRENT_STATUS.md:Accepted)",
     "Active window promotion for PE7-AC7-REMOVAL-MANIFEST-1 under Active Routing (docs/NEXT_DECISION.md:READY_FOR_EXECUTION)",
     "Exact AC7 candidate inventory, owner/path binding, zero-caller proof plan, and compatibility disposition ready for the next packet's canonical architecture/module document update.",
-    "Accepted-main CodeGraph call-path evidence bound to the exact candidate symbols and route."
+    "Accepted-main CodeGraph call-path evidence bound to the exact candidate symbols and route: routes.rs route -> product_tasks.rs HTTP handler -> tenant helper -> compatibility helper; direct callers are the four Rust test files and wrappers are Python, TypeScript, and Dashboard."
   ],
   "external_effect_limit": 0,
   "forbidden_changes": [
@@ -94,6 +94,7 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
   ],
   "goal": "Freeze a deletion manifest grouped by one canonical owner and rollback point, with zero-caller proof and compatibility disposition per item.",
   "ordered_steps": [
+    "docs/CURRENT_STATUS.md, docs/FUTURE_ROUTE.md, docs/NEXT_DECISION.md: reconcile the accepted predecessor, sole current window, and routing manifest without creating a second executable route.",
     "docs/ARCHITECTURE_BOOK.md: reconcile and freeze the exact AC7 removal candidates, symbols, callers, tests, owner, and rollback group.",
     "docs/MODULE_MAP.md: record the accepted ownership/deletion boundary without creating a parallel owner.",
     "docs/NEXT_DECISION.md: bind the exact candidate paths and candidate-specific verification/stop gates."
@@ -144,7 +145,7 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
   "secret_values_allowed": false,
   "verification": [
     "rg -n --fixed-strings -e 'approve-and-output' -e 'api_approve_and_output_product_task' -e 'approve_and_output_product_task' -e 'approveAndOutputProductTask' -- engine/src engine/tests sdk dashboard scripts tools tests",
-    "codegraph explore \"approve_and_output_product_task approve_and_output_product_task_for_tenant api_approve_and_output_product_task POST /api/v1/product/tasks/:task_id/approve-and-output\"",
+    "test \"$(git rev-parse origin/main)\" = \"4ea5f7707fa8c1f370cb8a8323c0b017bfcb3443\" && codegraph explore \"approve_and_output_product_task approve_and_output_product_task_for_tenant api_approve_and_output_product_task POST /api/v1/product/tasks/:task_id/approve-and-output\"",
     "bash scripts/check_wire_codegen_drift.sh",
     "bash scripts/verify_rust_typescript_stack.sh",
     "uv run --no-project python tools/check_security_baseline.py",

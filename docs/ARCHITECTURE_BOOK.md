@@ -634,7 +634,7 @@ All 4 implementation and migration packets of AC6 have converged:
    - `POST /api/v1/product/tasks/:task_id/approve-and-output` and associated client wrappers (`approve_and_output_product_task` in Python, `approveAndOutputProductTask` in TypeScript and Dashboard) are marked `@deprecated` and will remain operational for backwards compatibility until AC7.
    - Separate authority step endpoints (`POST /api/v1/product/tasks/:task_id/approve` and `POST /api/v1/product/tasks/:task_id/output`) are the sole canonical paths.
 
-3. **Frozen AC7 Removal Candidate Manifest**:
+3. **AC7 Removal Candidate Seed (to be reconciled by `PE7-AC7-REMOVAL-MANIFEST-1`)**:
    - `engine/src/http_server/routes.rs`: route `POST /api/v1/product/tasks/:task_id/approve-and-output`.
    - `engine/src/http_server/handlers/product_tasks.rs`: handler `api_approve_and_output_product_task`.
    - `engine/src/storage/local_product_store/product_tasks.rs`: helper `approve_and_output_product_task_for_tenant`.
@@ -642,6 +642,8 @@ All 4 implementation and migration packets of AC6 have converged:
    - `sdk/typescript/src/index.ts`: method `approveAndOutputProductTask`.
    - `dashboard/src/lib/api-client.ts`: method `approveAndOutputProductTask`.
    - `engine/tests/test_product_golden_path_authority.rs`: composite route assertions.
+
+This seed records the known deprecated surface from the AC6 compatibility closeout. It is not zero-caller proof or deletion authority: `PE7-AC7-REMOVAL-MANIFEST-1` must refresh direct callers and test coverage, reconcile the complete owner/path list in `docs/MODULE_MAP.md`, and freeze the exact manifest before `PE7-AC7-CLEANUP-1` may delete anything.
 
 ## Harness Evolution
 
