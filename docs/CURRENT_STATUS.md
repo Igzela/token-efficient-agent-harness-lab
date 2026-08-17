@@ -90,6 +90,12 @@ rollback_complexity: low/bounded; revert PR #562 to the pre-cleanup tree eb69270
 known_maintenance_surface: 3 owner groups across 10 files; no runtime compatibility island after the zero-match inventory
 expected_reuse_count: 1
 cost_or_measurement_unavailable_fields: exact project-wide agent-session count, normalized CI compute minutes, reviewer/operator wall-clock, and observed downstream reuse count
+owner_batch_cost:
+  basis: per-owner patch-size attribution; per-owner time, token, reviewer, and CI cost was not instrumented
+  ac7-consumer-compatibility-surface: 3 files, +0/-35 lines
+  ac7-http-compatibility-surface: 3 files, +0/-62 lines
+  ac7-local-store-compatibility: 4 files, +65/-109 lines
+  unavailable: per-owner lifecycle-cost allocation for the shared review and canonical CI receipts
 ```
 
 `expected_reuse_count` is a forecast for the downstream Contemporary RWE input handoff; it is not observed reuse evidence.
