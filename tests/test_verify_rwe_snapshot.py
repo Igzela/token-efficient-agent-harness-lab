@@ -34,6 +34,50 @@ class VerifyRweSnapshotTests(unittest.TestCase):
             verify_rwe_snapshot.verify_file(root, "input.txt", hashlib.sha256(b"other").hexdigest(), failures)
         self.assertEqual(failures, ["snapshot hash mismatch: input.txt"])
 
+    def test_reconstruction_metadata_rejects_effect_authority(self) -> None:
+        manifest = {
+            "status": "RECONSTRUCTABLE",
+            "reconstructable": True,
+            "authority": {
+                "external_effects": True,
+                "provider_calls": False,
+                "rwe_authority_consumed": False,
+                "target_writes": False,
+            },
+            "rebuild": {"provider_free": False},
+            "reconstruction_recipe": {"target_default_branch_write": True},
+        }
+        failures: list[str] = []
+        verify_rwe_snapshot.verify_reconstruction_metadata(manifest, failures)
+        self.assertIn("snapshot authority must deny external_effects", failures)
+        self.assertIn("snapshot rebuild is not provider-free", failures)
+        self.assertIn("reconstruction recipe permits a target-default-branch write", failures)
+
+    def test_isolated_roots_reject_shared_or_nested_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            failures: list[str] = []
+            verify_rwe_snapshot.verify_isolated_roots(root, root, failures)
+            self.assertEqual(
+                failures,
+                ["pre-AC source and post-AC harness must use distinct roots"],
+            )
+
+            nested = root / "source"
+            nested.mkdir()
+            failures = []
+            verify_rwe_snapshot.verify_isolated_roots(nested, root, failures)
+            self.assertIn("pre-AC source and post-AC harness roots must not be nested", failures)
+
+    def test_frozen_snapshot_metadata_is_provider_free(self) -> None:
+        manifest_path = Path(
+            "engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v2.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        failures: list[str] = []
+        verify_rwe_snapshot.verify_reconstruction_metadata(manifest, failures)
+        self.assertEqual(failures, [])
+
     def test_git_overlay_paths_include_staged_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

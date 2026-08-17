@@ -115,8 +115,10 @@ def required_manifest_failures(manifest: dict[str, object]) -> list[str]:
     failures: list[str] = []
     required = {
         "repository": ("source_commit", "source_tree_hash", "source_tree_hash_method", "reconstruction_base_tree_hash", "reconstruction_recipe_tree_hash"),
-        "reconstruction_recipe": ("base_commit", "recipe_commit", "recipe_paths", "recipe_sha256"),
+        "reconstruction_recipe": ("base_commit", "recipe_commit", "recipe_paths", "recipe_sha256", "overlay_rule", "recipe_state", "target_default_branch_write"),
         "build_inputs": ("dependency_lockfiles", "tracked_configuration", "source_configuration", "source_dependency_lockfiles"),
+        "authority": ("external_effects", "provider_calls", "rwe_authority_consumed", "target_writes"),
+        "rebuild": ("commands", "provider_free", "source_checkout_rule"),
         "generated_active_baseline": ("files",),
         "frozen_rwe": (
             "frozen_task_source_tree_hash",
@@ -136,6 +138,47 @@ def required_manifest_failures(manifest: dict[str, object]) -> list[str]:
             if field not in value:
                 failures.append(f"manifest field is missing: {section}.{field}")
     return failures
+
+
+def verify_reconstruction_metadata(manifest: dict[str, object], failures: list[str]) -> None:
+    if manifest.get("status") != "RECONSTRUCTABLE":
+        failures.append("snapshot status is not RECONSTRUCTABLE")
+    if manifest.get("reconstructable") is not True:
+        failures.append("snapshot is not marked reconstructable")
+
+    authority = manifest.get("authority")
+    if isinstance(authority, dict):
+        for field in ("external_effects", "provider_calls", "rwe_authority_consumed", "target_writes"):
+            if authority.get(field) is not False:
+                failures.append(f"snapshot authority must deny {field}")
+
+    rebuild = manifest.get("rebuild")
+    if isinstance(rebuild, dict) and rebuild.get("provider_free") is not True:
+        failures.append("snapshot rebuild is not provider-free")
+
+    recipe = manifest.get("reconstruction_recipe")
+    if isinstance(recipe, dict) and recipe.get("target_default_branch_write") is not False:
+        failures.append("reconstruction recipe permits a target-default-branch write")
+
+
+def verify_isolated_roots(source_root: Path, harness_root: Path, failures: list[str]) -> None:
+    source = source_root.resolve()
+    harness = harness_root.resolve()
+    if source == harness:
+        failures.append("pre-AC source and post-AC harness must use distinct roots")
+        return
+    if source in harness.parents or harness in source.parents:
+        failures.append("pre-AC source and post-AC harness roots must not be nested")
+
+    source_top = git_output(source, "rev-parse", "--show-toplevel")
+    harness_top = git_output(harness, "rev-parse", "--show-toplevel")
+    if source_top is None:
+        failures.append("pre-AC source checkout is not a Git worktree")
+    if harness_top is None:
+        failures.append("post-AC harness checkout is not a Git worktree")
+    if source_top is not None and harness_top is not None:
+        if Path(source_top).resolve() == Path(harness_top).resolve():
+            failures.append("pre-AC source and post-AC harness resolve to one Git worktree")
 
 
 def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures: list[str]) -> None:
@@ -184,9 +227,16 @@ def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object],
         verify_file(harness_root, item["path"], item["sha256"], failures)
     verify_file(harness_root, frozen["protocol_path"], frozen["protocol_file_sha256"], failures)
     verify_file(harness_root, frozen["schedule_path"], frozen["schedule_file_sha256"], failures)
+    protocol: dict[str, object] = {}
     try:
         protocol = json.loads((harness_root / frozen["protocol_path"]).read_text(encoding="utf-8"))
         schedule = json.loads((harness_root / frozen["schedule_path"]).read_text(encoding="utf-8"))
+        if protocol.get("fixture_only") is not False:
+            failures.append("frozen protocol must not be fixture-only")
+        if protocol.get("frozen_before_results") is not True:
+            failures.append("frozen protocol must be frozen before results")
+        if protocol.get("live_execution_authorized") is not False:
+            failures.append("frozen protocol must not authorize live execution")
         if protocol.get("authority_corpus_sha256") != manifest["frozen_rwe"]["corpus_sha256"]:
             failures.append("protocol corpus binding differs")
         if schedule.get("corpus_sha256") != manifest["frozen_rwe"]["corpus_sha256"]:
@@ -218,12 +268,25 @@ def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object],
             failures.append(f"frozen task source commit differs: {path.name}")
         if task.get("source_tree_hash") != expected:
             failures.append(f"frozen task source tree binding differs: {path.name}")
+        matching = next(
+            (
+                item
+                for item in protocol.get("tasks", [])
+                if isinstance(item, dict) and item.get("task_id") == task.get("task_id")
+            ),
+            None,
+        )
+        if matching is None:
+            failures.append(f"frozen task is absent from protocol: {path.name}")
+        elif matching.get("task_definition_sha256") != sha256_file(path):
+            failures.append(f"frozen task definition digest differs from protocol: {path.name}")
 
 
 def verify(manifest_path: Path, source_root: Path, harness_root: Path) -> list[str]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     failures: list[str] = []
     failures.extend(required_manifest_failures(manifest))
+    verify_reconstruction_metadata(manifest, failures)
     expected_manifest = manifest.get("manifest_sha256")
     if not isinstance(expected_manifest, str):
         failures.append("manifest_sha256 is missing")
@@ -232,6 +295,7 @@ def verify(manifest_path: Path, source_root: Path, harness_root: Path) -> list[s
 
     if not failures:
         try:
+            verify_isolated_roots(source_root, harness_root, failures)
             verify_git_overlay(source_root, manifest, failures)
             verify_frozen_task_bindings(harness_root, manifest, failures)
         except (KeyError, TypeError):
