@@ -152,7 +152,7 @@ class VerifyRweSnapshotTests(unittest.TestCase):
             self.assertEqual((destination / "tracked.txt").read_text(encoding="utf-8"), "tracked\n")
             self.assertFalse((destination / ".venv").exists())
 
-    def test_copy_cache_snapshot_materializes_symlinks(self) -> None:
+    def test_copy_cache_snapshot_preserves_symlinks_without_dereferencing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source"
@@ -161,10 +161,11 @@ class VerifyRweSnapshotTests(unittest.TestCase):
             (source / "link").symlink_to("payload")
             destination = root / "destination"
 
-            verify_rwe_snapshot.copy_cache_snapshot(source, destination, "test")
+            digest = verify_rwe_snapshot.copy_cache_snapshot(source, destination, "test")
 
-            self.assertFalse((destination / "link").is_symlink())
+            self.assertTrue((destination / "link").is_symlink())
             self.assertEqual((destination / "link").read_text(encoding="utf-8"), "bound\n")
+            self.assertEqual(digest, verify_rwe_snapshot.cache_snapshot_digest(destination))
 
     def test_copy_recipe_overlay_rejects_executable_mode_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -180,6 +181,16 @@ class VerifyRweSnapshotTests(unittest.TestCase):
     def test_bounded_command_caps_captured_output(self) -> None:
         result = verify_rwe_snapshot._run_bounded_command(
             [sys.executable, "-c", "print('x' * 300000)"],
+            cwd=Path("/"),
+            environment={"PATH": str(Path(sys.executable).parent)},
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertLessEqual(len(result.stdout.encode()), verify_rwe_snapshot.MAX_TRACE_OUTPUT_BYTES)
+
+    def test_bounded_command_caps_an_unterminated_output_line(self) -> None:
+        result = verify_rwe_snapshot._run_bounded_command(
+            [sys.executable, "-c", "import sys; sys.stdout.write('x' * 300000)"],
             cwd=Path("/"),
             environment={"PATH": str(Path(sys.executable).parent)},
             timeout=30,

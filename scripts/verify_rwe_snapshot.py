@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 
 FROZEN_RWE_MANIFEST_SHA256 = (
@@ -77,6 +78,11 @@ FROZEN_TRACE_BINARY_IDENTITIES = {
 }
 GIT_BINARY = FROZEN_TRACE_BINARY_IDENTITIES["git"]["path"]
 MAX_TRACE_OUTPUT_BYTES = 128 * 1024
+MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024
+MAX_GIT_STREAM_BYTES = 256 * 1024 * 1024
+MAX_CACHE_BYTES = 4 * 1024 * 1024 * 1024
+MAX_CACHE_ENTRIES = 250_000
+MIN_FREE_SPACE_BYTES = 2 * 1024 * 1024 * 1024
 PROCESS_TERMINATION_GRACE_SECONDS = 5
 CURRENT_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -126,57 +132,111 @@ def _git_environment() -> dict[str, str]:
     }
 
 
-def git_output(root: Path, *args: str) -> str | None:
-    result = subprocess.run(
-        [GIT_BINARY, "-C", str(root), *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=_git_environment(),
+def _git_command(root: Path, args: tuple[str, ...]) -> list[str]:
+    command = [
+        GIT_BINARY,
+        "-C",
+        str(root),
+        "--work-tree",
+        str(root),
+        "-c",
+        "core.fsmonitor=false",
+        "--no-optional-locks",
+    ]
+    if args and args[0] == "diff":
+        command.extend(("diff", "--no-ext-diff", "--no-textconv", *args[1:]))
+    else:
+        command.extend(args)
+    return command
+
+
+def _git_result(root: Path, *args: str) -> BoundedCommandResult:
+    return _run_bounded_command(
+        _git_command(root, args),
+        cwd=Path("/"),
+        environment=_git_environment(),
+        timeout=120,
+        retain_full_output=True,
+        max_output_bytes=MAX_GIT_OUTPUT_BYTES,
     )
-    if result.returncode:
+
+
+def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
+    process = subprocess.Popen(
+        _git_command(root, args),
+        cwd=Path("/"),
+        env=_git_environment(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    total = 0
+    overflow = False
+    try:
+        with destination.open("wb") as output:
+            while True:
+                chunk = process.stdout.read(64 * 1024)  # type: ignore[union-attr]
+                if not chunk:
+                    break
+                total += len(chunk)
+                if (
+                    total > MAX_GIT_STREAM_BYTES
+                    or shutil.disk_usage(destination.parent).free < MIN_FREE_SPACE_BYTES
+                ):
+                    overflow = True
+                    _terminate_process_group(process)
+                    break
+                output.write(chunk)
+        if overflow:
+            return False
+        return process.wait(timeout=120) == 0
+    except (OSError, subprocess.TimeoutExpired):
+        _terminate_process_group(process)
+        return False
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+def git_output(root: Path, *args: str) -> str | None:
+    result = _git_result(root, *args)
+    if result.error is not None or result.timed_out or result.output_truncated or result.returncode:
         return None
     return result.stdout.strip()
 
 
 def git_blob(root: Path, revision: str, relative: str) -> bytes | None:
-    result = subprocess.run(
-        [GIT_BINARY, "-C", str(root), "show", f"{revision}:{relative}"],
-        check=False,
-        capture_output=True,
-        env=_git_environment(),
-    )
-    return result.stdout if result.returncode == 0 else None
+    result = _git_result(root, "show", f"{revision}:{relative}")
+    if result.error is not None or result.timed_out or result.output_truncated:
+        return None
+    return result.stdout_bytes if result.returncode == 0 else None
 
 
 def git_tree_hash(root: Path, revision: str) -> str | None:
-    result = subprocess.run(
-        [GIT_BINARY, "-C", str(root), "ls-tree", "-r", "-z", "--full-tree", revision],
-        check=False,
-        capture_output=True,
-        env=_git_environment(),
-    )
-    if result.returncode:
+    result = _git_result(root, "ls-tree", "-r", "-z", "--full-tree", revision)
+    if result.error is not None or result.timed_out or result.output_truncated or result.returncode:
         return None
     entries: list[dict[str, object]] = []
-    for record in result.stdout.split(b"\0"):
-        if not record:
-            continue
-        header, relative_bytes = record.split(b"\t", 1)
-        mode, object_type, object_id = header.split()
-        if object_type != b"blob" or mode not in {b"100644", b"100755"}:
-            return None
-        relative = relative_bytes.decode("utf-8")
-        content = git_blob(root, revision, relative)
-        if content is None:
-            return None
-        entries.append(
-            {
-                "relative_path": relative,
-                "sha256": hashlib.sha256(content).hexdigest(),
-                "executable": mode == b"100755",
-            }
-        )
+    with tempfile.TemporaryDirectory(prefix="pe7-rwe-git-blob-") as directory:
+        blob_path = Path(directory) / "blob"
+        for record in result.stdout_bytes.split(b"\0"):
+            if not record:
+                continue
+            header, relative_bytes = record.split(b"\t", 1)
+            mode, object_type, object_id = header.split()
+            if object_type != b"blob" or mode not in {b"100644", b"100755"}:
+                return None
+            relative = relative_bytes.decode("utf-8")
+            if not _git_stream_to_path(root, blob_path, "cat-file", "blob", object_id.decode()):
+                return None
+            entries.append(
+                {
+                    "relative_path": relative,
+                    "sha256": sha256_file(blob_path),
+                    "executable": mode == b"100755",
+                }
+            )
     entries.sort(key=lambda item: item["relative_path"])
     encoded = json.dumps(entries, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -199,28 +259,18 @@ def git_overlay_paths(root: Path) -> list[str]:
 
 
 def git_revision_paths(root: Path, revision: str) -> list[str]:
-    result = subprocess.run(
-        [GIT_BINARY, "-C", str(root), "ls-tree", "-r", "-z", "--name-only", revision],
-        check=False,
-        capture_output=True,
-        env=_git_environment(),
-    )
-    if result.returncode:
+    result = _git_result(root, "ls-tree", "-r", "-z", "--name-only", revision)
+    if result.error is not None or result.timed_out or result.output_truncated or result.returncode:
         raise OSError(f"cannot enumerate Git revision: {revision}")
-    return [item.decode("utf-8") for item in result.stdout.split(b"\0") if item]
+    return [item.decode("utf-8") for item in result.stdout_bytes.split(b"\0") if item]
 
 
 def git_revision_modes(root: Path, revision: str) -> dict[str, int]:
-    result = subprocess.run(
-        [GIT_BINARY, "-C", str(root), "ls-tree", "-r", "-z", "--full-tree", revision],
-        check=False,
-        capture_output=True,
-        env=_git_environment(),
-    )
-    if result.returncode:
+    result = _git_result(root, "ls-tree", "-r", "-z", "--full-tree", revision)
+    if result.error is not None or result.timed_out or result.output_truncated or result.returncode:
         raise OSError(f"cannot enumerate Git revision modes: {revision}")
     modes: dict[str, int] = {}
-    for record in result.stdout.split(b"\0"):
+    for record in result.stdout_bytes.split(b"\0"):
         if not record:
             continue
         header, relative_bytes = record.split(b"\t", 1)
@@ -236,12 +286,12 @@ def copy_git_revision(root: Path, revision: str, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     modes = git_revision_modes(root, revision)
     for relative in git_revision_paths(root, revision):
-        content = git_blob(root, revision, relative)
-        if content is None:
-            raise OSError(f"cannot read Git revision path: {relative}")
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
+        if not _git_stream_to_path(
+            root, target, "show", f"{revision}:{relative}"
+        ):
+            raise OSError(f"cannot read Git revision path: {relative}")
         target.chmod(modes[relative])
 
 
@@ -264,15 +314,80 @@ def copy_recipe_overlay(
         target.chmod(expected_mode)
 
 
-def copy_cache_snapshot(source: Path, destination: Path, label: str) -> None:
-    """Materialize an independent cache copy without host symlink reach-through."""
+def cache_snapshot_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    entry_count = 0
+    total_bytes = 0
+    for path in sorted(root.rglob("*")):
+        entry_count += 1
+        if entry_count > MAX_CACHE_ENTRIES:
+            raise OSError("cache snapshot exceeds the entry-count limit")
+        relative = path.relative_to(root).as_posix().encode()
+        if path.is_symlink():
+            digest.update(relative)
+            digest.update(b"\0symlink\0")
+            digest.update(os.readlink(path).encode())
+            digest.update(b"\0")
+            continue
+        if not path.is_file():
+            if not path.is_dir():
+                raise OSError(f"cache snapshot contains an unsupported entry: {path}")
+            continue
+        size = path.stat().st_size
+        total_bytes += size
+        if total_bytes > MAX_CACHE_BYTES:
+            raise OSError("cache snapshot exceeds the byte limit")
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(str(path.stat().st_mode & 0o777).encode())
+        digest.update(b"\0")
+        digest.update(sha256_file(path).encode())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def copy_cache_snapshot(source: Path, destination: Path, label: str) -> str:
+    """Materialize and hash an independent, resource-bounded cache copy."""
+    copied = {"files": 0, "bytes": 0}
+
+    def copy_file(source_file: str, destination_file: str) -> str:
+        source_path = Path(source_file)
+        size = source_path.stat().st_size
+        copied["files"] += 1
+        copied["bytes"] += size
+        if copied["files"] > MAX_CACHE_ENTRIES:
+            raise OSError(f"{label} cache exceeds the entry-count limit")
+        if copied["bytes"] > MAX_CACHE_BYTES:
+            raise OSError(f"{label} cache exceeds the byte limit")
+        if shutil.disk_usage(destination.parent).free < MIN_FREE_SPACE_BYTES:
+            raise OSError(f"insufficient free space for {label} cache snapshot")
+        shutil.copy2(source_file, destination_file)
+        return destination_file
+
     try:
-        shutil.copytree(source, destination, symlinks=False)
+        source_digest = cache_snapshot_digest(source)
+        shutil.copytree(source, destination, symlinks=True, copy_function=copy_file)
     except OSError as error:
         raise OSError(f"cannot snapshot {label} cache: {error}") from error
-    for path in destination.rglob("*"):
-        if path.is_symlink():
-            raise OSError(f"{label} cache snapshot contains a symlink: {path}")
+    try:
+        destination_digest = cache_snapshot_digest(destination)
+    except OSError as error:
+        raise OSError(f"cannot hash {label} cache snapshot: {error}") from error
+    if destination_digest != source_digest:
+        raise OSError(f"{label} cache snapshot differs from its source binding")
+    return destination_digest
+
+
+def verify_cache_snapshot(
+    root: Path, expected_digest: str, label: str, failures: list[str]
+) -> None:
+    try:
+        actual_digest = cache_snapshot_digest(root)
+    except OSError as error:
+        failures.append(f"{label} cache snapshot is not verifiable: {error}")
+        return
+    if actual_digest != expected_digest:
+        failures.append(f"{label} cache snapshot digest changed")
 
 
 def registered_source_commands(
@@ -506,10 +621,13 @@ class BoundedCommandResult:
     returncode: int | None
     stdout: str
     stderr: str
+    stdout_bytes: bytes
+    stderr_bytes: bytes
     timed_out: bool
     error: BaseException | None
     forbidden_markers: tuple[str, ...]
     error_lines: tuple[str, ...]
+    output_truncated: bool
 
 
 def _drain_output(
@@ -523,6 +641,9 @@ def _drain_output(
     overlap = b""
     tail = bytearray()
     line_buffer = ""
+    retain_full_output = bool(state["retain_full_output"])
+    max_output_bytes = int(state["max_output_bytes"])
+    captured = bytearray()
     while True:
         chunk = stream.read(64 * 1024)  # type: ignore[attr-defined]
         if not chunk:
@@ -537,22 +658,31 @@ def _drain_output(
         line_buffer = ""
         if lines and not lines[-1].endswith(("\n", "\r")):
             line_buffer = lines.pop()
+        if len(line_buffer) > MAX_TRACE_OUTPUT_BYTES:
+            line_buffer = line_buffer[-MAX_TRACE_OUTPUT_BYTES:]
         for line in lines:
             stripped = line.strip()
             if stripped.lower().startswith(("error", "failed")) or "error:" in stripped.lower():
                 error_lines = state["error_lines"]  # type: ignore[assignment]
                 error_lines.append(stripped[:2000])  # type: ignore[union-attr]
                 del error_lines[:-8]  # type: ignore[index]
-        tail.extend(chunk)
-        if len(tail) > MAX_TRACE_OUTPUT_BYTES:
-            del tail[:-MAX_TRACE_OUTPUT_BYTES]
+        if retain_full_output:
+            remaining = max_output_bytes - len(captured)
+            if remaining > 0:
+                captured.extend(chunk[:remaining])
+            if len(chunk) > remaining:
+                state["output_truncated"] = True
+        else:
+            tail.extend(chunk)
+            if len(tail) > max_output_bytes:
+                del tail[:-max_output_bytes]
     if line_buffer:
         stripped = line_buffer.strip()
         if stripped.lower().startswith(("error", "failed")) or "error:" in stripped.lower():
             error_lines = state["error_lines"]  # type: ignore[assignment]
             error_lines.append(stripped[:2000])  # type: ignore[union-attr]
             del error_lines[:-8]  # type: ignore[index]
-    state[output_key] = bytes(tail)
+    state[output_key] = bytes(captured if retain_full_output else tail)
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
@@ -561,14 +691,25 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         return
-    try:
-        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
-    except subprocess.TimeoutExpired:
+    deadline = time.monotonic() + PROCESS_TERMINATION_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            break
+        try:
+            process.wait(timeout=0.1)
+        except subprocess.TimeoutExpired:
+            pass
+    else:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             return
-        process.wait()
+        try:
+            process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def _run_bounded_command(
@@ -578,6 +719,8 @@ def _run_bounded_command(
     environment: dict[str, str],
     timeout: int,
     forbidden_output: tuple[str, ...] = (),
+    retain_full_output: bool = False,
+    max_output_bytes: int = MAX_TRACE_OUTPUT_BYTES,
 ) -> BoundedCommandResult:
     """Run one child with bounded output and private descendant cleanup."""
     try:
@@ -591,9 +734,15 @@ def _run_bounded_command(
             start_new_session=True,
         )
     except OSError as error:
-        return BoundedCommandResult(None, "", "", False, error, (), ())
+        return BoundedCommandResult(None, "", "", b"", b"", False, error, (), (), False)
 
-    state: dict[str, object] = {"forbidden_markers": set(), "error_lines": []}
+    state: dict[str, object] = {
+        "forbidden_markers": set(),
+        "error_lines": [],
+        "retain_full_output": retain_full_output,
+        "max_output_bytes": max_output_bytes,
+        "output_truncated": False,
+    }
     stdout_thread = threading.Thread(
         target=_drain_output,
         args=(process.stdout, forbidden_output, state, "stdout"),
@@ -625,11 +774,24 @@ def _run_bounded_command(
         process.stdout.close()
     if process.stderr is not None:
         process.stderr.close()
-    stdout = bytes(state.get("stdout", b"")).decode(errors="replace")
-    stderr = bytes(state.get("stderr", b"")).decode(errors="replace")
+    stdout_bytes = bytes(state.get("stdout", b""))
+    stderr_bytes = bytes(state.get("stderr", b""))
+    stdout = stdout_bytes.decode(errors="replace")
+    stderr = stderr_bytes.decode(errors="replace")
     markers = tuple(sorted(state["forbidden_markers"]))  # type: ignore[arg-type]
     error_lines = tuple(state["error_lines"])  # type: ignore[arg-type]
-    return BoundedCommandResult(returncode, stdout, stderr, timed_out, None, markers, error_lines)
+    return BoundedCommandResult(
+        returncode,
+        stdout,
+        stderr,
+        stdout_bytes,
+        stderr_bytes,
+        timed_out,
+        None,
+        markers,
+        error_lines,
+        bool(state["output_truncated"]),
+    )
 
 
 def _run_provider_free_trace(
@@ -667,7 +829,7 @@ def _run_provider_free_trace(
         mapped_environment["CARGO_HOME"] = "/tmp/rwe-cargo-home"
         mapped_environment["RUSTUP_HOME"] = "/tmp/rwe-home/rustup"
         mapped_environment["CARGO_TARGET_DIR"] = "/tmp/rwe-target"
-        mapped_environment["UV_CACHE_DIR"] = "/tmp/rwe-host-uv-cache"
+        mapped_environment["UV_CACHE_DIR"] = "/tmp/rwe-uv-cache"
         if "PYTHONPATH" in mapped_environment:
             for host, guest in mounts.items():
                 mapped_environment["PYTHONPATH"] = mapped_environment["PYTHONPATH"].replace(
@@ -715,6 +877,8 @@ def _run_provider_free_trace(
             "/tmp/rwe-harness",
             "--dir",
             "/tmp/rwe-host-uv-cache",
+            "--dir",
+            "/tmp/rwe-uv-cache",
             "--dir",
             "/workspace",
             "--dir",
@@ -852,19 +1016,40 @@ def verify_provider_free_traces(
         home.mkdir()
         trace_cargo = temporary / "cargo-home"
         trace_cargo.mkdir()
+        cache_bindings: dict[Path, tuple[str, str]] = {}
         host_cargo = Path.home() / ".cargo"
         for relative in ("registry", "git"):
             source_cache = host_cargo / relative
             if not source_cache.is_dir():
                 failures.append(f"provider-free trace requires Cargo cache: {relative}")
                 return
-            copy_cache_snapshot(source_cache, trace_cargo / relative, f"Cargo {relative}")
+            cache_path = trace_cargo / relative
+            cache_bindings[cache_path] = (
+                f"Cargo {relative}",
+                copy_cache_snapshot(source_cache, cache_path, f"Cargo {relative}"),
+            )
+        (trace_cargo / ".package-cache").touch()
         uv_cache = Path.home() / ".cache/uv"
         if not uv_cache.is_dir():
             failures.append("provider-free trace requires the bound read-only uv cache")
             return
         trace_cache = temporary / "uv-cache"
-        copy_cache_snapshot(uv_cache, trace_cache, "uv")
+        cache_bindings[trace_cache] = ("uv", copy_cache_snapshot(uv_cache, trace_cache, "uv"))
+        cargo_lock = temporary / "cargo-package-cache.lock"
+        cargo_lock.touch()
+        uv_work_cache = temporary / "uv-work-cache"
+        uv_work_cache.mkdir()
+        # UV may publish freshly built editable distributions into its cache.
+        # Seed a disposable scratch copy from the bound snapshot so that these
+        # writes cannot cross a read-only bind mount or reach the host cache.
+        for cache_name in ("archive-v0", "wheels-v6", "simple-v21"):
+            source_cache = trace_cache / cache_name
+            if source_cache.exists():
+                copy_cache_snapshot(
+                    source_cache,
+                    uv_work_cache / cache_name,
+                    f"UV scratch {cache_name}",
+                )
         environment = _provider_free_environment(home, target)
         environment["CARGO_HOME"] = str(trace_cargo)
         environment["RUSTUP_HOME"] = str(home / "rustup")
@@ -891,17 +1076,24 @@ def verify_provider_free_traces(
             target: "/tmp/rwe-target",
             trace_cargo: "/tmp/rwe-cargo-home",
             trace_cache: "/tmp/rwe-host-uv-cache",
+            uv_work_cache: "/tmp/rwe-uv-cache",
+            cargo_lock: "/tmp/rwe-cargo-home/.package-cache",
         }
+        writable_cache_mounts = {uv_work_cache, cargo_lock}
+        for cache_path, (label, digest) in cache_bindings.items():
+            verify_cache_snapshot(cache_path, digest, label, failures)
         _run_provider_free_trace(
             "pre_ac_source_materializer",
             materializer,
             trace_source,
             source_environment,
             mounts,
-            {trace_source, target, trace_cache},
+            {trace_source, target, *writable_cache_mounts},
             True,
             failures,
         )
+        for cache_path, (label, digest) in cache_bindings.items():
+            verify_cache_snapshot(cache_path, digest, label, failures)
         verify_trace_generated_baseline(trace_source, manifest, failures)
         source_environment = dict(environment)
         source_environment.update(pytest_command_environment)
@@ -911,10 +1103,12 @@ def verify_provider_free_traces(
             trace_source,
             source_environment,
             mounts,
-            {trace_source, target, trace_cache},
+            {trace_source, target, *writable_cache_mounts},
             True,
             failures,
         )
+        for cache_path, (label, digest) in cache_bindings.items():
+            verify_cache_snapshot(cache_path, digest, label, failures)
         _run_provider_free_trace(
             "post_ac_engine_tests",
             [
@@ -929,10 +1123,12 @@ def verify_provider_free_traces(
             trace_harness,
             environment,
             mounts,
-            {trace_harness, target, trace_cargo},
+            {trace_harness, target, *writable_cache_mounts},
             True,
             failures,
         )
+        for cache_path, (label, digest) in cache_bindings.items():
+            verify_cache_snapshot(cache_path, digest, label, failures)
         engine_test_binary = find_engine_test_binary(target, failures)
         if engine_test_binary is None:
             return
