@@ -29,7 +29,7 @@ use engine::provider::anthropic::AnthropicProvider;
 use engine::provider::audit::ProviderAuditRecorder;
 use engine::provider::circuit_breaker_provider::CircuitBreakerProvider;
 use engine::provider::config::CredentialRef;
-use engine::provider::config::{provider_pricing_from_env, ProviderConfig};
+use engine::provider::config::{provider_pricing_from_env, ProviderConfig, ProviderPricingConfig};
 use engine::provider::credential::CredentialBoundary;
 use engine::provider::executor::ProviderNodeExecutor;
 use engine::provider::openai::OpenAiProvider;
@@ -64,15 +64,15 @@ fn main() {
     let addr = format!("{}:{}", host, port);
     let profile = app_config.profile.as_str().to_string();
 
-    let db_path = local_db_path();
-    let backup_dir = local_backup_dir(&db_path);
+    let db_path = app_config.database.db_path.clone();
+    let backup_dir = app_config.backup.backup_dir.clone();
     let backup_dir_for_auto = backup_dir.clone();
 
-    let store = if let Ok(_pg_url) = std::env::var("ACP_DATABASE_URL") {
+    let store = if let Some(ref _pg_url) = app_config.database.database_url {
         #[cfg(feature = "pg")]
         {
             println!("[acp-startup] db_backend=postgresql");
-            LocalProductStore::new_postgres(&_pg_url, || {
+            LocalProductStore::new_postgres(_pg_url, || {
                 chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
             })
             .expect("failed to open PostgreSQL store")
@@ -91,7 +91,7 @@ fn main() {
         }
         s
     };
-    if std::env::var("ACP_ADMIN_API_KEY").is_ok() {
+    if app_config.auth.admin_api_key.is_some() {
         store
             .upsert_team_member("local-admin", "Local Admin", "admin")
             .expect("failed to record local admin team member");
@@ -112,7 +112,7 @@ fn main() {
     let store_arc = Arc::new(store);
     let store_for_scheduler = store_arc.clone();
     let cb_registry = Arc::new(CircuitBreakerRegistry::new());
-    let cli_config = CliConfig::from_env();
+    let cli_config = app_config.cli.clone();
     let persisted_endpoint_configs = match persisted_adaptive_provider_endpoint_configs(&store_arc)
     {
         Ok(configs) => configs,
@@ -128,29 +128,15 @@ fn main() {
         |key| std::env::var(key).ok(),
         persisted_endpoint_configs.as_deref(),
     );
-    let execution_mode = std::env::var("ACP_EXECUTION_MODE")
-        .unwrap_or_else(|_| "off".to_string())
-        .to_lowercase();
+    let execution_mode = match app_config.execution.mode {
+        ExecutionMode::Off => "off".to_string(),
+        ExecutionMode::Provider => "provider".to_string(),
+    };
 
-    match execution_mode.as_str() {
-        "cli" => panic!(
-            "ACP_EXECUTION_MODE=cli is retired: execute CLI tools only as confirmed workflow nodes so allowlists, hooks, approvals, leases, and receipts remain authoritative"
-        ),
-        "auto" => panic!(
-            "ACP_EXECUTION_MODE=auto is retired: use ACP_SCHEDULER_EXECUTOR=auto or pool for scheduler-owned Provider/CLI routing"
-        ),
-        "off" | "provider" => {}
-        unsupported => panic!(
-            "unsupported ACP_EXECUTION_MODE={unsupported}; expected off or provider (cli and auto are retired)"
-        ),
-    }
-
-    let configured_provider = if std::env::var("ACP_PROVIDER_TYPE")
-        .is_ok_and(|value| !value.trim().is_empty())
-    {
+    let configured_provider = if app_config.provider.is_some() {
         match build_provider_for_engine(&store_arc, &cb_registry) {
             Ok(provider) => Some(provider),
-            Err(error) if execution_mode == "provider" => {
+            Err(error) if app_config.execution.mode == ExecutionMode::Provider => {
                 panic!("ACP_EXECUTION_MODE=provider requires a safe configured provider: {error}")
             }
             Err(error) => {
@@ -163,8 +149,8 @@ fn main() {
     };
     let provider_audit = Arc::new(ProviderAuditRecorder::with_store(store_arc.clone()));
 
-    let (base_engine, exec_type_label) = match execution_mode.as_str() {
-        "provider" => {
+    let (base_engine, exec_type_label) = match app_config.execution.mode {
+        ExecutionMode::Provider => {
             let provider = configured_provider
                 .as_ref()
                 .expect("provider mode validated above")
@@ -173,21 +159,19 @@ fn main() {
                 DispatchEngine::with_provider_executor_and_audit(provider, provider_audit.clone());
             (engine, "provider".to_string())
         }
-        "off" => {
+        ExecutionMode::Off => {
             // Direct dispatch execution is disabled. CLI tools remain
             // available only through confirmed workflow nodes.
             (DispatchEngine::new(), "noop".to_string())
         }
-        _ => unreachable!("execution mode validated above"),
     };
 
     let adaptive_execution_enabled = execution_gates.adaptive_execution;
-    let require_auth = env_enabled("ACP_REQUIRE_AUTH");
+    let require_auth = app_config.auth.require_auth;
     if cli_config.enabled && !require_auth {
         panic!("ACP_REQUIRE_AUTH=1 is required when managed CLI execution is explicitly enabled");
     }
-    let has_single_provider =
-        std::env::var("ACP_PROVIDER_TYPE").is_ok_and(|value| !value.trim().is_empty());
+    let has_single_provider = app_config.provider.is_some();
     let has_endpoint_config = std::env::var(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON)
         .is_ok_and(|value| !value.trim().is_empty())
         || persisted_endpoint_configs
@@ -234,14 +218,16 @@ fn main() {
             .with_backup_dir(backup_dir)
             .with_circuit_breaker_registry(cb_registry.clone())
             .with_cli_capability(CliCapability::from(&cli_config)),
+        &app_config.auth,
     );
     let mut agent_step_executor_for_runtime: Option<Arc<dyn NodeExecutor>> = None;
-    if execution_gates.provider_execution
-        && std::env::var("ACP_ENABLE_AGENT_RUNTIME").as_deref() == Ok("1")
-    {
+    if execution_gates.provider_execution && app_config.execution.agent_runtime_enabled {
         if let Some(provider) = state.configured_provider() {
-            let agent_pricing = provider_pricing_from_env();
-            let agent_cost_gates = engine::provider::CostGateConfig::from_env();
+            let agent_pricing = ProviderPricingConfig {
+                input_cost_per_1k: app_config.pricing.0,
+                output_cost_per_1k: app_config.pricing.1,
+            };
+            let agent_cost_gates = app_config.cost_limits.clone();
             if !matches!(
                 (agent_pricing.input_cost_per_1k, agent_pricing.output_cost_per_1k),
                 (Some(input), Some(output)) if input > 0.0 && output > 0.0
@@ -350,13 +336,13 @@ fn main() {
         println!("[acp-startup] external_runtime=opencode mode=fixture timeout_ms={timeout_ms}");
     }
 
-    let may_use_provider = provider_execution_requires_auth(
+    if provider_execution_requires_auth(
         state.executor_type(),
         adaptive_execution_enabled,
-        agent_step_executor_for_runtime.is_some(),
+        state.configured_provider().is_some(),
         external_runtime_live,
-    );
-    if may_use_provider && !require_auth {
+    ) && !require_auth
+    {
         panic!(
             "ACP_REQUIRE_AUTH=1 is required when provider execution is enabled and a real provider is configured"
         );
@@ -374,13 +360,15 @@ fn main() {
     } else {
         "local-only"
     };
-    let cost_per_dispatch = std::env::var("ACP_COST_PER_DISPATCH_USD")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
+    let cost_per_dispatch = app_config
+        .cost_limits
+        .per_dispatch_cap_usd
+        .map(|v| v.to_string())
         .unwrap_or_else(|| "unlimited".to_string());
-    let cost_daily = std::env::var("ACP_COST_DAILY_USD")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
+    let cost_daily = app_config
+        .cost_limits
+        .daily_cap_usd
+        .map(|v| v.to_string())
         .unwrap_or_else(|| "unlimited".to_string());
     let cli_summary = format!(
         "claude={} codex={}",
@@ -406,7 +394,7 @@ fn main() {
         eprintln!("[acp-warning] LAN-exposed without auth — set ACP_REQUIRE_AUTH=1 for production");
     }
     if host == "0.0.0.0" {
-        let cors = std::env::var("ACP_CORS_ORIGINS").unwrap_or_default();
+        let cors = &app_config.cors.origins;
         if cors.is_empty() || cors == "*" {
             eprintln!(
                 "[acp-warning] CORS allows all origins — set ACP_CORS_ORIGINS for production"
@@ -416,7 +404,12 @@ fn main() {
 
     // Production profile gate — hard fail on unsafe config
     if profile == "production" {
-        let violations = production_profile_violations(&host, require_auth);
+        let violations = production_profile_violations_inner(
+            &host,
+            require_auth,
+            &app_config.cors.origins,
+            app_config.backup.explicitly_configured,
+        );
         if !violations.is_empty() {
             eprintln!("[acp-fatal] Production profile violations:");
             for v in &violations {
@@ -427,14 +420,8 @@ fn main() {
     }
 
     let enable_scheduler = execution_gates.scheduler_enabled;
-    let backup_interval_sec: u64 = std::env::var("ACP_BACKUP_INTERVAL_SEC")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    let backup_retain_count: usize = std::env::var("ACP_BACKUP_RETAIN_COUNT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(5);
+    let backup_interval_sec: u64 = app_config.backup.interval_sec;
+    let backup_retain_count: usize = app_config.backup.retain_count;
     let state = if enable_scheduler {
         let scheduler_config = SchedulerConfig::from_env_with_gates(&execution_gates)
             .expect("invalid scheduler env configuration");
@@ -476,7 +463,7 @@ fn main() {
             panic!("trusted task advancement requires adaptive provider executor");
         }
         if backup_interval_sec > 0 {
-            if std::env::var("ACP_DATABASE_URL").is_ok() {
+            if app_config.database.database_url.is_some() {
                 eprintln!("[acp-warning] ACP_BACKUP_INTERVAL_SEC={} is ignored in PostgreSQL mode — use pg_dump or your managed backup service. App auto-backup disabled.", backup_interval_sec);
             } else {
                 let bm = engine::storage::backup_manager::BackupManager::new(&backup_dir_for_auto)
@@ -506,18 +493,24 @@ fn main() {
         state
     };
 
-    let dashboard_dir =
-        std::env::var("ACP_DASHBOARD_DIR").or_else(|_| std::env::var("DASHBOARD_DIR"));
-    let router = match dashboard_dir {
-        Ok(path) if !path.trim().is_empty() => {
-            println!("dashboard assets served from {}", path);
-            build_axum_router_with_dashboard(state, path)
+    let router = match app_config.dashboard_dir.as_ref() {
+        Some(path) => {
+            println!("dashboard assets served from {}", path.display());
+            build_axum_router_with_dashboard(state, path.display().to_string())
         }
-        _ => build_axum_router(state),
+        None => build_axum_router(state),
     };
 
-    let tls_cert_path = std::env::var("ACP_TLS_CERT_PATH").ok();
-    let tls_key_path = std::env::var("ACP_TLS_KEY_PATH").ok();
+    let tls_cert_path = app_config
+        .tls
+        .cert_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
+    let tls_key_path = app_config
+        .tls
+        .key_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
 
     if let Err(e) = validate_tls_config(tls_cert_path.as_deref(), tls_key_path.as_deref()) {
         eprintln!("[acp-fatal] {}", e);
@@ -802,18 +795,14 @@ fn local_backup_dir(db_path: &Path) -> PathBuf {
         })
 }
 
-fn configure_auth(state: AxumApiState) -> AxumApiState {
-    let require_auth = std::env::var("ACP_REQUIRE_AUTH")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let admin_api_key = std::env::var("ACP_ADMIN_API_KEY").ok();
-    if require_auth && admin_api_key.is_none() {
+fn configure_auth(state: AxumApiState, auth: &AuthConfig) -> AxumApiState {
+    if auth.require_auth && auth.admin_api_key.is_none() {
         panic!("ACP_ADMIN_API_KEY is required when ACP_REQUIRE_AUTH=1");
     }
-    let Some(raw_key) = admin_api_key else {
+    let Some(ref raw_key) = auth.admin_api_key else {
         return state;
     };
-    if !validate_token_shape(&raw_key) {
+    if !validate_token_shape(raw_key) {
         panic!("ACP_ADMIN_API_KEY must use the harness_<64 hex chars> local key shape");
     }
 
@@ -839,7 +828,7 @@ fn configure_auth(state: AxumApiState) -> AxumApiState {
     resolver.add_api_key(APIKey {
         key_id: LOCAL_BOOTSTRAP_API_KEY_ID.to_string(),
         tenant_id: "local".to_string(),
-        key_hash: hash_api_key(&raw_key, salt),
+        key_hash: hash_api_key(raw_key, salt),
         key_salt: salt.to_string(),
         scopes: bootstrap_scopes,
         created_at: 0.0,
@@ -1520,8 +1509,13 @@ mod tests {
                     "bootstrap",
                 )
                 .unwrap();
-            let app =
-                build_axum_router(configure_auth(AxumApiState::new()).with_local_store_arc(store));
+            let auth_config = AuthConfig {
+                require_auth: true,
+                admin_api_key: Some(bootstrap_raw.clone()),
+            };
+            let app = build_axum_router(
+                configure_auth(AxumApiState::new(), &auth_config).with_local_store_arc(store),
+            );
             // Construct the restart instance before releasing the environment
             // lock, so unrelated tests cannot clear the bootstrap configuration
             // between the two lifecycle checks.
@@ -1540,7 +1534,8 @@ mod tests {
                 )
                 .unwrap();
             let restarted = build_axum_router(
-                configure_auth(AxumApiState::new()).with_local_store_arc(restarted_store),
+                configure_auth(AxumApiState::new(), &auth_config)
+                    .with_local_store_arc(restarted_store),
             );
             clear_trusted_provider_env();
             (app, restarted)
@@ -2137,5 +2132,66 @@ mod tests {
         // Must contain symbolic reference, not raw bearer tokens
         assert!(debug_str.contains("ANTHROPIC_API_KEY"));
         assert!(!debug_str.contains("sk-ant-"));
+    }
+
+    #[tokio::test]
+    async fn test_module_migration_configure_auth_with_typed_config() {
+        let valid_key = format!("harness_{}", "b".repeat(64));
+        let auth_config = AuthConfig {
+            require_auth: true,
+            admin_api_key: Some(valid_key.clone()),
+        };
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+        store
+            .upsert_team_member("local-admin", "Local Admin", "admin")
+            .unwrap();
+        store
+            .record_api_key_metadata_for_tenant(
+                "local",
+                LOCAL_BOOTSTRAP_API_KEY_ID,
+                "local-admin",
+                "admin",
+                &local_admin_scope_list(),
+                "bootstrap",
+            )
+            .unwrap();
+        let app = build_axum_router(
+            configure_auth(AxumApiState::new(), &auth_config).with_local_store_arc(store),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {valid_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn test_module_migration_storage_config_consumption() {
+        let lookup = |key: &str| match key {
+            "ACP_DB_PATH" => Some("/tmp/test_migrated.db".to_string()),
+            "ACP_BACKUP_DIR" => Some("/tmp/test_migrated_backups".to_string()),
+            "ACP_BACKUP_INTERVAL_SEC" => Some("120".to_string()),
+            "ACP_BACKUP_RETAIN_COUNT" => Some("10".to_string()),
+            _ => None,
+        };
+        let config = AppConfig::from_lookup(lookup).expect("valid storage config");
+        assert_eq!(
+            config.database.db_path,
+            PathBuf::from("/tmp/test_migrated.db")
+        );
+        assert_eq!(
+            config.backup.backup_dir,
+            PathBuf::from("/tmp/test_migrated_backups")
+        );
+        assert_eq!(config.backup.interval_sec, 120);
+        assert_eq!(config.backup.retain_count, 10);
+        assert!(config.backup.explicitly_configured);
     }
 }
