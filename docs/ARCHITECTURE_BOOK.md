@@ -437,6 +437,112 @@ The four cross-domain transaction view groups:
 | `ManagedAcceptanceTx` | `managed_acceptance_delegations`, `managed_acceptance_spend_authorizations`, `audit_log` | One-use spend authorization issuance (`executions_used: 0 -> 1`), attempt admission with lease issuance, immutable proposal and manifest approval recording, artifact output confirmation, and terminal spend reconciliation. |
 | `RweTx` | `rwe_run_authorizations`, `rwe_cells`, `audit_log` | One-use RWE authorization issuance, run admission, realized cost and token spend deduction against authorized budget caps, cell fencing, and terminal store evidence projection. |
 
+### AC5: Explicit Runtime Composition Root Contract
+
+`PE7-AC5-CONTRACT-1` freezes configuration sources, precedence, validated schemas, dependency graph topology, runtime operational modes, secret-resolution boundaries, and module migration batches before the additive root core and module migration implementation packets. The contract is strictly provider-free, introduces zero schema alterations, and creates no second store or runtime authority.
+
+#### 1. Configuration Sources & Precedence Hierarchy
+
+The composition root (`engine/src/main.rs`) resolves system configuration using a deterministic, fail-closed 4-tier precedence hierarchy:
+
+```text
+Level 1: Explicit CLI Flags / Arguments (highest precedence, overrides all)
+  ↓
+Level 2: Explicit Environment Variables (`ACP_*`, `HOST`, `PORT`, etc.)
+  ↓
+Level 3: Persisted Settings / Configuration Files (`store.config_snapshot()`, `.claude.json`)
+  ↓
+Level 4: Deterministic Compiled Defaults (lowest precedence, fail-closed / default-off)
+```
+
+| Domain | Configuration Keys | Precedence & Fallback Chain | Default Value |
+|---|---|---|---|
+| **Server & Network** | `HOST`, `PORT`, `ACP_PROFILE`, `ACP_TLS_CERT_PATH`, `ACP_TLS_KEY_PATH`, `ACP_CORS_ORIGINS`, `ACP_DASHBOARD_DIR` (or `DASHBOARD_DIR`) | Env `HOST`/`PORT` → defaults (`127.0.0.1:8080`). Env `ACP_PROFILE` (`"local"` vs `"production"`). Symmetrical TLS validation (fail-closed if asymmetric). Dashboard: `ACP_DASHBOARD_DIR` → `DASHBOARD_DIR` → none. | Host: `127.0.0.1`, Port: `8080`, Profile: `"local"`, TLS: disabled, CORS: wildcard warning in local, forbidden wildcard in production. |
+| **Storage & Persistence** | `ACP_DATABASE_URL`, `ACP_DB_PATH`, `ACP_DB_ENCRYPTION_KEY`, `ACP_BACKUP_DIR`, `ACP_BACKUP_INTERVAL_SEC`, `ACP_BACKUP_RETAIN_COUNT` | Env `ACP_DATABASE_URL` (PostgreSQL mode, feature `pg` required) → `ACP_DB_PATH` (SQLite mode) → default `.agent-control-plane/local-team.db`. `ACP_BACKUP_DIR` → default `<db_parent>/backups`. `ACP_BACKUP_INTERVAL_SEC` → default 0 (disabled). | Backend: SQLite unencrypted at `.agent-control-plane/local-team.db`, Backup interval: `0` (disabled), Retain count: `5`. |
+| **Authentication & RBAC** | `ACP_REQUIRE_AUTH`, `ACP_ADMIN_API_KEY` | Env `ACP_REQUIRE_AUTH` (boolean flag). If enabled, `ACP_ADMIN_API_KEY` is mandatory and validated against `harness_<64 hex chars>`. Injects tenant `"local"` with `local_admin_scope_list()` and delegation ceilings. | Auth: `disabled` in local mode; mandatory in production. |
+| **Execution Mode & Gates** | `ACP_EXECUTION_MODE`, `ACP_ENABLE_PROVIDER_EXECUTION`, `ACP_TRUSTED_LOCAL_PROFILE`, `ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT` | Env `ACP_EXECUTION_MODE` (`"off"` or `"provider"`; `"cli"` and `"auto"` panic as retired). `EffectiveExecutionGates` evaluates composite flags (`ACP_TRUSTED_LOCAL_PROFILE` / `ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT` + persisted endpoints). | Execution Mode: `"off"` (noop direct dispatch; CLI tools only via confirmed workflow nodes). Gates: `default-off`. |
+| **Providers & Model Selection** | `ACP_PROVIDER_TYPE`, `ACP_MODEL`, `ACP_CLAUDE_CODE_CONFIG_PATH`, `ACP_BASE_URL`, `ACP_API_KEY`, `ACP_PROVIDER_INPUT_COST_PER_1K_USD`, `ACP_PROVIDER_OUTPUT_COST_PER_1K_USD`, `ACP_CIRCUIT_BREAKER_THRESHOLD`, `ACP_CIRCUIT_BREAKER_RECOVERY_MS` | Model resolution: Env `ACP_MODEL` → `.claude.json` project config (`ACP_CLAUDE_CODE_CONFIG_PATH` or `$HOME/.claude.json`) → `"default"`. Provider construction: `ACP_PROVIDER_TYPE` (`"stub"`, `"openai_compatible"`, `"anthropic"`). Pricing: Env rates → unconfigured warning. | Provider: `None` (unconfigured), Model: `"default"`, CB Threshold: `5`, CB Recovery: `30000ms`. |
+| **Adaptive Execution** | `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON`, `ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY`, `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION`, `ACP_ADAPTIVE_FUSION_KILL_SWITCH` | Endpoint configs: Env `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON` → `store.config_snapshot()["adaptive_provider_endpoints"]` → `None`. Kill switch: Env `ACP_ADAPTIVE_FUSION_KILL_SWITCH`. | Adaptive Execution: `default-off`, Endpoints: `empty/None`. |
+| **Scheduler & Workers** | `ACP_ENABLE_SCHEDULER`, `ACP_ENABLE_SUPERVISED_WORKERS`, `ACP_SUPERVISED_WORKER_COUNT`, `ACP_SCHEDULER_INTERVAL_MS`, `ACP_SCHEDULER_MAX_CONCURRENT`, `ACP_SCHEDULER_LEASE_TIMEOUT_MS`, `ACP_SCHEDULER_EXECUTOR` | `SchedulerConfig::from_env_with_gates(&execution_gates)`. Bounds validated at startup: workers `1..=32`, max_concurrent `1..=32` (`worker_count <= max_concurrent`), interval `250..=60_000ms`, lease timeout `1_000..=3_600_000ms`. | Scheduler: `disabled`, Interval: `2000ms`, Max concurrent: `4`, Worker count: `1`, Executor: `"noop"`. |
+| **Managed CLI Profiles** | `ACP_ENABLE_CLI_EXECUTION`, `ACP_CLI_EXECUTION_KILL_SWITCH`, `ACP_ENABLE_CLAUDE_CODE_EXECUTION`, `ACP_CLAUDE_CODE_BIN`, `ACP_CLAUDE_CODE_SHA256`, `ACP_CODEX_BIN`, `ACP_CODEX_SHA256`, `ACP_CODEX_VERSION_POLICY` | `CliConfig::from_env()`. Claude Code requires proven worktree confinement; Codex requires exact profile admission (`ManagedCodingRuntimeProfile`). Kill switch overrides enablement. | CLI Execution: `disabled` (`DEFAULT_CLI_EXECUTION_ENABLED = false`). |
+| **External & Sub-Runtimes** | `ACP_ENABLE_AGENT_RUNTIME`, `ACP_EXTERNAL_RUNTIME_MODE`, `ACP_OPENCODE_RUNTIME_MODE` | `ExternalRuntimeConfig::from_env` & `OpenCodeRuntimeConfig::from_env`. Bounded timeouts and fixed identity constraints. | External Runtimes: `disabled`. |
+
+#### 2. Validated Configuration Schemas
+
+The composition root aggregates typed, self-validating configuration schemas with strict validation bounds:
+
+1. **`ServerConfig`** (`http_server.v1`, `axum_api.v1`): Binds host (`"127.0.0.1"` or `"0.0.0.0"`), port (`1..=65535`), API prefix (`"/api/v1"`).
+2. **`DatabaseConfig` & `BackupConfig`**: Database backend (`Sqlite` or `Postgres`), paths, encryption keys, backup directory, interval, and retention count (>= 1).
+3. **`TlsConfig`**: Symmetric certificate and private key paths; fails closed if asymmetric.
+4. **`AuthConfig` & `TenantResolver`**: Auth enforcement, `harness_<64 hex chars>` key validation, bootstrap scopes with delegation ceilings.
+5. **`EffectiveExecutionGates`**: Composite evaluation of profile readiness, cost limits, and endpoint pricing.
+6. **`CliConfig` & `CliCapability`**: Execution switches, worktree confinement, binary hashes, and mandatory auth requirements.
+7. **`SchedulerConfig`**: Verified intervals (`250..=60_000ms`), concurrency limits (`1..=32`), worker counts, lease timeouts, and executor wiring.
+8. **`CostGateConfig` & `ProviderPricingConfig`**: Positive finite per-dispatch and daily cost caps, non-negative token pricing pairs.
+9. **`ProviderConfig`**: Endpoint URL (safe HTTPS/loopback HTTP), model ID, timeouts (`1_000..=300_000ms`), and bounded retry policies.
+10. **`AdaptiveProviderEndpointConfig`**: Symbolic credential names, pricing pairs, and endpoint registry mappings.
+
+#### 3. Dependency Graph Topology (Acyclic Forward DAG)
+
+In `engine/src/main.rs`, components are constructed through a strict, forward-only dependency injection graph without circular dependencies, global mutable variables, or runtime service locators:
+
+```text
+[1. Config & Env Validation]
+  │ (host, port, profile, TLS, production violations)
+  ▼
+[2. Storage Construction]
+  │ LocalProductStore (SQLite/Postgres + migrations + bootstrap keys)
+  ├───────────────────────────────────────────┐
+  ▼                                           ▼
+[3. Shared Infrastructure]               [4. Provider & Audit Stack]
+  │ CircuitBreakerRegistry                 │ ProviderAuditRecorder(store)
+  │ EffectiveExecutionGates                │ Single Provider (OpenAI/Anthropic/Stub)
+  │ CliConfig                              │ AdaptiveExecutionExecutor(providers, audit, kill)
+  │                                        │ DispatchEngine (noop or provider)
+  └─────────────────────┬─────────────────────┘
+                        ▼
+[5. API State Construction]
+  │ AxumApiState (engine, store, cb_registry, cli_capability)
+  │ + with_auth_live (TenantResolver, RateLimiter)
+  │ + with_sub_executors (AgentStep, LangGraph, OpenCode)
+  │
+  ├───────────────────────────────────────────┐
+  ▼                                           ▼
+[6. Scheduler Construction]               [7. HTTP Router & Server]
+  │ WorkflowScheduler(store, config)       │ build_axum_router / with_dashboard
+  │ + with_node_executors                  │ + Middleware (cors_layer, request_id_layer)
+  │ + with_auto_backup(BackupManager)      │ + axum_server / TcpListener bind
+  │ + scheduler.start()                    │ + Graceful shutdown handler
+  ▼                                           ▼
+state.with_scheduler(scheduler_arc) ───────> runtime.block_on(server.serve())
+```
+
+- **No Circularity**: `LocalProductStore` has zero dependency on API state, scheduler, or executors. `WorkflowScheduler` borrows `store` and receives `NodeExecutor` trait objects. `AxumApiState` wraps the scheduler inside `Arc<Mutex<WorkflowScheduler>>`.
+- **No Service Locators**: Every dependency is explicitly constructed at composition root and injected via constructor arguments or `with_*` builder methods.
+
+#### 4. Runtime Operational Modes
+
+| Mode | Trigger & Flag | Invariants & Startup Assertions | Default Behaviors |
+|---|---|---|---|
+| **`local`** | `ACP_PROFILE=local` (or unset) | Local SQLite persistence (`.agent-control-plane/local-team.db`), binds to `127.0.0.1`. Non-fatal warning if exposed to LAN (`0.0.0.0`) without auth. Permissive CORS allowed with warning. | Auth: `off` by default. Provider execution, adaptive fusion, scheduler workers, and CLI execution: `default-off`. |
+| **`production`** | `ACP_PROFILE=production` | **Strict Fail-Closed Startup Gate** (`production_profile_violations`):<br>1. `ACP_REQUIRE_AUTH=1` strictly required.<br>2. `ACP_ADMIN_API_KEY` mandatory with valid `harness_<64 hex>` format.<br>3. `ACP_CORS_ORIGINS` must be explicit and **must not be `"*"` or empty**.<br>4. `ACP_BACKUP_DIR` must be explicitly configured.<br>5. LAN bind (`0.0.0.0`) strictly requires auth.<br>6. Symmetrical TLS configuration required if TLS is enabled.<br>*Any violation aborts process with fatal exit code 1.* | Fail-closed on all unsafe configurations. |
+| **`test` / `stub` / `fixture`** | In-memory DB / explicit test harnesses | In-memory SQLite (`":memory:"`), `StubProvider` (`provider_type="stub"`), mock executors. Fixed virtual clocks (`fixed_now`) for deterministic auth and rate-limiter verification. Zero network calls or external credential requirements. | Deterministic offline verification. |
+
+#### 5. Secret-Resolution Boundary
+
+1. **Symbolic Credential References Only**: Configuration files, JSON payloads, and database tables store only symbolic names (e.g. `credential_env: "OPENAI_API_KEY"`) and redacted display tags (`CredentialRef` with `storage_backend: "env"` and `redacted_display: "***"`). Raw API keys, bearer tokens, and private keys are rejected at parse time.
+2. **Late Pre-Send Resolution Boundary**: Secret environment variables are resolved **only inside the pre-send network invocation boundary** (`ReqwestTransport`, `OpenAiProvider::send`, `AnthropicProvider::send`) immediately prior to HTTP dispatch.
+3. **Audit & Log Redaction**: All audit logs, event traces, serialized execution errors, and database receipts pass through `redact_sensitive_patterns` before emission.
+
+#### 6. Successor Migration Sequencing
+
+`PE7-AC5-ROOT-CORE-1` implements additive typed configuration structs and composition builder helpers. Following its acceptance, `PE7-AC5-MODULE-MIGRATION-1` executes across 4 sequential batches:
+
+- **Batch 1: Core Storage, Backup & Infrastructure Config** (`LocalProductStore`, `BackupManager`, `auth.rs`, `circuit_breaker.rs`, `rate_limiter.rs`).
+- **Batch 2: Execution Gates, Scheduler & CLI Runtime Config** (`EffectiveExecutionGates`, `WorkflowScheduler`, `CliConfig`, `external_runtime.rs`, `opencode_runtime.rs`).
+- **Batch 3: Provider, Adaptive Fusion & Cost Gate Config** (`ProviderConfig`, `adaptive_execution.rs`, `cost_gate.rs`, `credential.rs`).
+- **Batch 4: HTTP Server & Composition Root Assembly** (`AxumApiState`, route handlers, `main.rs`, negative environment-read search).
+
 ## Harness Evolution
 
 Experiment control is established in separate bounded layers: identity/lineage/mutation registry; evaluator/holdout/contamination/gaming boundary; equal total-lifecycle budget; diversity/exploration controls; and hard-gate-first Pareto/stop/restart/recovery behavior. No layer creates a second evaluator, budget, store, scheduler, or adoption owner.
