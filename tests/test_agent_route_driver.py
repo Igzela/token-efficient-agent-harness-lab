@@ -1390,16 +1390,16 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
             "docs/MODULE_MAP.md", "docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md",
             "docs/CURRENT_STATUS.md",
         ]
-        evidence_paths = docs + [
-            "scripts/agent-control/route_driver.py",
+        edit_paths = docs + ["scripts/agent-control/route_driver.py"]
+        evidence_paths = edit_paths + [
             "scripts/agent-control/local_run_once.py",
             "tests/test_route_driver.py",
         ]
-        proposal["allowed_paths"] = docs
+        proposal["allowed_paths"] = edit_paths
         proposal["read_paths"] = evidence_paths
         proposal["ordered_slices"] = [{
-            "paths": docs,
-            "description": "Update only the canonical route documents.",
+            "paths": edit_paths,
+            "description": "Update only the canonical route documents and owner source.",
         }]
         result = route_driver.CurrentMainEvidenceVerifier(self.repo, self.main).verify(
             json.dumps(proposal), self.successor, self._predecessor_receipt()
@@ -1407,11 +1407,11 @@ class TestCurrentMainEvidenceVerifier(unittest.TestCase):
         self.assertEqual(result.state, "READY_FOR_EXECUTION")
         self.assertIsNotNone(result.evidence)
         assert result.evidence is not None
-        self.assertEqual(result.evidence.allowed_paths, tuple(sorted(docs)))
+        self.assertEqual(result.evidence.allowed_paths, tuple(sorted(edit_paths)))
         self.assertEqual(result.evidence.read_paths, tuple(sorted(evidence_paths)))
         self.assertIsNotNone(result.candidate)
         assert result.candidate is not None
-        self.assertEqual(result.candidate.capsule["allowed_paths"], sorted(docs))
+        self.assertEqual(result.candidate.capsule["allowed_paths"], sorted(edit_paths))
         self.assertEqual(result.candidate.capsule["read_paths"], sorted(evidence_paths))
 
     def test_exact_tree_proves_all_refreshed_fields(self):
@@ -2311,6 +2311,271 @@ class TestRepositoryRouteRunner(unittest.TestCase):
         self.assertEqual(result["reason"], "capacity_occupied")
         self.assertEqual(runner.calls, 2)
         self.assertLess(runner.calls, 8)
+
+    def test_future_route_rejects_duplicate_headings(self):
+        future_text = (
+            "# Future Route\n\n"
+            "## Worker Tiers\n\nTier definitions.\n\n"
+            "## Known Planned-Seam Gaps\n\nNo gaps.\n\n"
+            "## Promotion Profile Contract\n\nContract.\n\n"
+            "## Stop and Resume Protocol\n\nProtocol.\n\n"
+            "## Portfolio Inventory Manifest\n\n<!-- future-route-inventory:v1\n{}\n-->\n\n"
+            "# Future Route\n\n"
+            "### Packet PE7-TEST-1\n\n"
+            "**State:** `BLOCKED_PREREQUISITE`\n\n"
+            "**Prerequisite:** PE7-PREV-1\n\n"
+            "**Class:** `IMPLEMENT`\n\n"
+            "**Outcome:** Test.\n\n"
+            "**Allowed delta:** Delta.\n\n"
+            "**Exit:** Exit.\n\n"
+            "**Stop:** Stop.\n"
+        )
+        failures = check_agent_handoff.future_route_profile_failures(future_text)
+        self.assertTrue(any("duplicate heading" in f for f in failures))
+
+    def test_invalidated_receipts_cannot_satisfy_prerequisites(self):
+        status_text = (
+            "## Accepted Packet Receipts\n\n"
+            f"| `PE7-VALID-1` | `COMPLETE` | PR #100 exact head `{'a' * 40}`; merge `{'b' * 40}` |\n\n"
+            "## Invalidated Historical Receipts (Repair Required)\n\n"
+            f"| `PE7-INVALID-1` | PR #101 merge `{'c' * 40}` | `INVALIDATED`: Merged without required production implementation |\n"
+        )
+        accepted = check_agent_handoff.accepted_packet_receipts(status_text)
+        self.assertIn("PE7-VALID-1", accepted)
+        self.assertNotIn("PE7-INVALID-1", accepted)
+
+    def test_fake_cws_he_completion_prerequisite_rejected(self):
+        status_text = (
+            "## Accepted Packet Receipts\n\n"
+            "| `PE7-AC3-CONTRACT-1` | `COMPLETE` | PR #486 exact head `9487a73ab9e00018103193d18c848e375b215a1b`; merge `6b2a6c46d30089800394ee82edd21075a2ef0d86`; exact-head `PASS`; canonical workflow `31922547776` |\n\n"
+            "## Invalidated Historical Receipts (Repair Required)\n\n"
+            "| `PE7-HE-EC2-CONTRACT-1` | PR #529 merge `e405142c6eca2b55b7edd25329ff0a7ab63767ea` | `INVALIDATED` |\n"
+        )
+        next_text = (
+            "## Active Routing\n\n1. `PE7-HE-EC2-HOLDOUT-SEAL-1` — `READY_FOR_EXECUTION`\n\n"
+            "## Packet PE7-HE-EC2-HOLDOUT-SEAL-1\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            "**Prerequisite:** PE7-HE-EC2-CONTRACT-1\n\n"
+            "**Class:** `IMPLEMENT`\n\n"
+            "**Outcome:** Seal holdouts.\n\n"
+            "**Allowed delta:** engine/src/harness_evolution_eval.rs\n\n"
+            "**Exit:** Exit.\n\n"
+            "**Stop:** Stop.\n"
+        )
+        failures = check_agent_handoff.active_state_failures(status_text, next_text)
+        self.assertTrue(any("prerequisites are not complete" in f for f in failures))
+
+    def test_weak_agent_dispatch_rejects_generic_or_doc_only_implement_capsule(self):
+        capsule = {
+            "schema_version": "weak_agent_dispatch.v1",
+            "packet_id": "PE7-AC4-VIEWS-CORE-1",
+            "packet_state": "READY_FOR_EXECUTION",
+            "dispatch_lane": "provider_free_repository_maintenance",
+            "plan_lane_state": "plan_lane_active",
+            "external_effect_limit": 0,
+            "authority_consumption_allowed": False,
+            "secret_values_allowed": False,
+            "private_paths_allowed": False,
+            "goal": "Extract pure view projections and compile golden traces.",
+            "rollback": "Revert view projections if golden traces diverge.",
+            "allowed_outputs": ["A provider-free change."],
+            "expected_artifacts": ["Canonical route evidence."],
+            "forbidden_changes": ["No target write."],
+            "forbidden_next_actions": ["No provider call."],
+            "ordered_steps": ["Update docs only."],
+            "pause_gates": ["Stop on failure."],
+            "prerequisites": ["PE7-AC3-PORT-MIGRATION-1"],
+            "prerequisite_receipts": ["PR #489 merge 02dcfb7d094e0ef9c6317ad800eab1ca1c957dd9"],
+            "read_paths": ["docs/ARCHITECTURE_BOOK.md", "docs/CURRENT_STATUS.md", "docs/NEXT_DECISION.md"],
+            "allowed_paths": ["docs/ARCHITECTURE_BOOK.md", "docs/CURRENT_STATUS.md", "docs/NEXT_DECISION.md"],
+            "verification": ["cargo test -p engine"],
+        }
+        next_text = (
+            "## Active Routing\n\n1. `PE7-AC4-VIEWS-CORE-1` — `READY_FOR_EXECUTION`\n\n"
+            "## Packet PE7-AC4-VIEWS-CORE-1\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            "**Class:** `IMPLEMENT`\n\n"
+            "### 11. Bounded Autonomous Worker Dispatch Capsule\n\n"
+            "<!-- weak-agent-dispatch:v1\n" + json.dumps(capsule, sort_keys=True) + "\n-->\n"
+        )
+        failures = check_agent_handoff.weak_agent_dispatch_failures(
+            next_text,
+            {"PE7-AC4-VIEWS-CORE-1": {"state": "READY_FOR_EXECUTION", "class": "IMPLEMENT"}},
+        )
+        self.assertTrue(any("allowed_paths must contain production source paths" in f for f in failures))
+        self.assertTrue(any("expected_artifacts contains generic placeholder" in f for f in failures))
+
+    def test_r532_b2_implement_matrix_in_check_agent_handoff(self):
+        # 1. AC4 views packet + route_driver.py => reject
+        capsule_mismatched = {
+            "schema_version": "weak_agent_dispatch.v1",
+            "packet_id": "PE7-AC4-VIEWS-CORE-1",
+            "packet_state": "READY_FOR_EXECUTION",
+            "dispatch_lane": "provider_free_repository_maintenance",
+            "plan_lane_state": "plan_lane_active",
+            "external_effect_limit": 0,
+            "authority_consumption_allowed": False,
+            "secret_values_allowed": False,
+            "private_paths_allowed": False,
+            "goal": "Extract pure view projections and compile golden traces.",
+            "rollback": "Revert view projections if golden traces diverge.",
+            "allowed_outputs": ["A provider-free change."],
+            "expected_artifacts": ["Pure view projections in engine/src/storage/local_product_store/views.rs"],
+            "forbidden_changes": ["No target write."],
+            "forbidden_next_actions": ["No provider call."],
+            "ordered_steps": ["Update views."],
+            "pause_gates": ["Stop on failure."],
+            "prerequisites": ["PE7-AC3-PORT-MIGRATION-1"],
+            "prerequisite_receipts": ["PR #489 merge 02dcfb7d094e0ef9c6317ad800eab1ca1c957dd9"],
+            "read_paths": ["docs/NEXT_DECISION.md", "scripts/agent-control/route_driver.py"],
+            "allowed_paths": ["docs/NEXT_DECISION.md", "scripts/agent-control/route_driver.py"],
+            "verification": ["cargo test -p engine"],
+        }
+        next_mismatched = (
+            "## Active Routing\n\n1. `PE7-AC4-VIEWS-CORE-1` — `READY_FOR_EXECUTION`\n\n"
+            "## Packet PE7-AC4-VIEWS-CORE-1\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            "**Class:** `IMPLEMENT`\n\n"
+            "### 11. Bounded Autonomous Worker Dispatch Capsule\n\n"
+            "<!-- weak-agent-dispatch:v1\n" + json.dumps(capsule_mismatched, sort_keys=True) + "\n-->\n"
+        )
+        failures = check_agent_handoff.weak_agent_dispatch_failures(
+            next_mismatched,
+            {"PE7-AC4-VIEWS-CORE-1": {"state": "READY_FOR_EXECUTION", "class": "IMPLEMENT"}},
+        )
+        self.assertTrue(any("must target engine production source" in f for f in failures))
+
+        # 2. product IMPLEMENT + test-only paths => reject
+        capsule_test_only = dict(capsule_mismatched)
+        capsule_test_only["allowed_paths"] = ["docs/NEXT_DECISION.md", "engine/tests/test_views.rs"]
+        capsule_test_only["read_paths"] = ["docs/NEXT_DECISION.md", "engine/tests/test_views.rs"]
+        next_test_only = (
+            "## Active Routing\n\n1. `PE7-AC4-VIEWS-CORE-1` — `READY_FOR_EXECUTION`\n\n"
+            "## Packet PE7-AC4-VIEWS-CORE-1\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            "**Class:** `IMPLEMENT`\n\n"
+            "### 11. Bounded Autonomous Worker Dispatch Capsule\n\n"
+            "<!-- weak-agent-dispatch:v1\n" + json.dumps(capsule_test_only, sort_keys=True) + "\n-->\n"
+        )
+        failures = check_agent_handoff.weak_agent_dispatch_failures(
+            next_test_only,
+            {"PE7-AC4-VIEWS-CORE-1": {"state": "READY_FOR_EXECUTION", "class": "IMPLEMENT"}},
+        )
+        self.assertTrue(any("cannot be satisfied by test-only paths" in f for f in failures))
+
+        # 3. product IMPLEMENT + correct engine owner/target => accept
+        capsule_valid = dict(capsule_mismatched)
+        capsule_valid["allowed_paths"] = [
+            "docs/NEXT_DECISION.md",
+            "engine/src/product_golden_path.rs",
+            "engine/tests/test_product_golden_path_g3.rs",
+        ]
+        capsule_valid["read_paths"] = [
+            "docs/NEXT_DECISION.md",
+            "engine/src/product_golden_path.rs",
+            "engine/tests/test_product_golden_path_g3.rs",
+        ]
+        next_valid = (
+            "## Active Routing\n\n1. `PE7-AC4-VIEWS-CORE-1` — `READY_FOR_EXECUTION`\n\n"
+            "## Packet PE7-AC4-VIEWS-CORE-1\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            "**Class:** `IMPLEMENT`\n\n"
+            "### 11. Bounded Autonomous Worker Dispatch Capsule\n\n"
+            "<!-- weak-agent-dispatch:v1\n" + json.dumps(capsule_valid, sort_keys=True) + "\n-->\n"
+        )
+        failures = check_agent_handoff.weak_agent_dispatch_failures(
+            next_valid,
+            {"PE7-AC4-VIEWS-CORE-1": {"state": "READY_FOR_EXECUTION", "class": "IMPLEMENT"}},
+        )
+        self.assertEqual(failures, [])
+
+        # 4. legitimate route-control IMPLEMENT + proved route owner => accept
+        capsule_route = {
+            "schema_version": "weak_agent_dispatch.v1",
+            "packet_id": "TOOL-PLAN-LANE-1",
+            "packet_state": "READY_FOR_EXECUTION",
+            "dispatch_lane": "provider_free_repository_maintenance",
+            "plan_lane_state": "plan_lane_active",
+            "external_effect_limit": 0,
+            "authority_consumption_allowed": False,
+            "secret_values_allowed": False,
+            "private_paths_allowed": False,
+            "goal": "Implement one bounded plan lane with full tests.",
+            "rollback": "Revert the plan lane implementation if tests fail.",
+            "allowed_outputs": ["A provider-free change."],
+            "expected_artifacts": ["Plan lane implementation in scripts/agent-control/plan_lane.py"],
+            "forbidden_changes": ["No target write."],
+            "forbidden_next_actions": ["No provider call."],
+            "ordered_steps": ["Update plan lane."],
+            "pause_gates": ["Stop on failure."],
+            "prerequisites": ["TOOL-PREV-1"],
+            "prerequisite_receipts": [f"PR #100 exact head {'a' * 40}; merge {'b' * 40}"],
+            "read_paths": [
+                "docs/NEXT_DECISION.md",
+                "scripts/agent-control/plan_lane.py",
+                "tests/test_agent_plan_lane.py",
+            ],
+            "allowed_paths": [
+                "docs/NEXT_DECISION.md",
+                "scripts/agent-control/plan_lane.py",
+                "tests/test_agent_plan_lane.py",
+            ],
+            "verification": ["python -m unittest"],
+        }
+        next_route = (
+            "## Active Routing\n\n1. `TOOL-PLAN-LANE-1` — `READY_FOR_EXECUTION`\n\n"
+            "## Packet TOOL-PLAN-LANE-1\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            "**Class:** `IMPLEMENT`\n\n"
+            "### 11. Bounded Autonomous Worker Dispatch Capsule\n\n"
+            "<!-- weak-agent-dispatch:v1\n" + json.dumps(capsule_route, sort_keys=True) + "\n-->\n"
+        )
+        failures = check_agent_handoff.weak_agent_dispatch_failures(
+            next_route,
+            {"TOOL-PLAN-LANE-1": {"state": "READY_FOR_EXECUTION", "class": "IMPLEMENT"}},
+        )
+        self.assertEqual(failures, [])
+
+    def test_canonical_review_receipt_validation_rejects_incomplete_receipts(self):
+        incomplete_receipt = (
+            "EXACT-HEAD REVIEW RECEIPT\n"
+            f"Reviewed SHA: {'a' * 40}\n"
+            f"Reviewed range: {'b' * 40}...{'a' * 40}\n"
+        )
+        failures = check_agent_handoff.validate_review_receipt_text(incomplete_receipt)
+        self.assertTrue(any("Reviewer session identity" in f for f in failures))
+        self.assertTrue(any("Reviewer authenticated identity" in f for f in failures))
+        self.assertTrue(any("Review transport" in f for f in failures))
+        self.assertTrue(any("Axes" in f for f in failures))
+        self.assertTrue(any("Outcome" in f for f in failures))
+        self.assertTrue(any("Unresolved objections" in f for f in failures))
+
+        valid_receipt = (
+            "EXACT-HEAD REVIEW RECEIPT\n"
+            f"Reviewed SHA: {'a' * 40}\n"
+            f"Reviewed range: {'b' * 40}...{'a' * 40}\n"
+            "Reviewer session identity: 123e4567-e89b-12d3-a456-426614174000\n"
+            "Reviewer authenticated identity: reviewer-bot\n"
+            "Review transport: direct-github-reviewer\n"
+            "Observed at: 2026-08-17T00:00:00Z\n"
+            "Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding\n"
+            "Outcome: PASS\n"
+            "Unresolved objections: none\n"
+        )
+        failures_valid = check_agent_handoff.validate_review_receipt_text(
+            valid_receipt, expected_head="a" * 40, expected_base="b" * 40
+        )
+        self.assertEqual(failures_valid, [])
+
+    def test_non_canonical_review_receipt_rejected(self):
+        status_text = (
+            "## Accepted Packet Receipts\n\n"
+            "| `PE7-BOGUS-1` | `COMPLETE` | Looks good to me, reviewed and merged! |\n"
+        )
+        failures = []
+        accepted = check_agent_handoff.accepted_packet_receipts(status_text, failures)
+        self.assertNotIn("PE7-BOGUS-1", accepted)
+        self.assertTrue(any("lacks a durable evidence identity" in f for f in failures))
 
 
 if __name__ == "__main__":

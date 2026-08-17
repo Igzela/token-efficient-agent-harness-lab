@@ -1959,6 +1959,46 @@ class CurrentMainEvidenceVerifier:
         }
         if not required_documents.issubset(allowed_paths):
             raise RouteDriverError("promotion_allowed_paths_missing_canonical_documents")
+        if successor.sketch.packet_class == "IMPLEMENT":
+            prod_allowed = [
+                p for p in allowed_paths
+                if not (
+                    p.startswith("docs/")
+                    or p.endswith(".md")
+                    or p in {"START_HERE.md", "AGENTS.md", "README.md", "CLAUDE.md", "LICENSE"}
+                    or "tests" in p.split("/")
+                    or "fixtures" in p.split("/")
+                    or p.split("/")[-1].startswith("test_")
+                    or p.split("/")[-1].endswith(("_test.rs", ".test.ts", ".test.js", ".test.mjs", ".spec.ts"))
+                )
+            ]
+            test_allowed = [
+                p for p in allowed_paths
+                if (
+                    "tests" in p.split("/")
+                    or "fixtures" in p.split("/")
+                    or p.split("/")[-1].startswith("test_")
+                    or p.split("/")[-1].endswith(("_test.rs", ".test.ts", ".test.js", ".test.mjs", ".spec.ts"))
+                )
+            ]
+            if not prod_allowed:
+                if test_allowed:
+                    raise RouteDriverError("promotion_implement_allowed_paths_test_only")
+                raise RouteDriverError("promotion_implement_allowed_paths_lack_source")
+            if successor.packet_id.startswith(("PE7-AC", "PE7-HE", "PE7-CWS", "PE7-MEMORY", "PE7-SKILL", "PE7-RWE")):
+                engine_prod = [
+                    p for p in prod_allowed
+                    if p.startswith("engine/src/") or p == "engine/src" or p.startswith("engine/")
+                ]
+                if not engine_prod:
+                    raise RouteDriverError("promotion_implement_allowed_paths_mismatched_target")
+            elif successor.packet_id.startswith(("PE7-ROUTE-", "PE7-PLAN-", "PE7-CTRL-", "TOOL-")):
+                route_prod = [
+                    p for p in prod_allowed
+                    if p.startswith(("scripts/", "tools/"))
+                ]
+                if not route_prod:
+                    raise RouteDriverError("promotion_implement_allowed_paths_mismatched_target")
         for path in allowed_paths:
             self._source(path)
         for path in read_paths:
