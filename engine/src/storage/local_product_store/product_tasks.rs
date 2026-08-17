@@ -7341,6 +7341,54 @@ impl LocalProductStore {
         }
     }
 
+    pub(super) fn bind_product_task_plan_run_sqlite(
+        conn: &rusqlite::Connection,
+        now: &str,
+        task_id: &str,
+        plan_id: &str,
+        run_id: &str,
+        actor: &str,
+    ) -> Result<(), String> {
+        conn.execute(
+            "UPDATE product_tasks SET plan_id = ?1, run_id = ?2, updated_at = ?3 WHERE task_id = ?4",
+            params![plan_id, run_id, now, task_id],
+        )
+        .map_err(|e| e.to_string())?;
+        append_audit_locked(
+            conn,
+            now,
+            actor,
+            "product_task.bind_plan_run",
+            task_id,
+            &json!({"plan_id": plan_id, "run_id": run_id}),
+        )?;
+        Ok(())
+    }
+
+    #[cfg(feature = "pg")]
+    pub(super) fn bind_product_task_plan_run_pg(
+        tx: &mut postgres::Transaction,
+        now: &str,
+        task_id: &str,
+        plan_id: &str,
+        run_id: &str,
+        actor: &str,
+    ) -> Result<(), String> {
+        tx.execute(
+            "UPDATE product_tasks SET plan_id = $1, run_id = $2, updated_at = $3 WHERE task_id = $4",
+            &[&plan_id, &run_id, &now, &task_id],
+        )
+        .map_err(|e| e.to_string())?;
+        let details = json!({"plan_id": plan_id, "run_id": run_id}).to_string();
+        tx.execute(
+            "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+             VALUES ($1, $2, 'product_task.bind_plan_run', $3, $4)",
+            &[&now, &actor, &task_id, &details],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub(crate) fn bind_product_task_plan_run(
         &self,
         task_id: &str,
@@ -7351,37 +7399,15 @@ impl LocalProductStore {
         let now = self.now();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                conn.execute(
-                    "UPDATE product_tasks SET plan_id = ?1, run_id = ?2, updated_at = ?3 WHERE task_id = ?4",
-                    params![plan_id, run_id, now, task_id],
-                )
-                .map_err(|e| e.to_string())?;
-                append_audit_locked(
-                    conn,
-                    &now,
-                    actor,
-                    "product_task.bind_plan_run",
-                    task_id,
-                    &json!({"plan_id": plan_id, "run_id": run_id}),
-                )?;
-                Ok(())
+                Self::bind_product_task_plan_run_sqlite(conn, &now, task_id, plan_id, run_id, actor)
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                client
-                    .execute(
-                        "UPDATE product_tasks SET plan_id = $1, run_id = $2, updated_at = $3 WHERE task_id = $4",
-                        &[&plan_id, &run_id, &now, &task_id],
-                    )
-                    .map_err(|e| e.to_string())?;
-                let details = json!({"plan_id": plan_id, "run_id": run_id}).to_string();
-                client
-                    .execute(
-                        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
-                         VALUES ($1, $2, 'product_task.bind_plan_run', $3, $4)",
-                        &[&now, &actor, &task_id, &details],
-                    )
-                    .map_err(|e| e.to_string())?;
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                Self::bind_product_task_plan_run_pg(
+                    &mut tx, &now, task_id, plan_id, run_id, actor,
+                )?;
+                tx.commit().map_err(|e| e.to_string())?;
                 Ok(())
             }),
         }

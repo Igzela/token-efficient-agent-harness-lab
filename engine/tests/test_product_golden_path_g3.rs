@@ -1675,11 +1675,11 @@ fn test_caller_migration_atomic_commit_boundary() {
 
         // 1. Single atomic admission
         let task = store.admit_product_task(&validated, "tester").unwrap();
-        let task_id = task["task_id"].as_str().unwrap();
+        let task_id = task["task_id"].as_str().unwrap().to_string();
 
         // 2. Cross-domain caller validation and state parity
         let phase = store
-            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .validate_managed_acceptance_product_task_phase("local", &task_id, "disposable", &rev)
             .expect("validate managed acceptance");
         assert_eq!(
             phase["task"]["status"],
@@ -1687,10 +1687,61 @@ fn test_caller_migration_atomic_commit_boundary() {
         );
         assert_eq!(phase["stage"], "pre_execution_admission");
 
-        // 3. Execution compile under single transaction boundary
-        let compiled = store
-            .compile_and_schedule_product_task(task_id, "tester", &["command".into()])
+        // 3. Multi-domain caller migration under single transaction view
+        store
+            .with_transaction(|tx| {
+                let retrieved = tx
+                    .product_task()
+                    .get_task(&task_id)?
+                    .expect("task exists in tx");
+                assert_eq!(retrieved["task_id"], task_id);
+
+                tx.product_task().bind_plan_run(
+                    &task_id,
+                    "plan-migrated-1",
+                    "run-migrated-1",
+                    "tester",
+                )?;
+
+                tx.workflow().append_audit(
+                    "tester",
+                    "workflow.caller_migrated_bound",
+                    &task_id,
+                    &serde_json::json!({"plan_id": "plan-migrated-1", "run_id": "run-migrated-1"}),
+                )?;
+
+                Ok(())
+            })
+            .expect("Transaction view multi-domain migration must succeed");
+
+        // 4. Verify durable persistence
+        let updated_task = store
+            .get_product_task(&task_id)
+            .unwrap()
+            .expect("task persisted");
+        assert_eq!(updated_task["plan_id"], "plan-migrated-1");
+        assert_eq!(updated_task["run_id"], "run-migrated-1");
+
+        let conn = rusqlite::Connection::open(dir.path().join("store.db")).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT action FROM audit_log WHERE resource = ?1 ORDER BY audit_id ASC")
             .unwrap();
-        assert_eq!(compiled["task"]["task_id"], task_id);
+        let actions: Vec<String> = stmt
+            .query_map(rusqlite::params![task_id], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            actions.iter().any(|a| a == "product_task.bind_plan_run"),
+            "Audit log must contain product_task.bind_plan_run: {:?}",
+            actions
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|a| a == "workflow.caller_migrated_bound"),
+            "Audit log must contain workflow.caller_migrated_bound: {:?}",
+            actions
+        );
     });
 }
