@@ -634,16 +634,90 @@ All 4 implementation and migration packets of AC6 have converged:
    - `POST /api/v1/product/tasks/:task_id/approve-and-output` and associated client wrappers (`approve_and_output_product_task` in Python, `approveAndOutputProductTask` in TypeScript and Dashboard) are marked `@deprecated` and will remain operational for backwards compatibility until AC7.
    - Separate authority step endpoints (`POST /api/v1/product/tasks/:task_id/approve` and `POST /api/v1/product/tasks/:task_id/output`) are the sole canonical paths.
 
-3. **AC7 Removal Candidate Seed (to be reconciled by `PE7-AC7-REMOVAL-MANIFEST-1`)**:
-   - `engine/src/http_server/routes.rs`: route `POST /api/v1/product/tasks/:task_id/approve-and-output`.
-   - `engine/src/http_server/handlers/product_tasks.rs`: handler `api_approve_and_output_product_task`.
-   - `engine/src/storage/local_product_store/product_tasks.rs`: helper `approve_and_output_product_task_for_tenant`.
-   - `sdk/python/src/agent_control_plane_sdk/client.py`: method `approve_and_output_product_task`.
-   - `sdk/typescript/src/index.ts`: method `approveAndOutputProductTask`.
-   - `dashboard/src/lib/api-client.ts`: method `approveAndOutputProductTask`.
-   - `engine/tests/test_product_golden_path_authority.rs`: composite route assertions.
+3. **AC7 Removal Manifest (frozen by `PE7-AC7-REMOVAL-MANIFEST-1`)**:
+   The sole owner of this packet is the AC7 removal-manifest contract in this
+   section. `docs/MODULE_MAP.md` and `docs/NEXT_DECISION.md` are synchronized
+   projections of that contract; the runtime owner names below are evidence
+   labels only, not packet owners or ownership transfers. The deletion
+   successor must execute the groups as separate owner-scoped batches.
+   The exact candidate set was re-proved on accepted main `73fed5fedf2361ee546b831b3e87acb6f0a096ec`.
+   CodeGraph binds the only production call path as
+   `routes.rs` route → `product_tasks.rs::api_approve_and_output_product_task`
+   → `approve_and_output_product_task_for_tenant`
+   → `approve_and_output_product_task`. The fixed-string inventory finds one
+   route assertion plus twelve direct Rust test-method references across the
+   four test files below; no other production, SDK, Dashboard, fixture, script,
+   replay, or authority caller is admitted by this manifest.
+   Each rollback group below is independently revertable to the accepted
+   pre-cleanup tree at `73fed5fedf2361ee546b831b3e87acb6f0a096ec`; cleanup must
+   not cross a group boundary after a scoped check fails.
 
-This seed records the known deprecated surface from the AC6 compatibility closeout. It is not zero-caller proof or deletion authority: `PE7-AC7-REMOVAL-MANIFEST-1` must refresh direct callers and test coverage, reconcile the complete owner/path list in `docs/MODULE_MAP.md`, and freeze the exact manifest before `PE7-AC7-CLEANUP-1` may delete anything.
+   - **Rollback group `ac7-http-compatibility-surface` — runtime owner
+     evidence: HTTP routing/handler.** Delete the route registration (including its
+     preflight branch) in `engine/src/http_server/routes.rs` for
+     `POST /api/v1/product/tasks/:task_id/approve-and-output`, and delete
+     `api_approve_and_output_product_task` in
+     `engine/src/http_server/handlers/product_tasks.rs`. The replacement is
+     the existing separate `approve` and `output` endpoints, which retain the
+     independent approval, execution, confirmation, and output authorities.
+     `engine/tests/test_product_golden_path_authority.rs`, function
+     `product_approval_and_output_have_separate_authority_and_confirmation`,
+     currently contains the legacy-route negative assertion; cleanup must
+     remove that obsolete assertion while retaining coverage for the separate
+     canonical authority paths.
+
+   - **Rollback group `ac7-local-store-compatibility` — runtime owner evidence:
+     `LocalProductStore`.** Delete
+     `approve_and_output_product_task_for_tenant` and
+     `approve_and_output_product_task` from
+     `engine/src/storage/local_product_store/product_tasks.rs`. Cleanup must
+     migrate or remove only the following direct compatibility callers while
+     preserving the existing separate store operations and their transaction,
+     CAS, idempotency, audit, approval, output, and recovery semantics:
+     `engine/tests/test_product_golden_path_evidence.rs` functions
+     `terminal_evidence_links_task_owners_without_fabricated_cost`,
+     `terminal_evidence_uses_managed_executor_class_and_owner_reported_usage`,
+     `export_patch_writes_approved_patch_without_touching_main`,
+     `draft_pr_without_network_gate_persists_an_exact_provider_free_plan`, and
+     `draft_pr_missing_github_credential_keeps_version_and_reuses_operation_after_restart`;
+     `engine/tests/test_product_golden_path_g3.rs` functions
+     `end_to_end_artifact_only_path_with_real_verification`,
+     `verification_failure_blocks_capture_approval_and_output`,
+     `capture_without_verification_is_rejected_for_approval`, and
+     `test_port_migration_idempotency_and_audit_traces`; and
+     `engine/tests/test_product_golden_path_recovery.rs` functions
+     `stale_approval_blocked_without_trustworthy_verification` and
+     `finalize_idempotent_after_completion`.
+
+   - **Rollback group `ac7-consumer-compatibility-surface` — runtime owner
+     evidence: typed SDK and Dashboard projections.** Delete the deprecated wrapper
+     `approve_and_output_product_task` from
+     `sdk/python/src/agent_control_plane_sdk/client.py`,
+     `approveAndOutputProductTask` from `sdk/typescript/src/index.ts`, and
+     `approveAndOutputProductTask` from `dashboard/src/lib/api-client.ts`.
+     The replacement is each existing consumer's separate approve/output
+     method pair; no SDK or Dashboard authority is added.
+
+   Compatibility disposition for every group is **remove after zero-caller
+   proof**: the deprecated composite surface remains operational on the
+   accepted AC6 baseline, but it is not a canonical path and must not be
+   called by cleanup code. `PE7-AC7-CLEANUP-1` may delete only this exact
+   manifest, after rerunning the fixed-string negative search across all
+   tracked source, SDK, Dashboard, fixture, script, replay, and authority-test
+   paths and after passing the candidate-specific behavior, recovery, and
+   consumer checks. The manifest is contract evidence, not deletion itself;
+   any newly discovered caller, owner, replacement mismatch, or recovery gap
+   stops cleanup and requires a new manifest decision.
+
+   Cleanup batch order is fixed for the successor: (1) remove the three
+   consumer wrappers and prove the separate SDK/Dashboard methods; (2) remove
+   the HTTP route/handler and its obsolete authority assertion while proving
+   the separate authority endpoints; (3) remove the two LocalProductStore
+   compatibility methods and migrate or remove the enumerated Rust test
+   callers while proving behavior, recovery, CAS/idempotency, audit, and
+   SQLite/PostgreSQL parity where applicable. After each batch, rerun the
+   scoped negative search and applicable checks; a failure stops and reverts
+   that batch to the pre-cleanup rollback point.
 
 ## Harness Evolution
 
