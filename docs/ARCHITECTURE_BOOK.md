@@ -635,6 +635,11 @@ All 4 implementation and migration packets of AC6 have converged:
    - Separate authority step endpoints (`POST /api/v1/product/tasks/:task_id/approve` and `POST /api/v1/product/tasks/:task_id/output`) are the sole canonical paths.
 
 3. **AC7 Removal Manifest (frozen by `PE7-AC7-REMOVAL-MANIFEST-1`)**:
+   The sole owner of this packet is the AC7 removal-manifest contract in this
+   section. `docs/MODULE_MAP.md` and `docs/NEXT_DECISION.md` are synchronized
+   projections of that contract; the runtime owner names below are evidence
+   labels only, not packet owners or ownership transfers. The deletion
+   successor must execute the groups as separate owner-scoped batches.
    The exact candidate set was re-proved on accepted main `73fed5fedf2361ee546b831b3e87acb6f0a096ec`.
    CodeGraph binds the only production call path as
    `routes.rs` route → `product_tasks.rs::api_approve_and_output_product_task`
@@ -647,8 +652,8 @@ All 4 implementation and migration packets of AC6 have converged:
    pre-cleanup tree at `73fed5fedf2361ee546b831b3e87acb6f0a096ec`; cleanup must
    not cross a group boundary after a scoped check fails.
 
-   - **Rollback group `ac7-http-compatibility-surface` — canonical owner:
-     HTTP routing/handler.** Delete the route registration (including its
+   - **Rollback group `ac7-http-compatibility-surface` — runtime owner
+     evidence: HTTP routing/handler.** Delete the route registration (including its
      preflight branch) in `engine/src/http_server/routes.rs` for
      `POST /api/v1/product/tasks/:task_id/approve-and-output`, and delete
      `api_approve_and_output_product_task` in
@@ -661,7 +666,7 @@ All 4 implementation and migration packets of AC6 have converged:
      remove that obsolete assertion while retaining coverage for the separate
      canonical authority paths.
 
-   - **Rollback group `ac7-local-store-compatibility` — canonical owner:
+   - **Rollback group `ac7-local-store-compatibility` — runtime owner evidence:
      `LocalProductStore`.** Delete
      `approve_and_output_product_task_for_tenant` and
      `approve_and_output_product_task` from
@@ -684,8 +689,8 @@ All 4 implementation and migration packets of AC6 have converged:
      `stale_approval_blocked_without_trustworthy_verification` and
      `finalize_idempotent_after_completion`.
 
-   - **Rollback group `ac7-consumer-compatibility-surface` — canonical owners:
-     typed SDK and Dashboard projections.** Delete the deprecated wrapper
+   - **Rollback group `ac7-consumer-compatibility-surface` — runtime owner
+     evidence: typed SDK and Dashboard projections.** Delete the deprecated wrapper
      `approve_and_output_product_task` from
      `sdk/python/src/agent_control_plane_sdk/client.py`,
      `approveAndOutputProductTask` from `sdk/typescript/src/index.ts`, and
