@@ -62,7 +62,8 @@ where
     }
 }
 
-const PRODUCT_TASK_SELECT: &str = "SELECT schema_version, task_id, tenant_id, workspace_id,
+pub(super) const PRODUCT_TASK_SELECT: &str =
+    "SELECT schema_version, task_id, tenant_id, workspace_id,
     idempotency_key, status, version, objective_fingerprint, target_id, target_repo_path,
     source_revision, source_tree_hash, output_intent, risk_class, approval_required,
     confirm_execution, confirm_output, intake_contract_sha256, intake_json,
@@ -1531,17 +1532,24 @@ impl LocalProductStore {
         )
     }
 
+    pub(super) fn get_product_task_locked(
+        conn: &rusqlite::Connection,
+        task_id: &str,
+    ) -> Result<Option<Value>, String> {
+        conn.query_row(
+            &format!("{PRODUCT_TASK_SELECT} WHERE task_id = ?1"),
+            params![task_id],
+            map_product_task_row,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
     pub fn get_product_task(&self, task_id: &str) -> Result<Option<Value>, String> {
         match &self.db {
-            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                conn.query_row(
-                    &format!("{PRODUCT_TASK_SELECT} WHERE task_id = ?1"),
-                    params![task_id],
-                    map_product_task_row,
-                )
-                .optional()
-                .map_err(|e| e.to_string())
-            }),
+            DatabaseConnection::Sqlite(_) => {
+                self.with_conn(|conn| Self::get_product_task_locked(conn, task_id))
+            }
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let row = client
@@ -7333,7 +7341,7 @@ impl LocalProductStore {
         }
     }
 
-    fn bind_product_task_plan_run(
+    pub(crate) fn bind_product_task_plan_run(
         &self,
         task_id: &str,
         plan_id: &str,
@@ -9259,7 +9267,7 @@ fn strict_product_task_bool_pg(value: i32, field: &str) -> Result<bool, String> 
 }
 
 #[cfg(feature = "pg")]
-fn product_task_row_to_json_pg(row: &postgres::Row) -> Result<Value, String> {
+pub(super) fn product_task_row_to_json_pg(row: &postgres::Row) -> Result<Value, String> {
     let intake_json: String = row.get("intake_json");
     let binding_json: Option<String> = row.get("workspace_binding_json");
     let intake = public_product_intake_json(&intake_json)?;

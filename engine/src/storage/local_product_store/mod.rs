@@ -70,6 +70,7 @@ use r2d2::Pool;
 #[cfg(feature = "pg")]
 use r2d2_postgres::PostgresConnectionManager;
 
+pub use crate::product_golden_path::ValidatedProductTaskIntake;
 pub use crate::read_only_planner::WorkflowPlanIds;
 pub use adaptive_observation::{
     AdaptiveObservationInput, AdaptiveObservationSummary, ADAPTIVE_OBSERVATION_SCHEMA_VERSION,
@@ -331,6 +332,70 @@ impl LocalProductStore {
                 }
             }
         })
+    }
+
+    /// Execute cross-domain operations under a single atomic store-owned transaction.
+    ///
+    /// The transaction boundary is owned exclusively by `LocalProductStore`.
+    /// The closure receives a mutable reference to `StoreTransaction`, from which
+    /// borrowed domain views (`WorkflowTx`, `ProductTaskTx`, `ManagedAcceptanceTx`, `RweTx`)
+    /// can be accessed. Views have no independent `commit` or `rollback` operations.
+    pub fn with_transaction<F, R>(&self, f: F) -> Result<R, String>
+    where
+        F: for<'a, 'c> FnOnce(&mut StoreTransaction<'a, 'c>) -> Result<R, String>,
+    {
+        match &self.db {
+            DatabaseConnection::Sqlite(conn) => {
+                let guard = conn.lock().map_err(|e| e.to_string())?;
+                guard
+                    .execute_batch("BEGIN IMMEDIATE")
+                    .map_err(|e| e.to_string())?;
+                let outcome = {
+                    let mut store_tx = StoreTransaction {
+                        backend: BackendTx::Sqlite(&guard),
+                        store: self,
+                    };
+                    f(&mut store_tx)
+                };
+                match outcome {
+                    Ok(val) => {
+                        guard.execute_batch("COMMIT").map_err(|e| {
+                            let _ = guard.execute_batch("ROLLBACK");
+                            e.to_string()
+                        })?;
+                        Ok(val)
+                    }
+                    Err(err) => {
+                        let _ = guard.execute_batch("ROLLBACK");
+                        Err(err)
+                    }
+                }
+            }
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(pool) => {
+                let mut client = pool.get().map_err(|e| format!("PG pool get failed: {e}"))?;
+                let tx = client.transaction().map_err(|e| e.to_string())?;
+                let tx_mutex = Mutex::new(tx);
+                let outcome = {
+                    let mut store_tx = StoreTransaction {
+                        backend: BackendTx::Pg(&tx_mutex),
+                        store: self,
+                    };
+                    f(&mut store_tx)
+                };
+                let tx = tx_mutex.into_inner().map_err(|e| e.to_string())?;
+                match outcome {
+                    Ok(val) => {
+                        tx.commit().map_err(|e| e.to_string())?;
+                        Ok(val)
+                    }
+                    Err(err) => {
+                        let _ = tx.rollback();
+                        Err(err)
+                    }
+                }
+            }
+        }
     }
 
     pub fn checkpoint_wal(&self) -> Result<(), String> {
@@ -665,4 +730,204 @@ pub(super) fn str_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
         current = current.get(*part)?;
     }
     current.as_str()
+}
+
+/// The underlying active database transaction handle for SQLite or PostgreSQL.
+pub enum BackendTx<'a, 'c> {
+    Sqlite(&'a Connection),
+    #[cfg(feature = "pg")]
+    Pg(&'a Mutex<postgres::Transaction<'c>>),
+    #[cfg(not(feature = "pg"))]
+    #[doc(hidden)]
+    _PgPhantom(std::marker::PhantomData<&'c ()>),
+}
+
+/// Unified borrowed store transaction wrapper.
+///
+/// Borrows the active transaction for lifetime `'a`. Does not expose independent
+/// commit or rollback methods; commits happen exactly once on `Ok(())` at the
+/// boundary of `LocalProductStore::with_transaction`.
+pub struct StoreTransaction<'a, 'c> {
+    pub(crate) backend: BackendTx<'a, 'c>,
+    pub(crate) store: &'a LocalProductStore,
+}
+
+impl<'a, 'c> StoreTransaction<'a, 'c> {
+    pub fn workflow<'b>(&'b mut self) -> WorkflowTx<'b, 'a, 'c> {
+        WorkflowTx { tx: self }
+    }
+
+    pub fn product_task<'b>(&'b mut self) -> ProductTaskTx<'b, 'a, 'c> {
+        ProductTaskTx { tx: self }
+    }
+
+    pub fn managed_acceptance<'b>(&'b mut self) -> ManagedAcceptanceTx<'b, 'a, 'c> {
+        ManagedAcceptanceTx { tx: self }
+    }
+
+    pub fn rwe<'b>(&'b mut self) -> RweTx<'b, 'a, 'c> {
+        RweTx { tx: self }
+    }
+
+    pub fn append_audit(
+        &mut self,
+        actor: &str,
+        action: &str,
+        resource: &str,
+        details: &Value,
+    ) -> Result<(), String> {
+        match &mut self.backend {
+            BackendTx::Sqlite(conn) => {
+                append_audit_locked(conn, &self.store.now(), actor, action, resource, details)?;
+                Ok(())
+            }
+            #[cfg(feature = "pg")]
+            BackendTx::Pg(tx_mutex) => {
+                let mut tx = tx_mutex.lock().map_err(|e| e.to_string())?;
+                let now = self.store.now();
+                let details_json = details.to_string();
+                tx.execute(
+                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                     VALUES ($1, $2, $3, $4, $5)",
+                    &[&now, &actor, &action, &resource, &details_json],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            #[cfg(not(feature = "pg"))]
+            BackendTx::_PgPhantom(_) => unreachable!(),
+        }
+    }
+
+    pub fn store(&self) -> &'a LocalProductStore {
+        self.store
+    }
+}
+
+/// Borrowed transaction view for the Workflow Runtime domain.
+pub struct WorkflowTx<'b, 'a, 'c> {
+    pub(crate) tx: &'b mut StoreTransaction<'a, 'c>,
+}
+
+impl<'b, 'a, 'c> WorkflowTx<'b, 'a, 'c> {
+    pub fn append_audit(
+        &mut self,
+        actor: &str,
+        action: &str,
+        resource: &str,
+        details: &Value,
+    ) -> Result<(), String> {
+        self.tx.append_audit(actor, action, resource, details)
+    }
+
+    pub fn get_plan(&self, plan_id: &str) -> Result<Option<Value>, String> {
+        self.tx.store.get_workflow_plan(plan_id)
+    }
+
+    pub fn get_run(&self, run_id: &str) -> Result<Option<Value>, String> {
+        self.tx.store.get_workflow_run(run_id)
+    }
+}
+
+/// Borrowed transaction view for the Product Task domain.
+pub struct ProductTaskTx<'b, 'a, 'c> {
+    pub(crate) tx: &'b mut StoreTransaction<'a, 'c>,
+}
+
+impl<'b, 'a, 'c> ProductTaskTx<'b, 'a, 'c> {
+    pub fn admit_task(
+        &mut self,
+        intake: &ValidatedProductTaskIntake,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.tx.store.admit_product_task(intake, actor)
+    }
+
+    pub fn get_task(&self, task_id: &str) -> Result<Option<Value>, String> {
+        match &self.tx.backend {
+            BackendTx::Sqlite(conn) => LocalProductStore::get_product_task_locked(conn, task_id),
+            #[cfg(feature = "pg")]
+            BackendTx::Pg(tx_mutex) => {
+                let mut tx = tx_mutex.lock().map_err(|e| e.to_string())?;
+                let row = tx
+                    .query_opt(
+                        &format!("{} WHERE task_id = $1", product_tasks::PRODUCT_TASK_SELECT),
+                        &[&task_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                row.map(|r| product_tasks::product_task_row_to_json_pg(&r))
+                    .transpose()
+            }
+            #[cfg(not(feature = "pg"))]
+            BackendTx::_PgPhantom(_) => unreachable!(),
+        }
+    }
+
+    pub fn bind_plan_run(
+        &mut self,
+        task_id: &str,
+        plan_id: &str,
+        run_id: &str,
+        actor: &str,
+    ) -> Result<(), String> {
+        self.tx
+            .store
+            .bind_product_task_plan_run(task_id, plan_id, run_id, actor)
+    }
+
+    pub fn append_audit(
+        &mut self,
+        actor: &str,
+        action: &str,
+        resource: &str,
+        details: &Value,
+    ) -> Result<(), String> {
+        self.tx.append_audit(actor, action, resource, details)
+    }
+}
+
+/// Borrowed transaction view for the Managed Acceptance domain.
+pub struct ManagedAcceptanceTx<'b, 'a, 'c> {
+    pub(crate) tx: &'b mut StoreTransaction<'a, 'c>,
+}
+
+impl<'b, 'a, 'c> ManagedAcceptanceTx<'b, 'a, 'c> {
+    pub fn append_audit(
+        &mut self,
+        actor: &str,
+        action: &str,
+        resource: &str,
+        details: &Value,
+    ) -> Result<(), String> {
+        self.tx.append_audit(actor, action, resource, details)
+    }
+
+    pub fn validate_task_phase(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        mode: &str,
+        rev: &str,
+    ) -> Result<Value, String> {
+        self.tx
+            .store
+            .validate_managed_acceptance_product_task_phase(tenant_id, task_id, mode, rev)
+    }
+}
+
+/// Borrowed transaction view for the Real Workload Evidence domain.
+pub struct RweTx<'b, 'a, 'c> {
+    pub(crate) tx: &'b mut StoreTransaction<'a, 'c>,
+}
+
+impl<'b, 'a, 'c> RweTx<'b, 'a, 'c> {
+    pub fn append_audit(
+        &mut self,
+        actor: &str,
+        action: &str,
+        resource: &str,
+        details: &Value,
+    ) -> Result<(), String> {
+        self.tx.append_audit(actor, action, resource, details)
+    }
 }
