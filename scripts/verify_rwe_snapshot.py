@@ -252,6 +252,30 @@ def verify_observed_toolchain(failures: list[str]) -> None:
             failures.append(f"observed toolchain differs from the frozen binding: {name}")
 
 
+def resolve_trace_binary(name: str, environment: dict[str, str], failures: list[str]) -> str | None:
+    if name == "cargo":
+        pinned = Path.home() / ".rustup" / "toolchains" / "1.96.0-x86_64-unknown-linux-gnu" / "bin" / "cargo"
+        if pinned.is_file() and os.access(pinned, os.X_OK):
+            return str(pinned)
+    path = shutil.which(name, path=environment["PATH"])
+    if path is None:
+        failures.append(f"provider-free trace binary is unavailable: {name}")
+        return None
+    return str(Path(path).resolve())
+
+
+def find_engine_test_binary(target: Path, failures: list[str]) -> Path | None:
+    candidates = sorted(
+        path
+        for path in (target / "debug" / "deps").glob("engine-*")
+        if path.is_file() and os.access(path, os.X_OK)
+    )
+    if not candidates:
+        failures.append("provider-free trace engine test binary is unavailable")
+        return None
+    return candidates[-1]
+
+
 def _provider_free_environment(home: Path, target: Path) -> dict[str, str]:
     """Return an allowlisted environment with no host configuration authority."""
     environment = {
@@ -414,6 +438,10 @@ def verify_provider_free_traces(
         home.mkdir()
         (home / "uv-cache").mkdir()
         environment = _provider_free_environment(home, target)
+        uv_binary = resolve_trace_binary("uv", environment, failures)
+        cargo_binary = resolve_trace_binary("cargo", environment, failures)
+        if uv_binary is None or cargo_binary is None:
+            return
         source_environment = dict(environment)
         source_environment["PYTHONPATH"] = str(trace_source / "apps/api/src")
         mounts = {
@@ -421,15 +449,18 @@ def verify_provider_free_traces(
             trace_harness: "/tmp/rwe-harness",
             target: "/tmp/rwe-target",
         }
-        trace_python = f"{mounts[trace_source]}/apps/api/.venv/bin/python"
         _run_provider_free_trace(
             "pre_ac_source_materializer",
             [
-                "uv",
+                uv_binary,
                 "run",
-                "--no-project",
-                "--",
-                trace_python,
+                "--locked",
+                "--no-sync",
+                "--project",
+                "apps/api/pyproject.toml",
+                "--extra",
+                "dev",
+                "python",
                 "tools/materialize_sample_baseline.py",
             ],
             trace_source,
@@ -442,11 +473,15 @@ def verify_provider_free_traces(
         _run_provider_free_trace(
             "pre_ac_source_pytest",
             [
-                "uv",
+                uv_binary,
                 "run",
-                "--no-project",
-                "--",
-                trace_python,
+                "--locked",
+                "--no-sync",
+                "--project",
+                "apps/api/pyproject.toml",
+                "--extra",
+                "dev",
+                "python",
                 "-m",
                 "pytest",
                 "apps/api/tests/",
@@ -462,7 +497,7 @@ def verify_provider_free_traces(
         _run_provider_free_trace(
             "post_ac_engine_tests",
             [
-                "cargo",
+                cargo_binary,
                 "test",
                 "-p",
                 "engine",
@@ -477,23 +512,27 @@ def verify_provider_free_traces(
             True,
             failures,
         )
+        engine_test_binary = find_engine_test_binary(target, failures)
+        if engine_test_binary is None:
+            return
         # This registered test intentionally probes nested bubblewrap. Running
         # it inside the outer sandbox makes it observe the outer namespace and
         # changes the probe result; its direct lane remains strict, offline,
-        # and provider-free while preserving the test's own fail-closed branch.
+        # and cache-free while preserving the test's own fail-closed branch.
+        nested_environment = {
+            key: value
+            for key, value in environment.items()
+            if key not in {"CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR", "UV_CACHE_DIR"}
+        }
         _run_provider_free_trace(
             "post_ac_nested_isolation_probe",
             [
-                "cargo",
-                "test",
-                "-p",
-                "engine",
+                str(engine_test_binary),
                 "cli::codex_mediation_admission::tests::isolation_probe_hides_synthetic_auth_path",
-                "--",
                 "--exact",
             ],
             trace_harness,
-            environment,
+            nested_environment,
             mounts,
             {trace_harness, target},
             False,
