@@ -601,6 +601,7 @@ class AgentControlPlaneClient:
     def approve_and_output_product_task(
         self, task_id: str, confirm_output: bool = False
     ) -> dict[str, Any]:
+        """@deprecated Use approve_product_task and output_product_task as separate authority steps."""
         return self._post(
             f"/api/v1/product/tasks/{_quote_path_segment(task_id)}/approve-and-output",
             {"confirm_output": confirm_output},
