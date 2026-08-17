@@ -51,20 +51,18 @@ const DEFAULT_PROVIDER_MODEL: &str = "default";
 
 fn main() {
     tracing_subscriber::fmt::init();
-    let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-    let addr = format!("{}:{}", host, port);
-    let profile = std::env::var("ACP_PROFILE")
-        .unwrap_or_else(|_| "local".to_string())
-        .to_lowercase();
-
-    if profile != "local" && profile != "production" {
-        eprintln!(
-            "[acp-fatal] ACP_PROFILE must be 'local' or 'production', got '{}'",
-            profile
-        );
+    let app_config = AppConfig::from_env().unwrap_or_else(|err| {
+        eprintln!("[acp-fatal] config initialization error: {err}");
+        std::process::exit(1);
+    });
+    if let Err(err) = app_config.validate() {
+        eprintln!("[acp-fatal] config validation error: {err}");
         std::process::exit(1);
     }
+    let host = app_config.server.host.clone();
+    let port = app_config.server.port.to_string();
+    let addr = format!("{}:{}", host, port);
+    let profile = app_config.profile.as_str().to_string();
 
     let db_path = local_db_path();
     let backup_dir = local_backup_dir(&db_path);
@@ -1089,6 +1087,367 @@ fn production_profile_violations_inner(
     violations
 }
 
+/// Top-level runtime profile modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeProfile {
+    Local,
+    Production,
+}
+
+impl RuntimeProfile {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Production => "production",
+        }
+    }
+}
+
+/// Server network and routing configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub api_prefix: String,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            api_prefix: "/api/v1".to_string(),
+        }
+    }
+}
+
+/// Database persistence backend configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatabaseConfig {
+    pub database_url: Option<String>,
+    pub db_path: PathBuf,
+    pub encryption_key: Option<String>,
+}
+
+/// Storage backup configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupConfig {
+    pub backup_dir: PathBuf,
+    pub interval_sec: u64,
+    pub retain_count: usize,
+    pub explicitly_configured: bool,
+}
+
+/// Symmetric TLS configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TlsConfig {
+    pub cert_path: Option<PathBuf>,
+    pub key_path: Option<PathBuf>,
+}
+
+impl TlsConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        let cert_str = self.cert_path.as_ref().map(|p| p.to_string_lossy());
+        let key_str = self.key_path.as_ref().map(|p| p.to_string_lossy());
+        validate_tls_config(cert_str.as_deref(), key_str.as_deref())
+    }
+}
+
+/// Authentication and RBAC configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthConfig {
+    pub require_auth: bool,
+    pub admin_api_key: Option<String>,
+}
+
+impl AuthConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.require_auth {
+            let key = self.admin_api_key.as_deref().ok_or_else(|| {
+                "ACP_REQUIRE_AUTH=1 requires ACP_ADMIN_API_KEY to be set".to_string()
+            })?;
+            if !validate_token_shape(key) {
+                return Err(
+                    "ACP_ADMIN_API_KEY invalid format: must match harness_<64 hex chars>"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// CORS configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorsConfig {
+    pub origins: String,
+    pub explicitly_configured: bool,
+}
+
+/// Execution mode selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMode {
+    Off,
+    Provider,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionModeConfig {
+    pub mode: ExecutionMode,
+    pub agent_runtime_enabled: bool,
+}
+
+/// Single provider configuration parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SingleProviderConfig {
+    pub provider_type: String,
+    pub model: String,
+    pub base_url: Option<String>,
+    pub credential_env: Option<String>,
+    pub cb_threshold: u64,
+    pub cb_recovery_ms: u64,
+}
+
+/// Top-level application composition configuration.
+#[derive(Debug, Clone)]
+pub struct AppConfig {
+    pub profile: RuntimeProfile,
+    pub server: ServerConfig,
+    pub database: DatabaseConfig,
+    pub backup: BackupConfig,
+    pub tls: TlsConfig,
+    pub auth: AuthConfig,
+    pub cors: CorsConfig,
+    pub execution: ExecutionModeConfig,
+    pub provider: Option<SingleProviderConfig>,
+    pub pricing: (Option<f64>, Option<f64>),
+    pub cost_limits: engine::provider::CostGateConfig,
+    pub cli: CliConfig,
+    pub scheduler: SchedulerConfig,
+    pub dashboard_dir: Option<PathBuf>,
+}
+
+impl AppConfig {
+    pub fn from_env() -> Result<Self, String> {
+        Self::from_lookup(|key| std::env::var(key).ok())
+    }
+
+    pub fn from_lookup<F>(lookup: F) -> Result<Self, String>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let profile_raw = lookup("ACP_PROFILE")
+            .map(|v| v.to_lowercase())
+            .unwrap_or_else(|| "local".to_string());
+        let profile = match profile_raw.as_str() {
+            "local" => RuntimeProfile::Local,
+            "production" => RuntimeProfile::Production,
+            other => {
+                return Err(format!(
+                    "ACP_PROFILE must be 'local' or 'production', got '{other}'"
+                ))
+            }
+        };
+
+        let host = lookup("HOST").unwrap_or_else(|| "127.0.0.1".to_string());
+        let port = lookup("PORT")
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(8080);
+        let server = ServerConfig {
+            host,
+            port,
+            api_prefix: "/api/v1".to_string(),
+        };
+
+        let db_path = lookup("ACP_DB_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(local_db_path);
+        let database = DatabaseConfig {
+            database_url: lookup("ACP_DATABASE_URL"),
+            db_path: db_path.clone(),
+            encryption_key: lookup("ACP_DB_ENCRYPTION_KEY"),
+        };
+
+        let backup_explicit = lookup("ACP_BACKUP_DIR").is_some();
+        let backup_dir = lookup("ACP_BACKUP_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| local_backup_dir(&db_path));
+        let backup_interval = lookup("ACP_BACKUP_INTERVAL_SEC")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let backup_retain = lookup("ACP_BACKUP_RETAIN_COUNT")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(5);
+        let backup = BackupConfig {
+            backup_dir,
+            interval_sec: backup_interval,
+            retain_count: backup_retain,
+            explicitly_configured: backup_explicit,
+        };
+
+        let tls = TlsConfig {
+            cert_path: lookup("ACP_TLS_CERT_PATH").map(PathBuf::from),
+            key_path: lookup("ACP_TLS_KEY_PATH").map(PathBuf::from),
+        };
+
+        let require_auth = lookup("ACP_REQUIRE_AUTH")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let admin_api_key = lookup("ACP_ADMIN_API_KEY");
+        let auth = AuthConfig {
+            require_auth,
+            admin_api_key,
+        };
+
+        let cors_explicit = lookup("ACP_CORS_ORIGINS").is_some();
+        let cors_origins = lookup("ACP_CORS_ORIGINS").unwrap_or_default();
+        let cors = CorsConfig {
+            origins: cors_origins,
+            explicitly_configured: cors_explicit,
+        };
+
+        let mode_raw = lookup("ACP_EXECUTION_MODE")
+            .unwrap_or_else(|| "off".to_string())
+            .to_lowercase();
+        let mode = match mode_raw.as_str() {
+            "off" | "" => ExecutionMode::Off,
+            "provider" => ExecutionMode::Provider,
+            other => {
+                return Err(format!(
+                    "ACP_EXECUTION_MODE must be 'off' or 'provider', got '{other}'"
+                ))
+            }
+        };
+        let agent_runtime_enabled = lookup("ACP_ENABLE_AGENT_RUNTIME")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let execution = ExecutionModeConfig {
+            mode,
+            agent_runtime_enabled,
+        };
+
+        let provider = lookup("ACP_PROVIDER_TYPE").map(|pt| {
+            let model = lookup("ACP_MODEL")
+                .filter(|m| !m.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_PROVIDER_MODEL.to_string());
+            let base_url = lookup("ACP_BASE_URL");
+            let credential_env = lookup("ACP_API_KEY");
+            let cb_threshold = lookup("ACP_CIRCUIT_BREAKER_THRESHOLD")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5);
+            let cb_recovery_ms = lookup("ACP_CIRCUIT_BREAKER_RECOVERY_MS")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30_000);
+            SingleProviderConfig {
+                provider_type: pt,
+                model,
+                base_url,
+                credential_env,
+                cb_threshold,
+                cb_recovery_ms,
+            }
+        });
+
+        let input_cost = lookup("ACP_PROVIDER_INPUT_COST_PER_1K_USD").and_then(|v| v.parse().ok());
+        let output_cost =
+            lookup("ACP_PROVIDER_OUTPUT_COST_PER_1K_USD").and_then(|v| v.parse().ok());
+        let pricing = (input_cost, output_cost);
+
+        let per_dispatch_cap = lookup("ACP_COST_PER_DISPATCH_USD").and_then(|v| v.parse().ok());
+        let daily_cap = lookup("ACP_COST_DAILY_USD").and_then(|v| v.parse().ok());
+        let cost_limits = engine::provider::CostGateConfig::new(per_dispatch_cap, daily_cap);
+
+        let cli = CliConfig::from_env();
+        let scheduler =
+            SchedulerConfig::from_env().map_err(|e| format!("scheduler config error: {e}"))?;
+        let dashboard_dir = lookup("ACP_DASHBOARD_DIR")
+            .or_else(|| lookup("DASHBOARD_DIR"))
+            .map(PathBuf::from);
+
+        Ok(AppConfig {
+            profile,
+            server,
+            database,
+            backup,
+            tls,
+            auth,
+            cors,
+            execution,
+            provider,
+            pricing,
+            cost_limits,
+            cli,
+            scheduler,
+            dashboard_dir,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        self.tls.validate()?;
+        self.auth.validate()?;
+
+        if self.profile == RuntimeProfile::Production {
+            let violations = production_profile_violations_inner(
+                &self.server.host,
+                self.auth.require_auth,
+                &self.cors.origins,
+                self.backup.explicitly_configured,
+            );
+            if !violations.is_empty() {
+                return Err(format!(
+                    "production profile violations: {}",
+                    violations.join("; ")
+                ));
+            }
+        }
+
+        if self.execution.agent_runtime_enabled {
+            if let Some(p) = self.pricing.0 {
+                if p <= 0.0 || p.is_nan() || p.is_infinite() {
+                    return Err(
+                        "ACP_PROVIDER_INPUT_COST_PER_1K_USD must be positive finite number"
+                            .to_string(),
+                    );
+                }
+            }
+            if let Some(p) = self.pricing.1 {
+                if p <= 0.0 || p.is_nan() || p.is_infinite() {
+                    return Err(
+                        "ACP_PROVIDER_OUTPUT_COST_PER_1K_USD must be positive finite number"
+                            .to_string(),
+                    );
+                }
+            }
+            if let (Some(pd), Some(d)) = (
+                self.cost_limits.per_dispatch_cap_usd,
+                self.cost_limits.daily_cap_usd,
+            ) {
+                if pd <= 0.0 || pd.is_nan() || pd.is_infinite() {
+                    return Err(
+                        "ACP_COST_PER_DISPATCH_USD must be positive finite number".to_string()
+                    );
+                }
+                if d <= 0.0 || d.is_nan() || d.is_infinite() {
+                    return Err("ACP_COST_DAILY_USD must be positive finite number".to_string());
+                }
+                if pd > d {
+                    return Err(
+                        "ACP_COST_PER_DISPATCH_USD cannot exceed ACP_COST_DAILY_USD".to_string()
+                    );
+                }
+            }
+        }
+
+        if self.cli.enabled && !self.auth.require_auth {
+            return Err(
+                "ACP_REQUIRE_AUTH=1 is required when managed CLI execution is enabled".to_string(),
+            );
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1639,5 +1998,144 @@ mod tests {
         let admin_scopes = local_admin_scope_list();
         assert!(!admin_scopes.is_empty());
         assert_eq!(admin_scopes.len(), local_admin_scopes().len());
+    }
+
+    #[test]
+    fn test_app_config_default_off_invariants() {
+        let config = AppConfig::from_lookup(|_| None).expect("default config should parse");
+        assert_eq!(config.profile, RuntimeProfile::Local);
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.server.api_prefix, "/api/v1");
+        assert!(!config.auth.require_auth);
+        assert!(config.auth.admin_api_key.is_none());
+        assert_eq!(config.execution.mode, ExecutionMode::Off);
+        assert!(!config.execution.agent_runtime_enabled);
+        assert!(config.provider.is_none());
+        assert_eq!(config.pricing, (None, None));
+        assert!(!config.cost_limits.is_active());
+        assert_eq!(config.backup.interval_sec, 0);
+        assert_eq!(config.backup.retain_count, 5);
+        assert!(!config.backup.explicitly_configured);
+        assert_eq!(config.tls.cert_path, None);
+        assert_eq!(config.tls.key_path, None);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_app_config_precedence_and_overrides() {
+        let valid_key = format!("harness_{}", "a".repeat(64));
+        let mock_env = |key: &str| match key {
+            "ACP_PROFILE" => Some("production".to_string()),
+            "HOST" => Some("10.0.0.1".to_string()),
+            "PORT" => Some("9090".to_string()),
+            "ACP_REQUIRE_AUTH" => Some("1".to_string()),
+            "ACP_ADMIN_API_KEY" => Some(valid_key.clone()),
+            "ACP_CORS_ORIGINS" => Some("https://example.com".to_string()),
+            "ACP_BACKUP_DIR" => Some("/data/backups".to_string()),
+            "ACP_EXECUTION_MODE" => Some("provider".to_string()),
+            "ACP_PROVIDER_TYPE" => Some("openai_compatible".to_string()),
+            "ACP_MODEL" => Some("gpt-4o".to_string()),
+            "ACP_API_KEY" => Some("OPENAI_API_KEY".to_string()),
+            _ => None,
+        };
+        let config = AppConfig::from_lookup(mock_env).expect("mock config should parse");
+        assert_eq!(config.profile, RuntimeProfile::Production);
+        assert_eq!(config.server.host, "10.0.0.1");
+        assert_eq!(config.server.port, 9090);
+        assert!(config.auth.require_auth);
+        assert_eq!(config.execution.mode, ExecutionMode::Provider);
+        assert!(config.backup.explicitly_configured);
+        assert_eq!(config.cors.origins, "https://example.com");
+        let provider = config
+            .provider
+            .as_ref()
+            .expect("provider config should be present");
+        assert_eq!(provider.provider_type, "openai_compatible");
+        assert_eq!(provider.model, "gpt-4o");
+        assert_eq!(provider.credential_env.as_deref(), Some("OPENAI_API_KEY"));
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_app_config_production_profile_fail_closed_violations() {
+        let valid_key = format!("harness_{}", "a".repeat(64));
+        // Missing auth in production
+        let mock_no_auth = |key: &str| match key {
+            "ACP_PROFILE" => Some("production".to_string()),
+            "ACP_CORS_ORIGINS" => Some("https://example.com".to_string()),
+            "ACP_BACKUP_DIR" => Some("/data/backups".to_string()),
+            _ => None,
+        };
+        let config = AppConfig::from_lookup(mock_no_auth).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("ACP_REQUIRE_AUTH must be enabled"), "{err}");
+
+        // Wildcard CORS in production
+        let mock_wildcard_cors = |key: &str| match key {
+            "ACP_PROFILE" => Some("production".to_string()),
+            "ACP_REQUIRE_AUTH" => Some("1".to_string()),
+            "ACP_ADMIN_API_KEY" => Some(valid_key.clone()),
+            "ACP_CORS_ORIGINS" => Some("*".to_string()),
+            "ACP_BACKUP_DIR" => Some("/data/backups".to_string()),
+            _ => None,
+        };
+        let config = AppConfig::from_lookup(mock_wildcard_cors).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("ACP_CORS_ORIGINS must not be '*'"), "{err}");
+
+        // Missing backup dir in production
+        let mock_no_backup = |key: &str| match key {
+            "ACP_PROFILE" => Some("production".to_string()),
+            "ACP_REQUIRE_AUTH" => Some("1".to_string()),
+            "ACP_ADMIN_API_KEY" => Some(valid_key.clone()),
+            "ACP_CORS_ORIGINS" => Some("https://example.com".to_string()),
+            _ => None,
+        };
+        let config = AppConfig::from_lookup(mock_no_backup).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("ACP_BACKUP_DIR must be configured"), "{err}");
+    }
+
+    #[test]
+    fn test_app_config_pricing_and_cost_cap_validation() {
+        let mock_invalid_pricing = |key: &str| match key {
+            "ACP_ENABLE_AGENT_RUNTIME" => Some("1".to_string()),
+            "ACP_PROVIDER_INPUT_COST_PER_1K_USD" => Some("-0.01".to_string()),
+            _ => None,
+        };
+        let config = AppConfig::from_lookup(mock_invalid_pricing).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("ACP_PROVIDER_INPUT_COST_PER_1K_USD must be positive"),
+            "{err}"
+        );
+
+        let mock_exceeded_cost_cap = |key: &str| match key {
+            "ACP_ENABLE_AGENT_RUNTIME" => Some("1".to_string()),
+            "ACP_COST_PER_DISPATCH_USD" => Some("10.0".to_string()),
+            "ACP_COST_DAILY_USD" => Some("5.0".to_string()),
+            _ => None,
+        };
+        let config = AppConfig::from_lookup(mock_exceeded_cost_cap).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("ACP_COST_PER_DISPATCH_USD cannot exceed ACP_COST_DAILY_USD"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_app_config_zero_credential_leakage() {
+        let mock_env = |key: &str| match key {
+            "ACP_PROVIDER_TYPE" => Some("anthropic".to_string()),
+            "ACP_API_KEY" => Some("ANTHROPIC_API_KEY".to_string()),
+            _ => None,
+        };
+        let config = AppConfig::from_lookup(mock_env).unwrap();
+        let debug_str = format!("{config:?}");
+        // Must contain symbolic reference, not raw bearer tokens
+        assert!(debug_str.contains("ANTHROPIC_API_KEY"));
+        assert!(!debug_str.contains("sk-ant-"));
     }
 }
