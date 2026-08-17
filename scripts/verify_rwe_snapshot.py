@@ -4,15 +4,19 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 
 
 FROZEN_RWE_MANIFEST_SHA256 = (
@@ -72,6 +76,9 @@ FROZEN_TRACE_BINARY_IDENTITIES = {
     },
 }
 GIT_BINARY = FROZEN_TRACE_BINARY_IDENTITIES["git"]["path"]
+MAX_TRACE_OUTPUT_BYTES = 128 * 1024
+PROCESS_TERMINATION_GRACE_SECONDS = 5
+CURRENT_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def sha256_file(path: Path) -> str:
@@ -105,12 +112,27 @@ def verify_file(root: Path, relative: str, expected: str, failures: list[str]) -
         failures.append(f"snapshot hash mismatch: {relative}")
 
 
+def _git_environment() -> dict[str, str]:
+    """Disable host Git configuration and repository-selection overrides."""
+    return {
+        "PATH": os.defpath,
+        "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_COUNT": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+
+
 def git_output(root: Path, *args: str) -> str | None:
     result = subprocess.run(
         [GIT_BINARY, "-C", str(root), *args],
         check=False,
         capture_output=True,
         text=True,
+        env=_git_environment(),
     )
     if result.returncode:
         return None
@@ -122,6 +144,7 @@ def git_blob(root: Path, revision: str, relative: str) -> bytes | None:
         [GIT_BINARY, "-C", str(root), "show", f"{revision}:{relative}"],
         check=False,
         capture_output=True,
+        env=_git_environment(),
     )
     return result.stdout if result.returncode == 0 else None
 
@@ -131,6 +154,7 @@ def git_tree_hash(root: Path, revision: str) -> str | None:
         [GIT_BINARY, "-C", str(root), "ls-tree", "-r", "-z", "--full-tree", revision],
         check=False,
         capture_output=True,
+        env=_git_environment(),
     )
     if result.returncode:
         return None
@@ -179,6 +203,7 @@ def git_revision_paths(root: Path, revision: str) -> list[str]:
         [GIT_BINARY, "-C", str(root), "ls-tree", "-r", "-z", "--name-only", revision],
         check=False,
         capture_output=True,
+        env=_git_environment(),
     )
     if result.returncode:
         raise OSError(f"cannot enumerate Git revision: {revision}")
@@ -190,6 +215,7 @@ def git_revision_modes(root: Path, revision: str) -> dict[str, int]:
         [GIT_BINARY, "-C", str(root), "ls-tree", "-r", "-z", "--full-tree", revision],
         check=False,
         capture_output=True,
+        env=_git_environment(),
     )
     if result.returncode:
         raise OSError(f"cannot enumerate Git revision modes: {revision}")
@@ -226,10 +252,27 @@ def copy_recipe_overlay(
         source = root / relative
         if source.is_symlink() or not source.is_file():
             raise OSError(f"recipe overlay is not a regular file: {relative}")
+        expected_mode = modes.get(relative)
+        if expected_mode is None:
+            raise OSError(f"recipe overlay mode is unavailable: {relative}")
+        actual_executable = source.stat().st_mode & 0o111
+        if bool(actual_executable) != bool(expected_mode & 0o111):
+            raise OSError(f"recipe overlay executable mode differs: {relative}")
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
-        target.chmod(modes[relative])
+        target.chmod(expected_mode)
+
+
+def copy_cache_snapshot(source: Path, destination: Path, label: str) -> None:
+    """Materialize an independent cache copy without host symlink reach-through."""
+    try:
+        shutil.copytree(source, destination, symlinks=False)
+    except OSError as error:
+        raise OSError(f"cannot snapshot {label} cache: {error}") from error
+    for path in destination.rglob("*"):
+        if path.is_symlink():
+            raise OSError(f"{label} cache snapshot contains a symlink: {path}")
 
 
 def registered_source_commands(
@@ -372,16 +415,18 @@ def verify_observed_toolchain(failures: list[str]) -> None:
             failures.append(f"frozen toolchain binary digest differs: {name}")
             continue
         try:
-            result = subprocess.run(
+            result = _run_bounded_command(
                 [str(path), *arguments],
-                env={"PATH": str(path.parent)},
-                check=False,
-                capture_output=True,
-                text=True,
+                cwd=Path("/"),
+                environment={"PATH": str(path.parent)},
                 timeout=10,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except OSError as error:
             failures.append(f"observed toolchain probe unavailable: {name}: {type(error).__name__}")
+            continue
+        if result.error is not None or result.timed_out:
+            error_name = type(result.error).__name__ if result.error else "TimeoutExpired"
+            failures.append(f"observed toolchain probe unavailable: {name}: {error_name}")
             continue
         actual = result.stdout.strip()
         if name == "uv":
@@ -437,7 +482,10 @@ def _provider_free_environment(home: Path, target: Path) -> dict[str, str]:
         "RUSTUP_HOME": str(rustup_home),
         "UV_CACHE_DIR": str(uv_cache),
         "CARGO_TARGET_DIR": str(target),
-        "CARGO_BUILD_JOBS": "2",
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
         "CARGO_NET_OFFLINE": "true",
         "UV_OFFLINE": "true",
         "UV_PYTHON": FROZEN_TRACE_BINARY_IDENTITIES["python"]["path"],
@@ -453,6 +501,137 @@ def _provider_free_environment(home: Path, target: Path) -> dict[str, str]:
     return environment
 
 
+@dataclass(frozen=True)
+class BoundedCommandResult:
+    returncode: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool
+    error: BaseException | None
+    forbidden_markers: tuple[str, ...]
+    error_lines: tuple[str, ...]
+
+
+def _drain_output(
+    stream: object,
+    markers: tuple[str, ...],
+    state: dict[str, object],
+    output_key: str,
+) -> None:
+    marker_bytes = tuple((marker, marker.encode()) for marker in markers)
+    overlap_limit = max((len(encoded) for _, encoded in marker_bytes), default=1) - 1
+    overlap = b""
+    tail = bytearray()
+    line_buffer = ""
+    while True:
+        chunk = stream.read(64 * 1024)  # type: ignore[attr-defined]
+        if not chunk:
+            break
+        scan = overlap + chunk
+        for marker, encoded in marker_bytes:
+            if encoded in scan:
+                state["forbidden_markers"].add(marker)  # type: ignore[union-attr]
+        overlap = scan[-overlap_limit:] if overlap_limit else b""
+        text_chunk = chunk.decode(errors="replace")
+        lines = (line_buffer + text_chunk).splitlines(keepends=True)
+        line_buffer = ""
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            line_buffer = lines.pop()
+        for line in lines:
+            stripped = line.strip()
+            if stripped.lower().startswith(("error", "failed")) or "error:" in stripped.lower():
+                error_lines = state["error_lines"]  # type: ignore[assignment]
+                error_lines.append(stripped[:2000])  # type: ignore[union-attr]
+                del error_lines[:-8]  # type: ignore[index]
+        tail.extend(chunk)
+        if len(tail) > MAX_TRACE_OUTPUT_BYTES:
+            del tail[:-MAX_TRACE_OUTPUT_BYTES]
+    if line_buffer:
+        stripped = line_buffer.strip()
+        if stripped.lower().startswith(("error", "failed")) or "error:" in stripped.lower():
+            error_lines = state["error_lines"]  # type: ignore[assignment]
+            error_lines.append(stripped[:2000])  # type: ignore[union-attr]
+            del error_lines[:-8]  # type: ignore[index]
+    state[output_key] = bytes(tail)
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Terminate only the process group created for this verifier child."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        process.wait()
+
+
+def _run_bounded_command(
+    command: list[str | Path],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+    timeout: int,
+    forbidden_output: tuple[str, ...] = (),
+) -> BoundedCommandResult:
+    """Run one child with bounded output and private descendant cleanup."""
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as error:
+        return BoundedCommandResult(None, "", "", False, error, (), ())
+
+    state: dict[str, object] = {"forbidden_markers": set(), "error_lines": []}
+    stdout_thread = threading.Thread(
+        target=_drain_output,
+        args=(process.stdout, forbidden_output, state, "stdout"),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_drain_output,
+        args=(process.stderr, forbidden_output, state, "stderr"),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    timed_out = False
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _terminate_process_group(process)
+        returncode = process.returncode
+    stdout_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
+    stderr_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
+    if stdout_thread.is_alive() or stderr_thread.is_alive():
+        _terminate_process_group(process)
+        stdout_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
+        stderr_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
+    if returncode and not timed_out:
+        _terminate_process_group(process)
+    if process.stdout is not None:
+        process.stdout.close()
+    if process.stderr is not None:
+        process.stderr.close()
+    stdout = bytes(state.get("stdout", b"")).decode(errors="replace")
+    stderr = bytes(state.get("stderr", b"")).decode(errors="replace")
+    markers = tuple(sorted(state["forbidden_markers"]))  # type: ignore[arg-type]
+    error_lines = tuple(state["error_lines"])  # type: ignore[arg-type]
+    return BoundedCommandResult(returncode, stdout, stderr, timed_out, None, markers, error_lines)
+
+
 def _run_provider_free_trace(
     name: str,
     command: list[str],
@@ -465,141 +644,127 @@ def _run_provider_free_trace(
     forbidden_output: tuple[str, ...] = (),
 ) -> None:
     if not sandbox:
-        try:
-            result = subprocess.run(
-                command,
-                cwd=cwd,
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=3_600,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            failures.append(f"provider-free trace unavailable: {name}: {type(error).__name__}")
+        result = _run_bounded_command(
+            command,
+            cwd=cwd,
+            environment=environment,
+            timeout=3_600,
+            forbidden_output=forbidden_output,
+        )
+    else:
+        bubblewrap = Path(FROZEN_TRACE_BINARY_IDENTITIES["bwrap"]["path"])
+        if not bubblewrap.is_file():
+            failures.append("provider-free trace unavailable: bwrap is required")
             return
-        output = f"{result.stdout}\n{result.stderr}"
-        for marker in forbidden_output:
-            if marker in output:
-                failures.append(f"provider-free trace emitted forbidden marker: {name}: {marker}")
-        if result.returncode:
-            failures.append(f"provider-free trace failed: {name}: exit={result.returncode}")
-        return
-
-    bubblewrap = Path(FROZEN_TRACE_BINARY_IDENTITIES["bwrap"]["path"])
-    if not bubblewrap.is_file():
-        failures.append("provider-free trace unavailable: bwrap is required")
-        return
-    cargo_target = Path(environment["CARGO_TARGET_DIR"])
-    if not cargo_target.is_dir():
-        failures.append("provider-free trace unavailable: Cargo target cache is not readable")
-        return
-    mapped_cwd = mounts.get(cwd, str(cwd))
-    mapped_environment = dict(environment)
-    mapped_environment["HOME"] = "/tmp/rwe-home"
-    mapped_environment["XDG_CONFIG_HOME"] = "/tmp/rwe-home/config"
-    mapped_environment["CARGO_HOME"] = "/tmp/rwe-cargo-home"
-    mapped_environment["RUSTUP_HOME"] = "/tmp/rwe-home/rustup"
-    mapped_environment["CARGO_TARGET_DIR"] = "/tmp/rwe-target"
-    mapped_environment["UV_CACHE_DIR"] = "/tmp/rwe-host-uv-cache"
-    if "PYTHONPATH" in mapped_environment:
+        cargo_target = Path(environment["CARGO_TARGET_DIR"])
+        if not cargo_target.is_dir():
+            failures.append("provider-free trace unavailable: Cargo target cache is not readable")
+            return
+        mapped_cwd = mounts.get(cwd, str(cwd))
+        mapped_environment = dict(environment)
+        mapped_environment["HOME"] = "/tmp/rwe-home"
+        mapped_environment["XDG_CONFIG_HOME"] = "/tmp/rwe-home/config"
+        mapped_environment["CARGO_HOME"] = "/tmp/rwe-cargo-home"
+        mapped_environment["RUSTUP_HOME"] = "/tmp/rwe-home/rustup"
+        mapped_environment["CARGO_TARGET_DIR"] = "/tmp/rwe-target"
+        mapped_environment["UV_CACHE_DIR"] = "/tmp/rwe-host-uv-cache"
+        if "PYTHONPATH" in mapped_environment:
+            for host, guest in mounts.items():
+                mapped_environment["PYTHONPATH"] = mapped_environment["PYTHONPATH"].replace(
+                    str(host), guest
+                )
+        sandbox_command = [
+            bubblewrap,
+            "--die-with-parent",
+            "--unshare-net",
+            "--clearenv",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--ro-bind",
+            "/bin",
+            "/bin",
+            "--ro-bind",
+            "/lib",
+            "/lib",
+            "--ro-bind",
+            "/lib64",
+            "/lib64",
+            "--ro-bind",
+            "/etc",
+            "/etc",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/tmp/rwe-home",
+            "--dir",
+            "/tmp/rwe-home/config",
+            "--dir",
+            "/tmp/rwe-home/rustup",
+            "--dir",
+            "/tmp/rwe-cargo-home",
+            "--dir",
+            "/tmp/rwe-target",
+            "--dir",
+            "/tmp/rwe-source",
+            "--dir",
+            "/tmp/rwe-harness",
+            "--dir",
+            "/tmp/rwe-host-uv-cache",
+            "--dir",
+            "/workspace",
+            "--dir",
+            "/home",
+            "--dir",
+            str(Path.home()),
+            "--dir",
+            str(Path.home() / ".rustup"),
+            "--dir",
+            str(Path.home() / ".rustup" / "toolchains"),
+            "--dir",
+            str(Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent),
+            "--ro-bind",
+            str(Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent),
+            str(Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent),
+            "--dir",
+            str(Path.home() / ".local"),
+            "--dir",
+            str(Path.home() / ".local" / "bin"),
+            "--ro-bind",
+            FROZEN_TRACE_BINARY_IDENTITIES["uv"]["path"],
+            FROZEN_TRACE_BINARY_IDENTITIES["uv"]["path"],
+        ]
         for host, guest in mounts.items():
-            mapped_environment["PYTHONPATH"] = mapped_environment["PYTHONPATH"].replace(
-                str(host), guest
-            )
-    sandbox_command = [
-        bubblewrap,
-        "--die-with-parent",
-        "--unshare-net",
-        "--clearenv",
-        "--ro-bind",
-        "/usr",
-        "/usr",
-        "--ro-bind",
-        "/bin",
-        "/bin",
-        "--ro-bind",
-        "/lib",
-        "/lib",
-        "--ro-bind",
-        "/lib64",
-        "/lib64",
-        "--ro-bind",
-        "/etc",
-        "/etc",
-        "--dev",
-        "/dev",
-        "--proc",
-        "/proc",
-        "--tmpfs",
-        "/tmp",
-        "--dir",
-        "/tmp/rwe-home",
-        "--dir",
-        "/tmp/rwe-home/config",
-        "--dir",
-        "/tmp/rwe-home/rustup",
-        "--dir",
-        "/tmp/rwe-cargo-home",
-        "--dir",
-        "/tmp/rwe-target",
-        "--dir",
-        "/tmp/rwe-source",
-        "--dir",
-        "/tmp/rwe-harness",
-        "--dir",
-        "/tmp/rwe-host-uv-cache",
-        "--dir",
-        "/workspace",
-        "--dir",
-        "/home",
-        "--dir",
-        str(Path.home()),
-        "--dir",
-        str(Path.home() / ".rustup"),
-        "--dir",
-        str(Path.home() / ".rustup" / "toolchains"),
-        "--dir",
-        str(Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent),
-        "--ro-bind",
-        str(Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent),
-        str(Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent),
-        "--dir",
-        str(Path.home() / ".local"),
-        "--dir",
-        str(Path.home() / ".local" / "bin"),
-        "--ro-bind",
-        FROZEN_TRACE_BINARY_IDENTITIES["uv"]["path"],
-        FROZEN_TRACE_BINARY_IDENTITIES["uv"]["path"],
-    ]
-    for host, guest in mounts.items():
-        mode = "--bind" if host in writable_mounts else "--ro-bind"
-        sandbox_command.extend((mode, str(host), guest))
-    sandbox_command.extend(("--chdir", mapped_cwd))
-    for key, value in mapped_environment.items():
-        sandbox_command.extend(("--setenv", key, value))
-    sandbox_command.append("--")
-    sandbox_command.extend(command)
-    try:
-        result = subprocess.run(
+            mode = "--bind" if host in writable_mounts else "--ro-bind"
+            sandbox_command.extend((mode, str(host), guest))
+        sandbox_command.extend(("--chdir", mapped_cwd))
+        for key, value in mapped_environment.items():
+            sandbox_command.extend(("--setenv", key, value))
+        sandbox_command.append("--")
+        sandbox_command.extend(command)
+        result = _run_bounded_command(
             sandbox_command,
             cwd=Path("/"),
-            env={"PATH": environment["PATH"]},
-            check=False,
-            capture_output=True,
-            text=True,
+            environment={"PATH": environment["PATH"]},
             timeout=3_600,
+            forbidden_output=forbidden_output,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        failures.append(f"provider-free trace unavailable: {name}: {type(error).__name__}")
+    if result.error is not None:
+        failures.append(f"provider-free trace unavailable: {name}: {type(result.error).__name__}")
         return
-    output = f"{result.stdout}\n{result.stderr}"
-    for marker in forbidden_output:
-        if marker in output:
-            failures.append(f"provider-free trace emitted forbidden marker: {name}: {marker}")
+    if result.timed_out:
+        failures.append(f"provider-free trace unavailable: {name}: TimeoutExpired")
+        return
+    for marker in result.forbidden_markers:
+        failures.append(f"provider-free trace emitted forbidden marker: {name}: {marker}")
     if result.returncode:
-        detail = (result.stderr or result.stdout).strip().splitlines()
-        suffix = f": {detail[-1][:300]}" if detail else ""
+        detail = (result.stdout + "\n" + result.stderr).strip().splitlines()
+        summary = list(result.error_lines) or detail[-20:]
+        suffix = f": {' | '.join(summary)[-2000:]}" if summary else ""
         failures.append(
             f"provider-free trace failed: {name}: exit={result.returncode}{suffix}"
         )
@@ -608,7 +773,7 @@ def _run_provider_free_trace(
 def verify_bwrap_capability(environment: dict[str, str], failures: list[str]) -> None:
     """Require a real direct bwrap probe before running the nested test lane."""
     bubblewrap = Path(FROZEN_TRACE_BINARY_IDENTITIES["bwrap"]["path"])
-    result = subprocess.run(
+    result = _run_bounded_command(
         [
             str(bubblewrap),
             "--die-with-parent",
@@ -642,13 +807,10 @@ def verify_bwrap_capability(environment: dict[str, str], failures: list[str]) ->
             str(Path.home() / ".codex"),
         ],
         cwd=Path("/"),
-        env={"PATH": environment["PATH"]},
-        check=False,
-        capture_output=True,
-        text=True,
+        environment={"PATH": environment["PATH"]},
         timeout=30,
     )
-    if result.returncode:
+    if result.error is not None or result.timed_out or result.returncode:
         failures.append("provider-free bwrap capability probe did not establish isolation")
 
 
@@ -696,13 +858,13 @@ def verify_provider_free_traces(
             if not source_cache.is_dir():
                 failures.append(f"provider-free trace requires Cargo cache: {relative}")
                 return
-            shutil.copytree(source_cache, trace_cargo / relative, symlinks=True)
+            copy_cache_snapshot(source_cache, trace_cargo / relative, f"Cargo {relative}")
         uv_cache = Path.home() / ".cache/uv"
         if not uv_cache.is_dir():
             failures.append("provider-free trace requires the bound read-only uv cache")
             return
         trace_cache = temporary / "uv-cache"
-        shutil.copytree(uv_cache, trace_cache, symlinks=True)
+        copy_cache_snapshot(uv_cache, trace_cache, "uv")
         environment = _provider_free_environment(home, target)
         environment["CARGO_HOME"] = str(trace_cargo)
         environment["RUSTUP_HOME"] = str(home / "rustup")
@@ -845,6 +1007,8 @@ def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures:
             or not candidate.is_file()
             or candidate.read_bytes() != expected
             or relative not in recipe_modes
+            or bool(candidate.stat().st_mode & 0o111)
+            != bool(recipe_modes[relative] & 0o111)
         ):
             failures.append(f"source checkout overlay differs from the bound recipe commit: {relative}")
 
@@ -913,12 +1077,54 @@ def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object],
             failures.append(f"frozen task definition digest differs from protocol: {path.name}")
 
 
+def verify_rust_reconstruction_binding(
+    harness_root: Path, manifest: dict[str, object], failures: list[str]
+) -> None:
+    """Fail closed if the Rust binding drifts from the manifest owner."""
+    path = harness_root / "engine/src/rwe/frozen_rwe_bindings.rs"
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError:
+        failures.append("Rust reconstruction binding is unavailable")
+        return
+    repository = manifest.get("repository", {})
+    recipe = manifest.get("reconstruction_recipe", {})
+    frozen = manifest.get("frozen_rwe", {})
+    expected = {
+        "FROZEN_RWE_TARGET_MAIN_SHA": repository.get("source_commit"),
+        "FROZEN_RWE_TARGET_TREE_HASH": frozen.get("frozen_task_source_tree_hash"),
+        "FROZEN_RWE_PRE_AC_SOURCE_TREE_HASH": repository.get("source_tree_hash"),
+        "FROZEN_RWE_RECIPE_COMMIT": recipe.get("recipe_commit"),
+        "FROZEN_RWE_RECIPE_TREE_HASH": repository.get("reconstruction_recipe_tree_hash"),
+        "FROZEN_RWE_SNAPSHOT_MANIFEST_SHA256": FROZEN_RWE_MANIFEST_SHA256,
+        "FROZEN_RWE_CORPUS_SHA256": frozen.get("corpus_sha256"),
+        "FROZEN_RWE_PROTOCOL_SHA256": frozen.get("protocol_sha256"),
+        "FROZEN_RWE_SCHEDULE_SHA256": frozen.get("schedule_sha256"),
+        "FROZEN_RWE_POST_AC_MAIN_SHA": FROZEN_POST_AC_IDENTITY["main_sha"],
+        "FROZEN_RWE_POST_AC_TREE_HASH": FROZEN_POST_AC_IDENTITY["tree_sha"],
+        "FROZEN_RWE_POST_AC_CARGO_LOCK_SHA256": FROZEN_POST_AC_IDENTITY["cargo_lock_sha256"],
+        "FROZEN_RWE_POST_AC_RUST_TOOLCHAIN_SHA256": FROZEN_POST_AC_IDENTITY[
+            "rust_toolchain_sha256"
+        ],
+    }
+    for name, value in expected.items():
+        if not isinstance(value, str):
+            failures.append(f"Rust reconstruction binding expectation is malformed: {name}")
+            continue
+        match = re.search(rf"pub const {re.escape(name)}: &str\s*=\s*\"([^\"]+)\"", source)
+        if match is None:
+            failures.append(f"Rust reconstruction binding constant is missing: {name}")
+        elif match.group(1) != value:
+            failures.append(f"Rust reconstruction binding differs from manifest: {name}")
+
+
 def verify_snapshot_integrity(
     source_root: Path, harness_root: Path, manifest: dict[str, object], failures: list[str]
 ) -> None:
     verify_post_ac_harness(harness_root, FROZEN_POST_AC_IDENTITY, failures)
     verify_git_overlay(source_root, manifest, failures)
     verify_frozen_task_bindings(harness_root, manifest, failures)
+    verify_rust_reconstruction_binding(CURRENT_REPOSITORY_ROOT, manifest, failures)
 
 
 def verify(

@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -150,6 +151,52 @@ class VerifyRweSnapshotTests(unittest.TestCase):
 
             self.assertEqual((destination / "tracked.txt").read_text(encoding="utf-8"), "tracked\n")
             self.assertFalse((destination / ".venv").exists())
+
+    def test_copy_cache_snapshot_materializes_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "payload").write_text("bound\n", encoding="utf-8")
+            (source / "link").symlink_to("payload")
+            destination = root / "destination"
+
+            verify_rwe_snapshot.copy_cache_snapshot(source, destination, "test")
+
+            self.assertFalse((destination / "link").is_symlink())
+            self.assertEqual((destination / "link").read_text(encoding="utf-8"), "bound\n")
+
+    def test_copy_recipe_overlay_rejects_executable_mode_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "recipe.py"
+            source.write_text("print('bound')\n", encoding="utf-8")
+            destination = root / "destination"
+            with self.assertRaisesRegex(OSError, "executable mode differs"):
+                verify_rwe_snapshot.copy_recipe_overlay(
+                    root, destination, ["recipe.py"], {"recipe.py": 0o755}
+                )
+
+    def test_bounded_command_caps_captured_output(self) -> None:
+        result = verify_rwe_snapshot._run_bounded_command(
+            [sys.executable, "-c", "print('x' * 300000)"],
+            cwd=Path("/"),
+            environment={"PATH": str(Path(sys.executable).parent)},
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertLessEqual(len(result.stdout.encode()), verify_rwe_snapshot.MAX_TRACE_OUTPUT_BYTES)
+
+    def test_rust_reconstruction_binding_is_manifest_bound(self) -> None:
+        manifest_path = Path(
+            "engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v2.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        failures: list[str] = []
+
+        verify_rwe_snapshot.verify_rust_reconstruction_binding(Path.cwd(), manifest, failures)
+
+        self.assertEqual(failures, [])
 
     def test_registered_source_commands_are_manifest_bound(self) -> None:
         manifest = {
