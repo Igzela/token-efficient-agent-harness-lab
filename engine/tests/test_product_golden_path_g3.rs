@@ -1494,32 +1494,171 @@ fn test_transaction_views_core_atomicity_and_rollback() {
         request.confirm_output = Some(true);
         let validated = validate_intake(&request, "local", "default").unwrap();
 
-        // 1. Admitted task under view
+        // 1. Admit task through product store
         let task = store.admit_product_task(&validated, "tester").unwrap();
-        let task_id = task["task_id"].as_str().unwrap();
+        let task_id = task["task_id"].as_str().unwrap().to_string();
 
-        // 2. Validate managed acceptance phase under transaction view
-        let phase_result = store.validate_managed_acceptance_product_task_phase(
-            "local",
-            task_id,
-            "disposable",
-            &rev,
+        // 2. Execute multi-domain operations under a single store transaction view
+        let task_status = store
+            .with_transaction(|tx| {
+                let retrieved = tx
+                    .product_task()
+                    .get_task(&task_id)?
+                    .expect("task exists in tx");
+                let status = retrieved["status"].as_str().unwrap().to_string();
+
+                tx.managed_acceptance().append_audit(
+                    "tester",
+                    "managed_acceptance.phase_verified",
+                    &task_id,
+                    &serde_json::json!({"phase": "disposable"}),
+                )?;
+
+                tx.append_audit(
+                    "tester",
+                    "product_task.transaction_view_verified",
+                    &task_id,
+                    &serde_json::json!({"stage": "views_core"}),
+                )?;
+
+                Ok(status)
+            })
+            .expect("with_transaction must succeed");
+
+        assert_eq!(task_status, ProductTaskStatus::WorkspaceBound.as_str());
+
+        // 3. Verify state committed durably
+        let task = store
+            .get_product_task(&task_id)
+            .unwrap()
+            .expect("committed task");
+        assert_eq!(task["status"], ProductTaskStatus::WorkspaceBound.as_str());
+
+        let conn = rusqlite::Connection::open(dir.path().join("store.db")).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT action FROM audit_log WHERE resource = ?1 ORDER BY audit_id ASC")
+            .unwrap();
+        let audit_actions: Vec<String> = stmt
+            .query_map(rusqlite::params![task_id], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            audit_actions
+                .iter()
+                .any(|a| a == "product_task.transaction_view_verified"),
+            "Audit must contain transaction view action: {:?}",
+            audit_actions
         );
         assert!(
-            phase_result.is_ok(),
-            "Phase validation must succeed for admitted task: {:?}",
-            phase_result.err()
+            audit_actions
+                .iter()
+                .any(|a| a == "managed_acceptance.phase_verified"),
+            "Audit must contain managed_acceptance action: {:?}",
+            audit_actions
         );
+    });
+}
 
-        // 3. Status retrieval through store view
-        let retrieved = store
-            .get_product_task(task_id)
+#[test]
+fn test_transaction_views_rollback_on_injected_error() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+
+        // Attempt a transaction that emits audit and then fails
+        let result: Result<(), String> = store.with_transaction(|tx| {
+            tx.append_audit(
+                "tester",
+                "product_task.must_rollback",
+                "test-resource",
+                &serde_json::json!({"data": "uncommitted"}),
+            )?;
+            Err("injected transaction failure".to_string())
+        });
+
+        assert!(result.is_err(), "Transaction must fail with injected error");
+        assert_eq!(result.unwrap_err(), "injected transaction failure");
+
+        // Verify zero audit entries or uncommitted side effects
+        let conn = rusqlite::Connection::open(dir.path().join("store.db")).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT action FROM audit_log WHERE resource = 'test-resource'")
+            .unwrap();
+        let audit_actions: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
             .unwrap()
-            .expect("task exists");
-        assert_eq!(
-            retrieved["status"],
-            ProductTaskStatus::WorkspaceBound.as_str()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            !audit_actions
+                .iter()
+                .any(|a| a == "product_task.must_rollback"),
+            "Uncommitted action must not appear in audit log after rollback"
         );
+    });
+}
+
+#[test]
+fn test_transaction_views_cross_domain_atomicity() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+
+        let mut request = intake(&repo, &rev, "views-cross-domain", pass_verify());
+        request.confirm_output = Some(true);
+        let validated = validate_intake(&request, "local", "default").unwrap();
+
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let tid = task["task_id"].as_str().unwrap().to_string();
+
+        // Exercise all four views and custom audit within a single transaction
+        store
+            .with_transaction(|tx| {
+                let retrieved = tx.product_task().get_task(&tid)?.expect("task exists");
+                assert_eq!(retrieved["task_id"], tid);
+
+                tx.workflow().append_audit(
+                    "tester",
+                    "workflow.tx_view_check",
+                    &tid,
+                    &serde_json::json!({}),
+                )?;
+                tx.managed_acceptance().append_audit(
+                    "tester",
+                    "managed_acceptance.tx_view_check",
+                    &tid,
+                    &serde_json::json!({}),
+                )?;
+                tx.rwe().append_audit(
+                    "tester",
+                    "rwe.tx_view_check",
+                    &tid,
+                    &serde_json::json!({}),
+                )?;
+
+                Ok(())
+            })
+            .expect("Cross-domain transaction must commit");
+
+        // Verify all 3 cross-domain audit entries committed
+        let conn = rusqlite::Connection::open(dir.path().join("store.db")).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT action FROM audit_log WHERE resource = ?1 ORDER BY audit_id ASC")
+            .unwrap();
+        let actions: Vec<String> = stmt
+            .query_map(rusqlite::params![tid], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(actions.iter().any(|a| a == "workflow.tx_view_check"));
+        assert!(actions
+            .iter()
+            .any(|a| a == "managed_acceptance.tx_view_check"));
+        assert!(actions.iter().any(|a| a == "rwe.tx_view_check"));
+
+        let task = store.get_product_task(&tid).unwrap().unwrap();
+        assert_eq!(task["status"], ProductTaskStatus::WorkspaceBound.as_str());
     });
 }
 
