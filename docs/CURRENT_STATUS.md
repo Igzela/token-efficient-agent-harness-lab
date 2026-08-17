@@ -13,6 +13,7 @@ Open PR heads, Draft/Ready state, CI, reviews, mergeability, and the next permit
 
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
 - Latest accepted runtime/code baseline: PR #562 exact head `84735a064466b81a5bf521cf20b1a924c80408e6` squash-merged as `8142a447c1b9ca861978bd3392da5ccea4263924`; it removes the frozen AC7 deprecated compatibility surface while retaining the separate approve/output authorities, audit, CAS/idempotency, and recovery paths. The pre-cleanup rollback tree is `eb692703ab3b3d030478b539fff4496014e45c7a`; `962aa81855673f7a2c0f5e72958ec24726e32c78` is the accepted docs-only descendant immediately before cleanup.
+- Latest accepted governing-document baseline: PR #563 exact head `80e68a108eb1d752f6632944300786fe9ea6511d` squash-merged as `42fcfa5ad7e349d27d3caa815163340f9c0d5c0b`; it closes AC7 and binds the provider-free Contemporary RWE reconstruction inputs without changing runtime code or authorizing a replay effect. Reconstruction promotion is a separate successor document change.
 - PR #368 accepted the provider timeout-ownership repair from exact head `17cc5d03…`; its exact-head review receipt reports `PASS` with no open findings, and its canonical exact-head workflow completed successfully before merge.
 - PR #369 accepted the operator-gated compatibility-calibration mechanism from exact head `b571c95a75a7c8eacda99a8f586d8f2360868ab7`; canonical exact-head workflow `31172449577` completed successfully and the exact-head review receipt reports `PASS` with no open findings.
 - PR #370 accepted the versioned v2 RWE refreeze from exact head `36c92b93975366c3f85471f247a3afb128e5351c`; exact-head review reports `PASS` with no open objections, canonical workflow `31312135471` completed every required job successfully, and the merged v2 corpus/protocol/schedule hashes are `044fcd7b…`, `bc68bfb3…`, and `6a729f12…`.
@@ -71,6 +72,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-AC6-COMPATIBILITY-CLOSEOUT-1` | `COMPLETE` | PR #558 exact head `646e076cba8b349d45880dd84d4520109a11db69`; merge `4ea5f7707fa8c1f370cb8a8323c0b017bfcb3443`; exact-head `PASS`; canonical workflow `32006997709` |
 | `PE7-AC7-REMOVAL-MANIFEST-1` | `COMPLETE` | PR #560 exact head `5567c670cb0338bf3bf089db95757714365829ec`; squash merge `eb692703ab3b3d030478b539fff4496014e45c7a`; exact-head review receipt comment `5314324232`; canonical workflow `32015963930`; exact-head check `32015963768`; no runtime deletion, Provider call, or target effect |
 | `PE7-AC7-CLEANUP-1` | `COMPLETE` | PR #562 exact head `84735a064466b81a5bf521cf20b1a924c80408e6`; squash merge `8142a447c1b9ca861978bd3392da5ccea4263924`; exact-head review receipt comment `5315606973`; canonical workflow `32026577558`; exact-head check `32026577560`; merged-tree fixed-string inventory zero matches; 10 files, `+65/-206`; no schema/migration, Provider call, target write, or effect |
+| `PE7-AC7-CLOSEOUT-1` | `COMPLETE` | PR #563 exact head `80e68a108eb1d752f6632944300786fe9ea6511d`; merge `42fcfa5ad7e349d27d3caa815163340f9c0d5c0b`; exact-head `PASS`; canonical workflow `32030794178` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -99,6 +101,66 @@ owner_batch_cost:
 ```
 
 `expected_reuse_count` is a forecast for the downstream Contemporary RWE input handoff; it is not observed reuse evidence.
+
+**PE7-AC7-CLOSEOUT-1 closeout_receipt:**
+
+```yaml
+packet: PE7-AC7-CLOSEOUT-1
+state: COMPLETE
+accepted_pr: 563
+accepted_head: 80e68a108eb1d752f6632944300786fe9ea6511d
+accepted_merge: 42fcfa5ad7e349d27d3caa815163340f9c0d5c0b
+exact_head_review: PASS
+canonical_workflow: 32030794178
+scope: docs-only provider-free closeout; no runtime, schema, evaluator, corpus, protocol, Provider, target, authority, or effect change
+zero_match_inventory: PASS across engine/src engine/tests sdk dashboard scripts tools tests
+separate_approve_output_paths: PASS; separate authority, audit, CAS/idempotency, and recovery paths remain
+cleanup_diff: 10 files changed, +65/-206 lines from 962aa81855673f7a2c0f5e72958ec24726e32c78 to 8142a447c1b9ca861978bd3392da5ccea4263924
+implementation_cost_receipt:
+  agent_sessions: 1 bounded implementation session
+  review_cycles: 1 final independent two-axis cycle (Standards + Spec), exact-head PASS
+  repair_iterations: 0 after final cleanup review
+  ci_runs: 1 canonical workflow (32026577558) plus 1 exact-head check (32026577560)
+  ci_compute_minutes: unavailable as a normalized aggregate; no canonical aggregate receipt persisted
+  files_changed: 10
+  schema_migrations: 0
+  compatibility_adapters_added: 0
+  authority_boundaries_touched: 0
+  external_dependencies_added: 0
+  rollback_complexity: low/bounded; revert cleanup PR #562 to eb692703ab3b3d030478b539fff4496014e45c7a
+  known_maintenance_surface: 3 owner groups across 10 files; no runtime compatibility island after zero-match inventory
+  expected_reuse_count: 1 forecast only; observed reuse unavailable
+  unavailable_fields: exact project-wide agent-session count, normalized CI compute, reviewer/operator wall-clock, observed downstream reuse, and per-owner lifecycle allocation
+  owner_batch_cost:
+    basis: per-owner patch-size attribution; per-owner time, token, reviewer, and CI cost was not instrumented
+    ac7-consumer-compatibility-surface: 3 files, +0/-35 lines
+    ac7-http-compatibility-surface: 3 files, +0/-62 lines
+    ac7-local-store-compatibility: 4 files, +65/-109 lines
+rollback:
+  code_rollback_tree: eb692703ab3b3d030478b539fff4496014e45c7a
+  closeout_rollback: revert this documentation/status delta only
+pre_ac_snapshot:
+  path: engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v2.json
+  status: RECONSTRUCTABLE
+  reconstructable: true
+  source_commit: 6240768506320a324d68787b9eaa86971c8c930c
+  source_tree_hash: f8d22ebf5009842d37285624f345d47bf6da5548032eb84cb7528407169d9cc3
+  recipe_commit: de0b3bb5158f07100d9ee3846b0555193503629d
+  recipe_tree_hash: 8fc5610c47cc4477c5ab7c65fe680ddf970bca4e612558701b316cc2ca038766
+  manifest_sha256: a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c
+  corpus_sha256: 044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20
+  protocol_sha256: bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db
+  schedule_sha256: 6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38
+  verifier_result: UNAVAILABLE_SOURCE_CHECKOUT; no replay success claimed
+post_ac_identity:
+  runtime_main: 8142a447c1b9ca861978bd3392da5ccea4263924
+  runtime_tree: df6ede05fdc6f1a533793a17591478ac5ecc7b9d
+  tracked_manifest_sha256: 6e883449d1beceb29c4cf114aad075ed6de0b3845f91d9e64059956173e2b7d6
+  cargo_lock_sha256: cf68982734f8a72148950f119408b676dd5b42ce65d7af69c02eca017a551653
+  rust_toolchain_sha256: e59c5da37d1f9f4e0f815bc188cb6056fc7410c9cdaa9673c2d44da557c75d12
+external_effects: none; Provider calls, target writes, authority consumption, replay, and EFFECT/T3 actions remain absent
+```
+
 ## Invalidated Historical Receipts (Repair Required)
 
 The following 34 packets from the AC3 through EC2 chain (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), were merged on historical PRs without complete production implementations, valid independent reviews, or required gate enforcement. They are explicitly marked `INVALIDATED` / `SUPERSEDED` / `REPAIR_REQUIRED` and removed from the accepted receipts prerequisite index until genuine sequential re-execution and re-proof are achieved:
@@ -234,8 +296,9 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | AC6 schema convergence | `COMPLETE` | PRs #550, #552, #554, #556, and #558 accepted; zero drift is verified across the Rust producer, SDKs, and Dashboard, and the AC7 removal manifest is accepted for deletion-only cleanup |
 | AC7 removal manifest | `COMPLETE` | PR #560 accepted; exact deprecated route, handler, LocalProductStore compatibility methods, consumer wrappers, test callers, rollback groups, and negative-search gates are frozen |
 | AC7 cleanup | `COMPLETE` | PR #562 accepted; fixed-string inventory is zero across tracked source, tests, SDK, Dashboard, scripts, tools, and replay/fixture paths; separate approve/output authority and recovery semantics remain; rollback is the pre-cleanup tree `eb692703…` |
-| AC7 closeout | `READY_FOR_EXECUTION` | Provider-free evidence/status closeout: convergence receipt, implementation-cost aggregation, rollback index, and contemporary old/new replay inputs |
-| Contemporary old/new replay | `BLOCKED_PREREQUISITE` | Reconstruction, protocol/preflight, authorized run, analysis |
+| AC7 closeout | `COMPLETE` | PR #563 accepted; exact cleanup convergence, implementation-cost aggregation, rollback index, and contemporary old/new replay inputs are bound |
+| Contemporary old/new replay reconstruction | `READY_FOR_EXECUTION` | Provider-free reconstruction of the frozen pre-AC Harness beside accepted post-AC under isolated identities; protocol/preflight and any authorized run remain gated successors |
+| Contemporary old/new replay | `BLOCKED_PREREQUISITE` | Reconstruction, protocol/preflight, authorized run, analysis; reconstruction is the current executable packet |
 | EC1–EC5 experiment control | `BLOCKED_PREREQUISITE` | 17 packets; causal mutation evidence and each control family freeze before implementation |
 | Level-1 core without memory/skill | `BLOCKED_PREREQUISITE` | Preflight, one authorized generation, independent closeout |
 | Level-1 transfer pilot | `BLOCKED_PREREQUISITE` | Sealed protocol, authorized run, analysis |
@@ -397,12 +460,12 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 1. No accepted four-cell v2 RWE baseline exists. A provider-free preflight ran ready=true with zero blockers (unissued request package digest `015c94e9d65a902f3aba5eae4f3da6cba6d534cc3c57af3a6faf89125663469a`). The later operator EFFECT `run-live-20260813-v2c` executed the four frozen v2 cells through the genuine delegated lifecycle and terminated `controlled_failure`: `cell-rwe-minimum-t1-fix_flow_linkage-r1-bp-standard-s2026080601`, `cell-rwe-minimum-t1-fix_flow_linkage-r2-bp-standard-s2026080602`, `cell-rwe-minimum-t2-draft_contract_tests-r1-bp-standard-s2026080601`, `cell-rwe-minimum-t2-draft_contract_tests-r2-bp-standard-s2026080602`. Planning completed on `deepseek-v4-pro`; implementation failed closed after 36–39s with `managed workspace action rejected: implementer output must be one JSON workspace action`; review/verify blocked; no seal; no target-default-branch write. Restricted-bundle sha256 `9b345faf744c14d67157856a512b39d90c6e03ff1081783c793b987d6f93bf82`; redacted-bundle sha256 `e2eafa226700061cb000b35dec776ef0b49417aa5faece0b065923b49ee83d3f`. Coordinator aggregate still reports zero provider requests; truthful planning usage is in store-owned workflow events (planning cost about USD 0.00135). Two earlier same-day one-use attempts (`auth-live-v2-001`/`-002`) failed before Provider POST (Golden Path intake off; detached HEAD). The durable B2 rule remains caller-supplied finite `expires_at`.
 2. The current two-task/four-cell design is lifecycle viability evidence, not a statistically decision-grade architecture baseline.
 3. No accepted operations/evidence manifest, larger decision baseline, or executed contemporary old/new comparison exists; the reconstructable snapshot verifier, real provider-free CLI preflight, and one separately authorized DB RUN now exist. That effect is uniquely bound to packet `PE7-RWE-DB-RUN-1`, run `run-goal-db-baseline-20260814-2340`, authorization `auth-goal-db-run-20260814-2340`, and run-evidence sha256 `a841e6d092d2946de2ee96bef03409ab8c276111c3ace53aef827bd0c00c277e`. ProductTasks `ptask-20260814154014-18cbb634bffe42c2`, `ptask-20260814154055-18cbb63e1d04419d`, `ptask-20260814154136-18cbb647bf8562c7`, and `ptask-20260814154219-18cbb651c35d869f` all ended `failed/execution_failed`; their exact attempt evidence retains workspace IDs `rwe-ws:run-goal-db-baseline-20260814-2340:cell-rwe-minimum-t1-fix_flow_linkage-r1-bp-standard-s2026080601`, `rwe-ws:run-goal-db-baseline-20260814-2340:cell-rwe-minimum-t1-fix_flow_linkage-r2-bp-standard-s2026080602`, `rwe-ws:run-goal-db-baseline-20260814-2340:cell-rwe-minimum-t2-draft_contract_tests-r1-bp-standard-s2026080601`, and `rwe-ws:run-goal-db-baseline-20260814-2340:cell-rwe-minimum-t2-draft_contract_tests-r2-bp-standard-s2026080602`, with `cleanup_status=not_required` for each. No route T3/owner-outcome receipt, analysis receipt, or decision-grade baseline is claimed. `PE7-RWE-DB-ANALYSIS-1` is parked with the run so provider-free AC0 can proceed; do not replay the effect or infer acceptance from its evidence.
-4. The AC0 data/trace freeze is complete as a provider-free contract and closeout; AC1 shared ProcessSupervisor hardening remains deferred and is not an active implementation frontier. AC2–AC6 are accepted; the AC7 removal-manifest, cleanup, and closeout chain remains gated by its immediately preceding accepted packet.
+4. The AC0 data/trace freeze is complete as a provider-free contract and closeout; AC1 shared ProcessSupervisor hardening remains deferred and is not an active implementation frontier. AC2–AC7 are accepted through the closeout merge `42fcfa5a`; `PE7-RWE-CR-RECONSTRUCTION-1` is the current provider-free implementation window, while protocol/preflight and all effects remain gated successors.
 5. Accepted Harness-Evolution identity/lineage, causal-manifest, mutation-registry, and evaluator/holdout contract boundaries are provider-free and non-authoritative. The EC2 contract freezes evaluator ownership, sealed-holdout access, immutable labels/rubric, contamination/gaming/safety invalidation, and evaluator-owned prediction-outcome derivation; its holdout-seal, sentinel-conformance, and `PredictionOutcomeV1` implementation packets remain gated successors. No accepted lifecycle-budget, diversity/exploration, or Pareto/stop/recovery implementation exists.
 6. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or fixed Meta operator-comparison result exists.
 7. No accepted metacognitive-operator, parameter-efficient training adapter, weight/harness factorial, co-evolution, or outer-policy research contract exists; full-weight and model-architecture evolution remain unrouted.
 8. The failed bootstrap from accepted main `aa83ac1f5eada74199e0ce28ecb91d37a48769d6` remains valid non-authorizing evidence: it stopped with `route_controller_unavailable_timeout` after GitHub rejected 28 workflow inputs with HTTP 422, before any workflow run, PR, claim, Provider call, target write, or external effect. PR #416 and accepted-main smoke `31631388199` removed that exact dispatch blocker. The route remains stopped until the one-time merge-backed bootstrap starts from current main; route10 remains non-resumable obsolete-main evidence.
-9. The invalidated historical packets from `PE7-AC3-ORCHESTRATOR-CORE-1` through `PE7-HE-EC2-CONTRACT-1` (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), remain non-authorizing historical evidence. Accepted AC3–AC7 receipts are listed above; the active semantic frontier is now `PE7-AC7-CLOSEOUT-1`, and every downstream packet must be executed sequentially with genuine evidence, exact-head reviews, and canonical CI before promotion.
+9. The invalidated historical packets from `PE7-AC3-ORCHESTRATOR-CORE-1` through `PE7-HE-EC2-CONTRACT-1` (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), remain non-authorizing historical evidence. Accepted AC3–AC7 receipts are listed above; the active semantic frontier is now `PE7-RWE-CR-RECONSTRUCTION-1`, and every downstream packet must be executed sequentially with genuine evidence, exact-head reviews, and canonical CI before promotion.
 
 ## Maintenance Boundary
 
