@@ -12,7 +12,7 @@ Open PR heads, Draft/Ready state, CI, reviews, mergeability, and the next permit
 ## Verified Repository State
 
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
-- Active runtime/code baseline: PR #457 exact head `6525907a7752e90dd31469aa8fd8bbfd08f01209` squash-merged as `e6ab1a1f5516ad52c0d1b431a5b1d52e990f90d7`; it contains the bounded RWE journal-accounting, strict managed-action parsing, and fail-closed ProductTask cleanup repair. Always refresh remote `main` for the current canonical-document head.
+- Latest accepted runtime/code baseline: PR #562 exact head `84735a064466b81a5bf521cf20b1a924c80408e6` squash-merged as `8142a447c1b9ca861978bd3392da5ccea4263924`; it removes the frozen AC7 deprecated compatibility surface while retaining the separate approve/output authorities, audit, CAS/idempotency, and recovery paths. The pre-cleanup rollback tree is `eb692703ab3b3d030478b539fff4496014e45c7a`; `962aa81855673f7a2c0f5e72958ec24726e32c78` is the accepted docs-only descendant immediately before cleanup.
 - PR #368 accepted the provider timeout-ownership repair from exact head `17cc5d03…`; its exact-head review receipt reports `PASS` with no open findings, and its canonical exact-head workflow completed successfully before merge.
 - PR #369 accepted the operator-gated compatibility-calibration mechanism from exact head `b571c95a75a7c8eacda99a8f586d8f2360868ab7`; canonical exact-head workflow `31172449577` completed successfully and the exact-head review receipt reports `PASS` with no open findings.
 - PR #370 accepted the versioned v2 RWE refreeze from exact head `36c92b93975366c3f85471f247a3afb128e5351c`; exact-head review reports `PASS` with no open objections, canonical workflow `31312135471` completed every required job successfully, and the merged v2 corpus/protocol/schedule hashes are `044fcd7b…`, `bc68bfb3…`, and `6a729f12…`.
@@ -70,6 +70,35 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-AC6-DASHBOARD-MIGRATION-1` | `COMPLETE` | PR #556 exact head `25feca06d5b7af32983479eb8a1f53e1f1da2e5f`; merge `9189bb83fd742b7bf489fca1124a4563bbd5ee22`; exact-head `PASS`; canonical workflow `32006356641` |
 | `PE7-AC6-COMPATIBILITY-CLOSEOUT-1` | `COMPLETE` | PR #558 exact head `646e076cba8b349d45880dd84d4520109a11db69`; merge `4ea5f7707fa8c1f370cb8a8323c0b017bfcb3443`; exact-head `PASS`; canonical workflow `32006997709` |
 | `PE7-AC7-REMOVAL-MANIFEST-1` | `COMPLETE` | PR #560 exact head `5567c670cb0338bf3bf089db95757714365829ec`; squash merge `eb692703ab3b3d030478b539fff4496014e45c7a`; exact-head review receipt comment `5314324232`; canonical workflow `32015963930`; exact-head check `32015963768`; no runtime deletion, Provider call, or target effect |
+| `PE7-AC7-CLEANUP-1` | `COMPLETE` | PR #562 exact head `84735a064466b81a5bf521cf20b1a924c80408e6`; squash merge `8142a447c1b9ca861978bd3392da5ccea4263924`; exact-head review receipt comment `5315606973`; canonical workflow `32026577558`; exact-head check `32026577560`; merged-tree fixed-string inventory zero matches; 10 files, `+65/-206`; no schema/migration, Provider call, target write, or effect |
+
+**PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
+
+```yaml
+packet: PE7-AC7-CLEANUP-1
+agent_sessions: 1 bounded implementation session observed in the cleanup worktree
+review_cycles: 1 final independent two-axis cycle (Standards + Spec), exact-head PASS
+repair_iterations: 0 after the final cleanup review
+ci_runs: 1 canonical workflow (32026577558) plus 1 exact-head check (32026577560)
+ci_compute_minutes: unavailable as a normalized aggregate; no canonical aggregate receipt was persisted
+files_changed: 10
+schema_migrations: 0
+compatibility_adapters_added: 0
+authority_boundaries_touched: 0
+external_dependencies_added: 0
+rollback_complexity: low/bounded; revert PR #562 to the pre-cleanup tree eb692703ab3b3d030478b539fff4496014e45c7a; no migration or durable-data mutation
+known_maintenance_surface: 3 owner groups across 10 files; no runtime compatibility island after the zero-match inventory
+expected_reuse_count: 1
+cost_or_measurement_unavailable_fields: exact project-wide agent-session count, normalized CI compute minutes, reviewer/operator wall-clock, and observed downstream reuse count
+owner_batch_cost:
+  basis: per-owner patch-size attribution; per-owner time, token, reviewer, and CI cost was not instrumented
+  ac7-consumer-compatibility-surface: 3 files, +0/-35 lines
+  ac7-http-compatibility-surface: 3 files, +0/-62 lines
+  ac7-local-store-compatibility: 4 files, +65/-109 lines
+  unavailable: per-owner lifecycle-cost allocation for the shared review and canonical CI receipts
+```
+
+`expected_reuse_count` is a forecast for the downstream Contemporary RWE input handoff; it is not observed reuse evidence.
 ## Invalidated Historical Receipts (Repair Required)
 
 The following 34 packets from the AC3 through EC2 chain (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), were merged on historical PRs without complete production implementations, valid independent reviews, or required gate enforcement. They are explicitly marked `INVALIDATED` / `SUPERSEDED` / `REPAIR_REQUIRED` and removed from the accepted receipts prerequisite index until genuine sequential re-execution and re-proof are achieved:
@@ -204,7 +233,8 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | AC4–AC5 | `COMPLETE` | AC4 contract/views/caller migration and AC5 contract/root-core/module migration are accepted by PRs #538, #540, #542, #544, #546, and #548 |
 | AC6 schema convergence | `COMPLETE` | PRs #550, #552, #554, #556, and #558 accepted; zero drift is verified across the Rust producer, SDKs, and Dashboard, and the AC7 removal manifest is accepted for deletion-only cleanup |
 | AC7 removal manifest | `COMPLETE` | PR #560 accepted; exact deprecated route, handler, LocalProductStore compatibility methods, consumer wrappers, test callers, rollback groups, and negative-search gates are frozen |
-| AC7 cleanup | `READY_FOR_EXECUTION` | Deletion-only implementation of the accepted AC7 manifest, owner-scoped batches, candidate-specific checks, and independent closeout |
+| AC7 cleanup | `COMPLETE` | PR #562 accepted; fixed-string inventory is zero across tracked source, tests, SDK, Dashboard, scripts, tools, and replay/fixture paths; separate approve/output authority and recovery semantics remain; rollback is the pre-cleanup tree `eb692703…` |
+| AC7 closeout | `READY_FOR_EXECUTION` | Provider-free evidence/status closeout: convergence receipt, implementation-cost aggregation, rollback index, and contemporary old/new replay inputs |
 | Contemporary old/new replay | `BLOCKED_PREREQUISITE` | Reconstruction, protocol/preflight, authorized run, analysis |
 | EC1–EC5 experiment control | `BLOCKED_PREREQUISITE` | 17 packets; causal mutation evidence and each control family freeze before implementation |
 | Level-1 core without memory/skill | `BLOCKED_PREREQUISITE` | Preflight, one authorized generation, independent closeout |
@@ -372,7 +402,7 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 6. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or fixed Meta operator-comparison result exists.
 7. No accepted metacognitive-operator, parameter-efficient training adapter, weight/harness factorial, co-evolution, or outer-policy research contract exists; full-weight and model-architecture evolution remain unrouted.
 8. The failed bootstrap from accepted main `aa83ac1f5eada74199e0ce28ecb91d37a48769d6` remains valid non-authorizing evidence: it stopped with `route_controller_unavailable_timeout` after GitHub rejected 28 workflow inputs with HTTP 422, before any workflow run, PR, claim, Provider call, target write, or external effect. PR #416 and accepted-main smoke `31631388199` removed that exact dispatch blocker. The route remains stopped until the one-time merge-backed bootstrap starts from current main; route10 remains non-resumable obsolete-main evidence.
-9. The invalidated historical packets from `PE7-AC3-ORCHESTRATOR-CORE-1` through `PE7-HE-EC2-CONTRACT-1` (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), remain non-authorizing historical evidence. Accepted AC3–AC7 manifest receipts are listed above; the active semantic frontier is now `PE7-AC7-CLEANUP-1`, and every downstream packet must be executed sequentially with genuine evidence, exact-head reviews, and canonical CI before promotion.
+9. The invalidated historical packets from `PE7-AC3-ORCHESTRATOR-CORE-1` through `PE7-HE-EC2-CONTRACT-1` (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), remain non-authorizing historical evidence. Accepted AC3–AC7 receipts are listed above; the active semantic frontier is now `PE7-AC7-CLOSEOUT-1`, and every downstream packet must be executed sequentially with genuine evidence, exact-head reviews, and canonical CI before promotion.
 
 ## Maintenance Boundary
 
