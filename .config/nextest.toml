@@ -1,0 +1,13 @@
+# nextest configuration for CI and local test execution.
+# See https://nexte.st/book/configuration.html
+
+[profile.default]
+# Default settings for local development.
+# Process-per-test isolation is the default in nextest.
+
+[profile.ci]
+# CI profile: fail-fast, no retries, structured output.
+retries = 0
+fail-fast = true
+status-level = "fail"
+final-status-level = "flaky"

@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Run the engine suite in parallel only after the env-lock contract is present."""
+"""Run the engine suite via cargo-nextest with process-per-test isolation.
+
+The env-lock contract is verified as a code-discipline gate.  Nextest's
+process isolation naturally prevents environment-variable leakage between
+tests, but the contract ensures the source code remains correct for
+standard ``cargo test`` as well.
+"""
 
 from __future__ import annotations
 
@@ -78,9 +84,9 @@ def main() -> int:
     print(f"engine test mode: {mode}", flush=True)
     if args.print_mode:
         return 0
-    command = ["cargo", "test", "-p", "engine"]
+    command = ["cargo", "nextest", "run", "-p", "engine", "--profile", "ci"]
     if not parallel:
-        command.extend(("--", "--test-threads=1"))
+        command.extend(("-j", "1"))
     os.execvp(command[0], command)
     return 127
 
