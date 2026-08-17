@@ -57,15 +57,15 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-AC3-CONTRACT-1` | `COMPLETE` | PR #486 exact head `9487a73ab9e00018103193d18c848e375b215a1b`; merge `6b2a6c46d30089800394ee82edd21075a2ef0d86`; exact-head `PASS`; canonical workflow `31922547776` |
 
 | `PE7-AC3-ORCHESTRATOR-CORE-1` | `COMPLETE` | PR #533 exact head `7c3f3de61b2ecc29fd3512e693948d52d511f4a3`; merge `77dac008a60cb569d3b9a8eb1a3e013e47743387`; exact-head `PASS`; canonical workflow `31984430115` |
+| `PE7-AC3-PORT-MIGRATION-1` | `COMPLETE` | PR #535 exact head `8c52fc1201025844dcbeb72dc31cc1217acd8f9e`; merge `3a58cf57abd0a09ea63bfcacad17c815af272de8`; exact-head `PASS`; canonical workflow `31985387700` |
 ## Invalidated Historical Receipts (Repair Required)
 
-The following 36 packets from the AC3 through EC2 chain (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), were merged on historical PRs without complete production implementations, valid independent reviews, or required gate enforcement. They are explicitly marked `INVALIDATED` / `SUPERSEDED` / `REPAIR_REQUIRED` and removed from the accepted receipts prerequisite index until genuine sequential re-execution and re-proof are achieved:
+The following 35 packets from the AC3 through EC2 chain (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), were merged on historical PRs without complete production implementations, valid independent reviews, or required gate enforcement. They are explicitly marked `INVALIDATED` / `SUPERSEDED` / `REPAIR_REQUIRED` and removed from the accepted receipts prerequisite index until genuine sequential re-execution and re-proof are achieved:
 
 | Packet | Historical PR / Merge | Audit Disposition |
 |---|---|---|
 | `PE7-SUCCESSOR-PROMOTION-ESCALATION-1` | PR #387 merge `597f90282fb6ca72472b890b825684bf54486709` | `SUPERSEDED`: Replaced by PR #532 route promotion and gate integrity repair |
 | `PE7-ROUTE-AUTOMATION-1` | PR #390 merge `5481053c736e7db8481cabd9316741f2a5cd6c7a` | `SUPERSEDED`: Replaced by PR #532 route promotion and gate integrity repair |
-| `PE7-AC3-PORT-MIGRATION-1` | PR #489 merge `02dcfb7d094e0ef9c6317ad800eab1ca1c957dd9` | `REPAIR_REQUIRED`: Blocked behind reopened `PE7-AC3-ORCHESTRATOR-CORE-1` |
 | `PE7-AC4-CONTRACT-1` | PR #490 merge `40c648a6de7e2288485af936d6274068a3d1b394` | `REPAIR_REQUIRED`: Blocked behind AC3 chain |
 | `PE7-AC4-VIEWS-CORE-1` | PR #491 merge `7c6b5a3115febd76906f04dcc14d5b9d0dc96f77` | `REPAIR_REQUIRED`: Blocked behind `PE7-AC4-CONTRACT-1` |
 | `PE7-AC4-CALLER-MIGRATION-1` | PR #493 merge `48f85425477bd141f1237bf9f9a62fd9ceaa5602` | `REPAIR_REQUIRED`: Blocked behind `PE7-AC4-VIEWS-CORE-1` |
