@@ -96,7 +96,7 @@ Architecture Convergence reuses these owners and changes boundaries incrementall
 2. AC1 — ProcessSupervisor contract, additive core, then enumerated caller migration.
 3. AC2 — typed-execution contract, additive boundary/adapters, then enumerated caller migration.
 4. AC3 — responsibility contract (frozen provider-free in `docs/CURRENT_STATUS.md` as `PE7-AC3-CONTRACT-1`), pure orchestrator extraction, then store/effect-port migration without state-semantic change.
-5. AC4 — transaction-view contract, borrowed view core on both backends, then enumerated caller migration.
+5. AC4 — transaction-view contract (frozen provider-free in `docs/CURRENT_STATUS.md` and `docs/ARCHITECTURE_BOOK.md` as `PE7-AC4-CONTRACT-1`), borrowed view core on both backends (`WorkflowTx`, `ProductTaskTx`, `ManagedAcceptanceTx`, `RweTx`), then enumerated caller migration without independent connection or commit authority.
 6. AC5 — configuration/composition contract, additive root, then module migration and approved legacy-read cleanup.
 7. AC6 — schema contract, Rust/codegen source, SDK migration, Dashboard data migration, then compatibility closeout.
 8. AC7 — zero-caller removal manifest, deletion-only implementation, then independent reference/behavior closeout.
