@@ -113,11 +113,11 @@ AC1 remains deferred optional hardening. It is not an executable successor and d
 
 AC2 distinguishes effect and outcome states while leaving admission, leases, spend, verification, approval, output, and adoption with existing owners.
 
-The AC2 contract and caller migration, AC3 Golden Path split, AC4 transaction views, AC5 composition root, and AC6 schema convergence/compatibility closeout are accepted on `main`; AC1 shared supervision remains deferred optional hardening. The AC7 removal manifest and deletion-only cleanup are accepted on `main`; `PE7-AC7-CLOSEOUT-1` is the current provider-free evidence/status window in `docs/NEXT_DECISION.md`. The Contemporary old/new RWE replay remains blocked until that closeout is accepted.
+The AC2 contract and caller migration, AC3 Golden Path split, AC4 transaction views, AC5 composition root, and AC6 schema convergence/compatibility closeout are accepted on `main`; AC1 shared supervision remains deferred optional hardening. The AC7 removal manifest, deletion-only cleanup, and closeout are accepted on `main`; `PE7-RWE-CR-RECONSTRUCTION-1` is the current provider-free reconstruction window in `docs/NEXT_DECISION.md`. Protocol/preflight and any replay or effect remain gated successors.
 
 ## Stage Architecture Convergence AC7 - obsolete legacy cleanup
 
-AC7 removes only the frozen compatibility surface after all callers and evidence have migrated; it does not change state-machine or authority order. Cleanup is accepted; its closeout is the current executable window and is intentionally absent from this routing-only index.
+AC7 removes only the frozen compatibility surface after all callers and evidence have migrated; it does not change state-machine or authority order. Cleanup and closeout are accepted; the provider-free reconstruction packet is the current executable window and is promoted into `docs/NEXT_DECISION.md`.
 
 ## Stage Contemporary old/new RWE replay
 
