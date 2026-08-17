@@ -1,10 +1,19 @@
 import type {
+  BudgetReservation,
   CheckStatus,
   ConfidenceLabel,
   DecisionStatus,
-  EvaluationStatus,
+  DispatchBundle,
+  DispatchDecision,
+  DispatchRecord,
+  DispatchRequest,
+  EvaluationCheck,
+  EvaluationResult,
+  Evidence,
   EvidencePolarity,
   EvidenceSource,
+  ExecutionGate,
+  ExecutionResult,
   ExecutionStatus,
   ExecutorType,
   ExpectedQualityBand,
@@ -12,21 +21,48 @@ import type {
   GateSeverity,
   ModelTier,
   QualityRequirement,
+  RejectedCandidate,
   RequestSource,
   RiskFlag,
   RiskLevel,
+  ShadowRoute,
+  TaskAnalysis,
   TaskDomain,
   TaskIntent,
 } from "../../../sdk/typescript/src/generated-wire-types";
 
-export type { ExecutorType } from "../../../sdk/typescript/src/generated-wire-types";
-
-export type { RequestSource } from "../../../sdk/typescript/src/generated-wire-types";
-
-export interface DispatchRequest {
-  raw_request: string;
-  request_source: RequestSource;
-}
+export type {
+  BudgetReservation,
+  CheckStatus,
+  ConfidenceLabel,
+  DecisionStatus,
+  DispatchBundle,
+  DispatchDecision,
+  DispatchRecord,
+  DispatchRequest,
+  EvaluationCheck,
+  EvaluationResult,
+  Evidence,
+  EvidencePolarity,
+  EvidenceSource,
+  ExecutionGate,
+  ExecutionResult,
+  ExecutionStatus,
+  ExecutorType,
+  ExpectedQualityBand,
+  FinalStatus,
+  GateSeverity,
+  ModelTier,
+  QualityRequirement,
+  RejectedCandidate,
+  RequestSource,
+  RiskFlag,
+  RiskLevel,
+  ShadowRoute,
+  TaskAnalysis,
+  TaskDomain,
+  TaskIntent,
+};
 
 export interface ApiStatus {
   schema_version: "axum_api.v1";
@@ -1412,193 +1448,6 @@ export interface QueueTenantListResponse {
   tenants: TenantQueueInfo[];
 }
 
-export interface DispatchBundle {
-  record: DispatchRecord;
-  analysis: TaskAnalysis;
-  decision: DispatchDecision;
-  execution_result: ExecutionResult;
-  evaluation_result: EvaluationResult;
-}
-
-export interface DispatchRecord {
-  schema_version: "dispatch_record.v1";
-  dispatch_id: string;
-  request_snapshot: string;
-  task_analysis_id: string;
-  decision_id: string;
-  execution_result_id: string | null;
-  evaluation_result_id: string | null;
-  usage_ledger_row_id: string | null;
-  budget_reservation_id: string | null;
-  final_status: FinalStatus;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface TaskAnalysis {
-  schema_version: "task_analysis.v1";
-  analysis_id: string;
-  raw_request_snapshot: string;
-  request_source: RequestSource;
-  primary_task_type: string;
-  task_domain: TaskDomain;
-  task_intent: TaskIntent;
-  risk_flags: RiskFlag[];
-  complexity_score: number;
-  cognitive_complexity: number;
-  context_complexity: number;
-  execution_risk: number;
-  ambiguity_score: number;
-  required_capabilities: string[];
-  context_budget_estimate: number;
-  execution_budget_estimate: number;
-  quality_requirement: QualityRequirement;
-  risk_level: RiskLevel;
-  confidence: number;
-  confidence_label: ConfidenceLabel;
-  uncertainty_reason: string[];
-  safe_default: string;
-  escalation_trigger: string | null;
-  positive_evidence: Evidence[];
-  negative_evidence: Evidence[];
-  features_detected: Record<string, unknown>;
-  analysis_method: "rule_only";
-  created_at: string;
-}
-
-export interface Evidence {
-  feature: string;
-  text: string;
-  span: [number, number];
-  polarity: EvidencePolarity;
-  source: EvidenceSource;
-  rule_id: string | null;
-  confidence: number;
-  negation_scope: string | null;
-}
-
-export interface DispatchDecision {
-  schema_version: "dispatch_decision.v1";
-  decision_id: string;
-  analysis_id: string;
-  analysis_snapshot: Record<string, unknown>;
-  selected_tier: ModelTier;
-  selected_profile_id: string | null;
-  fallback_tier: ModelTier;
-  fallback_profile_id: string | null;
-  shadow_routes: ShadowRoute[];
-  hard_constraints: string[];
-  rejected_candidates: RejectedCandidate[];
-  no_shadow_route_reason: string | null;
-  max_input_tokens: number;
-  max_output_tokens: number;
-  routing_reason: string;
-  quality_requirement: QualityRequirement;
-  expected_quality_band: ExpectedQualityBand;
-  confidence: number;
-  confidence_label: ConfidenceLabel;
-  budget_reservation: BudgetReservation;
-  execution_policy: Record<string, unknown>;
-  execution_gates: ExecutionGate[];
-  routing_mode: string;
-  routing_experiment_id: string | null;
-  decision_status: DecisionStatus;
-  created_at: string;
-}
-
-export interface BudgetReservation {
-  schema_version: "budget_reservation.v1";
-  reservation_id: string;
-  decision_id: string;
-  currency: string;
-  pricing_snapshot_id: string | null;
-  pre_budget: number;
-  reserved_input_tokens: number;
-  reserved_output_tokens: number;
-  reserved_total_tokens: number;
-  reserved_cost: number;
-  budget_policy_id: string | null;
-  budget_gate: string | null;
-  status: string;
-  actual_usage_ref: string | null;
-  budget_delta: number | null;
-  budget_violation: boolean;
-  created_at: string;
-  updated_at: string;
-  expires_at: string | null;
-}
-
-export interface ExecutionGate {
-  gate_id: string;
-  gate_type: string;
-  severity: GateSeverity;
-  reason: string;
-  evidence_refs: string[];
-  clearance_required: string;
-  cleared: boolean;
-  cleared_by: string | null;
-  cleared_at: string | null;
-}
-
-export interface ShadowRoute {
-  tier: ModelTier;
-  profile_id: string | null;
-  reason: string;
-  admission_scope: string;
-  estimated_cost: number | null;
-  expected_tradeoff: string;
-}
-
-export interface RejectedCandidate {
-  tier: ModelTier;
-  profile_id: string | null;
-  reason: string;
-  constraint_failed: string | null;
-  estimated_cost: number | null;
-}
-
-export interface ExecutionResult {
-  schema_version: "execution_result.v1";
-  result_id: string;
-  dispatch_id: string;
-  decision_id: string;
-  executor_type: ExecutorType;
-  status: ExecutionStatus;
-  output: string | null;
-  prompt_pack: Record<string, unknown> | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  estimated_cost: number | null;
-  latency_ms: number | null;
-  error_domain: string | null;
-  error_message: string | null;
-  provider_request_id: string | null;
-  attempt_number: number | null;
-  finish_reason: string | null;
-  usage_source: string | null;
-  created_at: string;
-}
-
-export interface EvaluationResult {
-  schema_version: "evaluation_result.v1";
-  evaluation_id: string;
-  dispatch_id: string;
-  decision_id: string;
-  execution_result_id: string;
-  status: EvaluationStatus;
-  checks: EvaluationCheck[];
-  quality_score: number | null;
-  requires_retry: boolean;
-  retry_reason: string | null;
-  created_at: string;
-}
-
-export interface EvaluationCheck {
-  check_id: string;
-  name: string;
-  status: CheckStatus;
-  reason: string;
-}
 
 export interface AutoAdjustmentsReport {
   schema_version: string;
