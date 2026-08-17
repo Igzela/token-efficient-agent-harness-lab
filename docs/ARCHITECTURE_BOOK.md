@@ -622,6 +622,27 @@ Following the acceptance of this contract (`PE7-AC6-CONTRACT-1`), implementation
 - **`PE7-AC6-DASHBOARD-MIGRATION-1`** (`IMPLEMENT`, T1): Migrate Dashboard data projections to consume generated wire contracts while preserving existing presentation layouts and zero-backend-authority invariants.
 - **`PE7-AC6-COMPATIBILITY-CLOSEOUT-1`** (`CLOSEOUT`, T2): Verify the entire producer/consumer compatibility matrix, validate zero wire drift, and freeze the AC7 legacy removal candidates.
 
+#### 6. AC6 Compatibility Closeout & AC7 Legacy Removal Manifest
+
+All 4 implementation and migration packets of AC6 have converged:
+
+1. **Producer/Consumer Compatibility Matrix (0 Drift)**:
+   - **Rust Engine** (`engine/src/wire_types.rs`), **Python SDK** (`sdk/python/src/agent_control_plane_sdk/wire_types.py`), **TypeScript SDK** (`sdk/typescript/src/generated-wire-types.ts`), and **Dashboard Projections** (`dashboard/src/lib/types.ts`) are in complete 1-to-1 lockstep across all 12 wire entities (`dispatch_request.v1`, `task_analysis.v1`, `dispatch_decision.v1`, `execution_result.v1`, `evaluation_result.v1`, `dispatch_record.v1`, `dispatch_bundle.v1`, `budget_reservation.v1`, `local_cost_summary.v2`, `local_dispatch_cost_detail.v1`, `axum_api.v1`, `local_dashboard.v1`) and all 18 enums (`RequestSource`, `ModelTier`, `TaskDomain`, `TaskIntent`, `RiskFlag`, `QualityRequirement`, `RiskLevel`, `ConfidenceLabel`, `EvidencePolarity`, `EvidenceSource`, `ExpectedQualityBand`, `DecisionStatus`, `GateSeverity`, `ExecutorType`, `ExecutionStatus`, `EvaluationStatus`, `CheckStatus`, `FinalStatus`).
+   - Verified continuously via `scripts/check_wire_codegen_drift.sh`.
+
+2. **Active Deprecation Window**:
+   - `POST /api/v1/product/tasks/:task_id/approve-and-output` and associated client wrappers (`approve_and_output_product_task` in Python, `approveAndOutputProductTask` in TypeScript and Dashboard) are marked `@deprecated` and will remain operational for backwards compatibility until AC7.
+   - Separate authority step endpoints (`POST /api/v1/product/tasks/:task_id/approve` and `POST /api/v1/product/tasks/:task_id/output`) are the sole canonical paths.
+
+3. **Frozen AC7 Removal Candidate Manifest**:
+   - `engine/src/http_server/routes.rs`: route `POST /api/v1/product/tasks/:task_id/approve-and-output`.
+   - `engine/src/http_server/handlers/product_tasks.rs`: handler `api_approve_and_output_product_task`.
+   - `engine/src/storage/local_product_store/product_tasks.rs`: helper `approve_and_output_product_task_for_tenant`.
+   - `sdk/python/src/agent_control_plane_sdk/client.py`: method `approve_and_output_product_task`.
+   - `sdk/typescript/src/index.ts`: method `approveAndOutputProductTask`.
+   - `dashboard/src/lib/api-client.ts`: method `approveAndOutputProductTask`.
+   - `engine/tests/test_product_golden_path_authority.rs`: composite route assertions.
+
 ## Harness Evolution
 
 Experiment control is established in separate bounded layers: identity/lineage/mutation registry; evaluator/holdout/contamination/gaming boundary; equal total-lifecycle budget; diversity/exploration controls; and hard-gate-first Pareto/stop/restart/recovery behavior. No layer creates a second evaluator, budget, store, scheduler, or adoption owner.
