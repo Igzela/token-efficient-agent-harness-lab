@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,38 @@ FROZEN_OBSERVED_TOOLCHAIN = {
     "python": "Python 3.14.4",
     "uv": "uv 0.11.17",
     "git": "git version 2.53.0",
+}
+FROZEN_TRACE_BINARY_IDENTITIES = {
+    "rustc": {
+        "path": str(
+            Path.home()
+            / ".rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc"
+        ),
+        "sha256": "ba4b837efb6612dfa8d941c5a72b8a50d1d03a0f36216743b173949aa8d9eb75",
+    },
+    "cargo": {
+        "path": str(
+            Path.home()
+            / ".rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo"
+        ),
+        "sha256": "f30f9fd1b1d0b8fd10dc33219eb4cd4bec3543f40e434ac71f5a03fd0359063f",
+    },
+    "python": {
+        "path": "/usr/bin/python3.14",
+        "sha256": "b8d8288faefdd300201f43fcf00f6f539a27218eeed3a3dff5ab10b9c4c99700",
+    },
+    "uv": {
+        "path": str(Path.home() / ".local/bin/uv"),
+        "sha256": "8ac91b3913a96c6d98d65b2fc6996064c85d0dc42a626977d337046be796c75d",
+    },
+    "git": {
+        "path": "/usr/bin/git",
+        "sha256": "5516c9f362c29376ab9a499a33082f9f611941d8c75930c880e30ad109e39c9a",
+    },
+    "bwrap": {
+        "path": "/usr/bin/bwrap",
+        "sha256": "0abea81db798ebf6b4742ac0664802d97521547a353c2a0dbdc21d76cbbfd2c0",
+    },
 }
 
 
@@ -132,6 +165,72 @@ def git_overlay_paths(root: Path) -> list[str]:
     )
 
 
+def git_revision_paths(root: Path, revision: str) -> list[str]:
+    result = subprocess.run(
+        ["git", "-C", str(root), "ls-tree", "-r", "-z", "--name-only", revision],
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode:
+        raise OSError(f"cannot enumerate Git revision: {revision}")
+    return [item.decode("utf-8") for item in result.stdout.split(b"\0") if item]
+
+
+def copy_git_revision(root: Path, revision: str, destination: Path) -> None:
+    """Copy only the bound Git revision, excluding ignored host artifacts."""
+    destination.mkdir(parents=True, exist_ok=True)
+    for relative in git_revision_paths(root, revision):
+        content = git_blob(root, revision, relative)
+        if content is None:
+            raise OSError(f"cannot read Git revision path: {relative}")
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+
+
+def copy_recipe_overlay(root: Path, destination: Path, paths: list[str]) -> None:
+    for relative in paths:
+        source = root / relative
+        if source.is_symlink() or not source.is_file():
+            raise OSError(f"recipe overlay is not a regular file: {relative}")
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
+def registered_source_commands(
+    manifest: dict[str, object], uv_binary: str, failures: list[str]
+) -> tuple[dict[str, str], list[str], dict[str, str], list[str]] | None:
+    rebuild = manifest.get("rebuild")
+    commands = rebuild.get("commands") if isinstance(rebuild, dict) else None
+    if not isinstance(commands, list) or len(commands) < 4:
+        failures.append("frozen rebuild command list is incomplete")
+        return None
+    raw_materializer, raw_pytest = commands[2:4]
+    if not isinstance(raw_materializer, str) or not isinstance(raw_pytest, str):
+        failures.append("frozen source trace commands are malformed")
+        return None
+
+    def split_command(raw: str) -> tuple[dict[str, str], list[str]]:
+        tokens = shlex.split(raw)
+        command_environment: dict[str, str] = {}
+        while tokens and "=" in tokens[0] and tokens[0].split("=", 1)[0].isidentifier():
+            key, value = tokens.pop(0).split("=", 1)
+            command_environment[key] = value
+        if not tokens or tokens[0] != "uv":
+            raise ValueError("registered source trace must invoke uv")
+        tokens[0] = uv_binary
+        return command_environment, tokens
+
+    try:
+        materializer_environment, materializer = split_command(raw_materializer)
+        pytest_environment, pytest = split_command(raw_pytest)
+    except ValueError as error:
+        failures.append(f"frozen source trace command is not registered uv execution: {error}")
+        return None
+    return materializer_environment, materializer, pytest_environment, pytest
+
+
 def required_manifest_failures(manifest: dict[str, object]) -> list[str]:
     failures: list[str] = []
     required = {
@@ -222,21 +321,25 @@ def verify_post_ac_harness(
 
 def verify_observed_toolchain(failures: list[str]) -> None:
     commands = {
-        "rustc": ["rustc", "--version"],
-        "cargo": ["cargo", "--version"],
-        "python": ["python3.14", "--version"],
-        "uv": ["uv", "--version"],
-        "git": ["git", "--version"],
+        "rustc": ["--version"],
+        "cargo": ["--version"],
+        "python": ["--version"],
+        "uv": ["--version"],
+        "git": ["--version"],
     }
-    environment = {"PATH": os.environ.get("PATH", "")}
-    for name, command in commands.items():
-        if shutil.which(command[0], path=environment["PATH"]) is None:
-            failures.append(f"observed toolchain binary is unavailable: {name}")
+    for name, arguments in commands.items():
+        identity = FROZEN_TRACE_BINARY_IDENTITIES[name]
+        path = Path(identity["path"])
+        if not path.is_file() or not os.access(path, os.X_OK):
+            failures.append(f"frozen toolchain binary is unavailable: {name}")
+            continue
+        if sha256_file(path) != identity["sha256"]:
+            failures.append(f"frozen toolchain binary digest differs: {name}")
             continue
         try:
             result = subprocess.run(
-                command,
-                env=environment,
+                [str(path), *arguments],
+                env={"PATH": str(path.parent)},
                 check=False,
                 capture_output=True,
                 text=True,
@@ -250,18 +353,22 @@ def verify_observed_toolchain(failures: list[str]) -> None:
             actual = actual.split(" (", 1)[0]
         if result.returncode or actual != FROZEN_OBSERVED_TOOLCHAIN[name]:
             failures.append(f"observed toolchain differs from the frozen binding: {name}")
+    bwrap_identity = FROZEN_TRACE_BINARY_IDENTITIES["bwrap"]
+    bwrap_path = Path(bwrap_identity["path"])
+    if not bwrap_path.is_file() or sha256_file(bwrap_path) != bwrap_identity["sha256"]:
+        failures.append("frozen toolchain binary digest differs: bwrap")
 
 
 def resolve_trace_binary(name: str, environment: dict[str, str], failures: list[str]) -> str | None:
-    if name == "cargo":
-        pinned = Path.home() / ".rustup" / "toolchains" / "1.96.0-x86_64-unknown-linux-gnu" / "bin" / "cargo"
-        if pinned.is_file() and os.access(pinned, os.X_OK):
-            return str(pinned)
-    path = shutil.which(name, path=environment["PATH"])
-    if path is None:
+    identity = FROZEN_TRACE_BINARY_IDENTITIES[name]
+    path = Path(identity["path"])
+    if not path.is_file() or not os.access(path, os.X_OK):
         failures.append(f"provider-free trace binary is unavailable: {name}")
         return None
-    return str(Path(path).resolve())
+    if sha256_file(path) != identity["sha256"]:
+        failures.append(f"provider-free trace binary digest differs: {name}")
+        return None
+    return str(path)
 
 
 def find_engine_test_binary(target: Path, failures: list[str]) -> Path | None:
@@ -278,20 +385,29 @@ def find_engine_test_binary(target: Path, failures: list[str]) -> Path | None:
 
 def _provider_free_environment(home: Path, target: Path) -> dict[str, str]:
     """Return an allowlisted environment with no host configuration authority."""
+    cargo_home = Path.home() / ".cargo"
+    rustup_home = Path.home() / ".rustup"
+    uv_cache = Path.home() / ".cache/uv"
     environment = {
         "PATH": os.pathsep.join(
-            [str(Path.home() / ".local" / "bin"), str(Path.home() / ".cargo" / "bin"), "/usr/bin", "/bin"]
+            [
+                str(Path.home() / ".local" / "bin"),
+                str(Path.home() / ".cargo" / "bin"),
+                "/usr/bin",
+                "/bin",
+            ]
         ),
         "HOME": str(home),
         "XDG_CONFIG_HOME": str(home / "config"),
-        "CARGO_HOME": os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")),
-        "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup")),
-        "UV_CACHE_DIR": str(home / "uv-cache"),
+        "CARGO_HOME": str(cargo_home),
+        "RUSTUP_HOME": str(rustup_home),
+        "UV_CACHE_DIR": str(uv_cache),
         "CARGO_TARGET_DIR": str(target),
         "CARGO_BUILD_JOBS": "2",
         "CARGO_NET_OFFLINE": "true",
         "UV_OFFLINE": "true",
-        "UV_NO_CACHE": "true",
+        "UV_PYTHON": FROZEN_TRACE_BINARY_IDENTITIES["python"]["path"],
+        "RUSTC": FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"],
         "CARGO_TERM_COLOR": "never",
         "PYTHONDONTWRITEBYTECODE": "1",
         "NO_COLOR": "1",
@@ -327,20 +443,20 @@ def _run_provider_free_trace(
             failures.append(f"provider-free trace failed: {name}: exit={result.returncode}")
         return
 
-    bubblewrap = shutil.which("bwrap")
-    if bubblewrap is None:
+    bubblewrap = Path(FROZEN_TRACE_BINARY_IDENTITIES["bwrap"]["path"])
+    if not bubblewrap.is_file():
         failures.append("provider-free trace unavailable: bwrap is required")
         return
     cargo_target = Path(environment["CARGO_TARGET_DIR"])
     if not cargo_target.is_dir():
         failures.append("provider-free trace unavailable: Cargo target cache is not readable")
         return
-    mapped_cwd = mounts[cwd]
+    mapped_cwd = mounts.get(cwd, str(cwd))
     mapped_environment = dict(environment)
     mapped_environment["HOME"] = "/tmp/rwe-home"
     mapped_environment["XDG_CONFIG_HOME"] = "/tmp/rwe-home/config"
     mapped_environment["CARGO_TARGET_DIR"] = "/tmp/rwe-target"
-    mapped_environment["UV_CACHE_DIR"] = "/tmp/rwe-uv-cache"
+    mapped_environment["UV_CACHE_DIR"] = "/tmp/rwe-host-uv-cache"
     if "PYTHONPATH" in mapped_environment:
         for host, guest in mounts.items():
             mapped_environment["PYTHONPATH"] = mapped_environment["PYTHONPATH"].replace(
@@ -383,7 +499,9 @@ def _run_provider_free_trace(
         "--dir",
         "/tmp/rwe-harness",
         "--dir",
-        "/tmp/rwe-uv-cache",
+        "/tmp/rwe-host-uv-cache",
+        "--dir",
+        "/workspace",
         "--dir",
         "/home",
         "--dir",
@@ -420,79 +538,144 @@ def _run_provider_free_trace(
         failures.append(f"provider-free trace unavailable: {name}: {type(error).__name__}")
         return
     if result.returncode:
-        failures.append(f"provider-free trace failed: {name}: exit={result.returncode}")
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        suffix = f": {detail[-1][:300]}" if detail else ""
+        failures.append(
+            f"provider-free trace failed: {name}: exit={result.returncode}{suffix}"
+        )
+
+
+def verify_bwrap_capability(environment: dict[str, str], failures: list[str]) -> None:
+    """Require a real direct bwrap probe before running the nested test lane."""
+    bubblewrap = Path(FROZEN_TRACE_BINARY_IDENTITIES["bwrap"]["path"])
+    result = subprocess.run(
+        [
+            str(bubblewrap),
+            "--die-with-parent",
+            "--unshare-net",
+            "--clearenv",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--ro-bind",
+            "/bin",
+            "/bin",
+            "--ro-bind",
+            "/lib",
+            "/lib",
+            "--ro-bind",
+            "/lib64",
+            "/lib64",
+            "--ro-bind",
+            "/etc",
+            "/etc",
+            "--tmpfs",
+            "/home",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--",
+            "/usr/bin/test",
+            "!",
+            "-e",
+            str(Path.home() / ".codex"),
+        ],
+        cwd=Path("/"),
+        env={"PATH": environment["PATH"]},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode:
+        failures.append("provider-free bwrap capability probe did not establish isolation")
+
+
+def verify_trace_generated_baseline(
+    trace_source: Path, manifest: dict[str, object], failures: list[str]
+) -> None:
+    generated = manifest.get("generated_active_baseline", {})
+    if not isinstance(generated, dict):
+        failures.append("generated active baseline metadata is malformed")
+        return
+    for relative, expected in generated.get("files", {}).items():
+        verify_file(trace_source, relative, expected, failures)
 
 
 def verify_provider_free_traces(
-    source_root: Path, harness_root: Path, failures: list[str]
+    source_root: Path,
+    harness_root: Path,
+    manifest: dict[str, object],
+    failures: list[str],
 ) -> None:
     with tempfile.TemporaryDirectory(prefix="pe7-rwe-trace-") as directory:
         temporary = Path(directory)
         trace_source = temporary / "source"
-        shutil.copytree(source_root, trace_source, symlinks=True)
+        copy_git_revision(source_root, manifest["repository"]["source_commit"], trace_source)
+        copy_recipe_overlay(
+            source_root,
+            trace_source,
+            manifest["reconstruction_recipe"]["recipe_paths"],
+        )
+        (trace_source / "source").symlink_to(".")
         trace_harness = temporary / "harness"
-        shutil.copytree(harness_root, trace_harness, symlinks=True)
+        copy_git_revision(harness_root, FROZEN_POST_AC_IDENTITY["main_sha"], trace_harness)
         target = temporary / "target"
         target.mkdir()
         home = temporary / "home"
         home.mkdir()
-        (home / "uv-cache").mkdir()
+        uv_cache = Path.home() / ".cache/uv"
+        if not uv_cache.is_dir():
+            failures.append("provider-free trace requires the bound read-only uv cache")
+            return
+        trace_cache = temporary / "uv-cache"
+        shutil.copytree(uv_cache, trace_cache, symlinks=True)
         environment = _provider_free_environment(home, target)
+        environment["UV_CACHE_DIR"] = str(trace_cache)
         uv_binary = resolve_trace_binary("uv", environment, failures)
         cargo_binary = resolve_trace_binary("cargo", environment, failures)
         if uv_binary is None or cargo_binary is None:
             return
+        registered = registered_source_commands(manifest, uv_binary, failures)
+        if registered is None:
+            return
+        (
+            materializer_command_environment,
+            materializer,
+            pytest_command_environment,
+            pytest,
+        ) = registered
         source_environment = dict(environment)
-        source_environment["PYTHONPATH"] = str(trace_source / "apps/api/src")
+        source_environment.update(materializer_command_environment)
         mounts = {
-            trace_source: str(source_root),
+            trace_source: "/workspace/source",
             trace_harness: "/tmp/rwe-harness",
             target: "/tmp/rwe-target",
+            trace_cache: "/tmp/rwe-host-uv-cache",
         }
         _run_provider_free_trace(
             "pre_ac_source_materializer",
-            [
-                uv_binary,
-                "run",
-                "--locked",
-                "--no-sync",
-                "--project",
-                "apps/api/pyproject.toml",
-                "--extra",
-                "dev",
-                "python",
-                "tools/materialize_sample_baseline.py",
-            ],
+            materializer,
             trace_source,
             source_environment,
             mounts,
-            {trace_source, target},
+            {trace_source, target, trace_cache},
             True,
             failures,
         )
+        verify_trace_generated_baseline(trace_source, manifest, failures)
+        source_environment = dict(environment)
+        source_environment.update(pytest_command_environment)
         _run_provider_free_trace(
             "pre_ac_source_pytest",
-            [
-                uv_binary,
-                "run",
-                "--locked",
-                "--no-sync",
-                "--project",
-                "apps/api/pyproject.toml",
-                "--extra",
-                "dev",
-                "python",
-                "-m",
-                "pytest",
-                "apps/api/tests/",
-                "-q",
-            ],
+            pytest,
             trace_source,
-        source_environment,
-        mounts,
-        {trace_source, target},
-        True,
-        failures,
+            source_environment,
+            mounts,
+            {trace_source, target, trace_cache},
+            True,
+            failures,
         )
         _run_provider_free_trace(
             "post_ac_engine_tests",
@@ -515,10 +698,11 @@ def verify_provider_free_traces(
         engine_test_binary = find_engine_test_binary(target, failures)
         if engine_test_binary is None:
             return
+        verify_bwrap_capability(environment, failures)
         # This registered test intentionally probes nested bubblewrap. Running
-        # it inside the outer sandbox makes it observe the outer namespace and
-        # changes the probe result; its direct lane remains strict, offline,
-        # and cache-free while preserving the test's own fail-closed branch.
+        # it inside the outer sandbox makes it observe the outer namespace.
+        # The direct lane is allowed only after the independent bwrap probe
+        # above proves that the test can establish its own filesystem boundary.
         nested_environment = {
             key: value
             for key, value in environment.items()
@@ -679,7 +863,7 @@ def verify(
             else:
                 verify_snapshot_integrity(source_root, harness_root, manifest, failures)
             if execute_traces and not failures:
-                verify_provider_free_traces(source_root, harness_root, failures)
+                verify_provider_free_traces(source_root, harness_root, manifest, failures)
                 verify_snapshot_integrity(source_root, harness_root, manifest, failures)
             elif not execute_traces:
                 failures.append("provider-free trace execution is required")

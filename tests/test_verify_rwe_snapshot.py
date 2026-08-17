@@ -129,6 +129,52 @@ class VerifyRweSnapshotTests(unittest.TestCase):
                 ["recipe.txt", "staged.txt"],
             )
 
+    def test_copy_git_revision_excludes_ignored_host_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for args in (
+                ("init", "-b", "main"),
+                ("config", "user.name", "Test"),
+                ("config", "user.email", "test@example.invalid"),
+            ):
+                subprocess.run(("git", *args), cwd=root, check=True, capture_output=True)
+            (root / ".gitignore").write_text(".venv/\n", encoding="utf-8")
+            (root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            (root / ".venv").mkdir()
+            (root / ".venv" / "private.txt").write_text("private\n", encoding="utf-8")
+            subprocess.run(("git", "add", ".gitignore", "tracked.txt"), cwd=root, check=True)
+            subprocess.run(("git", "commit", "-m", "base"), cwd=root, check=True, capture_output=True)
+
+            destination = root / "copy"
+            verify_rwe_snapshot.copy_git_revision(root, "HEAD", destination)
+
+            self.assertEqual((destination / "tracked.txt").read_text(encoding="utf-8"), "tracked\n")
+            self.assertFalse((destination / ".venv").exists())
+
+    def test_registered_source_commands_are_manifest_bound(self) -> None:
+        manifest = {
+            "rebuild": {
+                "commands": [
+                    "git clone source",
+                    "git apply recipe",
+                    "uv run --locked --project source/apps/api/pyproject.toml --extra dev python source/tools/materialize_sample_baseline.py",
+                    "PYTHONPATH=source/apps/api/src uv run --locked --project source/apps/api pytest source/apps/api/tests/ -q",
+                ]
+            }
+        }
+        failures: list[str] = []
+        registered = verify_rwe_snapshot.registered_source_commands(
+            manifest, "/fixed/uv", failures
+        )
+
+        self.assertEqual(failures, [])
+        assert registered is not None
+        materializer_environment, materializer, pytest_environment, pytest = registered
+        self.assertEqual(materializer[0], "/fixed/uv")
+        self.assertEqual(materializer_environment, {})
+        self.assertEqual(pytest_environment, {"PYTHONPATH": "source/apps/api/src"})
+        self.assertEqual(pytest[0], "/fixed/uv")
+
 
 if __name__ == "__main__":
     unittest.main()
