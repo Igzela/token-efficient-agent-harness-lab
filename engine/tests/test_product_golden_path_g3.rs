@@ -1445,6 +1445,41 @@ fn test_port_migration_idempotency_and_audit_traces() {
             output["task"]["status"].as_str(),
             Some(ProductTaskStatus::Completed.as_str())
         );
+
+        // 6. Verify audit trail is recorded through port operations
+        let conn = rusqlite::Connection::open(dir.path().join("store.db")).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT action FROM audit_log WHERE resource = ?1 ORDER BY audit_id ASC")
+            .unwrap();
+        let actions: Vec<String> = stmt
+            .query_map(rusqlite::params![task_id], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            actions.iter().any(|a| a == "product_task.admit"),
+            "audit log missing product_task.admit: {:?}",
+            actions
+        );
+        assert!(
+            actions.iter().any(|a| a == "product_task.bind_plan_run"),
+            "audit log missing product_task.bind_plan_run: {:?}",
+            actions
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|a| a == "product_task.output_approval_recorded"),
+            "audit log missing product_task.output_approval_recorded: {:?}",
+            actions
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|a| a == "product_task.terminal_evidence_committed"),
+            "audit log missing product_task.terminal_evidence_committed: {:?}",
+            actions
+        );
     });
 }
 
