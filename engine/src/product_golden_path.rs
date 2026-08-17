@@ -1324,7 +1324,7 @@ pub fn resolve_admitted_executor(policy: &ProductExecutorPolicy) -> Result<Strin
 /// The raw objective is deliberately excluded from this receipt. Its authoritative
 /// fingerprint and the complete intake-contract hash bind the prompt without making
 /// terminal/audit evidence a prompt corpus.
-pub(crate) fn product_apply_binding_sha256(
+pub fn product_apply_binding_sha256(
     workspace_id: &str,
     node_metadata: &Value,
 ) -> Result<String, String> {

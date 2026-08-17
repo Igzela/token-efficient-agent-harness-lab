@@ -1158,6 +1158,247 @@ fn test_pure_orchestrator_graph_compilation_and_validation_golden_traces() {
     assert_eq!(graph["nodes"][0]["executor"], "command");
     assert_eq!(graph["nodes"][0]["task_type"], "command");
 
+    // Test multi-stage graph compilation (managed_deepseek with legacy docs smoke verifier)
+    let ds_task_json = json!({
+        "task_id": "product-task-pure-ds",
+        "status": "workspace_bound",
+        "tenant_id": "local",
+        "workspace_id": "default",
+        "objective_fingerprint": validated.objective_fingerprint,
+        "intake_contract_sha256": validated.intake_contract_sha256,
+        "output_intent": "artifact_only",
+        "workspace_binding": {
+            "workspace_path": "/tmp/workspace-1",
+            "workspace_id": "default",
+            "source_revision": "1234567890abcdef1234567890abcdef12345678",
+            "allowed_paths": ["README.md", "docs/USER_GUIDE.md"]
+        },
+        "intake": {
+            "objective_preview": "Golden trace test for pure orchestrator core extraction.",
+            "budget": {
+                "total_tokens": 5000,
+                "total_calls": 5
+            },
+            "verification_commands": [{
+                "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+                "timeout_ms": 5000
+            }]
+        },
+        "managed_deepseek_deferred_binding": true
+    });
+
+    let ds_graph = compile_product_executable_graph(
+        &ds_task_json,
+        "2026-08-16T12:00:00Z",
+        &plan_ids,
+        "managed_deepseek",
+    )
+    .expect("compile managed_deepseek graph");
+    assert_eq!(ds_graph["schema_version"], "workflow_graph.v1");
+    let ds_nodes = ds_graph["nodes"].as_array().unwrap();
+    assert_eq!(ds_nodes.len(), 4);
+    assert_eq!(ds_nodes[0]["executor"], "managed_deepseek");
+    assert_eq!(ds_nodes[0]["managed_deepseek"]["stage"], "planning");
+    assert_eq!(ds_nodes[1]["executor"], "managed_deepseek");
+    assert_eq!(ds_nodes[1]["managed_deepseek"]["stage"], "implementation");
+    assert_eq!(ds_nodes[2]["executor"], "command");
+    assert_eq!(ds_nodes[2]["executor_class"], "deterministic_verifier");
+    assert_eq!(ds_nodes[3]["executor"], "managed_deepseek");
+    assert_eq!(ds_nodes[3]["managed_deepseek"]["stage"], "review");
+
+    std::env::remove_var(PRODUCT_TASK_GATE);
+}
+
+#[test]
+fn test_pure_orchestrator_golden_traces_four_categories() {
+    use engine::product_golden_path::{
+        compile_product_executable_graph, is_valid_product_task_transition,
+        parse_strict_product_verification_command, planned_workspace_path,
+        product_apply_binding_sha256, validate_intake, validate_source_revision_format,
+        ProductExecutorPolicy, ProductOutputIntent, ProductTaskIntakeRequest, ProductTaskStatus,
+        ProductVerificationCommand, PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION,
+    };
+    use serde_json::json;
+
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+
+    // =========================================================================
+    // Category 1: Intake / Admission / Status (Intake Contract & Transition Rules)
+    // =========================================================================
+    let req = ProductTaskIntakeRequest {
+        objective: "Pure orchestrator category 1 intake trace.".to_string(),
+        target_id: "disposable-target".to_string(),
+        target_repo_path: "/tmp/test-repo".to_string(),
+        source_kind: None,
+        source_revision: "abcdef0123456789abcdef0123456789abcdef01".to_string(),
+        source_tree_hash: None,
+        allowed_paths: vec!["src/lib.rs".to_string()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: "test -f src/lib.rs".to_string(),
+            timeout_ms: 5_000,
+        }],
+        output_intent: "artifact_only".to_string(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["command".to_string()],
+            prefer: Some("command".to_string()),
+        },
+        budget: None,
+        risk_class: "low".to_string(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: None,
+        idempotency_key: "orch-cat1-key".to_string(),
+        expected_version: None,
+        tenant_id: Some("local".to_string()),
+        workspace_id: Some("default".to_string()),
+        workspace_mode: Some("git_worktree".to_string()),
+    };
+
+    let val = validate_intake(&req, "local", "default").expect("validate intake");
+    assert_eq!(val.tenant_id, "local");
+    assert_eq!(val.workspace_id, "default");
+    assert_eq!(val.output_intent, ProductOutputIntent::ArtifactOnly);
+    assert_eq!(val.intake_contract_sha256.len(), 64);
+    assert_eq!(val.objective_fingerprint.len(), 64);
+
+    // Validate status transition table invariants
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::WorkspaceBound,
+        ProductTaskStatus::GraphReady
+    ));
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::GraphReady,
+        ProductTaskStatus::Running
+    ));
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::Running,
+        ProductTaskStatus::Verifying
+    ));
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::Verifying,
+        ProductTaskStatus::AwaitingApproval
+    ));
+    assert!(is_valid_product_task_transition(
+        ProductTaskStatus::AwaitingApproval,
+        ProductTaskStatus::Completed
+    ));
+
+    // Invalid skip transitions fail closed
+    assert!(!is_valid_product_task_transition(
+        ProductTaskStatus::Admitted,
+        ProductTaskStatus::Running
+    ));
+    assert!(!is_valid_product_task_transition(
+        ProductTaskStatus::WorkspaceBound,
+        ProductTaskStatus::Completed
+    ));
+
+    // =========================================================================
+    // Category 2: Compile / Execute / Verify (Pure Graph DAG & Verifier Parsing)
+    // =========================================================================
+    let task_json = json!({
+        "task_id": "product-task-cat2",
+        "status": "workspace_bound",
+        "tenant_id": "local",
+        "workspace_id": "default",
+        "objective_fingerprint": val.objective_fingerprint,
+        "intake_contract_sha256": val.intake_contract_sha256,
+        "output_intent": "artifact_only",
+        "workspace_binding": {
+            "workspace_path": "/tmp/workspace-cat2",
+            "workspace_id": "default",
+            "source_revision": "abcdef0123456789abcdef0123456789abcdef01",
+            "allowed_paths": ["src/lib.rs"]
+        },
+        "intake": {
+            "objective_preview": "Pure orchestrator category 1 intake trace.",
+            "budget": {
+                "total_tokens": 10000,
+                "total_calls": 10
+            },
+            "verification_commands": [{
+                "command": "test -f src/lib.rs",
+                "timeout_ms": 5000
+            }]
+        }
+    });
+
+    let plan_ids = engine::read_only_planner::WorkflowPlanIds::for_sequence(101);
+
+    // Single-stage executor compilation (command)
+    let g =
+        compile_product_executable_graph(&task_json, "2026-08-16T12:00:00Z", &plan_ids, "command")
+            .expect("Failed to compile graph for command");
+    assert_eq!(g["schema_version"], "workflow_graph.v1");
+    assert_eq!(
+        g["product_graph_schema_version"],
+        PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION
+    );
+    assert_eq!(g["nodes"].as_array().unwrap().len(), 1);
+
+    // Strict verifier command parser tests
+    let (env, argv) = parse_strict_product_verification_command("test -f src/lib.rs").unwrap();
+    assert!(env.is_empty());
+    assert_eq!(argv, vec!["test", "-f", "src/lib.rs"]);
+
+    let (py_env, py_argv) = parse_strict_product_verification_command(
+        "PYTHONPATH=src python3 -m pytest tests/test_core.py -q",
+    )
+    .unwrap();
+    assert_eq!(py_env, vec![("PYTHONPATH".to_string(), "src".to_string())]);
+    assert_eq!(
+        py_argv,
+        vec!["python3", "-m", "pytest", "tests/test_core.py", "-q"]
+    );
+
+    // Forbidden commands fail closed
+    assert!(parse_strict_product_verification_command("rm -rf src").is_err());
+    assert!(
+        parse_strict_product_verification_command("test -f src/lib.rs; cat /etc/passwd").is_err()
+    );
+    assert!(parse_strict_product_verification_command("grep -r foo .").is_err());
+
+    // =========================================================================
+    // Category 3: Recovery / Compensation (Deterministic Path Projections)
+    // =========================================================================
+    let planned_path =
+        planned_workspace_path(std::path::Path::new("/var/store/store.db"), "task-12345");
+    assert_eq!(
+        planned_path,
+        Ok(std::path::PathBuf::from("/var/store/workspaces/task-12345"))
+    );
+
+    // Source revision validation
+    assert!(validate_source_revision_format("abcdef0123456789abcdef0123456789abcdef01").is_ok());
+    assert!(validate_source_revision_format("main").is_ok());
+    assert!(validate_source_revision_format("-option").is_err());
+    assert!(validate_source_revision_format("branch with spaces").is_err());
+    assert!(validate_source_revision_format("").is_err());
+
+    // =========================================================================
+    // Category 4: Delegation / Output Projections (Apply Binding & Redaction)
+    // =========================================================================
+    let node_metadata = json!({
+        "workspace_id": "default",
+        "product_task_id": "product-task-cat2",
+        "tenant_id": "local",
+        "target_repo_path": "/tmp/test-repo",
+        "source_revision": "abcdef0123456789abcdef0123456789abcdef01",
+        "allowed_paths": ["src/lib.rs"],
+        "output_intent": "artifact_only",
+        "executor": "command",
+        "executor_class": "fixture_deterministic",
+        "workspace_path": "/tmp/workspace-cat2",
+        "workspace_root": "/tmp/workspace-cat2",
+        "objective_fingerprint": val.objective_fingerprint,
+        "intake_contract_sha256": val.intake_contract_sha256
+    });
+    let binding_sha = product_apply_binding_sha256("default", &node_metadata).expect("binding sha");
+    assert_eq!(binding_sha.len(), 64);
+
     std::env::remove_var(PRODUCT_TASK_GATE);
 }
 
