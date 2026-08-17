@@ -297,7 +297,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | AC7 removal manifest | `COMPLETE` | PR #560 accepted; exact deprecated route, handler, LocalProductStore compatibility methods, consumer wrappers, test callers, rollback groups, and negative-search gates are frozen |
 | AC7 cleanup | `COMPLETE` | PR #562 accepted; fixed-string inventory is zero across tracked source, tests, SDK, Dashboard, scripts, tools, and replay/fixture paths; separate approve/output authority and recovery semantics remain; rollback is the pre-cleanup tree `eb692703…` |
 | AC7 closeout | `COMPLETE` | PR #563 accepted; exact cleanup convergence, implementation-cost aggregation, rollback index, and contemporary old/new replay inputs are bound |
-| Contemporary old/new replay reconstruction | `IN_PROGRESS` | Provider-free reconstruction of the frozen pre-AC Harness beside accepted post-AC under isolated identities is executing; protocol/preflight and any authorized run remain gated successors |
+| Contemporary old/new replay reconstruction | `READY_FOR_EXECUTION` | Provider-free reconstruction of the frozen pre-AC Harness beside accepted post-AC under isolated identities; protocol/preflight and any authorized run remain gated successors |
 | Contemporary old/new replay | `BLOCKED_PREREQUISITE` | Reconstruction, protocol/preflight, authorized run, analysis; reconstruction is the current executable packet |
 | EC1–EC5 experiment control | `BLOCKED_PREREQUISITE` | 17 packets; causal mutation evidence and each control family freeze before implementation |
 | Level-1 core without memory/skill | `BLOCKED_PREREQUISITE` | Preflight, one authorized generation, independent closeout |

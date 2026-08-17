@@ -8,8 +8,21 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
+
+
+FROZEN_RWE_MANIFEST_SHA256 = (
+    "a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c"
+)
+FROZEN_POST_AC_IDENTITY = {
+    "main_sha": "42fcfa5ad7e349d27d3caa815163340f9c0d5c0b",
+    "tree_sha": "c81a2e4e635da05a8a1c15630371e98943c70c86",
+    "cargo_lock_sha256": "cf68982734f8a72148950f119408b676dd5b42ce65d7af69c02eca017a551653",
+    "rust_toolchain_sha256": "e59c5da37d1f9f4e0f815bc188cb6056fc7410c9cdaa9673c2d44da557c75d12",
+}
 
 
 def sha256_file(path: Path) -> str:
@@ -198,22 +211,23 @@ def verify_post_ac_harness(
     )
 
 
-def _provider_free_environment() -> dict[str, str]:
-    environment = dict(os.environ)
-    for key in list(environment):
-        upper = key.upper()
-        if any(
-            marker in upper
-            for marker in (
-                "API_KEY",
-                "AUTH_TOKEN",
-                "ANTHROPIC_",
-                "DEEPSEEK_",
-                "OPENAI_",
-            )
-        ):
-            environment.pop(key, None)
-    environment["CARGO_TERM_COLOR"] = "never"
+def _provider_free_environment(home: Path, target: Path) -> dict[str, str]:
+    """Return an allowlisted environment with no host configuration authority."""
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home / "config"),
+        "CARGO_HOME": os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")),
+        "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup")),
+        "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR", str(Path.home() / ".cache" / "uv")),
+        "CARGO_TARGET_DIR": str(target),
+        "CARGO_BUILD_JOBS": "2",
+        "CARGO_NET_OFFLINE": "true",
+        "UV_OFFLINE": "true",
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "NO_COLOR": "1",
+    }
     return environment
 
 
@@ -222,13 +236,90 @@ def _run_provider_free_trace(
     command: list[str],
     cwd: Path,
     environment: dict[str, str],
+    mounts: dict[Path, str],
+    writable_mounts: set[Path],
+    sandbox: bool,
     failures: list[str],
 ) -> None:
+    if not sandbox:
+        try:
+            result = subprocess.run(
+                command,
+                cwd=cwd,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3_600,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            failures.append(f"provider-free trace unavailable: {name}: {type(error).__name__}")
+            return
+        if result.returncode:
+            failures.append(f"provider-free trace failed: {name}: exit={result.returncode}")
+        return
+
+    bubblewrap = shutil.which("bwrap")
+    if bubblewrap is None:
+        failures.append("provider-free trace unavailable: bwrap is required")
+        return
+    cache = Path(environment["UV_CACHE_DIR"])
+    if not cache.is_dir():
+        failures.append("provider-free trace unavailable: UV cache is not readable")
+        return
+    cargo_target = Path(environment["CARGO_TARGET_DIR"])
+    if not cargo_target.is_dir():
+        failures.append("provider-free trace unavailable: Cargo target cache is not readable")
+        return
+    mapped_cwd = mounts[cwd]
+    mapped_environment = dict(environment)
+    mapped_environment["UV_CACHE_DIR"] = "/tmp/rwe-uv-cache"
+    if "PYTHONPATH" in mapped_environment:
+        for host, guest in mounts.items():
+            mapped_environment["PYTHONPATH"] = mapped_environment["PYTHONPATH"].replace(
+                str(host), guest
+            )
+    sandbox_command = [
+        bubblewrap,
+        "--die-with-parent",
+        "--unshare-net",
+        "--clearenv",
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--tmpfs",
+        "/tmp",
+        "--dir",
+        "/tmp/rwe-home",
+        "--dir",
+        "/tmp/rwe-home/config",
+        "--dir",
+        "/tmp/rwe-target",
+        "--dir",
+        "/tmp/rwe-source",
+        "--dir",
+        "/tmp/rwe-harness",
+        "--bind",
+        str(cache),
+        "/tmp/rwe-uv-cache",
+    ]
+    for host, guest in mounts.items():
+        mode = "--bind" if host in writable_mounts else "--ro-bind"
+        sandbox_command.extend((mode, str(host), guest))
+    sandbox_command.extend(("--chdir", mapped_cwd))
+    for key, value in mapped_environment.items():
+        sandbox_command.extend(("--setenv", key, value))
+    sandbox_command.append("--")
+    sandbox_command.extend(command)
     try:
         result = subprocess.run(
-            command,
-            cwd=cwd,
-            env=environment,
+            sandbox_command,
+            cwd=Path("/"),
+            env={"PATH": environment["PATH"]},
             check=False,
             capture_output=True,
             text=True,
@@ -244,34 +335,49 @@ def _run_provider_free_trace(
 def verify_provider_free_traces(
     source_root: Path, harness_root: Path, failures: list[str]
 ) -> None:
-    environment = _provider_free_environment()
-    source_environment = dict(environment)
-    source_environment["PYTHONPATH"] = str(source_root / "apps/api/src")
-    _run_provider_free_trace(
-        "pre_ac_source_pytest",
-        [
-            "uv",
-            "run",
-            "--locked",
-            "--project",
-            "apps/api/pyproject.toml",
-            "--extra",
-            "dev",
-            "pytest",
-            "apps/api/tests/",
-            "-q",
-        ],
-        source_root,
+    with tempfile.TemporaryDirectory(prefix="pe7-rwe-trace-") as directory:
+        temporary = Path(directory)
+        trace_source = temporary / "source"
+        shutil.copytree(source_root, trace_source, symlinks=True)
+        target = temporary / "target"
+        target.mkdir()
+        environment = _provider_free_environment(temporary / "home", target)
+        source_environment = dict(environment)
+        source_environment["PYTHONPATH"] = str(trace_source / "apps/api/src")
+        mounts = {trace_source: "/tmp/rwe-source", harness_root: "/tmp/rwe-harness"}
+        _run_provider_free_trace(
+            "pre_ac_source_pytest",
+            [
+                "uv",
+                "run",
+                "--locked",
+                "--project",
+                "apps/api/pyproject.toml",
+                "--extra",
+                "dev",
+                "python",
+                "-m",
+                "pytest",
+                "apps/api/tests/",
+                "-q",
+            ],
+            trace_source,
         source_environment,
+        mounts,
+        {trace_source},
+        True,
         failures,
-    )
-    _run_provider_free_trace(
-        "post_ac_engine_tests",
-        ["cargo", "test", "-p", "engine"],
-        harness_root,
+        )
+        _run_provider_free_trace(
+            "post_ac_engine_tests",
+            ["cargo", "test", "-p", "engine"],
+            harness_root,
         environment,
+        mounts,
+        set(),
+        False,
         failures,
-    )
+        )
 
 
 def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures: list[str]) -> None:
@@ -389,6 +495,8 @@ def verify(
     expected_manifest = manifest.get("manifest_sha256")
     if not isinstance(expected_manifest, str):
         failures.append("manifest_sha256 is missing")
+    elif expected_manifest != FROZEN_RWE_MANIFEST_SHA256:
+        failures.append("snapshot manifest digest differs from the frozen RWE binding")
     elif canonical_manifest_digest(manifest) != expected_manifest:
         failures.append("snapshot manifest canonical digest mismatch")
 
@@ -397,12 +505,17 @@ def verify(
             verify_isolated_roots(source_root, harness_root, failures)
             if post_ac_identity is None:
                 failures.append("post-AC identity binding is required")
+            elif post_ac_identity != FROZEN_POST_AC_IDENTITY:
+                failures.append("post-AC identity differs from the frozen RWE binding")
             else:
                 verify_post_ac_harness(harness_root, post_ac_identity, failures)
             verify_git_overlay(source_root, manifest, failures)
             verify_frozen_task_bindings(harness_root, manifest, failures)
             if execute_traces and not failures:
                 verify_provider_free_traces(source_root, harness_root, failures)
+                verify_post_ac_harness(harness_root, FROZEN_POST_AC_IDENTITY, failures)
+                verify_git_overlay(source_root, manifest, failures)
+                verify_frozen_task_bindings(harness_root, manifest, failures)
             elif not execute_traces:
                 failures.append("provider-free trace execution is required")
         except (KeyError, TypeError):

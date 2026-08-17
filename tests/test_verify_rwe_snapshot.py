@@ -86,6 +86,19 @@ class VerifyRweSnapshotTests(unittest.TestCase):
         self.assertIn("snapshot hash mismatch: Cargo.lock", failures)
         self.assertIn("snapshot hash mismatch: rust-toolchain.toml", failures)
 
+    def test_manifest_digest_must_match_the_frozen_binding(self) -> None:
+        manifest_path = Path(
+            "engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v2.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["status"] = "tampered"
+        manifest["manifest_sha256"] = verify_rwe_snapshot.canonical_manifest_digest(manifest)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            failures = verify_rwe_snapshot.verify(path, Path(directory), Path(directory))
+        self.assertIn("snapshot manifest digest differs from the frozen RWE binding", failures)
+
     def test_frozen_snapshot_metadata_is_provider_free(self) -> None:
         manifest_path = Path(
             "engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v2.json"
