@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import shutil
 import shlex
 import signal
@@ -141,6 +142,26 @@ def _git_command(root: Path, args: tuple[str, ...]) -> list[str]:
         str(root),
         "-c",
         "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        "core.sparseCheckout=false",
+        "-c",
+        "core.sparseCheckoutCone=false",
+        "-c",
+        "core.excludesFile=/dev/null",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-c",
+        "core.fileMode=true",
+        "-c",
+        "status.showUntrackedFiles=all",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "diff.external=",
+        "-c",
+        "diff.trustExitCode=false",
         "--no-optional-locks",
     ]
     if args and args[0] == "diff":
@@ -173,10 +194,24 @@ def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
     )
     total = 0
     overflow = False
+    timed_out = False
+    selector = selectors.DefaultSelector()
     try:
+        assert process.stdout is not None
+        os.set_blocking(process.stdout.fileno(), False)
+        selector.register(process.stdout, selectors.EVENT_READ)
+        deadline = time.monotonic() + 120
         with destination.open("wb") as output:
             while True:
-                chunk = process.stdout.read(64 * 1024)  # type: ignore[union-attr]
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    timed_out = True
+                    _terminate_process_group(process)
+                    break
+                try:
+                    chunk = process.stdout.read(64 * 1024)
+                except BlockingIOError:
+                    continue
                 if not chunk:
                     break
                 total += len(chunk)
@@ -188,13 +223,18 @@ def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
                     _terminate_process_group(process)
                     break
                 output.write(chunk)
-        if overflow:
+        if overflow or timed_out:
             return False
-        return process.wait(timeout=120) == 0
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+        if _process_group_exists(process.pid):
+            _terminate_process_group(process)
+            return False
+        return process.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         _terminate_process_group(process)
         return False
     finally:
+        selector.close()
         if process.stdout is not None:
             process.stdout.close()
 
@@ -507,7 +547,14 @@ def verify_post_ac_harness(
         expected["rust_toolchain_sha256"],
         failures,
     )
-    if git_output(harness_root, "status", "--porcelain=v1", "--untracked-files=all"):
+    status = _git_result(
+        harness_root, "status", "--porcelain=v1", "--untracked-files=all"
+    )
+    if status.error is not None or status.timed_out or status.output_truncated:
+        failures.append("post-AC harness Git status check was unavailable")
+    elif status.returncode:
+        failures.append("post-AC harness Git status check failed")
+    elif status.stdout.strip():
         failures.append("post-AC harness worktree must be clean")
 
 
@@ -687,6 +734,8 @@ def _drain_output(
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
     """Terminate only the process group created for this verifier child."""
+    if not _process_group_exists(process.pid):
+        return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -710,6 +759,16 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
             process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
             pass
+
+
+def _process_group_exists(process_id: int) -> bool:
+    try:
+        os.killpg(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _run_bounded_command(
@@ -769,6 +828,8 @@ def _run_bounded_command(
         stdout_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
         stderr_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
     if returncode and not timed_out:
+        _terminate_process_group(process)
+    if _process_group_exists(process.pid):
         _terminate_process_group(process)
     if process.stdout is not None:
         process.stdout.close()
