@@ -1,6 +1,6 @@
 # Future Route
 
-Last updated: 2026-08-16.
+Last updated: 2026-08-17.
 
 This document is the sole long-horizon routing index. Every packet here is `BLOCKED_PREREQUISITE` and routing-only: its order, prerequisite, intended class, bounded sketch, and promotion profile are accepted planning context, not implementation or external-effect authority.
 
@@ -40,7 +40,7 @@ These are audited absences or unaccepted seams at the current main, not permissi
 | Meta/R4 | existing EC/Level-2 owners | no accepted fixed O0/O1 or metacognitive operator adapter | treatment cannot be isolated under an immutable outer shell or can rewrite its contract |
 | R5 training | existing artifact/store/evaluator boundaries only | no accepted trainer, external-training adapter, checkpoint owner, or training-effect authority | data rights, base/adapter identity, compute, retry, deletion, or verifier separation is unresolved |
 | R6 outer policy | existing controllers/evidence owners | no accepted mapping for parent, lever, or curriculum policy; only one family may be chosen | action space includes evaluator, goals, safety, permissions, budgets, or unbounded recursive depth |
-| Dashboard | current Dashboard presentation/data consumers | AC6 data/schema migration and final presentation refresh are distinct; neither is accepted yet | final UI asks for backend/schema authority or optional R4-R6 work is treated as a blocker |
+| Dashboard | current Dashboard presentation/data consumers | AC6 data/schema migration is accepted; final presentation refresh remains unaccepted and distinct | final UI asks for backend/schema authority or optional R4-R6 work is treated as a blocker |
 
 ## Promotion Profile Contract
 
@@ -112,11 +112,11 @@ AC1 remains deferred optional hardening. It is not an executable successor and d
 
 AC2 distinguishes effect and outcome states while leaving admission, leases, spend, verification, approval, output, and adoption with existing owners.
 
-The AC2 contract, typed boundary repair, and enumerated caller migration are accepted; AC1 shared supervision remains deferred optional hardening. The AC3 Golden Path responsibility contract was promoted and its sketch removed from this index with the checked manifest refreshed by accepted PR #479; it is the current provider-free contract-freeze window in `docs/NEXT_DECISION.md`, and the remaining AC3 sketches below are its orchestrator-core and port-migration successors.
+The AC2 contract and caller migration, AC3 Golden Path split, AC4 transaction views, AC5 composition root, and AC6 schema convergence/compatibility closeout are accepted on `main`; AC1 shared supervision remains deferred optional hardening. The AC7 removal manifest is the current provider-free contract-freeze window in `docs/NEXT_DECISION.md`; the cleanup and closeout sketches below remain blocked successors.
 
-## Stage Architecture Convergence AC3 - Golden Path responsibility split
+## Stage Architecture Convergence AC7 - obsolete legacy cleanup
 
-AC3 separates orchestration, store mutation, and external effects without changing state-machine or authority order.
+AC7 removes only the frozen compatibility surface after all callers and evidence have migrated; it does not change state-machine or authority order.
 
 ### Packet PE7-AC7-CLEANUP-1
 

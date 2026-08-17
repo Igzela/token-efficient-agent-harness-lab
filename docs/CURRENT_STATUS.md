@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-16.
+Last updated: 2026-08-17.
 
 This document owns accepted repository truth and confirmed capability gaps only. It separates two states that must not be conflated:
 
@@ -198,10 +198,10 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | AC2 typed execution contract | `COMPLETE` | Provider-free typed state/outcome/usage contract, executor mappings, and the accepted fail-closed boundary repair are recorded below; PRs #469, #472, and #475 are merge-backed. The contract authorizes no wire/schema change, authority move, or shared `ProcessSupervisor` |
 | AC2 typed boundary and caller migration | `COMPLETE` | Boundary repair and the enumerated ProductTask verification/managed-review caller migration are accepted by PRs #475 and #478; callers use the canonical typed mapping, unknown evidence remains fail-closed, and AC1 shared supervision remains deferred optional hardening |
 | AC3 Golden Path responsibility contract | `COMPLETE` | PR #486 accepted; contract frozen |
-| AC3 Golden Path orchestrator core | `READY_FOR_EXECUTION` | Active semantic execution frontier reopened; awaiting genuine pure orchestrator extraction and golden-trace proof |
-| AC3 port migration | `BLOCKED_PREREQUISITE` | Blocked behind `PE7-AC3-ORCHESTRATOR-CORE-1` |
-| AC4–AC5 | `BLOCKED_PREREQUISITE` | Each stage remains behind its immediately preceding accepted AC contract and closeout |
-| AC6 schema convergence | `BLOCKED_PREREQUISITE` | Contract, Rust/codegen, SDK, Dashboard data migration, compatibility closeout |
+| AC3 Golden Path orchestrator core | `COMPLETE` | PR #533 accepted; pure orchestration and golden-trace proof are merge-backed |
+| AC3 port migration | `COMPLETE` | PR #535 accepted; canonical store/effect-port callers are merge-backed |
+| AC4–AC5 | `COMPLETE` | AC4 contract/views/caller migration and AC5 contract/root-core/module migration are accepted by PRs #538, #540, #542, #544, #546, and #548 |
+| AC6 schema convergence | `COMPLETE` | PRs #550, #552, #554, #556, and #558 accepted; zero drift is verified across the Rust producer, SDKs, and Dashboard, and AC7 removal candidates are frozen |
 | AC7 cleanup | `BLOCKED_PREREQUISITE` | Removal manifest, deletion-only implementation, independent closeout |
 | Contemporary old/new replay | `BLOCKED_PREREQUISITE` | Reconstruction, protocol/preflight, authorized run, analysis |
 | EC1–EC5 experiment control | `BLOCKED_PREREQUISITE` | 17 packets; causal mutation evidence and each control family freeze before implementation |
