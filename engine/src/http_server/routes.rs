@@ -301,10 +301,6 @@ fn axum_routes() -> Router<AxumApiState> {
             post(product_tasks::api_terminal_delegated_product_task).options(cors_preflight),
         )
         .route(
-            "/api/v1/product/tasks/:task_id/approve-and-output",
-            post(product_tasks::api_approve_and_output_product_task).options(cors_preflight),
-        )
-        .route(
             "/api/v1/product/tasks/:task_id/approve",
             post(product_tasks::api_approve_product_task).options(cors_preflight),
         )

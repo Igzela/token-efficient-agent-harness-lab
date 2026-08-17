@@ -87,15 +87,6 @@ async fn product_approval_and_output_have_separate_authority_and_confirmation() 
         "missing_scope"
     );
 
-    let unauthorized_combined = post(
-        &app,
-        &execute_key,
-        "/api/v1/product/tasks/missing/approve-and-output",
-        json!({"confirm_output": true}),
-    )
-    .await;
-    assert_eq!(unauthorized_combined.status(), StatusCode::FORBIDDEN);
-
     let authorized_approval = post(
         &app,
         &admin_key,
