@@ -67,7 +67,7 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
 
 **Outcome:** Delete only the accepted AC7 deprecated compatibility surface, in the manifest's three owner-scoped rollback batches, while preserving the existing separate approve/output authority paths and all audit, recovery, and idempotency semantics.
 
-**Allowed delta:** `engine/src/http_server/routes.rs`, `engine/src/http_server/handlers/product_tasks.rs`, `engine/src/storage/local_product_store/product_tasks.rs`, `sdk/python/src/agent_control_plane_sdk/client.py`, `sdk/typescript/src/index.ts`, `dashboard/src/lib/api-client.ts`, `engine/tests/test_product_golden_path_authority.rs`, `engine/tests/test_product_golden_path_evidence.rs`, `engine/tests/test_product_golden_path_g3.rs`, `engine/tests/test_product_golden_path_recovery.rs`, `sdk/python/tests/`, `sdk/typescript/`, `dashboard/`, `docs/ARCHITECTURE_BOOK.md`, `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, `docs/MODULE_MAP.md`, and `docs/NEXT_DECISION.md`. No schema, migration, new owner, provider, target, or effect change.
+**Allowed delta:** `engine/src/http_server/routes.rs`, `engine/src/http_server/handlers/product_tasks.rs`, `engine/src/storage/local_product_store/product_tasks.rs`, `sdk/python/src/agent_control_plane_sdk/client.py`, `sdk/typescript/src/index.ts`, `dashboard/src/lib/api-client.ts`, `engine/tests/test_product_golden_path_authority.rs`, `engine/tests/test_product_golden_path_evidence.rs`, `engine/tests/test_product_golden_path_g3.rs`, `engine/tests/test_product_golden_path_recovery.rs`, `docs/ARCHITECTURE_BOOK.md`, `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, `docs/MODULE_MAP.md`, and `docs/NEXT_DECISION.md`. No schema, migration, new owner, provider, target, or effect change.
 
 **Exit:** The fixed-string inventory has zero matches across tracked source, tests, SDK, Dashboard, scripts, tools, fixtures, and replay paths; each owner-scoped batch has candidate-specific behavior/recovery evidence; full applicable Rust, PostgreSQL, Python, TypeScript, Dashboard, wire-drift, security, handoff, and diff checks pass; the independent closeout packet is ready.
 
@@ -107,9 +107,6 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
     "engine/tests/test_product_golden_path_evidence.rs",
     "engine/tests/test_product_golden_path_g3.rs",
     "engine/tests/test_product_golden_path_recovery.rs",
-    "sdk/python/tests/",
-    "sdk/typescript/",
-    "dashboard/",
     "docs/ARCHITECTURE_BOOK.md",
     "docs/CURRENT_STATUS.md",
     "docs/FUTURE_ROUTE.md",
