@@ -6,18 +6,19 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split, AC4 transaction views, AC5 composition root, and AC6 Rust-authoritative schema convergence are accepted on `main`. AC1 shared `ProcessSupervisor` remains deferred optional hardening. The AC7 removal manifest is accepted; `PE7-AC7-CLEANUP-1` is now the sole provider-free deletion-only window. No provider call, target write, or effect is authorized.
+AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split, AC4 transaction views, AC5 composition root, and AC6 Rust-authoritative schema convergence are accepted on `main`. AC1 shared `ProcessSupervisor` remains deferred optional hardening. The AC7 removal manifest and deletion-only cleanup are accepted; `PE7-AC7-CLOSEOUT-1` is now the sole provider-free evidence/status window. No provider call, target write, authority consumption, or effect is authorized.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-AC7-CLEANUP-1 — READY_FOR_EXECUTION, provider-free]
+[window: PE7-AC7-CLOSEOUT-1 — READY_FOR_EXECUTION, provider-free]
+→ [successor: PE7-RWE-CR-RECONSTRUCTION-1 — BLOCKED_PREREQUISITE]
 
 ```
 
 ## Active Routing
 
-1. `PE7-AC7-CLEANUP-1` — `READY_FOR_EXECUTION`
+1. `PE7-AC7-CLOSEOUT-1` — `READY_FOR_EXECUTION`
 
 ## Completed (PE7-AC6-COMPATIBILITY-CLOSEOUT-1)
 
@@ -57,151 +58,121 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
 11. **Exit artifact.** Evidence destinations: accepted AC6 closeout and PR #559 receipt in `docs/CURRENT_STATUS.md`; the accepted AC7 manifest, owner boundary, PR #560 receipt, and cleanup promotion are now synchronized in the canonical documents.
 12. **Next action.** Execute the promoted deletion-only cleanup packet under its separate owner-scoped batch and rollback gates.
 
-## Packet PE7-AC7-CLEANUP-1
+## Completed (PE7-AC7-CLEANUP-1)
+
+**Historical state:** `COMPLETE`
+
+**Accepted evidence:** PR #562 exact head `84735a064466b81a5bf521cf20b1a924c80408e6`; squash merge `8142a447c1b9ca861978bd3392da5ccea4263924`; exact-head review receipt comment `5315606973`; canonical workflow `32026577558`; exact-head check `32026577560`; merged-tree negative search zero matches; 10 files changed, `+65/-206`; no schema/migration, Provider call, target write, or effect.
+
+**Rollback and convergence:** The pre-cleanup rollback tree is `eb692703ab3b3d030478b539fff4496014e45c7a`; accepted docs-only descendant before cleanup is `962aa81855673f7a2c0f5e72958ec24726e32c78`. Separate approve/output authority, audit, CAS/idempotency, and recovery paths remain present.
+
+## Packet PE7-AC7-CLOSEOUT-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-AC7-REMOVAL-MANIFEST-1` — COMPLETE on accepted main `eb692703ab3b3d030478b539fff4496014e45c7a` (PR #560 exact head `5567c670cb0338bf3bf089db95757714365829ec`; squash merge `eb692703ab3b3d030478b539fff4496014e45c7a`; exact-head review receipt comment `5314324232`; canonical workflow `32015963930`; exact-head check `32015963768`).
+**Prerequisite:** `PE7-AC7-CLEANUP-1` — COMPLETE on accepted main `8142a447c1b9ca861978bd3392da5ccea4263924` (PR #562 exact head `84735a064466b81a5bf521cf20b1a924c80408e6`; squash merge `8142a447c1b9ca861978bd3392da5ccea4263924`; exact-head review receipt comment `5315606973`; canonical workflow `32026577558`; exact-head check `32026577560`).
 
-**Class:** `IMPLEMENT`
+**Class:** `CLOSEOUT`
 
-**Outcome:** Delete only the accepted AC7 deprecated compatibility surface, in the manifest's three owner-scoped rollback batches, while preserving the existing separate approve/output authority paths and all audit, recovery, and idempotency semantics.
+**Outcome:** Independently verify AC7 convergence completeness, aggregate implementation cost and rollback evidence, and bind the contemporary old/new RWE replay inputs without claiming that the replay or a Provider effect has run.
 
-**Allowed delta:** `engine/src/http_server/routes.rs`, `engine/src/http_server/handlers/product_tasks.rs`, `engine/src/storage/local_product_store/product_tasks.rs`, `sdk/python/src/agent_control_plane_sdk/client.py`, `sdk/typescript/src/index.ts`, `dashboard/src/lib/api-client.ts`, `engine/tests/test_product_golden_path_authority.rs`, `engine/tests/test_product_golden_path_evidence.rs`, `engine/tests/test_product_golden_path_g3.rs`, `engine/tests/test_product_golden_path_recovery.rs`, `docs/ARCHITECTURE_BOOK.md`, `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, `docs/MODULE_MAP.md`, and `docs/NEXT_DECISION.md`. No schema, migration, new owner, provider, target, or effect change.
+**Allowed delta:** `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md` evidence/status synchronization only.
 
-**Exit:** The fixed-string inventory has zero matches across tracked source, tests, SDK, Dashboard, scripts, tools, fixtures, and replay paths; each owner-scoped batch has candidate-specific behavior/recovery evidence; full applicable Rust, PostgreSQL, Python, TypeScript, Dashboard, wire-drift, security, handoff, and diff checks pass; the independent closeout packet is ready.
+**Exit:** Accepted AC7 closeout receipt, zero unowned compatibility island, implementation-cost aggregation, rollback index, and contemporary-replay inputs.
 
-**Stop:** A hidden caller appears, a deletion changes authority/order/behavior, a recovery or audit invariant cannot be proved, or a single PR would consolidate owner/rollback groups beyond this exact manifest.
+**Stop:** An obsolete path still executes, separate authority/order or golden traces differ without accepted reason, the pre-AC identity is not reconstructable, or any proposed step requires a Provider, target write, authority consumption, or effect.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Perform deletion only; do not redesign the separate approve/output paths, move LocalProductStore authority, alter schemas, or add compatibility substitutes.
-2. **Prerequisites and evidence.** Accepted main `eb692703ab3b3d030478b539fff4496014e45c7a`; manifest receipt PR #560 exact head `5567c670cb0338bf3bf089db95757714365829ec`; merge `eb692703ab3b3d030478b539fff4496014e45c7a`; exact-head review receipt comment `5314324232`; canonical workflow `32015963930`; exact-head check `32015963768`; promoted future-route inventory SHA `bb98738f1ced73a836a096fc2be2abb118564ad108128bd84aa8308d2830ec80`; pre-cleanup rollback tree is accepted main.
-3. **Owner and paths.** Preserve existing runtime owners. Execute three separately evidenced batches in fixed order: consumer wrappers; HTTP route/handler and obsolete authority assertion; LocalProductStore methods plus enumerated Rust callers. This packet owns no runtime authority transfer.
-4. **Frozen invariants.** The manifest candidate set, replacements, group boundaries, pre-cleanup rollback point, separate approve/output authority order, audit trail, CAS/idempotency behavior, and recovery semantics remain immutable.
-5. **Only semantic delta.** Remove the exact deprecated symbols and their enumerated direct callers after each batch's zero-caller proof; do not change any neighboring canonical path.
-6. **Forbidden changes.** No provider, target, effect, T3 action, schema/migration, generated-wire change, second runtime/store/controller/evaluator, or unrelated cleanup.
-7. **Ordered implementation slices.** (1) remove Python/TypeScript/Dashboard composite wrappers and prove consumer checks; (2) remove the composite HTTP route/handler and obsolete authority assertion; (3) remove the two LocalProductStore compatibility methods and migrate/remove only the enumerated Rust test callers; run the scoped negative search after every batch.
-8. **Failure, recovery, and stop taxonomy.** Revert the current owner-scoped batch to the pre-batch tree on any hidden caller, behavior drift, failed parity, or unproved recovery; retain canonical schemas, audit, CAS/idempotency, and separate authority paths.
-9. **Verification.** Run the manifest fixed-string search with a fail-closed zero-match result after deletion; run the candidate-specific authority/evidence/G3/recovery Rust tests, SDK/Dashboard checks, applicable fixture/script/replay checks, `bash scripts/check_wire_codegen_drift.sh`, `bash scripts/verify_rust_typescript_stack.sh`, `cargo test -p engine --features pg-tests -- --test-threads=1`, Python tests, security baseline, agent handoff, and `git diff --check`.
-10. **Compatibility, rollback, and retention.** The accepted pre-cleanup main tree is the rollback point; no migration or durable-data mutation is permitted; retain all canonical schemas and audit/recovery evidence.
-11. **Exit artifact.** Record the exact deletion head, zero-match inventory, batch evidence, review receipt, canonical CI, merge, and refreshed main in `docs/CURRENT_STATUS.md`; the next packet independently verifies convergence and Harness identities.
-12. **Next action.** Keep the implementation PR Draft while changing; run one final exact-head Standards/Spec review, mark Ready once, wait for canonical required CI, manually squash merge, refresh main, and promote `PE7-AC7-CLOSEOUT-1` only after accepted evidence is synchronized.
+1. **Outcome and non-goals.** Close out the already-merged deletion-only cleanup; do not change runtime code, schemas, migrations, authority, evaluator, corpus, protocol, or Provider routing, and do not run Contemporary RWE.
+2. **Prerequisites and evidence.** Accepted main `8142a447c1b9ca861978bd3392da5ccea4263924`; cleanup PR #562 exact head `84735a064466b81a5bf521cf20b1a924c80408e6`; merge `8142a447c1b9ca861978bd3392da5ccea4263924`; exact-head review receipt `5315606973`; canonical workflow `32026577558`; exact-head check `32026577560`; refreshed Future Route manifest SHA `7ea611f2ffa6f36d2fa7eb516270b78edbb6db8139ba812892ca7a8f95045b2f`.
+3. **Owners and paths.** Evidence/status owners are `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`; pre-AC identity input is `engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v2.json` under the existing RWE snapshot owner; provider-free validation is `scripts/verify_rwe_snapshot.py`; post-AC identity is the accepted `token-efficient-agent-harness-lab@8142a447` tree.
+4. **Frozen invariants.** The AC7 manifest groups, separate approve/output authority order, audit/CAS/idempotency/recovery semantics, pre-cleanup rollback tree, and zero-match inventory remain unchanged; this packet adds evidence only.
+5. **Only semantic delta.** Replace stale route/status claims with the exact accepted cleanup receipt, cost, rollback, and replay-input identities.
+6. **Forbidden changes.** No runtime source/test/SDK/Dashboard change, schema/migration/generated-wire change, Provider call, credential read/output/persistence, target write, EFFECT/T3 action, authority consumption, automatic merge, or second owner.
+7. **Ordered closeout slices.** (1) prove the merged-tree zero-match inventory and preserved separate paths; (2) record the exact cleanup diff cost and rollback index; (3) record the accepted pre-AC reconstruction manifest and post-AC main/tree/toolchain identities; (4) leave Contemporary RWE reconstruction and all later EFFECT packets blocked until separately promoted.
+8. **Failure, recovery, and stop taxonomy.** A docs-only closeout change is reverted if any receipt, hash, path, rollback, or identity is inconsistent. The accepted pre-cleanup tree remains the code rollback point. The pre-AC source checkout is not present in this repository, so the snapshot verifier's unavailable-source result is recorded as a prerequisite for the later reconstruction packet, never as replay success.
+9. **Verification.** Re-run the fixed-string zero-match search over `engine/src`, `engine/tests`, `sdk`, `dashboard`, `scripts`, `tools`, and `tests`; verify separate approve/output symbols; bind `git diff --shortstat 962aa818... 8142a447` (`10 files, +65/-206`), accepted main/tree identity, and `pre_ac_harness_snapshot.v2.json` fields `RECONSTRUCTABLE=true`, source commit `6240768506320a324d68787b9eaa86971c8c930c`, manifest `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`; cleanup's exact-head canonical matrix remains the behavioral evidence.
+10. **Compatibility, rollback, and retention.** Revert this documentation PR to remove only its evidence/status delta; revert cleanup code to the accepted pre-cleanup tree `eb692703ab3b3d030478b539fff4496014e45c7a` if a later accepted decision requires rollback; retain the snapshot manifest and all redacted/hash-bound evidence.
+11. **Exit artifact.** Record the exact cleanup head/merge, zero-match result, owner-batch cost, review/CI receipts, rollback tree, pre-AC manifest, post-AC accepted-main identity `8142a447` with tracked-manifest hash `6e883449d1beceb29c4cf114aad075ed6de0b3845f91d9e64059956173e2b7d6`, Git tree `df6ede05fdc6f1a533793a17591478ac5ecc7b9d`, `Cargo.lock` hash `cf68982734f8a72148950f119408b676dd5b42ce65d7af69c02eca017a551653`, and `rust-toolchain.toml` hash `e59c5da37d1f9f4e0f815bc188cb6056fc7410c9cdaa9673c2d44da557c75d12`.
+12. **Next action.** After this closeout is independently reviewed, canonically merged, and refreshed on main, promote `PE7-RWE-CR-RECONSTRUCTION-1`; do not run `PE7-RWE-CR-RUN-1` or any HE packet before its own contract/preflight gates.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
 {
   "allowed_outputs": [
-    "A provider-free change limited to the independently proved current-main allowed paths.",
-    "Exact-head verification and review evidence through the existing lifecycle owners."
+    "Provider-free AC7 convergence closeout with exact accepted receipts, cost, rollback, and replay-input evidence.",
+    "A canonical route promotion to PE7-RWE-CR-RECONSTRUCTION-1 only after this closeout is accepted."
   ],
   "allowed_paths": [
-    "engine/src/http_server/routes.rs",
-    "engine/src/http_server/handlers/product_tasks.rs",
-    "engine/src/storage/local_product_store/product_tasks.rs",
-    "sdk/python/src/agent_control_plane_sdk/client.py",
-    "sdk/typescript/src/index.ts",
-    "dashboard/src/lib/api-client.ts",
-    "engine/tests/test_product_golden_path_authority.rs",
-    "engine/tests/test_product_golden_path_evidence.rs",
-    "engine/tests/test_product_golden_path_g3.rs",
-    "engine/tests/test_product_golden_path_recovery.rs",
-    "docs/ARCHITECTURE_BOOK.md",
     "docs/CURRENT_STATUS.md",
-    "docs/FUTURE_ROUTE.md",
-    "docs/MODULE_MAP.md",
-    "docs/NEXT_DECISION.md"
+    "docs/NEXT_DECISION.md",
+    "docs/FUTURE_ROUTE.md"
   ],
   "authority_consumption_allowed": false,
   "dispatch_lane": "provider_free_repository_maintenance",
   "expected_artifacts": [
-    "Deletion-only AC7 cleanup PR limited to the frozen route, handler, LocalProductStore methods, consumer wrappers, and enumerated callers.",
-    "Owner-scoped batch receipts proving zero callers after each batch and a final zero-match fixed-string inventory across source, tests, SDK, Dashboard, scripts, tools, fixtures, and replay paths.",
-    "Candidate-specific Rust authority/evidence/G3/recovery, Python SDK, TypeScript/Dashboard, wire-drift, security, handoff, and full-stack verification evidence.",
-    "Exact-head review receipt and canonical CI evidence bound to the final cleanup PR head before merge."
+    "Exact AC7 cleanup receipt and merged-tree zero-match inventory in docs/CURRENT_STATUS.md.",
+    "Implementation-cost and rollback index bound to the accepted cleanup head.",
+    "Hash-bound pre-AC snapshot and post-AC accepted-main identity inputs for later Contemporary RWE reconstruction."
   ],
   "external_effect_limit": 0,
   "forbidden_changes": [
-    "Do not use FUTURE_ROUTE static paths as current-main authority.",
-    "Do not create a second controller, ledger, queue, lease, store, or workflow owner.",
-    "Do not mint T3 authority, execute an EFFECT, auto-merge, call a Provider, or write a target."
+    "Do not modify runtime code, schema, migration, evaluator, corpus, protocol, or Provider route.",
+    "Do not call a Provider, read or persist credentials, write a target, consume authority, execute an EFFECT/T3 action, or auto-merge.",
+    "Do not promote or run Contemporary RWE or Harness Evolution before this closeout is accepted."
   ],
   "forbidden_next_actions": [
-    "Do not skip an EFFECT node or execute an EFFECT or T3 path without its exact valid finite receipt.",
-    "Do not treat missing, conflicting, stale, or outcome-unknown routing or receipts as success.",
-    "Do not start a successor whose promotion candidate has not been independently accepted.",
-    "Do not use FUTURE_ROUTE static paths as current-main authority.",
-    "Do not create a second controller, ledger, queue, lease, store, or workflow owner.",
-    "Do not mint T3 authority, execute an EFFECT, auto-merge, call a Provider, or write a target."
+    "Do not treat the pre-AC snapshot manifest as a completed replay.",
+    "Do not start PE7-RWE-CR-RECONSTRUCTION-1 until this closeout is accepted.",
+    "Do not skip PE7-RWE-CR-PROTOCOL-PREFLIGHT-1 or execute PE7-RWE-CR-RUN-1.",
+    "Do not create a second runtime, store, controller, evaluator, or rollback owner."
   ],
-  "goal": "Delete the frozen AC7 compatibility surface in separately evidenced owner-scoped batches while preserving canonical authority, audit, recovery, and rollback invariants.",
+  "goal": "Close out the accepted AC7 deletion while preserving exact rollback and reconstructable old/new Harness identities.",
   "ordered_steps": [
-    "consumer source paths: remove only the deprecated Python, TypeScript, and Dashboard composite wrappers; run consumer checks and the scoped negative search.",
-    "HTTP source paths: remove only the deprecated route/handler and obsolete authority assertion; run route/authority checks and the scoped negative search.",
-    "LocalProductStore and Rust test paths: remove only the two compatibility methods and enumerated direct callers; run behavior/recovery checks and the scoped negative search.",
-    "canonical docs: synchronize the exact cleanup head, evidence, rollback, and next closeout route without changing the manifest."
+    "Prove zero callers and preserved separate approve/output paths on accepted main.",
+    "Bind cleanup cost, review/CI/merge receipts, rollback tree, and documentation owners.",
+    "Bind the accepted pre-AC snapshot and current post-AC main identities as provider-free replay inputs.",
+    "Keep all Contemporary RWE and HE effects blocked behind their own promoted contracts and preflights."
   ],
-  "packet_id": "PE7-AC7-CLEANUP-1",
+  "packet_id": "PE7-AC7-CLOSEOUT-1",
   "packet_state": "READY_FOR_EXECUTION",
   "pause_gates": [
-    "Stop when an owner, caller, test, path, operation, destination, or decision cannot be re-proved from accepted main.",
-    "Stop when exact-head review or canonical CI is missing, stale, failed, or conflicting.",
-    "Recover ordinary worker, CI, review, checkpoint, duplicate, restart, and main-drift failures through existing owners; stop if recovery evidence is unproved.",
-    "Stop before a Provider, target, automatic merge, authority consumption, or external effect.",
-    "Do not retry a possibly executed external effect whose outcome is unknown."
+    "Stop on any inconsistent receipt, digest, path, owner, or rollback identity.",
+    "Stop if source reconstruction is unavailable or changes behavior; record the gap and remain blocked.",
+    "Stop before any Provider, target, authority, EFFECT, T3, automatic merge, or external effect."
   ],
   "plan_lane_state": "plan_lane_active",
   "prerequisite_receipts": [
-    "PR #560 exact head `5567c670cb0338bf3bf089db95757714365829ec`; squash merge `eb692703ab3b3d030478b539fff4496014e45c7a`; exact-head review receipt comment `5314324232`; canonical workflow `32015963930`; exact-head check `32015963768`; no runtime deletion, Provider call, or target effect"
+    "PR #562 exact head 84735a064466b81a5bf521cf20b1a924c80408e6; squash merge 8142a447c1b9ca861978bd3392da5ccea4263924; exact-head review receipt 5315606973; canonical workflow 32026577558; exact-head check 32026577560."
   ],
   "prerequisites": [
-    "PE7-AC7-REMOVAL-MANIFEST-1"
+    "PE7-AC7-CLEANUP-1"
   ],
   "private_paths_allowed": false,
-  "promotion_evidence_sha256": "bb98738f1ced73a836a096fc2be2abb118564ad108128bd84aa8308d2830ec80",
   "read_paths": [
-    "START_HERE.md",
-    "AGENTS.md",
-    "docs/ARCHITECTURE_BOOK.md",
     "docs/CURRENT_STATUS.md",
-    "docs/FUTURE_ROUTE.md",
-    "docs/MODULE_MAP.md",
     "docs/NEXT_DECISION.md",
-    "engine/src/http_server/routes.rs",
-    "engine/src/http_server/handlers/product_tasks.rs",
-    "engine/src/storage/local_product_store/product_tasks.rs",
-    "sdk/python/src/agent_control_plane_sdk/client.py",
-    "sdk/typescript/src/index.ts",
-    "dashboard/src/lib/api-client.ts",
-    "engine/tests/test_product_golden_path_authority.rs",
-    "engine/tests/test_product_golden_path_evidence.rs",
-    "engine/tests/test_product_golden_path_g3.rs",
-    "engine/tests/test_product_golden_path_recovery.rs",
-    "sdk/python/tests/",
-    "sdk/typescript/",
-    "dashboard/",
-    "scripts",
-    "tools",
-    "tests"
+    "docs/FUTURE_ROUTE.md",
+    "engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v2.json",
+    "scripts/verify_rwe_snapshot.py",
+    "scripts/check_agent_handoff.py"
   ],
   "risk_class": "none",
-  "rollback": "Revertable documentation diff with zero database migrations (proved by docs/ARCHITECTURE_BOOK.md:rollback)",
-  "route_manifest_sha256": "bb98738f1ced73a836a096fc2be2abb118564ad108128bd84aa8308d2830ec80",
+  "rollback": "Revert the documentation/status PR; the accepted cleanup rollback point remains eb692703ab3b3d030478b539fff4496014e45c7a and no database migration or external effect is involved.",
+  "route_manifest_sha256": "7ea611f2ffa6f36d2fa7eb516270b78edbb6db8139ba812892ca7a8f95045b2f",
   "schema_version": "weak_agent_dispatch.v1",
   "secret_values_allowed": false,
   "verification": [
-    "rg -n --fixed-strings -e 'approve-and-output' -e 'api_approve_and_output_product_task' -e 'approve_and_output_product_task' -e 'approveAndOutputProductTask' -- engine/src engine/tests sdk dashboard scripts tools tests",
-    "test \"$(git rev-parse origin/main)\" = \"eb692703ab3b3d030478b539fff4496014e45c7a\" && codegraph explore \"approve_and_output_product_task approve_and_output_product_task_for_tenant api_approve_and_output_product_task POST /api/v1/product/tasks/:task_id/approve-and-output\"",
-    "bash scripts/check_wire_codegen_drift.sh",
-    "bash scripts/verify_rust_typescript_stack.sh",
-    "uv run --no-project python tools/check_security_baseline.py",
+    "fixed-string zero-match search across engine/src engine/tests sdk dashboard scripts tools tests",
+    "separate approve/output symbol and route-preservation check",
+    "accepted cleanup receipt, exact diff cost, rollback tree, snapshot manifest, and post-AC identity consistency check",
     "uv run --no-project python scripts/check_agent_handoff.py",
-    "git diff --check",
-    "PE7-AC7-CLEANUP-1 successor gate: repeat the fixed-string search with zero matches across tracked source, SDK, Dashboard, fixture, script, replay, and authority-test paths; run the candidate-specific Rust, Python SDK, TypeScript/Dashboard, fixture/script/replay checks before closeout."
+    "git diff --check"
   ],
-  "verification_family": "source_focused_full",
-  "worker_tier": "T1"
+  "verification_family": "evidence_review",
+  "worker_tier": "T2"
 }
 -->
 
