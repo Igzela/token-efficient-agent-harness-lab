@@ -643,55 +643,6 @@ pub(crate) async fn api_terminal_delegated_product_task(
     ))
 }
 
-pub(crate) async fn api_approve_and_output_product_task(
-    State(state): State<AxumApiState>,
-    headers: HeaderMap,
-    uri: Uri,
-    Extension(request_id): Extension<RequestId>,
-    AxumPath(task_id): AxumPath<String>,
-    Json(body): Json<serde_json::Value>,
-) -> Result<impl IntoResponse, ApiError> {
-    let approval_context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
-    authorize(
-        &state,
-        &headers,
-        "dispatch:execute",
-        uri.path(),
-        &request_id.0,
-    )?;
-    if !product_gate_enabled() {
-        return Err(ApiError::with_code(
-            StatusCode::FORBIDDEN,
-            "product_golden_path_disabled",
-            format!("set {PRODUCT_TASK_GATE}=1 to enable product golden path intake"),
-        ));
-    }
-    let store = require_store(&state)?;
-    let confirm_output = body
-        .get("confirm_output")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    match store.approve_and_output_product_task_for_tenant(
-        &approval_context.tenant_id,
-        &task_id,
-        &approval_context.api_key_id,
-        confirm_output,
-    ) {
-        Ok(result) => Ok((
-            cors_headers(),
-            Json(json!({
-                "schema_version": AXUM_API_SCHEMA_VERSION,
-                "result": public_product_task_result_projection(&result),
-            })),
-        )),
-        Err(error) => Err(ApiError::with_code(
-            StatusCode::BAD_REQUEST,
-            "product_task_output_failed",
-            error,
-        )),
-    }
-}
-
 pub(crate) async fn api_approve_product_task(
     State(state): State<AxumApiState>,
     headers: HeaderMap,

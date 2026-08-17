@@ -134,6 +134,21 @@ fn run_scheduler_ticks(store: &LocalProductStore, run_id: &str) {
     }
 }
 
+fn complete_output(store: &LocalProductStore, task_id: &str, actor: &str) -> serde_json::Value {
+    let task = store.get_product_task(task_id).unwrap().unwrap();
+    let version = task["version"].as_u64().unwrap();
+    let approval = store.approve_product_task(task_id, actor, version).unwrap();
+    store
+        .output_product_task(
+            task_id,
+            actor,
+            version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap()
+}
+
 #[test]
 fn end_to_end_artifact_only_path_with_real_verification() {
     with_gates(|| {
@@ -265,9 +280,7 @@ fn end_to_end_artifact_only_path_with_real_verification() {
             FIXTURE_DETERMINISTIC_NOTE_CONTENT
         );
 
-        let done = store
-            .approve_and_output_product_task(task_id, "tester", true)
-            .expect("approve");
+        let done = complete_output(&store, task_id, "tester");
         assert_eq!(
             done["task"]["status"].as_str(),
             Some(ProductTaskStatus::Completed.as_str())
@@ -886,8 +899,9 @@ fn verification_failure_blocks_capture_approval_and_output() {
         assert_ne!(attempts[0]["exit_status"], 0);
 
         // No approval / output effect.
+        let current = store.get_product_task(task_id).unwrap().unwrap();
         let err = store
-            .approve_and_output_product_task(task_id, "tester", true)
+            .approve_product_task(task_id, "tester", current["version"].as_u64().unwrap())
             .unwrap_err();
         assert!(
             err.contains("awaiting_approval") || err.contains("requires"),
@@ -927,7 +941,7 @@ fn capture_without_verification_is_rejected_for_approval() {
         let task_id = task["task_id"].as_str().unwrap();
         // Force awaiting_approval-like attempt without verification by trying approve early.
         let err = store
-            .approve_and_output_product_task(task_id, "tester", true)
+            .approve_product_task(task_id, "tester", task["version"].as_u64().unwrap())
             .unwrap_err();
         assert!(
             err.contains("awaiting_approval") || err.contains("requires"),
@@ -1438,9 +1452,7 @@ fn test_port_migration_idempotency_and_audit_traces() {
         );
 
         // 5. Approve and output through port
-        let output = store
-            .approve_and_output_product_task(task_id, "tester", true)
-            .expect("approve and output");
+        let output = complete_output(&store, task_id, "tester");
         assert_eq!(
             output["task"]["status"].as_str(),
             Some(ProductTaskStatus::Completed.as_str())

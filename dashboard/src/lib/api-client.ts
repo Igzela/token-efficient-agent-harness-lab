@@ -785,21 +785,6 @@ export async function outputProductTask(
   );
 }
 
-/** @deprecated Use approveProductTask and outputProductTask separately. */
-export async function approveAndOutputProductTask(
-  taskId: string,
-  confirmOutput = false,
-): Promise<Record<string, unknown>> {
-  return fetchJson<Record<string, unknown>>(
-    `${BASE}/api/v1/product/tasks/${encodeURIComponent(taskId)}/approve-and-output`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ confirm_output: confirmOutput }),
-    },
-  );
-}
-
 export async function fetchSchedulerStatus(): Promise<SchedulerStatusResponse> {
   return fetchJson<SchedulerStatusResponse>(`${BASE}/api/v1/scheduler/status`);
 }

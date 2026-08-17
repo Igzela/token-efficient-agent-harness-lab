@@ -216,6 +216,21 @@ fn drive_to_awaiting_approval(
     store.get_product_task(task_id).unwrap().unwrap()
 }
 
+fn complete_output(store: &LocalProductStore, task_id: &str, actor: &str) -> serde_json::Value {
+    let task = store.get_product_task(task_id).unwrap().unwrap();
+    let version = task["version"].as_u64().unwrap();
+    let approval = store.approve_product_task(task_id, actor, version).unwrap();
+    store
+        .output_product_task(
+            task_id,
+            actor,
+            version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap()
+}
+
 #[test]
 fn product_task_authority_rejects_foreign_tenant_before_approval_or_output() {
     with_gates(|| {
@@ -334,9 +349,7 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
         let task = store.admit_product_task(&validated, "tester").unwrap();
         let task_id = task["task_id"].as_str().unwrap();
         complete_to_approval(&store, task_id);
-        let done = store
-            .approve_and_output_product_task(task_id, "tester", true)
-            .unwrap();
+        let done = complete_output(&store, task_id, "tester");
         assert_eq!(
             done["task"]["status"].as_str(),
             Some(ProductTaskStatus::Completed.as_str())
@@ -480,9 +493,7 @@ fn terminal_evidence_uses_managed_executor_class_and_owner_reported_usage() {
         store
             .finalize_product_task_after_execution(task_id, "tester")
             .unwrap();
-        let done = store
-            .approve_and_output_product_task(task_id, "tester", true)
-            .unwrap();
+        let done = complete_output(&store, task_id, "tester");
         let evidence = &done["terminal_evidence"];
         assert_eq!(evidence["node"]["executor_type"], "codex_cli");
         assert_eq!(evidence["node"]["executor_class"], "managed_coding");
@@ -893,9 +904,7 @@ fn export_patch_writes_approved_patch_without_touching_main() {
         let task = store.admit_product_task(&validated, "tester").unwrap();
         let task_id = task["task_id"].as_str().unwrap();
         complete_to_approval(&store, task_id);
-        let done = store
-            .approve_and_output_product_task(task_id, "tester", true)
-            .expect("export");
+        let done = complete_output(&store, task_id, "tester");
         assert_eq!(done["output"]["mode"], "export_patch");
         assert_eq!(done["output"]["status"], "exported");
         let receipt = done["output_receipt"].as_object().expect("output receipt");
@@ -1012,9 +1021,7 @@ fn draft_pr_without_network_gate_persists_an_exact_provider_free_plan() {
         let task = store.admit_product_task(&validated, "tester").unwrap();
         let task_id = task["task_id"].as_str().unwrap();
         complete_to_approval(&store, task_id);
-        let done = store
-            .approve_and_output_product_task(task_id, "tester", true)
-            .expect("draft unavailable path");
+        let done = complete_output(&store, task_id, "tester");
         assert_eq!(done["output"]["mode"], "draft_pr");
         assert_eq!(done["output"]["status"], "planned");
         assert_eq!(done["output"]["network_effect"], false);
@@ -1359,9 +1366,7 @@ fn draft_pr_rejects_non_github_remote_before_branch_push() {
         let task_id = task["task_id"].as_str().unwrap();
         complete_to_approval(&store, task_id);
         let approved_task = store.get_product_task(task_id).unwrap().unwrap();
-        let done = store
-            .approve_and_output_product_task(task_id, "tester", true)
-            .expect("acp push");
+        let done = complete_output(&store, task_id, "tester");
         assert_eq!(done["output"]["mode"], "draft_pr");
         assert_eq!(done["output"]["status"], "blocked");
         assert_eq!(done["output"]["admission_blocked"], true);

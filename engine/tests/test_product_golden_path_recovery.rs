@@ -323,6 +323,21 @@ fn complete_run(store: &LocalProductStore, run_id: &str) {
     }
 }
 
+fn complete_output(store: &LocalProductStore, task_id: &str, actor: &str) -> serde_json::Value {
+    let task = store.get_product_task(task_id).unwrap().unwrap();
+    let version = task["version"].as_u64().unwrap();
+    let approval = store.approve_product_task(task_id, actor, version).unwrap();
+    store
+        .output_product_task(
+            task_id,
+            actor,
+            version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap()
+}
+
 struct OverBudgetManagedExecutor;
 
 impl NodeExecutor for OverBudgetManagedExecutor {
@@ -2307,8 +2322,9 @@ fn stale_approval_blocked_without_trustworthy_verification() {
         let task_id = admit(&store, &repo, &rev, "rec-stale-approval");
         // Graph ready without verification evidence.
         compile(&store, &task_id);
+        let current = store.get_product_task(&task_id).unwrap().unwrap();
         let err = store
-            .approve_and_output_product_task(&task_id, "tester", true)
+            .approve_product_task(&task_id, "tester", current["version"].as_u64().unwrap())
             .unwrap_err();
         assert!(
             err.contains("awaiting_approval")
@@ -2331,11 +2347,15 @@ fn finalize_idempotent_after_completion() {
         store
             .finalize_product_task_after_execution(&task_id, "tester")
             .unwrap();
-        store
-            .approve_and_output_product_task(&task_id, "tester", true)
-            .unwrap();
+        let first = complete_output(&store, &task_id, "tester");
         let again = store
-            .approve_and_output_product_task(&task_id, "tester", true)
+            .output_product_task(
+                &task_id,
+                "tester",
+                first["task"]["version"].as_u64().unwrap(),
+                first["approval"]["approval_id"].as_str(),
+                true,
+            )
             .unwrap();
         assert_eq!(again["reused"], true);
         assert_eq!(

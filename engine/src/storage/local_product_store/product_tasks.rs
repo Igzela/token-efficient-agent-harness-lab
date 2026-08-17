@@ -6307,66 +6307,6 @@ impl LocalProductStore {
         )
     }
 
-    /// G3 compatibility wrapper. HTTP exposure requires both approval and
-    /// execution scopes; all effects flow through the separated owners.
-    pub fn approve_and_output_product_task(
-        &self,
-        task_id: &str,
-        actor: &str,
-        confirm_output: bool,
-    ) -> Result<Value, String> {
-        if !confirm_output {
-            return Err("confirm_output=true required for product output".to_string());
-        }
-        let task = self
-            .get_product_task(task_id)?
-            .ok_or_else(|| format!("product task not found: {task_id}"))?;
-        if task.get("status").and_then(Value::as_str) == Some(ProductTaskStatus::Completed.as_str())
-        {
-            let run_id = required_product_task_string(&task, "run_id")?;
-            let workspace_record_id = required_product_task_string(&task, "workspace_record_id")?;
-            let source_revision = task
-                .pointer("/workspace_binding/source_revision")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "product task source revision missing".to_string())?;
-            let artifact = self.current_product_task_artifact(
-                task_id,
-                &run_id,
-                &workspace_record_id,
-                source_revision,
-            )?;
-            let approval_id = completed_product_output_approval_id(&task, &artifact)?;
-            let version = task
-                .get("version")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| "product task version missing".to_string())?;
-            return self.output_product_task(task_id, actor, version, Some(approval_id), true);
-        }
-        let version = task
-            .get("version")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "product task version missing".to_string())?;
-        let approval = self.approve_product_task(task_id, actor, version)?;
-        self.output_product_task(
-            task_id,
-            actor,
-            version,
-            approval.get("approval_id").and_then(Value::as_str),
-            true,
-        )
-    }
-
-    pub fn approve_and_output_product_task_for_tenant(
-        &self,
-        tenant_id: &str,
-        task_id: &str,
-        actor: &str,
-        confirm_output: bool,
-    ) -> Result<Value, String> {
-        self.require_product_task_tenant(task_id, tenant_id)?;
-        self.approve_and_output_product_task(task_id, actor, confirm_output)
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn build_product_task_terminal_evidence(
         &self,
@@ -8528,27 +8468,6 @@ fn validate_product_artifact_against_approval(
         return Err("stale approval: artifact changed files mismatch".to_string());
     }
     Ok(())
-}
-
-fn completed_product_output_approval_id<'a>(
-    task: &Value,
-    artifact: &'a Value,
-) -> Result<&'a str, String> {
-    let intent = required_product_task_string(task, "output_intent")?;
-    let record = if intent == "draft_pr" {
-        artifact
-            .get("product_output_operation")
-            .ok_or_else(|| "completed task is missing its Draft PR operation".to_string())?
-    } else {
-        artifact
-            .get("product_output_receipt")
-            .ok_or_else(|| "completed task is missing its output receipt".to_string())?
-    };
-    record
-        .get("approval_id")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "completed output is missing its approval binding".to_string())
 }
 
 fn validate_completed_product_output_binding(

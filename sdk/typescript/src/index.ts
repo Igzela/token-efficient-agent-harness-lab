@@ -650,17 +650,6 @@ export class AgentControlPlaneClient {
     );
   }
 
-  /** @deprecated Use approveProductTask and outputProductTask as separate authority steps. */
-  approveAndOutputProductTask(
-    taskId: string,
-    confirmOutput = false,
-  ): Promise<ProductTaskResponse> {
-    return this.postJson<ProductTaskResponse>(
-      `/api/v1/product/tasks/${encodeURIComponent(taskId)}/approve-and-output`,
-      { confirm_output: confirmOutput },
-    );
-  }
-
   toolCapabilityPolicy(
     toolName: string,
   ): Promise<ToolPolicyResponse<ToolCapabilityPolicyValue>> {
