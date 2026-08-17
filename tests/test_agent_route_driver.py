@@ -2395,13 +2395,177 @@ class TestRepositoryRouteRunner(unittest.TestCase):
             "## Packet PE7-AC4-VIEWS-CORE-1\n\n"
             "**State:** `READY_FOR_EXECUTION`\n\n"
             "**Class:** `IMPLEMENT`\n\n"
+            "### 11. Bounded Autonomous Worker Dispatch Capsule\n\n"
             "<!-- weak-agent-dispatch:v1\n" + json.dumps(capsule, sort_keys=True) + "\n-->\n"
         )
         failures = check_agent_handoff.weak_agent_dispatch_failures(
             next_text,
             {"PE7-AC4-VIEWS-CORE-1": {"state": "READY_FOR_EXECUTION", "class": "IMPLEMENT"}},
         )
-        self.assertTrue(any("allowed_paths must contain production code or test paths" in f for f in failures))
+        self.assertTrue(any("allowed_paths must contain production source paths" in f for f in failures))
+        self.assertTrue(any("expected_artifacts contains generic placeholder" in f for f in failures))
+
+    def test_r532_b2_implement_matrix_in_check_agent_handoff(self):
+        # 1. AC4 views packet + route_driver.py => reject
+        capsule_mismatched = {
+            "schema_version": "weak_agent_dispatch.v1",
+            "packet_id": "PE7-AC4-VIEWS-CORE-1",
+            "packet_state": "READY_FOR_EXECUTION",
+            "dispatch_lane": "provider_free_repository_maintenance",
+            "plan_lane_state": "plan_lane_active",
+            "external_effect_limit": 0,
+            "authority_consumption_allowed": False,
+            "secret_values_allowed": False,
+            "private_paths_allowed": False,
+            "goal": "Extract pure view projections and compile golden traces.",
+            "rollback": "Revert view projections if golden traces diverge.",
+            "allowed_outputs": ["A provider-free change."],
+            "expected_artifacts": ["Pure view projections in engine/src/storage/local_product_store/views.rs"],
+            "forbidden_changes": ["No target write."],
+            "forbidden_next_actions": ["No provider call."],
+            "ordered_steps": ["Update views."],
+            "pause_gates": ["Stop on failure."],
+            "prerequisites": ["PE7-AC3-PORT-MIGRATION-1"],
+            "prerequisite_receipts": ["PR #489 merge 02dcfb7d094e0ef9c6317ad800eab1ca1c957dd9"],
+            "read_paths": ["docs/NEXT_DECISION.md", "scripts/agent-control/route_driver.py"],
+            "allowed_paths": ["docs/NEXT_DECISION.md", "scripts/agent-control/route_driver.py"],
+            "verification": ["cargo test -p engine"],
+        }
+        next_mismatched = (
+            "## Active Routing\n\n1. `PE7-AC4-VIEWS-CORE-1` — `READY_FOR_EXECUTION`\n\n"
+            "## Packet PE7-AC4-VIEWS-CORE-1\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            "**Class:** `IMPLEMENT`\n\n"
+            "### 11. Bounded Autonomous Worker Dispatch Capsule\n\n"
+            "<!-- weak-agent-dispatch:v1\n" + json.dumps(capsule_mismatched, sort_keys=True) + "\n-->\n"
+        )
+        failures = check_agent_handoff.weak_agent_dispatch_failures(
+            next_mismatched,
+            {"PE7-AC4-VIEWS-CORE-1": {"state": "READY_FOR_EXECUTION", "class": "IMPLEMENT"}},
+        )
+        self.assertTrue(any("must target engine production source" in f for f in failures))
+
+        # 2. product IMPLEMENT + test-only paths => reject
+        capsule_test_only = dict(capsule_mismatched)
+        capsule_test_only["allowed_paths"] = ["docs/NEXT_DECISION.md", "engine/tests/test_views.rs"]
+        capsule_test_only["read_paths"] = ["docs/NEXT_DECISION.md", "engine/tests/test_views.rs"]
+        next_test_only = (
+            "## Active Routing\n\n1. `PE7-AC4-VIEWS-CORE-1` — `READY_FOR_EXECUTION`\n\n"
+            "## Packet PE7-AC4-VIEWS-CORE-1\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            "**Class:** `IMPLEMENT`\n\n"
+            "### 11. Bounded Autonomous Worker Dispatch Capsule\n\n"
+            "<!-- weak-agent-dispatch:v1\n" + json.dumps(capsule_test_only, sort_keys=True) + "\n-->\n"
+        )
+        failures = check_agent_handoff.weak_agent_dispatch_failures(
+            next_test_only,
+            {"PE7-AC4-VIEWS-CORE-1": {"state": "READY_FOR_EXECUTION", "class": "IMPLEMENT"}},
+        )
+        self.assertTrue(any("cannot be satisfied by test-only paths" in f for f in failures))
+
+        # 3. product IMPLEMENT + correct engine owner/target => accept
+        capsule_valid = dict(capsule_mismatched)
+        capsule_valid["allowed_paths"] = [
+            "docs/NEXT_DECISION.md",
+            "engine/src/product_golden_path.rs",
+            "engine/tests/test_product_golden_path_g3.rs",
+        ]
+        capsule_valid["read_paths"] = [
+            "docs/NEXT_DECISION.md",
+            "engine/src/product_golden_path.rs",
+            "engine/tests/test_product_golden_path_g3.rs",
+        ]
+        next_valid = (
+            "## Active Routing\n\n1. `PE7-AC4-VIEWS-CORE-1` — `READY_FOR_EXECUTION`\n\n"
+            "## Packet PE7-AC4-VIEWS-CORE-1\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            "**Class:** `IMPLEMENT`\n\n"
+            "### 11. Bounded Autonomous Worker Dispatch Capsule\n\n"
+            "<!-- weak-agent-dispatch:v1\n" + json.dumps(capsule_valid, sort_keys=True) + "\n-->\n"
+        )
+        failures = check_agent_handoff.weak_agent_dispatch_failures(
+            next_valid,
+            {"PE7-AC4-VIEWS-CORE-1": {"state": "READY_FOR_EXECUTION", "class": "IMPLEMENT"}},
+        )
+        self.assertEqual(failures, [])
+
+        # 4. legitimate route-control IMPLEMENT + proved route owner => accept
+        capsule_route = {
+            "schema_version": "weak_agent_dispatch.v1",
+            "packet_id": "TOOL-PLAN-LANE-1",
+            "packet_state": "READY_FOR_EXECUTION",
+            "dispatch_lane": "provider_free_repository_maintenance",
+            "plan_lane_state": "plan_lane_active",
+            "external_effect_limit": 0,
+            "authority_consumption_allowed": False,
+            "secret_values_allowed": False,
+            "private_paths_allowed": False,
+            "goal": "Implement one bounded plan lane with full tests.",
+            "rollback": "Revert the plan lane implementation if tests fail.",
+            "allowed_outputs": ["A provider-free change."],
+            "expected_artifacts": ["Plan lane implementation in scripts/agent-control/plan_lane.py"],
+            "forbidden_changes": ["No target write."],
+            "forbidden_next_actions": ["No provider call."],
+            "ordered_steps": ["Update plan lane."],
+            "pause_gates": ["Stop on failure."],
+            "prerequisites": ["TOOL-PREV-1"],
+            "prerequisite_receipts": [f"PR #100 exact head {'a' * 40}; merge {'b' * 40}"],
+            "read_paths": [
+                "docs/NEXT_DECISION.md",
+                "scripts/agent-control/plan_lane.py",
+                "tests/test_agent_plan_lane.py",
+            ],
+            "allowed_paths": [
+                "docs/NEXT_DECISION.md",
+                "scripts/agent-control/plan_lane.py",
+                "tests/test_agent_plan_lane.py",
+            ],
+            "verification": ["python -m unittest"],
+        }
+        next_route = (
+            "## Active Routing\n\n1. `TOOL-PLAN-LANE-1` — `READY_FOR_EXECUTION`\n\n"
+            "## Packet TOOL-PLAN-LANE-1\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            "**Class:** `IMPLEMENT`\n\n"
+            "### 11. Bounded Autonomous Worker Dispatch Capsule\n\n"
+            "<!-- weak-agent-dispatch:v1\n" + json.dumps(capsule_route, sort_keys=True) + "\n-->\n"
+        )
+        failures = check_agent_handoff.weak_agent_dispatch_failures(
+            next_route,
+            {"TOOL-PLAN-LANE-1": {"state": "READY_FOR_EXECUTION", "class": "IMPLEMENT"}},
+        )
+        self.assertEqual(failures, [])
+
+    def test_canonical_review_receipt_validation_rejects_incomplete_receipts(self):
+        incomplete_receipt = (
+            "EXACT-HEAD REVIEW RECEIPT\n"
+            f"Reviewed SHA: {'a' * 40}\n"
+            f"Reviewed range: {'b' * 40}...{'a' * 40}\n"
+        )
+        failures = check_agent_handoff.validate_review_receipt_text(incomplete_receipt)
+        self.assertTrue(any("Reviewer session identity" in f for f in failures))
+        self.assertTrue(any("Reviewer authenticated identity" in f for f in failures))
+        self.assertTrue(any("Review transport" in f for f in failures))
+        self.assertTrue(any("Axes" in f for f in failures))
+        self.assertTrue(any("Outcome" in f for f in failures))
+        self.assertTrue(any("Unresolved objections" in f for f in failures))
+
+        valid_receipt = (
+            "EXACT-HEAD REVIEW RECEIPT\n"
+            f"Reviewed SHA: {'a' * 40}\n"
+            f"Reviewed range: {'b' * 40}...{'a' * 40}\n"
+            "Reviewer session identity: 123e4567-e89b-12d3-a456-426614174000\n"
+            "Reviewer authenticated identity: reviewer-bot\n"
+            "Review transport: direct-github-reviewer\n"
+            "Observed at: 2026-08-17T00:00:00Z\n"
+            "Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding\n"
+            "Outcome: PASS\n"
+            "Unresolved objections: none\n"
+        )
+        failures_valid = check_agent_handoff.validate_review_receipt_text(
+            valid_receipt, expected_head="a" * 40, expected_base="b" * 40
+        )
+        self.assertEqual(failures_valid, [])
 
     def test_non_canonical_review_receipt_rejected(self):
         status_text = (

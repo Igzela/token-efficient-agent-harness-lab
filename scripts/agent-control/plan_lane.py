@@ -368,12 +368,45 @@ def _parse(
     packet_class_match = re.search(r"^\*\*Class:\*\*\s*`?(?P<class>[A-Z0-9_]+)`?", packet_block, re.MULTILINE)
     packet_class = packet_class_match.group("class") if packet_class_match else None
     if packet_class == "IMPLEMENT":
-        source_paths = [
+        prod_paths = [
             p for p in allowed_paths
-            if not (p.startswith("docs/") or p.endswith(".md") or p in {"START_HERE.md", "AGENTS.md", "README.md", "CLAUDE.md"})
+            if not (
+                p.startswith("docs/")
+                or p.endswith(".md")
+                or p in {"START_HERE.md", "AGENTS.md", "README.md", "CLAUDE.md", "LICENSE"}
+                or "tests" in p.split("/")
+                or "fixtures" in p.split("/")
+                or p.split("/")[-1].startswith("test_")
+                or p.split("/")[-1].endswith(("_test.rs", ".test.ts", ".test.js", ".test.mjs", ".spec.ts"))
+            )
         ]
-        if not source_paths:
+        test_paths = [
+            p for p in allowed_paths
+            if (
+                "tests" in p.split("/")
+                or "fixtures" in p.split("/")
+                or p.split("/")[-1].startswith("test_")
+                or p.split("/")[-1].endswith(("_test.rs", ".test.ts", ".test.js", ".test.mjs", ".spec.ts"))
+            )
+        ]
+        if not prod_paths:
+            if test_paths:
+                raise PlanLaneError("plan_implement_allowed_paths_test_only")
             raise PlanLaneError("plan_implement_allowed_paths_lack_source")
+        if packet_id.startswith(("PE7-AC", "PE7-HE", "PE7-CWS", "PE7-MEMORY", "PE7-SKILL", "PE7-RWE")):
+            engine_prod = [
+                p for p in prod_paths
+                if p.startswith("engine/src/") or p == "engine/src" or p.startswith("engine/")
+            ]
+            if not engine_prod:
+                raise PlanLaneError("plan_implement_allowed_paths_mismatched_target")
+        elif packet_id.startswith(("PE7-ROUTE-", "PE7-PLAN-", "PE7-CTRL-", "TOOL-")):
+            route_prod = [
+                p for p in prod_paths
+                if p.startswith(("scripts/", "tools/"))
+            ]
+            if not route_prod:
+                raise PlanLaneError("plan_implement_allowed_paths_mismatched_target")
     prerequisites = _bounded_strings(payload["prerequisites"], "prerequisites", allow_empty=True)
     if any(not PACKET_ID.fullmatch(item) for item in prerequisites):
         raise PlanLaneError("plan_prerequisites_invalid")

@@ -468,6 +468,115 @@ def parse_packet_contracts(
     return packets
 
 
+REVIEW_RECEIPT_REQUIRED_AXES = frozenset({
+    "architecture",
+    "authority",
+    "compatibility",
+    "security",
+    "audit",
+    "rollback",
+    "scope/path binding",
+})
+
+
+def validate_review_receipt_text(
+    body: str, expected_head: str | None = None, expected_base: str | None = None
+) -> list[str]:
+    """Validate a canonical exact-head review receipt format and required fields."""
+
+    failures: list[str] = []
+    if "EXACT-HEAD REVIEW RECEIPT" not in body:
+        failures.append("review receipt missing EXACT-HEAD REVIEW RECEIPT marker")
+        return failures
+
+    def _field(label: str) -> str | None:
+        matches = re.findall(rf"(?im)^\s*{re.escape(label)}\s*:\s*(.*?)\s*$", body)
+        return matches[0].strip() if len(matches) == 1 else None
+
+    reviewed_sha = _field("Reviewed SHA")
+    if not reviewed_sha or not re.fullmatch(r"[0-9a-f]{40}", reviewed_sha):
+        failures.append("review receipt missing or invalid Reviewed SHA")
+    elif expected_head and reviewed_sha != expected_head:
+        failures.append(f"review receipt Reviewed SHA {reviewed_sha} does not match expected {expected_head}")
+
+    reviewed_range = _field("Reviewed range")
+    range_match = re.fullmatch(r"([0-9a-f]{40})\.\.\.([0-9a-f]{40})", reviewed_range or "")
+    if not range_match:
+        failures.append("review receipt missing or invalid Reviewed range")
+    else:
+        if expected_base and range_match.group(1) != expected_base:
+            failures.append(f"review receipt base SHA {range_match.group(1)} does not match expected {expected_base}")
+        if expected_head and range_match.group(2) != expected_head:
+            failures.append(f"review receipt head SHA {range_match.group(2)} does not match expected {expected_head}")
+
+    reviewer_session = _field("Reviewer session identity")
+    if not reviewer_session or reviewer_session.lower() in {"self", "self-review", "unknown", "implementation-agent"}:
+        failures.append("review receipt missing or invalid Reviewer session identity")
+
+    reviewer_auth = _field("Reviewer authenticated identity")
+    if not reviewer_auth:
+        failures.append("review receipt missing Reviewer authenticated identity")
+
+    transport = _field("Review transport")
+    if transport not in {"direct-github-reviewer", "parent-posted-on-behalf-of-independent-session"}:
+        failures.append(f"review receipt invalid Review transport: {transport!r}")
+    elif transport == "parent-posted-on-behalf-of-independent-session":
+        impl_session = _field("Implementation session identity")
+        if not impl_session:
+            failures.append("review receipt parent transport missing Implementation session identity")
+        elif reviewer_session and impl_session.lower() == reviewer_session.lower():
+            failures.append("review receipt reviewer and implementation sessions must differ")
+
+    axes_raw = _field("Axes")
+    if not axes_raw:
+        failures.append("review receipt missing Axes")
+    else:
+        found_axes = {axis.strip().lower() for axis in axes_raw.split(",")}
+        missing_axes = REVIEW_RECEIPT_REQUIRED_AXES - found_axes
+        if missing_axes:
+            failures.append(f"review receipt missing required axes: {sorted(missing_axes)}")
+
+    outcome = (_field("Outcome") or "").upper()
+    if outcome != "PASS":
+        failures.append(f"review receipt Outcome must be exact PASS, found: {outcome!r}")
+
+    unresolved = (_field("Unresolved objections") or "").lower()
+    if unresolved != "none":
+        failures.append(f"review receipt Unresolved objections must be 'none', found: {unresolved!r}")
+
+    return failures
+
+
+def is_doc_path(p: str) -> bool:
+    return (
+        p.startswith("docs/")
+        or p.endswith(".md")
+        or p in {"START_HERE.md", "AGENTS.md", "README.md", "CLAUDE.md", "LICENSE"}
+    )
+
+
+def is_test_path(p: str) -> bool:
+    norm = p.replace("\\", "/")
+    parts = norm.split("/")
+    if "tests" in parts or "fixtures" in parts:
+        return True
+    filename = parts[-1]
+    if (
+        filename.startswith("test_")
+        or filename.endswith("_test.rs")
+        or filename.endswith(".test.ts")
+        or filename.endswith(".test.js")
+        or filename.endswith(".test.mjs")
+        or filename.endswith(".spec.ts")
+    ):
+        return True
+    return False
+
+
+def is_production_source_path(p: str) -> bool:
+    return not is_doc_path(p) and not is_test_path(p)
+
+
 def accepted_packet_receipts(
     status_text: str, failures: list[str] | None = None
 ) -> set[str]:
@@ -890,6 +999,25 @@ def weak_agent_dispatch_failures(
         failures.append("weak-agent dispatch goal must be a concrete narrative")
     if not isinstance(rollback, str) or len(rollback.strip()) < 20:
         failures.append("weak-agent dispatch rollback must be a concrete narrative")
+    expected_artifacts = payload.get("expected_artifacts")
+    if isinstance(expected_artifacts, list):
+        for art in expected_artifacts:
+            if not isinstance(art, str):
+                continue
+            art_str = art.strip()
+            if art_str in {
+                "Canonical route evidence.",
+                "A provider-free change.",
+                "Canonical route evidence. (docs/NEXT_DECISION.md:canonical)",
+                "Canonical route evidence",
+            }:
+                failures.append(
+                    f"weak-agent dispatch expected_artifacts contains generic placeholder {art_str!r}; must be concrete package-specific narrative/paths"
+                )
+            elif len(art_str) < 15:
+                failures.append(
+                    f"weak-agent dispatch expected_artifacts {art_str!r} is too short; must be concrete package-specific narrative/paths"
+                )
     for field in WEAK_AGENT_DISPATCH_LIST_FIELDS:
         value = payload.get(field)
         if not isinstance(value, list) or not value or not all(
@@ -912,19 +1040,39 @@ def weak_agent_dispatch_failures(
         packet_info = current_packets.get(current_packet_id, {})
         packet_cls = packet_info.get("class")
         if packet_cls == "IMPLEMENT":
-            source_paths = [
-                p
-                for p in allowed_scope
-                if not (
-                    p.startswith("docs/")
-                    or p.endswith(".md")
-                    or p in {"START_HERE.md", "AGENTS.md", "README.md", "CLAUDE.md"}
-                )
-            ]
-            if not source_paths:
-                failures.append(
-                    f"weak-agent dispatch for IMPLEMENT packet {current_packet_id} allowed_paths must contain production code or test paths, found only documentation paths: {allowed_scope}"
-                )
+            prod_paths = [p for p in allowed_scope if is_production_source_path(p)]
+            test_paths = [p for p in allowed_scope if is_test_path(p)]
+            if not prod_paths:
+                if test_paths:
+                    failures.append(
+                        f"weak-agent dispatch for IMPLEMENT packet {current_packet_id} cannot be satisfied by test-only paths: {allowed_scope}"
+                    )
+                else:
+                    failures.append(
+                        f"weak-agent dispatch for IMPLEMENT packet {current_packet_id} allowed_paths must contain production source paths, found only documentation paths: {allowed_scope}"
+                    )
+            else:
+                if current_packet_id.startswith(
+                    ("PE7-AC", "PE7-HE", "PE7-CWS", "PE7-MEMORY", "PE7-SKILL", "PE7-RWE")
+                ):
+                    engine_prod = [
+                        p for p in prod_paths
+                        if p.startswith("engine/src/") or p == "engine/src" or p.startswith("engine/")
+                    ]
+                    if not engine_prod:
+                        failures.append(
+                            f"weak-agent dispatch for product IMPLEMENT packet {current_packet_id} must target engine production source, found unrelated path: {prod_paths}"
+                        )
+                elif current_packet_id.startswith(
+                    ("PE7-ROUTE-", "PE7-PLAN-", "PE7-CTRL-", "TOOL-")
+                ):
+                    route_prod = [
+                        p for p in prod_paths if p.startswith(("scripts/", "tools/"))
+                    ]
+                    if not route_prod:
+                        failures.append(
+                            f"weak-agent dispatch for route-control IMPLEMENT packet {current_packet_id} must target route control source, found unrelated path: {prod_paths}"
+                        )
     known_store_mutations = payload.get("known_store_mutations")
     if known_store_mutations is not None and (
         not isinstance(known_store_mutations, list)

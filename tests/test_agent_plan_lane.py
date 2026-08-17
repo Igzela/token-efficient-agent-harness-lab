@@ -569,6 +569,76 @@ class TestPlanLane(unittest.TestCase):
         candidate = plan_lane.parse(doc, MAIN)
         self.assertEqual(candidate.packet_id, "PE7-AC4-CONTRACT-1")
 
+    def test_ac4_views_packet_with_route_driver_rejected(self):
+        payload = packet_payload(
+            packet_id="PE7-AC4-VIEWS-CORE-1",
+            allowed_paths=["docs/NEXT_DECISION.md", "scripts/agent-control/route_driver.py"],
+        )
+        packet_block = [
+            "## Packet PE7-AC4-VIEWS-CORE-1",
+            "**State:** `READY_FOR_EXECUTION`",
+            "**Class:** `IMPLEMENT`",
+            "<!-- weak-agent-dispatch:v1 " + json.dumps(payload, sort_keys=True) + " -->",
+        ]
+        doc = "\n\n".join(["## Active Routing", "1. `PE7-AC4-VIEWS-CORE-1`", "\n".join(packet_block)])
+        with self.assertRaises(plan_lane.PlanLaneError) as ctx:
+            plan_lane.parse(doc, MAIN)
+        self.assertEqual(ctx.exception.reason, "plan_implement_allowed_paths_mismatched_target")
+
+    def test_product_implement_with_test_only_paths_rejected(self):
+        payload = packet_payload(
+            packet_id="PE7-AC3-ORCHESTRATOR-CORE-1",
+            allowed_paths=["docs/NEXT_DECISION.md", "engine/tests/test_product_golden_path_g3.rs"],
+        )
+        packet_block = [
+            "## Packet PE7-AC3-ORCHESTRATOR-CORE-1",
+            "**State:** `READY_FOR_EXECUTION`",
+            "**Class:** `IMPLEMENT`",
+            "<!-- weak-agent-dispatch:v1 " + json.dumps(payload, sort_keys=True) + " -->",
+        ]
+        doc = "\n\n".join(["## Active Routing", "1. `PE7-AC3-ORCHESTRATOR-CORE-1`", "\n".join(packet_block)])
+        with self.assertRaises(plan_lane.PlanLaneError) as ctx:
+            plan_lane.parse(doc, MAIN)
+        self.assertEqual(ctx.exception.reason, "plan_implement_allowed_paths_test_only")
+
+    def test_product_implement_with_correct_engine_source_accepted(self):
+        payload = packet_payload(
+            packet_id="PE7-AC3-ORCHESTRATOR-CORE-1",
+            allowed_paths=[
+                "docs/NEXT_DECISION.md",
+                "engine/src/product_golden_path.rs",
+                "engine/tests/test_product_golden_path_g3.rs",
+            ],
+        )
+        packet_block = [
+            "## Packet PE7-AC3-ORCHESTRATOR-CORE-1",
+            "**State:** `READY_FOR_EXECUTION`",
+            "**Class:** `IMPLEMENT`",
+            "<!-- weak-agent-dispatch:v1 " + json.dumps(payload, sort_keys=True) + " -->",
+        ]
+        doc = "\n\n".join(["## Active Routing", "1. `PE7-AC3-ORCHESTRATOR-CORE-1`", "\n".join(packet_block)])
+        candidate = plan_lane.parse(doc, MAIN)
+        self.assertEqual(candidate.packet_id, "PE7-AC3-ORCHESTRATOR-CORE-1")
+
+    def test_legitimate_route_control_implement_accepted(self):
+        payload = packet_payload(
+            packet_id="TOOL-PLAN-LANE-1",
+            allowed_paths=[
+                "docs/NEXT_DECISION.md",
+                "scripts/agent-control/route_driver.py",
+                "tests/test_agent_route_driver.py",
+            ],
+        )
+        packet_block = [
+            "## Packet TOOL-PLAN-LANE-1",
+            "**State:** `READY_FOR_EXECUTION`",
+            "**Class:** `IMPLEMENT`",
+            "<!-- weak-agent-dispatch:v1 " + json.dumps(payload, sort_keys=True) + " -->",
+        ]
+        doc = "\n\n".join(["## Active Routing", "1. `TOOL-PLAN-LANE-1`", "\n".join(packet_block)])
+        candidate = plan_lane.parse(doc, MAIN)
+        self.assertEqual(candidate.packet_id, "TOOL-PLAN-LANE-1")
+
 
 if __name__ == "__main__":
     unittest.main()
