@@ -67,7 +67,7 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
 
 **Outcome:** Delete only the accepted AC7 deprecated compatibility surface, in the manifest's three owner-scoped rollback batches, while preserving the existing separate approve/output authority paths and all audit, recovery, and idempotency semantics.
 
-**Allowed delta:** `engine/src/http_server/routes.rs`, `engine/src/http_server/handlers/product_tasks.rs`, `engine/src/storage/local_product_store/product_tasks.rs`, `sdk/python/src/agent_control_plane_sdk/client.py`, `sdk/typescript/src/index.ts`, `dashboard/src/lib/api-client.ts`, the four enumerated Rust golden-path test files, applicable SDK/Dashboard tests, and the five canonical route/status documents for closeout synchronization. No schema, migration, new owner, provider, target, or effect change.
+**Allowed delta:** `engine/src/http_server/routes.rs`, `engine/src/http_server/handlers/product_tasks.rs`, `engine/src/storage/local_product_store/product_tasks.rs`, `sdk/python/src/agent_control_plane_sdk/client.py`, `sdk/typescript/src/index.ts`, `dashboard/src/lib/api-client.ts`, `engine/tests/test_product_golden_path_authority.rs`, `engine/tests/test_product_golden_path_evidence.rs`, `engine/tests/test_product_golden_path_g3.rs`, `engine/tests/test_product_golden_path_recovery.rs`, `sdk/python/tests/`, `sdk/typescript/`, `dashboard/`, `docs/ARCHITECTURE_BOOK.md`, `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, `docs/MODULE_MAP.md`, and `docs/NEXT_DECISION.md`. No schema, migration, new owner, provider, target, or effect change.
 
 **Exit:** The fixed-string inventory has zero matches across tracked source, tests, SDK, Dashboard, scripts, tools, fixtures, and replay paths; each owner-scoped batch has candidate-specific behavior/recovery evidence; full applicable Rust, PostgreSQL, Python, TypeScript, Dashboard, wire-drift, security, handoff, and diff checks pass; the independent closeout packet is ready.
 
@@ -76,7 +76,7 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
 ### Twelve-field contract
 
 1. **Outcome and non-goals.** Perform deletion only; do not redesign the separate approve/output paths, move LocalProductStore authority, alter schemas, or add compatibility substitutes.
-2. **Prerequisites and evidence.** Accepted main `eb692703ab3b3d030478b539fff4496014e45c7a`; manifest receipt PR #560 exact head `5567c670cb0338bf3bf089db95757714365829ec`; merge `eb692703ab3b3d030478b539fff4496014e45c7a`; exact-head review receipt comment `5314324232`; canonical workflow `32015963930`; exact-head check `32015963768`; route manifest SHA `637bbc7b9c98021ce7af373fbfa04b7caa90a6024047bdd84b95dccb9ff5ac3e`; pre-cleanup rollback tree is accepted main.
+2. **Prerequisites and evidence.** Accepted main `eb692703ab3b3d030478b539fff4496014e45c7a`; manifest receipt PR #560 exact head `5567c670cb0338bf3bf089db95757714365829ec`; merge `eb692703ab3b3d030478b539fff4496014e45c7a`; exact-head review receipt comment `5314324232`; canonical workflow `32015963930`; exact-head check `32015963768`; promoted future-route inventory SHA `bb98738f1ced73a836a096fc2be2abb118564ad108128bd84aa8308d2830ec80`; pre-cleanup rollback tree is accepted main.
 3. **Owner and paths.** Preserve existing runtime owners. Execute three separately evidenced batches in fixed order: consumer wrappers; HTTP route/handler and obsolete authority assertion; LocalProductStore methods plus enumerated Rust callers. This packet owns no runtime authority transfer.
 4. **Frozen invariants.** The manifest candidate set, replacements, group boundaries, pre-cleanup rollback point, separate approve/output authority order, audit trail, CAS/idempotency behavior, and recovery semantics remain immutable.
 5. **Only semantic delta.** Remove the exact deprecated symbols and their enumerated direct callers after each batch's zero-caller proof; do not change any neighboring canonical path.
@@ -107,9 +107,9 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
     "engine/tests/test_product_golden_path_evidence.rs",
     "engine/tests/test_product_golden_path_g3.rs",
     "engine/tests/test_product_golden_path_recovery.rs",
-    "sdk/python/tests",
-    "sdk/typescript",
-    "dashboard",
+    "sdk/python/tests/",
+    "sdk/typescript/",
+    "dashboard/",
     "docs/ARCHITECTURE_BOOK.md",
     "docs/CURRENT_STATUS.md",
     "docs/FUTURE_ROUTE.md",
@@ -156,13 +156,13 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
   ],
   "plan_lane_state": "plan_lane_active",
   "prerequisite_receipts": [
-    "PR #560 exact head `5567c670cb0338bf3bf089db95757714365829ec`; squash merge `eb692703ab3b3d030478b539fff4496014e45c7a`; exact-head review receipt comment `5314324232`; canonical workflow `32015963930`; exact-head check `32015963768`"
+    "PR #560 exact head `5567c670cb0338bf3bf089db95757714365829ec`; squash merge `eb692703ab3b3d030478b539fff4496014e45c7a`; exact-head review receipt comment `5314324232`; canonical workflow `32015963930`; exact-head check `32015963768`; no runtime deletion, Provider call, or target effect"
   ],
   "prerequisites": [
     "PE7-AC7-REMOVAL-MANIFEST-1"
   ],
   "private_paths_allowed": false,
-  "promotion_evidence_sha256": "637bbc7b9c98021ce7af373fbfa04b7caa90a6024047bdd84b95dccb9ff5ac3e",
+  "promotion_evidence_sha256": "bb98738f1ced73a836a096fc2be2abb118564ad108128bd84aa8308d2830ec80",
   "read_paths": [
     "START_HERE.md",
     "AGENTS.md",
@@ -181,16 +181,16 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
     "engine/tests/test_product_golden_path_evidence.rs",
     "engine/tests/test_product_golden_path_g3.rs",
     "engine/tests/test_product_golden_path_recovery.rs",
-    "sdk/python/tests",
-    "sdk/typescript",
-    "dashboard",
+    "sdk/python/tests/",
+    "sdk/typescript/",
+    "dashboard/",
     "scripts",
     "tools",
     "tests"
   ],
   "risk_class": "none",
   "rollback": "Revertable documentation diff with zero database migrations (proved by docs/ARCHITECTURE_BOOK.md:rollback)",
-  "route_manifest_sha256": "637bbc7b9c98021ce7af373fbfa04b7caa90a6024047bdd84b95dccb9ff5ac3e",
+  "route_manifest_sha256": "bb98738f1ced73a836a096fc2be2abb118564ad108128bd84aa8308d2830ec80",
   "schema_version": "weak_agent_dispatch.v1",
   "secret_values_allowed": false,
   "verification": [
