@@ -201,7 +201,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | AC3 Golden Path orchestrator core | `COMPLETE` | PR #533 accepted; pure orchestration and golden-trace proof are merge-backed |
 | AC3 port migration | `COMPLETE` | PR #535 accepted; canonical store/effect-port callers are merge-backed |
 | AC4–AC5 | `COMPLETE` | AC4 contract/views/caller migration and AC5 contract/root-core/module migration are accepted by PRs #538, #540, #542, #544, #546, and #548 |
-| AC6 schema convergence | `COMPLETE` | PRs #550, #552, #554, #556, and #558 accepted; zero drift is verified across the Rust producer, SDKs, and Dashboard, and AC7 removal candidates are frozen |
+| AC6 schema convergence | `COMPLETE` | PRs #550, #552, #554, #556, and #558 accepted; zero drift is verified across the Rust producer, SDKs, and Dashboard, and the AC7 removal candidate seed is recorded for manifest reconciliation |
 | AC7 cleanup | `BLOCKED_PREREQUISITE` | Removal manifest, deletion-only implementation, independent closeout |
 | Contemporary old/new replay | `BLOCKED_PREREQUISITE` | Reconstruction, protocol/preflight, authorized run, analysis |
 | EC1–EC5 experiment control | `BLOCKED_PREREQUISITE` | 17 packets; causal mutation evidence and each control family freeze before implementation |
