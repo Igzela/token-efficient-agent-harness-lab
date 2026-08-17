@@ -75,7 +75,7 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
   "expected_artifacts": [
     "Accepted closeout of PE7-AC6-COMPATIBILITY-CLOSEOUT-1 in Accepted Packet Receipts table (docs/CURRENT_STATUS.md:Accepted)",
     "Active window promotion for PE7-AC7-REMOVAL-MANIFEST-1 under Active Routing (docs/NEXT_DECISION.md:READY_FOR_EXECUTION)",
-    "Exact AC7 candidate inventory, owner/path binding, zero-caller proof plan, and compatibility disposition in the canonical architecture/module documents.",
+    "Exact AC7 candidate inventory, owner/path binding, zero-caller proof plan, and compatibility disposition ready for the next packet's canonical architecture/module document update.",
     "Accepted-main CodeGraph call-path evidence bound to the exact candidate symbols and route."
   ],
   "external_effect_limit": 0,
@@ -131,7 +131,11 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
     "engine/tests/test_product_golden_path_authority.rs",
     "engine/tests/test_product_golden_path_evidence.rs",
     "engine/tests/test_product_golden_path_g3.rs",
-    "engine/tests/test_product_golden_path_recovery.rs"
+    "engine/tests/test_product_golden_path_recovery.rs",
+    "sdk/python/tests",
+    "scripts",
+    "tools",
+    "tests"
   ],
   "risk_class": "none",
   "rollback": "Revertable documentation diff with zero database migrations (proved by docs/ARCHITECTURE_BOOK.md:rollback)",
