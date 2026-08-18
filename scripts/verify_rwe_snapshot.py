@@ -490,7 +490,9 @@ def verify_cache_snapshot(
     try:
         actual_digest = cache_snapshot_digest(root)
     except OSError as error:
-        failures.append(f"{label} cache snapshot is not verifiable: {error}")
+        failures.append(
+            f"{label} cache snapshot is not verifiable: {type(error).__name__}"
+        )
         return
     if actual_digest != expected_digest:
         failures.append(f"{label} cache snapshot digest changed")
@@ -1188,11 +1190,11 @@ def _run_provider_free_trace(
     for marker in result.forbidden_markers:
         failures.append(f"provider-free trace emitted forbidden marker: {name}: {marker}")
     if result.returncode:
-        detail = (result.stdout + "\n" + result.stderr).strip().splitlines()
-        summary = [*result.error_lines, *detail[-20:]]
-        suffix = f": {' | '.join(summary)[-4000:]}" if summary else ""
+        output_state = "captured" if result.stdout or result.stderr else "empty"
+        truncation_state = "truncated" if result.output_truncated else "bounded"
         failures.append(
-            f"provider-free trace failed: {name}: exit={result.returncode}{suffix}"
+            f"provider-free trace failed: {name}: exit={result.returncode}; "
+            f"output={output_state}; limit={truncation_state}"
         )
 
 

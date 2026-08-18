@@ -256,6 +256,43 @@ class VerifyRweSnapshotTests(unittest.TestCase):
         self.assertNotIn(str(manifest_path), stderr.getvalue())
         self.assertEqual(stderr.getvalue(), "snapshot verification failed: OSError\n")
 
+    def test_cache_failures_do_not_report_absolute_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            failures: list[str] = []
+            with patch.object(
+                verify_rwe_snapshot,
+                "cache_snapshot_digest",
+                side_effect=OSError(f"private path: {root / 'cache'}"),
+            ):
+                verify_rwe_snapshot.verify_cache_snapshot(root, "expected", "test", failures)
+
+        self.assertEqual(failures, ["test cache snapshot is not verifiable: OSError"])
+
+    def test_trace_failures_do_not_report_child_output(self) -> None:
+        failures: list[str] = []
+        command = [
+            sys.executable,
+            "-c",
+            "import sys; print('/private/repository/path'); "
+            "print('/tmp/secret-output', file=sys.stderr); raise SystemExit(3)",
+        ]
+        verify_rwe_snapshot._run_provider_free_trace(
+            "test_trace",
+            command,
+            Path("/"),
+            {"PATH": str(Path(sys.executable).parent)},
+            {},
+            set(),
+            False,
+            failures,
+        )
+
+        self.assertEqual(len(failures), 1)
+        self.assertNotIn("/private/repository/path", failures[0])
+        self.assertNotIn("/tmp/secret-output", failures[0])
+        self.assertIn("output=captured", failures[0])
+
     def test_bounded_command_cleans_a_detached_descendant(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pid_path = Path(directory) / "child.pid"
