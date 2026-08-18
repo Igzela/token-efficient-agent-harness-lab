@@ -4695,6 +4695,28 @@ impl LocalProductStore {
         key_id: &str,
         now_unix: Option<f64>,
     ) -> Result<AuthenticatedPrincipal, String> {
+        self.authenticate_managed_acceptance_principal_inner(tenant_id, key_id, now_unix, true)
+    }
+
+    /// Read-only managed-acceptance authentication for inspection/preflight
+    /// callers. It validates the canonical metadata and scopes without
+    /// touching `api_key_metadata.last_used_at`.
+    pub fn authenticate_managed_acceptance_principal_read_only(
+        &self,
+        tenant_id: &str,
+        key_id: &str,
+        now_unix: Option<f64>,
+    ) -> Result<AuthenticatedPrincipal, String> {
+        self.authenticate_managed_acceptance_principal_inner(tenant_id, key_id, now_unix, false)
+    }
+
+    fn authenticate_managed_acceptance_principal_inner(
+        &self,
+        tenant_id: &str,
+        key_id: &str,
+        now_unix: Option<f64>,
+        touch_last_used: bool,
+    ) -> Result<AuthenticatedPrincipal, String> {
         let tenant_id = tenant_id.trim();
         let key_id = key_id.trim();
         if tenant_id.is_empty() || key_id.is_empty() {
@@ -4765,7 +4787,9 @@ impl LocalProductStore {
         };
         // Must hold at least risk-ack scope to be usable as a managed-acceptance principal.
         principal.require_scope(SCOPE_RISK_ACKNOWLEDGE)?;
-        let _ = self.touch_api_key_last_used_for_tenant(key_id, tenant_id);
+        if touch_last_used {
+            let _ = self.touch_api_key_last_used_for_tenant(key_id, tenant_id);
+        }
         Ok(principal)
     }
 

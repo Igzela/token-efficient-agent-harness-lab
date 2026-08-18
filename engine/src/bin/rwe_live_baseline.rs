@@ -5,8 +5,8 @@
 
 use clap::{Parser, Subcommand};
 use engine::rwe::live_baseline_coordinator::{
-    issue_and_admit_v2, operator_preflight, project_first_baseline_evidence, run_frozen_schedule,
-    ProductGoldenPathCellDriver, RWE_LIVE_CELL_COMPOSITION_SEAM,
+    issue_and_admit_v2, operator_preflight_read_only, project_first_baseline_evidence,
+    run_frozen_schedule, ProductGoldenPathCellDriver, RWE_LIVE_CELL_COMPOSITION_SEAM,
 };
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::json;
@@ -83,22 +83,36 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
-    let store = std::sync::Arc::new(LocalProductStore::new(&cli.db_path).unwrap_or_else(|e| {
+    let read_only_preflight = matches!(&cli.command, Commands::Preflight { .. });
+    let store = if read_only_preflight {
+        LocalProductStore::open_existing_read_only(&cli.db_path)
+    } else {
+        LocalProductStore::new(&cli.db_path)
+    }
+    .unwrap_or_else(|e| {
         eprintln!("store open failed: {e}");
         std::process::exit(2);
-    }));
-    let principal = store
-        .authenticate_managed_acceptance_principal(&cli.tenant_id, &cli.operator_key_id, None)
-        .unwrap_or_else(|e| {
-            eprintln!("principal auth failed: {e}");
-            std::process::exit(2);
-        });
+    });
+    let store = std::sync::Arc::new(store);
+    let principal = if read_only_preflight {
+        store.authenticate_managed_acceptance_principal_read_only(
+            &cli.tenant_id,
+            &cli.operator_key_id,
+            None,
+        )
+    } else {
+        store.authenticate_managed_acceptance_principal(&cli.tenant_id, &cli.operator_key_id, None)
+    }
+    .unwrap_or_else(|e| {
+        eprintln!("principal auth failed: {e}");
+        std::process::exit(2);
+    });
 
     let result = match cli.command {
         Commands::Preflight {
             authorization_id,
             golden_path_prerequisite_product_task_id,
-        } => operator_preflight(
+        } => operator_preflight_read_only(
             &store,
             &principal,
             authorization_id.as_deref(),

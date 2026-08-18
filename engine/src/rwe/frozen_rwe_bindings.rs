@@ -117,6 +117,128 @@ pub const fn frozen_rwe_reconstruction_binding() -> FrozenRweReconstructionBindi
     }
 }
 
+/// One immutable source identity in the contemporary old/new comparison.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenRweComparisonArm {
+    pub arm_id: String,
+    pub source_commit: String,
+    pub source_tree_hash: String,
+}
+
+/// Existing-owner projection of the reconstructable old/new comparison.
+///
+/// The corpus, protocol, schedule, lockfile, and toolchain are shared
+/// comparison inputs; only the source checkout identity differs between arms.
+/// This is a binding/projection only and cannot authorize a replay or effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenRweComparisonManifest {
+    pub old: FrozenRweComparisonArm,
+    pub new: FrozenRweComparisonArm,
+    pub cargo_lock_sha256: String,
+    pub rust_toolchain_sha256: String,
+    pub corpus_sha256: String,
+    pub protocol_sha256: String,
+    pub schedule_sha256: String,
+}
+
+impl FrozenRweComparisonManifest {
+    pub fn validate(&self) -> Result<(), String> {
+        let binding = frozen_rwe_reconstruction_binding();
+        binding.validate()?;
+        if self.old.arm_id != "old" || self.new.arm_id != "new" {
+            return Err("comparison manifest arm labels must be old and new".into());
+        }
+        if self.old.source_commit == self.new.source_commit
+            || self.old.source_tree_hash == self.new.source_tree_hash
+        {
+            return Err("comparison manifest arms have colliding source identities".into());
+        }
+        if self.old.source_commit != FROZEN_RWE_TARGET_MAIN_SHA
+            || self.old.source_tree_hash != FROZEN_RWE_PRE_AC_SOURCE_TREE_HASH
+        {
+            return Err("comparison manifest old identity is swapped or mismatched".into());
+        }
+        if self.new.source_commit != FROZEN_RWE_POST_AC_MAIN_SHA
+            || self.new.source_tree_hash != FROZEN_RWE_POST_AC_TREE_HASH
+        {
+            return Err("comparison manifest new identity is swapped or mismatched".into());
+        }
+        for (name, value) in [
+            ("cargo_lock_sha256", self.cargo_lock_sha256.as_str()),
+            ("rust_toolchain_sha256", self.rust_toolchain_sha256.as_str()),
+            ("corpus_sha256", self.corpus_sha256.as_str()),
+            ("protocol_sha256", self.protocol_sha256.as_str()),
+            ("schedule_sha256", self.schedule_sha256.as_str()),
+        ] {
+            if !is_sha256(value) {
+                return Err(format!("comparison manifest {name} must be a sha256"));
+            }
+        }
+        if self.corpus_sha256 != binding.corpus_sha256
+            || self.protocol_sha256 != binding.protocol_sha256
+            || self.schedule_sha256 != binding.schedule_sha256
+        {
+            return Err("comparison manifest frozen evidence identity mismatch".into());
+        }
+        if self.cargo_lock_sha256 != binding.post_ac_cargo_lock_sha256
+            || self.rust_toolchain_sha256 != binding.post_ac_rust_toolchain_sha256
+        {
+            return Err("comparison manifest build identity mismatch".into());
+        }
+        Ok(())
+    }
+
+    pub fn to_json(&self) -> Value {
+        serde_json::json!({
+            "schema_version": "rwe_comparison_identity.v1",
+            "old": {
+                "arm_id": self.old.arm_id,
+                "source_commit": self.old.source_commit,
+                "source_tree_hash": self.old.source_tree_hash,
+            },
+            "new": {
+                "arm_id": self.new.arm_id,
+                "source_commit": self.new.source_commit,
+                "source_tree_hash": self.new.source_tree_hash,
+            },
+            "cargo_lock_sha256": self.cargo_lock_sha256,
+            "rust_toolchain_sha256": self.rust_toolchain_sha256,
+            "corpus_sha256": self.corpus_sha256,
+            "protocol_sha256": self.protocol_sha256,
+            "schedule_sha256": self.schedule_sha256,
+        })
+    }
+}
+
+/// Build the accepted contemporary old/new identity projection.
+pub fn current_comparison_manifest() -> Result<FrozenRweComparisonManifest, String> {
+    let binding = frozen_rwe_reconstruction_binding();
+    binding.validate()?;
+    let manifest = FrozenRweComparisonManifest {
+        old: FrozenRweComparisonArm {
+            arm_id: "old".into(),
+            source_commit: binding.pre_ac_source_commit.into(),
+            source_tree_hash: binding.pre_ac_source_tree_hash.into(),
+        },
+        new: FrozenRweComparisonArm {
+            arm_id: "new".into(),
+            source_commit: binding.post_ac_main_sha.into(),
+            source_tree_hash: binding.post_ac_tree_hash.into(),
+        },
+        cargo_lock_sha256: binding.post_ac_cargo_lock_sha256.into(),
+        rust_toolchain_sha256: binding.post_ac_rust_toolchain_sha256.into(),
+        corpus_sha256: binding.corpus_sha256.into(),
+        protocol_sha256: binding.protocol_sha256.into(),
+        schedule_sha256: binding.schedule_sha256.into(),
+    };
+    manifest.validate()?;
+    Ok(manifest)
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrozenRweTaskBinding {
     pub task_id: String,
@@ -507,6 +629,51 @@ mod tests {
             assert!(is_exact_frozen_rwe_allowed_paths(&b.allowed_mutable_paths));
         }
         rwe_composition_seam_ready().unwrap();
+    }
+
+    #[test]
+    fn current_comparison_manifest_rejects_identity_collision() {
+        let mut manifest = current_comparison_manifest().unwrap();
+        manifest.new.source_commit = manifest.old.source_commit.clone();
+        let error = manifest.validate().unwrap_err();
+        assert!(
+            error.contains("colliding"),
+            "unexpected validation error: {error}"
+        );
+
+        let mut manifest = current_comparison_manifest().unwrap();
+        manifest.new.source_tree_hash = manifest.old.source_tree_hash.clone();
+        let error = manifest.validate().unwrap_err();
+        assert!(
+            error.contains("colliding"),
+            "unexpected validation error: {error}"
+        );
+    }
+
+    #[test]
+    fn current_comparison_manifest_rejects_swapped_and_missing_identity() {
+        let mut manifest = current_comparison_manifest().unwrap();
+        std::mem::swap(
+            &mut manifest.old.source_commit,
+            &mut manifest.new.source_commit,
+        );
+        std::mem::swap(
+            &mut manifest.old.source_tree_hash,
+            &mut manifest.new.source_tree_hash,
+        );
+        let error = manifest.validate().unwrap_err();
+        assert!(
+            error.contains("old identity"),
+            "unexpected validation error: {error}"
+        );
+
+        let mut manifest = current_comparison_manifest().unwrap();
+        manifest.new.source_commit.clear();
+        let error = manifest.validate().unwrap_err();
+        assert!(
+            error.contains("new identity"),
+            "unexpected validation error: {error}"
+        );
     }
 
     #[test]

@@ -659,6 +659,77 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
 
 #[cfg(feature = "pg-tests")]
 #[test]
+fn pg_read_only_managed_auth_preserves_last_used_metadata() {
+    let Some(store) = test_store() else { return };
+    let tag = format!("pg-read-only-auth-{}", uuid::Uuid::new_v4());
+    let key_id = format!("{tag}-operator");
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            &key_id,
+            "pg-read-only-operator",
+            "operator",
+            &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+            "pg-read-only-test-setup",
+        )
+        .unwrap();
+    let before = store
+        .get_api_key_metadata_for_tenant(&key_id, "local")
+        .unwrap()
+        .unwrap();
+    assert!(before["last_used_at"].is_null());
+    let principal = store
+        .authenticate_managed_acceptance_principal_read_only("local", &key_id, Some(1.0))
+        .unwrap();
+    assert_eq!(principal.principal_id(), key_id);
+    let after = store
+        .get_api_key_metadata_for_tenant(&key_id, "local")
+        .unwrap()
+        .unwrap();
+    assert_eq!(before, after);
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_read_only_preflight_preserves_store_metadata() {
+    let Some(store) = test_store() else { return };
+    let tag = format!("pg-read-only-preflight-{}", uuid::Uuid::new_v4());
+    let key_id = format!("{tag}-operator");
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            &key_id,
+            "pg-read-only-preflight-operator",
+            "operator",
+            &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+            "pg-read-only-preflight-setup",
+        )
+        .unwrap();
+    let principal = store
+        .authenticate_managed_acceptance_principal_read_only("local", &key_id, Some(1.0))
+        .unwrap();
+    let before = store
+        .get_api_key_metadata_for_tenant(&key_id, "local")
+        .unwrap()
+        .unwrap();
+    let preflight = engine::rwe::live_baseline_coordinator::operator_preflight_read_only(
+        &store, &principal, None, None,
+    )
+    .unwrap();
+    assert_eq!(preflight["ready"], false);
+    assert_eq!(preflight["authority_consumed"], false);
+    assert_eq!(preflight["provider_call_performed"], false);
+    assert_eq!(preflight["target_write_performed"], false);
+    assert_eq!(preflight["credential_readiness"], "unavailable");
+    let after = store
+        .get_api_key_metadata_for_tenant(&key_id, "local")
+        .unwrap()
+        .unwrap();
+    assert_eq!(before, after);
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
 fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
     let Some(store) = test_store() else { return };
     let previous_gate = std::env::var_os(PRODUCT_TASK_GATE);
