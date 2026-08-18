@@ -6,19 +6,19 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split, AC4 transaction views, AC5 composition root, and AC6 Rust-authoritative schema convergence are accepted on `main`. AC1 shared `ProcessSupervisor` remains deferred optional hardening. The AC7 removal manifest, deletion-only cleanup, and closeout are accepted; `PE7-RWE-CR-RECONSTRUCTION-1` is complete on accepted main `7cfa817a82ea3a638bd3e50af5266ee54eefe0c0`. `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` is now the sole provider-free contract window. No Provider call, target write, authority consumption, or replay effect is authorized.
+AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split, AC4 transaction views, AC5 composition root, and AC6 Rust-authoritative schema convergence are accepted on `main`. AC1 shared `ProcessSupervisor` remains deferred optional hardening. The AC7 removal manifest, deletion-only cleanup, and closeout are accepted; `PE7-RWE-CR-RECONSTRUCTION-1` is complete on accepted main `7cfa817a82ea3a638bd3e50af5266ee54eefe0c0`. `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` is the sole provider-free contract window, now parked at `DECISION_REQUIRED` after its owner path failed the zero-write/zero-credential-read audit. No Provider call, target write, authority consumption, or replay effect is authorized.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-RWE-CR-PROTOCOL-PREFLIGHT-1 — READY_FOR_EXECUTION, provider-free]
+[window: PE7-RWE-CR-PROTOCOL-PREFLIGHT-1 — DECISION_REQUIRED, provider-free; planning parked]
 
 
 ```
 
 ## Active Routing
 
-1. `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` — `READY_FOR_EXECUTION`
+1. `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` — `DECISION_REQUIRED`
 
 ## Completed (PE7-AC7-CLOSEOUT-1)
 
@@ -32,11 +32,11 @@ AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split
 
 **Accepted evidence:** PR #566 exact head `57f4a5ee3a9be48a6ebdc20eddbd5df978c4440f`; squash merge `7cfa817a82ea3a638bd3e50af5266ee54eefe0c0`; exact-head review receipt comment `5324095735`; canonical workflow `32103730088`; exact-head check `32103730089`. The explicit Python 3.14.4 verifier and registered provider-free traces passed. No Provider call, target write, authority consumption, or effect occurred.
 
-The reconstruction contract and historical implementation details remain in PR #566 and its merged diff. Its frozen pre-AC inputs are retained unchanged; the next executable packet is the provider-free protocol/preflight contract below.
+The reconstruction contract and historical implementation details remain in PR #566 and its merged diff. Its frozen pre-AC inputs are retained unchanged; the provider-free protocol/preflight contract below is the current planning-parked packet and has no execution authority until its decision-required repair is accepted.
 
 ## Packet PE7-RWE-CR-PROTOCOL-PREFLIGHT-1
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `DECISION_REQUIRED`
 
 **Prerequisite:** `PE7-RWE-CR-RECONSTRUCTION-1` — COMPLETE on accepted main `7cfa817a82ea3a638bd3e50af5266ee54eefe0c0` (PR #566 exact head `57f4a5ee3a9be48a6ebdc20eddbd5df978c4440f`; merge `7cfa817a82ea3a638bd3e50af5266ee54eefe0c0`; exact-head review receipt `5324095735`; canonical workflow `32103730088`; exact-head check `32103730089`).
 
@@ -48,7 +48,7 @@ The reconstruction contract and historical implementation details remain in PR #
 
 **Exit:** Zero-mismatch preflight and two unissued, finite operator authorization packages for both arms in the same bounded window.
 
-**Stop:** Provider/model/environment identity cannot remain comparable, capacity creates arm-time confounding, old/new evidence paths can collide, any identity/evidence is stale or missing, or any step would consume authority, call a Provider, or write a target.
+**Stop:** Provider/model/environment identity cannot remain comparable, capacity creates arm-time confounding, old/new evidence paths can collide, any identity/evidence is stale or missing, or any step would consume authority, call a Provider, or write a target. This packet is now parked because the existing CLI/store path cannot prove the required zero-write and zero-credential-read preflight.
 
 ### Twelve-field contract
 
@@ -58,18 +58,20 @@ The reconstruction contract and historical implementation details remain in PR #
 4. **Frozen invariants.** Bind old/new identities, corpus/protocol/schedule hashes, accepted main and toolchain identities, route manifest, packet identity, pre-registered protocol, and the existing preflight/corpus owners before any authorization is issued.
 5. **Only semantic delta.** Contract, status, and routing promotion only; no runtime or measurement-threshold change.
 6. **Forbidden changes.** No Provider call, effect, T3 action, authority consumption, target write, credential use, schema/migration, new runtime/store/evaluator, or second owner.
-7. **Ordered slices.** Reconcile current identities; freeze allocation/interleaving/drift/capacity and finite budgets; run the existing provider-free owner preflight without issuing or consuming; retain redacted/hash-bound receipts and promote the run only after this packet is accepted.
+7. **Ordered slices.** Reconcile current identities; freeze allocation/interleaving/drift/capacity and finite budgets; run a strictly read-only owner preflight without issuing or consuming; retain redacted/hash-bound receipts and promote the run only after this packet is accepted. The existing CLI path is not an acceptable execution path until the missing read-only seam is accepted.
 8. **Failure, recovery, and stop taxonomy.** Fail closed on mismatch, missingness, stale identity, capacity confounding, or evidence collision; do not retry or consume authority; preserve `unknown`; rollback is a docs-only revert.
 9. **Verification.** Run `cargo test -p engine viability_preflight_is_ready_without_issuing_or_consuming`, `cargo test -p engine current_contract_set_binds_candidate_freeze_point_and_hashes`, `git diff --check`, `bash scripts/check_wire_codegen_drift.sh`, `uv run --no-project python tools/check_security_baseline.py`, and `uv run --no-project python scripts/check_agent_handoff.py`; no Provider or effect command is permitted.
 10. **Compatibility, rollback, and retention.** Reuse the current Store/RWE owners and pre-registered measurement protocol; no migration or schema change; revert the docs-only packet promotion to roll back.
 11. **Exit artifact.** Accepted status receipt, promoted route/NEXT packet, and redacted/hash-bound provider-free preflight evidence owned by the existing RWE artifact/evidence owners; the two finite authorization packages remain unissued and are only a next-run input, not an effect of this packet.
 12. **Next action.** After accepted zero-mismatch preflight, promote `PE7-RWE-CR-RUN-1`; do not issue, consume, call, or run an effect from this packet.
 
-### 11. Bounded Autonomous Worker Dispatch Capsule
+### Decision-required boundary
 
-<!-- weak-agent-dispatch:v1
-{"allowed_outputs":["A provider-free contract/status/routing change limited to the independently proved current-main allowed paths.","Exact-head verification and review evidence through the existing lifecycle owners."],"allowed_paths":["docs/CURRENT_STATUS.md","docs/NEXT_DECISION.md","docs/FUTURE_ROUTE.md"],"authority_consumption_allowed":false,"dispatch_lane":"provider_free_repository_maintenance","expected_artifacts":["Accepted status receipt and promoted route/NEXT packet.","Redacted/hash-bound provider-free preflight evidence owned by the existing RWE artifact/evidence owners.","No Provider call, authority consumption, target write, or external effect."],"external_effect_limit":0,"forbidden_changes":["Do not use FUTURE_ROUTE static paths as current-main authority.","Do not create a second controller, ledger, queue, lease, store, evaluator, or workflow owner.","Do not modify frozen corpus, protocol inputs, schedule, operator, or snapshot inputs.","Do not mint T3 authority, execute an EFFECT, call a Provider, write a target, or auto-merge."],"forbidden_next_actions":["Do not issue or consume an authorization or execute an EFFECT/T3 path from this contract packet.","Do not treat missing, conflicting, stale, or outcome-unknown routing or receipts as success.","Do not start the run successor until this packet has an independently accepted exact-head receipt."],"goal":"Freeze the provider-free protocol/preflight contract for the contemporary old/new comparison.","ordered_steps":["Reconcile accepted old/new identities and bind the reconstruction receipt.","Freeze allocation/interleaving, drift covariates, capacity, and finite authorization budgets.","Use existing provider-free preflight owners to produce unissued hash-bound readiness evidence."],"packet_id":"PE7-RWE-CR-PROTOCOL-PREFLIGHT-1","packet_state":"READY_FOR_EXECUTION","pause_gates":["Stop when an owner, caller, test, path, operation, destination, or decision cannot be re-proved from accepted main.","Stop when exact-head review or canonical CI is missing, stale, failed, or conflicting.","Recover ordinary worker, CI, review, checkpoint, duplicate, restart, and main-drift failures through existing owners; stop if recovery evidence is unproved.","Stop before a Provider, target, authority consumption, or external effect.","Do not retry a possibly executed external effect whose outcome is unknown."],"plan_lane_state":"plan_lane_active","prerequisite_receipts":["PR #566 exact head `57f4a5ee3a9be48a6ebdc20eddbd5df978c4440f`; squash merge `7cfa817a82ea3a638bd3e50af5266ee54eefe0c0`; exact-head review receipt comment `5324095735`; canonical workflow `32103730088`; exact-head check `32103730089`; explicit Python 3.14.4 verifier and provider-free traces passed; no Provider call, target write, authority consumption, or effect"],"prerequisites":["PE7-RWE-CR-RECONSTRUCTION-1"],"private_paths_allowed":false,"promotion_evidence_sha256":"c33125ee031142eb1ced9153eb04f6635554e57301ffdd2b4d8b73eae52b536e","read_paths":["docs/CURRENT_STATUS.md","docs/NEXT_DECISION.md","docs/FUTURE_ROUTE.md","docs/ARCHITECTURE_BOOK.md","docs/REAL_WORLD_TESTING_PLAYBOOK.md","engine/src/rwe/live_baseline_coordinator.rs","engine/src/rwe/operator_corpus.rs","engine/src/rwe/economic_protocol.rs","engine/src/rwe/execution_schedule.rs","engine/tests/test_pg_integration.rs","engine/tests/test_operator_evidence.rs"],"risk_class":"none","rollback":"Revert the docs-only protocol/preflight promotion; no runtime, data, authority, or external state changes.","route_manifest_sha256":"2b78045a6d4bb5df5ef7965d78ae8978102c6e80dbc7e5b53b5d57f58e25be75","schema_version":"weak_agent_dispatch.v1","secret_values_allowed":false,"verification":["cargo test -p engine viability_preflight_is_ready_without_issuing_or_consuming","cargo test -p engine current_contract_set_binds_candidate_freeze_point_and_hashes","git diff --check","bash scripts/check_wire_codegen_drift.sh","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"verification_family":"docs_evidence_review","worker_tier":"T2"}
--->
+The provider-free execution attempt was deliberately not run. A read-only audit on accepted main `f16e3fc4ffa303b3d93876355b3b1783e988be1c` found that the current `rwe-live-baseline preflight` path opens `LocalProductStore` through a constructor that can create directories/SQLite state, apply DDL/migrations/configuration, and inspect the `ACP_DB_ENCRYPTION_KEY` symbol; principal authentication updates `last_used`; and `operator_preflight` reads the DeepSeek credential value. The checkout has no existing local Store, so creating one would violate this packet's `external_effect_limit: 0`. No database, credential, authority, Provider, target, or effect was touched.
+
+The existing contract is also not contemporary-comparison complete: the current preflight freeze remains the old single-arm binding (`ee43eac853644266614da09de764a3bf19f2d281` / target `6240768506320a324d68787b9eaa86971c8c930c`), while the required comparison identities are old `6240768506320a324d68787b9eaa86971c8c930c` with tree `f8d22ebf5009842d37285624f345d47bf6da5548032eb84cb7528407169d9cc3` and new `42fcfa5ad7e349d27d3caa815163340f9c0d5c0b` with tree `c81a2e4e635da05a8a1c15630371e98943c70c86`. The current schedule and owner-derived request path do not yet prove two-arm interleaving, allocation concealment, drift covariates, capacity pairing, or two finite unissued authorization packages.
+
+The smallest unpromoted repair proposal is `PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1` (T2 planning/implementation boundary; not current authority): extend the existing Store/RWE owners with a strict read-only open/auth/preflight projection and a hash-bound contemporary old/new comparison manifest. Its acceptance must prove no directory/DB/DDL/migration/config or metadata writes, no credential-value read, exact old/new identities, interleaving/concealment/drift/capacity rules, and owner-derived finite unissued packages. Fixtures/fakes, a second store/controller/evaluator, Provider calls, authority issuance/consumption, target writes, and effects remain forbidden. Until that repair is promoted and accepted, the replay successor stays blocked.
 
 ## Common Execution Protocol
 
