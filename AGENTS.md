@@ -41,6 +41,22 @@ When a necessary change crosses that boundary, stop with `DECISION_REQUIRED`; re
 
 Model and reasoning effort are user/tool settings. Do not edit model configuration to satisfy repository instructions; model choice never reduces testing, review, CI, audit, compatibility, compensation, or rollback.
 
+## Investigation Escalation (`ask_sol`)
+
+Autonomous workers own and execute routine tasks directly. When encountering genuinely difficult uncertainty, contradictory evidence, cross-module ambiguity, or high-impact architecture questions where initial hypotheses failed, a worker may invoke the shared read-only investigation tool:
+
+```bash
+scripts/ask_sol "<investigation goal>" [--hypothesis "<hypothesis>"] [--task-id "<task_id>"]
+```
+
+or `python3 scripts/ask_sol.py "<investigation goal>"`.
+
+- **Read-Only**: Sol runs in a strictly read-only sandbox and cannot mutate the caller's worktree, commit, push, or approve actions. Pre- and post-consultation worktree state is strictly verified.
+- **Independent**: Sol treats caller hypotheses as untrusted and verifies against first-party repository evidence.
+- **Bounded**: Consultations are bounded per attempt (maximum 2) to prevent consultation loops. Recursive `ask_sol` calls from Sol are rejected fail-closed.
+- **Harness-Neutral**: Usable by any local agent, worker, or script with tool/shell capability without provider-specific task authority.
+- **Escalation Only**: Not a mandatory planning, implementation, or review lane; routine work proceeds directly without Sol.
+
 ## Active-Wait Advancement Rule
 
 During CI, compilation, tests, or audits, do not wait passively. Refresh state, inspect the diff/contracts, prepare the next safe check, or repair a bounded prerequisite. Do not start a later packet or broaden authority merely to fill time.

@@ -67,6 +67,19 @@ rollback are revalidated. This transition cannot merge target repositories,
 release, deploy, consume Provider authority, or adopt product state. T3 and
 human decision receipts remain outside model delegation.
 
+### Shared investigation escalation (ask_sol)
+
+When an autonomous coding worker encounters high-value uncertainty, contradictory evidence, cross-module ambiguity, or repeated hypothesis failures, it may invoke the shared read-only investigation tool (`scripts/ask_sol.py` / `scripts/ask_sol`).
+
+The capability operates under strict architectural invariants:
+- **No Multi-Agent Orchestration / No Mandatory Lanes**: The ordinary worker remains the sole task owner, file editor, and executor. Sol is not a mandatory planning, implementation, or review lane.
+- **Harness Neutrality**: Any local worker (Codex, OpenCode, Claude, Gemini, local model, or script) reaches the same capability through the shared CLI tool; no harness-specific consultation logic or provider authority is created.
+- **Independent Verification**: Sol treats caller hypotheses as untrusted and investigates first-party repository evidence (code, tests, git history, diffs, schema, module maps) directly.
+- **Strict Read-Only Enforcement**: Sol executes in a Codex read-only sandbox (`-s read-only --ephemeral`). The tool captures git HEAD SHA and dirty-state digest before and after consultation; any mutation fails closed with `MUTATION_DETECTED`. Uncommitted caller changes are preserved.
+- **Loop Bounds and Recursion Rejection**: Sol cannot recursively invoke `ask_sol` (`ASK_SOL_ACTIVE=1` fails closed). Per-state consultation count is capped (default maximum 2) and resets only when git state advances.
+- **Zero Credential Persistence**: Local authenticated Codex CLI session is reused directly; credentials, secret tokens, and raw transcripts are never persisted or serialized into results.
+- **Structured Envelope**: Returns a canonical `ask_sol_result.v1` envelope containing status, finding, evidence locations, confidence, rejected alternatives, unresolved uncertainties, and recommended next action.
+
 ## Repository Context Control Plane
 
 Repository handoff separates three identities:

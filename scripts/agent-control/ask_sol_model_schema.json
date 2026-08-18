@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AskSolModelResponse",
+  "description": "Structured investigation findings emitted by GPT-5.6 Sol.",
+  "type": "object",
+  "required": [
+    "finding",
+    "evidence",
+    "rejected_alternatives",
+    "confidence",
+    "unresolved",
+    "recommended_next_action"
+  ],
+  "properties": {
+    "finding": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000,
+      "description": "Core finding and evidence summary"
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "line_range",
+          "observation"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Repository-relative file path or location"
+          },
+          "line_range": {
+            "type": ["string", "null"],
+            "description": "Optional line range"
+          },
+          "observation": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Evidence observed"
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "List of first-party evidence items"
+    },
+    "rejected_alternatives": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "maxLength": 2000
+      },
+      "description": "Hypotheses tested and rejected"
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["HIGH", "MEDIUM", "LOW"],
+      "description": "Confidence level"
+    },
+    "unresolved": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "maxLength": 2000
+      },
+      "description": "Unresolved uncertainties"
+    },
+    "recommended_next_action": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "description": "Recommended concrete next action"
+    }
+  },
+  "additionalProperties": false
+}
