@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AskSolInvestigationResult",
+  "description": "Structured, evidence-grounded findings from an independent read-only GPT-5.6 Sol investigation.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "investigation_goal",
+    "source_context",
+    "finding",
+    "evidence",
+    "confidence",
+    "unresolved",
+    "recommended_next_action"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["ask_sol_result.v1"],
+      "description": "Canonical schema version for ask_sol results"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["SUCCESS", "INCONCLUSIVE", "FAILED", "REJECTED", "MUTATION_DETECTED"],
+      "description": "Outcome status of the consultation"
+    },
+    "investigation_goal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "description": "The exact goal or question investigated"
+    },
+    "caller_hypothesis": {
+      "type": ["string", "null"],
+      "maxLength": 4000,
+      "description": "Optional caller hypothesis, treated as untrusted"
+    },
+    "source_context": {
+      "type": "object",
+      "required": [
+        "repo_root",
+        "worktree",
+        "head_sha",
+        "dirty_digest"
+      ],
+      "properties": {
+        "repo_root": {
+          "type": "string",
+          "description": "Repository root path"
+        },
+        "worktree": {
+          "type": "string",
+          "description": "Worktree path where the investigation occurred"
+        },
+        "head_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "HEAD commit SHA at investigation time"
+        },
+        "dirty_digest": {
+          "type": "string",
+          "description": "Digest of uncommitted caller working tree state"
+        }
+      },
+      "additionalProperties": false
+    },
+    "finding": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000,
+      "description": "Core finding and evidence summary from Sol"
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "observation"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Repository-relative file path or artifact location"
+          },
+          "line_range": {
+            "type": ["string", "null"],
+            "description": "Optional line range, e.g. '12-34' or 'L50'"
+          },
+          "observation": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Observed evidence at this location"
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "First-party repository evidence locations and observations"
+    },
+    "rejected_alternatives": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "maxLength": 2000
+      },
+      "description": "Plausible alternative hypotheses tested and rejected with evidence"
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["HIGH", "MEDIUM", "LOW"],
+      "description": "Confidence level based on repository proof"
+    },
+    "unresolved": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "maxLength": 2000
+      },
+      "description": "Unresolved uncertainties or remaining unproven assumptions"
+    },
+    "recommended_next_action": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "description": "Recommended concrete next action for the caller worker"
+    }
+  },
+  "additionalProperties": false
+}
