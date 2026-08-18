@@ -3022,5 +3022,33 @@ def main(argv: list[str] | None = None) -> int:
     raise AssertionError("unreachable command")
 
 
+def ensure_codegraph_for_cli() -> int:
+    """Fail closed unless the repository-local CodeGraph is ready."""
+    try:
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/ensure_codegraph.sh")],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        result = None
+    if result is not None and result.returncode == 0:
+        return 0
+    print(
+        json.dumps(
+            {
+                "schema_version": "agent_session_error.v1",
+                "disposition": "DECISION_REQUIRED",
+                "reason": "codegraph_required",
+                "detail": "CodeGraph readiness failed",
+            },
+            sort_keys=True,
+        )
+    )
+    return 3
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(ensure_codegraph_for_cli() or main())

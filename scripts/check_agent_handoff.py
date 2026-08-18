@@ -31,10 +31,14 @@ REQUIRED_TEXT = {
         "## Source-of-Truth Hierarchy",
         "## Establish the Leading Valid Frontier",
         "## One-Command Session Bootstrap",
+        "scripts/ensure_codegraph.sh",
+        "CodeGraph gate",
         "## Role Routes",
         "agent-context-routes:v1",
         "scripts/project_context.py",
         "scripts/session_context.py",
+        "review_protocol_version",
+        "review_round",
         "## Automation Boundary",
         "## End-of-Work Handoff",
         "## Documentation Discipline",
@@ -50,6 +54,10 @@ REQUIRED_TEXT = {
         "Full Agent Autonomy Mode",
         "Autonomous Advancement Loop",
         "Documentation Maintenance Rule",
+        "## Mandatory CodeGraph",
+        "scripts/ensure_codegraph.sh",
+        "codegraph explore",
+        "--require-codegraph",
         "resolve bounded design gaps",
         "do not commit real secrets",
         "do not falsify test or CI evidence",
@@ -65,6 +73,14 @@ REQUIRED_TEXT = {
         "scripts/project_context.py",
         "docs/CURRENT_STATUS.md",
         "docs/NEXT_DECISION.md",
+    ],
+    "scripts/ensure_codegraph.sh": [
+        "#!/usr/bin/env bash",
+        "CodeGraph is mandatory",
+        "codegraph init",
+        "codegraph index",
+        "codegraph sync",
+        "codegraph status",
     ],
     "README.md": [
         "START_HERE.md",
@@ -135,6 +151,8 @@ REQUIRED_TEXT = {
     "scripts/session_context.py": [
         "agent_context_routes.v1",
         "agent_session_handoff.v1",
+        "ensure_codegraph.sh",
+        "codegraph_required",
         "def parse_route_contract",
         "def extract_packet",
         "def _build_checkpoint",
@@ -156,10 +174,6 @@ REQUIRED_TEXT = {
     "scripts/agent-control/validate_review.py": [
         "review_convergence",
         "convergence_cross_field_invalid",
-    ],
-    "START_HERE.md": [
-        "review_protocol_version",
-        "review_round",
     ],
     "scripts/verify_rust_typescript_stack.sh": [
         "bash scripts/check_wire_codegen_drift.sh",
@@ -1523,7 +1537,24 @@ def check_project_context(failures: list[str]) -> None:
                 )
 
 
-def main() -> int:
+def check_codegraph_readiness(failures: list[str]) -> None:
+    """Run the strict CodeGraph gate without exposing launcher output."""
+    try:
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/ensure_codegraph.sh")],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        failures.append("CodeGraph readiness failed")
+        return
+    if result.returncode != 0:
+        failures.append("CodeGraph readiness failed")
+
+
+def main(*, require_codegraph: bool = False) -> int:
     failures: list[str] = []
     check_required_text(failures)
     check_entrypoint_roles(failures)
@@ -1532,6 +1563,8 @@ def main() -> int:
     check_active_state_consistency(failures)
     check_session_context_routes(failures)
     check_project_context(failures)
+    if require_codegraph:
+        check_codegraph_readiness(failures)
 
     wire_guard = ROOT / "scripts" / "check_wire_codegen_drift.sh"
     if not wire_guard.is_file() or not os.access(wire_guard, os.X_OK):
@@ -1569,4 +1602,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(require_codegraph="--require-codegraph" in sys.argv[1:]))

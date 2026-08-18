@@ -33,6 +33,14 @@ A green CI check is not enough if it belongs to an older PR head. This lab binds
 
 Maintainer and Agent entry: [`START_HERE.md`](START_HERE.md) · architecture: [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) · current plan: [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md) · future route: [`docs/FUTURE_ROUTE.md`](docs/FUTURE_ROUTE.md) · implementation rules: [`AGENTS.md`](AGENTS.md) · support: [`SUPPORT.md`](SUPPORT.md).
 
+Repository-maintenance sessions must initialize or synchronize the local CodeGraph index before inspection or code search:
+
+```bash
+bash scripts/ensure_codegraph.sh
+```
+
+The complete CodeGraph contract and hard-stop behavior live in [`AGENTS.md`](AGENTS.md); the generated `.codegraph/` directory is local-only and ignored.
+
 ## Quick Start
 
 Verified on a source checkout with Rust stable, [Bun](https://bun.sh/), and [uv](https://docs.astral.sh/uv/) (Python 3.11+ for the SDK; 3.10+ scripts where noted). See [CONTRIBUTING.md](CONTRIBUTING.md).

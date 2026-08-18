@@ -123,6 +123,54 @@ Replace stale status in place.
             commands,
         )
 
+    def test_strict_handoff_guard_runs_codegraph_readiness(self) -> None:
+        checker = load_handoff_checker()
+        commands: list[list[str]] = []
+
+        def fake_run(command, **_kwargs):
+            normalized = [str(part) for part in command]
+            commands.append(normalized)
+            if normalized[:3] == ["git", "rev-parse", "origin/main"]:
+                return completed(
+                    normalized,
+                    stdout="c3e58576cbba40dbcad666c39eefb6bbdc372434\n",
+                )
+            if normalized[:2] == ["git", "cat-file"]:
+                return completed(normalized)
+            if normalized[:3] == ["git", "merge-base", "--is-ancestor"]:
+                return completed(normalized)
+            if normalized[:2] == ["git", "show"]:
+                return completed(
+                    normalized,
+                    stdout="## Packet PE7-RWE-V2-VIABILITY-PREFLIGHT-1\n",
+                )
+            return completed(normalized)
+
+        with patch.object(checker.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(checker.main(require_codegraph=True), 0)
+
+        self.assertTrue(
+            any(command[-1].endswith("scripts/ensure_codegraph.sh") for command in commands),
+            commands,
+        )
+
+    def test_strict_handoff_guard_fails_closed_on_codegraph_error(self) -> None:
+        checker = load_handoff_checker()
+
+        def fake_run(command, **_kwargs):
+            normalized = [str(part) for part in command]
+            if normalized[-1].endswith("scripts/ensure_codegraph.sh"):
+                return completed(normalized, returncode=1, stdout="/private/index")
+            return completed(normalized)
+
+        output = io.StringIO()
+        with patch.object(checker.subprocess, "run", side_effect=fake_run):
+            with redirect_stdout(output):
+                self.assertEqual(checker.main(require_codegraph=True), 1)
+
+        self.assertIn("CodeGraph readiness failed", output.getvalue())
+        self.assertNotIn("/private/index", output.getvalue())
+
     def test_handoff_guard_fails_when_secret_scan_fails(self) -> None:
         checker = load_handoff_checker()
 

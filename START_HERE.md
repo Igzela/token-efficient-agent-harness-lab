@@ -57,6 +57,7 @@ refresh remote main
 → resolve the earliest eligible packet
 → confirm its exact owned PR head
 → confirm the local checkout/worktree matches the intended frontier
+→ run bash scripts/ensure_codegraph.sh and use CodeGraph for code understanding
 → read only the relevant owner, architecture, playbook, code, and tests
 → state scope, non-goals, authority, acceptance, rollback, and hard stops
 → begin work
@@ -69,16 +70,18 @@ A new PR head invalidates earlier CI and review conclusions for that PR. A block
 Every repository-maintenance session starts here, but no agent should load every maintained document. A coding agent, including a fresh successor resuming interrupted work, first runs one accepted-main entry command:
 
 ```bash
+bash scripts/ensure_codegraph.sh
 uv run --no-project python scripts/session_context.py enter --role coding
 ```
 
-The digest-bound JSON composes the accepted current packet, its complete bounded autonomous worker dispatch capsule (legacy machine identifier: `weak-agent-dispatch:v1`), current checkout, and any Git-private checkpoint. `FRESH_PACKET` lists only `targeted_reads`; `RESUME_CHECKPOINT` lists only the checkpoint-owned paths and its exact `next_permitted_action`. Treat `deferred_documents` as already projected startup context: do not reread them unless the entry reports a conflict, a missing fact, or a stop condition. The entry grants no new authority and never turns working-tree planning prose into accepted direction. If no packet is execution-ready (for example a planning-parked window), the entry is `DECISION_REQUIRED` and issues no checkpoint commands.
+The CodeGraph gate is defined by `AGENTS.md`; it initializes or synchronizes `.codegraph/` and finishes with a successful status. A missing CLI or failed index is a hard stop. The direct `session_context.py` CLI enforces the same gate before producing any route or entry. After that gate, the digest-bound JSON composes the accepted current packet, its complete bounded autonomous worker dispatch capsule (legacy machine identifier: `weak-agent-dispatch:v1`), current checkout, and any Git-private checkpoint. `FRESH_PACKET` lists only `targeted_reads`; `RESUME_CHECKPOINT` lists only the checkpoint-owned paths and its exact `next_permitted_action`. Treat `deferred_documents` as already projected startup context: do not reread them unless the entry reports a conflict, a missing fact, or a stop condition. The entry grants no new authority and never turns working-tree planning prose into accepted direction. If no packet is execution-ready (for example a planning-parked window), the entry is `DECISION_REQUIRED` and issues no checkpoint commands.
 
 For interruption or completion handoff, a coding entry exposes two digest-bound `checkpoint_write_commands`: `wip` and `stable`. Run exactly one unchanged command; the stable command is permitted only after every declared verification command has actually passed and the checkout stayed unchanged while they ran. Do not search this file, the script, or repository history for another coding checkpoint procedure. The commands accept no caller-authored text or paths, grant no authority, and remain gated by `checkpoint_allowed` and the current packet. Checkpoint verification evidence is bound to the accepted dispatch capsule's exact ordered verification contract; a rehashed checkpoint with a substituted evidence set, a caller-asserted `PASS`, or an inconsistent work-state/verification-state pairing is rejected, never resumed. Planning, review, and operator routes do not receive coding checkpoint commands.
 
-Planning, review, CI-repair, operator, and contributor sessions still request their bounded accepted document route:
+Planning, review, CI-repair, operator, and contributor sessions still request their bounded accepted document route after the mandatory CodeGraph gate:
 
 ```bash
+bash scripts/ensure_codegraph.sh
 uv run --no-project python scripts/session_context.py route --role planning
 ```
 
@@ -172,6 +175,8 @@ The machine-readable `agent-context-routes:v1` marker above is the enforced rout
 
 Use targeted reads. Do not load every document when the role and packet narrow the necessary context.
 
+Code understanding follows the canonical CodeGraph contract in `AGENTS.md`; use the helper before source reads or code search, then use CodeGraph to establish symbols and call paths before bounded textual confirmation.
+
 ## Planning and Execution Separation
 
 The planning or architecture process owns cross-packet direction, architecture and authority choices, packet scope and ordering, acceptance gates, and GO/NO-GO decisions. An implementation agent owns only packet-internal execution planning: inspect the real code, choose the smallest quality-preserving implementation, implement, test, synchronize the smallest canonical documents, and return evidence.
@@ -222,7 +227,7 @@ This automation is non-authoritative and must preserve these rules:
 
 ## End-of-Work Handoff
 
-Before ending or transferring a coding session, run exactly one unchanged command from the current entry's `checkpoint_write_commands`. Use `wip` after an interrupted implementation slice. Use `stable` only after every `verification_command` in that same entry has actually passed. The command automatically binds exact dirty paths allowed by the accepted packet as owned work and leaves every other dirty path preserve-only; it fails closed when no packet-owned change exists. The stable command proves the checkout is unchanged while the verification commands ran and binds the results to the accepted verification contract; a changed subject, a changed contract, or a caller-asserted result never produces a stable checkpoint. Other roles leave the compact report below and do not invent a coding checkpoint command.
+Before ending or transferring a coding session, run exactly one unchanged command from the current entry's `checkpoint_write_commands`. Use `wip` after an interrupted implementation slice. Use `stable` only after every `verification_command` in that same entry has actually passed. The command automatically binds exact dirty paths allowed by the accepted packet as owned work and leaves every other dirty path preserve-only; it fails closed when no packet-owned change exists. The stable command proves the checkout is unchanged while the verification commands ran and binds the results to the accepted verification contract; a changed subject, a changed contract, or a caller-asserted result never produces a stable checkpoint. Other roles leave the compact report below and do not invent a coding checkpoint command. Every role also runs `uv run --no-project python scripts/check_agent_handoff.py --require-codegraph` before handoff.
 
 The checkpoint contains repository-relative paths and content digests, never file content, credentials, prompts, transcripts, or absolute/private paths. It is an atomic, mode-0600, non-authoritative projection in Git's private path. It does not replace GitHub Issue/PR claim, lease, CI, review, or terminal receipts. A controlled worker must still persist through those existing owners; a new local conversation uses this checkpoint only to prove whether the exact WIP is safe to resume.
 

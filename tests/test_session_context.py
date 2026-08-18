@@ -256,6 +256,50 @@ class DeterministicSchemaTests(unittest.TestCase):
             self.assertNotEqual(altered, contract)
 
 
+class CodeGraphCliGuardTests(unittest.TestCase):
+    def test_launcher_failure_is_sanitized_and_decision_required(self):
+        with mock.patch.object(
+            session_context.subprocess,
+            "run",
+            side_effect=OSError("/private/launcher path"),
+        ), mock.patch("builtins.print") as printer:
+            status = session_context.ensure_codegraph_for_cli()
+
+        self.assertEqual(status, 3)
+        payload = json.loads(printer.call_args.args[0])
+        self.assertEqual(payload["disposition"], "DECISION_REQUIRED")
+        self.assertEqual(payload["reason"], "codegraph_required")
+        self.assertNotIn("/private/launcher", printer.call_args.args[0])
+
+    def test_index_failure_does_not_expose_helper_output(self):
+        result = subprocess.CompletedProcess(
+            ["bash", "scripts/ensure_codegraph.sh"],
+            1,
+            stdout="/private/index details",
+            stderr="/private/index failure",
+        )
+        with mock.patch.object(
+            session_context.subprocess, "run", return_value=result
+        ), mock.patch("builtins.print") as printer:
+            status = session_context.ensure_codegraph_for_cli()
+
+        self.assertEqual(status, 3)
+        payload = json.loads(printer.call_args.args[0])
+        self.assertEqual(payload["detail"], "CodeGraph readiness failed")
+        self.assertNotIn("/private/index", printer.call_args.args[0])
+
+    def test_decode_failure_is_sanitized_and_decision_required(self):
+        failure = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte")
+        with mock.patch.object(
+            session_context.subprocess, "run", side_effect=failure
+        ), mock.patch("builtins.print") as printer:
+            status = session_context.ensure_codegraph_for_cli()
+
+        self.assertEqual(status, 3)
+        payload = json.loads(printer.call_args.args[0])
+        self.assertEqual(payload["reason"], "codegraph_required")
+
+
 class RouteContractTests(unittest.TestCase):
     def test_every_role_gets_a_bounded_start_here_first_route(self):
         contract = session_context.parse_route_contract(route_document())

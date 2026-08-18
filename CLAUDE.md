@@ -2,6 +2,14 @@
 
 Read `START_HERE.md` first, then `AGENTS.md`. Those files define repository navigation, implementation authority, quality priorities, hard stops, and the working protocol.
 
+The canonical CodeGraph contract is in `AGENTS.md`. Start every repository session with:
+
+```bash
+bash scripts/ensure_codegraph.sh
+```
+
+The helper is the enforced gate; use `codegraph explore`/`node`/`callers`/`callees`/`impact` for code questions. If initialization, synchronization, or status fails, stop; do not fall back to `rg`, `grep`, `find`, or direct source reading. This adapter does not restate the contract.
+
 Before acting, generate a fresh context view when possible:
 
 ```bash

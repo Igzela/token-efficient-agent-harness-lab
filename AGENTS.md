@@ -17,6 +17,22 @@ correctness, safety, evidence, recovery, and rollback
 
 Conciseness must preserve quality. At session start, establish the leading valid frontier: remote accepted `main`, the latest exact head of the earliest eligible packet’s owned PR, and any blocked future frontiers. Never continue from a stale local branch, stale review head, or blocked downstream PR. Enter through the `START_HERE.md` one-command bootstrap (`scripts/session_context.py enter --role <role>` for the digest-bound route, or `route` for non-coding roles), and use `uv run --no-project python scripts/project_context.py` as an on-demand frontier-evidence view only when the entry asks for it; verify its claims against Git/GitHub and canonical documents. Repository-controlled implementation, CI-repair, and review prompts regenerate and inject a fresh validated capsule at session start; arbitrary later sessions still require explicit regeneration.
 
+## Mandatory CodeGraph
+
+CodeGraph is required at the start of every repository-maintenance session, including documentation, planning, review, CI-repair, and operator sessions. Before any code-oriented `rg`, `grep`, `find`, direct source read, or implementation decision, run:
+
+```bash
+bash scripts/ensure_codegraph.sh
+```
+
+Use `codegraph explore`, `codegraph node`, `codegraph callers`, `codegraph callees`, or `codegraph impact` for code questions and call paths. Exact-text search remains allowed after the CodeGraph readiness check for bounded confirmation only. Do not bypass CodeGraph because an index is missing: the helper must initialize it; if the CLI, initialization, synchronization, or status check fails, stop with `DECISION_REQUIRED` and do not reason from source by another route. `.codegraph/` is generated local state and must never be committed, persisted as evidence, or treated as an authority owner.
+
+Before handing off any repository-maintenance session, run the strict handoff gate as well:
+
+```bash
+uv run --no-project python scripts/check_agent_handoff.py --require-codegraph
+```
+
 ## Current Guardrails
 
 - Product Golden Path is default-off and target `main` is protected. No provider call in CI, target-default-branch write, auto-merge, release, deployment, or production installation. A local Provider call is permitted only when the accepted current packet's bounded autonomous worker dispatch capsule (legacy machine identifier: `weak-agent-dispatch:v1`) explicitly authorizes one; that exception never authorizes a target write, EFFECT, T3 action, release, deployment, or automatic merge.
