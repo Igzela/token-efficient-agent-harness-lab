@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -167,6 +168,20 @@ class VerifyRweSnapshotTests(unittest.TestCase):
             self.assertEqual((destination / "link").read_text(encoding="utf-8"), "bound\n")
             self.assertEqual(digest, verify_rwe_snapshot.cache_snapshot_digest(destination))
 
+    def test_copy_cache_snapshot_excludes_escaping_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "payload").write_text("bound\n", encoding="utf-8")
+            (source / "escape").symlink_to("/etc/passwd")
+            destination = root / "destination"
+
+            digest = verify_rwe_snapshot.copy_cache_snapshot(source, destination, "test")
+
+            self.assertFalse((destination / "escape").is_symlink())
+            self.assertEqual(digest, verify_rwe_snapshot.cache_snapshot_digest(destination))
+
     def test_copy_recipe_overlay_rejects_executable_mode_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -197,6 +212,34 @@ class VerifyRweSnapshotTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertLessEqual(len(result.stdout.encode()), verify_rwe_snapshot.MAX_TRACE_OUTPUT_BYTES)
+
+    def test_bounded_command_cleans_a_detached_descendant(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pid_path = Path(directory) / "child.pid"
+            child_code = (
+                "import os, pathlib, time; os.setsid(); "
+                f"pathlib.Path({str(pid_path)!r}).write_text(str(os.getpid())); time.sleep(30)"
+            )
+            parent_code = (
+                "import pathlib, subprocess, sys, time\n"
+                "subprocess.Popen([sys.executable, '-c', "
+                + repr(child_code)
+                + "])\n"
+                f"deadline=time.monotonic()+5\n"
+                f"path=pathlib.Path({str(pid_path)!r})\n"
+                "while not path.exists() and time.monotonic() < deadline:\n"
+                "    time.sleep(.01)\n"
+            )
+            result = verify_rwe_snapshot._run_bounded_command(
+                [sys.executable, "-c", parent_code],
+                cwd=Path("/"),
+                environment={"PATH": str(Path(sys.executable).parent)},
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0)
+            child_pid = int(pid_path.read_text(encoding="utf-8"))
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
 
     def test_rust_reconstruction_binding_is_manifest_bound(self) -> None:
         manifest_path = Path(

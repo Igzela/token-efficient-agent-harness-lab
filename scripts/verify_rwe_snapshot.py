@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 from dataclasses import dataclass
 import hashlib
 import json
@@ -81,17 +82,40 @@ GIT_BINARY = FROZEN_TRACE_BINARY_IDENTITIES["git"]["path"]
 MAX_TRACE_OUTPUT_BYTES = 128 * 1024
 MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_GIT_STREAM_BYTES = 256 * 1024 * 1024
+MAX_RECIPE_FILE_BYTES = 256 * 1024 * 1024
 MAX_CACHE_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CACHE_ENTRIES = 250_000
 MIN_FREE_SPACE_BYTES = 2 * 1024 * 1024 * 1024
 PROCESS_TERMINATION_GRACE_SECONDS = 5
 CURRENT_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_SUBREAPER_ENABLED: bool | None = None
+_CLEAR_SUBREAPER_PROGRAM = (
+    "import ctypes, os, sys; "
+    "libc=ctypes.CDLL(None, use_errno=True); "
+    "libc.prctl.argtypes=[ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, "
+    "ctypes.c_ulong, ctypes.c_ulong]; "
+    "libc.prctl.restype=ctypes.c_int; "
+    "status=libc.prctl(36, 0, 0, 0, 0); "
+    "os._exit(125) if status != 0 else os.execvpe(sys.argv[1], sys.argv[1:], os.environ)"
+)
 
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_file_bounded(path: Path, maximum: int) -> str:
+    digest = hashlib.sha256()
+    total = 0
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            total += len(chunk)
+            if total > maximum:
+                raise OSError(f"file exceeds bounded digest limit: {path}")
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -183,6 +207,8 @@ def _git_result(root: Path, *args: str) -> BoundedCommandResult:
 
 
 def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
+    subreaper_ready = _ensure_child_subreaper()
+    baseline_descendants = _descendant_pids(os.getpid()) if subreaper_ready else set()
     process = subprocess.Popen(
         _git_command(root, args),
         cwd=Path("/"),
@@ -206,7 +232,6 @@ def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not selector.select(remaining):
                     timed_out = True
-                    _terminate_process_group(process)
                     break
                 try:
                     chunk = process.stdout.read(64 * 1024)
@@ -220,18 +245,16 @@ def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
                     or shutil.disk_usage(destination.parent).free < MIN_FREE_SPACE_BYTES
                 ):
                     overflow = True
-                    _terminate_process_group(process)
                     break
                 output.write(chunk)
         if overflow or timed_out:
+            _cleanup_child_process(process, baseline_descendants, subreaper_ready)
             return False
         process.wait(timeout=max(0, deadline - time.monotonic()))
-        if _process_group_exists(process.pid):
-            _terminate_process_group(process)
-            return False
-        return process.returncode == 0
+        cleanup_ok = _cleanup_child_process(process, baseline_descendants, subreaper_ready)
+        return process.returncode == 0 and cleanup_ok
     except (OSError, subprocess.TimeoutExpired):
-        _terminate_process_group(process)
+        _cleanup_child_process(process, baseline_descendants, subreaper_ready)
         return False
     finally:
         selector.close()
@@ -282,10 +305,12 @@ def git_tree_hash(root: Path, revision: str) -> str | None:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def git_overlay_paths(root: Path) -> list[str]:
-    tracked = git_output(root, "diff", "--name-only") or ""
-    staged = git_output(root, "diff", "--cached", "--name-only") or ""
-    untracked = git_output(root, "ls-files", "--others", "--exclude-standard") or ""
+def git_overlay_paths(root: Path) -> list[str] | None:
+    tracked = git_output(root, "diff", "--name-only")
+    staged = git_output(root, "diff", "--cached", "--name-only")
+    untracked = git_output(root, "ls-files", "--others", "--exclude-standard")
+    if tracked is None or staged is None or untracked is None:
+        return None
     generated_prefix = "apps/api/src/alters_lab_api.egg-info/"
     return sorted(
         path
@@ -348,9 +373,20 @@ def copy_recipe_overlay(
         actual_executable = source.stat().st_mode & 0o111
         if bool(actual_executable) != bool(expected_mode & 0o111):
             raise OSError(f"recipe overlay executable mode differs: {relative}")
+        if source.stat().st_size > MAX_RECIPE_FILE_BYTES:
+            raise OSError(f"recipe overlay exceeds the byte limit: {relative}")
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        copied = 0
+        with source.open("rb") as source_stream, target.open("wb") as target_stream:
+            while True:
+                chunk = source_stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                copied += len(chunk)
+                if copied > MAX_RECIPE_FILE_BYTES:
+                    raise OSError(f"recipe overlay exceeds the byte limit: {relative}")
+                target_stream.write(chunk)
         target.chmod(expected_mode)
 
 
@@ -364,6 +400,8 @@ def cache_snapshot_digest(root: Path) -> str:
             raise OSError("cache snapshot exceeds the entry-count limit")
         relative = path.relative_to(root).as_posix().encode()
         if path.is_symlink():
+            if not _cache_symlink_is_safe(root, path):
+                continue
             digest.update(relative)
             digest.update(b"\0symlink\0")
             digest.update(os.readlink(path).encode())
@@ -386,6 +424,15 @@ def cache_snapshot_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _cache_symlink_is_safe(root: Path, path: Path) -> bool:
+    """Allow only links whose fully resolved target stays inside the snapshot."""
+    try:
+        path.resolve(strict=False).relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def copy_cache_snapshot(source: Path, destination: Path, label: str) -> str:
     """Materialize and hash an independent, resource-bounded cache copy."""
     copied = {"files": 0, "bytes": 0}
@@ -404,9 +451,24 @@ def copy_cache_snapshot(source: Path, destination: Path, label: str) -> str:
         shutil.copy2(source_file, destination_file)
         return destination_file
 
+    def ignore_escaping_symlinks(directory: str, names: list[str]) -> list[str]:
+        directory_path = Path(directory)
+        return [
+            name
+            for name in names
+            if (candidate := directory_path / name).is_symlink()
+            and not _cache_symlink_is_safe(source, candidate)
+        ]
+
     try:
         source_digest = cache_snapshot_digest(source)
-        shutil.copytree(source, destination, symlinks=True, copy_function=copy_file)
+        shutil.copytree(
+            source,
+            destination,
+            symlinks=True,
+            copy_function=copy_file,
+            ignore=ignore_escaping_symlinks,
+        )
     except OSError as error:
         raise OSError(f"cannot snapshot {label} cache: {error}") from error
     try:
@@ -771,6 +833,134 @@ def _process_group_exists(process_id: int) -> bool:
     return True
 
 
+def _ensure_child_subreaper() -> bool:
+    """Make detached descendants reparent to this verifier for cleanup."""
+    global _SUBREAPER_ENABLED
+    if _SUBREAPER_ENABLED is not None:
+        return _SUBREAPER_ENABLED
+    if sys.platform != "linux":
+        _SUBREAPER_ENABLED = False
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        prctl = libc.prctl
+        prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        prctl.restype = ctypes.c_int
+        _SUBREAPER_ENABLED = prctl(36, 1, 0, 0, 0) == 0  # PR_SET_CHILD_SUBREAPER
+    except (AttributeError, OSError):
+        _SUBREAPER_ENABLED = False
+    return _SUBREAPER_ENABLED
+
+
+def _child_command_without_subreaper(
+    command: list[str | Path], subreaper_ready: bool
+) -> list[str | Path]:
+    """Keep the verifier subreaper out of the isolated bwrap test namespace."""
+    if not subreaper_ready or not command:
+        return command
+    if str(command[0]) != FROZEN_TRACE_BINARY_IDENTITIES["bwrap"]["path"]:
+        return command
+    return [
+        FROZEN_TRACE_BINARY_IDENTITIES["python"]["path"],
+        "-c",
+        _CLEAR_SUBREAPER_PROGRAM,
+        *(str(argument) for argument in command),
+    ]
+
+
+def _process_parent_map() -> dict[int, int]:
+    parents: dict[int, int] = {}
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return parents
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = entry.joinpath("stat").read_text(encoding="ascii").rsplit(") ", 1)[1].split()
+            parents[int(entry.name)] = int(fields[1])
+        except (OSError, IndexError, ValueError):
+            continue
+    return parents
+
+
+def _descendant_pids(root_pid: int) -> set[int]:
+    parents = _process_parent_map()
+    descendants: set[int] = set()
+    frontier = {root_pid}
+    while frontier:
+        children = {pid for pid, parent in parents.items() if parent in frontier}
+        children -= descendants
+        descendants.update(children)
+        frontier = children
+    return descendants
+
+
+def _process_is_live(process_id: int) -> bool:
+    try:
+        fields = Path(f"/proc/{process_id}/stat").read_text(encoding="ascii").rsplit(") ", 1)[1].split()
+    except (OSError, IndexError):
+        return False
+    return bool(fields) and fields[0] != "Z"
+
+
+def _reap_process(process_id: int) -> None:
+    try:
+        os.waitpid(process_id, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        pass
+
+
+def _terminate_processes(process_ids: set[int]) -> bool:
+    process_ids = {pid for pid in process_ids if pid > 1 and pid != os.getpid()}
+    for process_id in process_ids:
+        try:
+            os.kill(process_id, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + PROCESS_TERMINATION_GRACE_SECONDS
+    remaining = set(process_ids)
+    while remaining and time.monotonic() < deadline:
+        for process_id in tuple(remaining):
+            _reap_process(process_id)
+            if not _process_is_live(process_id):
+                remaining.discard(process_id)
+        if remaining:
+            time.sleep(0.05)
+    for process_id in remaining:
+        try:
+            os.kill(process_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + PROCESS_TERMINATION_GRACE_SECONDS
+    while remaining and time.monotonic() < deadline:
+        for process_id in tuple(remaining):
+            _reap_process(process_id)
+            if not _process_is_live(process_id):
+                remaining.discard(process_id)
+        if remaining:
+            time.sleep(0.05)
+    return not remaining
+
+
+def _cleanup_child_process(
+    process: subprocess.Popen[bytes], baseline_descendants: set[int], subreaper_ready: bool
+) -> bool:
+    if _process_group_exists(process.pid):
+        _terminate_process_group(process)
+    if not subreaper_ready:
+        return False
+    residual = _descendant_pids(os.getpid()) - baseline_descendants
+    residual_cleanup_ok = True
+    if residual:
+        residual_cleanup_ok = _terminate_processes(residual)
+    return (
+        residual_cleanup_ok
+        and not _process_group_exists(process.pid)
+        and not (_descendant_pids(os.getpid()) - baseline_descendants)
+    )
+
+
 def _run_bounded_command(
     command: list[str | Path],
     *,
@@ -782,9 +972,11 @@ def _run_bounded_command(
     max_output_bytes: int = MAX_TRACE_OUTPUT_BYTES,
 ) -> BoundedCommandResult:
     """Run one child with bounded output and private descendant cleanup."""
+    subreaper_ready = _ensure_child_subreaper()
+    baseline_descendants = _descendant_pids(os.getpid()) if subreaper_ready else set()
     try:
         process = subprocess.Popen(
-            command,
+            _child_command_without_subreaper(command, subreaper_ready),
             cwd=cwd,
             env=environment,
             stdin=subprocess.DEVNULL,
@@ -821,16 +1013,15 @@ def _run_bounded_command(
         timed_out = True
         _terminate_process_group(process)
         returncode = process.returncode
+    cleanup_ok = _cleanup_child_process(process, baseline_descendants, subreaper_ready)
     stdout_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
     stderr_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
     if stdout_thread.is_alive() or stderr_thread.is_alive():
-        _terminate_process_group(process)
+        cleanup_ok = _cleanup_child_process(
+            process, baseline_descendants, subreaper_ready
+        ) and cleanup_ok
         stdout_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
         stderr_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
-    if returncode and not timed_out:
-        _terminate_process_group(process)
-    if _process_group_exists(process.pid):
-        _terminate_process_group(process)
     if process.stdout is not None:
         process.stdout.close()
     if process.stderr is not None:
@@ -841,6 +1032,11 @@ def _run_bounded_command(
     stderr = stderr_bytes.decode(errors="replace")
     markers = tuple(sorted(state["forbidden_markers"]))  # type: ignore[arg-type]
     error_lines = tuple(state["error_lines"])  # type: ignore[arg-type]
+    cleanup_error = (
+        RuntimeError("provider-free child descendant cleanup could not be proven")
+        if not cleanup_ok
+        else None
+    )
     return BoundedCommandResult(
         returncode,
         stdout,
@@ -848,7 +1044,7 @@ def _run_bounded_command(
         stdout_bytes,
         stderr_bytes,
         timed_out,
-        None,
+        cleanup_error,
         markers,
         error_lines,
         bool(state["output_truncated"]),
@@ -900,6 +1096,7 @@ def _run_provider_free_trace(
             bubblewrap,
             "--die-with-parent",
             "--unshare-net",
+            "--unshare-pid",
             "--clearenv",
             "--ro-bind",
             "/usr",
@@ -972,7 +1169,7 @@ def _run_provider_free_trace(
         sandbox_command.append("--")
         sandbox_command.extend(command)
         result = _run_bounded_command(
-            sandbox_command,
+            _child_command_without_subreaper(sandbox_command, _ensure_child_subreaper()),
             cwd=Path("/"),
             environment={"PATH": environment["PATH"]},
             timeout=3_600,
@@ -988,8 +1185,8 @@ def _run_provider_free_trace(
         failures.append(f"provider-free trace emitted forbidden marker: {name}: {marker}")
     if result.returncode:
         detail = (result.stdout + "\n" + result.stderr).strip().splitlines()
-        summary = list(result.error_lines) or detail[-20:]
-        suffix = f": {' | '.join(summary)[-2000:]}" if summary else ""
+        summary = [*result.error_lines, *detail[-20:]]
+        suffix = f": {' | '.join(summary)[-4000:]}" if summary else ""
         failures.append(
             f"provider-free trace failed: {name}: exit={result.returncode}{suffix}"
         )
@@ -1248,7 +1445,10 @@ def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures:
     recipe_changed = git_output(source_root, "diff", "--name-only", base_commit, recipe_commit)
     if recipe_changed is None or sorted(filter(None, recipe_changed.splitlines())) != paths:
         failures.append("recipe commit changes differ from the recipe path set")
-    if git_overlay_paths(source_root) != paths:
+    overlay_paths = git_overlay_paths(source_root)
+    if overlay_paths is None:
+        failures.append("source checkout overlay Git queries were unavailable")
+    elif overlay_paths != paths:
         failures.append("source checkout overlay paths differ from the recipe path set")
     try:
         recipe_modes = git_revision_modes(source_root, recipe_commit)
@@ -1262,7 +1462,10 @@ def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures:
             expected is None
             or candidate.is_symlink()
             or not candidate.is_file()
-            or candidate.read_bytes() != expected
+            or candidate.stat().st_size > MAX_RECIPE_FILE_BYTES
+            or candidate.stat().st_size != len(expected)
+            or sha256_file_bounded(candidate, MAX_RECIPE_FILE_BYTES)
+            != hashlib.sha256(expected).hexdigest()
             or relative not in recipe_modes
             or bool(candidate.stat().st_mode & 0o111)
             != bool(recipe_modes[relative] & 0o111)
