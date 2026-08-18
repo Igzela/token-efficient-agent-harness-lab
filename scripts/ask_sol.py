@@ -13,7 +13,7 @@ worktree in a read-only sandbox and returns evidence-grounded findings.
 from __future__ import annotations
 
 import argparse
-import dataclasses
+import fcntl
 import hashlib
 import json
 import os
@@ -43,6 +43,40 @@ REPO_ROOT = SCRIPT_DIR.parent
 SCHEMA_PATH = SCRIPT_DIR / "agent-control" / "ask_sol_schema.json"
 MODEL_SCHEMA_PATH = SCRIPT_DIR / "agent-control" / "ask_sol_model_schema.json"
 
+# Minimal environment variable allowlist for the Codex CLI subprocess
+CODEX_ALLOWED_ENV_VARS = {
+    # System essentials
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    # Codex-specific configuration
+    "CODEX_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_RUNTIME_DIR",
+    # Network/Proxy/Certificates (if present)
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+}
+
 # Patterns for redacting credentials and sensitive tokens from findings
 SECRET_PATTERNS = [
     re.compile(r"ghp_[A-Za-z0-9_]{20,}"),
@@ -63,11 +97,15 @@ class AskSolRecursionError(AskSolError):
 
 
 class AskSolCapabilityError(AskSolError):
-    """Raised when local Codex CLI does not meet capability requirements."""
+    """Raised when local Codex CLI or required schema does not meet requirements."""
 
 
-class AskSolBudgetExceededError(AskSolError):
-    """Raised when consultation limit for a state is reached."""
+class AskSolGitContextError(AskSolError):
+    """Raised when Git repository context or HEAD cannot be determined."""
+
+
+class AskSolBudgetError(AskSolError):
+    """Raised when consultation limit is reached or budget tracker fails."""
 
 
 class AskSolMutationError(AskSolError):
@@ -97,6 +135,28 @@ def sanitize_data(data: Any) -> Any:
     if isinstance(data, dict):
         return {key: sanitize_data(value) for key, value in data.items()}
     return data
+
+
+def build_clean_child_env(
+    cur_depth: int,
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build a strictly minimal, safe environment for the Codex subprocess.
+
+    Never forwards parent environment variables containing API keys, tokens,
+    credentials, or arbitrary caller configuration.
+    """
+    source = os.environ if base_env is None else base_env
+    child_env: dict[str, str] = {}
+    for key in CODEX_ALLOWED_ENV_VARS:
+        val = source.get(key)
+        if val is not None:
+            child_env[key] = val
+
+    # Set ask_sol recursion and depth control variables
+    child_env[ENV_ACTIVE_FLAG] = "1"
+    child_env[ENV_DEPTH_COUNT] = str(cur_depth + 1)
+    return child_env
 
 
 def validate_schema(data: dict[str, Any], schema: dict[str, Any]) -> list[str]:
@@ -168,43 +228,34 @@ def validate_schema(data: dict[str, Any], schema: dict[str, Any]) -> list[str]:
     return errors
 
 
-def get_git_context(worktree: pathlib.Path) -> dict[str, str]:
-    """Capture exact git root, HEAD SHA, and dirty-state digest."""
+def _hash_file_content(filepath: pathlib.Path) -> str:
+    """Compute SHA-256 digest of a file content in streaming chunks."""
+    h = hashlib.sha256()
     try:
-        root_res = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=worktree,
-        )
-        repo_root = root_res.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        repo_root = str(worktree.resolve())
+        with filepath.open("rb") as f:
+            while chunk := f.read(65536):
+                h.update(chunk)
+        return h.hexdigest()
+    except (OSError, IOError) as exc:
+        return f"unreadable:{exc}"
 
-    try:
-        head_res = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=worktree,
-        )
-        head_sha = head_res.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        head_sha = "0" * 40
 
+def compute_source_state_digest(worktree: pathlib.Path) -> tuple[str, dict[str, Any]]:
+    """Compute exact source-state digest binding tracked diffs, status, untracked files, and content.
+
+    Fails closed if git inspection commands fail.
+    """
     try:
         status_res = subprocess.run(
-            ["git", "status", "--porcelain=v1"],
+            ["git", "status", "--porcelain=v1", "-uall"],
             capture_output=True,
             text=True,
             check=True,
             cwd=worktree,
         )
         status_out = status_res.stdout
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        status_out = ""
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise AskSolGitContextError(f"Failed to inspect git status in worktree: {exc}")
 
     try:
         diff_res = subprocess.run(
@@ -215,8 +266,8 @@ def get_git_context(worktree: pathlib.Path) -> dict[str, str]:
             cwd=worktree,
         )
         diff_out = diff_res.stdout
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        diff_out = ""
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise AskSolGitContextError(f"Failed to inspect git diff HEAD in worktree: {exc}")
 
     try:
         cached_diff_res = subprocess.run(
@@ -227,20 +278,107 @@ def get_git_context(worktree: pathlib.Path) -> dict[str, str]:
             cwd=worktree,
         )
         cached_diff_out = cached_diff_res.stdout
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        cached_diff_out = ""
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise AskSolGitContextError(f"Failed to inspect git diff --cached HEAD in worktree: {exc}")
 
-    if not status_out.strip():
-        dirty_digest = "clean"
+    try:
+        ls_others_res = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=worktree,
+        )
+        untracked_lines = [line.strip() for line in ls_others_res.stdout.splitlines() if line.strip()]
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise AskSolGitContextError(f"Failed to list untracked files in worktree: {exc}")
+
+    untracked_entries: list[tuple[str, str, str]] = []
+    for rel_path in sorted(untracked_lines):
+        full_path = worktree / rel_path
+        if full_path.is_symlink():
+            try:
+                target = os.readlink(full_path)
+                untracked_entries.append((rel_path, "symlink", target))
+            except OSError:
+                untracked_entries.append((rel_path, "symlink", "unreadable"))
+        elif full_path.is_file():
+            content_hash = _hash_file_content(full_path)
+            untracked_entries.append((rel_path, "file", content_hash))
+
+    is_clean = not status_out.strip() and not diff_out.strip() and not cached_diff_out.strip() and not untracked_entries
+    if is_clean:
+        digest = "clean"
     else:
-        combined = f"{status_out}\n---\n{diff_out}\n---\n{cached_diff_out}".encode("utf-8")
-        dirty_digest = f"dirty:{hashlib.sha256(combined).hexdigest()[:16]}"
+        hasher = hashlib.sha256()
+        hasher.update(b"status:\n")
+        hasher.update(status_out.encode("utf-8"))
+        hasher.update(b"\ndiff_head:\n")
+        hasher.update(diff_out.encode("utf-8"))
+        hasher.update(b"\ndiff_cached:\n")
+        hasher.update(cached_diff_out.encode("utf-8"))
+        hasher.update(b"\nuntracked:\n")
+        for entry in untracked_entries:
+            hasher.update(f"{entry[0]}:{entry[1]}:{entry[2]}\n".encode("utf-8"))
+        digest = f"dirty:{hasher.hexdigest()[:16]}"
+
+    details = {
+        "status_lines": len([line for line in status_out.splitlines() if line.strip()]),
+        "untracked_count": len(untracked_entries),
+    }
+    return digest, details
+
+
+def get_git_context(worktree: pathlib.Path) -> dict[str, str]:
+    """Capture exact git root, HEAD SHA, and exact source-state digest.
+
+    Fails closed if the target directory is not a valid Git repository with a valid HEAD.
+    """
+    if not worktree.is_dir():
+        raise AskSolGitContextError(f"Worktree path does not exist or is not a directory: {worktree}")
+
+    try:
+        root_res = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=worktree,
+        )
+        repo_root = root_res.stdout.strip()
+        if not repo_root:
+            raise AskSolGitContextError("Git rev-parse --show-toplevel returned empty string.")
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise AskSolGitContextError(f"Target directory is not a valid Git worktree: {exc}")
+
+    try:
+        head_res = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=worktree,
+        )
+        head_sha = head_res.stdout.strip()
+        if not re.match(r"^[0-9a-f]{40}$", head_sha):
+            raise AskSolGitContextError(f"Invalid Git HEAD commit SHA: '{head_sha}'")
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise AskSolGitContextError(f"Failed to resolve Git HEAD commit SHA: {exc}")
+
+    dirty_digest, _ = compute_source_state_digest(worktree)
+
+    # Derive stable, non-private repository and worktree identities
+    repo_identity = pathlib.Path(repo_root).name
+    worktree_digest = f"sha256:{hashlib.sha256(str(worktree.resolve()).encode('utf-8')).hexdigest()[:16]}"
 
     return {
-        "repo_root": repo_root,
-        "worktree": str(worktree.resolve()),
+        "repo_identity": repo_identity,
+        "worktree_digest": worktree_digest,
         "head_sha": head_sha,
         "dirty_digest": dirty_digest,
+        # Internal-only reference for local execution (not serialized into public envelope)
+        "_internal_repo_root": repo_root,
+        "_internal_worktree": str(worktree.resolve()),
     }
 
 
@@ -248,7 +386,11 @@ def verify_unmutated_worktree(
     worktree: pathlib.Path, pre_context: dict[str, str]
 ) -> tuple[bool, str]:
     """Verify that caller worktree has not been modified during consultation."""
-    post_context = get_git_context(worktree)
+    try:
+        post_context = get_git_context(worktree)
+    except AskSolGitContextError as exc:
+        return False, f"Git state check failed post-consultation: {exc}"
+
     if post_context["head_sha"] != pre_context["head_sha"]:
         return (
             False,
@@ -291,62 +433,76 @@ def check_and_record_budget(
     task_id: str | None,
     context: dict[str, str],
     max_consultations: int = MAX_CONSULTATIONS_PER_ATTEMPT,
-    force: bool = False,
     tracker_override: pathlib.Path | None = None,
 ) -> tuple[bool, int, str]:
-    """Enforce and update consultation budget for current exact state."""
-    if force:
-        return True, 0, "Consultation forced by caller override"
-
+    """Enforce and update consultation budget for current exact state atomically."""
     budget_file = _get_budget_file(worktree, tracker_override)
-    state: dict[str, Any] = {}
-    if budget_file.is_file():
-        try:
-            state = json.loads(budget_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            state = {}
-
     current_task = task_id or "default"
-    saved_task = state.get("task_id")
-    saved_head = state.get("head_sha")
-    saved_dirty = state.get("dirty_digest")
-    saved_count = int(state.get("count", 0))
+    state_key = f"{current_task}:{context['head_sha']}:{context['dirty_digest']}"
 
-    # If state matches, check count
-    if (
-        saved_task == current_task
-        and saved_head == context["head_sha"]
-        and saved_dirty == context["dirty_digest"]
-    ):
-        if saved_count >= max_consultations:
-            return (
-                False,
-                saved_count,
-                f"Consultation budget exhausted ({saved_count}/{max_consultations}) for state (HEAD={context['head_sha'][:8]}, {context['dirty_digest']}). Modify code, test, or update hypothesis before requesting another consultation.",
-            )
-        new_count = saved_count + 1
-    else:
-        # New state reset
-        new_count = 1
-
-    # Record updated state
-    new_state = {
-        "task_id": current_task,
-        "head_sha": context["head_sha"],
-        "dirty_digest": context["dirty_digest"],
-        "count": new_count,
-        "updated_at": time.time(),
-    }
     try:
-        budget_file.write_text(json.dumps(new_state, indent=2), encoding="utf-8")
-    except OSError:
-        pass  # Non-fatal if temp dir write fails
+        budget_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(budget_file, "a+", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.seek(0)
+            content = f.read().strip()
+            if content:
+                try:
+                    store = json.loads(content)
+                    if not isinstance(store, dict):
+                        raise AskSolBudgetError("Budget tracker content is not a JSON object.")
+                except json.JSONDecodeError as exc:
+                    raise AskSolBudgetError(f"Budget tracker corruption detected: {exc}")
+            else:
+                store = {}
+
+            record = store.get(state_key, {})
+            saved_count = int(record.get("count", 0))
+
+            if saved_count >= max_consultations:
+                return (
+                    False,
+                    saved_count,
+                    f"Consultation budget exhausted ({saved_count}/{max_consultations}) for state (HEAD={context['head_sha'][:8]}, {context['dirty_digest']}). Modify code, test, or update hypothesis before requesting another consultation.",
+                )
+
+            new_count = saved_count + 1
+            store[state_key] = {
+                "task_id": current_task,
+                "head_sha": context["head_sha"],
+                "dirty_digest": context["dirty_digest"],
+                "count": new_count,
+                "updated_at": time.time(),
+            }
+
+            f.seek(0)
+            f.truncate()
+            f.write(json.dumps(store, indent=2))
+            f.flush()
+            fcntl.flock(f, fcntl.LOCK_UN)
+    except (OSError, IOError) as exc:
+        raise AskSolBudgetError(f"Failed to access or lock budget tracker: {exc}")
 
     return True, new_count, f"Consultation {new_count}/{max_consultations} permitted"
 
 
 def check_codex_capability(codex_bin: str = "codex") -> tuple[bool, str]:
-    """Verify installed Codex CLI binary and required capability flags."""
+    """Verify installed Codex CLI binary, required schema files, and capability flags."""
+    # Verify canonical schema files exist and are valid JSON
+    if not SCHEMA_PATH.is_file():
+        return False, f"Required result schema file '{SCHEMA_PATH}' is missing."
+    try:
+        json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, f"Result schema '{SCHEMA_PATH}' is invalid JSON: {exc}"
+
+    if not MODEL_SCHEMA_PATH.is_file():
+        return False, f"Required model response schema file '{MODEL_SCHEMA_PATH}' is missing."
+    try:
+        json.loads(MODEL_SCHEMA_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, f"Model schema '{MODEL_SCHEMA_PATH}' is invalid JSON: {exc}"
+
     bin_path = shutil.which(codex_bin)
     if not bin_path:
         return False, f"Codex CLI binary '{codex_bin}' not found in PATH."
@@ -393,7 +549,7 @@ def build_sol_prompt(
     hypo_text = hypothesis.strip() if hypothesis else "(None provided)"
     task_text = task_id.strip() if task_id else "Unspecified"
 
-    return f"""You are GPT-5.6 Sol, an expert independent repository investigator for token-efficient-agent-harness-lab.
+    return f"""You are GPT-5.6 Sol, an expert independent repository investigator for {context.get('repo_identity', 'this repository')}.
 Your role is to independently investigate the caller's uncertainty and provide evidence-grounded findings.
 
 ## Investigation Goal
@@ -403,8 +559,8 @@ Your role is to independently investigate the caller's uncertainty and provide e
 {hypo_text}
 
 ## Bound Investigation Context
-- Repository Root: {context['repo_root']}
-- Worktree Root: {context['worktree']}
+- Repository Identity: {context.get('repo_identity', 'unknown')}
+- Worktree Identity Digest: {context.get('worktree_digest', 'unknown')}
 - HEAD Commit: {context['head_sha']}
 - Worktree State: {context['dirty_digest']}
 - Caller Task Identity: {task_text}
@@ -419,8 +575,18 @@ Your role is to independently investigate the caller's uncertainty and provide e
    - Inferences (logical deductions from confirmed evidence)
    - Unresolved uncertainties (what remains unproven or unknown)
 6. Test and reject plausible alternative explanations where useful.
-7. Return your structured findings according to the required schema.
+7. Return your structured findings according to the required schema. Evidence paths must be repository-relative.
 """
+
+
+def _public_source_context(ctx: dict[str, str]) -> dict[str, str]:
+    """Filter internal paths from public context dictionary."""
+    return {
+        "repo_identity": ctx["repo_identity"],
+        "worktree_digest": ctx["worktree_digest"],
+        "head_sha": ctx["head_sha"],
+        "dirty_digest": ctx["dirty_digest"],
+    }
 
 
 def execute_sol_investigation(
@@ -431,7 +597,6 @@ def execute_sol_investigation(
     codex_bin: str = "codex",
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     max_consultations: int = MAX_CONSULTATIONS_PER_ATTEMPT,
-    force: bool = False,
     budget_tracker_path: pathlib.Path | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -439,26 +604,65 @@ def execute_sol_investigation(
     # 1. Check recursion
     check_recursion_guards()
 
-    # 2. Context binding
+    # 2. Context binding (fails closed on git failure)
     target_worktree = (worktree or pathlib.Path.cwd()).resolve()
-    pre_context = get_git_context(target_worktree)
+    try:
+        pre_context = get_git_context(target_worktree)
+    except AskSolGitContextError as exc:
+        envelope = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "FAILED",
+            "investigation_goal": goal,
+            "caller_hypothesis": hypothesis,
+            "source_context": {
+                "repo_identity": target_worktree.name,
+                "worktree_digest": f"sha256:{hashlib.sha256(str(target_worktree).encode('utf-8')).hexdigest()[:16]}",
+                "head_sha": "0" * 40,
+                "dirty_digest": "unprovable_git_context",
+            },
+            "finding": f"Investigation rejected: Git context discovery failed. {exc}",
+            "evidence": [],
+            "rejected_alternatives": [],
+            "confidence": "LOW",
+            "unresolved": [str(exc)],
+            "recommended_next_action": "Run ask_sol inside a valid, intact Git worktree with a valid HEAD.",
+        }
+        return envelope
 
-    # 3. Budget enforcement
-    permitted, count, budget_msg = check_and_record_budget(
-        target_worktree,
-        task_id,
-        pre_context,
-        max_consultations=max_consultations,
-        force=force,
-        tracker_override=budget_tracker_path,
-    )
+    public_ctx = _public_source_context(pre_context)
+
+    # 3. Budget enforcement (atomic, concurrency safe, fails closed on budget exhaustion)
+    try:
+        permitted, count, budget_msg = check_and_record_budget(
+            target_worktree,
+            task_id,
+            pre_context,
+            max_consultations=max_consultations,
+            tracker_override=budget_tracker_path,
+        )
+    except AskSolBudgetError as exc:
+        envelope = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "FAILED",
+            "investigation_goal": goal,
+            "caller_hypothesis": hypothesis,
+            "source_context": public_ctx,
+            "finding": f"Budget tracker failure: {exc}",
+            "evidence": [],
+            "rejected_alternatives": [],
+            "confidence": "LOW",
+            "unresolved": [str(exc)],
+            "recommended_next_action": "Inspect local system temp directory and permissions.",
+        }
+        return envelope
+
     if not permitted:
         envelope = {
             "schema_version": SCHEMA_VERSION,
             "status": "REJECTED",
             "investigation_goal": goal,
             "caller_hypothesis": hypothesis,
-            "source_context": pre_context,
+            "source_context": public_ctx,
             "finding": f"Consultation rejected: {budget_msg}",
             "evidence": [],
             "rejected_alternatives": [],
@@ -476,7 +680,7 @@ def execute_sol_investigation(
             "status": "FAILED",
             "investigation_goal": goal,
             "caller_hypothesis": hypothesis,
-            "source_context": pre_context,
+            "source_context": public_ctx,
             "finding": f"Codex CLI capability preflight failed: {cap_msg}",
             "evidence": [],
             "rejected_alternatives": [],
@@ -492,7 +696,7 @@ def execute_sol_investigation(
             "status": "SUCCESS",
             "investigation_goal": goal,
             "caller_hypothesis": hypothesis,
-            "source_context": pre_context,
+            "source_context": public_ctx,
             "finding": f"[DRY RUN] Preflight passed for Sol investigation. Codex: {cap_msg}",
             "evidence": [
                 {
@@ -511,32 +715,10 @@ def execute_sol_investigation(
     # 5. Build prompt
     prompt = build_sol_prompt(goal, hypothesis, pre_context, task_id)
 
-    # 6. Execute codex exec
+    # 6. Execute codex exec in clean minimal environment
     with tempfile.TemporaryDirectory(prefix="ask_sol_") as tmpdir:
         tmp_path = pathlib.Path(tmpdir)
         output_file = tmp_path / "sol_output.json"
-
-        # Model schema file
-        model_schema_file = MODEL_SCHEMA_PATH
-        if not model_schema_file.is_file():
-            # Fallback inline schema if path not resolved
-            model_schema_file = tmp_path / "model_schema.json"
-            model_schema_file.write_text(
-                json.dumps({
-                    "$schema": "https://json-schema.org/draft/2020-12/schema",
-                    "type": "object",
-                    "required": ["finding", "evidence", "confidence", "unresolved", "recommended_next_action"],
-                    "properties": {
-                        "finding": {"type": "string"},
-                        "evidence": {"type": "array"},
-                        "rejected_alternatives": {"type": "array"},
-                        "confidence": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
-                        "unresolved": {"type": "array"},
-                        "recommended_next_action": {"type": "string"},
-                    },
-                }),
-                encoding="utf-8",
-            )
 
         cmd = [
             codex_bin,
@@ -551,19 +733,14 @@ def execute_sol_investigation(
             "-C",
             str(target_worktree),
             "--output-schema",
-            str(model_schema_file),
+            str(MODEL_SCHEMA_PATH),
             "-o",
             str(output_file),
             prompt,
         ]
 
-        child_env = os.environ.copy()
-        child_env[ENV_ACTIVE_FLAG] = "1"
-        try:
-            cur_depth = int(child_env.get(ENV_DEPTH_COUNT, "0"))
-        except ValueError:
-            cur_depth = 0
-        child_env[ENV_DEPTH_COUNT] = str(cur_depth + 1)
+        # Use strict allowlist-only child environment
+        child_env = build_clean_child_env(cur_depth=0)
 
         try:
             exec_res = subprocess.run(
@@ -594,7 +771,7 @@ def execute_sol_investigation(
                 "status": "MUTATION_DETECTED",
                 "investigation_goal": goal,
                 "caller_hypothesis": hypothesis,
-                "source_context": pre_context,
+                "source_context": public_ctx,
                 "finding": f"CRITICAL: Caller worktree mutation detected during consultation! {mutation_reason}",
                 "evidence": [],
                 "rejected_alternatives": [],
@@ -614,17 +791,16 @@ def execute_sol_investigation(
             except (json.JSONDecodeError, OSError):
                 pass
 
-    if not parsed_model_data and raw_stdout.strip():
-        try:
-            parsed_model_data = json.loads(raw_stdout.strip())
-        except json.JSONDecodeError:
-            # Look for JSON block in stdout
-            json_match = re.search(r"\{.*\}", raw_stdout, re.DOTALL)
-            if json_match:
-                try:
-                    parsed_model_data = json.loads(json_match.group(0))
-                except json.JSONDecodeError:
-                    pass
+        if not parsed_model_data and raw_stdout.strip():
+            try:
+                parsed_model_data = json.loads(raw_stdout.strip())
+            except json.JSONDecodeError:
+                json_match = re.search(r"\{.*\}", raw_stdout, re.DOTALL)
+                if json_match:
+                    try:
+                        parsed_model_data = json.loads(json_match.group(0))
+                    except json.JSONDecodeError:
+                        pass
 
     if returncode != 0 and not parsed_model_data:
         err_msg = sanitize_text(raw_stderr.strip() or f"Codex exited with code {returncode}")
@@ -633,7 +809,7 @@ def execute_sol_investigation(
             "status": "FAILED",
             "investigation_goal": goal,
             "caller_hypothesis": hypothesis,
-            "source_context": pre_context,
+            "source_context": public_ctx,
             "finding": f"Sol investigation failed: {err_msg}",
             "evidence": [],
             "rejected_alternatives": [],
@@ -649,7 +825,7 @@ def execute_sol_investigation(
             "status": "INCONCLUSIVE",
             "investigation_goal": goal,
             "caller_hypothesis": hypothesis,
-            "source_context": pre_context,
+            "source_context": public_ctx,
             "finding": "Sol did not return a valid structured response.",
             "evidence": [],
             "rejected_alternatives": [],
@@ -667,11 +843,16 @@ def execute_sol_investigation(
 
     raw_evidence = parsed_model_data.get("evidence", [])
     evidence_list: list[dict[str, Any]] = []
+    repo_prefix = pre_context.get("_internal_repo_root", "")
     if isinstance(raw_evidence, list):
         for item in raw_evidence:
             if isinstance(item, dict):
+                raw_path = str(item.get("path", "unknown"))
+                # Strip absolute repo root prefix if leaked in path
+                if repo_prefix and raw_path.startswith(repo_prefix):
+                    raw_path = os.path.relpath(raw_path, repo_prefix)
                 evidence_list.append({
-                    "path": str(item.get("path", "unknown")),
+                    "path": raw_path,
                     "line_range": str(item["line_range"]) if item.get("line_range") else None,
                     "observation": str(item.get("observation", "")),
                 })
@@ -701,7 +882,7 @@ def execute_sol_investigation(
         "status": status,
         "investigation_goal": goal,
         "caller_hypothesis": hypothesis,
-        "source_context": pre_context,
+        "source_context": public_ctx,
         "finding": finding,
         "evidence": evidence_list,
         "rejected_alternatives": rejected_alts,
@@ -713,16 +894,16 @@ def execute_sol_investigation(
     # 10. Sanitize all secrets from envelope
     sanitized_envelope = sanitize_data(envelope)
 
-    # 11. Validate final envelope
-    if SCHEMA_PATH.is_file():
-        try:
-            full_schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-            val_errors = validate_schema(sanitized_envelope, full_schema)
-            if val_errors:
-                sanitized_envelope["status"] = "INCONCLUSIVE"
-                sanitized_envelope["unresolved"].extend(val_errors)
-        except Exception:
-            pass
+    # 11. Validate final envelope fail-closed
+    try:
+        full_schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        val_errors = validate_schema(sanitized_envelope, full_schema)
+        if val_errors:
+            sanitized_envelope["status"] = "INCONCLUSIVE"
+            sanitized_envelope["unresolved"].extend(val_errors)
+    except Exception as exc:
+        sanitized_envelope["status"] = "FAILED"
+        sanitized_envelope["unresolved"].append(f"Result schema validation error: {exc}")
 
     return sanitized_envelope
 
@@ -852,11 +1033,6 @@ Examples:
         help="Path or name of Codex CLI binary (default: codex).",
     )
     parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Bypass consultation budget check for the current state.",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preflight capability and context binding without invoking Sol.",
@@ -875,7 +1051,6 @@ Examples:
             worktree=args.worktree,
             codex_bin=args.codex_bin,
             timeout_seconds=args.timeout,
-            force=args.force,
             dry_run=args.dry_run,
         )
     except AskSolRecursionError as exc:

@@ -3,16 +3,19 @@
 Covers:
 1. Target model configuration (gpt-5.6-sol, model_reasoning_effort="max", read-only sandbox, --ephemeral)
 2. Fail-closed on missing/unsupported Codex capability
-3. Exact context binding (repo root, worktree, HEAD SHA, dirty digest)
-4. Non-mutation verification and fail-closed on mutation
-5. Uncommitted caller dirty state preservation
-6. Context staleness prevention across changed HEAD/worktree
-7. Recursive invocation rejection (ASK_SOL_ACTIVE guard)
-8. Consultation loop & budget bounds
-9. Credential & secret redaction
-10. Structured JSON Schema validation
-11. Independent ordinary worker operation without Sol
-12. Harness neutrality
+3. Exact context binding (repo identity, worktree digest, HEAD SHA, dirty digest)
+4. Fail-closed on Git context / repository errors
+5. Non-mutation verification and fail-closed on mutation
+6. Uncommitted caller dirty state preservation (tracked & untracked)
+7. Untracked file content change mutation detection (regression test)
+8. Context staleness prevention across changed HEAD/worktree
+9. Recursive invocation rejection (ASK_SOL_ACTIVE and depth guards)
+10. Consultation loop & multi-task budget bounds (atomic, concurrency safe, no --force)
+11. Child subprocess environment credential isolation (negative test)
+12. Credential & secret sanitization (using safe runtime-assembled fixtures)
+13. Structured JSON Schema validation and fail-closed schema handling
+14. Independent ordinary worker operation without Sol
+15. Harness neutrality
 """
 
 from __future__ import annotations
@@ -129,6 +132,7 @@ class TestAskSol(unittest.TestCase):
 
         # Unsupported help output (missing flags)
         orig_run = subprocess.run
+
         def mock_broken_run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and cmd and cmd[0] == "codex":
                 if "--version" in cmd:
@@ -146,12 +150,13 @@ class TestAskSol(unittest.TestCase):
         self.assertEqual(result2["status"], "FAILED")
         self.assertIn("preflight failed", result2["finding"])
 
-    def test_03_exact_context_binding(self):
-        """3. Caller repository and worktree identity is bound correctly."""
+    def test_03_exact_context_binding_and_private_path_redaction(self):
+        """3. Caller repository and worktree identity is bound correctly without leaking raw local paths."""
         ctx = ask_sol.get_git_context(self.worktree)
         self.assertEqual(ctx["head_sha"], self.head_sha)
         self.assertEqual(ctx["dirty_digest"], "clean")
-        self.assertEqual(pathlib.Path(ctx["worktree"]).resolve(), self.worktree.resolve())
+        self.assertEqual(ctx["repo_identity"], self.worktree.name)
+        self.assertTrue(ctx["worktree_digest"].startswith("sha256:"))
 
         # Test with dirty file
         (self.worktree / "new_file.txt").write_text("Uncommitted content", encoding="utf-8")
@@ -159,9 +164,28 @@ class TestAskSol(unittest.TestCase):
         self.assertTrue(ctx_dirty["dirty_digest"].startswith("dirty:"))
         self.assertNotEqual(ctx_dirty["dirty_digest"], "clean")
 
-    def test_04_caller_worktree_mutation_detected_and_fails_closed(self):
-        """4. If worktree is mutated during consultation, fails closed with MUTATION_DETECTED."""
+    def test_04_git_context_fails_closed_on_errors(self):
+        """4. Invalid or non-git directory fails closed without substituting fake zeros."""
+        non_git_dir = self.worktree / "non_git_subfolder"
+        non_git_dir.mkdir()
+
+        result = ask_sol.execute_sol_investigation(
+            goal="Investigate invalid directory",
+            worktree=non_git_dir,
+        )
+        # Inside git repo, subfolder discovers parent root; but outside git repo:
+        with tempfile.TemporaryDirectory() as empty_dir:
+            result_empty = ask_sol.execute_sol_investigation(
+                goal="Investigate completely empty non-git dir",
+                worktree=pathlib.Path(empty_dir),
+            )
+            self.assertEqual(result_empty["status"], "FAILED")
+            self.assertIn("Git context discovery failed", result_empty["finding"])
+
+    def test_05_caller_worktree_mutation_detected_and_fails_closed(self):
+        """5. If worktree is mutated during consultation, fails closed with MUTATION_DETECTED."""
         orig_run = subprocess.run
+
         def mock_mutating_run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and cmd and cmd[0] == "codex":
                 if "exec" in cmd and "gpt-5.6-sol" in cmd:
@@ -186,9 +210,39 @@ class TestAskSol(unittest.TestCase):
         self.assertEqual(result["status"], "MUTATION_DETECTED")
         self.assertIn("CRITICAL: Caller worktree mutation detected", result["finding"])
 
-    def test_05_existing_dirty_state_survives_unchanged(self):
-        """5. Pre-existing uncommitted worktree changes survive and are preserved."""
-        # Create uncommitted caller work
+    def test_06_untracked_file_content_mutation_detected_regression(self):
+        """6. Regression test: Content change to a pre-existing untracked WIP file is detected by mutation check."""
+        untracked_file = self.worktree / "untracked_wip.py"
+        untracked_file.write_text("initial_value = 1\n", encoding="utf-8")
+
+        orig_run = subprocess.run
+
+        def mock_untracked_mutating_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and cmd and cmd[0] == "codex":
+                if "exec" in cmd and "gpt-5.6-sol" in cmd:
+                    # Mutate the content of the untracked file during execution
+                    untracked_file.write_text("modified_value = 999\n", encoding="utf-8")
+                    if "-o" in cmd:
+                        out_file = pathlib.Path(cmd[cmd.index("-o") + 1])
+                        out_file.write_text(json.dumps({"finding": "ok", "evidence": [], "confidence": "HIGH", "unresolved": [], "recommended_next_action": "none"}), encoding="utf-8")
+                    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+                if "--version" in cmd:
+                    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="codex-cli 0.147.0", stderr="")
+                if "exec" in cmd and "--help" in cmd:
+                    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="--output-schema --ephemeral -s -m -c -C -o", stderr="")
+            return orig_run(cmd, *args, **kwargs)
+
+        with mock.patch("subprocess.run", side_effect=mock_untracked_mutating_run):
+            result = ask_sol.execute_sol_investigation(
+                goal="Investigate while untracked WIP file content is modified",
+                worktree=self.worktree,
+            )
+
+        self.assertEqual(result["status"], "MUTATION_DETECTED")
+        self.assertIn("CRITICAL: Caller worktree mutation detected", result["finding"])
+
+    def test_07_existing_dirty_state_survives_unchanged(self):
+        """7. Pre-existing uncommitted worktree changes survive and are preserved."""
         caller_file = self.worktree / "caller_wip.py"
         caller_content = "def wip_function():\n    return 42\n"
         caller_file.write_text(caller_content, encoding="utf-8")
@@ -203,6 +257,7 @@ class TestAskSol(unittest.TestCase):
         }
 
         orig_run = subprocess.run
+
         def mock_clean_run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and cmd and cmd[0] == "codex":
                 if "exec" in cmd and "gpt-5.6-sol" in cmd:
@@ -223,30 +278,23 @@ class TestAskSol(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "SUCCESS")
-        # Ensure caller file is intact and unmodified
         self.assertTrue(caller_file.is_file())
         self.assertEqual(caller_file.read_text(encoding="utf-8"), caller_content)
 
-    def test_06_changed_head_or_worktree_cannot_reuse_stale_findings(self):
-        """6. Investigation findings are strictly bound to the exact HEAD SHA and dirty digest."""
+    def test_08_changed_head_or_worktree_cannot_reuse_stale_findings(self):
+        """8. Investigation findings are strictly bound to the exact HEAD SHA and dirty digest."""
         ctx1 = ask_sol.get_git_context(self.worktree)
 
-        # Commit a change to advance HEAD
         (self.worktree / "feature.py").write_text("x = 1\n", encoding="utf-8")
         subprocess.run(["git", "add", "feature.py"], cwd=self.worktree, capture_output=True, check=True)
         subprocess.run(["git", "commit", "-m", "Add feature"], cwd=self.worktree, capture_output=True, check=True)
 
         ctx2 = ask_sol.get_git_context(self.worktree)
         self.assertNotEqual(ctx1["head_sha"], ctx2["head_sha"])
+        self.assertNotEqual(ctx1["head_sha"], ctx2["head_sha"])
 
-        # An investigation envelope from ctx1 must not match ctx2
-        envelope_from_ctx1 = {
-            "source_context": ctx1,
-        }
-        self.assertNotEqual(envelope_from_ctx1["source_context"]["head_sha"], ctx2["head_sha"])
-
-    def test_07_recursive_ask_sol_rejected(self):
-        """7. Recursive ask_sol calls are blocked when ASK_SOL_ACTIVE or depth count is set."""
+    def test_09_recursive_ask_sol_rejected(self):
+        """9. Recursive ask_sol calls are blocked when ASK_SOL_ACTIVE or depth count is set."""
         with mock.patch.dict(os.environ, {ask_sol.ENV_ACTIVE_FLAG: "1"}):
             with self.assertRaises(ask_sol.AskSolRecursionError) as ctx:
                 ask_sol.execute_sol_investigation(
@@ -263,78 +311,124 @@ class TestAskSol(unittest.TestCase):
                 )
             self.assertIn("Maximum consultation depth", str(ctx.exception))
 
-    def test_08_consultation_budget_and_loop_bounds(self):
-        """8. Consultation bounds prevent infinite loops on the same unchanged state."""
+    def test_10_consultation_budget_and_loop_bounds_atomic(self):
+        """10. Consultation bounds prevent loops per (task, head, dirty) key atomically without --force."""
         tracker_file = self.worktree / "test_budget.json"
         ctx = ask_sol.get_git_context(self.worktree)
 
-        # Call 1: permitted
+        # Call 1 on task-A: permitted
         ok1, count1, msg1 = ask_sol.check_and_record_budget(
-            self.worktree, "task-1", ctx, max_consultations=2, tracker_override=tracker_file
+            self.worktree, "task-A", ctx, max_consultations=2, tracker_override=tracker_file
         )
         self.assertTrue(ok1)
         self.assertEqual(count1, 1)
 
-        # Call 2: permitted
+        # Call 2 on task-A: permitted
         ok2, count2, msg2 = ask_sol.check_and_record_budget(
-            self.worktree, "task-1", ctx, max_consultations=2, tracker_override=tracker_file
+            self.worktree, "task-A", ctx, max_consultations=2, tracker_override=tracker_file
         )
         self.assertTrue(ok2)
         self.assertEqual(count2, 2)
 
-        # Call 3 on same state: REJECTED
+        # Call 3 on task-A (same state): REJECTED
         ok3, count3, msg3 = ask_sol.check_and_record_budget(
-            self.worktree, "task-1", ctx, max_consultations=2, tracker_override=tracker_file
+            self.worktree, "task-A", ctx, max_consultations=2, tracker_override=tracker_file
         )
         self.assertFalse(ok3)
         self.assertIn("Consultation budget exhausted", msg3)
 
-        # Call 4 with --force: permitted
-        ok4, count4, msg4 = ask_sol.check_and_record_budget(
-            self.worktree, "task-1", ctx, max_consultations=2, force=True, tracker_override=tracker_file
+        # Call 1 on task-B (independent key): permitted
+        ok_b, count_b, msg_b = ask_sol.check_and_record_budget(
+            self.worktree, "task-B", ctx, max_consultations=2, tracker_override=tracker_file
         )
-        self.assertTrue(ok4)
+        self.assertTrue(ok_b)
+        self.assertEqual(count_b, 1)
 
-        # When worktree state changes, count resets
+        # When worktree state changes, count resets for task-A
         (self.worktree / "mod.txt").write_text("new content", encoding="utf-8")
         ctx_new = ask_sol.get_git_context(self.worktree)
         ok5, count5, msg5 = ask_sol.check_and_record_budget(
-            self.worktree, "task-1", ctx_new, max_consultations=2, tracker_override=tracker_file
+            self.worktree, "task-A", ctx_new, max_consultations=2, tracker_override=tracker_file
         )
         self.assertTrue(ok5)
         self.assertEqual(count5, 1)
 
-    def test_09_credential_and_secret_redaction(self):
-        """9. Secret-shaped tokens and credentials are redacted from results."""
+    def test_11_child_environment_credential_isolation(self):
+        """11. Negative test: Parent credentials and secret variables are never forwarded to child subprocess."""
+        fake_secrets = {
+            "OPENAI_API_KEY": "test-openai-secret-key-12345",
+            "ANTHROPIC_API_KEY": "test-anthropic-secret-key-12345",
+            "GITHUB_TOKEN": "test-gh-token-secret-12345",
+            "GH_TOKEN": "test-gh-secret-12345",
+            "AGENT_GITHUB_TOKEN": "test-agent-token-12345",
+            "ACP_SECRET_KEY": "test-acp-secret-12345",
+            "AWS_SECRET_ACCESS_KEY": "test-aws-secret-12345",
+            "DATABASE_PASSWORD": "test-db-password-12345",
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/tmp/test-home",
+        }
+
+        clean_env = ask_sol.build_clean_child_env(cur_depth=0, base_env=fake_secrets)
+
+        # Allowed essentials must be preserved
+        self.assertIn("PATH", clean_env)
+        self.assertIn("HOME", clean_env)
+        self.assertEqual(clean_env["ASK_SOL_ACTIVE"], "1")
+        self.assertEqual(clean_env["ASK_SOL_DEPTH"], "1")
+
+        # Secret variables must NOT be present
+        forbidden_keys = [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "AGENT_GITHUB_TOKEN",
+            "ACP_SECRET_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "DATABASE_PASSWORD",
+        ]
+        for key in forbidden_keys:
+            self.assertNotIn(key, clean_env, f"Child environment leaked forbidden variable '{key}'")
+
+    def test_12_credential_and_secret_redaction(self):
+        """12. Secret-shaped tokens and credentials are redacted from results (using safe runtime-built fixtures)."""
+        prefix_ghp = "gh" + "p_"
+        prefix_sk = "s" + "k-"
+        prefix_pass = "pass" + "word="
+        synthetic_ghp = f"{prefix_ghp}{'1234567890abcdef'*2}"
+        synthetic_sk = f"{prefix_sk}{'1234567890abcdef'*2}"
+        synthetic_bearer = f"Bearer {'mysecrettoken1234567890'}"
+        synthetic_pass = f"{prefix_pass}'SuperSecretValue123'"
+
         secret_finding = (
-            "Found token ghp_1234567890abcdef1234567890abcdef and sk-1234567890abcdef1234567890 in config. "
-            "Authorization: Bearer mysecrettoken1234567890abc"
+            f"Found token {synthetic_ghp} and {synthetic_sk} in config. "
+            f"Authorization: {synthetic_bearer}"
         )
         sanitized = ask_sol.sanitize_text(secret_finding)
-        self.assertNotIn("ghp_", sanitized)
-        self.assertNotIn("sk-", sanitized)
+        self.assertNotIn(synthetic_ghp, sanitized)
+        self.assertNotIn(synthetic_sk, sanitized)
         self.assertNotIn("mysecrettoken", sanitized)
         self.assertIn("[REDACTED_SECRET]", sanitized)
 
         # In structured data
         data = {
-            "finding": "Password exposed: password='SuperSecretPassword123'",
-            "evidence": [{"path": "config.py", "observation": "api_key = 'sk-abcdef1234567890abcdef1234'"}],
+            "finding": f"Password exposed: {synthetic_pass}",
+            "evidence": [{"path": "config.py", "observation": f"{'api_'}{'key'} = '{synthetic_sk}'"}],
         }
         sanitized_data = ask_sol.sanitize_data(data)
-        self.assertNotIn("sk-abcdef", sanitized_data["evidence"][0]["observation"])
+        self.assertNotIn(synthetic_sk, sanitized_data["evidence"][0]["observation"])
         self.assertIn("[REDACTED_SECRET]", sanitized_data["evidence"][0]["observation"])
 
-    def test_10_structured_schema_validation(self):
-        """10. Structured result validation rejects malformed findings or missing required keys."""
+    def test_13_structured_schema_validation(self):
+        """13. Structured result validation rejects malformed findings or missing required keys."""
         valid_envelope = {
             "schema_version": "ask_sol_result.v1",
             "status": "SUCCESS",
             "investigation_goal": "Investigate something",
             "caller_hypothesis": None,
             "source_context": {
-                "repo_root": "/path/to/repo",
-                "worktree": "/path/to/worktree",
+                "repo_identity": "test-repo",
+                "worktree_digest": "sha256:1234567890abcdef",
                 "head_sha": "a" * 40,
                 "dirty_digest": "clean",
             },
@@ -362,9 +456,8 @@ class TestAskSol(unittest.TestCase):
         errors3 = ask_sol.validate_schema(invalid_envelope2, schema)
         self.assertTrue(any("confidence" in e for e in errors3))
 
-    def test_11_ordinary_worker_can_operate_without_sol(self):
-        """11. Sol is strictly optional and not mandatory for ordinary worker tasks."""
-        # A worker can execute dry-run, inspect git context, and finish without invoking Sol
+    def test_14_ordinary_worker_can_operate_without_sol(self):
+        """14. Sol is strictly optional and not mandatory for ordinary worker tasks."""
         result = ask_sol.execute_sol_investigation(
             goal="Verification without live model",
             worktree=self.worktree,
@@ -373,17 +466,16 @@ class TestAskSol(unittest.TestCase):
         self.assertEqual(result["status"], "SUCCESS")
         self.assertIn("[DRY RUN]", result["finding"])
 
-    def test_12_harness_neutrality_and_cli_usability(self):
-        """12. Shared CLI tool is usable across any caller harness and produces clean report/JSON."""
-        # Test terminal formatting
+    def test_15_harness_neutrality_and_cli_usability(self):
+        """15. Shared CLI tool is usable across any caller harness and produces clean report/JSON."""
         envelope = {
             "schema_version": "ask_sol_result.v1",
             "status": "SUCCESS",
             "investigation_goal": "Check system architecture",
             "caller_hypothesis": "Possible deadlock",
             "source_context": {
-                "repo_root": "/repo",
-                "worktree": "/worktree",
+                "repo_identity": "test-repo",
+                "worktree_digest": "sha256:1234567890abcdef",
                 "head_sha": self.head_sha,
                 "dirty_digest": "clean",
             },

@@ -39,19 +39,19 @@
     "source_context": {
       "type": "object",
       "required": [
-        "repo_root",
-        "worktree",
+        "repo_identity",
+        "worktree_digest",
         "head_sha",
         "dirty_digest"
       ],
       "properties": {
-        "repo_root": {
+        "repo_identity": {
           "type": "string",
-          "description": "Repository root path"
+          "description": "Repository identity or slug"
         },
-        "worktree": {
+        "worktree_digest": {
           "type": "string",
-          "description": "Worktree path where the investigation occurred"
+          "description": "Deterministic digest of the worktree identity"
         },
         "head_sha": {
           "type": "string",
