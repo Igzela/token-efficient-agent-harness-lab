@@ -188,6 +188,17 @@ def _git_command(root: Path, args: tuple[str, ...]) -> list[str]:
         "diff.trustExitCode=false",
         "--no-optional-locks",
     ]
+    for name in (
+        "cat-file",
+        "diff",
+        "ls-files",
+        "ls-tree",
+        "merge-base",
+        "rev-parse",
+        "show",
+        "status",
+    ):
+        command.extend(("-c", f"alias.{name}={name}"))
     if args and args[0] == "diff":
         command.extend(("diff", "--no-ext-diff", "--no-textconv", *args[1:]))
     else:
@@ -208,7 +219,9 @@ def _git_result(root: Path, *args: str) -> BoundedCommandResult:
 
 def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
     subreaper_ready = _ensure_child_subreaper()
-    baseline_descendants = _descendant_pids(os.getpid()) if subreaper_ready else set()
+    baseline_descendants = (
+        _descendant_identities(os.getpid()) if subreaper_ready else {}
+    )
     process = subprocess.Popen(
         _git_command(root, args),
         cwd=Path("/"),
@@ -218,6 +231,7 @@ def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    process_start_time = _process_start_time(process.pid)
     total = 0
     overflow = False
     timed_out = False
@@ -248,13 +262,19 @@ def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
                     break
                 output.write(chunk)
         if overflow or timed_out:
-            _cleanup_child_process(process, baseline_descendants, subreaper_ready)
+            _cleanup_child_process(
+                process, process_start_time, baseline_descendants, subreaper_ready
+            )
             return False
         process.wait(timeout=max(0, deadline - time.monotonic()))
-        cleanup_ok = _cleanup_child_process(process, baseline_descendants, subreaper_ready)
+        cleanup_ok = _cleanup_child_process(
+            process, process_start_time, baseline_descendants, subreaper_ready
+        )
         return process.returncode == 0 and cleanup_ok
     except (OSError, subprocess.TimeoutExpired):
-        _cleanup_child_process(process, baseline_descendants, subreaper_ready)
+        _cleanup_child_process(
+            process, process_start_time, baseline_descendants, subreaper_ready
+        )
         return False
     finally:
         selector.close()
@@ -741,7 +761,6 @@ class BoundedCommandResult:
     timed_out: bool
     error: BaseException | None
     forbidden_markers: tuple[str, ...]
-    error_lines: tuple[str, ...]
     output_truncated: bool
 
 
@@ -755,7 +774,6 @@ def _drain_output(
     overlap_limit = max((len(encoded) for _, encoded in marker_bytes), default=1) - 1
     overlap = b""
     tail = bytearray()
-    line_buffer = ""
     retain_full_output = bool(state["retain_full_output"])
     max_output_bytes = int(state["max_output_bytes"])
     captured = bytearray()
@@ -768,19 +786,6 @@ def _drain_output(
             if encoded in scan:
                 state["forbidden_markers"].add(marker)  # type: ignore[union-attr]
         overlap = scan[-overlap_limit:] if overlap_limit else b""
-        text_chunk = chunk.decode(errors="replace")
-        lines = (line_buffer + text_chunk).splitlines(keepends=True)
-        line_buffer = ""
-        if lines and not lines[-1].endswith(("\n", "\r")):
-            line_buffer = lines.pop()
-        if len(line_buffer) > MAX_TRACE_OUTPUT_BYTES:
-            line_buffer = line_buffer[-MAX_TRACE_OUTPUT_BYTES:]
-        for line in lines:
-            stripped = line.strip()
-            if stripped.lower().startswith(("error", "failed")) or "error:" in stripped.lower():
-                error_lines = state["error_lines"]  # type: ignore[assignment]
-                error_lines.append(stripped[:2000])  # type: ignore[union-attr]
-                del error_lines[:-8]  # type: ignore[index]
         if retain_full_output:
             remaining = max_output_bytes - len(captured)
             if remaining > 0:
@@ -791,42 +796,58 @@ def _drain_output(
             tail.extend(chunk)
             if len(tail) > max_output_bytes:
                 del tail[:-max_output_bytes]
-    if line_buffer:
-        stripped = line_buffer.strip()
-        if stripped.lower().startswith(("error", "failed")) or "error:" in stripped.lower():
-            error_lines = state["error_lines"]  # type: ignore[assignment]
-            error_lines.append(stripped[:2000])  # type: ignore[union-attr]
-            del error_lines[:-8]  # type: ignore[index]
     state[output_key] = bytes(captured if retain_full_output else tail)
 
 
-def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
-    """Terminate only the process group created for this verifier child."""
+def _terminate_process_group(
+    process: subprocess.Popen[bytes], expected_start_time: int | None
+) -> bool:
+    """Terminate a child group only while its leader identity still matches."""
+    if expected_start_time is None:
+        return False
+    current_start_time = _process_start_time(process.pid)
+    if current_start_time is None:
+        members = _process_group_members(process.pid)
+        return _terminate_processes(members) if members else not _process_group_exists(process.pid)
+    if current_start_time != expected_start_time:
+        return False
     if not _process_group_exists(process.pid):
-        return
+        return True
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
-        return
+        return True
     deadline = time.monotonic() + PROCESS_TERMINATION_GRACE_SECONDS
     while time.monotonic() < deadline:
+        current_start_time = _process_start_time(process.pid)
+        if current_start_time is None:
+            members = _process_group_members(process.pid)
+            return _terminate_processes(members) if members else not _process_group_exists(process.pid)
+        if current_start_time != expected_start_time:
+            return False
         try:
             os.killpg(process.pid, 0)
         except ProcessLookupError:
-            break
+            return True
         try:
             process.wait(timeout=0.1)
         except subprocess.TimeoutExpired:
             pass
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
-        try:
-            process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            pass
+    current_start_time = _process_start_time(process.pid)
+    if current_start_time is None:
+        members = _process_group_members(process.pid)
+        return _terminate_processes(members) if members else not _process_group_exists(process.pid)
+    if current_start_time != expected_start_time:
+        return False
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    try:
+        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+    return not _process_group_exists(process.pid)
 
 
 def _process_group_exists(process_id: int) -> bool:
@@ -874,6 +895,51 @@ def _child_command_without_subreaper(
     ]
 
 
+def _process_stat_fields(process_id: int) -> list[str] | None:
+    try:
+        return (
+            Path(f"/proc/{process_id}/stat")
+            .read_text(encoding="ascii")
+            .rsplit(") ", 1)[1]
+            .split()
+        )
+    except (OSError, IndexError):
+        return None
+
+
+def _process_start_time(process_id: int) -> int | None:
+    fields = _process_stat_fields(process_id)
+    if fields is None or len(fields) <= 19:
+        return None
+    try:
+        return int(fields[19])
+    except ValueError:
+        return None
+
+
+def _process_group_members(process_group_id: int) -> dict[int, int]:
+    members: dict[int, int] = {}
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return members
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        process_id = int(entry.name)
+        fields = _process_stat_fields(process_id)
+        if fields is None or len(fields) <= 2:
+            continue
+        try:
+            if int(fields[2]) != process_group_id:
+                continue
+        except ValueError:
+            continue
+        start_time = _process_start_time(process_id)
+        if start_time is not None:
+            members[process_id] = start_time
+    return members
+
+
 def _process_parent_map() -> dict[int, int]:
     parents: dict[int, int] = {}
     proc = Path("/proc")
@@ -882,88 +948,134 @@ def _process_parent_map() -> dict[int, int]:
     for entry in proc.iterdir():
         if not entry.name.isdigit():
             continue
+        fields = _process_stat_fields(int(entry.name))
         try:
-            fields = entry.joinpath("stat").read_text(encoding="ascii").rsplit(") ", 1)[1].split()
-            parents[int(entry.name)] = int(fields[1])
-        except (OSError, IndexError, ValueError):
+            if fields is not None:
+                parents[int(entry.name)] = int(fields[1])
+        except (IndexError, ValueError):
             continue
     return parents
 
 
-def _descendant_pids(root_pid: int) -> set[int]:
+def _descendant_identities(root_pid: int) -> dict[int, int]:
     parents = _process_parent_map()
-    descendants: set[int] = set()
+    descendants: dict[int, int] = {}
     frontier = {root_pid}
     while frontier:
         children = {pid for pid, parent in parents.items() if parent in frontier}
-        children -= descendants
-        descendants.update(children)
+        children -= descendants.keys()
+        for process_id in children:
+            start_time = _process_start_time(process_id)
+            if start_time is not None:
+                descendants[process_id] = start_time
         frontier = children
     return descendants
 
 
-def _process_is_live(process_id: int) -> bool:
-    try:
-        fields = Path(f"/proc/{process_id}/stat").read_text(encoding="ascii").rsplit(") ", 1)[1].split()
-    except (OSError, IndexError):
+def _process_is_live(process_id: int, expected_start_time: int) -> bool:
+    fields = _process_stat_fields(process_id)
+    if fields is None or _process_start_time(process_id) != expected_start_time:
         return False
     return bool(fields) and fields[0] != "Z"
 
 
-def _reap_process(process_id: int) -> None:
+def _reap_process(process_id: int, expected_start_time: int) -> bool:
+    current_start_time = _process_start_time(process_id)
+    if current_start_time is None:
+        return True
+    if current_start_time != expected_start_time:
+        return False
     try:
         os.waitpid(process_id, os.WNOHANG)
     except (ChildProcessError, OSError):
-        pass
+        return True
+    return True
 
 
-def _terminate_processes(process_ids: set[int]) -> bool:
-    process_ids = {pid for pid in process_ids if pid > 1 and pid != os.getpid()}
-    for process_id in process_ids:
+def _terminate_processes(process_ids: dict[int, int]) -> bool:
+    process_ids = {
+        pid: start_time
+        for pid, start_time in process_ids.items()
+        if pid > 1 and pid != os.getpid()
+    }
+    identity_ok = True
+    remaining: dict[int, int] = {}
+    for process_id, start_time in process_ids.items():
+        current_start_time = _process_start_time(process_id)
+        if current_start_time is None:
+            continue
+        if current_start_time != start_time:
+            identity_ok = False
+            continue
+        remaining[process_id] = start_time
+    for process_id, start_time in remaining.items():
+        if _process_start_time(process_id) != start_time:
+            identity_ok = False
+            continue
         try:
             os.kill(process_id, signal.SIGTERM)
         except ProcessLookupError:
             pass
     deadline = time.monotonic() + PROCESS_TERMINATION_GRACE_SECONDS
-    remaining = set(process_ids)
     while remaining and time.monotonic() < deadline:
-        for process_id in tuple(remaining):
-            _reap_process(process_id)
-            if not _process_is_live(process_id):
-                remaining.discard(process_id)
+        for process_id, start_time in tuple(remaining.items()):
+            if not _reap_process(process_id, start_time):
+                identity_ok = False
+                remaining.pop(process_id, None)
+            elif not _process_is_live(process_id, start_time):
+                remaining.pop(process_id, None)
         if remaining:
             time.sleep(0.05)
-    for process_id in remaining:
+    for process_id, start_time in remaining.items():
+        if _process_start_time(process_id) != start_time:
+            identity_ok = False
+            continue
         try:
             os.kill(process_id, signal.SIGKILL)
         except ProcessLookupError:
             pass
     deadline = time.monotonic() + PROCESS_TERMINATION_GRACE_SECONDS
     while remaining and time.monotonic() < deadline:
-        for process_id in tuple(remaining):
-            _reap_process(process_id)
-            if not _process_is_live(process_id):
-                remaining.discard(process_id)
+        for process_id, start_time in tuple(remaining.items()):
+            if not _reap_process(process_id, start_time):
+                identity_ok = False
+                remaining.pop(process_id, None)
+            elif not _process_is_live(process_id, start_time):
+                remaining.pop(process_id, None)
         if remaining:
             time.sleep(0.05)
-    return not remaining
+    return identity_ok and not remaining
 
 
 def _cleanup_child_process(
-    process: subprocess.Popen[bytes], baseline_descendants: set[int], subreaper_ready: bool
+    process: subprocess.Popen[bytes],
+    process_start_time: int | None,
+    baseline_descendants: dict[int, int],
+    subreaper_ready: bool,
 ) -> bool:
+    group_cleanup_ok = True
     if _process_group_exists(process.pid):
-        _terminate_process_group(process)
+        group_cleanup_ok = _terminate_process_group(process, process_start_time)
     if not subreaper_ready:
         return False
-    residual = _descendant_pids(os.getpid()) - baseline_descendants
+    current_descendants = _descendant_identities(os.getpid())
+    residual = {
+        pid: start_time
+        for pid, start_time in current_descendants.items()
+        if baseline_descendants.get(pid) != start_time
+    }
     residual_cleanup_ok = True
     if residual:
         residual_cleanup_ok = _terminate_processes(residual)
+    remaining_descendants = _descendant_identities(os.getpid())
     return (
-        residual_cleanup_ok
+        group_cleanup_ok
+        and residual_cleanup_ok
         and not _process_group_exists(process.pid)
-        and not (_descendant_pids(os.getpid()) - baseline_descendants)
+        and not any(
+            baseline_descendants.get(pid) != start_time
+            for pid, start_time in remaining_descendants.items()
+        )
     )
 
 
@@ -979,7 +1091,9 @@ def _run_bounded_command(
 ) -> BoundedCommandResult:
     """Run one child with bounded output and private descendant cleanup."""
     subreaper_ready = _ensure_child_subreaper()
-    baseline_descendants = _descendant_pids(os.getpid()) if subreaper_ready else set()
+    baseline_descendants = (
+        _descendant_identities(os.getpid()) if subreaper_ready else {}
+    )
     try:
         process = subprocess.Popen(
             _child_command_without_subreaper(command, subreaper_ready),
@@ -991,11 +1105,11 @@ def _run_bounded_command(
             start_new_session=True,
         )
     except OSError as error:
-        return BoundedCommandResult(None, "", "", b"", b"", False, error, (), (), False)
+        return BoundedCommandResult(None, "", "", b"", b"", False, error, (), False)
+    process_start_time = _process_start_time(process.pid)
 
     state: dict[str, object] = {
         "forbidden_markers": set(),
-        "error_lines": [],
         "retain_full_output": retain_full_output,
         "max_output_bytes": max_output_bytes,
         "output_truncated": False,
@@ -1017,14 +1131,16 @@ def _run_bounded_command(
         returncode = process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
-        _terminate_process_group(process)
+        _terminate_process_group(process, process_start_time)
         returncode = process.returncode
-    cleanup_ok = _cleanup_child_process(process, baseline_descendants, subreaper_ready)
+    cleanup_ok = _cleanup_child_process(
+        process, process_start_time, baseline_descendants, subreaper_ready
+    )
     stdout_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
     stderr_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
     if stdout_thread.is_alive() or stderr_thread.is_alive():
         cleanup_ok = _cleanup_child_process(
-            process, baseline_descendants, subreaper_ready
+            process, process_start_time, baseline_descendants, subreaper_ready
         ) and cleanup_ok
         stdout_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
         stderr_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
@@ -1037,7 +1153,6 @@ def _run_bounded_command(
     stdout = stdout_bytes.decode(errors="replace")
     stderr = stderr_bytes.decode(errors="replace")
     markers = tuple(sorted(state["forbidden_markers"]))  # type: ignore[arg-type]
-    error_lines = tuple(state["error_lines"])  # type: ignore[arg-type]
     cleanup_error = (
         RuntimeError("provider-free child descendant cleanup could not be proven")
         if not cleanup_ok
@@ -1052,7 +1167,6 @@ def _run_bounded_command(
         timed_out,
         cleanup_error,
         markers,
-        error_lines,
         bool(state["output_truncated"]),
     )
 

@@ -134,6 +134,26 @@ class VerifyRweSnapshotTests(unittest.TestCase):
                 ["recipe.txt", "staged.txt"],
             )
 
+    def test_git_queries_override_repository_local_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "alias-executed"
+            for args in (
+                ("init", "-b", "main"),
+                ("config", "user.name", "Test"),
+                ("config", "user.email", "test@example.invalid"),
+            ):
+                subprocess.run(("git", *args), cwd=root, check=True, capture_output=True)
+            subprocess.run(
+                ("git", "config", "alias.status", f"!touch {marker}"),
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(verify_rwe_snapshot.git_output(root, "status", "--porcelain"), "")
+            self.assertFalse(marker.exists())
+
     def test_copy_git_revision_excludes_ignored_host_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -292,6 +312,15 @@ class VerifyRweSnapshotTests(unittest.TestCase):
         self.assertNotIn("/private/repository/path", failures[0])
         self.assertNotIn("/tmp/secret-output", failures[0])
         self.assertIn("output=captured", failures[0])
+
+    def test_process_cleanup_refuses_start_time_mismatch(self) -> None:
+        with (
+            patch.object(verify_rwe_snapshot, "_process_start_time", return_value=123),
+            patch.object(os, "kill") as kill,
+        ):
+            self.assertFalse(verify_rwe_snapshot._terminate_processes({99999: 456}))
+
+        kill.assert_not_called()
 
     def test_bounded_command_cleans_a_detached_descendant(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
