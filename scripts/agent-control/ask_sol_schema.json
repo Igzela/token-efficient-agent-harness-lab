@@ -78,6 +78,7 @@
         "type": "object",
         "required": [
           "path",
+          "line_range",
           "observation"
         ],
         "properties": {
