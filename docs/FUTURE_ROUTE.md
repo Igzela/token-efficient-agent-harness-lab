@@ -114,11 +114,11 @@ AC1 remains deferred optional hardening. It is not an executable successor and d
 
 AC2 distinguishes effect and outcome states while leaving admission, leases, spend, verification, approval, output, and adoption with existing owners.
 
-The AC2 contract and caller migration, AC3 Golden Path split, AC4 transaction views, AC5 composition root, and AC6 schema convergence/compatibility closeout are accepted on `main`; AC1 shared supervision remains deferred optional hardening. The AC7 removal manifest, deletion-only cleanup, and closeout are accepted on `main`; Contemporary RWE reconstruction is accepted through `7cfa817a`, and `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` is the current provider-free contract window in `docs/NEXT_DECISION.md`. Any replay effect remains a gated successor.
+The AC2 contract and caller migration, AC3 Golden Path split, AC4 transaction views, AC5 composition root, and AC6 schema convergence/compatibility closeout are accepted on `main`; AC1 shared supervision remains deferred optional hardening. The AC7 removal manifest, deletion-only cleanup, and closeout are accepted on `main`; Contemporary RWE reconstruction is accepted through `7cfa817a`, and `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` is the current provider-free contract window in `docs/NEXT_DECISION.md`, now parked at `DECISION_REQUIRED` because the existing owner path cannot prove zero-write/zero-credential-read or contemporary two-arm identity. Any replay effect remains a gated successor.
 
 ## Stage Architecture Convergence AC7 - obsolete legacy cleanup
 
-AC7 removes only the frozen compatibility surface after all callers and evidence have migrated; it does not change state-machine or authority order. Cleanup and closeout are accepted; Contemporary RWE reconstruction is accepted, and the provider-free protocol/preflight packet is the current executable window in `docs/NEXT_DECISION.md`.
+AC7 removes only the frozen compatibility surface after all callers and evidence have migrated; it does not change state-machine or authority order. Cleanup and closeout are accepted; Contemporary RWE reconstruction is accepted, and the provider-free protocol/preflight packet is the current planning-parked window in `docs/NEXT_DECISION.md` pending a bounded repair proposal.
 
 ## Stage Contemporary old/new RWE replay
 
