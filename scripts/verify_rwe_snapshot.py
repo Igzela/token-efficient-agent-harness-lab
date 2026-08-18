@@ -89,6 +89,7 @@ MIN_FREE_SPACE_BYTES = 2 * 1024 * 1024 * 1024
 PROCESS_TERMINATION_GRACE_SECONDS = 5
 CURRENT_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _SUBREAPER_ENABLED: bool | None = None
+_TRUSTED_GIT_DIRS: dict[Path, Path] = {}
 _CLEAR_SUBREAPER_PROGRAM = (
     "import ctypes, os, sys; "
     "libc=ctypes.CDLL(None, use_errno=True); "
@@ -143,11 +144,59 @@ def verify_file(root: Path, relative: str, expected: str, failures: list[str]) -
         failures.append(f"snapshot hash mismatch: {relative}")
 
 
-def _git_environment() -> dict[str, str]:
-    """Disable host Git configuration and repository-selection overrides."""
+def _trusted_git_dir(root: Path) -> Path:
+    """Create a read-only Git-dir view without repository-local configuration."""
+    resolved_root = root.resolve()
+    cached = _TRUSTED_GIT_DIRS.get(resolved_root)
+    if cached is not None:
+        return cached
+    dot_git = resolved_root / ".git"
+    if dot_git.is_dir():
+        git_dir = dot_git.resolve()
+    elif dot_git.is_file():
+        marker = dot_git.read_text(encoding="utf-8").strip()
+        if not marker.startswith("gitdir:"):
+            raise OSError("Git worktree metadata is malformed")
+        git_dir = Path(marker.split(":", 1)[1].strip())
+        if not git_dir.is_absolute():
+            git_dir = (dot_git.parent / git_dir).resolve()
+        else:
+            git_dir = git_dir.resolve()
+    else:
+        raise OSError("Git worktree metadata is unavailable")
+    if not git_dir.is_dir():
+        raise OSError("Git directory is unavailable")
+    common_marker = git_dir / "commondir"
+    if common_marker.is_file():
+        common_dir = (git_dir / common_marker.read_text(encoding="utf-8").strip()).resolve()
+    else:
+        common_dir = git_dir
+    if not common_dir.is_dir():
+        raise OSError("Git common directory is unavailable")
+
+    view = Path(tempfile.mkdtemp(prefix="pe7-rwe-git-view-"))
+    head_source = git_dir / "HEAD"
+    if not head_source.is_file():
+        head_source = common_dir / "HEAD"
+    if not head_source.is_file() or head_source.stat().st_size > 4096:
+        raise OSError("Git HEAD is unavailable")
+    (view / "HEAD").write_bytes(head_source.read_bytes())
+    for name in ("index", "objects", "refs", "packed-refs", "info", "shallow", "logs"):
+        source = git_dir / name
+        if not source.exists():
+            source = common_dir / name
+        if source.exists():
+            (view / name).symlink_to(source, target_is_directory=source.is_dir())
+    _TRUSTED_GIT_DIRS[resolved_root] = view
+    return view
+
+
+def _git_environment(root: Path) -> dict[str, str]:
+    """Use only a config-less Git-dir view and fixed verifier configuration."""
     return {
         "PATH": os.defpath,
         "LC_ALL": "C",
+        "GIT_DIR": str(_trusted_git_dir(root)),
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG": os.devnull,
         "GIT_CONFIG_GLOBAL": os.devnull,
@@ -208,10 +257,14 @@ def _git_command(root: Path, args: tuple[str, ...]) -> list[str]:
 
 
 def _git_result(root: Path, *args: str) -> BoundedCommandResult:
+    try:
+        environment = _git_environment(root)
+    except OSError as error:
+        return BoundedCommandResult(None, "", "", b"", b"", False, error, (), False)
     return _run_bounded_command(
         _git_command(root, args),
         cwd=Path("/"),
-        environment=_git_environment(),
+        environment=environment,
         timeout=120,
         retain_full_output=True,
         max_output_bytes=MAX_GIT_OUTPUT_BYTES,
@@ -223,15 +276,18 @@ def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
     baseline_descendants = (
         _descendant_identities(os.getpid()) if subreaper_ready else {}
     )
-    process = subprocess.Popen(
-        _git_command(root, args),
-        cwd=Path("/"),
-        env=_git_environment(),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    try:
+        process = subprocess.Popen(
+            _git_command(root, args),
+            cwd=Path("/"),
+            env=_git_environment(root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        return False
     process_start_time = _process_start_time(process.pid)
     group_session_id = _process_session_id(process.pid)
     group_members = _process_group_members(process.pid, group_session_id)
@@ -279,6 +335,7 @@ def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
             max(0, deadline - time.monotonic()),
             group_members,
             group_session_id,
+            process_start_time,
         )
         cleanup_ok = _cleanup_child_process(
             process,
@@ -833,7 +890,7 @@ def _terminate_process_group(
         return False
     current_start_time = _process_start_time(process.pid)
     if current_start_time is None:
-        members = _process_group_members(process.pid, group_session_id)
+        members = {pid: start for pid, start in group_members.items() if pid != process.pid}
         return (
             _terminate_processes(members, process.pid, group_session_id)
             if members
@@ -851,7 +908,7 @@ def _terminate_process_group(
     while time.monotonic() < deadline:
         current_start_time = _process_start_time(process.pid)
         if current_start_time is None:
-            members = _process_group_members(process.pid, group_session_id)
+            members = {pid: start for pid, start in group_members.items() if pid != process.pid}
             return (
                 _terminate_processes(members, process.pid, group_session_id)
                 if members
@@ -870,7 +927,7 @@ def _terminate_process_group(
             pass
     current_start_time = _process_start_time(process.pid)
     if current_start_time is None:
-        members = _process_group_members(process.pid, group_session_id)
+        members = {pid: start for pid, start in group_members.items() if pid != process.pid}
         return (
             _terminate_processes(members, process.pid, group_session_id)
             if members
@@ -1000,18 +1057,21 @@ def _wait_with_group_snapshot(
     timeout: float,
     group_members: dict[int, int],
     group_session_id: int | None,
+    process_start_time: int | None,
 ) -> int:
     deadline = time.monotonic() + timeout
     while True:
-        if _process_start_time(process.pid) is not None:
+        fields = _process_stat_fields(process.pid)
+        if process_start_time is not None and fields is not None:
+            if _process_start_time(process.pid) != process_start_time:
+                return process.wait(timeout=0.1)
             group_members.update(_process_group_members(process.pid, group_session_id))
+            if fields and fields[0] == "Z":
+                return process.wait(timeout=0.1)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired(process.args, timeout)
-        try:
-            return process.wait(timeout=min(0.1, remaining))
-        except subprocess.TimeoutExpired:
-            continue
+        time.sleep(min(0.01, remaining))
 
 
 def _process_parent_map() -> dict[int, int]:
@@ -1240,7 +1300,11 @@ def _run_bounded_command(
     timed_out = False
     try:
         returncode = _wait_with_group_snapshot(
-            process, timeout, group_members, group_session_id
+            process,
+            timeout,
+            group_members,
+            group_session_id,
+            process_start_time,
         )
     except subprocess.TimeoutExpired:
         timed_out = True

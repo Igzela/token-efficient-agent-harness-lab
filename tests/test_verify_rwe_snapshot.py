@@ -150,8 +150,18 @@ class VerifyRweSnapshotTests(unittest.TestCase):
                 check=True,
                 capture_output=True,
             )
+            subprocess.run(
+                ("git", "config", "core.bare", "true"),
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
 
             self.assertEqual(verify_rwe_snapshot.git_output(root, "status", "--porcelain"), "")
+            self.assertEqual(
+                verify_rwe_snapshot.git_output(root, "rev-parse", "--is-bare-repository"),
+                "false",
+            )
             self.assertFalse(marker.exists())
 
     def test_copy_git_revision_excludes_ignored_host_artifacts(self) -> None:
