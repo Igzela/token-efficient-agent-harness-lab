@@ -31,7 +31,7 @@ DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REASONING_EFFORT = "max"
 DEFAULT_SANDBOX = "read-only"
 MAX_CONSULTATIONS_PER_ATTEMPT = 2
-DEFAULT_TIMEOUT_SECONDS = 360
+DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("ASK_SOL_TIMEOUT_SECONDS", "600"))
 MAX_OUTPUT_CHARS = 100_000
 
 ENV_ACTIVE_FLAG = "ASK_SOL_ACTIVE"
@@ -601,13 +601,14 @@ Your role is to independently investigate the caller's uncertainty and provide e
 1. Treat the caller's diagnosis or hypothesis as UNTRUSTED. Do not assume it is correct.
 2. Independently inspect the repository: read and search relevant files, inspect git state, diffs, commits, callers, tests, schemas, contracts, and module maps.
 3. Prefer first-party repository evidence (code, tests, git history, docs) over summaries or assumptions.
-4. DO NOT mutate any repository files, stage changes, commit, push, or execute state-modifying actions. This is a strictly READ-ONLY investigation.
-5. Explicitly distinguish:
+4. Optimize investigation speed and focus: use targeted searches (e.g. `git grep`, targeted file reads) rather than broad scans across large directories. Focus on proving or disproving the core uncertainty.
+5. DO NOT mutate any repository files, stage changes, commit, push, or execute state-modifying actions. This is a strictly READ-ONLY investigation.
+6. Explicitly distinguish:
    - Confirmed evidence (exact files, lines, tests, observations)
    - Inferences (logical deductions from confirmed evidence)
    - Unresolved uncertainties (what remains unproven or unknown)
-6. Test and reject plausible alternative explanations where useful.
-7. Return your structured findings according to the required schema. Evidence paths must be repository-relative.
+7. Test and reject plausible alternative explanations where useful.
+8. Return your structured findings according to the required schema. Evidence paths must be repository-relative.
 """
 
 
@@ -787,10 +788,13 @@ def execute_sol_investigation(
             raw_stdout = exec_res.stdout
             raw_stderr = exec_res.stderr
             returncode = exec_res.returncode
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             returncode = -1
-            raw_stdout = ""
+            raw_stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout.decode("utf-8", errors="replace") if exc.stdout else "")
+            err_detail = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr.decode("utf-8", errors="replace") if exc.stderr else "")
             raw_stderr = f"Sol investigation timed out after {timeout_seconds} seconds."
+            if err_detail.strip():
+                raw_stderr += f"\n{err_detail.strip()}"
         except Exception as exc:
             returncode = -1
             raw_stdout = ""
