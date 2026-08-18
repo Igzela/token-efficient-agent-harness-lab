@@ -57,8 +57,13 @@ mod workflow_runs;
 #[cfg(test)]
 mod workflow_runs_mutation_tests;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::fs::{File, OpenOptions};
+use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -125,10 +130,246 @@ fn utc_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+fn sqlite_companion_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    value.into()
+}
+
+fn sqlite_snapshot_digest(path: &Path) -> Result<String, String> {
+    let mut digest = Sha256::new();
+    for (label, component) in [
+        ("main", path.to_path_buf()),
+        ("wal", sqlite_companion_path(path, "-wal")),
+        ("shm", sqlite_companion_path(path, "-shm")),
+        ("journal", sqlite_companion_path(path, "-journal")),
+    ] {
+        digest.update(label.as_bytes());
+        match std::fs::read(&component) {
+            Ok(bytes) => {
+                digest.update([1]);
+                digest.update((bytes.len() as u64).to_le_bytes());
+                digest.update(bytes);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                digest.update([0]);
+            }
+            Err(error) => {
+                return Err(format!(
+                    "read-only store snapshot component could not be read: {error}"
+                ));
+            }
+        }
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+fn sqlite_read_only_uri(path: &Path) -> String {
+    let mut uri = String::from("file:");
+    for byte in path.as_os_str().as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'.' | b'_' | b'~') {
+            uri.push(*byte as char);
+        } else {
+            uri.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    uri.push_str("?mode=ro&immutable=1");
+    uri
+}
+
+fn sqlite_companion_non_empty(path: &Path, suffix: &str) -> Result<bool, String> {
+    match std::fs::metadata(sqlite_companion_path(path, suffix)) {
+        Ok(metadata) => Ok(metadata.len() > 0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "read-only store could not inspect its {suffix} companion: {error}"
+        )),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn file_identity(file: &File) -> Result<FileIdentity, String> {
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("store lock identity is unavailable: {error}"))?;
+    Ok(FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+fn path_identity(path: &Path) -> Result<FileIdentity, String> {
+    let metadata =
+        std::fs::metadata(path).map_err(|_| "store path identity is unavailable".to_string())?;
+    Ok(FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+fn ensure_lock_matches_path(path: &Path, file: &File) -> Result<FileIdentity, String> {
+    let identity = file_identity(file)?;
+    if path_identity(path)? != identity {
+        return Err("store path identity changed while acquiring its lock".into());
+    }
+    Ok(identity)
+}
+
+fn lock_exclusive(file: &File) -> Result<(), String> {
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if result == -1 {
+        return Err(format!(
+            "mutable store could not acquire its process lock: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+fn unlock(file: &File) -> Result<(), String> {
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if result == -1 {
+        return Err(format!(
+            "store process lock could not be released: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+fn acquire_read_only_lock(path: &Path) -> Result<File, String> {
+    let file = File::open(path)
+        .map_err(|error| format!("read-only store could not open lock handle: {error}"))?;
+    ensure_lock_matches_path(path, &file)?;
+    let shared_result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
+    if shared_result == -1 {
+        return Err(format!(
+            "read-only store could not acquire its process snapshot lock: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let lock = libc::flock {
+        l_type: libc::F_RDLCK as libc::c_short,
+        l_whence: libc::SEEK_SET as libc::c_short,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    let result = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock) };
+    if result == -1 {
+        return Err(format!(
+            "read-only store could not acquire a stable snapshot lock: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    ensure_lock_matches_path(path, &file)?;
+    Ok(file)
+}
+
+fn acquire_process_write_lock(
+    path: &Path,
+    create_if_missing: bool,
+    anchor: Option<&File>,
+) -> Result<Option<File>, String> {
+    if path == Path::new(":memory:") {
+        return Ok(None);
+    }
+    let file = if create_if_missing {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(|error| format!("mutable store could not open its process lock: {error}"))?
+    } else {
+        match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let anchor = anchor.ok_or_else(|| {
+                    "mutable store path disappeared before lock acquisition".to_string()
+                })?;
+                let file = anchor.try_clone().map_err(|error| {
+                    format!("mutable store lock anchor is unavailable: {error}")
+                })?;
+                lock_exclusive(&file)?;
+                return Ok(Some(file));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "mutable store could not open its process lock: {error}"
+                ));
+            }
+        }
+    };
+    let expected = anchor.map(file_identity).transpose()?;
+    let identity = file_identity(&file)?;
+    if expected.is_some_and(|expected| expected != identity) {
+        return Err("mutable store path identity changed since it was opened".into());
+    }
+    lock_exclusive(&file)?;
+    ensure_lock_matches_path(path, &file)?;
+    Ok(Some(file))
+}
+
 pub enum DatabaseConnection {
-    Sqlite(Mutex<Connection>),
+    Sqlite(SqliteDatabase),
     #[cfg(feature = "pg")]
     Pg(Pool<PostgresConnectionManager<NoTls>>),
+}
+
+pub struct SqliteDatabase {
+    connection: Mutex<Connection>,
+    process_lock: Option<File>,
+    process_lock_held: bool,
+    _read_only_lock: Option<File>,
+    read_only_snapshot_digest: Option<String>,
+    read_only_path_identity: Option<FileIdentity>,
+}
+
+impl SqliteDatabase {
+    fn writable(connection: Connection, process_lock: Option<File>) -> Self {
+        Self {
+            connection: Mutex::new(connection),
+            process_lock_held: process_lock.is_some(),
+            process_lock,
+            _read_only_lock: None,
+            read_only_snapshot_digest: None,
+            read_only_path_identity: None,
+        }
+    }
+
+    fn read_only(
+        connection: Connection,
+        read_only_lock: File,
+        read_only_snapshot_digest: String,
+    ) -> Result<Self, String> {
+        let read_only_path_identity = file_identity(&read_only_lock)?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+            process_lock: None,
+            process_lock_held: false,
+            _read_only_lock: Some(read_only_lock),
+            read_only_snapshot_digest: Some(read_only_snapshot_digest),
+            read_only_path_identity: Some(read_only_path_identity),
+        })
+    }
+
+    fn release_initialization_lock(&mut self) -> Result<(), String> {
+        if !self.process_lock_held {
+            return Ok(());
+        }
+        if let Some(file) = self.process_lock.as_ref() {
+            unlock(file)?;
+        }
+        self.process_lock_held = false;
+        Ok(())
+    }
 }
 
 pub struct LocalProductStore {
@@ -166,6 +407,90 @@ impl LocalProductStore {
         )
     }
 
+    /// Open an existing SQLite store without acquiring any mutation path.
+    ///
+    /// This is intentionally separate from [`Self::new`]: the normal
+    /// constructor creates parent directories, enables WAL, applies DDL, and
+    /// runs migrations/default configuration. A preflight must not do any of
+    /// those things merely by inspecting an operator store.
+    pub fn open_existing_read_only(path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::open_existing_read_only_inner(path, None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_existing_read_only_with_encryption(
+        path: impl AsRef<Path>,
+        encryption_key: Option<&str>,
+    ) -> Result<Self, String> {
+        Self::open_existing_read_only_inner(path, encryption_key)
+    }
+
+    fn open_existing_read_only_inner(
+        path: impl AsRef<Path>,
+        encryption_key: Option<&str>,
+    ) -> Result<Self, String> {
+        let requested_path = path.as_ref();
+        if !requested_path.is_file() {
+            return Err("read-only store path is not an existing file".into());
+        }
+        let path = requested_path
+            .canonicalize()
+            .map_err(|error| format!("read-only store path canonicalization failed: {error}"))?;
+        let read_only_lock = acquire_read_only_lock(&path)?;
+        let initial_snapshot_digest = sqlite_snapshot_digest(&path)?;
+        for (label, suffix) in [
+            ("WAL", "-wal"),
+            ("SHM", "-shm"),
+            ("rollback journal", "-journal"),
+        ] {
+            if sqlite_companion_non_empty(&path, suffix)? {
+                return Err(format!(
+                    "read-only store refuses a non-empty {label} companion"
+                ));
+            }
+        }
+        let uri = sqlite_read_only_uri(&path);
+        let conn = Connection::open_with_flags(
+            &uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .map_err(|e| format!("read-only store open failed: {e}"))?;
+        if let Some(key) = encryption_key {
+            conn.execute_batch(&format!("PRAGMA key = '{}';", key.replace('\'', "''")))
+                .map_err(|e| format!("read-only store encryption setup failed: {e}"))?;
+        }
+        conn.query_row("SELECT name FROM sqlite_master LIMIT 1", [], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .map_err(|_| "encryption_readiness_unavailable".to_string())?;
+        // Connection-local query_only is an additional guard against an
+        // accidental mutation through a future read-only caller. It does not
+        // create schema, write WAL state, or persist connection settings.
+        conn.execute_batch("PRAGMA query_only=ON;")
+            .map_err(|e| format!("read-only store guard failed: {e}"))?;
+        // Keep one connection-local read transaction for the lifetime of the
+        // inspection owner. The immutable URI prevents SQLite from creating
+        // WAL/SHM state; the shared lock and component digest still fail
+        // closed if another process changes the underlying store.
+        conn.execute_batch("BEGIN;")
+            .map_err(|e| format!("read-only store snapshot transaction failed: {e}"))?;
+        let final_snapshot_digest = sqlite_snapshot_digest(&path)?;
+        if initial_snapshot_digest != final_snapshot_digest {
+            return Err("read-only store changed while opening its snapshot".into());
+        }
+        Ok(Self {
+            db_path: path,
+            db: DatabaseConnection::Sqlite(SqliteDatabase::read_only(
+                conn,
+                read_only_lock,
+                final_snapshot_digest,
+            )?),
+            clock: Box::new(utc_now),
+            encryption_active: encryption_key.is_some(),
+            embedding_client: crate::provider::embedding::ProviderEmbeddingClient::default(),
+        })
+    }
+
     fn new_with_components(
         path: impl AsRef<Path>,
         clock: impl Fn() -> String + Send + Sync + 'static,
@@ -178,7 +503,11 @@ impl LocalProductStore {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
         }
+        let process_write_lock = acquire_process_write_lock(&path, true, None)?;
         let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+        if let Some(lock) = process_write_lock.as_ref() {
+            ensure_lock_matches_path(&path, lock)?;
+        }
         if let Some(key) = encryption_key {
             conn.execute_batch(&format!("PRAGMA key = '{}';", key.replace('\'', "''")))
                 .map_err(|e| format!("Failed to set encryption key: {}", e))?;
@@ -223,15 +552,24 @@ impl LocalProductStore {
         }
         conn.execute_batch(schema::ddl_for(schema::Dialect::Sqlite))
             .map_err(|e| e.to_string())?;
-        let store = Self {
+        let mut store = Self {
             db_path: path,
-            db: DatabaseConnection::Sqlite(Mutex::new(conn)),
+            db: DatabaseConnection::Sqlite(SqliteDatabase::writable(conn, process_write_lock)),
             clock: Box::new(clock),
             encryption_active: encryption_key.is_some(),
             embedding_client,
         };
-        store.ensure_default_config()?;
-        store.run_migrations()?;
+        let initialization = (|| {
+            store.ensure_default_config()?;
+            store.run_migrations()
+        })();
+        let release = match &mut store.db {
+            DatabaseConnection::Sqlite(database) => database.release_initialization_lock(),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => Ok(()),
+        };
+        initialization?;
+        release?;
         Ok(store)
     }
 
@@ -291,14 +629,49 @@ impl LocalProductStore {
         }
     }
 
+    pub(crate) fn ensure_read_only_snapshot_stable(&self) -> Result<(), String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(database) => {
+                let Some(expected) = database.read_only_snapshot_digest.as_deref() else {
+                    return Ok(());
+                };
+                let expected_path_identity = database
+                    .read_only_path_identity
+                    .ok_or_else(|| "read-only store path identity is unavailable".to_string())?;
+                if path_identity(&self.db_path)? != expected_path_identity {
+                    return Err("read-only store path identity changed during inspection".into());
+                }
+                let current = sqlite_snapshot_digest(&self.db_path)?;
+                if current != expected {
+                    return Err("read-only store changed during inspection".into());
+                }
+                Ok(())
+            }
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => Ok(()),
+        }
+    }
+
     pub(super) fn with_conn<F, R>(&self, f: F) -> Result<R, String>
     where
         F: FnOnce(&Connection) -> Result<R, String>,
     {
         match &self.db {
             DatabaseConnection::Sqlite(conn) => {
-                let guard = conn.lock().map_err(|e| e.to_string())?;
-                f(&guard)
+                let _process_write_lock = if conn.read_only_snapshot_digest.is_none()
+                    && !conn.process_lock_held
+                {
+                    acquire_process_write_lock(&self.db_path, false, conn.process_lock.as_ref())?
+                } else {
+                    None
+                };
+                self.ensure_read_only_snapshot_stable()?;
+                let guard = conn.connection.lock().map_err(|e| e.to_string())?;
+                let result = f(&guard);
+                drop(guard);
+                self.ensure_read_only_snapshot_stable()
+                    .map(|()| result)
+                    .and_then(|result| result)
             }
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => {
@@ -314,6 +687,14 @@ impl LocalProductStore {
     where
         F: FnOnce(&Connection) -> Result<R, String>,
     {
+        match &self.db {
+            DatabaseConnection::Sqlite(database)
+                if database.read_only_snapshot_digest.is_some() =>
+            {
+                return Err("read-only store cannot start a mutation transaction".into());
+            }
+            _ => {}
+        }
         self.with_conn(|conn| {
             conn.execute_batch("BEGIN IMMEDIATE")
                 .map_err(|error| error.to_string())?;
@@ -346,7 +727,15 @@ impl LocalProductStore {
     {
         match &self.db {
             DatabaseConnection::Sqlite(conn) => {
-                let guard = conn.lock().map_err(|e| e.to_string())?;
+                if conn.read_only_snapshot_digest.is_some() {
+                    return Err("read-only store cannot start a mutation transaction".into());
+                }
+                let _process_write_lock = if conn.process_lock_held {
+                    None
+                } else {
+                    acquire_process_write_lock(&self.db_path, false, conn.process_lock.as_ref())?
+                };
+                let guard = conn.connection.lock().map_err(|e| e.to_string())?;
                 guard
                     .execute_batch("BEGIN IMMEDIATE")
                     .map_err(|e| e.to_string())?;
@@ -400,6 +789,11 @@ impl LocalProductStore {
 
     pub fn checkpoint_wal(&self) -> Result<(), String> {
         match &self.db {
+            DatabaseConnection::Sqlite(database)
+                if database.read_only_snapshot_digest.is_some() =>
+            {
+                Err("read-only store cannot checkpoint WAL".into())
+            }
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 conn.execute_batch("PRAGMA wal_checkpoint(FULL);")
                     .map_err(|e| e.to_string())
@@ -419,6 +813,18 @@ impl LocalProductStore {
         }
         match &self.db {
             DatabaseConnection::Sqlite(connection) => {
+                if connection.read_only_snapshot_digest.is_some() {
+                    return Err("read-only store cannot restore a backup".into());
+                }
+                let _process_write_lock = if connection.process_lock_held {
+                    None
+                } else {
+                    acquire_process_write_lock(
+                        &self.db_path,
+                        false,
+                        connection.process_lock.as_ref(),
+                    )?
+                };
                 let source = Connection::open_with_flags(
                     backup_path,
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -433,7 +839,10 @@ impl LocalProductStore {
                     ));
                 }
 
-                let mut destination = connection.lock().map_err(|error| error.to_string())?;
+                let mut destination = connection
+                    .connection
+                    .lock()
+                    .map_err(|error| error.to_string())?;
                 let backup = rusqlite::backup::Backup::new(&source, &mut destination)
                     .map_err(|error| format!("failed to initialize live restore: {error}"))?;
                 backup

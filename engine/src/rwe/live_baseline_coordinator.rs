@@ -16,8 +16,8 @@ use sha2::{Digest, Sha256};
 
 use super::corpus::RweTaskDefinition;
 use super::frozen_rwe_bindings::{
-    rwe_composition_seam_ready, RweCellBudgetEnvelope, FROZEN_RWE_RISK_CLASS,
-    FROZEN_RWE_TARGET_MAIN_SHA,
+    current_comparison_manifest, rwe_composition_seam_ready, RweCellBudgetEnvelope,
+    FROZEN_RWE_RISK_CLASS, FROZEN_RWE_TARGET_MAIN_SHA,
 };
 use super::operator_corpus::{
     freeze_current_operator_contract_set, OperatorFrozenContractSet, OPERATOR_ADMITTED_BINARY_PATH,
@@ -857,6 +857,44 @@ pub fn operator_preflight(
     authorization_id: Option<&str>,
     golden_path_prerequisite_product_task_id: Option<&str>,
 ) -> Result<Value, String> {
+    let credential_present = std::env::var(DEEPSEEK_CREDENTIAL_REFERENCE)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_some();
+    operator_preflight_with_credential_readiness(
+        store,
+        principal,
+        authorization_id,
+        golden_path_prerequisite_product_task_id,
+        Some(credential_present),
+    )
+}
+
+/// Provider-free read-only readiness projection. It never reads credential
+/// values; readiness is explicitly unavailable until a redacted owner is
+/// supplied by a separately accepted contract.
+pub fn operator_preflight_read_only(
+    store: &LocalProductStore,
+    principal: &AuthenticatedPrincipal,
+    authorization_id: Option<&str>,
+    golden_path_prerequisite_product_task_id: Option<&str>,
+) -> Result<Value, String> {
+    operator_preflight_with_credential_readiness(
+        store,
+        principal,
+        authorization_id,
+        golden_path_prerequisite_product_task_id,
+        None,
+    )
+}
+
+fn operator_preflight_with_credential_readiness(
+    store: &LocalProductStore,
+    principal: &AuthenticatedPrincipal,
+    authorization_id: Option<&str>,
+    golden_path_prerequisite_product_task_id: Option<&str>,
+    credential_present: Option<bool>,
+) -> Result<Value, String> {
     let observed_at = store.require_now()?;
     let frozen = freeze_current_operator_contract_set()?;
     let mut blockers = Vec::new();
@@ -869,16 +907,28 @@ pub fn operator_preflight(
         }));
     }
 
-    let cred_present = std::env::var(DEEPSEEK_CREDENTIAL_REFERENCE)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .is_some();
-    if !cred_present {
-        blockers.push(json!({
+    match credential_present {
+        Some(true) => {}
+        Some(false) => blockers.push(json!({
             "code": "missing_credential_symbol",
             "detail": format!("{DEEPSEEK_CREDENTIAL_REFERENCE} not set in parent process")
-        }));
+        })),
+        None => blockers.push(json!({
+            "code": "credential_readiness_unavailable",
+            "detail": "provider credential readiness is unavailable in the read-only provider-free preflight; no credential value was read"
+        })),
     }
+
+    let comparison = match current_comparison_manifest() {
+        Ok(manifest) => manifest.to_json(),
+        Err(error) => {
+            blockers.push(json!({
+                "code": "comparison_identity_invalid",
+                "detail": error,
+            }));
+            Value::Null
+        }
+    };
 
     if let Err(e) = rwe_composition_seam_ready() {
         blockers.push(json!({
@@ -997,6 +1047,8 @@ pub fn operator_preflight(
         }));
     }
 
+    store.ensure_read_only_snapshot_stable()?;
+
     // Ready only when composition seam, GP prereq, and other pre-effect gates pass.
     let ready = blockers.is_empty() && gp_ready;
     Ok(sort_value(&json!({
@@ -1022,12 +1074,18 @@ pub fn operator_preflight(
             "binary_path": OPERATOR_ADMITTED_BINARY_PATH,
             "binary_version": OPERATOR_ADMITTED_BINARY_VERSION,
         },
+        "comparison": comparison,
         "principal": {
             "tenant_id": principal.tenant_id(),
             "principal_id": principal.principal_id(),
             "principal_kind": principal.principal_kind().as_str(),
         },
-        "credential_symbol_present": cred_present,
+        "credential_symbol_present": credential_present,
+        "credential_readiness": match credential_present {
+            Some(true) => "present",
+            Some(false) => "missing",
+            None => "unavailable",
+        },
         "credential_reference": DEEPSEEK_CREDENTIAL_REFERENCE,
         "golden_path_prerequisite_ready": gp_ready,
         "authorization": auth_status,
@@ -2881,8 +2939,11 @@ mod tests {
         SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
     };
     use sha2::Digest;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc::{channel, sync_channel};
     use std::sync::Arc;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
@@ -3204,34 +3265,23 @@ mod tests {
     }
 
     #[test]
-    fn viability_preflight_is_ready_without_issuing_or_consuming() {
+    fn viability_preflight_reports_unavailable_without_credential_claim() {
         let dir = tempdir().unwrap();
         let store = Arc::new(LocalProductStore::new(dir.path().join("pf-ready.db")).unwrap());
         let principal = operator(&store, "t-pf-ready", "op-pf-ready");
         seed_gp(&store, "ptask-gp-pf-ready", principal.tenant_id());
-        let _lock = crate::cli::config::cli_env_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let had_cred = std::env::var_os(DEEPSEEK_CREDENTIAL_REFERENCE);
-        let had_ci = std::env::var_os("CI");
-        std::env::set_var(DEEPSEEK_CREDENTIAL_REFERENCE, "test-operator-credential");
-        std::env::remove_var("CI");
-        let pre = operator_preflight(&store, &principal, None, Some("ptask-gp-pf-ready"));
-        match had_cred {
-            Some(v) => std::env::set_var(DEEPSEEK_CREDENTIAL_REFERENCE, v),
-            None => std::env::remove_var(DEEPSEEK_CREDENTIAL_REFERENCE),
-        }
-        match had_ci {
-            Some(v) => std::env::set_var("CI", v),
-            None => std::env::remove_var("CI"),
-        }
+        let pre = operator_preflight_read_only(&store, &principal, None, Some("ptask-gp-pf-ready"));
         let pre = pre.unwrap();
-        assert_eq!(pre["ready"], true);
+        assert_eq!(pre["ready"], false);
         assert_eq!(pre["authority_consumed"], false);
         assert_eq!(pre["provider_call_performed"], false);
         assert_eq!(pre["target_write_performed"], false);
         assert_eq!(pre["live_baseline_sealed"], false);
-        assert!(pre["blockers"].as_array().unwrap().is_empty());
+        assert_eq!(pre["credential_readiness"], "unavailable");
+        assert!(pre["credential_symbol_present"].is_null());
+        assert!(pre["blockers"].as_array().unwrap().iter().any(|blocker| {
+            blocker.get("code").and_then(Value::as_str) == Some("credential_readiness_unavailable")
+        }));
         let observed = pre["observed_at"].as_str().unwrap();
         assert!(
             chrono::DateTime::parse_from_rfc3339(observed).is_ok(),
@@ -3274,6 +3324,300 @@ mod tests {
             .get_rwe_run_authorization("unissued")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn viability_preflight_is_read_only_without_store_creation_or_auth_touch() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("existing?reserved#percent%.db");
+        let store = LocalProductStore::new(&db_path).unwrap();
+        store
+            .record_api_key_metadata_for_tenant(
+                "t-read-only",
+                "op-read-only",
+                "operator-user",
+                "operator",
+                &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+                "test",
+            )
+            .unwrap();
+        let before = store
+            .get_api_key_metadata_for_tenant("op-read-only", "t-read-only")
+            .unwrap()
+            .unwrap();
+        assert!(before["last_used_at"].is_null());
+        drop(store);
+        let directory_entries = || {
+            let mut entries: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    let metadata = entry.metadata().unwrap();
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        metadata.len(),
+                        metadata.modified().ok(),
+                    )
+                })
+                .collect();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            entries
+        };
+        let before_directory = directory_entries();
+        let before_file = std::fs::metadata(&db_path).unwrap();
+        let before_size = before_file.len();
+        let before_modified = before_file.modified().ok();
+
+        let read_only = Arc::new(LocalProductStore::open_existing_read_only(&db_path).unwrap());
+        let principal = read_only
+            .authenticate_managed_acceptance_principal_read_only(
+                "t-read-only",
+                "op-read-only",
+                Some(1.0),
+            )
+            .unwrap();
+        let pre = operator_preflight_read_only(&read_only, &principal, None, None).unwrap();
+        assert_eq!(pre["ready"], false);
+        assert_eq!(pre["authority_consumed"], false);
+        assert_eq!(pre["provider_call_performed"], false);
+        assert_eq!(pre["target_write_performed"], false);
+        assert!(pre["credential_symbol_present"].is_null());
+        let mutation = read_only.record_api_key_metadata(
+            "should-not-write",
+            "operator-user",
+            "operator",
+            &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+            "read-only-regression",
+        );
+        assert!(mutation.is_err(), "read-only store accepted a mutation");
+        let checkpoint = read_only.checkpoint_wal();
+        assert!(checkpoint
+            .expect_err("read-only store checkpointed its WAL")
+            .contains("read-only"));
+        let transaction = read_only.with_transaction(|_| Ok::<(), String>(()));
+        assert!(transaction
+            .expect_err("read-only store accepted a transaction")
+            .contains("read-only"));
+        let restore = read_only
+            .restore_verified_sqlite_backup(std::path::Path::new("missing-verified-backup.db"));
+        assert!(restore
+            .expect_err("read-only store accepted a backup restore")
+            .contains("read-only"));
+        let after = read_only
+            .get_api_key_metadata_for_tenant("op-read-only", "t-read-only")
+            .unwrap()
+            .unwrap();
+        assert!(after["last_used_at"].is_null());
+        assert_eq!(before, after);
+        drop(read_only);
+
+        let after_file = std::fs::metadata(&db_path).unwrap();
+        assert_eq!(after_file.len(), before_size);
+        assert_eq!(after_file.modified().ok(), before_modified);
+        assert_eq!(directory_entries(), before_directory);
+
+        let missing_parent = dir.path().join("missing-parent");
+        let missing_path = missing_parent.join("missing.db");
+        assert!(LocalProductStore::open_existing_read_only(&missing_path).is_err());
+        assert!(!missing_parent.exists());
+    }
+
+    #[test]
+    fn read_only_snapshot_serializes_same_process_writer() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("snapshot.db");
+        let store = LocalProductStore::new(&db_path).unwrap();
+        drop(store);
+
+        let read_only = LocalProductStore::open_existing_read_only(&db_path).unwrap();
+        let writer_path = db_path.clone();
+        let (started_sender, started_receiver) = sync_channel(0);
+        let (finished_sender, finished_receiver) = channel();
+        let writer = std::thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            let mutating_store = LocalProductStore::new(&writer_path).unwrap();
+            mutating_store
+                .record_api_key_metadata_for_tenant(
+                    "t-snapshot",
+                    "op-snapshot",
+                    "operator-user",
+                    "operator",
+                    &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+                    "snapshot-mutation",
+                )
+                .unwrap();
+            finished_sender.send(()).unwrap();
+        });
+        started_receiver.recv().unwrap();
+        assert!(finished_receiver
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        drop(read_only);
+        assert!(finished_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .is_ok());
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn read_only_snapshot_rejects_same_bytes_path_replacement() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("same-bytes-replacement.db");
+        let store = LocalProductStore::new(&db_path).unwrap();
+        store
+            .record_api_key_metadata_for_tenant(
+                "t-same-bytes",
+                "op-same-bytes",
+                "operator-user",
+                "operator",
+                &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+                "same-bytes-setup",
+            )
+            .unwrap();
+        drop(store);
+
+        let read_only = LocalProductStore::open_existing_read_only(&db_path).unwrap();
+        let original_bytes = std::fs::read(&db_path).unwrap();
+        std::fs::remove_file(&db_path).unwrap();
+        std::fs::write(&db_path, original_bytes).unwrap();
+
+        let error = read_only
+            .get_api_key_metadata_for_tenant("op-same-bytes", "t-same-bytes")
+            .expect_err("read-only store accepted a replacement inode");
+        assert!(error.contains("identity changed"), "{error}");
+    }
+
+    #[test]
+    fn read_only_open_reuses_encryption_configuration_and_verified_lock_anchor() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("encrypted-anchor.db");
+        let store = LocalProductStore::new_with_encryption(
+            &db_path,
+            || "2026-08-18T00:00:00Z".to_string(),
+            Some("test-encryption-key'with-specials"),
+        )
+        .unwrap();
+        store
+            .record_api_key_metadata_for_tenant(
+                "t-encrypted",
+                "op-encrypted",
+                "operator-user",
+                "operator",
+                &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+                "encryption-test",
+            )
+            .unwrap();
+        drop(store);
+
+        let read_only = LocalProductStore::open_existing_read_only_with_encryption(
+            &db_path,
+            Some("test-encryption-key'with-specials"),
+        )
+        .unwrap();
+        assert!(read_only.is_encrypted());
+        assert!(read_only
+            .get_api_key_metadata_for_tenant("op-encrypted", "t-encrypted")
+            .unwrap()
+            .is_some());
+        assert!(read_only
+            .record_api_key_metadata(
+                "op-encrypted-new",
+                "operator-user",
+                "operator",
+                &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+                "encryption-read-only-test",
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn read_only_encrypted_store_reports_unavailable_without_key() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("encrypted-unavailable.db");
+        let store = LocalProductStore::new_with_encryption(
+            &db_path,
+            || "2026-08-18T00:00:00Z".to_string(),
+            Some("test-encryption-key"),
+        )
+        .unwrap();
+        drop(store);
+
+        let companion_path = |suffix: &str| {
+            let mut path = db_path.as_os_str().to_os_string();
+            path.push(suffix);
+            PathBuf::from(path)
+        };
+        let before = std::fs::read(&db_path).unwrap();
+        for suffix in ["-wal", "-shm", "-journal"] {
+            assert!(!companion_path(suffix).exists());
+        }
+
+        let error = match LocalProductStore::open_existing_read_only(&db_path) {
+            Ok(_) => panic!("encrypted store opened without redacted key readiness"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "encryption_readiness_unavailable");
+        assert_eq!(std::fs::read(&db_path).unwrap(), before);
+        for suffix in ["-wal", "-shm", "-journal"] {
+            assert!(!companion_path(suffix).exists());
+        }
+    }
+
+    #[test]
+    fn writable_store_fails_closed_on_path_replacement_but_keeps_verified_unlinked_inode() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("anchor.db");
+        let store = LocalProductStore::new(&db_path).unwrap();
+        std::fs::remove_file(&db_path).unwrap();
+        store
+            .record_api_key_metadata(
+                "unlinked-key",
+                "operator-user",
+                "operator",
+                &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+                "unlinked-test",
+            )
+            .unwrap();
+
+        std::fs::write(&db_path, b"replacement").unwrap();
+        let error = store
+            .record_api_key_metadata(
+                "replacement-key",
+                "operator-user",
+                "operator",
+                &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+                "replacement-test",
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("identity changed"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn read_only_open_rejects_pending_sqlite_sidecars() {
+        for (suffix, label) in [
+            ("-wal", "WAL"),
+            ("-shm", "SHM"),
+            ("-journal", "rollback journal"),
+        ] {
+            let dir = tempdir().unwrap();
+            let db_path = dir.path().join("pending-sidecar.db");
+            let store = LocalProductStore::new(&db_path).unwrap();
+            drop(store);
+            let mut sidecar = db_path.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            std::fs::write(PathBuf::from(sidecar), b"pending").unwrap();
+            let error = match LocalProductStore::open_existing_read_only(&db_path) {
+                Ok(_) => panic!("read-only open accepted pending {label} companion"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains(label),
+                "unexpected error for {label}: {error}"
+            );
+        }
     }
 
     #[test]
