@@ -149,6 +149,7 @@ def _git_environment() -> dict[str, str]:
         "PATH": os.defpath,
         "LC_ALL": "C",
         "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG": os.devnull,
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_SYSTEM": os.devnull,
         "GIT_CONFIG_COUNT": "0",
@@ -232,6 +233,8 @@ def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
         start_new_session=True,
     )
     process_start_time = _process_start_time(process.pid)
+    group_session_id = _process_session_id(process.pid)
+    group_members = _process_group_members(process.pid, group_session_id)
     total = 0
     overflow = False
     timed_out = False
@@ -263,17 +266,37 @@ def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
                 output.write(chunk)
         if overflow or timed_out:
             _cleanup_child_process(
-                process, process_start_time, baseline_descendants, subreaper_ready
+                process,
+                process_start_time,
+                group_members,
+                group_session_id,
+                baseline_descendants,
+                subreaper_ready,
             )
             return False
-        process.wait(timeout=max(0, deadline - time.monotonic()))
+        _wait_with_group_snapshot(
+            process,
+            max(0, deadline - time.monotonic()),
+            group_members,
+            group_session_id,
+        )
         cleanup_ok = _cleanup_child_process(
-            process, process_start_time, baseline_descendants, subreaper_ready
+            process,
+            process_start_time,
+            group_members,
+            group_session_id,
+            baseline_descendants,
+            subreaper_ready,
         )
         return process.returncode == 0 and cleanup_ok
     except (OSError, subprocess.TimeoutExpired):
         _cleanup_child_process(
-            process, process_start_time, baseline_descendants, subreaper_ready
+            process,
+            process_start_time,
+            group_members,
+            group_session_id,
+            baseline_descendants,
+            subreaper_ready,
         )
         return False
     finally:
@@ -800,15 +823,22 @@ def _drain_output(
 
 
 def _terminate_process_group(
-    process: subprocess.Popen[bytes], expected_start_time: int | None
+    process: subprocess.Popen[bytes],
+    expected_start_time: int | None,
+    group_members: dict[int, int],
+    group_session_id: int | None,
 ) -> bool:
     """Terminate a child group only while its leader identity still matches."""
     if expected_start_time is None:
         return False
     current_start_time = _process_start_time(process.pid)
     if current_start_time is None:
-        members = _process_group_members(process.pid)
-        return _terminate_processes(members) if members else not _process_group_exists(process.pid)
+        members = _process_group_members(process.pid, group_session_id)
+        return (
+            _terminate_processes(members, process.pid, group_session_id)
+            if members
+            else not _process_group_exists(process.pid)
+        )
     if current_start_time != expected_start_time:
         return False
     if not _process_group_exists(process.pid):
@@ -821,10 +851,15 @@ def _terminate_process_group(
     while time.monotonic() < deadline:
         current_start_time = _process_start_time(process.pid)
         if current_start_time is None:
-            members = _process_group_members(process.pid)
-            return _terminate_processes(members) if members else not _process_group_exists(process.pid)
+            members = _process_group_members(process.pid, group_session_id)
+            return (
+                _terminate_processes(members, process.pid, group_session_id)
+                if members
+                else not _process_group_exists(process.pid)
+            )
         if current_start_time != expected_start_time:
             return False
+        group_members.update(_process_group_members(process.pid, group_session_id))
         try:
             os.killpg(process.pid, 0)
         except ProcessLookupError:
@@ -835,8 +870,12 @@ def _terminate_process_group(
             pass
     current_start_time = _process_start_time(process.pid)
     if current_start_time is None:
-        members = _process_group_members(process.pid)
-        return _terminate_processes(members) if members else not _process_group_exists(process.pid)
+        members = _process_group_members(process.pid, group_session_id)
+        return (
+            _terminate_processes(members, process.pid, group_session_id)
+            if members
+            else not _process_group_exists(process.pid)
+        )
     if current_start_time != expected_start_time:
         return False
     try:
@@ -917,7 +956,19 @@ def _process_start_time(process_id: int) -> int | None:
         return None
 
 
-def _process_group_members(process_group_id: int) -> dict[int, int]:
+def _process_session_id(process_id: int) -> int | None:
+    fields = _process_stat_fields(process_id)
+    if fields is None or len(fields) <= 3:
+        return None
+    try:
+        return int(fields[3])
+    except ValueError:
+        return None
+
+
+def _process_group_members(
+    process_group_id: int, expected_session_id: int | None
+) -> dict[int, int]:
     members: dict[int, int] = {}
     proc = Path("/proc")
     if not proc.is_dir():
@@ -930,7 +981,11 @@ def _process_group_members(process_group_id: int) -> dict[int, int]:
         if fields is None or len(fields) <= 2:
             continue
         try:
-            if int(fields[2]) != process_group_id:
+            if (
+                int(fields[2]) != process_group_id
+                or expected_session_id is not None
+                and int(fields[3]) != expected_session_id
+            ):
                 continue
         except ValueError:
             continue
@@ -938,6 +993,25 @@ def _process_group_members(process_group_id: int) -> dict[int, int]:
         if start_time is not None:
             members[process_id] = start_time
     return members
+
+
+def _wait_with_group_snapshot(
+    process: subprocess.Popen[bytes],
+    timeout: float,
+    group_members: dict[int, int],
+    group_session_id: int | None,
+) -> int:
+    deadline = time.monotonic() + timeout
+    while True:
+        if _process_start_time(process.pid) is not None:
+            group_members.update(_process_group_members(process.pid, group_session_id))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        try:
+            return process.wait(timeout=min(0.1, remaining))
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _process_parent_map() -> dict[int, int]:
@@ -992,7 +1066,33 @@ def _reap_process(process_id: int, expected_start_time: int) -> bool:
     return True
 
 
-def _terminate_processes(process_ids: dict[int, int]) -> bool:
+def _process_identity_matches(
+    process_id: int,
+    expected_start_time: int,
+    expected_group_id: int | None = None,
+    expected_session_id: int | None = None,
+) -> bool:
+    fields = _process_stat_fields(process_id)
+    if fields is None or len(fields) <= 19:
+        return False
+    try:
+        return (
+            int(fields[19]) == expected_start_time
+            and (expected_group_id is None or int(fields[2]) == expected_group_id)
+            and (
+                expected_session_id is None
+                or int(fields[3]) == expected_session_id
+            )
+        )
+    except (IndexError, ValueError):
+        return False
+
+
+def _terminate_processes(
+    process_ids: dict[int, int],
+    expected_group_id: int | None = None,
+    expected_session_id: int | None = None,
+) -> bool:
     process_ids = {
         pid: start_time
         for pid, start_time in process_ids.items()
@@ -1001,15 +1101,18 @@ def _terminate_processes(process_ids: dict[int, int]) -> bool:
     identity_ok = True
     remaining: dict[int, int] = {}
     for process_id, start_time in process_ids.items():
-        current_start_time = _process_start_time(process_id)
-        if current_start_time is None:
+        if _process_start_time(process_id) is None:
             continue
-        if current_start_time != start_time:
+        if not _process_identity_matches(
+            process_id, start_time, expected_group_id, expected_session_id
+        ):
             identity_ok = False
             continue
         remaining[process_id] = start_time
     for process_id, start_time in remaining.items():
-        if _process_start_time(process_id) != start_time:
+        if not _process_identity_matches(
+            process_id, start_time, expected_group_id, expected_session_id
+        ):
             identity_ok = False
             continue
         try:
@@ -1027,7 +1130,9 @@ def _terminate_processes(process_ids: dict[int, int]) -> bool:
         if remaining:
             time.sleep(0.05)
     for process_id, start_time in remaining.items():
-        if _process_start_time(process_id) != start_time:
+        if not _process_identity_matches(
+            process_id, start_time, expected_group_id, expected_session_id
+        ):
             identity_ok = False
             continue
         try:
@@ -1050,12 +1155,16 @@ def _terminate_processes(process_ids: dict[int, int]) -> bool:
 def _cleanup_child_process(
     process: subprocess.Popen[bytes],
     process_start_time: int | None,
+    group_members: dict[int, int],
+    group_session_id: int | None,
     baseline_descendants: dict[int, int],
     subreaper_ready: bool,
 ) -> bool:
     group_cleanup_ok = True
     if _process_group_exists(process.pid):
-        group_cleanup_ok = _terminate_process_group(process, process_start_time)
+        group_cleanup_ok = _terminate_process_group(
+            process, process_start_time, group_members, group_session_id
+        )
     if not subreaper_ready:
         return False
     current_descendants = _descendant_identities(os.getpid())
@@ -1107,6 +1216,8 @@ def _run_bounded_command(
     except OSError as error:
         return BoundedCommandResult(None, "", "", b"", b"", False, error, (), False)
     process_start_time = _process_start_time(process.pid)
+    group_session_id = _process_session_id(process.pid)
+    group_members = _process_group_members(process.pid, group_session_id)
 
     state: dict[str, object] = {
         "forbidden_markers": set(),
@@ -1128,19 +1239,33 @@ def _run_bounded_command(
     stderr_thread.start()
     timed_out = False
     try:
-        returncode = process.wait(timeout=timeout)
+        returncode = _wait_with_group_snapshot(
+            process, timeout, group_members, group_session_id
+        )
     except subprocess.TimeoutExpired:
         timed_out = True
-        _terminate_process_group(process, process_start_time)
+        _terminate_process_group(
+            process, process_start_time, group_members, group_session_id
+        )
         returncode = process.returncode
     cleanup_ok = _cleanup_child_process(
-        process, process_start_time, baseline_descendants, subreaper_ready
+        process,
+        process_start_time,
+        group_members,
+        group_session_id,
+        baseline_descendants,
+        subreaper_ready,
     )
     stdout_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
     stderr_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
     if stdout_thread.is_alive() or stderr_thread.is_alive():
         cleanup_ok = _cleanup_child_process(
-            process, process_start_time, baseline_descendants, subreaper_ready
+            process,
+            process_start_time,
+            group_members,
+            group_session_id,
+            baseline_descendants,
+            subreaper_ready,
         ) and cleanup_ok
         stdout_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
         stderr_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
