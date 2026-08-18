@@ -2538,9 +2538,17 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
     }
 
     fn migrate_v36_add_delegations(conn: &Connection) -> Result<(), String> {
-        conn.execute_batch(schema::V36_DDL)
+        // The v36 compatibility columns are repaired with read-then-alter
+        // operations. Serialize the complete DDL and repair so two store
+        // openers cannot both observe a missing column and race on ALTER
+        // TABLE. The immediate transaction also keeps user_version behind
+        // the fully repaired schema when a migration fails.
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
-        repair_sqlite_v36_delegated_plan_owner(conn)
+        tx.execute_batch(schema::V36_DDL)
+            .map_err(|error| error.to_string())?;
+        repair_sqlite_v36_delegated_plan_owner(&tx)?;
+        tx.commit().map_err(|error| error.to_string())
     }
 
     fn migrate_v33_add_managed_acceptance_spend(conn: &Connection) -> Result<(), String> {
