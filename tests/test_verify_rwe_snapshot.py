@@ -1,4 +1,6 @@
+from contextlib import redirect_stderr
 import hashlib
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -6,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from scripts import verify_rwe_snapshot
 
@@ -212,6 +215,46 @@ class VerifyRweSnapshotTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertLessEqual(len(result.stdout.encode()), verify_rwe_snapshot.MAX_TRACE_OUTPUT_BYTES)
+
+    def test_main_does_not_report_absolute_paths_from_exceptions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest.json"
+            stderr = StringIO()
+            with (
+                patch.object(
+                    verify_rwe_snapshot,
+                    "verify",
+                    side_effect=OSError(f"private path: {manifest_path}"),
+                ),
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "verify_rwe_snapshot.py",
+                        "--manifest",
+                        str(manifest_path),
+                        "--source-root",
+                        str(root / "source"),
+                        "--harness-root",
+                        str(root / "harness"),
+                        "--post-ac-main-sha",
+                        "0" * 40,
+                        "--post-ac-tree-sha",
+                        "0" * 40,
+                        "--post-ac-cargo-lock-sha256",
+                        "0" * 64,
+                        "--post-ac-rust-toolchain-sha256",
+                        "0" * 64,
+                    ],
+                ),
+                redirect_stderr(stderr),
+            ):
+                status = verify_rwe_snapshot.main()
+
+        self.assertEqual(status, 1)
+        self.assertNotIn(str(manifest_path), stderr.getvalue())
+        self.assertEqual(stderr.getvalue(), "snapshot verification failed: OSError\n")
 
     def test_bounded_command_cleans_a_detached_descendant(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

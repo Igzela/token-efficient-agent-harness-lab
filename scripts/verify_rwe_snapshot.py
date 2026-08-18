@@ -115,7 +115,7 @@ def sha256_file_bounded(path: Path, maximum: int) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             total += len(chunk)
             if total > maximum:
-                raise OSError(f"file exceeds bounded digest limit: {path}")
+                raise OSError("file exceeds bounded digest limit")
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -409,7 +409,7 @@ def cache_snapshot_digest(root: Path) -> str:
             continue
         if not path.is_file():
             if not path.is_dir():
-                raise OSError(f"cache snapshot contains an unsupported entry: {path}")
+                raise OSError("cache snapshot contains an unsupported entry")
             continue
         size = path.stat().st_size
         total_bytes += size
@@ -470,11 +470,15 @@ def copy_cache_snapshot(source: Path, destination: Path, label: str) -> str:
             ignore=ignore_escaping_symlinks,
         )
     except OSError as error:
-        raise OSError(f"cannot snapshot {label} cache: {error}") from error
+        raise OSError(
+            f"cannot snapshot {label} cache: {type(error).__name__}"
+        ) from error
     try:
         destination_digest = cache_snapshot_digest(destination)
     except OSError as error:
-        raise OSError(f"cannot hash {label} cache snapshot: {error}") from error
+        raise OSError(
+            f"cannot hash {label} cache snapshot: {type(error).__name__}"
+        ) from error
     if destination_digest != source_digest:
         raise OSError(f"{label} cache snapshot differs from its source binding")
     return destination_digest
@@ -1268,8 +1272,10 @@ def verify_provider_free_traces(
         (trace_source / "source").symlink_to(".")
         trace_harness = temporary / "harness"
         copy_git_revision(harness_root, FROZEN_POST_AC_IDENTITY["main_sha"], trace_harness)
-        target = temporary / "target"
-        target.mkdir()
+        source_target = temporary / "source-target"
+        source_target.mkdir()
+        harness_target = temporary / "harness-target"
+        harness_target.mkdir()
         home = temporary / "home"
         home.mkdir()
         trace_cargo = temporary / "cargo-home"
@@ -1295,8 +1301,10 @@ def verify_provider_free_traces(
         cache_bindings[trace_cache] = ("uv", copy_cache_snapshot(uv_cache, trace_cache, "uv"))
         cargo_lock = temporary / "cargo-package-cache.lock"
         cargo_lock.touch()
-        uv_work_cache = temporary / "uv-work-cache"
-        uv_work_cache.mkdir()
+        source_uv_work_cache = temporary / "source-uv-work-cache"
+        source_uv_work_cache.mkdir()
+        harness_uv_work_cache = temporary / "harness-uv-work-cache"
+        harness_uv_work_cache.mkdir()
         # UV may publish freshly built editable distributions into its cache.
         # Seed a disposable scratch copy from the bound snapshot so that these
         # writes cannot cross a read-only bind mount or reach the host cache.
@@ -1305,16 +1313,29 @@ def verify_provider_free_traces(
             if source_cache.exists():
                 copy_cache_snapshot(
                     source_cache,
-                    uv_work_cache / cache_name,
+                    source_uv_work_cache / cache_name,
                     f"UV scratch {cache_name}",
                 )
-        environment = _provider_free_environment(home, target)
-        environment["CARGO_HOME"] = str(trace_cargo)
-        environment["RUSTUP_HOME"] = str(home / "rustup")
-        environment["UV_CACHE_DIR"] = str(trace_cache)
-        uv_binary = resolve_trace_binary("uv", environment, failures)
-        cargo_binary = resolve_trace_binary("cargo", environment, failures)
-        rustdoc_binary = resolve_trace_binary("rustdoc", environment, failures)
+        for cache_name in ("archive-v0", "wheels-v6", "simple-v21"):
+            source_cache = trace_cache / cache_name
+            if source_cache.exists():
+                copy_cache_snapshot(
+                    source_cache,
+                    harness_uv_work_cache / cache_name,
+                    f"UV harness scratch {cache_name}",
+                )
+        source_environment = _provider_free_environment(home, source_target)
+        source_environment["CARGO_HOME"] = str(trace_cargo)
+        source_environment["RUSTUP_HOME"] = str(home / "rustup")
+        source_environment["UV_CACHE_DIR"] = str(trace_cache)
+        source_base_environment = dict(source_environment)
+        harness_environment = _provider_free_environment(home, harness_target)
+        harness_environment["CARGO_HOME"] = str(trace_cargo)
+        harness_environment["RUSTUP_HOME"] = str(home / "rustup")
+        harness_environment["UV_CACHE_DIR"] = str(trace_cache)
+        uv_binary = resolve_trace_binary("uv", source_environment, failures)
+        cargo_binary = resolve_trace_binary("cargo", source_environment, failures)
+        rustdoc_binary = resolve_trace_binary("rustdoc", source_environment, failures)
         if uv_binary is None or cargo_binary is None or rustdoc_binary is None:
             return
         registered = registered_source_commands(manifest, uv_binary, failures)
@@ -1326,18 +1347,40 @@ def verify_provider_free_traces(
             pytest_command_environment,
             pytest,
         ) = registered
-        source_environment = dict(environment)
-        source_environment.update(materializer_command_environment)
-        mounts = {
+        source_mounts = {
             trace_source: "/workspace/source",
             trace_harness: "/tmp/rwe-harness",
-            target: "/tmp/rwe-target",
+            source_target: "/tmp/rwe-target",
             trace_cargo: "/tmp/rwe-cargo-home",
             trace_cache: "/tmp/rwe-host-uv-cache",
-            uv_work_cache: "/tmp/rwe-uv-cache",
+            source_uv_work_cache: "/tmp/rwe-uv-cache",
             cargo_lock: "/tmp/rwe-cargo-home/.package-cache",
         }
-        writable_cache_mounts = {uv_work_cache, cargo_lock}
+        source_writable_mounts = {
+            trace_source,
+            source_target,
+            source_uv_work_cache,
+            cargo_lock,
+        }
+        harness_cargo_lock = temporary / "harness-cargo-package-cache.lock"
+        harness_cargo_lock.touch()
+        harness_mounts = {
+            trace_source: "/workspace/source",
+            trace_harness: "/tmp/rwe-harness",
+            harness_target: "/tmp/rwe-target",
+            trace_cargo: "/tmp/rwe-cargo-home",
+            trace_cache: "/tmp/rwe-host-uv-cache",
+            harness_uv_work_cache: "/tmp/rwe-uv-cache",
+            harness_cargo_lock: "/tmp/rwe-cargo-home/.package-cache",
+        }
+        harness_writable_mounts = {
+            trace_harness,
+            harness_target,
+            harness_uv_work_cache,
+            harness_cargo_lock,
+        }
+        source_environment = dict(source_base_environment)
+        source_environment.update(materializer_command_environment)
         for cache_path, (label, digest) in cache_bindings.items():
             verify_cache_snapshot(cache_path, digest, label, failures)
         _run_provider_free_trace(
@@ -1345,23 +1388,23 @@ def verify_provider_free_traces(
             materializer,
             trace_source,
             source_environment,
-            mounts,
-            {trace_source, target, *writable_cache_mounts},
+            source_mounts,
+            source_writable_mounts,
             True,
             failures,
         )
         for cache_path, (label, digest) in cache_bindings.items():
             verify_cache_snapshot(cache_path, digest, label, failures)
         verify_trace_generated_baseline(trace_source, manifest, failures)
-        source_environment = dict(environment)
+        source_environment = dict(source_base_environment)
         source_environment.update(pytest_command_environment)
         _run_provider_free_trace(
             "pre_ac_source_pytest",
             pytest,
             trace_source,
             source_environment,
-            mounts,
-            {trace_source, target, *writable_cache_mounts},
+            source_mounts,
+            source_writable_mounts,
             True,
             failures,
         )
@@ -1379,25 +1422,25 @@ def verify_provider_free_traces(
                 "cli::codex_mediation_admission::tests::isolation_probe_hides_synthetic_auth_path",
             ],
             trace_harness,
-            environment,
-            mounts,
-            {trace_harness, target, *writable_cache_mounts},
+            harness_environment,
+            harness_mounts,
+            harness_writable_mounts,
             True,
             failures,
         )
         for cache_path, (label, digest) in cache_bindings.items():
             verify_cache_snapshot(cache_path, digest, label, failures)
-        engine_test_binary = find_engine_test_binary(target, failures)
+        engine_test_binary = find_engine_test_binary(harness_target, failures)
         if engine_test_binary is None:
             return
-        verify_bwrap_capability(environment, failures)
+        verify_bwrap_capability(harness_environment, failures)
         # This registered test intentionally probes nested bubblewrap. Running
         # it inside the outer sandbox makes it observe the outer namespace.
         # The direct lane is allowed only after the independent bwrap probe
         # above proves that the test can establish its own filesystem boundary.
         nested_environment = {
             key: value
-            for key, value in environment.items()
+            for key, value in harness_environment.items()
             if key not in {"CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR", "UV_CACHE_DIR"}
         }
         _run_provider_free_trace(
@@ -1409,8 +1452,8 @@ def verify_provider_free_traces(
             ],
             trace_harness,
             nested_environment,
-            mounts,
-            {trace_harness, target},
+            harness_mounts,
+            {trace_harness, harness_target},
             False,
             failures,
             ("BLOCKED:bwrap_userns_unavailable",),
@@ -1671,7 +1714,10 @@ def main() -> int:
             args.execute_traces,
         )
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
-        print(f"snapshot verification failed: {error}", file=sys.stderr)
+        print(
+            f"snapshot verification failed: {type(error).__name__}",
+            file=sys.stderr,
+        )
         return 1
     if failures:
         print("\n".join(f"snapshot verification failed: {failure}" for failure in failures), file=sys.stderr)
