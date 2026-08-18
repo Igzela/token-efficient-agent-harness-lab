@@ -23,6 +23,100 @@ pub const FROZEN_RWE_VERIFIER_IDENTITY: &str = "deterministic_rwe_pytest_v1";
 /// Docs Golden Path verifier identity (unchanged).
 pub const DOCS_GP_VERIFIER_IDENTITY: &str = "deterministic_docs_health_check_v1";
 
+/// Exact pre-AC source checkout and provider-free recipe bound by the
+/// reconstructable snapshot manifest. These values are distinct from the
+/// task-definition source tree above: the former identifies the complete
+/// source checkout, while the latter identifies the task input contract.
+pub const FROZEN_RWE_PRE_AC_SOURCE_TREE_HASH: &str =
+    "f8d22ebf5009842d37285624f345d47bf6da5548032eb84cb7528407169d9cc3";
+pub const FROZEN_RWE_RECIPE_COMMIT: &str = "de0b3bb5158f07100d9ee3846b0555193503629d";
+pub const FROZEN_RWE_RECIPE_TREE_HASH: &str =
+    "8fc5610c47cc4477c5ab7c65fe680ddf970bca4e612558701b316cc2ca038766";
+pub const FROZEN_RWE_SNAPSHOT_MANIFEST_SHA256: &str =
+    "a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c";
+pub const FROZEN_RWE_CORPUS_SHA256: &str =
+    "044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20";
+pub const FROZEN_RWE_PROTOCOL_SHA256: &str =
+    "bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db";
+pub const FROZEN_RWE_SCHEDULE_SHA256: &str =
+    "6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38";
+
+/// Accepted post-AC main identity used as the comparison arm. This is a
+/// binding only; it does not authorize a replay, Provider call, or target
+/// write.
+pub const FROZEN_RWE_POST_AC_MAIN_SHA: &str = "42fcfa5ad7e349d27d3caa815163340f9c0d5c0b";
+pub const FROZEN_RWE_POST_AC_TREE_HASH: &str = "c81a2e4e635da05a8a1c15630371e98943c70c86";
+pub const FROZEN_RWE_POST_AC_CARGO_LOCK_SHA256: &str =
+    "cf68982734f8a72148950f119408b676dd5b42ce65d7af69c02eca017a551653";
+pub const FROZEN_RWE_POST_AC_RUST_TOOLCHAIN_SHA256: &str =
+    "e59c5da37d1f9f4e0f815bc188cb6056fc7410c9cdaa9673c2d44da557c75d12";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrozenRweReconstructionBinding {
+    pub pre_ac_source_commit: &'static str,
+    pub pre_ac_source_tree_hash: &'static str,
+    pub recipe_commit: &'static str,
+    pub recipe_tree_hash: &'static str,
+    pub snapshot_manifest_sha256: &'static str,
+    pub corpus_sha256: &'static str,
+    pub protocol_sha256: &'static str,
+    pub schedule_sha256: &'static str,
+    pub post_ac_main_sha: &'static str,
+    pub post_ac_tree_hash: &'static str,
+    pub post_ac_cargo_lock_sha256: &'static str,
+    pub post_ac_rust_toolchain_sha256: &'static str,
+}
+
+impl FrozenRweReconstructionBinding {
+    pub fn validate(self) -> Result<(), String> {
+        for (name, value) in [
+            ("pre_ac_source_commit", self.pre_ac_source_commit),
+            ("pre_ac_source_tree_hash", self.pre_ac_source_tree_hash),
+            ("recipe_commit", self.recipe_commit),
+            ("recipe_tree_hash", self.recipe_tree_hash),
+            ("snapshot_manifest_sha256", self.snapshot_manifest_sha256),
+            ("corpus_sha256", self.corpus_sha256),
+            ("protocol_sha256", self.protocol_sha256),
+            ("schedule_sha256", self.schedule_sha256),
+            ("post_ac_main_sha", self.post_ac_main_sha),
+            ("post_ac_tree_hash", self.post_ac_tree_hash),
+            ("post_ac_cargo_lock_sha256", self.post_ac_cargo_lock_sha256),
+            (
+                "post_ac_rust_toolchain_sha256",
+                self.post_ac_rust_toolchain_sha256,
+            ),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("reconstruction binding requires {name}"));
+            }
+        }
+        if self.pre_ac_source_commit == self.post_ac_main_sha {
+            return Err("pre-AC source and post-AC main identities must differ".into());
+        }
+        if self.pre_ac_source_tree_hash == self.post_ac_tree_hash {
+            return Err("pre-AC source and post-AC trees must differ".into());
+        }
+        Ok(())
+    }
+}
+
+pub const fn frozen_rwe_reconstruction_binding() -> FrozenRweReconstructionBinding {
+    FrozenRweReconstructionBinding {
+        pre_ac_source_commit: FROZEN_RWE_TARGET_MAIN_SHA,
+        pre_ac_source_tree_hash: FROZEN_RWE_PRE_AC_SOURCE_TREE_HASH,
+        recipe_commit: FROZEN_RWE_RECIPE_COMMIT,
+        recipe_tree_hash: FROZEN_RWE_RECIPE_TREE_HASH,
+        snapshot_manifest_sha256: FROZEN_RWE_SNAPSHOT_MANIFEST_SHA256,
+        corpus_sha256: FROZEN_RWE_CORPUS_SHA256,
+        protocol_sha256: FROZEN_RWE_PROTOCOL_SHA256,
+        schedule_sha256: FROZEN_RWE_SCHEDULE_SHA256,
+        post_ac_main_sha: FROZEN_RWE_POST_AC_MAIN_SHA,
+        post_ac_tree_hash: FROZEN_RWE_POST_AC_TREE_HASH,
+        post_ac_cargo_lock_sha256: FROZEN_RWE_POST_AC_CARGO_LOCK_SHA256,
+        post_ac_rust_toolchain_sha256: FROZEN_RWE_POST_AC_RUST_TOOLCHAIN_SHA256,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrozenRweTaskBinding {
     pub task_id: String,
@@ -361,6 +455,7 @@ pub fn ensure_frozen_operator_target(frozen: &OperatorFrozenContractSet) -> Resu
 /// Composition seam readiness: frozen bindings load and match Board A freeze.
 /// Does not issue or consume authority.
 pub fn rwe_composition_seam_ready() -> Result<(), String> {
+    frozen_rwe_reconstruction_binding().validate()?;
     let frozen = freeze_current_operator_contract_set()?;
     ensure_frozen_operator_target(&frozen)?;
     let bindings = frozen_rwe_task_bindings()?;
@@ -394,6 +489,16 @@ mod tests {
 
     #[test]
     fn frozen_bindings_load_and_match_pytest() {
+        let reconstruction = frozen_rwe_reconstruction_binding();
+        reconstruction.validate().unwrap();
+        assert_ne!(
+            reconstruction.pre_ac_source_commit,
+            reconstruction.post_ac_main_sha
+        );
+        assert_ne!(
+            reconstruction.pre_ac_source_tree_hash,
+            reconstruction.post_ac_tree_hash
+        );
         let bindings = frozen_rwe_task_bindings().unwrap();
         assert_eq!(bindings.len(), 2);
         for b in &bindings {

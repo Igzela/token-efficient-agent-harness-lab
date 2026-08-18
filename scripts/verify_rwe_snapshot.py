@@ -4,17 +4,120 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
+import selectors
+import shutil
+import shlex
+import signal
 import subprocess
 import sys
+import tempfile
+import threading
+import time
+import tomllib
+
+
+FROZEN_RWE_MANIFEST_SHA256 = (
+    "a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c"
+)
+FROZEN_POST_AC_IDENTITY = {
+    "main_sha": "42fcfa5ad7e349d27d3caa815163340f9c0d5c0b",
+    "tree_sha": "c81a2e4e635da05a8a1c15630371e98943c70c86",
+    "cargo_lock_sha256": "cf68982734f8a72148950f119408b676dd5b42ce65d7af69c02eca017a551653",
+    "rust_toolchain_sha256": "e59c5da37d1f9f4e0f815bc188cb6056fc7410c9cdaa9673c2d44da557c75d12",
+}
+FROZEN_OBSERVED_TOOLCHAIN = {
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "rustdoc": "rustdoc 1.96.0 (ac68faa20 2026-05-25)",
+    "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)",
+    "python": "Python 3.14.4",
+    "uv": "uv 0.11.17",
+    "git": "git version 2.53.0",
+}
+FROZEN_TRACE_BINARY_IDENTITIES = {
+    "rustc": {
+        "path": str(
+            Path.home()
+            / ".rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc"
+        ),
+        "sha256": "ba4b837efb6612dfa8d941c5a72b8a50d1d03a0f36216743b173949aa8d9eb75",
+    },
+    "rustdoc": {
+        "path": str(
+            Path.home()
+            / ".rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustdoc"
+        ),
+        "sha256": "ead78a0e00004d88ef7a3209a20552ba805cc9cb7cde7b061093a1b2dfb037c0",
+    },
+    "cargo": {
+        "path": str(
+            Path.home()
+            / ".rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo"
+        ),
+        "sha256": "f30f9fd1b1d0b8fd10dc33219eb4cd4bec3543f40e434ac71f5a03fd0359063f",
+    },
+    "python": {
+        "path": "/usr/bin/python3.14",
+        "sha256": "b8d8288faefdd300201f43fcf00f6f539a27218eeed3a3dff5ab10b9c4c99700",
+    },
+    "uv": {
+        "path": str(Path.home() / ".local/bin/uv"),
+        "sha256": "8ac91b3913a96c6d98d65b2fc6996064c85d0dc42a626977d337046be796c75d",
+    },
+    "git": {
+        "path": "/usr/bin/git",
+        "sha256": "5516c9f362c29376ab9a499a33082f9f611941d8c75930c880e30ad109e39c9a",
+    },
+    "bwrap": {
+        "path": "/usr/bin/bwrap",
+        "sha256": "0abea81db798ebf6b4742ac0664802d97521547a353c2a0dbdc21d76cbbfd2c0",
+    },
+}
+GIT_BINARY = FROZEN_TRACE_BINARY_IDENTITIES["git"]["path"]
+MAX_TRACE_OUTPUT_BYTES = 128 * 1024
+MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024
+MAX_GIT_STREAM_BYTES = 256 * 1024 * 1024
+MAX_RECIPE_FILE_BYTES = 256 * 1024 * 1024
+MAX_CACHE_BYTES = 4 * 1024 * 1024 * 1024
+MAX_CACHE_ENTRIES = 250_000
+MIN_FREE_SPACE_BYTES = 2 * 1024 * 1024 * 1024
+PROCESS_TERMINATION_GRACE_SECONDS = 5
+CURRENT_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_SUBREAPER_ENABLED: bool | None = None
+_TRUSTED_GIT_DIRS: dict[Path, Path] = {}
+_CLEAR_SUBREAPER_PROGRAM = (
+    "import ctypes, os, sys; "
+    "libc=ctypes.CDLL(None, use_errno=True); "
+    "libc.prctl.argtypes=[ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, "
+    "ctypes.c_ulong, ctypes.c_ulong]; "
+    "libc.prctl.restype=ctypes.c_int; "
+    "status=libc.prctl(36, 0, 0, 0, 0); "
+    "os._exit(125) if status != 0 else os.execvpe(sys.argv[1], sys.argv[1:], os.environ)"
+)
 
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_file_bounded(path: Path, maximum: int) -> str:
+    digest = hashlib.sha256()
+    total = 0
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            total += len(chunk)
+            if total > maximum:
+                raise OSError("file exceeds bounded digest limit")
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -42,63 +145,273 @@ def verify_file(root: Path, relative: str, expected: str, failures: list[str]) -
         failures.append(f"snapshot hash mismatch: {relative}")
 
 
-def git_output(root: Path, *args: str) -> str | None:
-    result = subprocess.run(
-        ["git", "-C", str(root), *args],
-        check=False,
-        capture_output=True,
-        text=True,
+def _trusted_git_dir(root: Path) -> Path:
+    """Create a read-only Git-dir view without repository-local configuration."""
+    resolved_root = root.resolve()
+    cached = _TRUSTED_GIT_DIRS.get(resolved_root)
+    if cached is not None:
+        return cached
+    dot_git = resolved_root / ".git"
+    if dot_git.is_dir():
+        git_dir = dot_git.resolve()
+    elif dot_git.is_file():
+        marker = dot_git.read_text(encoding="utf-8").strip()
+        if not marker.startswith("gitdir:"):
+            raise OSError("Git worktree metadata is malformed")
+        git_dir = Path(marker.split(":", 1)[1].strip())
+        if not git_dir.is_absolute():
+            git_dir = (dot_git.parent / git_dir).resolve()
+        else:
+            git_dir = git_dir.resolve()
+    else:
+        raise OSError("Git worktree metadata is unavailable")
+    if not git_dir.is_dir():
+        raise OSError("Git directory is unavailable")
+    common_marker = git_dir / "commondir"
+    if common_marker.is_file():
+        common_dir = (git_dir / common_marker.read_text(encoding="utf-8").strip()).resolve()
+    else:
+        common_dir = git_dir
+    if not common_dir.is_dir():
+        raise OSError("Git common directory is unavailable")
+
+    view = Path(tempfile.mkdtemp(prefix="pe7-rwe-git-view-"))
+    head_source = git_dir / "HEAD"
+    if not head_source.is_file():
+        head_source = common_dir / "HEAD"
+    if not head_source.is_file() or head_source.stat().st_size > 4096:
+        raise OSError("Git HEAD is unavailable")
+    (view / "HEAD").write_bytes(head_source.read_bytes())
+    for name in ("index", "objects", "refs", "packed-refs", "info", "shallow", "logs"):
+        source = git_dir / name
+        if not source.exists():
+            source = common_dir / name
+        if source.exists():
+            (view / name).symlink_to(source, target_is_directory=source.is_dir())
+    _TRUSTED_GIT_DIRS[resolved_root] = view
+    return view
+
+
+def _git_environment(root: Path) -> dict[str, str]:
+    """Use only a config-less Git-dir view and fixed verifier configuration."""
+    return {
+        "PATH": os.defpath,
+        "LC_ALL": "C",
+        "GIT_DIR": str(_trusted_git_dir(root)),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG": os.devnull,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_COUNT": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+
+
+def _git_command(root: Path, args: tuple[str, ...]) -> list[str]:
+    command = [
+        GIT_BINARY,
+        "-C",
+        str(root),
+        "--work-tree",
+        str(root),
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        "core.sparseCheckout=false",
+        "-c",
+        "core.sparseCheckoutCone=false",
+        "-c",
+        "core.excludesFile=/dev/null",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-c",
+        "core.fileMode=true",
+        "-c",
+        "status.showUntrackedFiles=all",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "diff.external=",
+        "-c",
+        "diff.trustExitCode=false",
+        "--no-optional-locks",
+    ]
+    for name in (
+        "cat-file",
+        "diff",
+        "ls-files",
+        "ls-tree",
+        "merge-base",
+        "rev-parse",
+        "show",
+        "status",
+    ):
+        command.extend(("-c", f"alias.{name}={name}"))
+    if args and args[0] == "diff":
+        command.extend(("diff", "--no-ext-diff", "--no-textconv", *args[1:]))
+    else:
+        command.extend(args)
+    return command
+
+
+def _git_result(root: Path, *args: str) -> BoundedCommandResult:
+    try:
+        environment = _git_environment(root)
+    except OSError as error:
+        return BoundedCommandResult(None, "", "", b"", b"", False, error, (), False)
+    return _run_bounded_command(
+        _git_command(root, args),
+        cwd=Path("/"),
+        environment=environment,
+        timeout=120,
+        retain_full_output=True,
+        max_output_bytes=MAX_GIT_OUTPUT_BYTES,
     )
-    if result.returncode:
+
+
+def _git_stream_to_path(root: Path, destination: Path, *args: str) -> bool:
+    subreaper_ready = _ensure_child_subreaper()
+    baseline_descendants = (
+        _descendant_identities(os.getpid()) if subreaper_ready else {}
+    )
+    try:
+        process = subprocess.Popen(
+            _git_command(root, args),
+            cwd=Path("/"),
+            env=_git_environment(root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        return False
+    process_start_time = _process_start_time(process.pid)
+    group_session_id = _process_session_id(process.pid)
+    group_members = _process_group_members(process.pid, group_session_id)
+    total = 0
+    overflow = False
+    timed_out = False
+    selector = selectors.DefaultSelector()
+    try:
+        assert process.stdout is not None
+        os.set_blocking(process.stdout.fileno(), False)
+        selector.register(process.stdout, selectors.EVENT_READ)
+        deadline = time.monotonic() + 120
+        with destination.open("wb") as output:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    timed_out = True
+                    break
+                try:
+                    chunk = process.stdout.read(64 * 1024)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    break
+                total += len(chunk)
+                if (
+                    total > MAX_GIT_STREAM_BYTES
+                    or shutil.disk_usage(destination.parent).free < MIN_FREE_SPACE_BYTES
+                ):
+                    overflow = True
+                    break
+                output.write(chunk)
+        if overflow or timed_out:
+            _cleanup_child_process(
+                process,
+                process_start_time,
+                group_members,
+                group_session_id,
+                baseline_descendants,
+                subreaper_ready,
+            )
+            return False
+        _wait_with_group_snapshot(
+            process,
+            max(0, deadline - time.monotonic()),
+            group_members,
+            group_session_id,
+            process_start_time,
+        )
+        cleanup_ok = _cleanup_child_process(
+            process,
+            process_start_time,
+            group_members,
+            group_session_id,
+            baseline_descendants,
+            subreaper_ready,
+        )
+        return process.returncode == 0 and cleanup_ok
+    except (OSError, subprocess.TimeoutExpired):
+        _cleanup_child_process(
+            process,
+            process_start_time,
+            group_members,
+            group_session_id,
+            baseline_descendants,
+            subreaper_ready,
+        )
+        return False
+    finally:
+        selector.close()
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+def git_output(root: Path, *args: str) -> str | None:
+    result = _git_result(root, *args)
+    if result.error is not None or result.timed_out or result.output_truncated or result.returncode:
         return None
     return result.stdout.strip()
 
 
 def git_blob(root: Path, revision: str, relative: str) -> bytes | None:
-    result = subprocess.run(
-        ["git", "-C", str(root), "show", f"{revision}:{relative}"],
-        check=False,
-        capture_output=True,
-    )
-    return result.stdout if result.returncode == 0 else None
+    result = _git_result(root, "show", f"{revision}:{relative}")
+    if result.error is not None or result.timed_out or result.output_truncated:
+        return None
+    return result.stdout_bytes if result.returncode == 0 else None
 
 
 def git_tree_hash(root: Path, revision: str) -> str | None:
-    result = subprocess.run(
-        ["git", "-C", str(root), "ls-tree", "-r", "-z", "--full-tree", revision],
-        check=False,
-        capture_output=True,
-    )
-    if result.returncode:
+    result = _git_result(root, "ls-tree", "-r", "-z", "--full-tree", revision)
+    if result.error is not None or result.timed_out or result.output_truncated or result.returncode:
         return None
     entries: list[dict[str, object]] = []
-    for record in result.stdout.split(b"\0"):
-        if not record:
-            continue
-        header, relative_bytes = record.split(b"\t", 1)
-        mode, object_type, object_id = header.split()
-        if object_type != b"blob" or mode not in {b"100644", b"100755"}:
-            return None
-        relative = relative_bytes.decode("utf-8")
-        content = git_blob(root, revision, relative)
-        if content is None:
-            return None
-        entries.append(
-            {
-                "relative_path": relative,
-                "sha256": hashlib.sha256(content).hexdigest(),
-                "executable": mode == b"100755",
-            }
-        )
+    with tempfile.TemporaryDirectory(prefix="pe7-rwe-git-blob-") as directory:
+        blob_path = Path(directory) / "blob"
+        for record in result.stdout_bytes.split(b"\0"):
+            if not record:
+                continue
+            header, relative_bytes = record.split(b"\t", 1)
+            mode, object_type, object_id = header.split()
+            if object_type != b"blob" or mode not in {b"100644", b"100755"}:
+                return None
+            relative = relative_bytes.decode("utf-8")
+            if not _git_stream_to_path(root, blob_path, "cat-file", "blob", object_id.decode()):
+                return None
+            entries.append(
+                {
+                    "relative_path": relative,
+                    "sha256": sha256_file(blob_path),
+                    "executable": mode == b"100755",
+                }
+            )
     entries.sort(key=lambda item: item["relative_path"])
     encoded = json.dumps(entries, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
-def git_overlay_paths(root: Path) -> list[str]:
-    tracked = git_output(root, "diff", "--name-only") or ""
-    staged = git_output(root, "diff", "--cached", "--name-only") or ""
-    untracked = git_output(root, "ls-files", "--others", "--exclude-standard") or ""
+def git_overlay_paths(root: Path) -> list[str] | None:
+    tracked = git_output(root, "diff", "--name-only")
+    staged = git_output(root, "diff", "--cached", "--name-only")
+    untracked = git_output(root, "ls-files", "--others", "--exclude-standard")
+    if tracked is None or staged is None or untracked is None:
+        return None
     generated_prefix = "apps/api/src/alters_lab_api.egg-info/"
     return sorted(
         path
@@ -111,12 +424,222 @@ def git_overlay_paths(root: Path) -> list[str]:
     )
 
 
+def git_revision_paths(root: Path, revision: str) -> list[str]:
+    result = _git_result(root, "ls-tree", "-r", "-z", "--name-only", revision)
+    if result.error is not None or result.timed_out or result.output_truncated or result.returncode:
+        raise OSError(f"cannot enumerate Git revision: {revision}")
+    return [item.decode("utf-8") for item in result.stdout_bytes.split(b"\0") if item]
+
+
+def git_revision_modes(root: Path, revision: str) -> dict[str, int]:
+    result = _git_result(root, "ls-tree", "-r", "-z", "--full-tree", revision)
+    if result.error is not None or result.timed_out or result.output_truncated or result.returncode:
+        raise OSError(f"cannot enumerate Git revision modes: {revision}")
+    modes: dict[str, int] = {}
+    for record in result.stdout_bytes.split(b"\0"):
+        if not record:
+            continue
+        header, relative_bytes = record.split(b"\t", 1)
+        mode, object_type, _ = header.split()
+        if object_type != b"blob" or mode not in {b"100644", b"100755"}:
+            raise OSError(f"unsupported Git tree entry: {relative_bytes.decode('utf-8')}")
+        modes[relative_bytes.decode("utf-8")] = 0o755 if mode == b"100755" else 0o644
+    return modes
+
+
+def copy_git_revision(root: Path, revision: str, destination: Path) -> None:
+    """Copy only the bound Git revision, excluding ignored host artifacts."""
+    destination.mkdir(parents=True, exist_ok=True)
+    modes = git_revision_modes(root, revision)
+    for relative in git_revision_paths(root, revision):
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not _git_stream_to_path(
+            root, target, "show", f"{revision}:{relative}"
+        ):
+            raise OSError(f"cannot read Git revision path: {relative}")
+        target.chmod(modes[relative])
+
+
+def copy_recipe_overlay(
+    root: Path, destination: Path, paths: list[str], modes: dict[str, int]
+) -> None:
+    for relative in paths:
+        source = root / relative
+        if source.is_symlink() or not source.is_file():
+            raise OSError(f"recipe overlay is not a regular file: {relative}")
+        expected_mode = modes.get(relative)
+        if expected_mode is None:
+            raise OSError(f"recipe overlay mode is unavailable: {relative}")
+        actual_executable = source.stat().st_mode & 0o111
+        if bool(actual_executable) != bool(expected_mode & 0o111):
+            raise OSError(f"recipe overlay executable mode differs: {relative}")
+        if source.stat().st_size > MAX_RECIPE_FILE_BYTES:
+            raise OSError(f"recipe overlay exceeds the byte limit: {relative}")
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        copied = 0
+        with source.open("rb") as source_stream, target.open("wb") as target_stream:
+            while True:
+                chunk = source_stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                copied += len(chunk)
+                if copied > MAX_RECIPE_FILE_BYTES:
+                    raise OSError(f"recipe overlay exceeds the byte limit: {relative}")
+                target_stream.write(chunk)
+        target.chmod(expected_mode)
+
+
+def cache_snapshot_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    entry_count = 0
+    total_bytes = 0
+    for path in sorted(root.rglob("*")):
+        entry_count += 1
+        if entry_count > MAX_CACHE_ENTRIES:
+            raise OSError("cache snapshot exceeds the entry-count limit")
+        relative = path.relative_to(root).as_posix().encode()
+        if path.is_symlink():
+            if not _cache_symlink_is_safe(root, path):
+                continue
+            digest.update(relative)
+            digest.update(b"\0symlink\0")
+            digest.update(os.readlink(path).encode())
+            digest.update(b"\0")
+            continue
+        if not path.is_file():
+            if not path.is_dir():
+                raise OSError("cache snapshot contains an unsupported entry")
+            continue
+        size = path.stat().st_size
+        total_bytes += size
+        if total_bytes > MAX_CACHE_BYTES:
+            raise OSError("cache snapshot exceeds the byte limit")
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(str(path.stat().st_mode & 0o777).encode())
+        digest.update(b"\0")
+        digest.update(sha256_file(path).encode())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _cache_symlink_is_safe(root: Path, path: Path) -> bool:
+    """Allow only links whose fully resolved target stays inside the snapshot."""
+    try:
+        path.resolve(strict=False).relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def copy_cache_snapshot(source: Path, destination: Path, label: str) -> str:
+    """Materialize and hash an independent, resource-bounded cache copy."""
+    copied = {"files": 0, "bytes": 0}
+
+    def copy_file(source_file: str, destination_file: str) -> str:
+        source_path = Path(source_file)
+        size = source_path.stat().st_size
+        copied["files"] += 1
+        copied["bytes"] += size
+        if copied["files"] > MAX_CACHE_ENTRIES:
+            raise OSError(f"{label} cache exceeds the entry-count limit")
+        if copied["bytes"] > MAX_CACHE_BYTES:
+            raise OSError(f"{label} cache exceeds the byte limit")
+        if shutil.disk_usage(destination.parent).free < MIN_FREE_SPACE_BYTES:
+            raise OSError(f"insufficient free space for {label} cache snapshot")
+        shutil.copy2(source_file, destination_file)
+        return destination_file
+
+    def ignore_escaping_symlinks(directory: str, names: list[str]) -> list[str]:
+        directory_path = Path(directory)
+        return [
+            name
+            for name in names
+            if (candidate := directory_path / name).is_symlink()
+            and not _cache_symlink_is_safe(source, candidate)
+        ]
+
+    try:
+        source_digest = cache_snapshot_digest(source)
+        shutil.copytree(
+            source,
+            destination,
+            symlinks=True,
+            copy_function=copy_file,
+            ignore=ignore_escaping_symlinks,
+        )
+    except OSError as error:
+        raise OSError(
+            f"cannot snapshot {label} cache: {type(error).__name__}"
+        ) from error
+    try:
+        destination_digest = cache_snapshot_digest(destination)
+    except OSError as error:
+        raise OSError(
+            f"cannot hash {label} cache snapshot: {type(error).__name__}"
+        ) from error
+    if destination_digest != source_digest:
+        raise OSError(f"{label} cache snapshot differs from its source binding")
+    return destination_digest
+
+
+def verify_cache_snapshot(
+    root: Path, expected_digest: str, label: str, failures: list[str]
+) -> None:
+    try:
+        actual_digest = cache_snapshot_digest(root)
+    except OSError as error:
+        failures.append(
+            f"{label} cache snapshot is not verifiable: {type(error).__name__}"
+        )
+        return
+    if actual_digest != expected_digest:
+        failures.append(f"{label} cache snapshot digest changed")
+
+
+def registered_source_commands(
+    manifest: dict[str, object], uv_binary: str, failures: list[str]
+) -> tuple[dict[str, str], list[str], dict[str, str], list[str]] | None:
+    rebuild = manifest.get("rebuild")
+    commands = rebuild.get("commands") if isinstance(rebuild, dict) else None
+    if not isinstance(commands, list) or len(commands) < 4:
+        failures.append("frozen rebuild command list is incomplete")
+        return None
+    raw_materializer, raw_pytest = commands[2:4]
+    if not isinstance(raw_materializer, str) or not isinstance(raw_pytest, str):
+        failures.append("frozen source trace commands are malformed")
+        return None
+
+    def split_command(raw: str) -> tuple[dict[str, str], list[str]]:
+        tokens = shlex.split(raw)
+        command_environment: dict[str, str] = {}
+        while tokens and "=" in tokens[0] and tokens[0].split("=", 1)[0].isidentifier():
+            key, value = tokens.pop(0).split("=", 1)
+            command_environment[key] = value
+        if not tokens or tokens[0] != "uv":
+            raise ValueError("registered source trace must invoke uv")
+        tokens[0] = uv_binary
+        return command_environment, tokens
+
+    try:
+        materializer_environment, materializer = split_command(raw_materializer)
+        pytest_environment, pytest = split_command(raw_pytest)
+    except ValueError as error:
+        failures.append(f"frozen source trace command is not registered uv execution: {error}")
+        return None
+    return materializer_environment, materializer, pytest_environment, pytest
+
+
 def required_manifest_failures(manifest: dict[str, object]) -> list[str]:
     failures: list[str] = []
     required = {
         "repository": ("source_commit", "source_tree_hash", "source_tree_hash_method", "reconstruction_base_tree_hash", "reconstruction_recipe_tree_hash"),
-        "reconstruction_recipe": ("base_commit", "recipe_commit", "recipe_paths", "recipe_sha256"),
+        "reconstruction_recipe": ("base_commit", "recipe_commit", "recipe_paths", "recipe_sha256", "overlay_rule", "recipe_state", "target_default_branch_write"),
         "build_inputs": ("dependency_lockfiles", "tracked_configuration", "source_configuration", "source_dependency_lockfiles"),
+        "authority": ("external_effects", "provider_calls", "rwe_authority_consumed", "target_writes"),
+        "rebuild": ("commands", "provider_free", "source_checkout_rule"),
         "generated_active_baseline": ("files",),
         "frozen_rwe": (
             "frozen_task_source_tree_hash",
@@ -136,6 +659,1115 @@ def required_manifest_failures(manifest: dict[str, object]) -> list[str]:
             if field not in value:
                 failures.append(f"manifest field is missing: {section}.{field}")
     return failures
+
+
+def verify_reconstruction_metadata(manifest: dict[str, object], failures: list[str]) -> None:
+    if manifest.get("status") != "RECONSTRUCTABLE":
+        failures.append("snapshot status is not RECONSTRUCTABLE")
+    if manifest.get("reconstructable") is not True:
+        failures.append("snapshot is not marked reconstructable")
+
+    authority = manifest.get("authority")
+    if isinstance(authority, dict):
+        for field in ("external_effects", "provider_calls", "rwe_authority_consumed", "target_writes"):
+            if authority.get(field) is not False:
+                failures.append(f"snapshot authority must deny {field}")
+
+    rebuild = manifest.get("rebuild")
+    if isinstance(rebuild, dict) and rebuild.get("provider_free") is not True:
+        failures.append("snapshot rebuild is not provider-free")
+
+    recipe = manifest.get("reconstruction_recipe")
+    if isinstance(recipe, dict) and recipe.get("target_default_branch_write") is not False:
+        failures.append("reconstruction recipe permits a target-default-branch write")
+
+
+def verify_isolated_roots(source_root: Path, harness_root: Path, failures: list[str]) -> None:
+    source = source_root.resolve()
+    harness = harness_root.resolve()
+    if source == harness:
+        failures.append("pre-AC source and post-AC harness must use distinct roots")
+        return
+    if source in harness.parents or harness in source.parents:
+        failures.append("pre-AC source and post-AC harness roots must not be nested")
+
+    source_top = git_output(source, "rev-parse", "--show-toplevel")
+    harness_top = git_output(harness, "rev-parse", "--show-toplevel")
+    if source_top is None:
+        failures.append("pre-AC source checkout is not a Git worktree")
+    if harness_top is None:
+        failures.append("post-AC harness checkout is not a Git worktree")
+    if source_top is not None and harness_top is not None:
+        if Path(source_top).resolve() == Path(harness_top).resolve():
+            failures.append("pre-AC source and post-AC harness resolve to one Git worktree")
+
+
+def verify_post_ac_harness(
+    harness_root: Path, expected: dict[str, str], failures: list[str]
+) -> None:
+    if git_output(harness_root, "rev-parse", "HEAD") != expected["main_sha"]:
+        failures.append("post-AC harness HEAD differs from the bound accepted main")
+    if git_output(harness_root, "rev-parse", "HEAD^{tree}") != expected["tree_sha"]:
+        failures.append("post-AC harness tree differs from the bound accepted tree")
+    verify_file(harness_root, "Cargo.lock", expected["cargo_lock_sha256"], failures)
+    verify_file(
+        harness_root,
+        "rust-toolchain.toml",
+        expected["rust_toolchain_sha256"],
+        failures,
+    )
+    status = _git_result(
+        harness_root, "status", "--porcelain=v1", "--untracked-files=all"
+    )
+    if status.error is not None or status.timed_out or status.output_truncated:
+        failures.append("post-AC harness Git status check was unavailable")
+    elif status.returncode:
+        failures.append("post-AC harness Git status check failed")
+    elif status.stdout.strip():
+        failures.append("post-AC harness worktree must be clean")
+
+
+def verify_observed_toolchain(failures: list[str]) -> None:
+    expected_python = Path(FROZEN_TRACE_BINARY_IDENTITIES["python"]["path"]).resolve()
+    active_python = Path(sys.executable).resolve()
+    if active_python != expected_python:
+        failures.append("active verifier interpreter differs from the frozen Python binding")
+    commands = {
+        "rustc": ["--version"],
+        "rustdoc": ["--version"],
+        "cargo": ["--version"],
+        "python": ["--version"],
+        "uv": ["--version"],
+        "git": ["--version"],
+    }
+    for name, arguments in commands.items():
+        identity = FROZEN_TRACE_BINARY_IDENTITIES[name]
+        path = Path(identity["path"])
+        if not path.is_file() or not os.access(path, os.X_OK):
+            failures.append(f"frozen toolchain binary is unavailable: {name}")
+            continue
+        if sha256_file(path) != identity["sha256"]:
+            failures.append(f"frozen toolchain binary digest differs: {name}")
+            continue
+        try:
+            result = _run_bounded_command(
+                [str(path), *arguments],
+                cwd=Path("/"),
+                environment={"PATH": str(path.parent)},
+                timeout=10,
+            )
+        except OSError as error:
+            failures.append(f"observed toolchain probe unavailable: {name}: {type(error).__name__}")
+            continue
+        if result.error is not None or result.timed_out:
+            error_name = type(result.error).__name__ if result.error else "TimeoutExpired"
+            failures.append(f"observed toolchain probe unavailable: {name}: {error_name}")
+            continue
+        actual = result.stdout.strip()
+        if name == "uv":
+            actual = actual.split(" (", 1)[0]
+        if result.returncode or actual != FROZEN_OBSERVED_TOOLCHAIN[name]:
+            failures.append(f"observed toolchain differs from the frozen binding: {name}")
+    bwrap_identity = FROZEN_TRACE_BINARY_IDENTITIES["bwrap"]
+    bwrap_path = Path(bwrap_identity["path"])
+    if not bwrap_path.is_file() or sha256_file(bwrap_path) != bwrap_identity["sha256"]:
+        failures.append("frozen toolchain binary digest differs: bwrap")
+
+
+def resolve_trace_binary(name: str, environment: dict[str, str], failures: list[str]) -> str | None:
+    identity = FROZEN_TRACE_BINARY_IDENTITIES[name]
+    path = Path(identity["path"])
+    if not path.is_file() or not os.access(path, os.X_OK):
+        failures.append(f"provider-free trace binary is unavailable: {name}")
+        return None
+    if sha256_file(path) != identity["sha256"]:
+        failures.append(f"provider-free trace binary digest differs: {name}")
+        return None
+    return str(path)
+
+
+def find_engine_test_binary(target: Path, failures: list[str]) -> Path | None:
+    candidates = sorted(
+        path
+        for path in (target / "debug" / "deps").glob("engine-*")
+        if path.is_file() and os.access(path, os.X_OK)
+    )
+    if not candidates:
+        failures.append("provider-free trace engine test binary is unavailable")
+        return None
+    return candidates[-1]
+
+
+def _provider_free_environment(home: Path, target: Path) -> dict[str, str]:
+    """Return an allowlisted environment with no host configuration authority."""
+    cargo_home = Path.home() / ".cargo"
+    rustup_home = Path.home() / ".rustup"
+    uv_cache = Path.home() / ".cache/uv"
+    environment = {
+        "PATH": os.pathsep.join(
+            [
+                str(Path.home() / ".local" / "bin"),
+                "/usr/bin",
+                "/bin",
+            ]
+        ),
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home / "config"),
+        "CARGO_HOME": str(cargo_home),
+        "RUSTUP_HOME": str(rustup_home),
+        "UV_CACHE_DIR": str(uv_cache),
+        "CARGO_TARGET_DIR": str(target),
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+        "CARGO_NET_OFFLINE": "true",
+        "UV_OFFLINE": "true",
+        "UV_PYTHON": FROZEN_TRACE_BINARY_IDENTITIES["python"]["path"],
+        "RUSTC": FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"],
+        "RUSTDOC": FROZEN_TRACE_BINARY_IDENTITIES["rustdoc"]["path"],
+        "LD_LIBRARY_PATH": str(
+            Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent / "lib"
+        ),
+        "CARGO_TERM_COLOR": "never",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "NO_COLOR": "1",
+    }
+    return environment
+
+
+@dataclass(frozen=True)
+class BoundedCommandResult:
+    returncode: int | None
+    stdout: str
+    stderr: str
+    stdout_bytes: bytes
+    stderr_bytes: bytes
+    timed_out: bool
+    error: BaseException | None
+    forbidden_markers: tuple[str, ...]
+    output_truncated: bool
+
+
+def _drain_output(
+    stream: object,
+    markers: tuple[str, ...],
+    state: dict[str, object],
+    output_key: str,
+) -> None:
+    marker_bytes = tuple((marker, marker.encode()) for marker in markers)
+    overlap_limit = max((len(encoded) for _, encoded in marker_bytes), default=1) - 1
+    overlap = b""
+    tail = bytearray()
+    retain_full_output = bool(state["retain_full_output"])
+    max_output_bytes = int(state["max_output_bytes"])
+    captured = bytearray()
+    while True:
+        chunk = stream.read(64 * 1024)  # type: ignore[attr-defined]
+        if not chunk:
+            break
+        scan = overlap + chunk
+        for marker, encoded in marker_bytes:
+            if encoded in scan:
+                state["forbidden_markers"].add(marker)  # type: ignore[union-attr]
+        overlap = scan[-overlap_limit:] if overlap_limit else b""
+        if retain_full_output:
+            remaining = max_output_bytes - len(captured)
+            if remaining > 0:
+                captured.extend(chunk[:remaining])
+            if len(chunk) > remaining:
+                state["output_truncated"] = True
+        else:
+            tail.extend(chunk)
+            if len(tail) > max_output_bytes:
+                del tail[:-max_output_bytes]
+    state[output_key] = bytes(captured if retain_full_output else tail)
+
+
+def _terminate_process_group(
+    process: subprocess.Popen[bytes],
+    expected_start_time: int | None,
+    group_members: dict[int, int],
+    group_session_id: int | None,
+) -> bool:
+    """Terminate a child group only while its leader identity still matches."""
+    if expected_start_time is None:
+        return False
+    current_start_time = _process_start_time(process.pid)
+    if current_start_time is None:
+        members = {pid: start for pid, start in group_members.items() if pid != process.pid}
+        return (
+            _terminate_processes(members, process.pid, group_session_id)
+            if members
+            else not _process_group_exists(process.pid)
+        )
+    if current_start_time != expected_start_time:
+        return False
+    if not _process_group_exists(process.pid):
+        return True
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    deadline = time.monotonic() + PROCESS_TERMINATION_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        current_start_time = _process_start_time(process.pid)
+        if current_start_time is None:
+            members = {pid: start for pid, start in group_members.items() if pid != process.pid}
+            return (
+                _terminate_processes(members, process.pid, group_session_id)
+                if members
+                else not _process_group_exists(process.pid)
+            )
+        if current_start_time != expected_start_time:
+            return False
+        group_members.update(_process_group_members(process.pid, group_session_id))
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return True
+        try:
+            process.wait(timeout=0.1)
+        except subprocess.TimeoutExpired:
+            pass
+    current_start_time = _process_start_time(process.pid)
+    if current_start_time is None:
+        members = {pid: start for pid, start in group_members.items() if pid != process.pid}
+        return (
+            _terminate_processes(members, process.pid, group_session_id)
+            if members
+            else not _process_group_exists(process.pid)
+        )
+    if current_start_time != expected_start_time:
+        return False
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    try:
+        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+    return not _process_group_exists(process.pid)
+
+
+def _process_group_exists(process_id: int) -> bool:
+    try:
+        os.killpg(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _ensure_child_subreaper() -> bool:
+    """Make detached descendants reparent to this verifier for cleanup."""
+    global _SUBREAPER_ENABLED
+    if _SUBREAPER_ENABLED is not None:
+        return _SUBREAPER_ENABLED
+    if sys.platform != "linux":
+        _SUBREAPER_ENABLED = False
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        prctl = libc.prctl
+        prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        prctl.restype = ctypes.c_int
+        _SUBREAPER_ENABLED = prctl(36, 1, 0, 0, 0) == 0  # PR_SET_CHILD_SUBREAPER
+    except (AttributeError, OSError):
+        _SUBREAPER_ENABLED = False
+    return _SUBREAPER_ENABLED
+
+
+def _child_command_without_subreaper(
+    command: list[str | Path], subreaper_ready: bool
+) -> list[str | Path]:
+    """Keep the verifier subreaper out of the isolated bwrap test namespace."""
+    if not subreaper_ready or not command:
+        return command
+    if str(command[0]) != FROZEN_TRACE_BINARY_IDENTITIES["bwrap"]["path"]:
+        return command
+    return [
+        FROZEN_TRACE_BINARY_IDENTITIES["python"]["path"],
+        "-c",
+        _CLEAR_SUBREAPER_PROGRAM,
+        *(str(argument) for argument in command),
+    ]
+
+
+def _process_stat_fields(process_id: int) -> list[str] | None:
+    try:
+        return (
+            Path(f"/proc/{process_id}/stat")
+            .read_text(encoding="ascii")
+            .rsplit(") ", 1)[1]
+            .split()
+        )
+    except (OSError, IndexError):
+        return None
+
+
+def _process_start_time(process_id: int) -> int | None:
+    fields = _process_stat_fields(process_id)
+    if fields is None or len(fields) <= 19:
+        return None
+    try:
+        return int(fields[19])
+    except ValueError:
+        return None
+
+
+def _process_session_id(process_id: int) -> int | None:
+    fields = _process_stat_fields(process_id)
+    if fields is None or len(fields) <= 3:
+        return None
+    try:
+        return int(fields[3])
+    except ValueError:
+        return None
+
+
+def _process_group_members(
+    process_group_id: int, expected_session_id: int | None
+) -> dict[int, int]:
+    members: dict[int, int] = {}
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return members
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        process_id = int(entry.name)
+        fields = _process_stat_fields(process_id)
+        if fields is None or len(fields) <= 2:
+            continue
+        try:
+            if (
+                int(fields[2]) != process_group_id
+                or expected_session_id is not None
+                and int(fields[3]) != expected_session_id
+            ):
+                continue
+        except ValueError:
+            continue
+        start_time = _process_start_time(process_id)
+        if start_time is not None:
+            members[process_id] = start_time
+    return members
+
+
+def _wait_with_group_snapshot(
+    process: subprocess.Popen[bytes],
+    timeout: float,
+    group_members: dict[int, int],
+    group_session_id: int | None,
+    process_start_time: int | None,
+) -> int:
+    deadline = time.monotonic() + timeout
+    while True:
+        fields = _process_stat_fields(process.pid)
+        if process_start_time is not None and fields is not None:
+            if _process_start_time(process.pid) != process_start_time:
+                return process.wait(timeout=0.1)
+            group_members.update(_process_group_members(process.pid, group_session_id))
+            if fields and fields[0] == "Z":
+                return process.wait(timeout=0.1)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        time.sleep(min(0.01, remaining))
+
+
+def _process_parent_map() -> dict[int, int]:
+    parents: dict[int, int] = {}
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return parents
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        fields = _process_stat_fields(int(entry.name))
+        try:
+            if fields is not None:
+                parents[int(entry.name)] = int(fields[1])
+        except (IndexError, ValueError):
+            continue
+    return parents
+
+
+def _descendant_identities(root_pid: int) -> dict[int, int]:
+    parents = _process_parent_map()
+    descendants: dict[int, int] = {}
+    frontier = {root_pid}
+    while frontier:
+        children = {pid for pid, parent in parents.items() if parent in frontier}
+        children -= descendants.keys()
+        for process_id in children:
+            start_time = _process_start_time(process_id)
+            if start_time is not None:
+                descendants[process_id] = start_time
+        frontier = children
+    return descendants
+
+
+def _process_is_live(process_id: int, expected_start_time: int) -> bool:
+    fields = _process_stat_fields(process_id)
+    if fields is None or _process_start_time(process_id) != expected_start_time:
+        return False
+    return bool(fields) and fields[0] != "Z"
+
+
+def _reap_process(process_id: int, expected_start_time: int) -> bool:
+    current_start_time = _process_start_time(process_id)
+    if current_start_time is None:
+        return True
+    if current_start_time != expected_start_time:
+        return False
+    try:
+        os.waitpid(process_id, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        return True
+    return True
+
+
+def _process_identity_matches(
+    process_id: int,
+    expected_start_time: int,
+    expected_group_id: int | None = None,
+    expected_session_id: int | None = None,
+) -> bool:
+    fields = _process_stat_fields(process_id)
+    if fields is None or len(fields) <= 19:
+        return False
+    try:
+        return (
+            int(fields[19]) == expected_start_time
+            and (expected_group_id is None or int(fields[2]) == expected_group_id)
+            and (
+                expected_session_id is None
+                or int(fields[3]) == expected_session_id
+            )
+        )
+    except (IndexError, ValueError):
+        return False
+
+
+def _terminate_processes(
+    process_ids: dict[int, int],
+    expected_group_id: int | None = None,
+    expected_session_id: int | None = None,
+) -> bool:
+    process_ids = {
+        pid: start_time
+        for pid, start_time in process_ids.items()
+        if pid > 1 and pid != os.getpid()
+    }
+    identity_ok = True
+    remaining: dict[int, int] = {}
+    for process_id, start_time in process_ids.items():
+        if _process_start_time(process_id) is None:
+            continue
+        if not _process_identity_matches(
+            process_id, start_time, expected_group_id, expected_session_id
+        ):
+            identity_ok = False
+            continue
+        remaining[process_id] = start_time
+    for process_id, start_time in remaining.items():
+        if not _process_identity_matches(
+            process_id, start_time, expected_group_id, expected_session_id
+        ):
+            identity_ok = False
+            continue
+        try:
+            os.kill(process_id, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + PROCESS_TERMINATION_GRACE_SECONDS
+    while remaining and time.monotonic() < deadline:
+        for process_id, start_time in tuple(remaining.items()):
+            if not _reap_process(process_id, start_time):
+                identity_ok = False
+                remaining.pop(process_id, None)
+            elif not _process_is_live(process_id, start_time):
+                remaining.pop(process_id, None)
+        if remaining:
+            time.sleep(0.05)
+    for process_id, start_time in remaining.items():
+        if not _process_identity_matches(
+            process_id, start_time, expected_group_id, expected_session_id
+        ):
+            identity_ok = False
+            continue
+        try:
+            os.kill(process_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + PROCESS_TERMINATION_GRACE_SECONDS
+    while remaining and time.monotonic() < deadline:
+        for process_id, start_time in tuple(remaining.items()):
+            if not _reap_process(process_id, start_time):
+                identity_ok = False
+                remaining.pop(process_id, None)
+            elif not _process_is_live(process_id, start_time):
+                remaining.pop(process_id, None)
+        if remaining:
+            time.sleep(0.05)
+    return identity_ok and not remaining
+
+
+def _cleanup_child_process(
+    process: subprocess.Popen[bytes],
+    process_start_time: int | None,
+    group_members: dict[int, int],
+    group_session_id: int | None,
+    baseline_descendants: dict[int, int],
+    subreaper_ready: bool,
+) -> bool:
+    group_cleanup_ok = True
+    if _process_group_exists(process.pid):
+        group_cleanup_ok = _terminate_process_group(
+            process, process_start_time, group_members, group_session_id
+        )
+    if not subreaper_ready:
+        return False
+    current_descendants = _descendant_identities(os.getpid())
+    residual = {
+        pid: start_time
+        for pid, start_time in current_descendants.items()
+        if baseline_descendants.get(pid) != start_time
+    }
+    residual_cleanup_ok = True
+    if residual:
+        residual_cleanup_ok = _terminate_processes(residual)
+    remaining_descendants = _descendant_identities(os.getpid())
+    return (
+        group_cleanup_ok
+        and residual_cleanup_ok
+        and not _process_group_exists(process.pid)
+        and not any(
+            baseline_descendants.get(pid) != start_time
+            for pid, start_time in remaining_descendants.items()
+        )
+    )
+
+
+def _run_bounded_command(
+    command: list[str | Path],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+    timeout: int,
+    forbidden_output: tuple[str, ...] = (),
+    retain_full_output: bool = False,
+    max_output_bytes: int = MAX_TRACE_OUTPUT_BYTES,
+) -> BoundedCommandResult:
+    """Run one child with bounded output and private descendant cleanup."""
+    subreaper_ready = _ensure_child_subreaper()
+    baseline_descendants = (
+        _descendant_identities(os.getpid()) if subreaper_ready else {}
+    )
+    try:
+        process = subprocess.Popen(
+            _child_command_without_subreaper(command, subreaper_ready),
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as error:
+        return BoundedCommandResult(None, "", "", b"", b"", False, error, (), False)
+    process_start_time = _process_start_time(process.pid)
+    group_session_id = _process_session_id(process.pid)
+    group_members = _process_group_members(process.pid, group_session_id)
+
+    state: dict[str, object] = {
+        "forbidden_markers": set(),
+        "retain_full_output": retain_full_output,
+        "max_output_bytes": max_output_bytes,
+        "output_truncated": False,
+    }
+    stdout_thread = threading.Thread(
+        target=_drain_output,
+        args=(process.stdout, forbidden_output, state, "stdout"),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_drain_output,
+        args=(process.stderr, forbidden_output, state, "stderr"),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    timed_out = False
+    try:
+        returncode = _wait_with_group_snapshot(
+            process,
+            timeout,
+            group_members,
+            group_session_id,
+            process_start_time,
+        )
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _terminate_process_group(
+            process, process_start_time, group_members, group_session_id
+        )
+        returncode = process.returncode
+    cleanup_ok = _cleanup_child_process(
+        process,
+        process_start_time,
+        group_members,
+        group_session_id,
+        baseline_descendants,
+        subreaper_ready,
+    )
+    stdout_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
+    stderr_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
+    if stdout_thread.is_alive() or stderr_thread.is_alive():
+        cleanup_ok = _cleanup_child_process(
+            process,
+            process_start_time,
+            group_members,
+            group_session_id,
+            baseline_descendants,
+            subreaper_ready,
+        ) and cleanup_ok
+        stdout_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
+        stderr_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
+    if process.stdout is not None:
+        process.stdout.close()
+    if process.stderr is not None:
+        process.stderr.close()
+    stdout_bytes = bytes(state.get("stdout", b""))
+    stderr_bytes = bytes(state.get("stderr", b""))
+    stdout = stdout_bytes.decode(errors="replace")
+    stderr = stderr_bytes.decode(errors="replace")
+    markers = tuple(sorted(state["forbidden_markers"]))  # type: ignore[arg-type]
+    cleanup_error = (
+        RuntimeError("provider-free child descendant cleanup could not be proven")
+        if not cleanup_ok
+        else None
+    )
+    return BoundedCommandResult(
+        returncode,
+        stdout,
+        stderr,
+        stdout_bytes,
+        stderr_bytes,
+        timed_out,
+        cleanup_error,
+        markers,
+        bool(state["output_truncated"]),
+    )
+
+
+def _run_provider_free_trace(
+    name: str,
+    command: list[str],
+    cwd: Path,
+    environment: dict[str, str],
+    mounts: dict[Path, str],
+    writable_mounts: set[Path],
+    sandbox: bool,
+    failures: list[str],
+    forbidden_output: tuple[str, ...] = (),
+) -> None:
+    if not sandbox:
+        result = _run_bounded_command(
+            command,
+            cwd=cwd,
+            environment=environment,
+            timeout=3_600,
+            forbidden_output=forbidden_output,
+        )
+    else:
+        bubblewrap = Path(FROZEN_TRACE_BINARY_IDENTITIES["bwrap"]["path"])
+        if not bubblewrap.is_file():
+            failures.append("provider-free trace unavailable: bwrap is required")
+            return
+        cargo_target = Path(environment["CARGO_TARGET_DIR"])
+        if not cargo_target.is_dir():
+            failures.append("provider-free trace unavailable: Cargo target cache is not readable")
+            return
+        mapped_cwd = mounts.get(cwd, str(cwd))
+        mapped_environment = dict(environment)
+        mapped_environment["HOME"] = "/tmp/rwe-home"
+        mapped_environment["XDG_CONFIG_HOME"] = "/tmp/rwe-home/config"
+        mapped_environment["CARGO_HOME"] = "/tmp/rwe-cargo-home"
+        mapped_environment["RUSTUP_HOME"] = "/tmp/rwe-home/rustup"
+        mapped_environment["CARGO_TARGET_DIR"] = "/tmp/rwe-target"
+        mapped_environment["UV_CACHE_DIR"] = "/tmp/rwe-uv-cache"
+        if "PYTHONPATH" in mapped_environment:
+            for host, guest in mounts.items():
+                mapped_environment["PYTHONPATH"] = mapped_environment["PYTHONPATH"].replace(
+                    str(host), guest
+                )
+        sandbox_command = [
+            bubblewrap,
+            "--die-with-parent",
+            "--unshare-net",
+            "--unshare-pid",
+            "--clearenv",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--ro-bind",
+            "/bin",
+            "/bin",
+            "--ro-bind",
+            "/lib",
+            "/lib",
+            "--ro-bind",
+            "/lib64",
+            "/lib64",
+            "--ro-bind",
+            "/etc",
+            "/etc",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/tmp/rwe-home",
+            "--dir",
+            "/tmp/rwe-home/config",
+            "--dir",
+            "/tmp/rwe-home/rustup",
+            "--dir",
+            "/tmp/rwe-cargo-home",
+            "--dir",
+            "/tmp/rwe-target",
+            "--dir",
+            "/tmp/rwe-source",
+            "--dir",
+            "/tmp/rwe-harness",
+            "--dir",
+            "/tmp/rwe-host-uv-cache",
+            "--dir",
+            "/tmp/rwe-uv-cache",
+            "--dir",
+            "/workspace",
+            "--dir",
+            "/home",
+            "--dir",
+            str(Path.home()),
+            "--dir",
+            str(Path.home() / ".rustup"),
+            "--dir",
+            str(Path.home() / ".rustup" / "toolchains"),
+            "--dir",
+            str(Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent),
+            "--ro-bind",
+            str(Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent),
+            str(Path(FROZEN_TRACE_BINARY_IDENTITIES["rustc"]["path"]).parent.parent),
+            "--dir",
+            str(Path.home() / ".local"),
+            "--dir",
+            str(Path.home() / ".local" / "bin"),
+            "--ro-bind",
+            FROZEN_TRACE_BINARY_IDENTITIES["uv"]["path"],
+            FROZEN_TRACE_BINARY_IDENTITIES["uv"]["path"],
+        ]
+        for host, guest in mounts.items():
+            mode = "--bind" if host in writable_mounts else "--ro-bind"
+            sandbox_command.extend((mode, str(host), guest))
+        sandbox_command.extend(("--chdir", mapped_cwd))
+        for key, value in mapped_environment.items():
+            sandbox_command.extend(("--setenv", key, value))
+        sandbox_command.append("--")
+        sandbox_command.extend(command)
+        result = _run_bounded_command(
+            _child_command_without_subreaper(sandbox_command, _ensure_child_subreaper()),
+            cwd=Path("/"),
+            environment={"PATH": environment["PATH"]},
+            timeout=3_600,
+            forbidden_output=forbidden_output,
+        )
+    if result.error is not None:
+        failures.append(f"provider-free trace unavailable: {name}: {type(result.error).__name__}")
+        return
+    if result.timed_out:
+        failures.append(f"provider-free trace unavailable: {name}: TimeoutExpired")
+        return
+    for marker in result.forbidden_markers:
+        failures.append(f"provider-free trace emitted forbidden marker: {name}: {marker}")
+    if result.returncode:
+        output_state = "captured" if result.stdout or result.stderr else "empty"
+        truncation_state = "truncated" if result.output_truncated else "bounded"
+        failures.append(
+            f"provider-free trace failed: {name}: exit={result.returncode}; "
+            f"output={output_state}; limit={truncation_state}"
+        )
+
+
+def verify_bwrap_capability(environment: dict[str, str], failures: list[str]) -> None:
+    """Require a real direct bwrap probe before running the nested test lane."""
+    bubblewrap = Path(FROZEN_TRACE_BINARY_IDENTITIES["bwrap"]["path"])
+    result = _run_bounded_command(
+        [
+            str(bubblewrap),
+            "--die-with-parent",
+            "--unshare-net",
+            "--clearenv",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--ro-bind",
+            "/bin",
+            "/bin",
+            "--ro-bind",
+            "/lib",
+            "/lib",
+            "--ro-bind",
+            "/lib64",
+            "/lib64",
+            "--ro-bind",
+            "/etc",
+            "/etc",
+            "--tmpfs",
+            "/home",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--",
+            "/usr/bin/test",
+            "!",
+            "-e",
+            str(Path.home() / ".codex"),
+        ],
+        cwd=Path("/"),
+        environment={"PATH": environment["PATH"]},
+        timeout=30,
+    )
+    if result.error is not None or result.timed_out or result.returncode:
+        failures.append("provider-free bwrap capability probe did not establish isolation")
+
+
+def verify_trace_generated_baseline(
+    trace_source: Path, manifest: dict[str, object], failures: list[str]
+) -> None:
+    generated = manifest.get("generated_active_baseline", {})
+    if not isinstance(generated, dict):
+        failures.append("generated active baseline metadata is malformed")
+        return
+    for relative, expected in generated.get("files", {}).items():
+        verify_file(trace_source, relative, expected, failures)
+
+
+def verify_provider_free_traces(
+    source_root: Path,
+    harness_root: Path,
+    manifest: dict[str, object],
+    failures: list[str],
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="pe7-rwe-trace-") as directory:
+        temporary = Path(directory)
+        trace_source = temporary / "source"
+        copy_git_revision(source_root, manifest["repository"]["source_commit"], trace_source)
+        copy_recipe_overlay(
+            source_root,
+            trace_source,
+            manifest["reconstruction_recipe"]["recipe_paths"],
+            git_revision_modes(
+                source_root, manifest["reconstruction_recipe"]["recipe_commit"]
+            ),
+        )
+        (trace_source / "source").symlink_to(".")
+        trace_harness = temporary / "harness"
+        copy_git_revision(harness_root, FROZEN_POST_AC_IDENTITY["main_sha"], trace_harness)
+        source_target = temporary / "source-target"
+        source_target.mkdir()
+        harness_target = temporary / "harness-target"
+        harness_target.mkdir()
+        home = temporary / "home"
+        home.mkdir()
+        trace_cargo = temporary / "cargo-home"
+        trace_cargo.mkdir()
+        cache_bindings: dict[Path, tuple[str, str]] = {}
+        host_cargo = Path.home() / ".cargo"
+        for relative in ("registry", "git"):
+            source_cache = host_cargo / relative
+            if not source_cache.is_dir():
+                failures.append(f"provider-free trace requires Cargo cache: {relative}")
+                return
+            cache_path = trace_cargo / relative
+            cache_bindings[cache_path] = (
+                f"Cargo {relative}",
+                copy_cache_snapshot(source_cache, cache_path, f"Cargo {relative}"),
+            )
+        (trace_cargo / ".package-cache").touch()
+        uv_cache = Path.home() / ".cache/uv"
+        if not uv_cache.is_dir():
+            failures.append("provider-free trace requires the bound read-only uv cache")
+            return
+        trace_cache = temporary / "uv-cache"
+        cache_bindings[trace_cache] = ("uv", copy_cache_snapshot(uv_cache, trace_cache, "uv"))
+        cargo_lock = temporary / "cargo-package-cache.lock"
+        cargo_lock.touch()
+        source_uv_work_cache = temporary / "source-uv-work-cache"
+        source_uv_work_cache.mkdir()
+        harness_uv_work_cache = temporary / "harness-uv-work-cache"
+        harness_uv_work_cache.mkdir()
+        # UV may publish freshly built editable distributions into its cache.
+        # Seed a disposable scratch copy from the bound snapshot so that these
+        # writes cannot cross a read-only bind mount or reach the host cache.
+        for cache_name in ("archive-v0", "wheels-v6", "simple-v21"):
+            source_cache = trace_cache / cache_name
+            if source_cache.exists():
+                copy_cache_snapshot(
+                    source_cache,
+                    source_uv_work_cache / cache_name,
+                    f"UV scratch {cache_name}",
+                )
+        for cache_name in ("archive-v0", "wheels-v6", "simple-v21"):
+            source_cache = trace_cache / cache_name
+            if source_cache.exists():
+                copy_cache_snapshot(
+                    source_cache,
+                    harness_uv_work_cache / cache_name,
+                    f"UV harness scratch {cache_name}",
+                )
+        source_environment = _provider_free_environment(home, source_target)
+        source_environment["CARGO_HOME"] = str(trace_cargo)
+        source_environment["RUSTUP_HOME"] = str(home / "rustup")
+        source_environment["UV_CACHE_DIR"] = str(trace_cache)
+        source_base_environment = dict(source_environment)
+        harness_environment = _provider_free_environment(home, harness_target)
+        harness_environment["CARGO_HOME"] = str(trace_cargo)
+        harness_environment["RUSTUP_HOME"] = str(home / "rustup")
+        harness_environment["UV_CACHE_DIR"] = str(trace_cache)
+        uv_binary = resolve_trace_binary("uv", source_environment, failures)
+        cargo_binary = resolve_trace_binary("cargo", source_environment, failures)
+        rustdoc_binary = resolve_trace_binary("rustdoc", source_environment, failures)
+        if uv_binary is None or cargo_binary is None or rustdoc_binary is None:
+            return
+        registered = registered_source_commands(manifest, uv_binary, failures)
+        if registered is None:
+            return
+        (
+            materializer_command_environment,
+            materializer,
+            pytest_command_environment,
+            pytest,
+        ) = registered
+        source_mounts = {
+            trace_source: "/workspace/source",
+            trace_harness: "/tmp/rwe-harness",
+            source_target: "/tmp/rwe-target",
+            trace_cargo: "/tmp/rwe-cargo-home",
+            trace_cache: "/tmp/rwe-host-uv-cache",
+            source_uv_work_cache: "/tmp/rwe-uv-cache",
+            cargo_lock: "/tmp/rwe-cargo-home/.package-cache",
+        }
+        source_writable_mounts = {
+            trace_source,
+            source_target,
+            source_uv_work_cache,
+            cargo_lock,
+        }
+        harness_cargo_lock = temporary / "harness-cargo-package-cache.lock"
+        harness_cargo_lock.touch()
+        harness_mounts = {
+            trace_source: "/workspace/source",
+            trace_harness: "/tmp/rwe-harness",
+            harness_target: "/tmp/rwe-target",
+            trace_cargo: "/tmp/rwe-cargo-home",
+            trace_cache: "/tmp/rwe-host-uv-cache",
+            harness_uv_work_cache: "/tmp/rwe-uv-cache",
+            harness_cargo_lock: "/tmp/rwe-cargo-home/.package-cache",
+        }
+        harness_writable_mounts = {
+            trace_harness,
+            harness_target,
+            harness_uv_work_cache,
+            harness_cargo_lock,
+        }
+        source_environment = dict(source_base_environment)
+        source_environment.update(materializer_command_environment)
+        for cache_path, (label, digest) in cache_bindings.items():
+            verify_cache_snapshot(cache_path, digest, label, failures)
+        _run_provider_free_trace(
+            "pre_ac_source_materializer",
+            materializer,
+            trace_source,
+            source_environment,
+            source_mounts,
+            source_writable_mounts,
+            True,
+            failures,
+        )
+        for cache_path, (label, digest) in cache_bindings.items():
+            verify_cache_snapshot(cache_path, digest, label, failures)
+        verify_trace_generated_baseline(trace_source, manifest, failures)
+        source_environment = dict(source_base_environment)
+        source_environment.update(pytest_command_environment)
+        _run_provider_free_trace(
+            "pre_ac_source_pytest",
+            pytest,
+            trace_source,
+            source_environment,
+            source_mounts,
+            source_writable_mounts,
+            True,
+            failures,
+        )
+        for cache_path, (label, digest) in cache_bindings.items():
+            verify_cache_snapshot(cache_path, digest, label, failures)
+        _run_provider_free_trace(
+            "post_ac_engine_tests",
+            [
+                cargo_binary,
+                "test",
+                "-p",
+                "engine",
+                "--",
+                "--skip",
+                "cli::codex_mediation_admission::tests::isolation_probe_hides_synthetic_auth_path",
+            ],
+            trace_harness,
+            harness_environment,
+            harness_mounts,
+            harness_writable_mounts,
+            True,
+            failures,
+        )
+        for cache_path, (label, digest) in cache_bindings.items():
+            verify_cache_snapshot(cache_path, digest, label, failures)
+        engine_test_binary = find_engine_test_binary(harness_target, failures)
+        if engine_test_binary is None:
+            return
+        verify_bwrap_capability(harness_environment, failures)
+        # This registered test intentionally probes nested bubblewrap. Running
+        # it inside the outer sandbox makes it observe the outer namespace.
+        # The direct lane is allowed only after the independent bwrap probe
+        # above proves that the test can establish its own filesystem boundary.
+        nested_environment = {
+            key: value
+            for key, value in harness_environment.items()
+            if key not in {"CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR", "UV_CACHE_DIR"}
+        }
+        _run_provider_free_trace(
+            "post_ac_nested_isolation_probe",
+            [
+                str(engine_test_binary),
+                "cli::codex_mediation_admission::tests::isolation_probe_hides_synthetic_auth_path",
+                "--exact",
+            ],
+            trace_harness,
+            nested_environment,
+            harness_mounts,
+            {trace_harness, harness_target},
+            False,
+            failures,
+            ("BLOCKED:bwrap_userns_unavailable",),
+        )
 
 
 def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures: list[str]) -> None:
@@ -166,16 +1798,154 @@ def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures:
     recipe_changed = git_output(source_root, "diff", "--name-only", base_commit, recipe_commit)
     if recipe_changed is None or sorted(filter(None, recipe_changed.splitlines())) != paths:
         failures.append("recipe commit changes differ from the recipe path set")
-    if git_overlay_paths(source_root) != paths:
+    overlay_paths = git_overlay_paths(source_root)
+    if overlay_paths is None:
+        failures.append("source checkout overlay Git queries were unavailable")
+    elif overlay_paths != paths:
         failures.append("source checkout overlay paths differ from the recipe path set")
+    try:
+        recipe_modes = git_revision_modes(source_root, recipe_commit)
+    except OSError:
+        failures.append("bound recipe file modes are unavailable")
+        recipe_modes = {}
     for relative in paths:
         candidate = source_root / relative
         expected = git_blob(source_root, recipe_commit, relative)
-        if expected is None or not candidate.is_file() or candidate.read_bytes() != expected:
+        if (
+            expected is None
+            or candidate.is_symlink()
+            or not candidate.is_file()
+            or candidate.stat().st_size > MAX_RECIPE_FILE_BYTES
+            or candidate.stat().st_size != len(expected)
+            or sha256_file_bounded(candidate, MAX_RECIPE_FILE_BYTES)
+            != hashlib.sha256(expected).hexdigest()
+            or relative not in recipe_modes
+            or bool(candidate.stat().st_mode & 0o111)
+            != bool(recipe_modes[relative] & 0o111)
+        ):
             failures.append(f"source checkout overlay differs from the bound recipe commit: {relative}")
 
 
-def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object], failures: list[str]) -> None:
+def _frozen_corpus_digest(
+    harness_root: Path,
+    frozen: dict[str, object],
+    task_paths: list[Path],
+    failures: list[str],
+) -> str | None:
+    def required_string(task: dict[str, object], key: str) -> str:
+        value = task.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{key} is required")
+        return value
+
+    def required_strings(task: dict[str, object], key: str) -> list[str]:
+        value = task.get(key)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"{key} must be a string array")
+        return value
+
+    def optional_u64(task: dict[str, object], key: str, default: int) -> int:
+        value = task.get(key, default)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"{key} must be an unsigned integer")
+        return value
+
+    def required_u64(task: dict[str, object], key: str) -> int:
+        value = task.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"{key} must be an unsigned integer")
+        return value
+
+    tasks: list[dict[str, object]] = []
+    source_repositories: set[str] = set()
+    executors: set[str] = set()
+    corpus_root = task_paths[0].parent.parent
+    try:
+        for path in task_paths:
+            raw = path.read_bytes()
+            task = json.loads(raw)
+            if not isinstance(task, dict):
+                raise ValueError("task definition must be an object")
+            objective = required_string(task, "objective")
+            source_repository = required_string(task, "source_repository")
+            executor = required_string(task, "executor_identity")
+            source_repositories.add(source_repository)
+            executors.add(executor)
+            tasks.append(
+                {
+                    "schema_version": required_string(task, "schema_version"),
+                    "task_id": required_string(task, "task_id"),
+                    "class": required_string(task, "class"),
+                    "definition_path": path.relative_to(corpus_root).as_posix(),
+                    "definition_sha256": hashlib.sha256(raw).hexdigest(),
+                    "objective_sha256": hashlib.sha256(objective.encode()).hexdigest(),
+                    "source_repository": source_repository,
+                    "source_commit": required_string(task, "source_commit"),
+                    "source_tree_hash": required_string(task, "source_tree_hash"),
+                    "allowed_mutable_paths": required_strings(task, "allowed_mutable_paths"),
+                    "expected_verification_commands": required_strings(
+                        task, "expected_verification_commands"
+                    ),
+                    "expected_outcome_class": required_string(task, "expected_outcome_class"),
+                    "patch_max_files": optional_u64(task, "patch_max_files", 3),
+                    "patch_max_lines": optional_u64(task, "patch_max_lines", 80),
+                    "timeout_ms": optional_u64(task, "timeout_ms", 180_000),
+                    "cancel_behavior": required_string(task, "cancel_behavior"),
+                    "executor_identity": executor,
+                    "model_identity": required_string(task, "model_identity"),
+                    "per_task_max_provider_requests": optional_u64(
+                        task, "per_task_max_provider_requests", 1
+                    ),
+                    "per_task_max_retries": optional_u64(task, "per_task_max_retries", 0),
+                    "per_task_max_input_tokens": required_u64(
+                        task, "per_task_max_input_tokens"
+                    ),
+                    "per_task_max_output_tokens": required_u64(
+                        task, "per_task_max_output_tokens"
+                    ),
+                    "per_task_max_total_tokens": required_u64(
+                        task, "per_task_max_total_tokens"
+                    ),
+                    "deterministic_seed": optional_u64(task, "deterministic_seed", 0),
+                    "cleanup_rules": required_strings(task, "cleanup_rules"),
+                }
+            )
+        if len(source_repositories) != 1 or len(executors) != 1:
+            raise ValueError("task identity fields are inconsistent")
+        source_repository = next(iter(source_repositories))
+        prefix = "https://github.com/"
+        if not source_repository.startswith(prefix):
+            raise ValueError("task source repository is not a GitHub repository")
+        disposable_target_repo = source_repository[len(prefix) :].rstrip("/")
+        if disposable_target_repo.count("/") != 1:
+            raise ValueError("task source repository is not owner/repository shaped")
+        cargo = tomllib.loads((harness_root / "engine/Cargo.toml").read_text(encoding="utf-8"))
+        package = cargo.get("package")
+        if not isinstance(package, dict) or not isinstance(package.get("version"), str):
+            raise ValueError("engine package version is unavailable")
+        authority_body = {
+            "schema_version": "rwe_first_corpus.v1",
+            "corpus_id": frozen["corpus_id"],
+            "tasks": tasks,
+            "disposable_target_repo": disposable_target_repo,
+            "target_main_sha_required": True,
+            "admitted_executor": next(iter(executors)),
+            "admitted_codex_version": package["version"],
+            "draft_pr_only": True,
+            "auto_merge_disabled": True,
+        }
+        encoded = json.dumps(
+            authority_body, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+        failures.append(f"frozen corpus binding cannot be recomputed: {type(error).__name__}")
+        return None
+
+
+def verify_frozen_task_bindings(
+    harness_root: Path, manifest: dict[str, object], failures: list[str]
+) -> None:
     frozen = manifest["frozen_rwe"]
     expected = frozen["frozen_task_source_tree_hash"]
     expected_commit = manifest["repository"]["source_commit"]
@@ -184,9 +1954,16 @@ def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object],
         verify_file(harness_root, item["path"], item["sha256"], failures)
     verify_file(harness_root, frozen["protocol_path"], frozen["protocol_file_sha256"], failures)
     verify_file(harness_root, frozen["schedule_path"], frozen["schedule_file_sha256"], failures)
+    protocol: dict[str, object] = {}
     try:
         protocol = json.loads((harness_root / frozen["protocol_path"]).read_text(encoding="utf-8"))
         schedule = json.loads((harness_root / frozen["schedule_path"]).read_text(encoding="utf-8"))
+        if protocol.get("fixture_only") is not False:
+            failures.append("frozen protocol must not be fixture-only")
+        if protocol.get("frozen_before_results") is not True:
+            failures.append("frozen protocol must be frozen before results")
+        if protocol.get("live_execution_authorized") is not False:
+            failures.append("frozen protocol must not authorize live execution")
         if protocol.get("authority_corpus_sha256") != manifest["frozen_rwe"]["corpus_sha256"]:
             failures.append("protocol corpus binding differs")
         if schedule.get("corpus_sha256") != manifest["frozen_rwe"]["corpus_sha256"]:
@@ -218,22 +1995,107 @@ def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object],
             failures.append(f"frozen task source commit differs: {path.name}")
         if task.get("source_tree_hash") != expected:
             failures.append(f"frozen task source tree binding differs: {path.name}")
+        matching = next(
+            (
+                item
+                for item in protocol.get("tasks", [])
+                if isinstance(item, dict) and item.get("task_id") == task.get("task_id")
+            ),
+            None,
+        )
+        if matching is None:
+            failures.append(f"frozen task is absent from protocol: {path.name}")
+        elif matching.get("task_definition_sha256") != sha256_file(path):
+            failures.append(f"frozen task definition digest differs from protocol: {path.name}")
+    actual_corpus_sha256 = _frozen_corpus_digest(harness_root, frozen, task_paths, failures)
+    if actual_corpus_sha256 is not None and actual_corpus_sha256 != frozen["corpus_sha256"]:
+        failures.append("frozen corpus digest differs from the manifest binding")
 
 
-def verify(manifest_path: Path, source_root: Path, harness_root: Path) -> list[str]:
+def verify_rust_reconstruction_binding(
+    harness_root: Path, manifest: dict[str, object], failures: list[str]
+) -> None:
+    """Fail closed if the Rust binding drifts from the manifest owner."""
+    path = harness_root / "engine/src/rwe/frozen_rwe_bindings.rs"
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError:
+        failures.append("Rust reconstruction binding is unavailable")
+        return
+    repository = manifest.get("repository", {})
+    recipe = manifest.get("reconstruction_recipe", {})
+    frozen = manifest.get("frozen_rwe", {})
+    expected = {
+        "FROZEN_RWE_TARGET_MAIN_SHA": repository.get("source_commit"),
+        "FROZEN_RWE_TARGET_TREE_HASH": frozen.get("frozen_task_source_tree_hash"),
+        "FROZEN_RWE_PRE_AC_SOURCE_TREE_HASH": repository.get("source_tree_hash"),
+        "FROZEN_RWE_RECIPE_COMMIT": recipe.get("recipe_commit"),
+        "FROZEN_RWE_RECIPE_TREE_HASH": repository.get("reconstruction_recipe_tree_hash"),
+        "FROZEN_RWE_SNAPSHOT_MANIFEST_SHA256": FROZEN_RWE_MANIFEST_SHA256,
+        "FROZEN_RWE_CORPUS_SHA256": frozen.get("corpus_sha256"),
+        "FROZEN_RWE_PROTOCOL_SHA256": frozen.get("protocol_sha256"),
+        "FROZEN_RWE_SCHEDULE_SHA256": frozen.get("schedule_sha256"),
+        "FROZEN_RWE_POST_AC_MAIN_SHA": FROZEN_POST_AC_IDENTITY["main_sha"],
+        "FROZEN_RWE_POST_AC_TREE_HASH": FROZEN_POST_AC_IDENTITY["tree_sha"],
+        "FROZEN_RWE_POST_AC_CARGO_LOCK_SHA256": FROZEN_POST_AC_IDENTITY["cargo_lock_sha256"],
+        "FROZEN_RWE_POST_AC_RUST_TOOLCHAIN_SHA256": FROZEN_POST_AC_IDENTITY[
+            "rust_toolchain_sha256"
+        ],
+    }
+    for name, value in expected.items():
+        if not isinstance(value, str):
+            failures.append(f"Rust reconstruction binding expectation is malformed: {name}")
+            continue
+        match = re.search(rf"pub const {re.escape(name)}: &str\s*=\s*\"([^\"]+)\"", source)
+        if match is None:
+            failures.append(f"Rust reconstruction binding constant is missing: {name}")
+        elif match.group(1) != value:
+            failures.append(f"Rust reconstruction binding differs from manifest: {name}")
+
+
+def verify_snapshot_integrity(
+    source_root: Path, harness_root: Path, manifest: dict[str, object], failures: list[str]
+) -> None:
+    verify_post_ac_harness(harness_root, FROZEN_POST_AC_IDENTITY, failures)
+    verify_git_overlay(source_root, manifest, failures)
+    verify_frozen_task_bindings(harness_root, manifest, failures)
+    verify_rust_reconstruction_binding(CURRENT_REPOSITORY_ROOT, manifest, failures)
+
+
+def verify(
+    manifest_path: Path,
+    source_root: Path,
+    harness_root: Path,
+    post_ac_identity: dict[str, str] | None = None,
+    execute_traces: bool = False,
+) -> list[str]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     failures: list[str] = []
     failures.extend(required_manifest_failures(manifest))
+    verify_reconstruction_metadata(manifest, failures)
     expected_manifest = manifest.get("manifest_sha256")
     if not isinstance(expected_manifest, str):
         failures.append("manifest_sha256 is missing")
+    elif expected_manifest != FROZEN_RWE_MANIFEST_SHA256:
+        failures.append("snapshot manifest digest differs from the frozen RWE binding")
     elif canonical_manifest_digest(manifest) != expected_manifest:
         failures.append("snapshot manifest canonical digest mismatch")
 
     if not failures:
         try:
-            verify_git_overlay(source_root, manifest, failures)
-            verify_frozen_task_bindings(harness_root, manifest, failures)
+            verify_observed_toolchain(failures)
+            verify_isolated_roots(source_root, harness_root, failures)
+            if post_ac_identity is None:
+                failures.append("post-AC identity binding is required")
+            elif post_ac_identity != FROZEN_POST_AC_IDENTITY:
+                failures.append("post-AC identity differs from the frozen RWE binding")
+            else:
+                verify_snapshot_integrity(source_root, harness_root, manifest, failures)
+            if execute_traces and not failures:
+                verify_provider_free_traces(source_root, harness_root, manifest, failures)
+                verify_snapshot_integrity(source_root, harness_root, manifest, failures)
+            elif not execute_traces:
+                failures.append("provider-free trace execution is required")
         except (KeyError, TypeError):
             failures.append("snapshot Git overlay binding is malformed")
 
@@ -264,13 +2126,30 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--harness-root", type=Path, default=Path.cwd())
+    parser.add_argument("--post-ac-main-sha", required=True)
+    parser.add_argument("--post-ac-tree-sha", required=True)
+    parser.add_argument("--post-ac-cargo-lock-sha256", required=True)
+    parser.add_argument("--post-ac-rust-toolchain-sha256", required=True)
+    parser.add_argument("--execute-traces", action="store_true")
     args = parser.parse_args()
     try:
         failures = verify(
-            args.manifest.resolve(), args.source_root.resolve(), args.harness_root.resolve()
+            args.manifest.resolve(),
+            args.source_root.resolve(),
+            args.harness_root.resolve(),
+            {
+                "main_sha": args.post_ac_main_sha,
+                "tree_sha": args.post_ac_tree_sha,
+                "cargo_lock_sha256": args.post_ac_cargo_lock_sha256,
+                "rust_toolchain_sha256": args.post_ac_rust_toolchain_sha256,
+            },
+            args.execute_traces,
         )
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
-        print(f"snapshot verification failed: {error}", file=sys.stderr)
+        print(
+            f"snapshot verification failed: {type(error).__name__}",
+            file=sys.stderr,
+        )
         return 1
     if failures:
         print("\n".join(f"snapshot verification failed: {failure}" for failure in failures), file=sys.stderr)
