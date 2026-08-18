@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 
 
 FROZEN_RWE_MANIFEST_SHA256 = (
@@ -727,6 +728,10 @@ def verify_post_ac_harness(
 
 
 def verify_observed_toolchain(failures: list[str]) -> None:
+    expected_python = Path(FROZEN_TRACE_BINARY_IDENTITIES["python"]["path"]).resolve()
+    active_python = Path(sys.executable).resolve()
+    if active_python != expected_python:
+        failures.append("active verifier interpreter differs from the frozen Python binding")
     commands = {
         "rustc": ["--version"],
         "rustdoc": ["--version"],
@@ -1821,7 +1826,126 @@ def verify_git_overlay(source_root: Path, manifest: dict[str, object], failures:
             failures.append(f"source checkout overlay differs from the bound recipe commit: {relative}")
 
 
-def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object], failures: list[str]) -> None:
+def _frozen_corpus_digest(
+    harness_root: Path,
+    frozen: dict[str, object],
+    task_paths: list[Path],
+    failures: list[str],
+) -> str | None:
+    def required_string(task: dict[str, object], key: str) -> str:
+        value = task.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{key} is required")
+        return value
+
+    def required_strings(task: dict[str, object], key: str) -> list[str]:
+        value = task.get(key)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"{key} must be a string array")
+        return value
+
+    def optional_u64(task: dict[str, object], key: str, default: int) -> int:
+        value = task.get(key, default)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"{key} must be an unsigned integer")
+        return value
+
+    def required_u64(task: dict[str, object], key: str) -> int:
+        value = task.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"{key} must be an unsigned integer")
+        return value
+
+    tasks: list[dict[str, object]] = []
+    source_repositories: set[str] = set()
+    executors: set[str] = set()
+    corpus_root = task_paths[0].parent.parent
+    try:
+        for path in task_paths:
+            raw = path.read_bytes()
+            task = json.loads(raw)
+            if not isinstance(task, dict):
+                raise ValueError("task definition must be an object")
+            objective = required_string(task, "objective")
+            source_repository = required_string(task, "source_repository")
+            executor = required_string(task, "executor_identity")
+            source_repositories.add(source_repository)
+            executors.add(executor)
+            tasks.append(
+                {
+                    "schema_version": required_string(task, "schema_version"),
+                    "task_id": required_string(task, "task_id"),
+                    "class": required_string(task, "class"),
+                    "definition_path": path.relative_to(corpus_root).as_posix(),
+                    "definition_sha256": hashlib.sha256(raw).hexdigest(),
+                    "objective_sha256": hashlib.sha256(objective.encode()).hexdigest(),
+                    "source_repository": source_repository,
+                    "source_commit": required_string(task, "source_commit"),
+                    "source_tree_hash": required_string(task, "source_tree_hash"),
+                    "allowed_mutable_paths": required_strings(task, "allowed_mutable_paths"),
+                    "expected_verification_commands": required_strings(
+                        task, "expected_verification_commands"
+                    ),
+                    "expected_outcome_class": required_string(task, "expected_outcome_class"),
+                    "patch_max_files": optional_u64(task, "patch_max_files", 3),
+                    "patch_max_lines": optional_u64(task, "patch_max_lines", 80),
+                    "timeout_ms": optional_u64(task, "timeout_ms", 180_000),
+                    "cancel_behavior": required_string(task, "cancel_behavior"),
+                    "executor_identity": executor,
+                    "model_identity": required_string(task, "model_identity"),
+                    "per_task_max_provider_requests": optional_u64(
+                        task, "per_task_max_provider_requests", 1
+                    ),
+                    "per_task_max_retries": optional_u64(task, "per_task_max_retries", 0),
+                    "per_task_max_input_tokens": required_u64(
+                        task, "per_task_max_input_tokens"
+                    ),
+                    "per_task_max_output_tokens": required_u64(
+                        task, "per_task_max_output_tokens"
+                    ),
+                    "per_task_max_total_tokens": required_u64(
+                        task, "per_task_max_total_tokens"
+                    ),
+                    "deterministic_seed": optional_u64(task, "deterministic_seed", 0),
+                    "cleanup_rules": required_strings(task, "cleanup_rules"),
+                }
+            )
+        if len(source_repositories) != 1 or len(executors) != 1:
+            raise ValueError("task identity fields are inconsistent")
+        source_repository = next(iter(source_repositories))
+        prefix = "https://github.com/"
+        if not source_repository.startswith(prefix):
+            raise ValueError("task source repository is not a GitHub repository")
+        disposable_target_repo = source_repository[len(prefix) :].rstrip("/")
+        if disposable_target_repo.count("/") != 1:
+            raise ValueError("task source repository is not owner/repository shaped")
+        cargo = tomllib.loads((harness_root / "engine/Cargo.toml").read_text(encoding="utf-8"))
+        package = cargo.get("package")
+        if not isinstance(package, dict) or not isinstance(package.get("version"), str):
+            raise ValueError("engine package version is unavailable")
+        authority_body = {
+            "schema_version": "rwe_first_corpus.v1",
+            "corpus_id": frozen["corpus_id"],
+            "tasks": tasks,
+            "disposable_target_repo": disposable_target_repo,
+            "target_main_sha_required": True,
+            "admitted_executor": next(iter(executors)),
+            "admitted_codex_version": package["version"],
+            "draft_pr_only": True,
+            "auto_merge_disabled": True,
+        }
+        encoded = json.dumps(
+            authority_body, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+        failures.append(f"frozen corpus binding cannot be recomputed: {type(error).__name__}")
+        return None
+
+
+def verify_frozen_task_bindings(
+    harness_root: Path, manifest: dict[str, object], failures: list[str]
+) -> None:
     frozen = manifest["frozen_rwe"]
     expected = frozen["frozen_task_source_tree_hash"]
     expected_commit = manifest["repository"]["source_commit"]
@@ -1883,6 +2007,9 @@ def verify_frozen_task_bindings(harness_root: Path, manifest: dict[str, object],
             failures.append(f"frozen task is absent from protocol: {path.name}")
         elif matching.get("task_definition_sha256") != sha256_file(path):
             failures.append(f"frozen task definition digest differs from protocol: {path.name}")
+    actual_corpus_sha256 = _frozen_corpus_digest(harness_root, frozen, task_paths, failures)
+    if actual_corpus_sha256 is not None and actual_corpus_sha256 != frozen["corpus_sha256"]:
+        failures.append("frozen corpus digest differs from the manifest binding")
 
 
 def verify_rust_reconstruction_binding(

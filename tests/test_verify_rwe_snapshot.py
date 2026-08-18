@@ -113,6 +113,53 @@ class VerifyRweSnapshotTests(unittest.TestCase):
         verify_rwe_snapshot.verify_reconstruction_metadata(manifest, failures)
         self.assertEqual(failures, [])
 
+    def test_frozen_corpus_digest_is_recomputed_from_task_inputs(self) -> None:
+        manifest_path = Path(
+            "engine/rwe/corpora/rwe-minimum-first-corpus/v2/snapshot/pre_ac_harness_snapshot.v2.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        frozen = manifest["frozen_rwe"]
+        source_root = Path("engine/rwe/corpora/rwe-minimum-first-corpus/v2")
+        task_sources = sorted((source_root / "tasks").glob("*.json"))
+        with tempfile.TemporaryDirectory() as directory:
+            harness_root = Path(directory)
+            task_root = harness_root / "engine/rwe/corpora/rwe-minimum-first-corpus/v2/tasks"
+            task_root.mkdir(parents=True)
+            for source in task_sources:
+                (task_root / source.name).write_bytes(source.read_bytes())
+            cargo_root = harness_root / "engine"
+            cargo_root.mkdir(exist_ok=True)
+            (cargo_root / "Cargo.toml").write_text(
+                "[package]\nname = 'engine'\nversion = '0.1.0'\n",
+                encoding="utf-8",
+            )
+            failures: list[str] = []
+            digest = verify_rwe_snapshot._frozen_corpus_digest(
+                harness_root, frozen, sorted(task_root.glob("*.json")), failures
+            )
+            self.assertEqual(failures, [])
+            self.assertEqual(digest, frozen["corpus_sha256"])
+
+            tampered = json.loads((task_root / task_sources[0].name).read_text(encoding="utf-8"))
+            tampered["objective"] = "tampered objective"
+            (task_root / task_sources[0].name).write_text(
+                json.dumps(tampered), encoding="utf-8"
+            )
+            failures = []
+            tampered_digest = verify_rwe_snapshot._frozen_corpus_digest(
+                harness_root, frozen, sorted(task_root.glob("*.json")), failures
+            )
+            self.assertEqual(failures, [])
+            self.assertNotEqual(tampered_digest, frozen["corpus_sha256"])
+
+    def test_active_verifier_interpreter_must_match_frozen_binding(self) -> None:
+        failures: list[str] = []
+        with patch.object(verify_rwe_snapshot.sys, "executable", "/usr/bin/python3.12"):
+            verify_rwe_snapshot.verify_observed_toolchain(failures)
+        self.assertIn(
+            "active verifier interpreter differs from the frozen Python binding", failures
+        )
+
     def test_git_overlay_paths_include_staged_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
