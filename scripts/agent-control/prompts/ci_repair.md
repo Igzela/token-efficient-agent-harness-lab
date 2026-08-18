@@ -40,7 +40,7 @@ This is repair attempt #{{REPAIR_COUNT}} (maximum 2).
 If repeated CI repair hypotheses fail, error logs are contradictory, or root causes are genuinely ambiguous across subsystems, you may run:
 
 ```bash
-ask_sol "<investigation goal>" --hypothesis "<optional caller hypothesis>"
+scripts/ask_sol "<investigation goal>" --hypothesis "<optional caller hypothesis>"
 ```
 
 or `python3 scripts/ask_sol.py "<investigation goal>"`.

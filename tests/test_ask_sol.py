@@ -2,7 +2,7 @@
 
 Covers:
 1. Target model configuration (gpt-5.6-sol, model_reasoning_effort="max", read-only sandbox, --ephemeral)
-2. Fail-closed on missing/unsupported Codex capability
+2. Fail-closed on missing/unsupported Codex capability without consuming budget
 3. Exact context binding (repo identity, worktree digest, HEAD SHA, dirty digest)
 4. Fail-closed on Git context / repository errors
 5. Non-mutation verification and fail-closed on mutation
@@ -12,10 +12,14 @@ Covers:
 9. Recursive invocation rejection (ASK_SOL_ACTIVE and depth guards)
 10. Consultation loop & multi-task budget bounds (atomic, concurrency safe, no --force)
 11. Child subprocess environment credential isolation (negative test)
-12. Credential & secret sanitization (using safe runtime-assembled fixtures)
-13. Structured JSON Schema validation and fail-closed schema handling
-14. Independent ordinary worker operation without Sol
-15. Harness neutrality
+12. Credential-bearing proxy URL filtering (negative test)
+13. Credential & secret sanitization (using safe runtime-assembled fixtures)
+14. Structured JSON Schema validation and fail-closed schema handling
+15. Nonzero Codex returncode NEVER produces SUCCESS (regression test)
+16. Unreadable source input fails closed (regression test)
+17. Dry-run and preflight do not consume consultation budget slots (regression test)
+18. Independent ordinary worker operation without Sol
+19. Harness neutrality
 """
 
 from __future__ import annotations
@@ -173,7 +177,6 @@ class TestAskSol(unittest.TestCase):
             goal="Investigate invalid directory",
             worktree=non_git_dir,
         )
-        # Inside git repo, subfolder discovers parent root; but outside git repo:
         with tempfile.TemporaryDirectory() as empty_dir:
             result_empty = ask_sol.execute_sol_investigation(
                 goal="Investigate completely empty non-git dir",
@@ -291,7 +294,6 @@ class TestAskSol(unittest.TestCase):
 
         ctx2 = ask_sol.get_git_context(self.worktree)
         self.assertNotEqual(ctx1["head_sha"], ctx2["head_sha"])
-        self.assertNotEqual(ctx1["head_sha"], ctx2["head_sha"])
 
     def test_09_recursive_ask_sol_rejected(self):
         """9. Recursive ask_sol calls are blocked when ASK_SOL_ACTIVE or depth count is set."""
@@ -390,8 +392,21 @@ class TestAskSol(unittest.TestCase):
         for key in forbidden_keys:
             self.assertNotIn(key, clean_env, f"Child environment leaked forbidden variable '{key}'")
 
-    def test_12_credential_and_secret_redaction(self):
-        """12. Secret-shaped tokens and credentials are redacted from results (using safe runtime-built fixtures)."""
+    def test_12_proxy_credential_filtering(self):
+        """12. Negative test: Credential-bearing proxy URLs with userinfo are stripped from child env."""
+        proxy_env = {
+            "HTTP_PROXY": "http://user:secretpass@proxy.example.com:8080",
+            "HTTPS_PROXY": "https://secure-proxy.example.com:8443",
+            "NO_PROXY": "localhost,127.0.0.1",
+            "PATH": "/usr/bin:/bin",
+        }
+        clean_env = ask_sol.build_clean_child_env(cur_depth=0, base_env=proxy_env)
+        self.assertNotIn("HTTP_PROXY", clean_env, "Credential-bearing HTTP_PROXY was not filtered")
+        self.assertEqual(clean_env["HTTPS_PROXY"], "https://secure-proxy.example.com:8443")
+        self.assertEqual(clean_env["NO_PROXY"], "localhost,127.0.0.1")
+
+    def test_13_credential_and_secret_redaction(self):
+        """13. Secret-shaped tokens and credentials are redacted from results (using safe runtime-built fixtures)."""
         prefix_ghp = "gh" + "p_"
         prefix_sk = "s" + "k-"
         prefix_pass = "pass" + "word="
@@ -419,8 +434,8 @@ class TestAskSol(unittest.TestCase):
         self.assertNotIn(synthetic_sk, sanitized_data["evidence"][0]["observation"])
         self.assertIn("[REDACTED_SECRET]", sanitized_data["evidence"][0]["observation"])
 
-    def test_13_structured_schema_validation(self):
-        """13. Structured result validation rejects malformed findings or missing required keys."""
+    def test_14_structured_schema_validation(self):
+        """14. Structured result validation rejects malformed findings or missing required keys."""
         valid_envelope = {
             "schema_version": "ask_sol_result.v1",
             "status": "SUCCESS",
@@ -456,8 +471,94 @@ class TestAskSol(unittest.TestCase):
         errors3 = ask_sol.validate_schema(invalid_envelope2, schema)
         self.assertTrue(any("confidence" in e for e in errors3))
 
-    def test_14_ordinary_worker_can_operate_without_sol(self):
-        """14. Sol is strictly optional and not mandatory for ordinary worker tasks."""
+    def test_15_nonzero_codex_exit_never_becomes_success(self):
+        """15. Regression test: Nonzero Codex returncode fails closed (FAILED) even if valid JSON was written."""
+        mock_output = {
+            "finding": "Valid looking finding",
+            "evidence": [{"path": "README.md", "line_range": "1", "observation": "text"}],
+            "rejected_alternatives": [],
+            "confidence": "HIGH",
+            "unresolved": [],
+            "recommended_next_action": "action",
+        }
+
+        orig_run = subprocess.run
+
+        def mock_failing_codex_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and cmd and cmd[0] == "codex":
+                if "exec" in cmd and "gpt-5.6-sol" in cmd:
+                    # Write output file but exit with failure returncode (e.g. 1 or 137 OOM)
+                    if "-o" in cmd:
+                        out_file = pathlib.Path(cmd[cmd.index("-o") + 1])
+                        out_file.write_text(json.dumps(mock_output), encoding="utf-8")
+                    return subprocess.CompletedProcess(
+                        args=cmd,
+                        returncode=1,
+                        stdout="",
+                        stderr="Codex runtime error after writing partial output",
+                    )
+                if "--version" in cmd:
+                    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="codex-cli 0.147.0", stderr="")
+                if "exec" in cmd and "--help" in cmd:
+                    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="--output-schema --ephemeral -s -m -c -C -o", stderr="")
+            return orig_run(cmd, *args, **kwargs)
+
+        with mock.patch("subprocess.run", side_effect=mock_failing_codex_run):
+            result = ask_sol.execute_sol_investigation(
+                goal="Investigate with failing returncode",
+                worktree=self.worktree,
+            )
+
+        self.assertEqual(result["status"], "FAILED")
+        self.assertNotEqual(result["status"], "SUCCESS")
+        self.assertIn("failed (exit code 1)", result["finding"])
+        self.assertIn("Partial model finding captured", result["finding"])
+
+    def test_16_unreadable_source_input_fails_closed(self):
+        """16. Regression test: Unreadable non-ignored source file fails closed with AskSolGitContextError."""
+        unreadable_file = self.worktree / "unreadable_wip.txt"
+        unreadable_file.write_text("secret", encoding="utf-8")
+
+        with mock.patch.object(pathlib.Path, "open", side_effect=PermissionError("Permission denied")):
+            with self.assertRaises(ask_sol.AskSolGitContextError):
+                ask_sol.compute_source_state_digest(self.worktree)
+
+        # In full execution, results in status FAILED
+        with mock.patch.object(pathlib.Path, "open", side_effect=PermissionError("Permission denied")):
+            result = ask_sol.execute_sol_investigation(
+                goal="Investigate with unreadable source file",
+                worktree=self.worktree,
+            )
+        self.assertEqual(result["status"], "FAILED")
+        self.assertIn("Git context discovery failed", result["finding"])
+
+    def test_17_dry_run_and_preflight_do_not_consume_budget(self):
+        """17. Regression test: Dry-run and preflight failures consume 0 consultation budget slots."""
+        tracker_file = self.worktree / "test_budget_preflight.json"
+
+        # 1. Dry run: should not consume budget
+        result_dry = ask_sol.execute_sol_investigation(
+            goal="Dry run test",
+            worktree=self.worktree,
+            budget_tracker_path=tracker_file,
+            dry_run=True,
+        )
+        self.assertEqual(result_dry["status"], "SUCCESS")
+        self.assertIn("[DRY RUN]", result_dry["finding"])
+        self.assertFalse(tracker_file.exists(), "Budget tracker file was created during dry run")
+
+        # 2. Preflight failure: should not consume budget
+        with mock.patch("shutil.which", return_value=None):
+            result_broken = ask_sol.execute_sol_investigation(
+                goal="Preflight failure test",
+                worktree=self.worktree,
+                budget_tracker_path=tracker_file,
+            )
+        self.assertEqual(result_broken["status"], "FAILED")
+        self.assertFalse(tracker_file.exists(), "Budget tracker file was created during preflight failure")
+
+    def test_18_ordinary_worker_can_operate_without_sol(self):
+        """18. Sol is strictly optional and not mandatory for ordinary worker tasks."""
         result = ask_sol.execute_sol_investigation(
             goal="Verification without live model",
             worktree=self.worktree,
@@ -466,8 +567,8 @@ class TestAskSol(unittest.TestCase):
         self.assertEqual(result["status"], "SUCCESS")
         self.assertIn("[DRY RUN]", result["finding"])
 
-    def test_15_harness_neutrality_and_cli_usability(self):
-        """15. Shared CLI tool is usable across any caller harness and produces clean report/JSON."""
+    def test_19_harness_neutrality_and_cli_usability(self):
+        """19. Shared CLI tool is usable across any caller harness and produces clean report/JSON."""
         envelope = {
             "schema_version": "ask_sol_result.v1",
             "status": "SUCCESS",

@@ -64,7 +64,7 @@ CODEX_ALLOWED_ENV_VARS = {
     "XDG_DATA_HOME",
     "XDG_CACHE_HOME",
     "XDG_RUNTIME_DIR",
-    # Network/Proxy/Certificates (if present)
+    # Network/Proxy/Certificates (if present and non-credential-bearing)
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "NO_PROXY",
@@ -75,6 +75,15 @@ CODEX_ALLOWED_ENV_VARS = {
     "SSL_CERT_DIR",
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
+}
+
+PROXY_VARS = {
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
 }
 
 # Patterns for redacting credentials and sensitive tokens from findings
@@ -137,6 +146,15 @@ def sanitize_data(data: Any) -> Any:
     return data
 
 
+def _is_credential_bearing_proxy_url(url_val: str) -> bool:
+    """Check if a proxy URL contains embedded username/password userinfo (e.g. http://user:pass@host)."""
+    if not url_val:
+        return False
+    stripped = url_val.split("://", 1)[-1] if "://" in url_val else url_val
+    authority = stripped.split("/", 1)[0]
+    return "@" in authority
+
+
 def build_clean_child_env(
     cur_depth: int,
     base_env: dict[str, str] | None = None,
@@ -144,13 +162,16 @@ def build_clean_child_env(
     """Build a strictly minimal, safe environment for the Codex subprocess.
 
     Never forwards parent environment variables containing API keys, tokens,
-    credentials, or arbitrary caller configuration.
+    credentials, or arbitrary caller configuration. Rejects credential-bearing proxy URLs.
     """
     source = os.environ if base_env is None else base_env
     child_env: dict[str, str] = {}
     for key in CODEX_ALLOWED_ENV_VARS:
         val = source.get(key)
         if val is not None:
+            if key in PROXY_VARS and _is_credential_bearing_proxy_url(val):
+                # Omit credential-bearing proxy URLs
+                continue
             child_env[key] = val
 
     # Set ask_sol recursion and depth control variables
@@ -228,8 +249,11 @@ def validate_schema(data: dict[str, Any], schema: dict[str, Any]) -> list[str]:
     return errors
 
 
-def _hash_file_content(filepath: pathlib.Path) -> str:
-    """Compute SHA-256 digest of a file content in streaming chunks."""
+def _hash_file_content(filepath: pathlib.Path, rel_path: str) -> str:
+    """Compute SHA-256 digest of a file content in streaming chunks.
+
+    Fails closed if the file cannot be opened or read.
+    """
     h = hashlib.sha256()
     try:
         with filepath.open("rb") as f:
@@ -237,13 +261,13 @@ def _hash_file_content(filepath: pathlib.Path) -> str:
                 h.update(chunk)
         return h.hexdigest()
     except (OSError, IOError) as exc:
-        return f"unreadable:{exc}"
+        raise AskSolGitContextError(f"Unreadable source file '{rel_path}': {exc}")
 
 
 def compute_source_state_digest(worktree: pathlib.Path) -> tuple[str, dict[str, Any]]:
     """Compute exact source-state digest binding tracked diffs, status, untracked files, and content.
 
-    Fails closed if git inspection commands fail.
+    Fails closed if git inspection commands or file reads fail.
     """
     try:
         status_res = subprocess.run(
@@ -300,11 +324,19 @@ def compute_source_state_digest(worktree: pathlib.Path) -> tuple[str, dict[str, 
             try:
                 target = os.readlink(full_path)
                 untracked_entries.append((rel_path, "symlink", target))
-            except OSError:
-                untracked_entries.append((rel_path, "symlink", "unreadable"))
+            except OSError as exc:
+                raise AskSolGitContextError(f"Unreadable symlink target for '{rel_path}': {exc}")
         elif full_path.is_file():
-            content_hash = _hash_file_content(full_path)
+            content_hash = _hash_file_content(full_path, rel_path)
             untracked_entries.append((rel_path, "file", content_hash))
+        elif full_path.exists():
+            try:
+                stat_res = full_path.stat()
+                untracked_entries.append((rel_path, "stat", f"mode:{stat_res.st_mode}"))
+            except OSError as exc:
+                raise AskSolGitContextError(f"Unreadable file entry '{rel_path}': {exc}")
+        else:
+            raise AskSolGitContextError(f"Untracked file '{rel_path}' listed by git does not exist.")
 
     is_clean = not status_out.strip() and not diff_out.strip() and not cached_diff_out.strip() and not untracked_entries
     if is_clean:
@@ -625,13 +657,54 @@ def execute_sol_investigation(
             "rejected_alternatives": [],
             "confidence": "LOW",
             "unresolved": [str(exc)],
-            "recommended_next_action": "Run ask_sol inside a valid, intact Git worktree with a valid HEAD.",
+            "recommended_next_action": "Run scripts/ask_sol inside a valid, intact Git worktree with a valid HEAD.",
         }
         return envelope
 
     public_ctx = _public_source_context(pre_context)
 
-    # 3. Budget enforcement (atomic, concurrency safe, fails closed on budget exhaustion)
+    # 3. Capability verification (fails closed before budget consumption)
+    cap_ok, cap_msg = check_codex_capability(codex_bin)
+    if not cap_ok:
+        envelope = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "FAILED",
+            "investigation_goal": goal,
+            "caller_hypothesis": hypothesis,
+            "source_context": public_ctx,
+            "finding": f"Codex CLI capability preflight failed: {cap_msg}",
+            "evidence": [],
+            "rejected_alternatives": [],
+            "confidence": "LOW",
+            "unresolved": [cap_msg],
+            "recommended_next_action": "Verify Codex CLI installation and capabilities or proceed with local investigation.",
+        }
+        return envelope
+
+    # 4. Dry-run return (consumes 0 budget slots)
+    if dry_run:
+        envelope = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "SUCCESS",
+            "investigation_goal": goal,
+            "caller_hypothesis": hypothesis,
+            "source_context": public_ctx,
+            "finding": f"[DRY RUN] Preflight passed for Sol investigation. Codex: {cap_msg}",
+            "evidence": [
+                {
+                    "path": "scripts/ask_sol.py",
+                    "line_range": None,
+                    "observation": "Dry run invocation verified context binding and capability preflight.",
+                }
+            ],
+            "rejected_alternatives": [],
+            "confidence": "HIGH",
+            "unresolved": [],
+            "recommended_next_action": "Execute scripts/ask_sol without --dry-run when ready.",
+        }
+        return envelope
+
+    # 5. Budget enforcement (only reserved for actual attempted Sol invocation)
     try:
         permitted, count, budget_msg = check_and_record_budget(
             target_worktree,
@@ -672,50 +745,10 @@ def execute_sol_investigation(
         }
         return envelope
 
-    # 4. Capability verification
-    cap_ok, cap_msg = check_codex_capability(codex_bin)
-    if not cap_ok:
-        envelope = {
-            "schema_version": SCHEMA_VERSION,
-            "status": "FAILED",
-            "investigation_goal": goal,
-            "caller_hypothesis": hypothesis,
-            "source_context": public_ctx,
-            "finding": f"Codex CLI capability preflight failed: {cap_msg}",
-            "evidence": [],
-            "rejected_alternatives": [],
-            "confidence": "LOW",
-            "unresolved": [cap_msg],
-            "recommended_next_action": "Verify Codex CLI installation and capabilities or proceed with local investigation.",
-        }
-        return envelope
-
-    if dry_run:
-        envelope = {
-            "schema_version": SCHEMA_VERSION,
-            "status": "SUCCESS",
-            "investigation_goal": goal,
-            "caller_hypothesis": hypothesis,
-            "source_context": public_ctx,
-            "finding": f"[DRY RUN] Preflight passed for Sol investigation. Codex: {cap_msg}",
-            "evidence": [
-                {
-                    "path": "scripts/ask_sol.py",
-                    "line_range": None,
-                    "observation": "Dry run invocation verified context binding and capability preflight.",
-                }
-            ],
-            "rejected_alternatives": [],
-            "confidence": "HIGH",
-            "unresolved": [],
-            "recommended_next_action": "Execute ask_sol without --dry-run when ready.",
-        }
-        return envelope
-
-    # 5. Build prompt
+    # 6. Build prompt
     prompt = build_sol_prompt(goal, hypothesis, pre_context, task_id)
 
-    # 6. Execute codex exec in clean minimal environment
+    # 7. Execute codex exec in clean minimal environment
     with tempfile.TemporaryDirectory(prefix="ask_sol_") as tmpdir:
         tmp_path = pathlib.Path(tmpdir)
         output_file = tmp_path / "sol_output.json"
@@ -763,7 +796,7 @@ def execute_sol_investigation(
             raw_stdout = ""
             raw_stderr = f"Subprocess execution error: {exc}"
 
-        # 7. Post-consultation worktree non-mutation verification
+        # 8. Post-consultation worktree non-mutation verification
         unmutated, mutation_reason = verify_unmutated_worktree(target_worktree, pre_context)
         if not unmutated:
             envelope = {
@@ -781,7 +814,7 @@ def execute_sol_investigation(
             }
             return envelope
 
-        # 8. Parse and validate output
+        # 9. Parse output
         parsed_model_data: dict[str, Any] | None = None
         if output_file.is_file():
             try:
@@ -802,22 +835,28 @@ def execute_sol_investigation(
                     except json.JSONDecodeError:
                         pass
 
-    if returncode != 0 and not parsed_model_data:
-        err_msg = sanitize_text(raw_stderr.strip() or f"Codex exited with code {returncode}")
+    # Fail closed: NONZERO RETURNCODE MUST NEVER PRODUCE SUCCESS
+    if returncode != 0:
+        err_msg = sanitize_text(raw_stderr.strip() or f"Codex CLI exited with non-zero status ({returncode})")
+        finding_text = f"Sol investigation failed (exit code {returncode}): {err_msg}"
+        if parsed_model_data and isinstance(parsed_model_data, dict):
+            partial_finding = parsed_model_data.get("finding")
+            if partial_finding:
+                finding_text += f"\n\nPartial model finding captured: {partial_finding}"
         envelope = {
             "schema_version": SCHEMA_VERSION,
             "status": "FAILED",
             "investigation_goal": goal,
             "caller_hypothesis": hypothesis,
             "source_context": public_ctx,
-            "finding": f"Sol investigation failed: {err_msg}",
+            "finding": finding_text,
             "evidence": [],
             "rejected_alternatives": [],
             "confidence": "LOW",
             "unresolved": [err_msg],
-            "recommended_next_action": "Review local error logs or proceed with manual worker investigation.",
+            "recommended_next_action": "Review Codex error output or proceed with manual worker investigation.",
         }
-        return envelope
+        return sanitize_data(envelope)
 
     if not parsed_model_data or not isinstance(parsed_model_data, dict):
         envelope = {
@@ -835,7 +874,7 @@ def execute_sol_investigation(
         }
         return envelope
 
-    # 9. Normalize & sanitize model data
+    # 10. Normalize & sanitize model data (only on returncode == 0)
     finding = str(parsed_model_data.get("finding", "")).strip() or "No finding text provided."
     confidence = str(parsed_model_data.get("confidence", "MEDIUM")).upper()
     if confidence not in {"HIGH", "MEDIUM", "LOW"}:
@@ -848,7 +887,6 @@ def execute_sol_investigation(
         for item in raw_evidence:
             if isinstance(item, dict):
                 raw_path = str(item.get("path", "unknown"))
-                # Strip absolute repo root prefix if leaked in path
                 if repo_prefix and raw_path.startswith(repo_prefix):
                     raw_path = os.path.relpath(raw_path, repo_prefix)
                 evidence_list.append({
@@ -891,10 +929,10 @@ def execute_sol_investigation(
         "recommended_next_action": next_action,
     }
 
-    # 10. Sanitize all secrets from envelope
+    # 11. Sanitize all secrets from envelope
     sanitized_envelope = sanitize_data(envelope)
 
-    # 11. Validate final envelope fail-closed
+    # 12. Validate final envelope fail-closed
     try:
         full_schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
         val_errors = validate_schema(sanitized_envelope, full_schema)
@@ -975,9 +1013,9 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  ask_sol "Why is test_verify_rwe_snapshot failing on clean worktree?"
-  ask_sol "Is AdvisorBroker dead code or referenced in dispatch?" --hypothesis "I suspect only dispatch_engine uses it"
-  ask_sol "Determine root cause for PostgreSQL connection leak" --task-id "issue-566" --json
+  scripts/ask_sol "Why is test_verify_rwe_snapshot failing on clean worktree?"
+  scripts/ask_sol "Is AdvisorBroker dead code or referenced in dispatch?" --hypothesis "I suspect only dispatch_engine uses it"
+  scripts/ask_sol "Determine root cause for PostgreSQL connection leak" --task-id "issue-566" --json
 """,
     )
     parser.add_argument(

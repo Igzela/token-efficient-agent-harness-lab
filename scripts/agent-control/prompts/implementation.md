@@ -36,7 +36,7 @@ The changed files must be a non-empty subset of the machine-readable allowed-pat
 When encountering genuinely difficult uncertainty, contradictory evidence, or cross-module ambiguity where initial root-cause hypotheses failed, you may invoke the shared read-only investigation tool:
 
 ```bash
-ask_sol "<investigation goal>" --hypothesis "<optional caller hypothesis>"
+scripts/ask_sol "<investigation goal>" --hypothesis "<optional caller hypothesis>"
 ```
 
 or `python3 scripts/ask_sol.py "<investigation goal>"`.

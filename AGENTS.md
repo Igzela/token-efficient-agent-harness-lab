@@ -46,7 +46,7 @@ Model and reasoning effort are user/tool settings. Do not edit model configurati
 Autonomous workers own and execute routine tasks directly. When encountering genuinely difficult uncertainty, contradictory evidence, cross-module ambiguity, or high-impact architecture questions where initial hypotheses failed, a worker may invoke the shared read-only investigation tool:
 
 ```bash
-ask_sol "<investigation goal>" [--hypothesis "<hypothesis>"] [--task-id "<task_id>"]
+scripts/ask_sol "<investigation goal>" [--hypothesis "<hypothesis>"] [--task-id "<task_id>"]
 ```
 
 or `python3 scripts/ask_sol.py "<investigation goal>"`.
