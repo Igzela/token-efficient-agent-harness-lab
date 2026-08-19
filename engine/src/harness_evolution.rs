@@ -31,6 +31,9 @@ pub const MUTATION_FAMILY_REGISTRY_SCHEMA: &str = "mutation_family_registry.v1";
 /// it is not a live ENABLE and does not authorize candidate generation.
 pub const EC1_FROZEN_ACTIVE_HARNESS_SHA: &str =
     crate::context_working_set::CWS_ACTIVE_HARNESS_DEFAULT_OFF_SHA;
+pub const EC1_GENERATOR_CLASS: &str = "unissued_bounded_generator.v1";
+pub const EC1_INVALIDATION_CLASS: &str = "harness_evolution_invalidation.v1";
+pub const EC1_BUDGET_CLASS: &str = "existing_budget_owner_non_authoritative.v1";
 
 pub const ENABLE_ENV: &str = "ACP_ENABLE_HARNESS_EVOLUTION_LAB";
 pub const KILL_SWITCH_ENV: &str = "ACP_HARNESS_EVOLUTION_KILL_SWITCH";
@@ -199,6 +202,11 @@ pub struct FailurePatternEvidenceV1 {
     pub schema_version: String,
     pub evidence_id: String,
     pub source_identity_hash: String,
+    pub parent_identity_hash: String,
+    pub generator_class: String,
+    pub lineage_schema_version: String,
+    pub invalidation_class: String,
+    pub budget_class: String,
     pub observation_digest: String,
     pub causal_status: CausalStatus,
     pub counterevidence_digest: String,
@@ -236,6 +244,7 @@ pub struct MutationFamilyRecord {
     pub family_id: String,
     pub admitted_surface: String,
     pub owner: String,
+    pub non_authority: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -383,6 +392,7 @@ pub fn registered_mutation_families() -> MutationFamilyRegistry {
                 family_id: format!("family:{surface}"),
                 admitted_surface: (*surface).to_string(),
                 owner: "engine/src/harness_evolution.rs".to_string(),
+                non_authority: true,
             })
             .collect(),
     }
@@ -398,6 +408,89 @@ fn require_nonempty_id(value: &str, code: &str) -> Result<(), EvolutionAdmission
     Ok(())
 }
 
+fn record_digest_excluding_sha256(value: &Value) -> Result<String, EvolutionAdmissionError> {
+    refuse_sensitive_payload_fields(value)?;
+    let mut copy = value.clone();
+    if let Value::Object(map) = &mut copy {
+        map.remove("record_sha256");
+    }
+    canonical_json_sha256(&copy)
+        .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error))
+}
+
+pub fn derive_failure_evidence_id(source_identity_hash: &str, observation_digest: &str) -> String {
+    format!(
+        "fpe-{}",
+        &sha256_hex(&format!(
+            "fpe.v1|{source_identity_hash}|{observation_digest}"
+        ))[..32]
+    )
+}
+
+pub fn derive_hypothesis_manifest_id(
+    failure_evidence_id: &str,
+    candidate_delta_digest: &str,
+) -> String {
+    format!(
+        "mh-{}",
+        &sha256_hex(&format!(
+            "mh.v1|{failure_evidence_id}|{candidate_delta_digest}"
+        ))[..32]
+    )
+}
+
+pub fn derive_prediction_outcome_id(
+    hypothesis_manifest_digest: &str,
+    evaluation_digest: &str,
+) -> String {
+    format!(
+        "po-{}",
+        &sha256_hex(&format!(
+            "po.v1|{hypothesis_manifest_digest}|{evaluation_digest}"
+        ))[..32]
+    )
+}
+
+fn require_derived_id(observed: &str, expected: &str) -> Result<(), EvolutionAdmissionError> {
+    if observed != expected {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_identity_asserted",
+            "identity must be derived from source hashes, not caller text",
+        ));
+    }
+    Ok(())
+}
+
+fn require_record_sha256(value: &Value, observed: &str) -> Result<(), EvolutionAdmissionError> {
+    let expected = record_digest_excluding_sha256(value)?;
+    if observed != expected {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_record_tamper",
+            "record_sha256 must match canonical content excluding itself",
+        ));
+    }
+    Ok(())
+}
+
+fn require_ec1_identity_classes(
+    generator_class: &str,
+    lineage_schema_version: &str,
+    invalidation_class: &str,
+    budget_class: &str,
+) -> Result<(), EvolutionAdmissionError> {
+    if generator_class != EC1_GENERATOR_CLASS
+        || lineage_schema_version != LINEAGE_SCHEMA_VERSION
+        || invalidation_class != EC1_INVALIDATION_CLASS
+        || budget_class != EC1_BUDGET_CLASS
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_identity_class_mismatch",
+            "parent/generator/lineage/invalidation/budget classes are frozen",
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_failure_pattern_evidence(
     evidence: &FailurePatternEvidenceV1,
 ) -> Result<(), EvolutionAdmissionError> {
@@ -407,23 +500,31 @@ pub fn validate_failure_pattern_evidence(
             "failure pattern schema mismatch",
         ));
     }
-    require_nonempty_id(&evidence.evidence_id, "ec1_identity_empty")?;
     validate_sha256_hex(&evidence.source_identity_hash)?;
+    validate_sha256_hex(&evidence.parent_identity_hash)?;
     validate_sha256_hex(&evidence.observation_digest)?;
     validate_sha256_hex(&evidence.counterevidence_digest)?;
-    validate_sha256_hex(&evidence.record_sha256)?;
-    if !ADMITTED_MUTABLE_SURFACES.contains(&evidence.mutable_surface.as_str()) {
+    require_ec1_identity_classes(
+        &evidence.generator_class,
+        &evidence.lineage_schema_version,
+        &evidence.invalidation_class,
+        &evidence.budget_class,
+    )?;
+    require_derived_id(
+        &evidence.evidence_id,
+        &derive_failure_evidence_id(&evidence.source_identity_hash, &evidence.observation_digest),
+    )?;
+    if !ADMITTED_MUTABLE_SURFACES.contains(&evidence.mutable_surface.as_str())
+        || !ADMITTED_MUTABLE_SURFACES.contains(&evidence.addressable_surface.as_str())
+    {
         return Err(EvolutionAdmissionError::new(
             "evolution_forbidden_surface",
-            "failure pattern mutable surface is not admitted",
+            "failure pattern surface is not admitted",
         ));
     }
-    if FORBIDDEN_MUTABLE_SURFACES.contains(&evidence.addressable_surface.as_str()) {
-        return Err(EvolutionAdmissionError::new(
-            "evolution_forbidden_surface",
-            "failure pattern cannot address evaluator or authority policy",
-        ));
-    }
+    let value = serde_json::to_value(evidence)
+        .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error.to_string()))?;
+    require_record_sha256(&value, &evidence.record_sha256)?;
     Ok(())
 }
 
@@ -436,14 +537,22 @@ pub fn validate_mutation_hypothesis_manifest(
             "hypothesis manifest schema mismatch",
         ));
     }
-    require_nonempty_id(&manifest.manifest_id, "ec1_identity_empty")?;
     require_nonempty_id(&manifest.failure_evidence_id, "ec1_identity_empty")?;
     validate_sha256_hex(&manifest.candidate_delta_digest)?;
     validate_sha256_hex(&manifest.predicted_improvement_digest)?;
     validate_sha256_hex(&manifest.predicted_regression_digest)?;
     validate_sha256_hex(&manifest.invariant_digest)?;
     validate_sha256_hex(&manifest.evaluation_plan_digest)?;
-    validate_sha256_hex(&manifest.record_sha256)?;
+    require_derived_id(
+        &manifest.manifest_id,
+        &derive_hypothesis_manifest_id(
+            &manifest.failure_evidence_id,
+            &manifest.candidate_delta_digest,
+        ),
+    )?;
+    let value = serde_json::to_value(manifest)
+        .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error.to_string()))?;
+    require_record_sha256(&value, &manifest.record_sha256)?;
     Ok(())
 }
 
@@ -456,17 +565,25 @@ pub fn validate_prediction_outcome_contract(
             "prediction outcome schema mismatch",
         ));
     }
-    require_nonempty_id(&outcome.outcome_id, "ec1_identity_empty")?;
     validate_sha256_hex(&outcome.hypothesis_manifest_digest)?;
     validate_sha256_hex(&outcome.evaluation_digest)?;
     validate_sha256_hex(&outcome.evaluator_identity_hash)?;
-    validate_sha256_hex(&outcome.record_sha256)?;
+    require_derived_id(
+        &outcome.outcome_id,
+        &derive_prediction_outcome_id(
+            &outcome.hypothesis_manifest_digest,
+            &outcome.evaluation_digest,
+        ),
+    )?;
     if outcome.outcome.is_evaluator_authority() {
         return Err(EvolutionAdmissionError::new(
             "ec1_prediction_authority",
             "prediction outcome cannot grant evaluator authority",
         ));
     }
+    let value = serde_json::to_value(outcome)
+        .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error.to_string()))?;
+    require_record_sha256(&value, &outcome.record_sha256)?;
     Ok(())
 }
 
@@ -492,7 +609,10 @@ pub fn validate_mutation_family_registry(
                 format!("unregistered mutation family {}", family.family_id),
             ));
         }
-        if FORBIDDEN_MUTABLE_SURFACES.contains(&family.admitted_surface.as_str()) {
+        if FORBIDDEN_MUTABLE_SURFACES.contains(&family.admitted_surface.as_str())
+            || !family.non_authority
+            || family.owner != "engine/src/harness_evolution.rs"
+        {
             return Err(EvolutionAdmissionError::new(
                 "evolution_forbidden_surface",
                 "mutation family cannot reach evaluator or authority policy",
@@ -1113,6 +1233,35 @@ mod tests {
         sha256_hex(label)
     }
 
+    fn seal_record_sha256(value: &mut Value) {
+        let expected = record_digest_excluding_sha256(value).unwrap();
+        value["record_sha256"] = Value::String(expected);
+    }
+
+    fn sample_failure_pattern(causal: CausalStatus) -> FailurePatternEvidenceV1 {
+        let source = digest("source");
+        let observation = digest("obs");
+        let mut value = serde_json::to_value(FailurePatternEvidenceV1 {
+            schema_version: FAILURE_PATTERN_EVIDENCE_SCHEMA.to_string(),
+            evidence_id: derive_failure_evidence_id(&source, &observation),
+            source_identity_hash: source,
+            parent_identity_hash: digest("root"),
+            generator_class: EC1_GENERATOR_CLASS.to_string(),
+            lineage_schema_version: LINEAGE_SCHEMA_VERSION.to_string(),
+            invalidation_class: EC1_INVALIDATION_CLASS.to_string(),
+            budget_class: EC1_BUDGET_CLASS.to_string(),
+            observation_digest: observation,
+            causal_status: causal,
+            counterevidence_digest: digest("counter"),
+            addressable_surface: "prompts_and_bounded_rules".to_string(),
+            mutable_surface: "prompts_and_bounded_rules".to_string(),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        seal_record_sha256(&mut value);
+        serde_json::from_value(value).unwrap()
+    }
+
     #[test]
     fn ec1_contract_freezes_default_off_harness_and_registry() {
         assert_eq!(
@@ -1122,30 +1271,30 @@ mod tests {
         let registry = registered_mutation_families();
         validate_mutation_family_registry(&registry).unwrap();
         assert_eq!(registry.families.len(), ADMITTED_MUTABLE_SURFACES.len());
+        assert!(registry.families.iter().all(|family| family.non_authority));
     }
 
     #[test]
     fn failure_pattern_keeps_unknown_and_rejects_empty_identity() {
-        let ok = FailurePatternEvidenceV1 {
-            schema_version: FAILURE_PATTERN_EVIDENCE_SCHEMA.to_string(),
-            evidence_id: "fpe-1".to_string(),
-            source_identity_hash: digest("source"),
-            observation_digest: digest("obs"),
-            causal_status: CausalStatus::Unknown,
-            counterevidence_digest: digest("counter"),
-            addressable_surface: "prompts_and_bounded_rules".to_string(),
-            mutable_surface: "prompts_and_bounded_rules".to_string(),
-            record_sha256: digest("record"),
-        };
+        let ok = sample_failure_pattern(CausalStatus::Unknown);
         validate_failure_pattern_evidence(&ok).unwrap();
-        let mut disputed = ok.clone();
-        disputed.causal_status = CausalStatus::Disputed;
+        let disputed = sample_failure_pattern(CausalStatus::Disputed);
         validate_failure_pattern_evidence(&disputed).unwrap();
-        let mut empty = ok.clone();
-        empty.evidence_id.clear();
+        let mut asserted = ok.clone();
+        asserted.evidence_id = "caller-id".to_string();
         assert_eq!(
-            validate_failure_pattern_evidence(&empty).unwrap_err().code,
-            "ec1_identity_empty"
+            validate_failure_pattern_evidence(&asserted)
+                .unwrap_err()
+                .code,
+            "ec1_identity_asserted"
+        );
+        let mut rewritten = ok.clone();
+        rewritten.parent_identity_hash = digest("rewritten-parent");
+        assert_eq!(
+            validate_failure_pattern_evidence(&rewritten)
+                .unwrap_err()
+                .code,
+            "ec1_record_tamper"
         );
         let mut forbidden = ok;
         forbidden.addressable_surface = "evaluator".to_string();
@@ -1159,34 +1308,46 @@ mod tests {
 
     #[test]
     fn prediction_outcome_is_not_evaluator_authority() {
-        let outcome = PredictionOutcomeV1 {
+        let hyp = digest("hyp");
+        let evaluation = digest("eval");
+        let mut outcome_value = serde_json::to_value(PredictionOutcomeV1 {
             schema_version: PREDICTION_OUTCOME_SCHEMA.to_string(),
-            outcome_id: "po-1".to_string(),
-            hypothesis_manifest_digest: digest("hyp"),
-            evaluation_digest: digest("eval"),
+            outcome_id: derive_prediction_outcome_id(&hyp, &evaluation),
+            hypothesis_manifest_digest: hyp,
+            evaluation_digest: evaluation,
             evaluator_identity_hash: digest("evaluator"),
             outcome: PredictionOutcomeKind::Unavailable,
-            record_sha256: digest("record"),
-        };
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        seal_record_sha256(&mut outcome_value);
+        let outcome: PredictionOutcomeV1 = serde_json::from_value(outcome_value).unwrap();
         validate_prediction_outcome_contract(&outcome).unwrap();
         assert!(!PredictionOutcomeKind::Correct.is_evaluator_authority());
-        let manifest = MutationHypothesisManifestV1 {
+        let failure_id = derive_failure_evidence_id(&digest("source"), &digest("obs"));
+        let delta = digest("delta");
+        let mut manifest_value = serde_json::to_value(MutationHypothesisManifestV1 {
             schema_version: MUTATION_HYPOTHESIS_MANIFEST_SCHEMA.to_string(),
-            manifest_id: "mh-1".to_string(),
-            failure_evidence_id: "fpe-1".to_string(),
-            candidate_delta_digest: digest("delta"),
+            manifest_id: derive_hypothesis_manifest_id(&failure_id, &delta),
+            failure_evidence_id: failure_id,
+            candidate_delta_digest: delta,
             predicted_improvement_digest: digest("imp"),
             predicted_regression_digest: digest("reg"),
             invariant_digest: digest("inv"),
             evaluation_plan_digest: digest("plan"),
-            record_sha256: digest("mh-record"),
-        };
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        seal_record_sha256(&mut manifest_value);
+        let manifest: MutationHypothesisManifestV1 =
+            serde_json::from_value(manifest_value).unwrap();
         validate_mutation_hypothesis_manifest(&manifest).unwrap();
         let mut unregistered = registered_mutation_families();
         unregistered.families.push(MutationFamilyRecord {
             family_id: "family:evaluator".to_string(),
             admitted_surface: "evaluator".to_string(),
             owner: "caller".to_string(),
+            non_authority: false,
         });
         assert_eq!(
             validate_mutation_family_registry(&unregistered)
