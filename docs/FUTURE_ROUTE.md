@@ -1,6 +1,6 @@
 # Future Route
 
-Last updated: 2026-08-18.
+Last updated: 2026-08-19.
 
 This document is the sole long-horizon routing index. Every packet here is `BLOCKED_PREREQUISITE` and routing-only: its order, prerequisite, intended class, bounded sketch, and promotion profile are accepted planning context, not implementation or external-effect authority.
 
@@ -114,11 +114,11 @@ AC1 remains deferred optional hardening. It is not an executable successor and d
 
 AC2 distinguishes effect and outcome states while leaving admission, leases, spend, verification, approval, output, and adoption with existing owners.
 
-The AC2 contract and caller migration, AC3 Golden Path split, AC4 transaction views, AC5 composition root, and AC6 schema convergence/compatibility closeout are accepted on `main`; AC1 shared supervision remains deferred optional hardening. The AC7 removal manifest, deletion-only cleanup, and closeout are accepted on `main`; Contemporary RWE reconstruction is accepted through `7cfa817a`; `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` remains parked at `DECISION_REQUIRED`; and `PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1` is the current provider-free read-only implementation window in `docs/NEXT_DECISION.md`. Any replay effect remains a gated successor.
+The AC2 contract and caller migration, AC3 Golden Path split, AC4 transaction views, AC5 composition root, and AC6 schema convergence/compatibility closeout are accepted on `main`; AC1 shared supervision remains deferred optional hardening. The AC7 removal manifest, deletion-only cleanup, and closeout are accepted on `main`; Contemporary RWE reconstruction is accepted through `7cfa817a`; the read-only preflight repair is accepted through `262b67b6`; and `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` remains parked at `DECISION_REQUIRED` in `docs/NEXT_DECISION.md`. Any replay effect remains a gated successor.
 
 ## Stage Architecture Convergence AC7 - obsolete legacy cleanup
 
-AC7 removes only the frozen compatibility surface after all callers and evidence have migrated; it does not change state-machine or authority order. Cleanup and closeout are accepted; Contemporary RWE reconstruction is accepted, the protocol/preflight predecessor is planning-parked, and the bounded provider-free read-only repair is the current implementation window in `docs/NEXT_DECISION.md`.
+AC7 removes only the frozen compatibility surface after all callers and evidence have migrated; it does not change state-machine or authority order. Cleanup and closeout are accepted; Contemporary RWE reconstruction and the read-only preflight repair are accepted; the protocol/preflight predecessor is planning-parked in `docs/NEXT_DECISION.md`.
 
 ## Stage Contemporary old/new RWE replay
 
