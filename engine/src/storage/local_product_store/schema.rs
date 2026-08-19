@@ -819,6 +819,30 @@ CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec1_identity_lineage_parent
     ON harness_evolution_ec1_identity_lineage(parent_lineage_id, created_at);
 ";
 
+pub(super) const EC1_CAUSAL_MANIFEST_DDL: &str = "
+CREATE TABLE IF NOT EXISTS harness_evolution_ec1_failure_patterns (
+    evidence_id TEXT PRIMARY KEY,
+    lineage_id TEXT NOT NULL,
+    causal_status TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(lineage_id) REFERENCES harness_evolution_ec1_identity_lineage(lineage_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec1_failure_patterns_lineage
+    ON harness_evolution_ec1_failure_patterns(lineage_id, created_at);
+CREATE TABLE IF NOT EXISTS harness_evolution_ec1_hypotheses (
+    manifest_id TEXT PRIMARY KEY,
+    evidence_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(evidence_id) REFERENCES harness_evolution_ec1_failure_patterns(evidence_id),
+    FOREIGN KEY(lineage_id) REFERENCES harness_evolution_ec1_identity_lineage(lineage_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec1_hypotheses_evidence
+    ON harness_evolution_ec1_hypotheses(evidence_id, created_at);
+";
+
 pub(super) const V28_DDL: &str = "
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
@@ -1656,6 +1680,28 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec1_identity_lineage (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec1_identity_lineage_parent
     ON harness_evolution_ec1_identity_lineage(parent_lineage_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_ec1_failure_patterns (
+    evidence_id TEXT PRIMARY KEY,
+    lineage_id TEXT NOT NULL,
+    causal_status TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(lineage_id) REFERENCES harness_evolution_ec1_identity_lineage(lineage_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec1_failure_patterns_lineage
+    ON harness_evolution_ec1_failure_patterns(lineage_id, created_at);
+CREATE TABLE IF NOT EXISTS harness_evolution_ec1_hypotheses (
+    manifest_id TEXT PRIMARY KEY,
+    evidence_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(evidence_id) REFERENCES harness_evolution_ec1_failure_patterns(evidence_id),
+    FOREIGN KEY(lineage_id) REFERENCES harness_evolution_ec1_identity_lineage(lineage_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec1_hypotheses_evidence
+    ON harness_evolution_ec1_hypotheses(evidence_id, created_at);
 
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
@@ -2866,6 +2912,28 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec1_identity_lineage (
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec1_identity_lineage_parent
     ON harness_evolution_ec1_identity_lineage(parent_lineage_id, created_at);
 
+CREATE TABLE IF NOT EXISTS harness_evolution_ec1_failure_patterns (
+    evidence_id TEXT PRIMARY KEY,
+    lineage_id TEXT NOT NULL,
+    causal_status TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(lineage_id) REFERENCES harness_evolution_ec1_identity_lineage(lineage_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec1_failure_patterns_lineage
+    ON harness_evolution_ec1_failure_patterns(lineage_id, created_at);
+CREATE TABLE IF NOT EXISTS harness_evolution_ec1_hypotheses (
+    manifest_id TEXT PRIMARY KEY,
+    evidence_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(evidence_id) REFERENCES harness_evolution_ec1_failure_patterns(evidence_id),
+    FOREIGN KEY(lineage_id) REFERENCES harness_evolution_ec1_identity_lineage(lineage_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec1_hypotheses_evidence
+    ON harness_evolution_ec1_hypotheses(evidence_id, created_at);
+
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
     family_id TEXT NOT NULL,
@@ -3283,6 +3351,8 @@ mod tests {
 
     #[test]
     fn current_schema_ddl_contains_policy_snapshot_surface_for_both_dialects() {
+        assert!(SQLITE_DDL.contains(EC1_CAUSAL_MANIFEST_DDL.trim()));
+        assert!(POSTGRES_DDL.contains(EC1_CAUSAL_MANIFEST_DDL.trim()));
         for expected in [
             "controlled_loop_policy_snapshots",
             "idx_policy_snapshots_status",
@@ -3318,6 +3388,10 @@ mod tests {
             "harness_evolution_receipts",
             "harness_evolution_ec1_identity_lineage",
             "idx_harness_evolution_ec1_identity_lineage_parent",
+            "harness_evolution_ec1_failure_patterns",
+            "idx_harness_evolution_ec1_failure_patterns_lineage",
+            "harness_evolution_ec1_hypotheses",
+            "idx_harness_evolution_ec1_hypotheses_evidence",
             "idx_harness_evolution_candidates_lineage",
             "harness_evolution_sealed_holdouts",
             "harness_evolution_evaluations",

@@ -89,6 +89,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-CWS-BENCHMARK-RUN-1` | `COMPLETE` | PR #589 exact head `0f9cad12a850a7ed2ffcc823ebd2da29318c5ae6`; squash merge `84b1933bc3d9e657acae94d9e5f14810c0651917`; exact-head review comments `5347630853` and `5347631083`; canonical workflow `32298813456`; exact-head check `32298813444`; fail-closed; `executed=false`; `provider_posts=0` |
 | `PE7-CWS-ANALYSIS-1` | `COMPLETE` | PR #590 exact head `da09ea576154e55e532d2de5477972f2c5c516d5`; squash merge `1544c8d0a3f1b196fdb4b560759609662cd5f432`; exact-head review comments `5347818781` and `5347818993`; canonical workflow `32301497907`; exact-head check `32301497898`; disposition `INSUFFICIENT_DEFAULT_OFF`; active Harness `84b1933bc3d9e657acae94d9e5f14810c0651917`; no ENABLE |
 | `PE7-HE-EC1-CONTRACT-1` | `COMPLETE` | PR #591 exact head `50661a622c19e1f6da1f934a43bcbbaa4b52a003`; squash merge `e116e212ed043d773e215f2ba029e5b2f1763e4d`; exact-head review comments `5348443154` and `5348443354`; canonical workflow `32306087501`; default-off Harness `84b1933bc3d9e657acae94d9e5f14810c0651917` |
+| `PE7-HE-EC1-IDENTITY-LINEAGE-1` | `COMPLETE` | PR #592 exact head `155fa749effdcd790fb954eefcf64d12790d21b6`; squash merge `3dc2d3b12fbb95ec2b26220681cba5ad7547c6d2`; exact-head review comments `5348823217` and `5348823396`; canonical workflow `32309602816` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -362,7 +363,11 @@ Disposition is `INSUFFICIENT_DEFAULT_OFF`. Live arms were not observed; hard gat
 
 ### HE EC1 identity lineage (`PE7-HE-EC1-IDENTITY-LINEAGE-1`)
 
-Immutable `Ec1IdentityLineageRecord` rows persist under `LocalProductStore` table `harness_evolution_ec1_identity_lineage`. Lineage IDs are derived; parent rows must exist; causal sources cannot orphan; active Harness is CWS default-off `84b1933bc3d9e657acae94d9e5f14810c0651917`. No selection, adoption, or second store.
+Immutable `Ec1IdentityLineageRecord` rows persist under `LocalProductStore` table `harness_evolution_ec1_identity_lineage`. Lineage IDs are derived; parent rows must exist; causal sources cannot orphan; active Harness is CWS default-off `84b1933bc3d9e657acae94d9e5f14810c0651917`. No selection, adoption, or second store. Receipt: PR #592 merge `3dc2d3b12fbb95ec2b26220681cba5ad7547c6d2`.
+
+### HE EC1 causal manifest (`PE7-HE-EC1-CAUSAL-MANIFEST-1`)
+
+This packet records source-bound `FailurePatternEvidenceV1` and pre-execution `MutationHypothesisManifestV1` under existing `LocalProductStore` HE tables. Observation vs inference is explicit; causal status is not proof. Hypotheses are insert-only and must bind a proposal digest. Sensitive fields remain refused. No candidate execution or evaluator result.
 
 ## Invalidated Historical Receipts (Repair Required)
 

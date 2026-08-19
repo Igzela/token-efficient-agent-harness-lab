@@ -2549,6 +2549,8 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
             .map_err(|error| error.to_string())?;
         tx.execute_batch(schema::EC1_IDENTITY_LINEAGE_DDL)
             .map_err(|error| error.to_string())?;
+        tx.execute_batch(schema::EC1_CAUSAL_MANIFEST_DDL)
+            .map_err(|error| error.to_string())?;
         repair_sqlite_v36_delegated_plan_owner(&tx)?;
         tx.commit().map_err(|error| error.to_string())
     }

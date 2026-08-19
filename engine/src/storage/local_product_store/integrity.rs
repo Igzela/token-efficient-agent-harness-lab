@@ -80,6 +80,8 @@ const INTEGRITY_TABLES: &[&str] = &[
     "harness_evolution_candidates",
     "harness_evolution_receipts",
     "harness_evolution_ec1_identity_lineage",
+    "harness_evolution_ec1_failure_patterns",
+    "harness_evolution_ec1_hypotheses",
     "harness_evolution_sealed_holdouts",
     "harness_evolution_evaluations",
     "harness_evolution_pareto_archive",

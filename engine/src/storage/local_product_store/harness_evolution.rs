@@ -5,11 +5,13 @@ use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use super::{append_audit_locked, LocalProductStore};
 use crate::harness_evolution::{
     build_admission_receipt, configured_workspace_root, revalidate_workspace_content,
-    seal_ec1_identity_lineage, validate_candidate_for_admission, validate_ec1_identity_lineage,
-    validate_proposal, ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason,
-    Ec1IdentityLineageRecord, EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal,
-    EvolutionReceipt, ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION,
-    EVOLUTION_LAB_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION,
+    seal_ec1_identity_lineage, seal_failure_pattern_evidence, seal_mutation_hypothesis_manifest,
+    validate_candidate_for_admission, validate_ec1_identity_lineage,
+    validate_failure_pattern_evidence, validate_mutation_hypothesis_manifest, validate_proposal,
+    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, Ec1IdentityLineageRecord,
+    EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal, EvolutionReceipt,
+    FailurePatternEvidenceV1, MutationHypothesisManifestV1, ACTIVE_VERSION_SCHEMA,
+    CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
     build_eval_receipt, build_pareto_archive, build_sealed_vault,
@@ -262,6 +264,176 @@ impl LocalProductStore {
                 Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
                 None => Ok(None),
             }
+        })
+    }
+
+    pub fn record_ec1_failure_pattern(
+        &self,
+        evidence: FailurePatternEvidenceV1,
+        actor_id: &str,
+    ) -> Result<FailurePatternEvidenceV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec1_failure_pattern_actor: authenticated actor_id is required".into());
+        }
+        let sealed = seal_failure_pattern_evidence(evidence).map_err(|error| error.message)?;
+        validate_failure_pattern_evidence(&sealed).map_err(|error| error.message)?;
+        let body = serde_json::to_string(&sealed).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let lineage: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT lineage_id, source_identity_hash FROM harness_evolution_ec1_identity_lineage WHERE lineage_id=?1",
+                    params![sealed.lineage_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let Some((_, source_hash)) = lineage else {
+                return Err(format!(
+                    "ec1_lineage_missing: {} is not recorded",
+                    sealed.lineage_id
+                ));
+            };
+            if source_hash != sealed.source_identity_hash {
+                return Err(
+                    "ec1_source_mismatch: failure pattern source is not bound to lineage"
+                        .into(),
+                );
+            }
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec1_failure_patterns WHERE evidence_id=?1",
+                    params![sealed.evidence_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(existing_body) = existing {
+                if existing_body == body {
+                    let stored = serde_json::from_str(&existing_body).map_err(|e| e.to_string())?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(stored);
+                }
+                return Err(format!(
+                    "ec1_failure_pattern_immutable: {} already exists and cannot be mutated",
+                    sealed.evidence_id
+                ));
+            }
+            tx.execute(
+                "INSERT INTO harness_evolution_ec1_failure_patterns
+                    (evidence_id, lineage_id, causal_status, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    sealed.evidence_id,
+                    sealed.lineage_id,
+                    sealed.causal_status.as_str(),
+                    body,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec1_failure_pattern_recorded",
+                &sealed.evidence_id,
+                &serde_json::json!({
+                    "lineage_id": sealed.lineage_id,
+                    "causal_status": sealed.causal_status.as_str(),
+                    "evidence_role": sealed.evidence_role.as_str(),
+                    "actor_id": actor_id,
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(sealed)
+        })
+    }
+
+    pub fn record_ec1_hypothesis(
+        &self,
+        manifest: MutationHypothesisManifestV1,
+        actor_id: &str,
+    ) -> Result<MutationHypothesisManifestV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec1_hypothesis_actor: authenticated actor_id is required".into());
+        }
+        let sealed = seal_mutation_hypothesis_manifest(manifest).map_err(|error| error.message)?;
+        validate_mutation_hypothesis_manifest(&sealed).map_err(|error| error.message)?;
+        let body = serde_json::to_string(&sealed).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let evidence: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT evidence_id, lineage_id FROM harness_evolution_ec1_failure_patterns WHERE evidence_id=?1",
+                    params![sealed.failure_evidence_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let Some((_, evidence_lineage)) = evidence else {
+                return Err(format!(
+                    "ec1_failure_pattern_missing: {} is not recorded",
+                    sealed.failure_evidence_id
+                ));
+            };
+            if evidence_lineage != sealed.lineage_id {
+                return Err(
+                    "ec1_hypothesis_lineage_mismatch: hypothesis is not bound to the evidence lineage"
+                        .into(),
+                );
+            }
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec1_hypotheses WHERE manifest_id=?1",
+                    params![sealed.manifest_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(existing_body) = existing {
+                if existing_body == body {
+                    let stored = serde_json::from_str(&existing_body).map_err(|e| e.to_string())?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(stored);
+                }
+                return Err(format!(
+                    "ec1_hypothesis_immutable: {} already exists and cannot be mutated after recording",
+                    sealed.manifest_id
+                ));
+            }
+            tx.execute(
+                "INSERT INTO harness_evolution_ec1_hypotheses
+                    (manifest_id, evidence_id, lineage_id, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    sealed.manifest_id,
+                    sealed.failure_evidence_id,
+                    sealed.lineage_id,
+                    body,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec1_hypothesis_recorded",
+                &sealed.manifest_id,
+                &serde_json::json!({
+                    "evidence_id": sealed.failure_evidence_id,
+                    "lineage_id": sealed.lineage_id,
+                    "proposal_body_sha256": sealed.proposal_body_sha256,
+                    "actor_id": actor_id,
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(sealed)
         })
     }
 
@@ -2368,5 +2540,128 @@ mod tests {
             .expect("lineage survives restart");
         assert_eq!(loaded.active_harness_sha, EC1_FROZEN_ACTIVE_HARNESS_SHA);
         assert_eq!(loaded.record_sha256, recorded.record_sha256);
+    }
+
+    #[test]
+    fn records_source_bound_ec1_causal_manifest_with_restart() {
+        use crate::harness_evolution::{
+            seal_ec1_identity_lineage, seal_failure_pattern_evidence,
+            seal_mutation_hypothesis_manifest, CausalStatus, Ec1IdentityLineageRecord,
+            EvidenceRole, FailurePatternEvidenceV1, MutationHypothesisManifestV1, EC1_BUDGET_CLASS,
+            EC1_FROZEN_ACTIVE_HARNESS_SHA, EC1_GENERATOR_CLASS, EC1_IDENTITY_LINEAGE_SCHEMA,
+            EC1_INVALIDATION_CLASS, FAILURE_PATTERN_EVIDENCE_SCHEMA, LINEAGE_SCHEMA_VERSION,
+            MUTATION_HYPOTHESIS_MANIFEST_SCHEMA,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec1-causal.db");
+        let store = LocalProductStore::new(&db).unwrap();
+        let source = sha256_hex("ec1-root-source");
+        let lineage = store
+            .record_ec1_identity_lineage(
+                seal_ec1_identity_lineage(Ec1IdentityLineageRecord {
+                    schema_version: EC1_IDENTITY_LINEAGE_SCHEMA.to_string(),
+                    lineage_id: String::new(),
+                    parent_lineage_id: None,
+                    source_identity_hash: source.clone(),
+                    active_harness_sha: EC1_FROZEN_ACTIVE_HARNESS_SHA.to_string(),
+                    causal_source_id: None,
+                    record_sha256: String::new(),
+                })
+                .unwrap(),
+                "operator-test",
+            )
+            .unwrap();
+        let pattern = seal_failure_pattern_evidence(FailurePatternEvidenceV1 {
+            schema_version: FAILURE_PATTERN_EVIDENCE_SCHEMA.to_string(),
+            evidence_id: String::new(),
+            lineage_id: lineage.lineage_id.clone(),
+            evidence_role: EvidenceRole::Observation,
+            source_identity_hash: source,
+            parent_identity_hash: sha256_hex("root"),
+            generator_class: EC1_GENERATOR_CLASS.to_string(),
+            lineage_schema_version: LINEAGE_SCHEMA_VERSION.to_string(),
+            invalidation_class: EC1_INVALIDATION_CLASS.to_string(),
+            budget_class: EC1_BUDGET_CLASS.to_string(),
+            observation_digest: sha256_hex("obs"),
+            causal_status: CausalStatus::Unknown,
+            counterevidence_digest: sha256_hex("counter"),
+            addressable_surface: "prompts_and_bounded_rules".to_string(),
+            mutable_surface: "prompts_and_bounded_rules".to_string(),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        let recorded = store
+            .record_ec1_failure_pattern(pattern.clone(), "operator-test")
+            .unwrap();
+        assert_eq!(
+            store
+                .record_ec1_failure_pattern(pattern.clone(), "operator-test")
+                .unwrap()
+                .evidence_id,
+            recorded.evidence_id
+        );
+        let mut mutated = recorded.clone();
+        mutated.causal_status = CausalStatus::Supported;
+        assert!(store
+            .record_ec1_failure_pattern(mutated, "operator-test")
+            .unwrap_err()
+            .contains("immutable"));
+        let hypothesis = seal_mutation_hypothesis_manifest(MutationHypothesisManifestV1 {
+            schema_version: MUTATION_HYPOTHESIS_MANIFEST_SCHEMA.to_string(),
+            manifest_id: String::new(),
+            lineage_id: lineage.lineage_id.clone(),
+            failure_evidence_id: recorded.evidence_id.clone(),
+            proposal_body_sha256: sha256_hex("proposal-body"),
+            candidate_delta_digest: sha256_hex("delta"),
+            predicted_improvement_digest: sha256_hex("imp"),
+            predicted_regression_digest: sha256_hex("reg"),
+            invariant_digest: sha256_hex("inv"),
+            evaluation_plan_digest: sha256_hex("plan"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        let stored_h = store
+            .record_ec1_hypothesis(hypothesis.clone(), "operator-test")
+            .unwrap();
+        assert_eq!(stored_h.proposal_body_sha256, sha256_hex("proposal-body"));
+        let mut unbound = hypothesis.clone();
+        unbound.proposal_body_sha256.clear();
+        assert!(store
+            .record_ec1_hypothesis(unbound, "operator-test")
+            .is_err());
+        let mut missing_lineage = pattern.clone();
+        missing_lineage.lineage_id = "heil-missing".into();
+        assert!(store
+            .record_ec1_failure_pattern(missing_lineage, "operator-test")
+            .unwrap_err()
+            .contains("lineage"));
+        let mut source_mismatch = pattern.clone();
+        source_mismatch.source_identity_hash = sha256_hex("other-source");
+        assert!(store
+            .record_ec1_failure_pattern(source_mismatch, "operator-test")
+            .unwrap_err()
+            .contains("source"));
+        let mut post_exec = stored_h.clone();
+        post_exec.predicted_improvement_digest = sha256_hex("changed");
+        assert!(store
+            .record_ec1_hypothesis(post_exec, "operator-test")
+            .unwrap_err()
+            .contains("immutable"));
+        drop(store);
+        let reopened = LocalProductStore::new(&db).unwrap();
+        assert_eq!(
+            reopened
+                .record_ec1_failure_pattern(pattern, "operator-test")
+                .unwrap()
+                .record_sha256,
+            recorded.record_sha256
+        );
+        assert_eq!(
+            reopened
+                .record_ec1_hypothesis(hypothesis, "operator-test")
+                .unwrap()
+                .manifest_id,
+            stored_h.manifest_id
+        );
     }
 }
