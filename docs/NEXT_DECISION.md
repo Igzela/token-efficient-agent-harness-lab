@@ -6,19 +6,19 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-HE-EC1-CONTRACT-1` is complete. The current window is `PE7-HE-EC1-IDENTITY-LINEAGE-1`: immutable identity/lineage recording bound to CWS default-off Harness `84b1933b`. No selection, adoption, ENABLE, or Level-1.
+`PE7-HE-EC1-IDENTITY-LINEAGE-1` is complete. The current window is `PE7-HE-EC1-CAUSAL-MANIFEST-1`: persist source-bound failure-pattern evidence and pre-execution hypotheses against lineage rows. No candidate execution, ENABLE, or Level-1.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-HE-EC1-IDENTITY-LINEAGE-1 — READY_FOR_EXECUTION, provider-free; immutable lineage]
+[window: PE7-HE-EC1-CAUSAL-MANIFEST-1 — READY_FOR_EXECUTION, provider-free; source-bound causal records]
 
 
 ```
 
 ## Active Routing
 
-1. `PE7-HE-EC1-IDENTITY-LINEAGE-1` — `READY_FOR_EXECUTION`
+1. `PE7-HE-EC1-CAUSAL-MANIFEST-1` — `READY_FOR_EXECUTION`
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -50,41 +50,47 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Accepted evidence:** PR #591 exact head `50661a622c19e1f6da1f934a43bcbbaa4b52a003`; squash merge `e116e212ed043d773e215f2ba029e5b2f1763e4d`; exact-head review comments `5348443154` and `5348443354`; canonical workflow `32306087501`.
 
-## Packet PE7-HE-EC1-IDENTITY-LINEAGE-1
+## Completed (PE7-HE-EC1-IDENTITY-LINEAGE-1)
+
+**State:** `COMPLETE`
+
+**Accepted evidence:** PR #592 exact head `155fa749effdcd790fb954eefcf64d12790d21b6`; squash merge `3dc2d3b12fbb95ec2b26220681cba5ad7547c6d2`; exact-head review comments `5348823217` and `5348823396`; canonical workflow `32309602816`.
+
+## Packet PE7-HE-EC1-CAUSAL-MANIFEST-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-HE-EC1-CONTRACT-1`
+**Prerequisite:** `PE7-HE-EC1-IDENTITY-LINEAGE-1`
 
 **Class:** `IMPLEMENT`
 
-**Outcome:** Implement immutable identity and lineage recording under existing artifact/store owners, including source identities for later causal manifests, bound to CWS default-off SHA `84b1933b`.
+**Outcome:** Immutable source-bound `FailurePatternEvidenceV1` and pre-execution `MutationHypothesisManifestV1` under the existing HE store owner.
 
-**Allowed delta:** `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `engine/src/storage/local_product_store/schema.rs`, `engine/src/storage/local_product_store/migrations.rs`, `engine/src/storage/local_product_store/pg_backend/migrations.rs`, `engine/src/storage/local_product_store/integrity.rs`, `engine/tests/test_data_operations.rs`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Contract-approved records, hashes, validation, and projections only; no selection or adoption.
+**Allowed delta:** `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `engine/src/storage/local_product_store/schema.rs`, `engine/src/storage/local_product_store/migrations.rs`, `engine/src/storage/local_product_store/pg_backend/migrations.rs`, `engine/src/storage/local_product_store/integrity.rs`, `engine/tests/test_data_operations.rs`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. No candidate execution, evaluator result, selection, or admission-policy change.
 
-**Exit:** Tamper/replay/duplicate/restart/parity tests prove immutable ancestry, exact active-Harness binding, and no orphan causal-evidence reference.
+**Exit:** Unknown/disputed cause, counterevidence, addressability, invariant, prediction, tamper, duplicate, restart, SQLite/PostgreSQL parity, forbidden-sensitive-field, and proposal-binding tests pass.
 
-**Stop:** Requires a second store, mutable ancestry, candidate-controlled identity, destructive migration, or Level-1.
+**Stop:** Parallel failure-intelligence store; confidence as causal proof; post-execution hypothesis edits; observation mixed with inference; Level-1.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Immutable identity/lineage persistence. No selection, adoption, generation, ENABLE, or Level-1.
-2. **Prerequisites and evidence.** EC1 contract COMPLETE on PR #591 / `e116e212ed043d773e215f2ba029e5b2f1763e4d`.
-3. **Owners and paths.** `engine/src/harness_evolution.rs` plus existing `LocalProductStore` HE owner.
-4. **Frozen invariants.** Active Harness SHA `84b1933bc3d9e657acae94d9e5f14810c0651917`. Lineage IDs derived. Ancestry insert-only.
-5. **Only semantic delta.** `Ec1IdentityLineageRecord` plus store insert/get and additive table.
-6. **Forbidden changes.** No second store, evaluator, selection, or destructive schema rollback.
-7. **Ordered slices.** Derive/seal records; persist; reject orphan causal sources; restart-load.
-8. **Failure taxonomy.** Wrong Harness, asserted identity, missing parent, orphan causal, immutable conflict.
+1. **Outcome and non-goals.** Persist redacted causal records against lineage. No execution, evaluation, ENABLE, or Level-1.
+2. **Prerequisites and evidence.** Identity-lineage COMPLETE on PR #592 / `3dc2d3b12fbb95ec2b26220681cba5ad7547c6d2`.
+3. **Owners and paths.** Existing HE module and `LocalProductStore`.
+4. **Frozen invariants.** Lineage-bound source hashes. Causal status is not proof. Hypotheses insert-only.
+5. **Only semantic delta.** Failure-pattern and hypothesis seal/persist plus additive tables.
+6. **Forbidden changes.** No second store, evaluator, candidate generation.
+7. **Ordered slices.** Bind to lineage; persist observation; persist pre-execution hypothesis; reject inference-as-proof and mutation.
+8. **Failure taxonomy.** Missing lineage, source mismatch, immutable conflict, inference as proof, sensitive fields.
 9. **Verification.** Focused cargo tests, handoff, security, rustfmt.
-10. **Compatibility and rollback.** Revert this PR; table is additive `CREATE IF NOT EXISTS`.
-11. **Exit artifact.** Durable lineage rows bound to default-off SHA.
-12. **Next action.** Promote `PE7-HE-EC1-CAUSAL-MANIFEST-1`.
+10. **Compatibility and rollback.** Revert this PR; tables are additive `CREATE IF NOT EXISTS`.
+11. **Exit artifact.** Durable failure-pattern and hypothesis rows.
+12. **Next action.** Promote `PE7-HE-EC1-MUTATION-REGISTRY-1`.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC1-IDENTITY-LINEAGE-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Record immutable EC1 identity/lineage bound to CWS default-off Harness 84b1933b.","allowed_paths":["engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/tests/test_data_operations.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md"],"read_paths":["engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/tests/test_data_operations.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/MODULE_MAP.md"],"allowed_outputs":["Immutable EC1 identity lineage records persisted by LocalProductStore."],"prerequisites":["PE7-HE-EC1-CONTRACT-1"],"prerequisite_receipts":["PE7-HE-EC1-CONTRACT-1 COMPLETE: PR #591 exact head 50661a622c19e1f6da1f934a43bcbbaa4b52a003; squash merge e116e212ed043d773e215f2ba029e5b2f1763e4d"],"forbidden_changes":["Do not create a second store.","Do not mutate ancestry.","Do not ENABLE the laboratory.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Seal derived identity/lineage records.","Persist insert-only under LocalProductStore.","Reject orphan causal sources and missing parents.","Prove replay, tamper, and restart."],"verification":["cargo test -p engine --lib ec1_identity_lineage_binds_default_off_sha_and_rejects_orphans -- --test-threads=1","cargo test -p engine --lib records_immutable_ec1_identity_lineage -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; identity lineage table is additive CREATE IF NOT EXISTS and the laboratory stays default-off.","pause_gates":["Stop before causal-manifest persistence of hypotheses.","Stop before Level-1."],"expected_artifacts":["Ec1IdentityLineageRecord","harness_evolution_ec1_identity_lineage"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":["harness_evolution_ec1_identity_lineage"]}
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC1-CAUSAL-MANIFEST-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Persist source-bound FailurePatternEvidenceV1 and MutationHypothesisManifestV1 against EC1 lineage rows.","allowed_paths":["engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/tests/test_data_operations.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md"],"read_paths":["engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/tests/test_data_operations.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/MODULE_MAP.md"],"allowed_outputs":["Immutable source-bound failure-pattern and hypothesis records."],"prerequisites":["PE7-HE-EC1-IDENTITY-LINEAGE-1"],"prerequisite_receipts":["PE7-HE-EC1-IDENTITY-LINEAGE-1 COMPLETE: PR #592 exact head 155fa749effdcd790fb954eefcf64d12790d21b6; squash merge 3dc2d3b12fbb95ec2b26220681cba5ad7547c6d2"],"forbidden_changes":["Do not create a second failure-intelligence store.","Do not treat confidence as causal proof.","Do not allow post-execution hypothesis edits.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Bind failure patterns to recorded lineage.","Persist unknown/disputed observations.","Persist pre-execution hypotheses insert-only.","Reject inference-as-proof and sensitive fields."],"verification":["cargo test -p engine --lib causal_manifest_keeps_unknown_and_rejects_inference_as_proof -- --test-threads=1","cargo test -p engine --lib records_source_bound_ec1_causal -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; causal tables are additive CREATE IF NOT EXISTS and the laboratory stays default-off.","pause_gates":["Stop before mutation-registry generators.","Stop before Level-1."],"expected_artifacts":["FailurePatternEvidenceV1","MutationHypothesisManifestV1","harness_evolution_ec1_failure_patterns","harness_evolution_ec1_hypotheses"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":["harness_evolution_ec1_failure_patterns","harness_evolution_ec1_hypotheses"]}
 -->
 
 ## Common Execution Protocol

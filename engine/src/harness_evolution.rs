@@ -170,6 +170,26 @@ impl CausalStatus {
             Self::Disputed => "disputed",
         }
     }
+
+    pub fn is_causal_proof(self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceRole {
+    Observation,
+    Inference,
+}
+
+impl EvidenceRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Observation => "observation",
+            Self::Inference => "inference",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +222,8 @@ impl PredictionOutcomeKind {
 pub struct FailurePatternEvidenceV1 {
     pub schema_version: String,
     pub evidence_id: String,
+    pub lineage_id: String,
+    pub evidence_role: EvidenceRole,
     pub source_identity_hash: String,
     pub parent_identity_hash: String,
     pub generator_class: String,
@@ -220,7 +242,9 @@ pub struct FailurePatternEvidenceV1 {
 pub struct MutationHypothesisManifestV1 {
     pub schema_version: String,
     pub manifest_id: String,
+    pub lineage_id: String,
     pub failure_evidence_id: String,
+    pub proposal_body_sha256: Option<String>,
     pub candidate_delta_digest: String,
     pub predicted_improvement_digest: String,
     pub predicted_regression_digest: String,
@@ -430,23 +454,28 @@ fn record_digest_excluding_sha256(value: &Value) -> Result<String, EvolutionAdmi
         .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error))
 }
 
-pub fn derive_failure_evidence_id(source_identity_hash: &str, observation_digest: &str) -> String {
+pub fn derive_failure_evidence_id(
+    lineage_id: &str,
+    source_identity_hash: &str,
+    observation_digest: &str,
+) -> String {
     format!(
         "fpe-{}",
         &sha256_hex(&format!(
-            "fpe.v1|{source_identity_hash}|{observation_digest}"
+            "fpe.v1|{lineage_id}|{source_identity_hash}|{observation_digest}"
         ))[..32]
     )
 }
 
 pub fn derive_hypothesis_manifest_id(
+    lineage_id: &str,
     failure_evidence_id: &str,
     candidate_delta_digest: &str,
 ) -> String {
     format!(
         "mh-{}",
         &sha256_hex(&format!(
-            "mh.v1|{failure_evidence_id}|{candidate_delta_digest}"
+            "mh.v1|{lineage_id}|{failure_evidence_id}|{candidate_delta_digest}"
         ))[..32]
     )
 }
@@ -512,6 +541,7 @@ pub fn validate_failure_pattern_evidence(
             "failure pattern schema mismatch",
         ));
     }
+    require_nonempty_id(&evidence.lineage_id, "ec1_identity_empty")?;
     validate_sha256_hex(&evidence.source_identity_hash)?;
     validate_sha256_hex(&evidence.parent_identity_hash)?;
     validate_sha256_hex(&evidence.observation_digest)?;
@@ -522,9 +552,27 @@ pub fn validate_failure_pattern_evidence(
         &evidence.invalidation_class,
         &evidence.budget_class,
     )?;
+    if evidence.causal_status.is_causal_proof() {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_causal_proof",
+            "causal status is not causal proof",
+        ));
+    }
+    if evidence.evidence_role == EvidenceRole::Inference
+        && evidence.causal_status == CausalStatus::Supported
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_inference_as_proof",
+            "inference cannot be recorded as supported causal proof",
+        ));
+    }
     require_derived_id(
         &evidence.evidence_id,
-        &derive_failure_evidence_id(&evidence.source_identity_hash, &evidence.observation_digest),
+        &derive_failure_evidence_id(
+            &evidence.lineage_id,
+            &evidence.source_identity_hash,
+            &evidence.observation_digest,
+        ),
     )?;
     if !ADMITTED_MUTABLE_SURFACES.contains(&evidence.mutable_surface.as_str())
         || !ADMITTED_MUTABLE_SURFACES.contains(&evidence.addressable_surface.as_str())
@@ -549,7 +597,11 @@ pub fn validate_mutation_hypothesis_manifest(
             "hypothesis manifest schema mismatch",
         ));
     }
+    require_nonempty_id(&manifest.lineage_id, "ec1_identity_empty")?;
     require_nonempty_id(&manifest.failure_evidence_id, "ec1_identity_empty")?;
+    if let Some(proposal) = manifest.proposal_body_sha256.as_deref() {
+        validate_sha256_hex(proposal)?;
+    }
     validate_sha256_hex(&manifest.candidate_delta_digest)?;
     validate_sha256_hex(&manifest.predicted_improvement_digest)?;
     validate_sha256_hex(&manifest.predicted_regression_digest)?;
@@ -558,6 +610,7 @@ pub fn validate_mutation_hypothesis_manifest(
     require_derived_id(
         &manifest.manifest_id,
         &derive_hypothesis_manifest_id(
+            &manifest.lineage_id,
             &manifest.failure_evidence_id,
             &manifest.candidate_delta_digest,
         ),
@@ -716,6 +769,42 @@ pub fn seal_ec1_identity_lineage(
     record.record_sha256 = digest;
     validate_ec1_identity_lineage(&record)?;
     Ok(record)
+}
+
+pub fn seal_failure_pattern_evidence(
+    mut evidence: FailurePatternEvidenceV1,
+) -> Result<FailurePatternEvidenceV1, EvolutionAdmissionError> {
+    evidence.evidence_id = derive_failure_evidence_id(
+        &evidence.lineage_id,
+        &evidence.source_identity_hash,
+        &evidence.observation_digest,
+    );
+    let mut value = serde_json::to_value(&evidence)
+        .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    evidence.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_failure_pattern_evidence(&evidence)?;
+    Ok(evidence)
+}
+
+pub fn seal_mutation_hypothesis_manifest(
+    mut manifest: MutationHypothesisManifestV1,
+) -> Result<MutationHypothesisManifestV1, EvolutionAdmissionError> {
+    manifest.manifest_id = derive_hypothesis_manifest_id(
+        &manifest.lineage_id,
+        &manifest.failure_evidence_id,
+        &manifest.candidate_delta_digest,
+    );
+    let mut value = serde_json::to_value(&manifest)
+        .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    manifest.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_mutation_hypothesis_manifest(&manifest)?;
+    Ok(manifest)
 }
 
 pub fn validate_mutable_surface(
@@ -1333,9 +1422,12 @@ mod tests {
     fn sample_failure_pattern(causal: CausalStatus) -> FailurePatternEvidenceV1 {
         let source = digest("source");
         let observation = digest("obs");
-        let mut value = serde_json::to_value(FailurePatternEvidenceV1 {
+        let lineage_id = "heil-fixture-root".to_string();
+        seal_failure_pattern_evidence(FailurePatternEvidenceV1 {
             schema_version: FAILURE_PATTERN_EVIDENCE_SCHEMA.to_string(),
-            evidence_id: derive_failure_evidence_id(&source, &observation),
+            evidence_id: String::new(),
+            lineage_id,
+            evidence_role: EvidenceRole::Observation,
             source_identity_hash: source,
             parent_identity_hash: digest("root"),
             generator_class: EC1_GENERATOR_CLASS.to_string(),
@@ -1349,9 +1441,7 @@ mod tests {
             mutable_surface: "prompts_and_bounded_rules".to_string(),
             record_sha256: String::new(),
         })
-        .unwrap();
-        seal_record_sha256(&mut value);
-        serde_json::from_value(value).unwrap()
+        .unwrap()
     }
 
     #[test]
@@ -1415,6 +1505,23 @@ mod tests {
     }
 
     #[test]
+    fn causal_manifest_keeps_unknown_and_rejects_inference_as_proof() {
+        let observed = sample_failure_pattern(CausalStatus::Unknown);
+        assert_eq!(observed.evidence_role, EvidenceRole::Observation);
+        assert!(!observed.causal_status.is_causal_proof());
+        validate_failure_pattern_evidence(&sample_failure_pattern(CausalStatus::Disputed)).unwrap();
+        let mut inferred = observed;
+        inferred.evidence_role = EvidenceRole::Inference;
+        inferred.causal_status = CausalStatus::Supported;
+        assert_eq!(
+            seal_failure_pattern_evidence(inferred).unwrap_err().code,
+            "ec1_inference_as_proof"
+        );
+        let err = refuse_sensitive_payload_fields(&json!({"raw_prompt": "secret"}));
+        assert_eq!(err.unwrap_err().code, "evolution_sensitive_payload");
+    }
+
+    #[test]
     fn failure_pattern_keeps_unknown_and_rejects_empty_identity() {
         let ok = sample_failure_pattern(CausalStatus::Unknown);
         validate_failure_pattern_evidence(&ok).unwrap();
@@ -1464,12 +1571,14 @@ mod tests {
         let outcome: PredictionOutcomeV1 = serde_json::from_value(outcome_value).unwrap();
         validate_prediction_outcome_contract(&outcome).unwrap();
         assert!(!PredictionOutcomeKind::Correct.is_evaluator_authority());
-        let failure_id = derive_failure_evidence_id(&digest("source"), &digest("obs"));
+        let pattern = sample_failure_pattern(CausalStatus::Unknown);
         let delta = digest("delta");
-        let mut manifest_value = serde_json::to_value(MutationHypothesisManifestV1 {
+        let manifest = seal_mutation_hypothesis_manifest(MutationHypothesisManifestV1 {
             schema_version: MUTATION_HYPOTHESIS_MANIFEST_SCHEMA.to_string(),
-            manifest_id: derive_hypothesis_manifest_id(&failure_id, &delta),
-            failure_evidence_id: failure_id,
+            manifest_id: String::new(),
+            lineage_id: pattern.lineage_id.clone(),
+            failure_evidence_id: pattern.evidence_id.clone(),
+            proposal_body_sha256: Some(digest("proposal-body")),
             candidate_delta_digest: delta,
             predicted_improvement_digest: digest("imp"),
             predicted_regression_digest: digest("reg"),
@@ -1478,9 +1587,6 @@ mod tests {
             record_sha256: String::new(),
         })
         .unwrap();
-        seal_record_sha256(&mut manifest_value);
-        let manifest: MutationHypothesisManifestV1 =
-            serde_json::from_value(manifest_value).unwrap();
         validate_mutation_hypothesis_manifest(&manifest).unwrap();
         let mut unregistered = registered_mutation_families();
         unregistered.families.push(MutationFamilyRecord {
