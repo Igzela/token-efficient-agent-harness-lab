@@ -8,6 +8,7 @@ pub mod budget_anomaly;
 pub mod budget_forecast;
 pub mod budget_manager;
 pub mod cli;
+pub mod context_working_set;
 pub mod dispatch_decision;
 pub mod dispatch_engine;
 pub mod dispatch_ledger;

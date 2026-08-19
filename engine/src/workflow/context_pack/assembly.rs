@@ -1,6 +1,20 @@
 use serde_json::{json, Value};
 
+use crate::context_working_set::{
+    project as project_working_set, ProjectedWorkingSet, ProjectorBounds, ProjectorError,
+    SourceItem,
+};
+
 use super::budget::allocate_context_budget;
+
+/// Existing context-pack owner delegates derived projection; it does not move
+/// source authority into the working-set module.
+pub fn project_authorized_working_set(
+    items: &[SourceItem],
+    bounds: ProjectorBounds,
+) -> Result<ProjectedWorkingSet, ProjectorError> {
+    project_working_set(items, bounds)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextAssemblyConfig {
