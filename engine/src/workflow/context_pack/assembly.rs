@@ -1,10 +1,11 @@
 use serde_json::{json, Value};
 
 use crate::context_working_set::{
-    compose_runtime_prompt, cws_benchmark_preflight, partition_working_set,
+    compose_runtime_prompt, cws_benchmark_preflight, cws_benchmark_run, partition_working_set,
     project as project_working_set, project_repository_session, reduce_tool_result, CachePartition,
-    CacheTelemetryObservation, CwsBenchmarkPreflight, ProjectedWorkingSet, ProjectorBounds,
-    ProjectorError, ReducedToolResult, RepositorySessionMode, SourceItem, ToolResultAdmission,
+    CacheTelemetryObservation, CwsBenchmarkPreflight, CwsBenchmarkRunReport, ProjectedWorkingSet,
+    ProjectorBounds, ProjectorError, ReducedToolResult, RepositorySessionMode, SourceItem,
+    ToolResultAdmission,
 };
 
 use super::budget::allocate_context_budget;
@@ -56,6 +57,22 @@ pub fn authorized_cws_benchmark_preflight(
     evidence_paths_bound: bool,
 ) -> Result<CwsBenchmarkPreflight, ProjectorError> {
     cws_benchmark_preflight(head_sha, provider_capability_known, evidence_paths_bound)
+}
+
+pub fn authorized_cws_benchmark_run(
+    head_sha: &str,
+    provider_capability_known: bool,
+    evidence_paths_bound: bool,
+    authorization_issued: bool,
+    provider_credential_present: bool,
+) -> Result<CwsBenchmarkRunReport, ProjectorError> {
+    cws_benchmark_run(
+        head_sha,
+        provider_capability_known,
+        evidence_paths_bound,
+        authorization_issued,
+        provider_credential_present,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]
