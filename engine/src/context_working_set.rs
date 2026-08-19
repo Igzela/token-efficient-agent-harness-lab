@@ -11,6 +11,9 @@ pub const SCHEMA_VERSION: &str = "context_working_set.v1";
 pub const IMPLEMENTATION_DISPOSITION: &str = "REIMPLEMENT";
 pub const REDUCER_DISPOSITION: &str = "REIMPLEMENT";
 pub const CACHE_PARTITION_DISPOSITION: &str = "REIMPLEMENT";
+pub const CWS_BENCHMARK_PREFLIGHT_SCHEMA: &str = "cws_benchmark_preflight.v1";
+pub const FROZEN_CWS_PROTOCOL_MAIN_SHA: &str = "f561089103a4a6e51b47f38d6640054ec8a660d0";
+pub const CWS_UNISSUED_AUTHORIZATION_PACKAGES: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Residency {
@@ -472,6 +475,54 @@ pub fn partition_working_set(
         stable_prefix_digest: content_sha256(prefix_material.as_bytes()),
         dynamic_digest: content_sha256(dynamic_material.as_bytes()),
         telemetry,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CwsBenchmarkPreflight {
+    pub schema_version: String,
+    pub protocol_main_sha: String,
+    pub head_sha: String,
+    pub baseline_toggle: String,
+    pub treatment_toggle: String,
+    pub unissued_authorization_packages: u32,
+    pub authorizations_issued: bool,
+    pub cache_telemetry_required: bool,
+    pub ready: bool,
+    pub blockers: Vec<String>,
+}
+
+/// Provider-free CWS benchmark preflight. Binds reconstructable identities and
+/// one unissued T3 authorization package. Never issues or POSTs.
+pub fn cws_benchmark_preflight(
+    head_sha: &str,
+    provider_capability_known: bool,
+    evidence_paths_bound: bool,
+) -> Result<CwsBenchmarkPreflight, ProjectorError> {
+    if !valid_sha(head_sha) {
+        return Err(ProjectorError {
+            code: "binding_invalid".to_string(),
+            message: "preflight head must be a 40-hex SHA".to_string(),
+        });
+    }
+    let mut blockers = Vec::new();
+    if !provider_capability_known {
+        blockers.push("provider_capability_unverified".to_string());
+    }
+    if !evidence_paths_bound {
+        blockers.push("evidence_paths_unbound".to_string());
+    }
+    Ok(CwsBenchmarkPreflight {
+        schema_version: CWS_BENCHMARK_PREFLIGHT_SCHEMA.to_string(),
+        protocol_main_sha: FROZEN_CWS_PROTOCOL_MAIN_SHA.to_string(),
+        head_sha: head_sha.to_string(),
+        baseline_toggle: "cws_projection=off".to_string(),
+        treatment_toggle: "cws_projection=on".to_string(),
+        unissued_authorization_packages: CWS_UNISSUED_AUTHORIZATION_PACKAGES,
+        authorizations_issued: false,
+        cache_telemetry_required: false,
+        ready: blockers.is_empty(),
+        blockers,
     })
 }
 
@@ -1183,6 +1234,38 @@ mod tests {
             partition_working_set(&projected, None)
                 .unwrap()
                 .stable_prefix_digest
+        );
+    }
+
+    #[test]
+    fn cws_preflight_binds_unissued_package_and_does_not_issue() {
+        let head = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        let blocked = cws_benchmark_preflight(head, false, false).unwrap();
+        assert!(!blocked.ready);
+        assert!(blocked
+            .blockers
+            .contains(&"provider_capability_unverified".to_string()));
+        assert!(!blocked.authorizations_issued);
+        assert_eq!(blocked.unissued_authorization_packages, 1);
+        assert_eq!(blocked.protocol_main_sha, FROZEN_CWS_PROTOCOL_MAIN_SHA);
+        assert_eq!(blocked.baseline_toggle, "cws_projection=off");
+        assert_eq!(blocked.treatment_toggle, "cws_projection=on");
+        assert!(!blocked.cache_telemetry_required);
+
+        let ready = cws_benchmark_preflight(head, true, true).unwrap();
+        assert!(ready.ready);
+        assert!(ready.blockers.is_empty());
+        assert!(!ready.authorizations_issued);
+        assert_eq!(ready.unissued_authorization_packages, 1);
+    }
+
+    #[test]
+    fn cws_preflight_rejects_invalid_head() {
+        assert_eq!(
+            cws_benchmark_preflight("not-a-sha", true, true)
+                .unwrap_err()
+                .code,
+            "binding_invalid"
         );
     }
 }

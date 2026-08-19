@@ -84,6 +84,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-CWS-REPOSITORY-INTEGRATION-1` | `COMPLETE` | PR #584 exact head `323d479d73f26f280cf28502e3c609d4baf78298`; squash merge `d33d7d04709575d1f6fb9fdbe94169175a261108`; exact-head review comments `5346743411` and `5346743657`; canonical workflow `32290928328`; exact-head check `32290928230`; fresh changed-head fail-closed |
 | `PE7-CWS-RUNTIME-INTEGRATION-1` | `COMPLETE` | PR #585 exact head `7cbe7a0f3660468862302075f024b627a26a0a2e`; squash merge `1dffbc4271a68aebce93a540e7a5793eacefa546`; exact-head review comments `5346942802` and `5346943054`; canonical workflow `32292746487`; exact-head check `32292746231`; stub hashes composed prompts and does not own context |
 | `PE7-CWS-CACHE-PARTITION-1` | `COMPLETE` | PR #586 exact head `ecb1367a26d56a633902f0685b3d13d02efff9b4`; squash merge `5a3929dc97b0a94bcec0a95b6e77450238d437da`; exact-head review comments `5347162514` and `5347162743`; canonical workflow `32294752392`; exact-head check `32294752539`; partition digests ignore cache telemetry |
+| `PE7-CWS-BENCHMARK-PROTOCOL-1` | `COMPLETE` | PR #587 exact head `fe9372732559ffab61b7e98fb81c578cd61bd3fc`; squash merge `f561089103a4a6e51b47f38d6640054ec8a660d0`; exact-head review comments `5347317462` and `5347317666`; canonical workflow `32296178643`; exact-head check `32296178560`; hard-gate-first protocol freeze; no Provider |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -338,6 +339,10 @@ Hard-gate-first comparison. Treatment may differ from the post-AC baseline only 
 | Stop | Authority expiry, unknown EFFECT, incomparable arms, post-hoc threshold, burden used as evaluator |
 
 Maintenance-burden metrics are not evaluator or acceptance authority.
+
+### CWS benchmark preflight (`PE7-CWS-BENCHMARK-PREFLIGHT-1`)
+
+`cws_benchmark_preflight` binds protocol main `f5610891`, baseline `cws_projection=off`, treatment `cws_projection=on`, cache telemetry not required, and exactly one unissued T3 authorization package with `authorizations_issued=false`. `ready=false` when provider capability or evidence paths are unverified. This packet does not POST a Provider or inspect comparison results.
 
 ## Invalidated Historical Receipts (Repair Required)
 
