@@ -87,6 +87,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-CWS-BENCHMARK-PROTOCOL-1` | `COMPLETE` | PR #587 exact head `fe9372732559ffab61b7e98fb81c578cd61bd3fc`; squash merge `f561089103a4a6e51b47f38d6640054ec8a660d0`; exact-head review comments `5347317462` and `5347317666`; canonical workflow `32296178643`; exact-head check `32296178560`; hard-gate-first protocol freeze; no Provider |
 | `PE7-CWS-BENCHMARK-PREFLIGHT-1` | `COMPLETE` | PR #588 exact head `c806f75c5910b117c3cf7e44ad1c6a6503e48ddd`; squash merge `1569c70e9f2034bb4f7bc5ccbc24d889b66645ab`; exact-head review comments `5347437430` and `5347437722`; canonical workflow `32297108984`; exact-head check `32297109030`; one unissued T3 package; not a live-ready claim |
 | `PE7-CWS-BENCHMARK-RUN-1` | `COMPLETE` | PR #589 exact head `0f9cad12a850a7ed2ffcc823ebd2da29318c5ae6`; squash merge `84b1933bc3d9e657acae94d9e5f14810c0651917`; exact-head review comments `5347630853` and `5347631083`; canonical workflow `32298813456`; exact-head check `32298813444`; fail-closed; `executed=false`; `provider_posts=0` |
+| `PE7-CWS-ANALYSIS-1` | `COMPLETE` | PR #590 exact head `da09ea576154e55e532d2de5477972f2c5c516d5`; squash merge `1544c8d0a3f1b196fdb4b560759609662cd5f432`; exact-head review comments `5347818781` and `5347818993`; canonical workflow `32301497907`; exact-head check `32301497898`; disposition `INSUFFICIENT_DEFAULT_OFF`; active Harness `84b1933bc3d9e657acae94d9e5f14810c0651917`; no ENABLE |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -352,7 +353,11 @@ Maintenance-burden metrics are not evaluator or acceptance authority.
 
 ### CWS analysis (`PE7-CWS-ANALYSIS-1`)
 
-Disposition is `INSUFFICIENT_DEFAULT_OFF`. Live arms were not observed; hard gates did not pass. The active Harness identity for later HE packets is accepted main `84b1933bc3d9e657acae94d9e5f14810c0651917` with CWS default-off. ENABLE is not recorded. Implementation-maintenance burden (REIMPLEMENT projector/reducer, no upstream transplant LOC) is decision evidence only and is not evaluator authority.
+Disposition is `INSUFFICIENT_DEFAULT_OFF`. Live arms were not observed; hard gates did not pass. The active Harness identity for later HE packets is accepted main `84b1933bc3d9e657acae94d9e5f14810c0651917` with CWS default-off. ENABLE is not recorded. Implementation-maintenance burden (REIMPLEMENT projector/reducer, no upstream transplant LOC) is decision evidence only and is not evaluator authority. Receipt: PR #590 merge `1544c8d0a3f1b196fdb4b560759609662cd5f432`.
+
+### HE EC1 contract (`PE7-HE-EC1-CONTRACT-1`)
+
+`engine/src/harness_evolution.rs` freezes `FailurePatternEvidenceV1`, `MutationHypothesisManifestV1`, `PredictionOutcomeV1`, and a pre-registered mutation-family registry under the existing HE owner. Active Harness identity is CWS default-off SHA `84b1933b`. Causal status may be `unknown` or `disputed`. Prediction outcomes are not evaluator, admission, or adoption authority. No candidate generation, evaluation, or persistence change.
 
 ## Invalidated Historical Receipts (Repair Required)
 
