@@ -239,6 +239,8 @@ Provider-free read-only inventory. Conversation text is not durable truth. No pr
 | Durable memory versions | `engine/src/storage/local_product_store/` `durable_memory_versions` | experimental/store-owned; not CWS authority | versioned rows | store-scoped | existing retrieval events | yes, store versions |
 | Tool results / artifacts | existing artifact/evidence owners | evidence, not model truth | large logs possible | may contain diagnostics | not yet a CWS reducer | rehydrate from artifact identity when present |
 | Canonical docs / Git | `docs/*`, Git objects | accepted-main truth | full files | public prose | role-targeted reads | yes, exact Git identity |
+| Shared Sol investigation | `scripts/ask_sol.py` | read-only consultation; not product authority | bounded goal/hypothesis | no worktree mutation; no secrets in receipts | existing script redaction | yes, from consultation receipts |
+| Managed CLI / Codex child context | `engine/src/cli/` | existing CLI mediation; not a second provider owner | child-process prompt assembly | credentials stay out of child env | existing mediation | no: child raw prompts are not authority |
 
 Unknown ingress: none identified beyond the rows above at this checkout. A later packet must not treat chat history as a source row.
 
