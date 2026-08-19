@@ -428,7 +428,7 @@ impl LocalProductStore {
                 &serde_json::json!({
                     "evidence_id": sealed.failure_evidence_id,
                     "lineage_id": sealed.lineage_id,
-                    "proposal_bound": sealed.proposal_body_sha256.is_some(),
+                    "proposal_body_sha256": sealed.proposal_body_sha256,
                     "actor_id": actor_id,
                 }),
             )?;
@@ -2611,7 +2611,7 @@ mod tests {
             manifest_id: String::new(),
             lineage_id: lineage.lineage_id.clone(),
             failure_evidence_id: recorded.evidence_id.clone(),
-            proposal_body_sha256: Some(sha256_hex("proposal-body")),
+            proposal_body_sha256: sha256_hex("proposal-body"),
             candidate_delta_digest: sha256_hex("delta"),
             predicted_improvement_digest: sha256_hex("imp"),
             predicted_regression_digest: sha256_hex("reg"),
@@ -2623,7 +2623,24 @@ mod tests {
         let stored_h = store
             .record_ec1_hypothesis(hypothesis.clone(), "operator-test")
             .unwrap();
-        assert!(stored_h.proposal_body_sha256.is_some());
+        assert_eq!(stored_h.proposal_body_sha256, sha256_hex("proposal-body"));
+        let mut unbound = hypothesis.clone();
+        unbound.proposal_body_sha256.clear();
+        assert!(store
+            .record_ec1_hypothesis(unbound, "operator-test")
+            .is_err());
+        let mut missing_lineage = pattern.clone();
+        missing_lineage.lineage_id = "heil-missing".into();
+        assert!(store
+            .record_ec1_failure_pattern(missing_lineage, "operator-test")
+            .unwrap_err()
+            .contains("lineage"));
+        let mut source_mismatch = pattern.clone();
+        source_mismatch.source_identity_hash = sha256_hex("other-source");
+        assert!(store
+            .record_ec1_failure_pattern(source_mismatch, "operator-test")
+            .unwrap_err()
+            .contains("source"));
         let mut post_exec = stored_h.clone();
         post_exec.predicted_improvement_digest = sha256_hex("changed");
         assert!(store

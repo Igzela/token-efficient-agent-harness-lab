@@ -367,7 +367,7 @@ Immutable `Ec1IdentityLineageRecord` rows persist under `LocalProductStore` tabl
 
 ### HE EC1 causal manifest (`PE7-HE-EC1-CAUSAL-MANIFEST-1`)
 
-Source-bound `FailurePatternEvidenceV1` and pre-execution `MutationHypothesisManifestV1` persist under existing `LocalProductStore` HE tables. Observation vs inference is explicit; causal status is not proof. Hypotheses are insert-only. Sensitive fields remain refused. No candidate execution or evaluator result.
+This packet records source-bound `FailurePatternEvidenceV1` and pre-execution `MutationHypothesisManifestV1` under existing `LocalProductStore` HE tables. Observation vs inference is explicit; causal status is not proof. Hypotheses are insert-only and must bind a proposal digest. Sensitive fields remain refused. No candidate execution or evaluator result.
 
 ## Invalidated Historical Receipts (Repair Required)
 

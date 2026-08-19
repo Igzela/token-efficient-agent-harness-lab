@@ -244,7 +244,7 @@ pub struct MutationHypothesisManifestV1 {
     pub manifest_id: String,
     pub lineage_id: String,
     pub failure_evidence_id: String,
-    pub proposal_body_sha256: Option<String>,
+    pub proposal_body_sha256: String,
     pub candidate_delta_digest: String,
     pub predicted_improvement_digest: String,
     pub predicted_regression_digest: String,
@@ -599,9 +599,7 @@ pub fn validate_mutation_hypothesis_manifest(
     }
     require_nonempty_id(&manifest.lineage_id, "ec1_identity_empty")?;
     require_nonempty_id(&manifest.failure_evidence_id, "ec1_identity_empty")?;
-    if let Some(proposal) = manifest.proposal_body_sha256.as_deref() {
-        validate_sha256_hex(proposal)?;
-    }
+    validate_sha256_hex(&manifest.proposal_body_sha256)?;
     validate_sha256_hex(&manifest.candidate_delta_digest)?;
     validate_sha256_hex(&manifest.predicted_improvement_digest)?;
     validate_sha256_hex(&manifest.predicted_regression_digest)?;
@@ -1578,7 +1576,7 @@ mod tests {
             manifest_id: String::new(),
             lineage_id: pattern.lineage_id.clone(),
             failure_evidence_id: pattern.evidence_id.clone(),
-            proposal_body_sha256: Some(digest("proposal-body")),
+            proposal_body_sha256: digest("proposal-body"),
             candidate_delta_digest: delta,
             predicted_improvement_digest: digest("imp"),
             predicted_regression_digest: digest("reg"),

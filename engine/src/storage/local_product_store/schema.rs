@@ -3351,6 +3351,8 @@ mod tests {
 
     #[test]
     fn current_schema_ddl_contains_policy_snapshot_surface_for_both_dialects() {
+        assert!(SQLITE_DDL.contains(EC1_CAUSAL_MANIFEST_DDL.trim()));
+        assert!(POSTGRES_DDL.contains(EC1_CAUSAL_MANIFEST_DDL.trim()));
         for expected in [
             "controlled_loop_policy_snapshots",
             "idx_policy_snapshots_status",
