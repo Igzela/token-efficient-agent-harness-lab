@@ -277,6 +277,81 @@ pub fn rehydrate(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepositorySessionMode {
+    Fresh,
+    Resume,
+    Repair,
+    Review,
+    CiRepair,
+}
+
+fn valid_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Project already-authorized canonical sources for a repository-maintenance
+/// session. Capsules stay non-authoritative; a changed head cannot be hidden.
+pub fn project_repository_session(
+    accepted_main_sha: &str,
+    head_sha: &str,
+    packet_id: &str,
+    mode: RepositorySessionMode,
+    docs: &[SourceItem],
+    bounds: ProjectorBounds,
+) -> Result<ProjectedWorkingSet, ProjectorError> {
+    if !valid_sha(accepted_main_sha) || !valid_sha(head_sha) {
+        return Err(ProjectorError {
+            code: "binding_invalid".to_string(),
+            message: "accepted_main and head must be 40-hex SHAs".to_string(),
+        });
+    }
+    if packet_id.trim().is_empty() {
+        return Err(ProjectorError {
+            code: "binding_invalid".to_string(),
+            message: "packet_id is required".to_string(),
+        });
+    }
+    if mode == RepositorySessionMode::Fresh && accepted_main_sha != head_sha {
+        return Err(ProjectorError {
+            code: "changed_head".to_string(),
+            message: "fresh session cannot hide a checkout that is not accepted main".to_string(),
+        });
+    }
+    for item in docs {
+        if item.kind == ItemKind::Authority && item.residency != Residency::Pinned {
+            return Err(ProjectorError {
+                code: "forbidden_eviction".to_string(),
+                message: "canonical authority must stay PINNED in repository sessions".to_string(),
+            });
+        }
+    }
+    let mut binding_items = vec![
+        identity_item("git", "accepted_main", accepted_main_sha),
+        identity_item("git", "head", head_sha),
+        identity_item("packet", "packet_id", packet_id),
+        identity_item("session", "mode", format!("{mode:?}").as_str()),
+    ];
+    binding_items.extend(docs.iter().cloned());
+    project(&binding_items, bounds)
+}
+
+fn identity_item(owner: &str, identity: &str, body: &str) -> SourceItem {
+    let bytes = body.as_bytes().to_vec();
+    SourceItem {
+        identity: SourceIdentity {
+            owner: owner.to_string(),
+            identity: identity.to_string(),
+            content_sha256: content_sha256(&bytes),
+        },
+        kind: ItemKind::Authority,
+        residency: Residency::Pinned,
+        bytes,
+        supersedes: None,
+        source_stale: false,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolOutcome {
     Success,
     Failure,
@@ -680,5 +755,133 @@ mod tests {
         ))
         .unwrap_err();
         assert_eq!(err.code, "blocker_dropped");
+    }
+
+    fn bound() -> ProjectorBounds {
+        ProjectorBounds {
+            max_bytes: 10_000,
+            max_tokens: 10_000,
+        }
+    }
+
+    #[test]
+    fn fresh_session_requires_head_equal_accepted_main() {
+        let err = project_repository_session(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "PE7-CWS-REPOSITORY-INTEGRATION-1",
+            RepositorySessionMode::Fresh,
+            &[],
+            bound(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "changed_head");
+    }
+
+    #[test]
+    fn repair_session_keeps_distinct_main_and_head_and_dedupes_docs() {
+        let sha = "cccccccccccccccccccccccccccccccccccccccc";
+        let head = "dddddddddddddddddddddddddddddddddddddddd";
+        let doc = item(
+            "docs/CURRENT_STATUS.md",
+            ItemKind::Authority,
+            Residency::Pinned,
+            "status-body",
+        );
+        let dup = item(
+            "docs/CURRENT_STATUS.md",
+            ItemKind::Authority,
+            Residency::Pinned,
+            "status-body",
+        );
+        let out = project_repository_session(
+            sha,
+            head,
+            "PE7-CWS-REPOSITORY-INTEGRATION-1",
+            RepositorySessionMode::Repair,
+            &[doc, dup],
+            bound(),
+        )
+        .unwrap();
+        let status_hits = out
+            .prefix
+            .iter()
+            .filter(|item| item.identity.identity == "docs/CURRENT_STATUS.md")
+            .count();
+        assert_eq!(status_hits, 1);
+        assert!(out
+            .prefix
+            .iter()
+            .any(|item| item.identity.identity == "accepted_main" && item.bytes == sha.as_bytes()));
+        assert!(out
+            .prefix
+            .iter()
+            .any(|item| item.identity.identity == "head" && item.bytes == head.as_bytes()));
+        assert!(out
+            .prefix
+            .iter()
+            .any(|item| item.identity.identity == "packet_id"));
+    }
+
+    #[test]
+    fn review_and_ci_repair_modes_project_and_rehydrate() {
+        let main = "1111111111111111111111111111111111111111";
+        let head = "2222222222222222222222222222222222222222";
+        for mode in [
+            RepositorySessionMode::Review,
+            RepositorySessionMode::CiRepair,
+            RepositorySessionMode::Resume,
+        ] {
+            let out = project_repository_session(
+                main,
+                head,
+                "PE7-CWS-REPOSITORY-INTEGRATION-1",
+                mode,
+                &[],
+                bound(),
+            )
+            .unwrap();
+            let handle = RehydrationHandle {
+                source_owner: "git".to_string(),
+                source_identity: "head".to_string(),
+                content_sha256: content_sha256(head.as_bytes()),
+                recipe_kind: RecipeKind::GitBlob,
+            };
+            assert_eq!(
+                rehydrate(&handle, head.as_bytes()).unwrap(),
+                head.as_bytes()
+            );
+            assert_eq!(out.prefix.len(), 4);
+        }
+    }
+
+    #[test]
+    fn invalid_sha_or_empty_packet_fails_closed() {
+        assert_eq!(
+            project_repository_session(
+                "not-a-sha",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "P",
+                RepositorySessionMode::Fresh,
+                &[],
+                bound(),
+            )
+            .unwrap_err()
+            .code,
+            "binding_invalid"
+        );
+        assert_eq!(
+            project_repository_session(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "  ",
+                RepositorySessionMode::Fresh,
+                &[],
+                bound(),
+            )
+            .unwrap_err()
+            .code,
+            "binding_invalid"
+        );
     }
 }

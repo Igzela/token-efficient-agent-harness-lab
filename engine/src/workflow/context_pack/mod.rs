@@ -6,8 +6,8 @@ mod validation;
 
 pub use assembly::{
     assemble_context_injection, assemble_context_injection_with_bridge, bridge_context_fields,
-    project_authorized_working_set, reduce_authorized_tool_result, ContextAssemblyConfig,
-    ContextSource,
+    project_authorized_repository_session, project_authorized_working_set,
+    reduce_authorized_tool_result, ContextAssemblyConfig, ContextSource,
 };
 pub use budget::{allocate_context_budget, apply_prune_policy, check_budget_compliance};
 pub use rules::*;
@@ -366,6 +366,28 @@ mod tests {
         })
         .unwrap();
         assert_eq!(reduced.outcome, ToolOutcome::Failure);
+    }
+
+    #[test]
+    fn existing_context_owner_delegates_repository_session_projection() {
+        use crate::context_working_set::{ProjectorBounds, RepositorySessionMode};
+        let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let projected = project_authorized_repository_session(
+            sha,
+            sha,
+            "PE7-CWS-REPOSITORY-INTEGRATION-1",
+            RepositorySessionMode::Fresh,
+            &[],
+            ProjectorBounds {
+                max_bytes: 10_000,
+                max_tokens: 10_000,
+            },
+        )
+        .unwrap();
+        assert!(projected
+            .prefix
+            .iter()
+            .any(|item| item.identity.identity == "packet_id"));
     }
 
     #[test]
