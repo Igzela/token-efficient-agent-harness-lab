@@ -5,8 +5,9 @@ use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use super::{append_audit_locked, LocalProductStore};
 use crate::harness_evolution::{
     build_admission_receipt, configured_workspace_root, revalidate_workspace_content,
-    validate_candidate_for_admission, validate_proposal, ActiveHarnessIdentity, CandidateStatus,
-    CandidateTerminalReason, EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal,
+    seal_ec1_identity_lineage, validate_candidate_for_admission, validate_ec1_identity_lineage,
+    validate_proposal, ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason,
+    Ec1IdentityLineageRecord, EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal,
     EvolutionReceipt, ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION,
     EVOLUTION_LAB_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION,
 };
@@ -154,6 +155,111 @@ impl LocalProductStore {
                 Some(body) => Ok(Some(
                     serde_json::from_str(&body).map_err(|e| e.to_string())?,
                 )),
+                None => Ok(None),
+            }
+        })
+    }
+
+    pub fn record_ec1_identity_lineage(
+        &self,
+        record: Ec1IdentityLineageRecord,
+        actor_id: &str,
+    ) -> Result<Ec1IdentityLineageRecord, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec1_identity_lineage_actor: authenticated actor_id is required".into());
+        }
+        let sealed = seal_ec1_identity_lineage(record).map_err(|error| error.message)?;
+        validate_ec1_identity_lineage(&sealed).map_err(|error| error.message)?;
+        let body = serde_json::to_string(&sealed).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            if let Some(parent) = sealed.parent_lineage_id.as_deref() {
+                let parent_exists: Option<String> = tx
+                    .query_row(
+                        "SELECT lineage_id FROM harness_evolution_ec1_identity_lineage WHERE lineage_id=?1",
+                        params![parent],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                if parent_exists.is_none() {
+                    return Err(format!(
+                        "ec1_lineage_parent_missing: parent {parent} is not recorded"
+                    ));
+                }
+            }
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec1_identity_lineage WHERE lineage_id=?1",
+                    params![sealed.lineage_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(existing_body) = existing {
+                if existing_body == body {
+                    let stored: Ec1IdentityLineageRecord =
+                        serde_json::from_str(&existing_body).map_err(|e| e.to_string())?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(stored);
+                }
+                return Err(format!(
+                    "ec1_identity_lineage_immutable: {} already exists and cannot be mutated",
+                    sealed.lineage_id
+                ));
+            }
+            tx.execute(
+                "INSERT INTO harness_evolution_ec1_identity_lineage
+                    (lineage_id, parent_lineage_id, source_identity_hash, active_harness_sha, causal_source_id, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    sealed.lineage_id,
+                    sealed.parent_lineage_id,
+                    sealed.source_identity_hash,
+                    sealed.active_harness_sha,
+                    sealed.causal_source_id,
+                    body,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec1_identity_lineage_recorded",
+                &sealed.lineage_id,
+                &serde_json::json!({
+                    "schema_version": sealed.schema_version,
+                    "lineage_id": sealed.lineage_id,
+                    "parent_lineage_id": sealed.parent_lineage_id,
+                    "active_harness_sha": sealed.active_harness_sha,
+                    "causal_source_id": sealed.causal_source_id,
+                    "actor_id": actor_id,
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(sealed)
+        })
+    }
+
+    pub fn get_ec1_identity_lineage(
+        &self,
+        lineage_id: &str,
+    ) -> Result<Option<Ec1IdentityLineageRecord>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec1_identity_lineage WHERE lineage_id=?1",
+                    params![lineage_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
                 None => Ok(None),
             }
         })
@@ -2206,5 +2312,61 @@ mod tests {
             "level1 acceptance: neutral/no-improvement fixture path ok for seeds {:?}",
             results.iter().map(|(s, _, _)| *s).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn records_immutable_ec1_identity_lineage_with_restart_and_no_orphans() {
+        use crate::harness_evolution::{
+            seal_ec1_identity_lineage, Ec1IdentityLineageRecord, EC1_FROZEN_ACTIVE_HARNESS_SHA,
+            EC1_IDENTITY_LINEAGE_SCHEMA,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec1-lineage.db");
+        let store = LocalProductStore::new(&db).unwrap();
+        let root = seal_ec1_identity_lineage(Ec1IdentityLineageRecord {
+            schema_version: EC1_IDENTITY_LINEAGE_SCHEMA.to_string(),
+            lineage_id: String::new(),
+            parent_lineage_id: None,
+            source_identity_hash: sha256_hex("ec1-root-source"),
+            active_harness_sha: EC1_FROZEN_ACTIVE_HARNESS_SHA.to_string(),
+            causal_source_id: None,
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        let recorded = store
+            .record_ec1_identity_lineage(root.clone(), "operator-test")
+            .unwrap();
+        let replay = store
+            .record_ec1_identity_lineage(root.clone(), "operator-test")
+            .unwrap();
+        assert_eq!(replay.lineage_id, recorded.lineage_id);
+        let mut tampered = recorded.clone();
+        tampered.causal_source_id = Some("orphan".into());
+        assert!(store
+            .record_ec1_identity_lineage(tampered, "operator-test")
+            .unwrap_err()
+            .contains("causal"));
+        let missing_parent = seal_ec1_identity_lineage(Ec1IdentityLineageRecord {
+            schema_version: EC1_IDENTITY_LINEAGE_SCHEMA.to_string(),
+            lineage_id: String::new(),
+            parent_lineage_id: Some("heil-missing".into()),
+            source_identity_hash: sha256_hex("ec1-child-source"),
+            active_harness_sha: EC1_FROZEN_ACTIVE_HARNESS_SHA.to_string(),
+            causal_source_id: None,
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        assert!(store
+            .record_ec1_identity_lineage(missing_parent, "operator-test")
+            .unwrap_err()
+            .contains("parent"));
+        drop(store);
+        let reopened = LocalProductStore::new(&db).unwrap();
+        let loaded = reopened
+            .get_ec1_identity_lineage(&recorded.lineage_id)
+            .unwrap()
+            .expect("lineage survives restart");
+        assert_eq!(loaded.active_harness_sha, EC1_FROZEN_ACTIVE_HARNESS_SHA);
+        assert_eq!(loaded.record_sha256, recorded.record_sha256);
     }
 }

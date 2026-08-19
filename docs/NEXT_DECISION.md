@@ -6,19 +6,19 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-CWS-ANALYSIS-1` is complete with `INSUFFICIENT_DEFAULT_OFF`. The current window is `PE7-HE-EC1-CONTRACT-1`: freeze identity, causal-evidence, and mutation-family schemas on the default-off Harness `84b1933b`. No candidate generation, evaluation, persistence, ENABLE, or Level-1.
+`PE7-HE-EC1-CONTRACT-1` is complete. The current window is `PE7-HE-EC1-IDENTITY-LINEAGE-1`: immutable identity/lineage recording bound to CWS default-off Harness `84b1933b`. No selection, adoption, ENABLE, or Level-1.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-HE-EC1-CONTRACT-1 — READY_FOR_EXECUTION, provider-free; freeze EC1 schemas]
+[window: PE7-HE-EC1-IDENTITY-LINEAGE-1 — READY_FOR_EXECUTION, provider-free; immutable lineage]
 
 
 ```
 
 ## Active Routing
 
-1. `PE7-HE-EC1-CONTRACT-1` — `READY_FOR_EXECUTION`
+1. `PE7-HE-EC1-IDENTITY-LINEAGE-1` — `READY_FOR_EXECUTION`
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -44,41 +44,47 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Accepted evidence:** PR #590 exact head `da09ea576154e55e532d2de5477972f2c5c516d5`; squash merge `1544c8d0a3f1b196fdb4b560759609662cd5f432`; exact-head review comments `5347818781` and `5347818993`; canonical workflow `32301497907`; exact-head check `32301497898`; `INSUFFICIENT_DEFAULT_OFF`; active Harness `84b1933bc3d9e657acae94d9e5f14810c0651917`.
 
-## Packet PE7-HE-EC1-CONTRACT-1
+## Completed (PE7-HE-EC1-CONTRACT-1)
+
+**State:** `COMPLETE`
+
+**Accepted evidence:** PR #591 exact head `50661a622c19e1f6da1f934a43bcbbaa4b52a003`; squash merge `e116e212ed043d773e215f2ba029e5b2f1763e4d`; exact-head review comments `5348443154` and `5348443354`; canonical workflow `32306087501`.
+
+## Packet PE7-HE-EC1-IDENTITY-LINEAGE-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-CWS-ANALYSIS-1`
+**Prerequisite:** `PE7-HE-EC1-CONTRACT-1`
 
-**Class:** `CONTRACT`
+**Class:** `IMPLEMENT`
 
-**Outcome:** Freeze active-Harness, candidate, parent, generator, lineage, mutation-family, identity-hash, invalidation, budget, `FailurePatternEvidenceV1`, `MutationHypothesisManifestV1`, and `PredictionOutcomeV1` bindings on default-off SHA `84b1933b`.
+**Outcome:** Implement immutable identity and lineage recording under existing artifact/store owners, including source identities for later causal manifests, bound to CWS default-off SHA `84b1933b`.
 
-**Allowed delta:** `engine/src/harness_evolution.rs`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. No candidate generation, evaluation, or persistence change.
+**Allowed delta:** `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `engine/src/storage/local_product_store/schema.rs`, `engine/src/storage/local_product_store/migrations.rs`, `engine/src/storage/local_product_store/pg_backend/migrations.rs`, `engine/src/storage/local_product_store/integrity.rs`, `engine/tests/test_data_operations.rs`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Contract-approved records, hashes, validation, and projections only; no selection or adoption.
 
-**Exit:** Exact identity/lineage and causal-evidence schemas plus a pre-registered mutation registry with ownership, redaction, counterevidence, addressability, and non-authority rules.
+**Exit:** Tamper/replay/duplicate/restart/parity tests prove immutable ancestry, exact active-Harness binding, and no orphan causal-evidence reference.
 
-**Stop:** Identity or cause can be caller/model asserted; lineage can be rewritten; uncertainty cannot be represented; mutation scope can reach evaluator/authority policy; Level-1.
+**Stop:** Requires a second store, mutable ancestry, candidate-controlled identity, destructive migration, or Level-1.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Contract freeze only. No generation, evaluation, persistence, ENABLE, or Level-1.
-2. **Prerequisites and evidence.** CWS analysis COMPLETE `INSUFFICIENT_DEFAULT_OFF` on PR #590 / `1544c8d0a3f1b196fdb4b560759609662cd5f432`.
-3. **Owners and paths.** Existing `engine/src/harness_evolution.rs`.
-4. **Frozen invariants.** Default-off Harness `84b1933b`. Causal `unknown`/`disputed` remain representable. Prediction outcomes are not authority.
-5. **Only semantic delta.** EC1 schema types and validators; pre-registered mutation families on admitted surfaces.
-6. **Forbidden changes.** No second store/evaluator; no generator; no evaluator/holdout implementation.
-7. **Ordered slices.** Freeze schemas; bind default-off identity; register families; stop before identity persistence.
-8. **Failure taxonomy.** Empty identity, forbidden surface, empty registry.
+1. **Outcome and non-goals.** Immutable identity/lineage persistence. No selection, adoption, generation, ENABLE, or Level-1.
+2. **Prerequisites and evidence.** EC1 contract COMPLETE on PR #591 / `e116e212ed043d773e215f2ba029e5b2f1763e4d`.
+3. **Owners and paths.** `engine/src/harness_evolution.rs` plus existing `LocalProductStore` HE owner.
+4. **Frozen invariants.** Active Harness SHA `84b1933bc3d9e657acae94d9e5f14810c0651917`. Lineage IDs derived. Ancestry insert-only.
+5. **Only semantic delta.** `Ec1IdentityLineageRecord` plus store insert/get and additive table.
+6. **Forbidden changes.** No second store, evaluator, selection, or destructive schema rollback.
+7. **Ordered slices.** Derive/seal records; persist; reject orphan causal sources; restart-load.
+8. **Failure taxonomy.** Wrong Harness, asserted identity, missing parent, orphan causal, immutable conflict.
 9. **Verification.** Focused cargo tests, handoff, security, rustfmt.
-10. **Compatibility and rollback.** Revert this PR; laboratory remains default-off.
-11. **Exit artifact.** Versioned EC1 types and registry validators.
-12. **Next action.** Promote `PE7-HE-EC1-IDENTITY-LINEAGE-1`.
+10. **Compatibility and rollback.** Revert this PR; table is additive `CREATE IF NOT EXISTS`.
+11. **Exit artifact.** Durable lineage rows bound to default-off SHA.
+12. **Next action.** Promote `PE7-HE-EC1-CAUSAL-MANIFEST-1`.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC1-CONTRACT-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Freeze EC1 identity, causal-evidence, and mutation-family schemas on default-off Harness 84b1933b.","allowed_paths":["engine/src/harness_evolution.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md"],"read_paths":["engine/src/harness_evolution.rs","engine/src/context_working_set.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/MODULE_MAP.md"],"allowed_outputs":["EC1 contract types and validators with a pre-registered mutation family registry."],"prerequisites":["PE7-CWS-ANALYSIS-1"],"prerequisite_receipts":["PE7-CWS-ANALYSIS-1 COMPLETE: PR #590 exact head da09ea576154e55e532d2de5477972f2c5c516d5; squash merge 1544c8d0a3f1b196fdb4b560759609662cd5f432; disposition INSUFFICIENT_DEFAULT_OFF; active Harness 84b1933bc3d9e657acae94d9e5f14810c0651917"],"forbidden_changes":["Do not generate candidates.","Do not change evaluation or persistence.","Do not ENABLE the laboratory.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Freeze FailurePatternEvidenceV1, MutationHypothesisManifestV1, and PredictionOutcomeV1.","Bind default-off active Harness SHA.","Pre-register mutation families on admitted surfaces.","Stop before identity-lineage persistence."],"verification":["cargo test -p engine --lib ec1_contract_freezes_default_off_harness_and_registry -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; Harness Evolution remains default-off with no candidate generation.","pause_gates":["Stop before identity persistence.","Stop before Level-1."],"expected_artifacts":["FailurePatternEvidenceV1","MutationHypothesisManifestV1","PredictionOutcomeV1","MutationFamilyRegistry"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T2","known_store_mutations":[]}
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC1-IDENTITY-LINEAGE-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Record immutable EC1 identity/lineage bound to CWS default-off Harness 84b1933b.","allowed_paths":["engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/tests/test_data_operations.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md"],"read_paths":["engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/tests/test_data_operations.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/MODULE_MAP.md"],"allowed_outputs":["Immutable EC1 identity lineage records persisted by LocalProductStore."],"prerequisites":["PE7-HE-EC1-CONTRACT-1"],"prerequisite_receipts":["PE7-HE-EC1-CONTRACT-1 COMPLETE: PR #591 exact head 50661a622c19e1f6da1f934a43bcbbaa4b52a003; squash merge e116e212ed043d773e215f2ba029e5b2f1763e4d"],"forbidden_changes":["Do not create a second store.","Do not mutate ancestry.","Do not ENABLE the laboratory.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Seal derived identity/lineage records.","Persist insert-only under LocalProductStore.","Reject orphan causal sources and missing parents.","Prove replay, tamper, and restart."],"verification":["cargo test -p engine --lib ec1_identity_lineage_binds_default_off_sha_and_rejects_orphans -- --test-threads=1","cargo test -p engine --lib records_immutable_ec1_identity_lineage -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; identity lineage table is additive CREATE IF NOT EXISTS and the laboratory stays default-off.","pause_gates":["Stop before causal-manifest persistence of hypotheses.","Stop before Level-1."],"expected_artifacts":["Ec1IdentityLineageRecord","harness_evolution_ec1_identity_lineage"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":["harness_evolution_ec1_identity_lineage"]}
 -->
 
 ## Common Execution Protocol
