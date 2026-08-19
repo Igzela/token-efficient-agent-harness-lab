@@ -870,9 +870,17 @@ pub fn operator_preflight(
     )
 }
 
-/// Provider-free read-only readiness projection. It never reads credential
-/// values; readiness is explicitly unavailable until a redacted owner is
-/// supplied by a separately accepted contract.
+/// Redacted parent-process credential presence. Inspects only whether the
+/// named environment symbol exists and is non-empty; it never decodes, logs,
+/// or returns the secret value.
+pub fn redacted_provider_credential_present() -> bool {
+    std::env::var_os(DEEPSEEK_CREDENTIAL_REFERENCE)
+        .map(|value| !value.is_empty())
+        .unwrap_or(false)
+}
+
+/// Provider-free read-only readiness projection. Credential readiness uses the
+/// redacted presence owner and never reads credential values.
 pub fn operator_preflight_read_only(
     store: &LocalProductStore,
     principal: &AuthenticatedPrincipal,
@@ -884,7 +892,7 @@ pub fn operator_preflight_read_only(
         principal,
         authorization_id,
         golden_path_prerequisite_product_task_id,
-        None,
+        Some(redacted_provider_credential_present()),
     )
 }
 
@@ -3265,21 +3273,36 @@ mod tests {
     }
 
     #[test]
-    fn viability_preflight_reports_unavailable_without_credential_claim() {
+    fn viability_preflight_reports_redacted_credential_presence_without_value() {
         let dir = tempdir().unwrap();
         let store = Arc::new(LocalProductStore::new(dir.path().join("pf-ready.db")).unwrap());
         let principal = operator(&store, "t-pf-ready", "op-pf-ready");
         seed_gp(&store, "ptask-gp-pf-ready", principal.tenant_id());
+        let had_cred = std::env::var_os(DEEPSEEK_CREDENTIAL_REFERENCE);
+        std::env::remove_var(DEEPSEEK_CREDENTIAL_REFERENCE);
         let pre = operator_preflight_read_only(&store, &principal, None, Some("ptask-gp-pf-ready"));
+        match had_cred {
+            Some(v) => std::env::set_var(DEEPSEEK_CREDENTIAL_REFERENCE, v),
+            None => std::env::remove_var(DEEPSEEK_CREDENTIAL_REFERENCE),
+        }
         let pre = pre.unwrap();
         assert_eq!(pre["ready"], false);
         assert_eq!(pre["authority_consumed"], false);
         assert_eq!(pre["provider_call_performed"], false);
         assert_eq!(pre["target_write_performed"], false);
         assert_eq!(pre["live_baseline_sealed"], false);
-        assert_eq!(pre["credential_readiness"], "unavailable");
-        assert!(pre["credential_symbol_present"].is_null());
+        assert_eq!(pre["credential_readiness"], "missing");
+        assert_eq!(pre["credential_symbol_present"], false);
+        assert_eq!(
+            pre["comparison"]["window"],
+            "single_randomized_interleaved_window"
+        );
+        assert_eq!(pre["comparison"]["authorizations_issued"], false);
+        assert_eq!(pre["comparison"]["unissued_authorization_packages"], 2);
         assert!(pre["blockers"].as_array().unwrap().iter().any(|blocker| {
+            blocker.get("code").and_then(Value::as_str) == Some("missing_credential_symbol")
+        }));
+        assert!(!pre["blockers"].as_array().unwrap().iter().any(|blocker| {
             blocker.get("code").and_then(Value::as_str) == Some("credential_readiness_unavailable")
         }));
         let observed = pre["observed_at"].as_str().unwrap();
@@ -3381,7 +3404,8 @@ mod tests {
         assert_eq!(pre["authority_consumed"], false);
         assert_eq!(pre["provider_call_performed"], false);
         assert_eq!(pre["target_write_performed"], false);
-        assert!(pre["credential_symbol_present"].is_null());
+        assert!(pre["credential_symbol_present"].is_boolean());
+        assert_ne!(pre["credential_readiness"], "unavailable");
         let mutation = read_only.record_api_key_metadata(
             "should-not-write",
             "operator-user",

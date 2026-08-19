@@ -6,98 +6,77 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-AC0 data/trace freeze, AC2 typed execution, AC3 Golden Path responsibility split, AC4 transaction views, AC5 composition root, and AC6 Rust-authoritative schema convergence are accepted on `main`. AC1 shared `ProcessSupervisor` remains deferred optional hardening. The AC7 removal manifest, deletion-only cleanup, and closeout are accepted. `PE7-RWE-CR-RECONSTRUCTION-1` is complete on accepted main `7cfa817a82ea3a638bd3e50af5266ee54eefe0c0`. `PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1` is complete on accepted main `262b67b675c36859c3dee6e1556fa0090654b75c`. `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` is the sole provider-free contract window and remains parked at `DECISION_REQUIRED` until remaining redacted-readiness and two-arm comparison-protocol decisions are separately re-proved. No Provider call, target write, authority consumption, or replay effect is authorized.
+The read-only RWE preflight repair is accepted on `262b67b675c36859c3dee6e1556fa0090654b75c`. `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` is the current provider-free contract window: freeze redacted credential readiness and the two-arm comparison protocol on existing owners, then record a real read-only preflight. A missing Store, missing credential symbol, or any blocker is not live-ready. No Provider call, authority consumption, target write, or replay is authorized.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-RWE-CR-PROTOCOL-PREFLIGHT-1 — DECISION_REQUIRED, provider-free; planning parked]
+[window: PE7-RWE-CR-PROTOCOL-PREFLIGHT-1 — READY_FOR_EXECUTION, provider-free; protocol/preflight freeze]
 
 
 ```
 
 ## Active Routing
 
-1. `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` — `DECISION_REQUIRED`
-
-## Completed (PE7-AC7-CLOSEOUT-1)
-
-**Historical state:** `COMPLETE`
-
-**Historical evidence:** PR #563 exact head `80e68a108eb1d752f6632944300786fe9ea6511d`; merge `42fcfa5ad7e349d27d3caa815163340f9c0d5c0b`; exact-head `PASS`; canonical workflow `32030794178`.
-
-## Completed (PE7-RWE-CR-RECONSTRUCTION-1)
-
-**State:** `COMPLETE`
-
-**Accepted evidence:** PR #566 exact head `57f4a5ee3a9be48a6ebdc20eddbd5df978c4440f`; squash merge `7cfa817a82ea3a638bd3e50af5266ee54eefe0c0`; exact-head review receipt comment `5324095735`; canonical workflow `32103730088`; exact-head check `32103730089`. The explicit Python 3.14.4 verifier and registered provider-free traces passed. No Provider call, target write, authority consumption, or effect occurred.
-
-The reconstruction contract and historical implementation details remain in PR #566 and its merged diff. Frozen pre-AC inputs are unchanged.
+1. `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` — `READY_FOR_EXECUTION`
 
 ## Completed (PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1)
 
 **State:** `COMPLETE`
 
-**Accepted evidence:** PR #572 exact head `0f63ad49c2b5ba87bf5e661bcbae9fd5fab9a9a8`; squash merge `262b67b675c36859c3dee6e1556fa0090654b75c`; exact-head review receipt comment `5328249811`; canonical workflow `32137758400`; exact-head check `32137758389`. The existing-owner SQLite read-only Store/auth/preflight seam and old/new identity projection are accepted. No Provider call, credential-value read, authority consumption, target write, or effect occurred. This packet does not claim a live-ready baseline.
+**Accepted evidence:** PR #572 exact head `0f63ad49c2b5ba87bf5e661bcbae9fd5fab9a9a8`; squash merge `262b67b675c36859c3dee6e1556fa0090654b75c`; exact-head review receipt comment `5328249811`; canonical workflow `32137758400`; exact-head check `32137758389`. Closeout PR #575 squash merge `55170c8b66847608b747eb5d7323f56543ba0bdf`.
 
 ## Packet PE7-RWE-CR-PROTOCOL-PREFLIGHT-1
 
-**State:** `DECISION_REQUIRED`
+**State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1` — COMPLETE on accepted main `262b67b675c36859c3dee6e1556fa0090654b75c` (PR #572 exact head `0f63ad49c2b5ba87bf5e661bcbae9fd5fab9a9a8`; exact-head review receipt `5328249811`; canonical workflow `32137758400`; exact-head check `32137758389`). Reconstruction remains COMPLETE on `7cfa817a82ea3a638bd3e50af5266ee54eefe0c0`.
+**Prerequisite:** `PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1` — COMPLETE on accepted main `262b67b675c36859c3dee6e1556fa0090654b75c`.
 
 **Class:** `CONTRACT`
 
-**Outcome:** Freeze randomization/interleaving, allocation concealment, drift covariates, capacity, finite authorizations, and immediate provider-free preflight for the old/new comparison.
+**Outcome:** Freeze redacted credential presence and the two-arm comparison window/allocation/concealment/drift/capacity pairing with two unissued authorization slots; run the existing read-only preflight and record actual ready/blocker fields. Do not run an arm or claim live-ready from a blocked preflight.
 
-**Allowed delta:** `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md` only until remaining owner facts are re-proved; no live execution or post-AC threshold change; reuse the pre-registered measurement protocol and the accepted read-only Store/auth/preflight seam.
+**Allowed delta:** `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/FUTURE_ROUTE.md`, `engine/src/rwe/frozen_rwe_bindings.rs`, `engine/src/rwe/live_baseline_coordinator.rs`, and `engine/tests/test_pg_integration.rs` only.
 
-**Exit:** Zero-mismatch preflight and two unissued, finite operator authorization packages for both arms in the same bounded window.
+**Exit:** Comparison protocol freeze and redacted credential owner are accepted; a captured provider-free preflight shows actual readiness. `ready=true` is required before promoting `PE7-RWE-CR-RUN-1`.
 
-**Stop:** Provider/model/environment identity cannot remain comparable, capacity creates arm-time confounding, old/new evidence paths can collide, any identity/evidence is stale or missing, redacted credential readiness remains unavailable without an accepted owner, or any step would consume authority, call a Provider, or write a target.
+**Stop:** Credential values would be read, frozen hashes would change, a Store would be created, authority would be issued, or live-ready would be claimed from blockers.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Freeze the protocol/preflight contract only. Do not run an arm, issue or consume authority, call a Provider, produce an effect, or perform analysis.
-2. **Prerequisites and evidence.** Accepted repair main `262b67b675c36859c3dee6e1556fa0090654b75c`; reconstruction `7cfa817a82ea3a638bd3e50af5266ee54eefe0c0`; pre-AC snapshot manifest `a423ea9889dfc32680f660312bf61d95e5c2a26c49fc52143b26b8d9847c9c8c`, source commit `6240768506320a324d68787b9eaa86971c8c930c`, source tree `f8d22ebf5009842d37285624f345d47bf6da5548032eb84cb7528407169d9cc3`, recipe commit `de0b3bb5158f07100d9ee3846b0555193503629d`, recipe tree `8fc5610c47cc4477c5ab7c65fe680ddf970bca4e612558701b316cc2ca038766`; corpus/protocol/schedule `044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20`/`bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db`/`6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38`; post-AC lock/toolchain hashes `cf68982734f8a72148950f119408b676dd5b42ce65d7af69c02eca017a551653`/`e59c5da37d1f9f4e0f815bc188cb6056fc7410c9cdaa9673c2d44da557c75d12`.
-3. **Owners and paths.** Existing owners only: read-only `LocalProductStore` open/auth, `engine/src/rwe/live_baseline_coordinator.rs::operator_preflight_read_only`, `engine/src/rwe/operator_corpus.rs::freeze_current_operator_contract_set`, `engine/src/rwe/frozen_rwe_bindings.rs`, `engine/src/rwe/economic_protocol.rs`, `engine/src/rwe/execution_schedule.rs`; this packet adds no runtime owner.
-4. **Frozen invariants.** Bind old/new identities, corpus/protocol/schedule hashes, accepted main and toolchain identities, route manifest, packet identity, pre-registered protocol, and the existing preflight/corpus owners before any authorization is issued.
-5. **Only semantic delta.** Contract, status, and routing promotion only; no runtime or measurement-threshold change.
-6. **Forbidden changes.** No Provider call, effect, T3 action, authority consumption, target write, credential-value read/output/persistence, schema/migration, new runtime/store/evaluator, or second owner.
-7. **Ordered slices.** Reconcile current identities; freeze allocation/interleaving/drift/capacity and finite budgets; run the accepted read-only owner preflight without issuing or consuming; retain redacted/hash-bound receipts and promote the run only after this packet is accepted.
-8. **Failure, recovery, and stop taxonomy.** Fail closed on mismatch, missingness, stale identity, capacity confounding, unavailable redacted readiness, or evidence collision; do not retry or consume authority; preserve `unknown`; rollback is a docs-only revert.
-9. **Verification.** Run `cargo test -p engine viability_preflight_is_read_only_without_store_creation_or_auth_touch`, `cargo test -p engine current_comparison_manifest_rejects_identity_collision`, `git diff --check`, `bash scripts/check_wire_codegen_drift.sh`, `uv run --no-project python tools/check_security_baseline.py`, and `uv run --no-project python scripts/check_agent_handoff.py`; no Provider or effect command is permitted until a later EFFECT packet.
-10. **Compatibility, rollback, and retention.** Reuse the accepted read-only Store/RWE owners and pre-registered measurement protocol; no migration or schema change; revert the docs-only packet promotion to roll back.
-11. **Exit artifact.** Accepted status receipt, promoted route/NEXT packet, and redacted/hash-bound provider-free preflight evidence owned by the existing RWE artifact/evidence owners; the two finite authorization packages remain unissued and are only a next-run input, not an effect of this packet.
-12. **Next action.** After accepted zero-mismatch preflight, promote `PE7-RWE-CR-RUN-1`; do not issue, consume, call, or run an effect from this packet.
+1. **Outcome and non-goals.** Freeze protocol/preflight only. Do not run, issue, consume, call a Provider, or write a target.
+2. **Prerequisites and evidence.** Repair COMPLETE on `262b67b675c36859c3dee6e1556fa0090654b75c`.
+3. **Owners and paths.** Existing read-only Store/auth/preflight, frozen comparison binding, and operator corpus/protocol/schedule hashes.
+4. **Frozen invariants.** Old/new identities and corpus/protocol/schedule hashes stay unchanged.
+5. **Only semantic delta.** Redacted credential presence and two-arm comparison protocol projection.
+6. **Forbidden changes.** No Provider, effect, schema/migration, hash mutation, credential-value read, or second owner.
+7. **Ordered slices.** Redacted presence; two-arm protocol freeze; real read-only preflight capture.
+8. **Failure taxonomy.** Fail closed on missing Store, missing credential symbol, identity collision, or hash drift; unknown stays unknown.
+9. **Verification.** Exact dispatch-capsule commands.
+10. **Compatibility and rollback.** Revert this PR; no store cleanup.
+11. **Exit artifact.** Accepted freeze plus captured preflight JSON/stderr.
+12. **Next action.** Promote `PE7-RWE-CR-RUN-1` only after `ready=true`.
 
-### Decision-required boundary
+### 11. Bounded Autonomous Worker Dispatch Capsule
 
-The accepted repair on `262b67b675c36859c3dee6e1556fa0090654b75c` added a strict existing-file SQLite read-only open, non-touching authentication, and a provider-free preflight projection that does not read credential values. That seam is not a live-ready claim.
-
-This packet remains parked because the remaining comparison/readiness decisions are not re-proved:
-
-- Encrypted SQLCipher preflight still returns `encryption_readiness_unavailable` pending a separately authorized redacted-readiness owner; unencrypted SQLite is the only path the repair guaranteed.
-- No provider-free live preflight was run against an existing Store; `ready=true` is not accepted.
-- Two-arm interleaving, allocation concealment, drift covariates, capacity pairing, and two finite unissued authorization packages are not yet frozen as a contemporary protocol receipt.
-- The identity projection exists in the accepted binding owner and fails closed on missing/swapped/colliding identities, but that is not a completed protocol/preflight freeze.
-
-No database, credential value, authority, Provider, target, or effect may be touched to “unstick” this window. `PE7-RWE-CR-RUN-1` remains blocked until this packet is separately re-promoted and accepted.
+<!-- weak-agent-dispatch:v1
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-RWE-CR-PROTOCOL-PREFLIGHT-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Freeze the contemporary two-arm comparison protocol and redacted credential readiness on the accepted read-only preflight owner without issuing authority or running a replay.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/rwe/frozen_rwe_bindings.rs","engine/src/rwe/live_baseline_coordinator.rs","engine/tests/test_pg_integration.rs"],"read_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/MODULE_MAP.md","docs/REAL_WORLD_TESTING_PLAYBOOK.md","engine/src/bin/rwe_live_baseline.rs","engine/src/rwe/frozen_rwe_bindings.rs","engine/src/rwe/live_baseline_coordinator.rs","engine/src/rwe/operator_corpus.rs","engine/tests/test_operator_evidence.rs","engine/tests/test_pg_integration.rs"],"allowed_outputs":["Redacted credential-presence projection that never reads credential values.","Existing-owner two-arm comparison protocol freeze bound to accepted hashes.","Provider-free read-only preflight evidence that does not claim live-ready without ready=true."],"prerequisites":["PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1"],"prerequisite_receipts":["PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1 COMPLETE: PR #572 exact head `0f63ad49c2b5ba87bf5e661bcbae9fd5fab9a9a8`; squash merge `262b67b675c36859c3dee6e1556fa0090654b75c`; exact-head review receipt comment `5328249811`; canonical workflow `32137758400`; exact-head check `32137758389`; existing-owner SQLite read-only Store/auth/preflight seam and old/new identity projection accepted; no Provider call, credential-value read, target write, authority consumption, or effect; not a live-ready claim"],"forbidden_changes":["Do not create a second runtime, scheduler, store, controller, evaluator, authority, or evidence owner.","Do not read, output, persist, or validate credential values.","Do not mutate frozen corpus, protocol, or schedule hashes.","Do not issue or consume authority, call a Provider, write a target, or perform an effect.","Do not invent a live-ready claim from a blocked preflight."],"ordered_steps":["Project redacted parent-process credential presence through the existing environment-symbol owner without decoding the secret.","Bind the accepted old/new identities to a frozen two-arm window, allocation, concealment, drift, capacity pairing, and two unissued authorization slots.","Run the existing read-only preflight entry point and record actual ready/blocker fields."],"verification":["cargo fmt --all -- --check","cargo test -p engine current_comparison_manifest_rejects_protocol_freeze_mutation","cargo test -p engine viability_preflight_reports_redacted_credential_presence_without_value","cargo test -p engine viability_preflight_is_read_only_without_store_creation_or_auth_touch","git diff --check","bash scripts/check_wire_codegen_drift.sh","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this protocol/preflight PR. The accepted read-only repair remains on main and requires no store cleanup because this packet issues no authority and creates no operator Store.","pause_gates":["Stop when an owner, caller, path, or readiness fact cannot be re-proved from accepted main.","Stop before any schema/data write, credential-value read, Provider, authority action, target write, or effect.","Stop when exact-head review or canonical CI is missing, stale, failed, or conflicting."],"expected_artifacts":["Redacted credential presence on the read-only preflight path.","Two-arm comparison protocol freeze with two unissued authorization slots.","Captured provider-free preflight output that does not claim ready unless ready=true."],"forbidden_next_actions":["Do not start PE7-RWE-CR-RUN-1 until this packet has an accepted zero-mismatch ready preflight.","Do not treat a missing-store or missing-credential blocker as live-ready."],"verification_family":"source_focused_full","worker_tier":"T2","risk_class":"none","known_store_mutations":[]}
+-->
 
 ## Common Execution Protocol
 
 - `READY_FOR_EXECUTION` packets require a valid dispatch capsule; blocked or decision-required packets carry no executable capsule.
 - Refresh accepted `main`, the current packet, exact PR head, CI, and review receipts before each transition.
 - Keep a changing PR Draft; run focused/local full checks, then one final stable-head Standards/Spec review, Ready, canonical exact-head CI, manual squash merge, and main refresh.
-- No Provider call, credential read/output/persistence, target write, EFFECT/T3 action, auto-merge, or second runtime/store/authority owner in this packet.
+- No Provider call, credential-value read/output/persistence, target write, EFFECT/T3 action, auto-merge, or second runtime/store/authority owner in this packet.
 - Unknown, stale, missing, or conflicting evidence remains fail-closed; never retry an effect whose outcome may be unknown.
 
 ## Hard Stops
 
 - `DECISION_REQUIRED` when a caller, owner, path, semantics, compatibility fact, rollback, or evidence cannot be re-proved from accepted `main`.
-- No Provider call, credential read/output/persistence, target write, EFFECT/T3 action, auto-merge, or second runtime/store/authority owner.
+- No Provider call, credential-value read/output/persistence, target write, EFFECT/T3 action, auto-merge, or second runtime/store/authority owner.
 - Unknown or possibly executed effects are never treated as success or retried.
 
 ## Future Route Boundary
 
-`docs/FUTURE_ROUTE.md` is routing-only. The parked protocol packet remains governed by this document; no future sketch authorizes code or an effect until promoted into this document from accepted `main`.
+`docs/FUTURE_ROUTE.md` is routing-only. No future sketch authorizes a replay until this packet is accepted with a ready preflight.
