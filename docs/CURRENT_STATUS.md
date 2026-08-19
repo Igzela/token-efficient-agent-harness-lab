@@ -77,6 +77,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1` | `COMPLETE` | PR #572 exact head `0f63ad49c2b5ba87bf5e661bcbae9fd5fab9a9a8`; squash merge `262b67b675c36859c3dee6e1556fa0090654b75c`; exact-head review receipt comment `5328249811`; canonical workflow `32137758400`; exact-head check `32137758389`; existing-owner SQLite read-only Store/auth/preflight seam and old/new identity projection accepted; no Provider call, credential-value read, target write, authority consumption, or effect; not a live-ready claim |
 | `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` | `COMPLETE` | Freeze PR #576 exact head `7b9e51bd12d7cb4007915edb9d5809f2db488416`; squash merge `837ae2aadc0470713121361d5c529d6936e8926f`; exact-head review comment `5344672600`; canonical workflow `32273292076`; exact-head check `32273291960`; idle-SHM PR #577 exact head `1bfffe1c620cff79caf37bd566f9ee80073d252e`; squash merge `9c25d193d3b85ad9e7cc66af21a0c78ba0171d7a`; exact-head review comment `5345103991`; canonical workflow `32276756829`; exact-head check `32276756856`; captured `rwe-live-baseline preflight` against existing `.agent-control-plane/local-team.db` failed closed at principal auth (`no such column: tenant_id`); not a live-ready claim |
 | `PE7-CWS-INGRESS-INVENTORY-1` | `COMPLETE` | PR #579 exact head `b91f207eba8d5910dd97c626c458be0e369c577e`; squash merge `76d21ea2fd4d8a691bc83c28d680e5affff77ba2`; exact-head review comment `5345445854`; canonical workflow `32279656821`; exact-head check `32279656781`; owner-bound ingress matrix and non-final harvest matrix; no TRANSPLANT disposition; RUN-1 not started |
+| `PE7-CWS-PROJECTION-CONTRACT-1` | `COMPLETE` | PR #580 exact head `0a750a3a5cda92b419efbfb35f89f5cfee0fe429`; squash merge `4129ca5d08cd7a2e89ad2485864ba28900ecc645`; exact-head review comments `5345585496` and `5345585819`; canonical workflow `32280864211`; exact-head check `32280864192`; PINNED/HOT/WARM/COLD residency; scoring cannot evict PINNED; RUN-1 not started |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -268,6 +269,28 @@ Derived, deletable, rebuildable projection. Not a second store or evaluator.
 | `COLD` | reduced handles requiring rehydration | drop only when a source-bound rehydration recipe remains |
 
 Promotion/demotion is deterministic and independent of embedding/model scores for all safety-relevant decisions.
+
+### Rehydration policy (`PE7-CWS-REHYDRATION-CONTRACT-1`)
+
+A reduced or `COLD` item is a handle, not a second copy of truth. Rehydration reconstructs model-visible bytes from an existing owner. It never creates a hidden transcript store, never expands permissions, and never authorizes repeating an EFFECT.
+
+Handle fields (all required unless noted): `source_owner`, `source_identity` (Git object SHA + path, or existing artifact id), `content_sha256`, optional `byte_range`, `recipe_kind`, `redaction_class`.
+
+| `recipe_kind` | Retrieval | May repeat EFFECT? |
+|---|---|---|
+| `GIT_BLOB` | exact Git object + path at the bound SHA | no |
+| `ARTIFACT_REF` | existing artifact/evidence owner by id + hash | no |
+| `DETERMINISTIC_RERUN` | named provider-free local recipe with identical inputs | no; stop if the recipe would call a Provider, write a target, or consume authority |
+
+Integrity: retrieved bytes must match `content_sha256`; mismatch is `UNAVAILABLE`, not a repaired substitute. Freshness is identity-bound: “latest file” is not a recipe. Redaction at rehydration must be at least as strict as admission; secrets and private paths stay out. Missing source, missing hash, or failed owner lookup is `UNAVAILABLE`. Outcome-unknown evidence rehydrates only as the original unknown receipt; it does not become success.
+
+Named fail-closed vectors for later IMPLEMENT packets:
+
+1. PINNED authority handle → same digest as the bound Git/doc identity.
+2. COLD tool-result handle → `ARTIFACT_REF` only; raw log is not copied into a new store.
+3. Missing or mismatched `content_sha256` → `UNAVAILABLE`, never empty success.
+4. `DETERMINISTIC_RERUN` that would POST a Provider or write a target → rejected; not an implicit RUN-1.
+5. Summary-only handle with no source identity → not rehydratable; packet stop.
 
 ## Invalidated Historical Receipts (Repair Required)
 
