@@ -5,10 +5,11 @@ mod types;
 mod validation;
 
 pub use assembly::{
-    assemble_context_injection, assemble_context_injection_with_bridge, bridge_context_fields,
-    compose_authorized_runtime_prompt, partition_authorized_working_set,
-    project_authorized_repository_session, project_authorized_working_set,
-    reduce_authorized_tool_result, ContextAssemblyConfig, ContextSource,
+    assemble_context_injection, assemble_context_injection_with_bridge,
+    authorized_cws_benchmark_preflight, bridge_context_fields, compose_authorized_runtime_prompt,
+    partition_authorized_working_set, project_authorized_repository_session,
+    project_authorized_working_set, reduce_authorized_tool_result, ContextAssemblyConfig,
+    ContextSource,
 };
 pub use budget::{allocate_context_budget, apply_prune_policy, check_budget_compliance};
 pub use rules::*;
@@ -431,6 +432,18 @@ mod tests {
         let part = partition_authorized_working_set(&projected, None).unwrap();
         assert_eq!(part.stable_prefix_digest.len(), 64);
         assert!(part.telemetry.is_none());
+    }
+
+    #[test]
+    fn existing_context_owner_runs_cws_preflight() {
+        let report = authorized_cws_benchmark_preflight(
+            "ffffffffffffffffffffffffffffffffffffffff",
+            true,
+            true,
+        )
+        .unwrap();
+        assert!(report.ready);
+        assert!(!report.authorizations_issued);
     }
 
     #[test]

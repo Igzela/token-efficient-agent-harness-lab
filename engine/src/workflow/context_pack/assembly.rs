@@ -1,10 +1,10 @@
 use serde_json::{json, Value};
 
 use crate::context_working_set::{
-    compose_runtime_prompt, partition_working_set, project as project_working_set,
-    project_repository_session, reduce_tool_result, CachePartition, CacheTelemetryObservation,
-    ProjectedWorkingSet, ProjectorBounds, ProjectorError, ReducedToolResult, RepositorySessionMode,
-    SourceItem, ToolResultAdmission,
+    compose_runtime_prompt, cws_benchmark_preflight, partition_working_set,
+    project as project_working_set, project_repository_session, reduce_tool_result, CachePartition,
+    CacheTelemetryObservation, CwsBenchmarkPreflight, ProjectedWorkingSet, ProjectorBounds,
+    ProjectorError, ReducedToolResult, RepositorySessionMode, SourceItem, ToolResultAdmission,
 };
 
 use super::budget::allocate_context_budget;
@@ -48,6 +48,14 @@ pub fn partition_authorized_working_set(
     telemetry: Option<CacheTelemetryObservation>,
 ) -> Result<CachePartition, ProjectorError> {
     partition_working_set(projected, telemetry)
+}
+
+pub fn authorized_cws_benchmark_preflight(
+    head_sha: &str,
+    provider_capability_known: bool,
+    evidence_paths_bound: bool,
+) -> Result<CwsBenchmarkPreflight, ProjectorError> {
+    cws_benchmark_preflight(head_sha, provider_capability_known, evidence_paths_bound)
 }
 
 #[derive(Debug, Clone, PartialEq)]
