@@ -241,7 +241,7 @@ Provider-free read-only inventory. Conversation text is not durable truth. No pr
 | Provider transport | `engine/src/provider/` | existing provider owner; default-off in CI | request-scoped | credentials stay in env, not prompts | existing redaction | no: raw provider payloads are not retained as authority |
 | Agent scratchpad/notes | `engine/src/node_executor.rs` | agent-state summary only | bounded summary | summaries, not raw bodies, in audit | `update_scratchpad_summary` | store agent_state; raw bodies excluded |
 | Durable memory versions | `engine/src/storage/local_product_store/` `durable_memory_versions` | experimental/store-owned; not CWS authority | versioned rows | store-scoped | existing retrieval events | yes, store versions |
-| Tool results / artifacts | existing artifact/evidence owners | evidence, not model truth | large logs possible | may contain diagnostics | not yet a CWS reducer | rehydrate from artifact identity when present |
+| Tool results / artifacts | existing artifact/evidence owners | evidence, not model truth | large logs possible | may contain diagnostics | CWS reducer `REIMPLEMENT` in `reduce_tool_result`; raw stays with artifact owner | rehydrate from `ARTIFACT_REF` handle |
 | Canonical docs / Git | `docs/*`, Git objects | accepted-main truth | full files | public prose | role-targeted reads | yes, exact Git identity |
 | Shared Sol investigation | `scripts/ask_sol.py` | read-only consultation; not product authority | bounded goal/hypothesis | no worktree mutation; no secrets in receipts | existing script redaction | yes, from consultation receipts |
 | Managed CLI / Codex child context | `engine/src/cli/` | existing CLI mediation; not a second provider owner | child-process prompt assembly | credentials stay out of child env | existing mediation | no: child raw prompts are not authority |
@@ -257,7 +257,7 @@ Unknown ingress: none identified beyond the rows above at this checkout. A later
 | Aider | github.com/Aider-AI/aider | re-verify at promotion | `UNKNOWN` | harvest identity not frozen |
 | Command Code | unpublished harness source | n/a | `INELIGIBLE_SOURCE` | architecture/behavior reference only; not a transplant candidate |
 
-No `TRANSPLANT` / `ADAPT` / `REIMPLEMENT` / `REJECT` disposition is recorded.
+No harvest-candidate `TRANSPLANT` / `ADAPT` / `REJECT` is recorded. Projector and reducer implementation-selection dispositions are each `REIMPLEMENT` (see below); an INGRESS `candidate_status` is not that decision.
 
 ### Working-set residency policy (`PE7-CWS-PROJECTION-CONTRACT-1`)
 

@@ -670,4 +670,15 @@ mod tests {
             "unbound_evidence"
         );
     }
+
+    #[test]
+    fn tiny_bound_that_cannot_keep_failure_line_is_blocker_dropped() {
+        let err = reduce_tool_result(&admit(
+            ToolOutcome::Failure,
+            "error: compile failed at src/lib.rs",
+            3,
+        ))
+        .unwrap_err();
+        assert_eq!(err.code, "blocker_dropped");
+    }
 }
