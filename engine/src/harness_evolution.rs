@@ -20,6 +20,17 @@ pub const RECEIPT_SCHEMA_VERSION: &str = "harness_evolution_receipt.v1";
 pub const WORKSPACE_SCHEMA_VERSION: &str = "harness_evolution_workspace.v1";
 pub const ACTIVE_VERSION_SCHEMA: &str = "harness_active_version.v1";
 pub const MUTABLE_SURFACE_SCHEMA: &str = "harness_mutable_surface.v1";
+pub const EC1_CONTRACT_SCHEMA_VERSION: &str = "harness_evolution_ec1_contract.v1";
+pub const EC1_CONTRACT_ID: &str = "PE7-HE-EC1-CONTRACT-1";
+pub const FAILURE_PATTERN_EVIDENCE_SCHEMA: &str = "failure_pattern_evidence.v1";
+pub const MUTATION_HYPOTHESIS_MANIFEST_SCHEMA: &str = "mutation_hypothesis_manifest.v1";
+pub const PREDICTION_OUTCOME_SCHEMA: &str = "prediction_outcome.v1";
+pub const MUTATION_FAMILY_REGISTRY_SCHEMA: &str = "mutation_family_registry.v1";
+
+/// CWS analysis bound this SHA as the default-off active Harness. EC1 freezes it;
+/// it is not a live ENABLE and does not authorize candidate generation.
+pub const EC1_FROZEN_ACTIVE_HARNESS_SHA: &str =
+    crate::context_working_set::CWS_ACTIVE_HARNESS_DEFAULT_OFF_SHA;
 
 pub const ENABLE_ENV: &str = "ACP_ENABLE_HARNESS_EVOLUTION_LAB";
 pub const KILL_SWITCH_ENV: &str = "ACP_HARNESS_EVOLUTION_KILL_SWITCH";
@@ -135,6 +146,102 @@ pub struct ActiveHarnessIdentity {
 pub struct MutableSurfaceDeclaration {
     pub schema_version: String,
     pub surfaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CausalStatus {
+    Unknown,
+    Hypothesized,
+    Supported,
+    Disputed,
+}
+
+impl CausalStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Hypothesized => "hypothesized",
+            Self::Supported => "supported",
+            Self::Disputed => "disputed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PredictionOutcomeKind {
+    Correct,
+    Incorrect,
+    PartiallySupported,
+    Contradicted,
+    Unavailable,
+}
+
+impl PredictionOutcomeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Correct => "correct",
+            Self::Incorrect => "incorrect",
+            Self::PartiallySupported => "partially_supported",
+            Self::Contradicted => "contradicted",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    pub fn is_evaluator_authority(self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailurePatternEvidenceV1 {
+    pub schema_version: String,
+    pub evidence_id: String,
+    pub source_identity_hash: String,
+    pub observation_digest: String,
+    pub causal_status: CausalStatus,
+    pub counterevidence_digest: String,
+    pub addressable_surface: String,
+    pub mutable_surface: String,
+    pub record_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MutationHypothesisManifestV1 {
+    pub schema_version: String,
+    pub manifest_id: String,
+    pub failure_evidence_id: String,
+    pub candidate_delta_digest: String,
+    pub predicted_improvement_digest: String,
+    pub predicted_regression_digest: String,
+    pub invariant_digest: String,
+    pub evaluation_plan_digest: String,
+    pub record_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PredictionOutcomeV1 {
+    pub schema_version: String,
+    pub outcome_id: String,
+    pub hypothesis_manifest_digest: String,
+    pub evaluation_digest: String,
+    pub evaluator_identity_hash: String,
+    pub outcome: PredictionOutcomeKind,
+    pub record_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MutationFamilyRecord {
+    pub family_id: String,
+    pub admitted_surface: String,
+    pub owner: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MutationFamilyRegistry {
+    pub schema_version: String,
+    pub families: Vec<MutationFamilyRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +372,138 @@ pub fn validate_sha256_hex(value: &str) -> Result<(), EvolutionAdmissionError> {
         ));
     }
     Ok(())
+}
+
+pub fn registered_mutation_families() -> MutationFamilyRegistry {
+    MutationFamilyRegistry {
+        schema_version: MUTATION_FAMILY_REGISTRY_SCHEMA.to_string(),
+        families: ADMITTED_MUTABLE_SURFACES
+            .iter()
+            .map(|surface| MutationFamilyRecord {
+                family_id: format!("family:{surface}"),
+                admitted_surface: (*surface).to_string(),
+                owner: "engine/src/harness_evolution.rs".to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn require_nonempty_id(value: &str, code: &str) -> Result<(), EvolutionAdmissionError> {
+    if value.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            code,
+            "identity cannot be caller-asserted empty",
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_failure_pattern_evidence(
+    evidence: &FailurePatternEvidenceV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if evidence.schema_version != FAILURE_PATTERN_EVIDENCE_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_schema_invalid",
+            "failure pattern schema mismatch",
+        ));
+    }
+    require_nonempty_id(&evidence.evidence_id, "ec1_identity_empty")?;
+    validate_sha256_hex(&evidence.source_identity_hash)?;
+    validate_sha256_hex(&evidence.observation_digest)?;
+    validate_sha256_hex(&evidence.counterevidence_digest)?;
+    validate_sha256_hex(&evidence.record_sha256)?;
+    if !ADMITTED_MUTABLE_SURFACES.contains(&evidence.mutable_surface.as_str()) {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_forbidden_surface",
+            "failure pattern mutable surface is not admitted",
+        ));
+    }
+    if FORBIDDEN_MUTABLE_SURFACES.contains(&evidence.addressable_surface.as_str()) {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_forbidden_surface",
+            "failure pattern cannot address evaluator or authority policy",
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_mutation_hypothesis_manifest(
+    manifest: &MutationHypothesisManifestV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if manifest.schema_version != MUTATION_HYPOTHESIS_MANIFEST_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_schema_invalid",
+            "hypothesis manifest schema mismatch",
+        ));
+    }
+    require_nonempty_id(&manifest.manifest_id, "ec1_identity_empty")?;
+    require_nonempty_id(&manifest.failure_evidence_id, "ec1_identity_empty")?;
+    validate_sha256_hex(&manifest.candidate_delta_digest)?;
+    validate_sha256_hex(&manifest.predicted_improvement_digest)?;
+    validate_sha256_hex(&manifest.predicted_regression_digest)?;
+    validate_sha256_hex(&manifest.invariant_digest)?;
+    validate_sha256_hex(&manifest.evaluation_plan_digest)?;
+    validate_sha256_hex(&manifest.record_sha256)?;
+    Ok(())
+}
+
+pub fn validate_prediction_outcome_contract(
+    outcome: &PredictionOutcomeV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if outcome.schema_version != PREDICTION_OUTCOME_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_schema_invalid",
+            "prediction outcome schema mismatch",
+        ));
+    }
+    require_nonempty_id(&outcome.outcome_id, "ec1_identity_empty")?;
+    validate_sha256_hex(&outcome.hypothesis_manifest_digest)?;
+    validate_sha256_hex(&outcome.evaluation_digest)?;
+    validate_sha256_hex(&outcome.evaluator_identity_hash)?;
+    validate_sha256_hex(&outcome.record_sha256)?;
+    if outcome.outcome.is_evaluator_authority() {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_prediction_authority",
+            "prediction outcome cannot grant evaluator authority",
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_mutation_family_registry(
+    registry: &MutationFamilyRegistry,
+) -> Result<(), EvolutionAdmissionError> {
+    if registry.schema_version != MUTATION_FAMILY_REGISTRY_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_schema_invalid",
+            "mutation family registry schema mismatch",
+        ));
+    }
+    if registry.families.is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_registry_empty",
+            "mutation family registry must be pre-registered",
+        ));
+    }
+    for family in &registry.families {
+        if !ADMITTED_MUTABLE_SURFACES.contains(&family.admitted_surface.as_str()) {
+            return Err(EvolutionAdmissionError::new(
+                "evolution_forbidden_surface",
+                format!("unregistered mutation family {}", family.family_id),
+            ));
+        }
+        if FORBIDDEN_MUTABLE_SURFACES.contains(&family.admitted_surface.as_str()) {
+            return Err(EvolutionAdmissionError::new(
+                "evolution_forbidden_surface",
+                "mutation family cannot reach evaluator or authority policy",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn frozen_ec1_active_harness_sha() -> &'static str {
+    EC1_FROZEN_ACTIVE_HARNESS_SHA
 }
 
 pub fn validate_mutable_surface(
@@ -869,6 +1108,93 @@ pub fn candidate_from_proposal(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn digest(label: &str) -> String {
+        sha256_hex(label)
+    }
+
+    #[test]
+    fn ec1_contract_freezes_default_off_harness_and_registry() {
+        assert_eq!(
+            frozen_ec1_active_harness_sha(),
+            crate::context_working_set::CWS_ACTIVE_HARNESS_DEFAULT_OFF_SHA
+        );
+        let registry = registered_mutation_families();
+        validate_mutation_family_registry(&registry).unwrap();
+        assert_eq!(registry.families.len(), ADMITTED_MUTABLE_SURFACES.len());
+    }
+
+    #[test]
+    fn failure_pattern_keeps_unknown_and_rejects_empty_identity() {
+        let ok = FailurePatternEvidenceV1 {
+            schema_version: FAILURE_PATTERN_EVIDENCE_SCHEMA.to_string(),
+            evidence_id: "fpe-1".to_string(),
+            source_identity_hash: digest("source"),
+            observation_digest: digest("obs"),
+            causal_status: CausalStatus::Unknown,
+            counterevidence_digest: digest("counter"),
+            addressable_surface: "prompts_and_bounded_rules".to_string(),
+            mutable_surface: "prompts_and_bounded_rules".to_string(),
+            record_sha256: digest("record"),
+        };
+        validate_failure_pattern_evidence(&ok).unwrap();
+        let mut disputed = ok.clone();
+        disputed.causal_status = CausalStatus::Disputed;
+        validate_failure_pattern_evidence(&disputed).unwrap();
+        let mut empty = ok.clone();
+        empty.evidence_id.clear();
+        assert_eq!(
+            validate_failure_pattern_evidence(&empty).unwrap_err().code,
+            "ec1_identity_empty"
+        );
+        let mut forbidden = ok;
+        forbidden.addressable_surface = "evaluator".to_string();
+        assert_eq!(
+            validate_failure_pattern_evidence(&forbidden)
+                .unwrap_err()
+                .code,
+            "evolution_forbidden_surface"
+        );
+    }
+
+    #[test]
+    fn prediction_outcome_is_not_evaluator_authority() {
+        let outcome = PredictionOutcomeV1 {
+            schema_version: PREDICTION_OUTCOME_SCHEMA.to_string(),
+            outcome_id: "po-1".to_string(),
+            hypothesis_manifest_digest: digest("hyp"),
+            evaluation_digest: digest("eval"),
+            evaluator_identity_hash: digest("evaluator"),
+            outcome: PredictionOutcomeKind::Unavailable,
+            record_sha256: digest("record"),
+        };
+        validate_prediction_outcome_contract(&outcome).unwrap();
+        assert!(!PredictionOutcomeKind::Correct.is_evaluator_authority());
+        let manifest = MutationHypothesisManifestV1 {
+            schema_version: MUTATION_HYPOTHESIS_MANIFEST_SCHEMA.to_string(),
+            manifest_id: "mh-1".to_string(),
+            failure_evidence_id: "fpe-1".to_string(),
+            candidate_delta_digest: digest("delta"),
+            predicted_improvement_digest: digest("imp"),
+            predicted_regression_digest: digest("reg"),
+            invariant_digest: digest("inv"),
+            evaluation_plan_digest: digest("plan"),
+            record_sha256: digest("mh-record"),
+        };
+        validate_mutation_hypothesis_manifest(&manifest).unwrap();
+        let mut unregistered = registered_mutation_families();
+        unregistered.families.push(MutationFamilyRecord {
+            family_id: "family:evaluator".to_string(),
+            admitted_surface: "evaluator".to_string(),
+            owner: "caller".to_string(),
+        });
+        assert_eq!(
+            validate_mutation_family_registry(&unregistered)
+                .unwrap_err()
+                .code,
+            "evolution_forbidden_surface"
+        );
+    }
 
     #[test]
     fn derives_stable_identities() {
