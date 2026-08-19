@@ -614,6 +614,8 @@ fn apply_pg_v36_migration(client: &mut postgres::Client) -> Result<(), String> {
     }
     tx.batch_execute(schema::V36_DDL)
         .map_err(|e| format!("m36: {e}"))?;
+    tx.batch_execute(schema::EC1_IDENTITY_LINEAGE_DDL)
+        .map_err(|e| format!("m36 ec1 identity lineage: {e}"))?;
     repair_pg_v36_delegated_plan_owner(&mut tx)?;
     tx.execute(
         "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",

@@ -804,6 +804,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_lease
     WHERE attempt_lease_id IS NOT NULL;
 ";
 
+pub(super) const EC1_IDENTITY_LINEAGE_DDL: &str = "
+CREATE TABLE IF NOT EXISTS harness_evolution_ec1_identity_lineage (
+    lineage_id TEXT PRIMARY KEY,
+    parent_lineage_id TEXT,
+    source_identity_hash TEXT NOT NULL CHECK (length(source_identity_hash) = 64),
+    active_harness_sha TEXT NOT NULL CHECK (length(active_harness_sha) = 40),
+    causal_source_id TEXT,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(parent_lineage_id) REFERENCES harness_evolution_ec1_identity_lineage(lineage_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec1_identity_lineage_parent
+    ON harness_evolution_ec1_identity_lineage(parent_lineage_id, created_at);
+";
+
 pub(super) const V28_DDL: &str = "
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
@@ -1628,6 +1643,19 @@ CREATE TABLE IF NOT EXISTS harness_evolution_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_receipts_candidate
     ON harness_evolution_receipts(candidate_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_ec1_identity_lineage (
+    lineage_id TEXT PRIMARY KEY,
+    parent_lineage_id TEXT,
+    source_identity_hash TEXT NOT NULL CHECK (length(source_identity_hash) = 64),
+    active_harness_sha TEXT NOT NULL CHECK (length(active_harness_sha) = 40),
+    causal_source_id TEXT,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(parent_lineage_id) REFERENCES harness_evolution_ec1_identity_lineage(lineage_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec1_identity_lineage_parent
+    ON harness_evolution_ec1_identity_lineage(parent_lineage_id, created_at);
 
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
@@ -2825,6 +2853,19 @@ CREATE TABLE IF NOT EXISTS harness_evolution_receipts (
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_receipts_candidate
     ON harness_evolution_receipts(candidate_id, created_at);
 
+CREATE TABLE IF NOT EXISTS harness_evolution_ec1_identity_lineage (
+    lineage_id TEXT PRIMARY KEY,
+    parent_lineage_id TEXT,
+    source_identity_hash TEXT NOT NULL CHECK (length(source_identity_hash) = 64),
+    active_harness_sha TEXT NOT NULL CHECK (length(active_harness_sha) = 40),
+    causal_source_id TEXT,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(parent_lineage_id) REFERENCES harness_evolution_ec1_identity_lineage(lineage_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec1_identity_lineage_parent
+    ON harness_evolution_ec1_identity_lineage(parent_lineage_id, created_at);
+
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
     family_id TEXT NOT NULL,
@@ -3275,6 +3316,8 @@ mod tests {
             "harness_evolution_proposals",
             "harness_evolution_candidates",
             "harness_evolution_receipts",
+            "harness_evolution_ec1_identity_lineage",
+            "idx_harness_evolution_ec1_identity_lineage_parent",
             "idx_harness_evolution_candidates_lineage",
             "harness_evolution_sealed_holdouts",
             "harness_evolution_evaluations",

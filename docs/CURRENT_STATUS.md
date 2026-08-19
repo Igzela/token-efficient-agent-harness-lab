@@ -88,6 +88,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-CWS-BENCHMARK-PREFLIGHT-1` | `COMPLETE` | PR #588 exact head `c806f75c5910b117c3cf7e44ad1c6a6503e48ddd`; squash merge `1569c70e9f2034bb4f7bc5ccbc24d889b66645ab`; exact-head review comments `5347437430` and `5347437722`; canonical workflow `32297108984`; exact-head check `32297109030`; one unissued T3 package; not a live-ready claim |
 | `PE7-CWS-BENCHMARK-RUN-1` | `COMPLETE` | PR #589 exact head `0f9cad12a850a7ed2ffcc823ebd2da29318c5ae6`; squash merge `84b1933bc3d9e657acae94d9e5f14810c0651917`; exact-head review comments `5347630853` and `5347631083`; canonical workflow `32298813456`; exact-head check `32298813444`; fail-closed; `executed=false`; `provider_posts=0` |
 | `PE7-CWS-ANALYSIS-1` | `COMPLETE` | PR #590 exact head `da09ea576154e55e532d2de5477972f2c5c516d5`; squash merge `1544c8d0a3f1b196fdb4b560759609662cd5f432`; exact-head review comments `5347818781` and `5347818993`; canonical workflow `32301497907`; exact-head check `32301497898`; disposition `INSUFFICIENT_DEFAULT_OFF`; active Harness `84b1933bc3d9e657acae94d9e5f14810c0651917`; no ENABLE |
+| `PE7-HE-EC1-CONTRACT-1` | `COMPLETE` | PR #591 exact head `50661a622c19e1f6da1f934a43bcbbaa4b52a003`; squash merge `e116e212ed043d773e215f2ba029e5b2f1763e4d`; exact-head review comments `5348443154` and `5348443354`; canonical workflow `32306087501`; default-off Harness `84b1933bc3d9e657acae94d9e5f14810c0651917` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -357,7 +358,11 @@ Disposition is `INSUFFICIENT_DEFAULT_OFF`. Live arms were not observed; hard gat
 
 ### HE EC1 contract (`PE7-HE-EC1-CONTRACT-1`)
 
-`engine/src/harness_evolution.rs` freezes `FailurePatternEvidenceV1`, `MutationHypothesisManifestV1`, `PredictionOutcomeV1`, and a pre-registered mutation-family registry under the existing HE owner. Active Harness identity is CWS default-off SHA `84b1933b`. Causal status may be `unknown` or `disputed`. Prediction outcomes are not evaluator, admission, or adoption authority. No candidate generation, evaluation, or persistence change.
+`engine/src/harness_evolution.rs` freezes `FailurePatternEvidenceV1`, `MutationHypothesisManifestV1`, `PredictionOutcomeV1`, and a pre-registered mutation-family registry under the existing HE owner. Active Harness identity is CWS default-off SHA `84b1933b`. Causal status may be `unknown` or `disputed`. Prediction outcomes are not evaluator, admission, or adoption authority. No candidate generation, evaluation, or persistence change. Receipt: PR #591 merge `e116e212ed043d773e215f2ba029e5b2f1763e4d`.
+
+### HE EC1 identity lineage (`PE7-HE-EC1-IDENTITY-LINEAGE-1`)
+
+Immutable `Ec1IdentityLineageRecord` rows persist under `LocalProductStore` table `harness_evolution_ec1_identity_lineage`. Lineage IDs are derived; parent rows must exist; causal sources cannot orphan; active Harness is CWS default-off `84b1933bc3d9e657acae94d9e5f14810c0651917`. No selection, adoption, or second store.
 
 ## Invalidated Historical Receipts (Repair Required)
 

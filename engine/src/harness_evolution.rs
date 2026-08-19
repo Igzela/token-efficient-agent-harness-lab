@@ -26,6 +26,7 @@ pub const FAILURE_PATTERN_EVIDENCE_SCHEMA: &str = "failure_pattern_evidence.v1";
 pub const MUTATION_HYPOTHESIS_MANIFEST_SCHEMA: &str = "mutation_hypothesis_manifest.v1";
 pub const PREDICTION_OUTCOME_SCHEMA: &str = "prediction_outcome.v1";
 pub const MUTATION_FAMILY_REGISTRY_SCHEMA: &str = "mutation_family_registry.v1";
+pub const EC1_IDENTITY_LINEAGE_SCHEMA: &str = "harness_evolution_ec1_identity_lineage.v1";
 
 /// CWS analysis bound this SHA as the default-off active Harness. EC1 freezes it;
 /// it is not a live ENABLE and does not authorize candidate generation.
@@ -251,6 +252,17 @@ pub struct MutationFamilyRecord {
 pub struct MutationFamilyRegistry {
     pub schema_version: String,
     pub families: Vec<MutationFamilyRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ec1IdentityLineageRecord {
+    pub schema_version: String,
+    pub lineage_id: String,
+    pub parent_lineage_id: Option<String>,
+    pub source_identity_hash: String,
+    pub active_harness_sha: String,
+    pub causal_source_id: Option<String>,
+    pub record_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -624,6 +636,86 @@ pub fn validate_mutation_family_registry(
 
 pub fn frozen_ec1_active_harness_sha() -> &'static str {
     EC1_FROZEN_ACTIVE_HARNESS_SHA
+}
+
+pub fn derive_ec1_identity_lineage_id(
+    parent_lineage_id: Option<&str>,
+    source_identity_hash: &str,
+    active_harness_sha: &str,
+) -> String {
+    let parent = parent_lineage_id.unwrap_or("root");
+    format!(
+        "heil-{}",
+        &sha256_hex(&format!(
+            "ec1-lineage.v1|{parent}|{source_identity_hash}|{active_harness_sha}"
+        ))[..32]
+    )
+}
+
+pub fn validate_ec1_identity_lineage(
+    record: &Ec1IdentityLineageRecord,
+) -> Result<(), EvolutionAdmissionError> {
+    if record.schema_version != EC1_IDENTITY_LINEAGE_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_schema_invalid",
+            "identity lineage schema mismatch",
+        ));
+    }
+    if record.active_harness_sha != EC1_FROZEN_ACTIVE_HARNESS_SHA {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_active_harness_mismatch",
+            "identity lineage must bind the CWS default-off Harness SHA",
+        ));
+    }
+    validate_sha256_hex(&record.source_identity_hash)?;
+    require_derived_id(
+        &record.lineage_id,
+        &derive_ec1_identity_lineage_id(
+            record.parent_lineage_id.as_deref(),
+            &record.source_identity_hash,
+            &record.active_harness_sha,
+        ),
+    )?;
+    if let Some(parent) = record.parent_lineage_id.as_deref() {
+        require_nonempty_id(parent, "ec1_identity_empty")?;
+        if parent == record.lineage_id {
+            return Err(EvolutionAdmissionError::new(
+                "ec1_lineage_cycle",
+                "identity lineage cannot parent itself",
+            ));
+        }
+    }
+    if let Some(causal) = record.causal_source_id.as_deref() {
+        if causal != record.lineage_id {
+            return Err(EvolutionAdmissionError::new(
+                "ec1_orphan_causal_source",
+                "causal source must reference this lineage, not an unknown identity",
+            ));
+        }
+    }
+    let value = serde_json::to_value(record)
+        .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error.to_string()))?;
+    require_record_sha256(&value, &record.record_sha256)?;
+    Ok(())
+}
+
+pub fn seal_ec1_identity_lineage(
+    mut record: Ec1IdentityLineageRecord,
+) -> Result<Ec1IdentityLineageRecord, EvolutionAdmissionError> {
+    record.lineage_id = derive_ec1_identity_lineage_id(
+        record.parent_lineage_id.as_deref(),
+        &record.source_identity_hash,
+        &record.active_harness_sha,
+    );
+    let mut value = serde_json::to_value(&record)
+        .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    let digest = record_digest_excluding_sha256(&value)?;
+    record.record_sha256 = digest;
+    validate_ec1_identity_lineage(&record)?;
+    Ok(record)
 }
 
 pub fn validate_mutable_surface(
@@ -1272,6 +1364,54 @@ mod tests {
         validate_mutation_family_registry(&registry).unwrap();
         assert_eq!(registry.families.len(), ADMITTED_MUTABLE_SURFACES.len());
         assert!(registry.families.iter().all(|family| family.non_authority));
+    }
+
+    #[test]
+    fn ec1_identity_lineage_binds_default_off_sha_and_rejects_orphans() {
+        let sealed = seal_ec1_identity_lineage(Ec1IdentityLineageRecord {
+            schema_version: EC1_IDENTITY_LINEAGE_SCHEMA.to_string(),
+            lineage_id: String::new(),
+            parent_lineage_id: None,
+            source_identity_hash: digest("source-root"),
+            active_harness_sha: EC1_FROZEN_ACTIVE_HARNESS_SHA.to_string(),
+            causal_source_id: None,
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        validate_ec1_identity_lineage(&sealed).unwrap();
+        let mut child = seal_ec1_identity_lineage(Ec1IdentityLineageRecord {
+            schema_version: EC1_IDENTITY_LINEAGE_SCHEMA.to_string(),
+            lineage_id: String::new(),
+            parent_lineage_id: Some(sealed.lineage_id.clone()),
+            source_identity_hash: digest("source-child"),
+            active_harness_sha: EC1_FROZEN_ACTIVE_HARNESS_SHA.to_string(),
+            causal_source_id: None,
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        child.causal_source_id = Some(child.lineage_id.clone());
+        child = seal_ec1_identity_lineage(child).unwrap();
+        validate_ec1_identity_lineage(&child).unwrap();
+        let mut orphan = child.clone();
+        orphan.causal_source_id = Some("unknown-causal".into());
+        assert_eq!(
+            validate_ec1_identity_lineage(&orphan).unwrap_err().code,
+            "ec1_orphan_causal_source"
+        );
+        let mut wrong_harness = sealed.clone();
+        wrong_harness.active_harness_sha = "0".repeat(40);
+        assert_eq!(
+            validate_ec1_identity_lineage(&wrong_harness)
+                .unwrap_err()
+                .code,
+            "ec1_active_harness_mismatch"
+        );
+        let mut rewritten = sealed;
+        rewritten.parent_lineage_id = Some(child.lineage_id);
+        assert_eq!(
+            validate_ec1_identity_lineage(&rewritten).unwrap_err().code,
+            "ec1_identity_asserted"
+        );
     }
 
     #[test]
