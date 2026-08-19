@@ -1,6 +1,7 @@
 """Build Codex prompts from Issue task specifications and current runtime evidence.
 """
 
+import hashlib
 import json
 import os
 import pathlib
@@ -436,7 +437,55 @@ def build_claim_bound_implementation_prompt(
         "Treat the trusted claim and repository checkout as the authority; do not "
         "expand the allowed paths or perform GitHub mutations.\n"
     )
+    prompt += "\n" + cws_session_projection_block(
+        accepted_main_sha=accepted_main_sha,
+        head_sha=accepted_main_sha,
+        packet_id="claim-bound",
+        mode="fresh",
+        documents={
+            "docs/CURRENT_STATUS.md": read_local("docs/CURRENT_STATUS.md") or "",
+            "docs/NEXT_DECISION.md": read_local("docs/NEXT_DECISION.md") or "",
+        },
+    )
     return prompt
+
+
+def cws_session_projection_block(
+    *,
+    accepted_main_sha,
+    head_sha,
+    packet_id,
+    mode,
+    documents,
+):
+    """Compact PINNED handles for canonical docs. Not a second authority owner."""
+
+    if not isinstance(accepted_main_sha, str) or len(accepted_main_sha) != 40:
+        raise ValueError("accepted_main_sha is invalid")
+    if not isinstance(head_sha, str) or len(head_sha) != 40:
+        raise ValueError("head_sha is invalid")
+    if mode == "fresh" and accepted_main_sha != head_sha:
+        raise ValueError("changed_head")
+    if not isinstance(packet_id, str) or not packet_id.strip():
+        raise ValueError("packet_id is invalid")
+    rows = []
+    seen = set()
+    for path, body in documents.items():
+        if path in seen:
+            continue
+        seen.add(path)
+        digest = hashlib.sha256((body or "").encode("utf-8")).hexdigest()
+        rows.append(f"- `{path}` sha256 `{digest}` residency PINNED")
+    return (
+        "## CWS repository session projection\n"
+        f"- accepted_main_sha: `{accepted_main_sha}`\n"
+        f"- head_sha: `{head_sha}`\n"
+        f"- packet_id: `{packet_id}`\n"
+        f"- mode: `{mode}`\n"
+        "Canonical documents are bound by identity/hash; do not re-expand full copies.\n"
+        + "\n".join(rows)
+        + "\n"
+    )
 
 
 def build_claim_bound_plan_implementation_prompt(
