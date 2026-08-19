@@ -3621,11 +3621,7 @@ mod tests {
 
     #[test]
     fn read_only_open_rejects_pending_sqlite_sidecars() {
-        for (suffix, label) in [
-            ("-wal", "WAL"),
-            ("-shm", "SHM"),
-            ("-journal", "rollback journal"),
-        ] {
+        for (suffix, label) in [("-wal", "WAL"), ("-journal", "rollback journal")] {
             let dir = tempdir().unwrap();
             let db_path = dir.path().join("pending-sidecar.db");
             let store = LocalProductStore::new(&db_path).unwrap();
@@ -3642,6 +3638,29 @@ mod tests {
                 "unexpected error for {label}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn read_only_open_accepts_idle_wal_index_when_wal_is_empty() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("idle-shm.db");
+        let store = LocalProductStore::new(&db_path).unwrap();
+        store
+            .record_api_key_metadata(
+                "idle-shm-key",
+                "operator-user",
+                "operator",
+                &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+                "idle-shm",
+            )
+            .unwrap();
+        drop(store);
+        let opened = LocalProductStore::open_existing_read_only(&db_path)
+            .expect("idle SHM leftover should not block read-only open");
+        assert!(opened
+            .get_api_key_metadata("idle-shm-key")
+            .unwrap()
+            .is_some());
     }
 
     #[test]

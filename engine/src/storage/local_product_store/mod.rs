@@ -438,17 +438,15 @@ impl LocalProductStore {
             .map_err(|error| format!("read-only store path canonicalization failed: {error}"))?;
         let read_only_lock = acquire_read_only_lock(&path)?;
         let initial_snapshot_digest = sqlite_snapshot_digest(&path)?;
-        for (label, suffix) in [
-            ("WAL", "-wal"),
-            ("SHM", "-shm"),
-            ("rollback journal", "-journal"),
-        ] {
-            if sqlite_companion_non_empty(&path, suffix)? {
-                return Err(format!(
-                    "read-only store refuses a non-empty {label} companion"
-                ));
-            }
+        if sqlite_companion_non_empty(&path, "-wal")? {
+            return Err("read-only store refuses a non-empty WAL companion".into());
         }
+        if sqlite_companion_non_empty(&path, "-journal")? {
+            return Err("read-only store refuses a non-empty rollback journal companion".into());
+        }
+        // An idle WAL-index leftover (typical 32KiB SHM after checkpoint) is not
+        // uncheckpointed database content. Refuse SHM only when WAL still has
+        // pending pages — already covered by the WAL check above.
         let uri = sqlite_read_only_uri(&path);
         let conn = Connection::open_with_flags(
             &uri,
