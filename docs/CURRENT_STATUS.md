@@ -76,6 +76,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-RWE-CR-RECONSTRUCTION-1` | `COMPLETE` | PR #566 exact head `57f4a5ee3a9be48a6ebdc20eddbd5df978c4440f`; squash merge `7cfa817a82ea3a638bd3e50af5266ee54eefe0c0`; exact-head review receipt comment `5324095735`; canonical workflow `32103730088`; exact-head check `32103730089`; explicit Python 3.14.4 verifier and provider-free traces passed; no Provider call, target write, authority consumption, or effect |
 | `PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1` | `COMPLETE` | PR #572 exact head `0f63ad49c2b5ba87bf5e661bcbae9fd5fab9a9a8`; squash merge `262b67b675c36859c3dee6e1556fa0090654b75c`; exact-head review receipt comment `5328249811`; canonical workflow `32137758400`; exact-head check `32137758389`; existing-owner SQLite read-only Store/auth/preflight seam and old/new identity projection accepted; no Provider call, credential-value read, target write, authority consumption, or effect; not a live-ready claim |
 | `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` | `COMPLETE` | Freeze PR #576 exact head `7b9e51bd12d7cb4007915edb9d5809f2db488416`; squash merge `837ae2aadc0470713121361d5c529d6936e8926f`; exact-head review comment `5344672600`; canonical workflow `32273292076`; exact-head check `32273291960`; idle-SHM PR #577 exact head `1bfffe1c620cff79caf37bd566f9ee80073d252e`; squash merge `9c25d193d3b85ad9e7cc66af21a0c78ba0171d7a`; exact-head review comment `5345103991`; canonical workflow `32276756829`; exact-head check `32276756856`; captured `rwe-live-baseline preflight` against existing `.agent-control-plane/local-team.db` failed closed at principal auth (`no such column: tenant_id`); not a live-ready claim |
+| `PE7-CWS-INGRESS-INVENTORY-1` | `COMPLETE` | PR #579 exact head `b91f207eba8d5910dd97c626c458be0e369c577e`; squash merge `76d21ea2fd4d8a691bc83c28d680e5affff77ba2`; exact-head review comment `5345445854`; canonical workflow `32279656821`; exact-head check `32279656781`; owner-bound ingress matrix and non-final harvest matrix; no TRANSPLANT disposition; RUN-1 not started |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -254,6 +255,19 @@ Unknown ingress: none identified beyond the rows above at this checkout. A later
 | Command Code | unpublished harness source | n/a | `INELIGIBLE_SOURCE` | architecture/behavior reference only; not a transplant candidate |
 
 No `TRANSPLANT` / `ADAPT` / `REIMPLEMENT` / `REJECT` disposition is recorded.
+
+### Working-set residency policy (`PE7-CWS-PROJECTION-CONTRACT-1`)
+
+Derived, deletable, rebuildable projection. Not a second store or evaluator.
+
+| Class | Holds | Eviction |
+|---|---|---|
+| `PINNED` | authority, unresolved blockers, outcome-unknown evidence, exact packet/task bindings, allowed/forbidden scope, verification contracts | never by relevance score |
+| `HOT` | active-path working items with exact source identity | lexicographic demotion to WARM only after PINNED capacity is satisfied |
+| `WARM` | recently used source-bound items | lexicographic demotion to COLD; never if it would drop PINNED |
+| `COLD` | reduced handles requiring rehydration | drop only when a source-bound rehydration recipe remains |
+
+Promotion/demotion is deterministic and independent of embedding/model scores for all safety-relevant decisions.
 
 ## Invalidated Historical Receipts (Repair Required)
 
