@@ -90,6 +90,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-CWS-ANALYSIS-1` | `COMPLETE` | PR #590 exact head `da09ea576154e55e532d2de5477972f2c5c516d5`; squash merge `1544c8d0a3f1b196fdb4b560759609662cd5f432`; exact-head review comments `5347818781` and `5347818993`; canonical workflow `32301497907`; exact-head check `32301497898`; disposition `INSUFFICIENT_DEFAULT_OFF`; active Harness `84b1933bc3d9e657acae94d9e5f14810c0651917`; no ENABLE |
 | `PE7-HE-EC1-CONTRACT-1` | `COMPLETE` | PR #591 exact head `50661a622c19e1f6da1f934a43bcbbaa4b52a003`; squash merge `e116e212ed043d773e215f2ba029e5b2f1763e4d`; exact-head review comments `5348443154` and `5348443354`; canonical workflow `32306087501`; default-off Harness `84b1933bc3d9e657acae94d9e5f14810c0651917` |
 | `PE7-HE-EC1-IDENTITY-LINEAGE-1` | `COMPLETE` | PR #592 exact head `155fa749effdcd790fb954eefcf64d12790d21b6`; squash merge `3dc2d3b12fbb95ec2b26220681cba5ad7547c6d2`; exact-head review comments `5348823217` and `5348823396`; canonical workflow `32309602816` |
+| `PE7-HE-EC1-CAUSAL-MANIFEST-1` | `COMPLETE` | PR #593 exact head `c00f24dac433d9b3fc23f5b0df746c89442097dd`; squash merge `b2fa400395a0502bf52ea5fd9468af5830766422`; exact-head review comments `5349023567` and `5349023702`; canonical workflow `32311374839` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -367,7 +368,11 @@ Immutable `Ec1IdentityLineageRecord` rows persist under `LocalProductStore` tabl
 
 ### HE EC1 causal manifest (`PE7-HE-EC1-CAUSAL-MANIFEST-1`)
 
-This packet records source-bound `FailurePatternEvidenceV1` and pre-execution `MutationHypothesisManifestV1` under existing `LocalProductStore` HE tables. Observation vs inference is explicit; causal status is not proof. Hypotheses are insert-only and must bind a proposal digest. Sensitive fields remain refused. No candidate execution or evaluator result.
+Source-bound `FailurePatternEvidenceV1` and pre-execution `MutationHypothesisManifestV1` persist under existing `LocalProductStore` HE tables. Observation vs inference is explicit; causal status is not proof. Hypotheses are insert-only and must bind a proposal digest. Sensitive fields remain refused. No candidate execution or evaluator result. Receipt: PR #593 merge `b2fa400395a0502bf52ea5fd9468af5830766422`.
+
+### HE EC1 mutation registry (`PE7-HE-EC1-MUTATION-REGISTRY-1`)
+
+This packet records bounded generator adapters so each candidate binding uses the accepted mutation-family registry and an addressable causal hypothesis. Unknown families are rejected. The adapter cannot edit the registry or evaluator. No ENABLE or Level-1.
 
 ## Invalidated Historical Receipts (Repair Required)
 

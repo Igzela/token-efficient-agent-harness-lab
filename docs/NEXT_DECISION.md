@@ -6,19 +6,19 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-HE-EC1-IDENTITY-LINEAGE-1` is complete. The current window is `PE7-HE-EC1-CAUSAL-MANIFEST-1`: persist source-bound failure-pattern evidence and pre-execution hypotheses against lineage rows. No candidate execution, ENABLE, or Level-1.
+`PE7-HE-EC1-CAUSAL-MANIFEST-1` is complete. The current window is `PE7-HE-EC1-MUTATION-REGISTRY-1`: bind generated candidates to addressable causal manifests through the accepted family registry. No evaluator, ENABLE, or Level-1.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-HE-EC1-CAUSAL-MANIFEST-1 — READY_FOR_EXECUTION, provider-free; source-bound causal records]
+[window: PE7-HE-EC1-MUTATION-REGISTRY-1 — READY_FOR_EXECUTION, provider-free; registry-bound candidate adapters]
 
 
 ```
 
 ## Active Routing
 
-1. `PE7-HE-EC1-CAUSAL-MANIFEST-1` — `READY_FOR_EXECUTION`
+1. `PE7-HE-EC1-MUTATION-REGISTRY-1` — `READY_FOR_EXECUTION`
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -56,41 +56,47 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Accepted evidence:** PR #592 exact head `155fa749effdcd790fb954eefcf64d12790d21b6`; squash merge `3dc2d3b12fbb95ec2b26220681cba5ad7547c6d2`; exact-head review comments `5348823217` and `5348823396`; canonical workflow `32309602816`.
 
-## Packet PE7-HE-EC1-CAUSAL-MANIFEST-1
+## Completed (PE7-HE-EC1-CAUSAL-MANIFEST-1)
+
+**State:** `COMPLETE`
+
+**Accepted evidence:** PR #593 exact head `c00f24dac433d9b3fc23f5b0df746c89442097dd`; squash merge `b2fa400395a0502bf52ea5fd9468af5830766422`; exact-head review comments `5349023567` and `5349023702`; canonical workflow `32311374839`.
+
+## Packet PE7-HE-EC1-MUTATION-REGISTRY-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-HE-EC1-IDENTITY-LINEAGE-1`
+**Prerequisite:** `PE7-HE-EC1-CAUSAL-MANIFEST-1`
 
 **Class:** `IMPLEMENT`
 
-**Outcome:** Immutable source-bound `FailurePatternEvidenceV1` and pre-execution `MutationHypothesisManifestV1` under the existing HE store owner.
+**Outcome:** Accepted mutation-family registry and bounded generator adapters; each generated candidate binds an addressable causal manifest.
 
-**Allowed delta:** `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `engine/src/storage/local_product_store/schema.rs`, `engine/src/storage/local_product_store/migrations.rs`, `engine/src/storage/local_product_store/pg_backend/migrations.rs`, `engine/src/storage/local_product_store/integrity.rs`, `engine/tests/test_data_operations.rs`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. No candidate execution, evaluator result, selection, or admission-policy change.
+**Allowed delta:** `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `engine/src/storage/local_product_store/schema.rs`, `engine/src/storage/local_product_store/migrations.rs`, `engine/src/storage/local_product_store/pg_backend/migrations.rs`, `engine/src/storage/local_product_store/integrity.rs`, `engine/tests/test_data_operations.rs`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. No evaluator, parent-selection, spend, merge, or production authority.
 
-**Exit:** Unknown/disputed cause, counterevidence, addressability, invariant, prediction, tamper, duplicate, restart, SQLite/PostgreSQL parity, forbidden-sensitive-field, and proposal-binding tests pass.
+**Exit:** Unknown family rejection, unaddressable-pattern rejection, hypothesis/delta digest binding, scope containment, deterministic seed binding, and complete lineage tests pass.
 
-**Stop:** Parallel failure-intelligence store; confidence as causal proof; post-execution hypothesis edits; observation mixed with inference; Level-1.
+**Stop:** Generator can edit registry/policy/evaluator or escape admitted Harness surface; Level-1.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Persist redacted causal records against lineage. No execution, evaluation, ENABLE, or Level-1.
-2. **Prerequisites and evidence.** Identity-lineage COMPLETE on PR #592 / `3dc2d3b12fbb95ec2b26220681cba5ad7547c6d2`.
+1. **Outcome and non-goals.** Registry-bound candidate adapters. No ENABLE, evaluation, or Level-1.
+2. **Prerequisites and evidence.** Causal-manifest COMPLETE on PR #593 / `b2fa400395a0502bf52ea5fd9468af5830766422`.
 3. **Owners and paths.** Existing HE module and `LocalProductStore`.
-4. **Frozen invariants.** Lineage-bound source hashes. Causal status is not proof. Hypotheses insert-only.
-5. **Only semantic delta.** Failure-pattern and hypothesis seal/persist plus additive tables.
-6. **Forbidden changes.** No second store, evaluator, candidate generation.
-7. **Ordered slices.** Bind to lineage; persist observation; persist pre-execution hypothesis; reject inference-as-proof and mutation.
-8. **Failure taxonomy.** Missing lineage, source mismatch, immutable conflict, inference as proof, sensitive fields.
+4. **Frozen invariants.** Families come only from `registered_mutation_families()`. Bindings include hypothesis, delta, lineage, and seed.
+5. **Only semantic delta.** `generate_ec1_candidate_binding` plus insert-only store rows.
+6. **Forbidden changes.** No evaluator, second store, or registry mutation API.
+7. **Ordered slices.** Reject unknown family; bind hypothesis/delta/seed; persist against recorded hypothesis.
+8. **Failure taxonomy.** Unknown family, missing hypothesis, lineage mismatch, delta mismatch.
 9. **Verification.** Focused cargo tests, handoff, security, rustfmt.
-10. **Compatibility and rollback.** Revert this PR; tables are additive `CREATE IF NOT EXISTS`.
-11. **Exit artifact.** Durable failure-pattern and hypothesis rows.
-12. **Next action.** Promote `PE7-HE-EC1-MUTATION-REGISTRY-1`.
+10. **Compatibility and rollback.** Revert this PR; table is additive `CREATE IF NOT EXISTS`.
+11. **Exit artifact.** Durable candidate-causal bindings.
+12. **Next action.** Promote `PE7-HE-EC2-CONTRACT-1`.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC1-CAUSAL-MANIFEST-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Persist source-bound FailurePatternEvidenceV1 and MutationHypothesisManifestV1 against EC1 lineage rows.","allowed_paths":["engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/tests/test_data_operations.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md"],"read_paths":["engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/tests/test_data_operations.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/MODULE_MAP.md"],"allowed_outputs":["Immutable source-bound failure-pattern and hypothesis records."],"prerequisites":["PE7-HE-EC1-IDENTITY-LINEAGE-1"],"prerequisite_receipts":["PE7-HE-EC1-IDENTITY-LINEAGE-1 COMPLETE: PR #592 exact head 155fa749effdcd790fb954eefcf64d12790d21b6; squash merge 3dc2d3b12fbb95ec2b26220681cba5ad7547c6d2"],"forbidden_changes":["Do not create a second failure-intelligence store.","Do not treat confidence as causal proof.","Do not allow post-execution hypothesis edits.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Bind failure patterns to recorded lineage.","Persist unknown/disputed observations.","Persist pre-execution hypotheses insert-only.","Reject inference-as-proof and sensitive fields."],"verification":["cargo test -p engine --lib causal_manifest_keeps_unknown_and_rejects_inference_as_proof -- --test-threads=1","cargo test -p engine --lib records_source_bound_ec1_causal -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; causal tables are additive CREATE IF NOT EXISTS and the laboratory stays default-off.","pause_gates":["Stop before mutation-registry generators.","Stop before Level-1."],"expected_artifacts":["FailurePatternEvidenceV1","MutationHypothesisManifestV1","harness_evolution_ec1_failure_patterns","harness_evolution_ec1_hypotheses"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":["harness_evolution_ec1_failure_patterns","harness_evolution_ec1_hypotheses"]}
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC1-MUTATION-REGISTRY-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Bind generated candidates to addressable causal manifests through the accepted mutation-family registry.","allowed_paths":["engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/tests/test_data_operations.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md"],"read_paths":["engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/tests/test_data_operations.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/MODULE_MAP.md"],"allowed_outputs":["Registry-bound candidate causal bindings."],"prerequisites":["PE7-HE-EC1-CAUSAL-MANIFEST-1"],"prerequisite_receipts":["PE7-HE-EC1-CAUSAL-MANIFEST-1 COMPLETE: PR #593 exact head c00f24dac433d9b3fc23f5b0df746c89442097dd; squash merge b2fa400395a0502bf52ea5fd9468af5830766422"],"forbidden_changes":["Do not expose a registry mutation API.","Do not ENABLE the laboratory.","Do not change the evaluator.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Use only registered mutation families.","Bind hypothesis, delta digest, lineage, and seed.","Persist insert-only bindings against recorded hypotheses.","Reject unknown families."],"verification":["cargo test -p engine --lib mutation_registry_rejects_unknown_family_and_binds_seed -- --test-threads=1","cargo test -p engine --lib records_source_bound_ec1_causal -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; candidate binding table is additive CREATE IF NOT EXISTS and the laboratory stays default-off.","pause_gates":["Stop before EC2 evaluator/holdout work.","Stop before Level-1."],"expected_artifacts":["Ec1CandidateCausalBinding","generate_ec1_candidate_binding","harness_evolution_ec1_candidate_bindings"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":["harness_evolution_ec1_candidate_bindings"]}
 -->
 
 ## Common Execution Protocol

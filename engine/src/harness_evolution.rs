@@ -27,6 +27,7 @@ pub const MUTATION_HYPOTHESIS_MANIFEST_SCHEMA: &str = "mutation_hypothesis_manif
 pub const PREDICTION_OUTCOME_SCHEMA: &str = "prediction_outcome.v1";
 pub const MUTATION_FAMILY_REGISTRY_SCHEMA: &str = "mutation_family_registry.v1";
 pub const EC1_IDENTITY_LINEAGE_SCHEMA: &str = "harness_evolution_ec1_identity_lineage.v1";
+pub const EC1_CANDIDATE_BINDING_SCHEMA: &str = "harness_evolution_ec1_candidate_binding.v1";
 
 /// CWS analysis bound this SHA as the default-off active Harness. EC1 freezes it;
 /// it is not a live ENABLE and does not authorize candidate generation.
@@ -276,6 +277,18 @@ pub struct MutationFamilyRecord {
 pub struct MutationFamilyRegistry {
     pub schema_version: String,
     pub families: Vec<MutationFamilyRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ec1CandidateCausalBinding {
+    pub schema_version: String,
+    pub binding_id: String,
+    pub family_id: String,
+    pub hypothesis_manifest_id: String,
+    pub candidate_delta_digest: String,
+    pub lineage_id: String,
+    pub seed: u64,
+    pub record_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -687,6 +700,120 @@ pub fn validate_mutation_family_registry(
 
 pub fn frozen_ec1_active_harness_sha() -> &'static str {
     EC1_FROZEN_ACTIVE_HARNESS_SHA
+}
+
+pub fn derive_ec1_candidate_binding_id(
+    family_id: &str,
+    hypothesis_manifest_id: &str,
+    candidate_delta_digest: &str,
+    seed: u64,
+) -> String {
+    format!(
+        "hecb-{}",
+        &sha256_hex(&format!(
+            "ec1-bind.v1|{family_id}|{hypothesis_manifest_id}|{candidate_delta_digest}|{seed}"
+        ))[..32]
+    )
+}
+
+fn lookup_registered_family(
+    family_id: &str,
+) -> Result<MutationFamilyRecord, EvolutionAdmissionError> {
+    registered_mutation_families()
+        .families
+        .into_iter()
+        .find(|family| family.family_id == family_id)
+        .ok_or_else(|| {
+            EvolutionAdmissionError::new("ec1_unknown_family", "mutation family is not registered")
+        })
+}
+
+pub fn generate_ec1_candidate_binding(
+    family_id: &str,
+    hypothesis: &MutationHypothesisManifestV1,
+    seed: u64,
+) -> Result<Ec1CandidateCausalBinding, EvolutionAdmissionError> {
+    validate_mutation_hypothesis_manifest(hypothesis)?;
+    let family = lookup_registered_family(family_id)?;
+    if !ADMITTED_MUTABLE_SURFACES.contains(&family.admitted_surface.as_str())
+        || FORBIDDEN_MUTABLE_SURFACES.contains(&family.admitted_surface.as_str())
+        || !family.non_authority
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_unaddressable_pattern",
+            "mutation family is not an admitted addressable surface",
+        ));
+    }
+    if hypothesis.candidate_delta_digest.is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_unaddressable_pattern",
+            "hypothesis delta digest is not addressable",
+        ));
+    }
+    require_nonempty_id(&hypothesis.lineage_id, "ec1_identity_empty")?;
+    let binding = Ec1CandidateCausalBinding {
+        schema_version: EC1_CANDIDATE_BINDING_SCHEMA.to_string(),
+        binding_id: derive_ec1_candidate_binding_id(
+            family_id,
+            &hypothesis.manifest_id,
+            &hypothesis.candidate_delta_digest,
+            seed,
+        ),
+        family_id: family.family_id,
+        hypothesis_manifest_id: hypothesis.manifest_id.clone(),
+        candidate_delta_digest: hypothesis.candidate_delta_digest.clone(),
+        lineage_id: hypothesis.lineage_id.clone(),
+        seed,
+        record_sha256: String::new(),
+    };
+    seal_ec1_candidate_binding(binding)
+}
+
+pub fn validate_ec1_candidate_binding(
+    binding: &Ec1CandidateCausalBinding,
+) -> Result<(), EvolutionAdmissionError> {
+    if binding.schema_version != EC1_CANDIDATE_BINDING_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec1_schema_invalid",
+            "candidate binding schema mismatch",
+        ));
+    }
+    lookup_registered_family(&binding.family_id)?;
+    validate_sha256_hex(&binding.candidate_delta_digest)?;
+    require_nonempty_id(&binding.hypothesis_manifest_id, "ec1_identity_empty")?;
+    require_nonempty_id(&binding.lineage_id, "ec1_identity_empty")?;
+    require_derived_id(
+        &binding.binding_id,
+        &derive_ec1_candidate_binding_id(
+            &binding.family_id,
+            &binding.hypothesis_manifest_id,
+            &binding.candidate_delta_digest,
+            binding.seed,
+        ),
+    )?;
+    let value = serde_json::to_value(binding)
+        .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error.to_string()))?;
+    require_record_sha256(&value, &binding.record_sha256)?;
+    Ok(())
+}
+
+pub fn seal_ec1_candidate_binding(
+    mut binding: Ec1CandidateCausalBinding,
+) -> Result<Ec1CandidateCausalBinding, EvolutionAdmissionError> {
+    binding.binding_id = derive_ec1_candidate_binding_id(
+        &binding.family_id,
+        &binding.hypothesis_manifest_id,
+        &binding.candidate_delta_digest,
+        binding.seed,
+    );
+    let mut value = serde_json::to_value(&binding)
+        .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    binding.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_ec1_candidate_binding(&binding)?;
+    Ok(binding)
 }
 
 pub fn derive_ec1_identity_lineage_id(
@@ -1517,6 +1644,45 @@ mod tests {
         );
         let err = refuse_sensitive_payload_fields(&json!({"raw_prompt": "secret"}));
         assert_eq!(err.unwrap_err().code, "evolution_sensitive_payload");
+    }
+
+    #[test]
+    fn mutation_registry_rejects_unknown_family_and_binds_seed() {
+        let pattern = sample_failure_pattern(CausalStatus::Unknown);
+        let hypothesis = seal_mutation_hypothesis_manifest(MutationHypothesisManifestV1 {
+            schema_version: MUTATION_HYPOTHESIS_MANIFEST_SCHEMA.to_string(),
+            manifest_id: String::new(),
+            lineage_id: pattern.lineage_id.clone(),
+            failure_evidence_id: pattern.evidence_id.clone(),
+            proposal_body_sha256: digest("proposal-body"),
+            candidate_delta_digest: digest("delta"),
+            predicted_improvement_digest: digest("imp"),
+            predicted_regression_digest: digest("reg"),
+            invariant_digest: digest("inv"),
+            evaluation_plan_digest: digest("plan"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        let family = &registered_mutation_families().families[0].family_id;
+        let a = generate_ec1_candidate_binding(family, &hypothesis, 7).unwrap();
+        let b = generate_ec1_candidate_binding(family, &hypothesis, 7).unwrap();
+        assert_eq!(a.binding_id, b.binding_id);
+        assert_eq!(a.candidate_delta_digest, hypothesis.candidate_delta_digest);
+        assert_eq!(a.lineage_id, hypothesis.lineage_id);
+        assert_eq!(
+            generate_ec1_candidate_binding("family:unknown", &hypothesis, 7)
+                .unwrap_err()
+                .code,
+            "ec1_unknown_family"
+        );
+        assert_eq!(
+            generate_ec1_candidate_binding("family:evaluator", &hypothesis, 7)
+                .unwrap_err()
+                .code,
+            "ec1_unknown_family"
+        );
+        let other = generate_ec1_candidate_binding(family, &hypothesis, 8).unwrap();
+        assert_ne!(a.binding_id, other.binding_id);
     }
 
     #[test]

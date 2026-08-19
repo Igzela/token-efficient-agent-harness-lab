@@ -4,14 +4,16 @@ use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::{append_audit_locked, LocalProductStore};
 use crate::harness_evolution::{
-    build_admission_receipt, configured_workspace_root, revalidate_workspace_content,
-    seal_ec1_identity_lineage, seal_failure_pattern_evidence, seal_mutation_hypothesis_manifest,
-    validate_candidate_for_admission, validate_ec1_identity_lineage,
+    build_admission_receipt, configured_workspace_root, generate_ec1_candidate_binding,
+    revalidate_workspace_content, seal_ec1_identity_lineage, seal_failure_pattern_evidence,
+    seal_mutation_hypothesis_manifest, validate_candidate_for_admission,
+    validate_ec1_candidate_binding, validate_ec1_identity_lineage,
     validate_failure_pattern_evidence, validate_mutation_hypothesis_manifest, validate_proposal,
-    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, Ec1IdentityLineageRecord,
-    EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal, EvolutionReceipt,
-    FailurePatternEvidenceV1, MutationHypothesisManifestV1, ACTIVE_VERSION_SCHEMA,
-    CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION,
+    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding,
+    Ec1IdentityLineageRecord, EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal,
+    EvolutionReceipt, FailurePatternEvidenceV1, MutationHypothesisManifestV1,
+    ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION,
+    RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
     build_eval_receipt, build_pareto_archive, build_sealed_vault,
@@ -429,6 +431,102 @@ impl LocalProductStore {
                     "evidence_id": sealed.failure_evidence_id,
                     "lineage_id": sealed.lineage_id,
                     "proposal_body_sha256": sealed.proposal_body_sha256,
+                    "actor_id": actor_id,
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(sealed)
+        })
+    }
+
+    pub fn record_ec1_candidate_binding(
+        &self,
+        family_id: &str,
+        hypothesis: &MutationHypothesisManifestV1,
+        seed: u64,
+        actor_id: &str,
+    ) -> Result<Ec1CandidateCausalBinding, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec1_candidate_binding_actor: authenticated actor_id is required".into());
+        }
+        let sealed = generate_ec1_candidate_binding(family_id, hypothesis, seed)
+            .map_err(|error| error.message)?;
+        validate_ec1_candidate_binding(&sealed).map_err(|error| error.message)?;
+        let body = serde_json::to_string(&sealed).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let stored_h: Option<(String, String, String)> = tx
+                .query_row(
+                    "SELECT manifest_id, lineage_id, body_json FROM harness_evolution_ec1_hypotheses WHERE manifest_id=?1",
+                    params![sealed.hypothesis_manifest_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let Some((_, hyp_lineage, hyp_body)) = stored_h else {
+                return Err(format!(
+                    "ec1_hypothesis_missing: {} is not recorded",
+                    sealed.hypothesis_manifest_id
+                ));
+            };
+            if hyp_lineage != sealed.lineage_id {
+                return Err("ec1_binding_lineage_mismatch: binding lineage is incomplete".into());
+            }
+            let stored_manifest: MutationHypothesisManifestV1 =
+                serde_json::from_str(&hyp_body).map_err(|e| e.to_string())?;
+            if stored_manifest.candidate_delta_digest != sealed.candidate_delta_digest {
+                return Err(
+                    "ec1_binding_delta_mismatch: candidate delta is not bound to the hypothesis"
+                        .into(),
+                );
+            }
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec1_candidate_bindings WHERE binding_id=?1",
+                    params![sealed.binding_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(existing_body) = existing {
+                if existing_body == body {
+                    let stored = serde_json::from_str(&existing_body).map_err(|e| e.to_string())?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(stored);
+                }
+                return Err(format!(
+                    "ec1_candidate_binding_immutable: {} already exists",
+                    sealed.binding_id
+                ));
+            }
+            tx.execute(
+                "INSERT INTO harness_evolution_ec1_candidate_bindings
+                    (binding_id, family_id, hypothesis_manifest_id, lineage_id, seed, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    sealed.binding_id,
+                    sealed.family_id,
+                    sealed.hypothesis_manifest_id,
+                    sealed.lineage_id,
+                    sealed.seed as i64,
+                    body,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec1_candidate_binding_recorded",
+                &sealed.binding_id,
+                &serde_json::json!({
+                    "family_id": sealed.family_id,
+                    "hypothesis_manifest_id": sealed.hypothesis_manifest_id,
+                    "lineage_id": sealed.lineage_id,
+                    "seed": sealed.seed,
                     "actor_id": actor_id,
                 }),
             )?;
@@ -2647,6 +2745,24 @@ mod tests {
             .record_ec1_hypothesis(post_exec, "operator-test")
             .unwrap_err()
             .contains("immutable"));
+        let family = crate::harness_evolution::registered_mutation_families().families[0]
+            .family_id
+            .clone();
+        let bound = store
+            .record_ec1_candidate_binding(&family, &stored_h, 7, "operator-test")
+            .unwrap();
+        assert_eq!(bound.hypothesis_manifest_id, stored_h.manifest_id);
+        assert_eq!(
+            store
+                .record_ec1_candidate_binding(&family, &stored_h, 7, "operator-test")
+                .unwrap()
+                .binding_id,
+            bound.binding_id
+        );
+        assert!(store
+            .record_ec1_candidate_binding("family:unknown", &stored_h, 7, "operator-test")
+            .unwrap_err()
+            .contains("not registered"));
         drop(store);
         let reopened = LocalProductStore::new(&db).unwrap();
         assert_eq!(
