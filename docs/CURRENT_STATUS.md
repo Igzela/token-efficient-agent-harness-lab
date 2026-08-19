@@ -82,6 +82,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-CWS-PROJECTOR-CORE-1` | `COMPLETE` | PR #582 exact head `cdcd41655aa098b46cdf7d2ee12031d1860e71c2`; squash merge `07446ffe1cb31e49ace25e36deb6233433a3814e`; exact-head review comments `5345989055` and `5345989325`; canonical workflow `32284433657`; exact-head check `32284433705`; `REIMPLEMENT` projector in `engine/src/context_working_set.rs`; PINNED cannot be bound-evicted |
 | `PE7-CWS-TOOL-RESULT-REDUCTION-1` | `COMPLETE` | PR #583 exact head `bd793a7ea449e96df9576876bc38003d6f295be1`; squash merge `2af00e19463a10a58c44a52587ceb78114b23538`; exact-head review comments `5346266783` and `5346267002`; canonical workflow `32286825170`; exact-head check `32286825482`; reducer never promotes failure/unknown |
 | `PE7-CWS-REPOSITORY-INTEGRATION-1` | `COMPLETE` | PR #584 exact head `323d479d73f26f280cf28502e3c609d4baf78298`; squash merge `d33d7d04709575d1f6fb9fdbe94169175a261108`; exact-head review comments `5346743411` and `5346743657`; canonical workflow `32290928328`; exact-head check `32290928230`; fresh changed-head fail-closed |
+| `PE7-CWS-RUNTIME-INTEGRATION-1` | `COMPLETE` | PR #585 exact head `7cbe7a0f3660468862302075f024b627a26a0a2e`; squash merge `1dffbc4271a68aebce93a540e7a5793eacefa546`; exact-head review comments `5346942802` and `5346943054`; canonical workflow `32292746487`; exact-head check `32292746231`; stub hashes composed prompts and does not own context |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -311,6 +312,10 @@ Reducer disposition is `REIMPLEMENT`. Large tool results stay with existing arti
 ### Runtime prompt composition (`PE7-CWS-RUNTIME-INTEGRATION-1`)
 
 `compose_runtime_prompt` turns an already-projected working set into a provider-free prompt: PINNED prefix, dynamic items, then cold rehydration handles. The stub provider is used only as a deterministic hash oracle; it does not own context. Outcome-unknown and cancellation text are preserved.
+
+### Cache partition (`PE7-CWS-CACHE-PARTITION-1`)
+
+Disposition is `REIMPLEMENT`. `partition_working_set` hashes the PINNED prefix separately from dynamic items and cold handles. Optional `CacheTelemetryObservation` is attached as observation only: missing cached-token or cache-write fields stay `None` and never become zero. Changing telemetry cannot change digests or authorize work.
 
 ## Invalidated Historical Receipts (Repair Required)
 
