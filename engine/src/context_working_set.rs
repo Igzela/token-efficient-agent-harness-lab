@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 pub const SCHEMA_VERSION: &str = "context_working_set.v1";
 pub const IMPLEMENTATION_DISPOSITION: &str = "REIMPLEMENT";
 pub const REDUCER_DISPOSITION: &str = "REIMPLEMENT";
+pub const CACHE_PARTITION_DISPOSITION: &str = "REIMPLEMENT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Residency {
@@ -401,6 +402,77 @@ pub fn compose_runtime_prompt(
         out.push_str("\n[cancellation preserved]\n");
     }
     Ok(out)
+}
+
+/// Optional provider-reported cache usage. Missing fields stay missing; they
+/// are never coerced to zero and never enter partition identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheTelemetryObservation {
+    pub provider_id: String,
+    pub cached_input_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachePartition {
+    pub stable_prefix_digest: String,
+    pub dynamic_digest: String,
+    pub telemetry: Option<CacheTelemetryObservation>,
+}
+
+fn item_fingerprint(item: &ProjectedItem) -> String {
+    format!(
+        "{}\0{}\0{}\0{:?}",
+        item.identity.owner, item.identity.identity, item.identity.content_sha256, item.kind
+    )
+}
+
+/// Deterministic stable-prefix vs dynamic partition. Telemetry is attached
+/// only as observation and cannot authorize work or change digests.
+pub fn partition_working_set(
+    projected: &ProjectedWorkingSet,
+    telemetry: Option<CacheTelemetryObservation>,
+) -> Result<CachePartition, ProjectorError> {
+    if projected
+        .prefix
+        .iter()
+        .any(|item| item.residency != Residency::Pinned)
+    {
+        return Err(ProjectorError {
+            code: "prefix_contaminated".to_string(),
+            message: "stable prefix may only contain PINNED items".to_string(),
+        });
+    }
+    if projected.dynamic.iter().any(|item| {
+        matches!(
+            item.kind,
+            ItemKind::Authority | ItemKind::Blocker | ItemKind::OutcomeUnknown
+        )
+    }) {
+        return Err(ProjectorError {
+            code: "prefix_contaminated".to_string(),
+            message: "authority/blocker/unknown must not enter the dynamic partition".to_string(),
+        });
+    }
+    let mut prefix_material = String::new();
+    for item in &projected.prefix {
+        prefix_material.push_str(&item_fingerprint(item));
+        prefix_material.push('\n');
+    }
+    let mut dynamic_material = String::new();
+    for item in &projected.dynamic {
+        dynamic_material.push_str(&item_fingerprint(item));
+        dynamic_material.push('\n');
+    }
+    for handle in &projected.cold_handles {
+        dynamic_material.push_str(&handle.content_sha256);
+        dynamic_material.push('\n');
+    }
+    Ok(CachePartition {
+        stable_prefix_digest: content_sha256(prefix_material.as_bytes()),
+        dynamic_digest: content_sha256(dynamic_material.as_bytes()),
+        telemetry,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -997,5 +1069,120 @@ mod tests {
         let second = stub.invoke(&request).await.unwrap();
         assert_eq!(first.output, second.output);
         assert!(first.output.contains("stub-cws"));
+    }
+
+    fn projected_sample() -> ProjectedWorkingSet {
+        project(
+            &[
+                item("auth", ItemKind::Authority, Residency::Pinned, "pin"),
+                item("hot-work", ItemKind::Working, Residency::Hot, "dyn"),
+            ],
+            bound(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn partition_ignores_cache_telemetry_and_missingness() {
+        let projected = projected_sample();
+        let none = partition_working_set(&projected, None).unwrap();
+        let hit = partition_working_set(
+            &projected,
+            Some(CacheTelemetryObservation {
+                provider_id: "stub".to_string(),
+                cached_input_tokens: Some(12),
+                cache_write_tokens: None,
+            }),
+        )
+        .unwrap();
+        let write = partition_working_set(
+            &projected,
+            Some(CacheTelemetryObservation {
+                provider_id: "stub".to_string(),
+                cached_input_tokens: None,
+                cache_write_tokens: Some(99),
+            }),
+        )
+        .unwrap();
+        assert_eq!(none.stable_prefix_digest, hit.stable_prefix_digest);
+        assert_eq!(none.dynamic_digest, hit.dynamic_digest);
+        assert_eq!(hit.stable_prefix_digest, write.stable_prefix_digest);
+        assert_eq!(hit.dynamic_digest, write.dynamic_digest);
+        assert!(none.telemetry.is_none());
+        assert!(hit.telemetry.as_ref().unwrap().cache_write_tokens.is_none());
+        assert_eq!(CACHE_PARTITION_DISPOSITION, "REIMPLEMENT");
+        let replay = partition_working_set(&projected, None).unwrap();
+        assert_eq!(replay, none);
+    }
+
+    #[test]
+    fn mutating_dynamic_invalidates_only_dynamic_digest() {
+        let auth = item("auth", ItemKind::Authority, Residency::Pinned, "pin");
+        let a = project(
+            &[
+                auth.clone(),
+                item("w1", ItemKind::Working, Residency::Hot, "one"),
+            ],
+            bound(),
+        )
+        .unwrap();
+        let b = project(
+            &[auth, item("w2", ItemKind::Working, Residency::Hot, "two")],
+            bound(),
+        )
+        .unwrap();
+        let pa = partition_working_set(&a, None).unwrap();
+        let pb = partition_working_set(&b, None).unwrap();
+        assert_eq!(pa.stable_prefix_digest, pb.stable_prefix_digest);
+        assert_ne!(pa.dynamic_digest, pb.dynamic_digest);
+    }
+
+    #[test]
+    fn authority_in_dynamic_is_prefix_contamination() {
+        let projected = ProjectedWorkingSet {
+            schema_version: SCHEMA_VERSION.to_string(),
+            prefix: vec![],
+            dynamic: vec![ProjectedItem {
+                identity: SourceIdentity {
+                    owner: "docs".to_string(),
+                    identity: "auth".to_string(),
+                    content_sha256: content_sha256(b"x"),
+                },
+                kind: ItemKind::Authority,
+                residency: Residency::Hot,
+                bytes: b"x".to_vec(),
+            }],
+            cold_handles: vec![],
+        };
+        assert_eq!(
+            partition_working_set(&projected, None).unwrap_err().code,
+            "prefix_contaminated"
+        );
+    }
+
+    #[test]
+    fn unsupported_provider_telemetry_stays_observational() {
+        let projected = projected_sample();
+        let part = partition_working_set(
+            &projected,
+            Some(CacheTelemetryObservation {
+                provider_id: "unknown-provider".to_string(),
+                cached_input_tokens: None,
+                cache_write_tokens: None,
+            }),
+        )
+        .unwrap();
+        assert!(part
+            .telemetry
+            .as_ref()
+            .unwrap()
+            .cached_input_tokens
+            .is_none());
+        assert_eq!(
+            part.stable_prefix_digest,
+            partition_working_set(&projected, None)
+                .unwrap()
+                .stable_prefix_digest
+        );
     }
 }
