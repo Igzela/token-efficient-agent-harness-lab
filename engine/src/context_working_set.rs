@@ -351,6 +351,58 @@ fn identity_item(owner: &str, identity: &str, body: &str) -> SourceItem {
     }
 }
 
+/// Compose a provider-free runtime prompt from an already-projected working
+/// set. The provider never becomes the context owner; cancellation and
+/// outcome-unknown text are copied verbatim.
+pub fn compose_runtime_prompt(
+    task_binding: &str,
+    projected: &ProjectedWorkingSet,
+    user_prompt: &str,
+) -> Result<String, ProjectorError> {
+    if task_binding.trim().is_empty() {
+        return Err(ProjectorError {
+            code: "binding_invalid".to_string(),
+            message: "runtime prompt requires a task/authority binding".to_string(),
+        });
+    }
+    let mut out = String::new();
+    out.push_str("## CWS runtime projection\n");
+    out.push_str(&format!("task_binding: {task_binding}\n"));
+    out.push_str("prefix:\n");
+    for item in &projected.prefix {
+        if item.kind == ItemKind::OutcomeUnknown {
+            out.push_str("  outcome-unknown ");
+        }
+        out.push_str(&format!(
+            "  PINNED {} {}\n",
+            item.identity.identity,
+            std::str::from_utf8(&item.bytes).unwrap_or("[binary]")
+        ));
+    }
+    out.push_str("dynamic:\n");
+    for item in &projected.dynamic {
+        out.push_str(&format!(
+            "  {:?} {} {}\n",
+            item.residency,
+            item.identity.identity,
+            std::str::from_utf8(&item.bytes).unwrap_or("[binary]")
+        ));
+    }
+    out.push_str("cold_handles:\n");
+    for handle in &projected.cold_handles {
+        out.push_str(&format!(
+            "  {} {} sha256 {}\n",
+            handle.source_identity, handle.content_sha256, handle.source_owner
+        ));
+    }
+    out.push_str("user:\n");
+    out.push_str(user_prompt);
+    if user_prompt.to_ascii_uppercase().contains("CANCEL") {
+        out.push_str("\n[cancellation preserved]\n");
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolOutcome {
     Success,
@@ -883,5 +935,67 @@ mod tests {
             .code,
             "binding_invalid"
         );
+    }
+
+    #[test]
+    fn runtime_prompt_keeps_unknown_and_cancellation() {
+        let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let unknown = item(
+            "unknown-receipt",
+            ItemKind::OutcomeUnknown,
+            Residency::Pinned,
+            "outcome-unknown: lease expired",
+        );
+        let projected = project_repository_session(
+            sha,
+            sha,
+            "PE7-CWS-RUNTIME-INTEGRATION-1",
+            RepositorySessionMode::Fresh,
+            &[unknown],
+            bound(),
+        )
+        .unwrap();
+        let prompt = compose_runtime_prompt("ptask-1", &projected, "CANCEL worker").unwrap();
+        assert!(prompt.contains("ptask-1"));
+        assert!(prompt.contains("outcome-unknown"));
+        assert!(prompt.contains("[cancellation preserved]"));
+        assert!(prompt.contains("PINNED"));
+    }
+
+    #[test]
+    fn empty_task_binding_is_rejected() {
+        let empty = ProjectedWorkingSet {
+            schema_version: SCHEMA_VERSION.to_string(),
+            prefix: vec![],
+            dynamic: vec![],
+            cold_handles: vec![],
+        };
+        assert_eq!(
+            compose_runtime_prompt("  ", &empty, "x").unwrap_err().code,
+            "binding_invalid"
+        );
+    }
+
+    #[tokio::test]
+    async fn stub_provider_hashes_composed_prompt_without_owning_context() {
+        use crate::provider::Provider;
+        let sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let projected = project_repository_session(
+            sha,
+            sha,
+            "PE7-CWS-RUNTIME-INTEGRATION-1",
+            RepositorySessionMode::Fresh,
+            &[],
+            bound(),
+        )
+        .unwrap();
+        let prompt = compose_runtime_prompt("ptask-2", &projected, "run node").unwrap();
+        let stub = crate::provider::stub::StubProvider::new("stub-cws");
+        let request =
+            crate::provider::ProviderRequest::local_stub("stub-cws", "stub-model", &prompt);
+        let first = stub.invoke(&request).await.unwrap();
+        let second = stub.invoke(&request).await.unwrap();
+        assert_eq!(first.output, second.output);
+        assert!(first.output.contains("stub-cws"));
     }
 }

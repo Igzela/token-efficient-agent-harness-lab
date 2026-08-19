@@ -81,6 +81,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-CWS-REHYDRATION-CONTRACT-1` | `COMPLETE` | PR #581 exact head `b7b4037bd31731e1ba0f16904006d38bf4c78b82`; squash merge `1b6d73fce72cb195578ae5af784203f7de274e9f`; exact-head review comments `5345676315` and `5345676536`; canonical workflow `32281612446`; exact-head check `32281612505`; source-bound handles; reconstruction does not authorize EFFECT |
 | `PE7-CWS-PROJECTOR-CORE-1` | `COMPLETE` | PR #582 exact head `cdcd41655aa098b46cdf7d2ee12031d1860e71c2`; squash merge `07446ffe1cb31e49ace25e36deb6233433a3814e`; exact-head review comments `5345989055` and `5345989325`; canonical workflow `32284433657`; exact-head check `32284433705`; `REIMPLEMENT` projector in `engine/src/context_working_set.rs`; PINNED cannot be bound-evicted |
 | `PE7-CWS-TOOL-RESULT-REDUCTION-1` | `COMPLETE` | PR #583 exact head `bd793a7ea449e96df9576876bc38003d6f295be1`; squash merge `2af00e19463a10a58c44a52587ceb78114b23538`; exact-head review comments `5346266783` and `5346267002`; canonical workflow `32286825170`; exact-head check `32286825482`; reducer never promotes failure/unknown |
+| `PE7-CWS-REPOSITORY-INTEGRATION-1` | `COMPLETE` | PR #584 exact head `323d479d73f26f280cf28502e3c609d4baf78298`; squash merge `d33d7d04709575d1f6fb9fdbe94169175a261108`; exact-head review comments `5346743411` and `5346743657`; canonical workflow `32290928328`; exact-head check `32290928230`; fresh changed-head fail-closed |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -306,6 +307,10 @@ Reducer disposition is `REIMPLEMENT`. Large tool results stay with existing arti
 ### Repository session projection (`PE7-CWS-REPOSITORY-INTEGRATION-1`)
 
 `project_repository_session` binds accepted main, head, packet, and mode as PINNED items consumed by the existing `context_pack` owner. Claim-bound prompts attach identity/hash handles via `cws_session_projection_block` instead of a second full canonical-document copy. Fresh sessions fail closed on a changed head. Capsules remain non-authoritative.
+
+### Runtime prompt composition (`PE7-CWS-RUNTIME-INTEGRATION-1`)
+
+`compose_runtime_prompt` turns an already-projected working set into a provider-free prompt: PINNED prefix, dynamic items, then cold rehydration handles. The stub provider is used only as a deterministic hash oracle; it does not own context. Outcome-unknown and cancellation text are preserved.
 
 ## Invalidated Historical Receipts (Repair Required)
 

@@ -6,19 +6,19 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-CWS-TOOL-RESULT-REDUCTION-1` is complete. `PE7-RWE-CR-RUN-1` remains a retained live-ready blocker. The current window is `PE7-CWS-REPOSITORY-INTEGRATION-1`: wire the projector into repository-maintenance session/prompt paths. No Provider, store table, or RUN-1.
+`PE7-CWS-REPOSITORY-INTEGRATION-1` is complete. `PE7-RWE-CR-RUN-1` remains a retained live-ready blocker. The current window is `PE7-CWS-RUNTIME-INTEGRATION-1`: bind the same residency projection to runtime/provider prompts without a second owner. No Provider POST, store table, or RUN-1.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-CWS-REPOSITORY-INTEGRATION-1 — READY_FOR_EXECUTION, provider-free; repository session projection]
+[window: PE7-CWS-RUNTIME-INTEGRATION-1 — READY_FOR_EXECUTION, provider-free; runtime prompt composition]
 
 
 ```
 
 ## Active Routing
 
-1. `PE7-CWS-REPOSITORY-INTEGRATION-1` — `READY_FOR_EXECUTION`
+1. `PE7-CWS-RUNTIME-INTEGRATION-1` — `READY_FOR_EXECUTION`
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -26,53 +26,53 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Historical source:** `90d093f473a013db512a4adddbd29e9f3a8344d8`
 
-## Completed (PE7-CWS-PROJECTOR-CORE-1)
-
-**State:** `COMPLETE`
-
-**Accepted evidence:** PR #582 exact head `cdcd41655aa098b46cdf7d2ee12031d1860e71c2`; squash merge `07446ffe1cb31e49ace25e36deb6233433a3814e`.
-
 ## Completed (PE7-CWS-TOOL-RESULT-REDUCTION-1)
 
 **State:** `COMPLETE`
 
-**Accepted evidence:** PR #583 exact head `bd793a7ea449e96df9576876bc38003d6f295be1`; squash merge `2af00e19463a10a58c44a52587ceb78114b23538`; exact-head review comments `5346266783` and `5346267002`; canonical workflow `32286825170`; exact-head check `32286825482`.
+**Accepted evidence:** PR #583 exact head `bd793a7ea449e96df9576876bc38003d6f295be1`; squash merge `2af00e19463a10a58c44a52587ceb78114b23538`.
 
-## Packet PE7-CWS-REPOSITORY-INTEGRATION-1
+## Completed (PE7-CWS-REPOSITORY-INTEGRATION-1)
+
+**State:** `COMPLETE`
+
+**Accepted evidence:** PR #584 exact head `323d479d73f26f280cf28502e3c609d4baf78298`; squash merge `d33d7d04709575d1f6fb9fdbe94169175a261108`; exact-head review comments `5346743411` and `5346743657`; canonical workflow `32290928328`; exact-head check `32290928230`.
+
+## Packet PE7-CWS-RUNTIME-INTEGRATION-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-CWS-TOOL-RESULT-REDUCTION-1`
+**Prerequisite:** `PE7-CWS-REPOSITORY-INTEGRATION-1`
 
 **Class:** `IMPLEMENT`
 
-**Outcome:** Integrate the projector with repository-maintenance session/prompt construction so canonical context is bound by identity/hash and not repeatedly re-expanded.
+**Outcome:** Production model requests consume the same source-bound residency semantics. The provider remains an executor, not the context owner.
 
-**Allowed delta:** `engine/src/context_working_set.rs`, `engine/src/workflow/context_pack/assembly.rs`, `engine/src/workflow/context_pack/mod.rs`, `scripts/agent-control/prompt_builder.py`, `tests/test_cws_repository_projection.py`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`.
+**Allowed delta:** `engine/src/context_working_set.rs`, `engine/src/workflow/context_pack/assembly.rs`, `engine/src/workflow/context_pack/mod.rs`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`.
 
-**Exit:** Fresh/resume/repair/review/CI-repair fixtures prove exact main/head/packet bindings, no duplicate canonical-document payload, bounded model-visible context, exact rehydration, unchanged fail-closed decisions.
+**Exit:** Stub/fake provider-free tests prove stable task bindings, bounded dynamic context, exact rehydration handles, cancellation/unknown preservation, and unchanged executor mappings.
 
-**Stop:** Capsule becomes authority; changed-head is hidden; second session owner; Provider or RUN-1.
+**Stop:** Provider becomes context truth; schema/credential/retry change; cache as correctness; outcome remapping; RUN-1.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Repository session projection only. No runtime/provider integration or RUN-1.
-2. **Prerequisites and evidence.** Tool-result reduction COMPLETE on `2af00e19`.
-3. **Owners and paths.** Existing `context_pack` and `prompt_builder` owners; derived CWS module.
-4. **Frozen invariants.** Capsules remain non-authoritative. PINNED authority stays PINNED.
-5. **Only semantic delta.** `project_repository_session` plus claim-bound CWS handles.
-6. **Forbidden changes.** No schema, Provider, route-controller, or checkpoint owner move.
-7. **Ordered slices.** Record bindings; implement session projector; wire prompt handles; tests.
-8. **Failure taxonomy.** `changed_head` and `binding_invalid` fail closed.
-9. **Verification.** Focused cargo and python unittests, handoff, security baseline, rustfmt.
+1. **Outcome and non-goals.** Runtime prompt composition only. No cache partition, Provider POST, or RUN-1.
+2. **Prerequisites and evidence.** Repository integration COMPLETE on `d33d7d04`.
+3. **Owners and paths.** Derived CWS module; `context_pack` consumer; existing stub provider used only as a hash oracle.
+4. **Frozen invariants.** Provider does not own context. Unknown/cancel stay unknown/cancel.
+5. **Only semantic delta.** `compose_runtime_prompt` plus owner adapter.
+6. **Forbidden changes.** No credential, retry, schema, or Store mutation.
+7. **Ordered slices.** Compose PINNED then dynamic then cold handles; stub replay test.
+8. **Failure taxonomy.** Empty task binding fails closed.
+9. **Verification.** Focused cargo tests including stub invoke, handoff, security, rustfmt.
 10. **Compatibility and rollback.** Revert this PR.
-11. **Exit artifact.** Session projector plus prompt handles.
-12. **Next action.** Promote `PE7-CWS-RUNTIME-INTEGRATION-1`.
+11. **Exit artifact.** Runtime composer in `engine/src/context_working_set.rs`.
+12. **Next action.** Promote `PE7-CWS-CACHE-PARTITION-1`.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-CWS-REPOSITORY-INTEGRATION-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Wire working-set projection into repository-maintenance session and claim-bound prompts without a second context owner.","allowed_paths":["engine/src/context_working_set.rs","engine/src/workflow/context_pack/assembly.rs","engine/src/workflow/context_pack/mod.rs","scripts/agent-control/prompt_builder.py","tests/test_cws_repository_projection.py","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md"],"read_paths":["engine/src/context_working_set.rs","engine/src/workflow/context_pack/assembly.rs","engine/src/workflow/context_pack/mod.rs","scripts/agent-control/prompt_builder.py","tests/test_cws_repository_projection.py","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/MODULE_MAP.md"],"allowed_outputs":["A repository-session projection that binds accepted main, head, and packet without duplicating canonical documents."],"prerequisites":["PE7-CWS-TOOL-RESULT-REDUCTION-1"],"prerequisite_receipts":["PE7-CWS-TOOL-RESULT-REDUCTION-1 COMPLETE: PR #583 exact head `bd793a7ea449e96df9576876bc38003d6f295be1`; squash merge `2af00e19463a10a58c44a52587ceb78114b23538`; exact-head review comments `5346266783` and `5346267002`; canonical workflow `32286825170`; exact-head check `32286825482`"],"forbidden_changes":["Do not make a capsule authoritative.","Do not hide a changed head.","Do not start PE7-RWE-CR-RUN-1."],"ordered_steps":["Implement project_repository_session.","Wire context_pack and prompt_builder.","Pass fresh/repair/review fixtures."],"verification":["cargo test -p engine --lib context_working_set -- --test-threads=1","PYTHONPATH=src uv run --no-project python -m unittest tests.test_cws_repository_projection","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this documentation and adapter PR; session_context and route authority remain unchanged and no Provider or Store mutation is introduced.","pause_gates":["Stop if a capsule would become authority.","Stop before Provider or RUN-1."],"expected_artifacts":["project_repository_session and cws_session_projection_block"],"forbidden_next_actions":["Do not start PE7-RWE-CR-RUN-1."],"worker_tier":"T1","known_store_mutations":[]}
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-CWS-RUNTIME-INTEGRATION-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Compose provider-free runtime prompts from the accepted working-set projection without replacing the provider owner.","allowed_paths":["engine/src/context_working_set.rs","engine/src/workflow/context_pack/assembly.rs","engine/src/workflow/context_pack/mod.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md"],"read_paths":["engine/src/context_working_set.rs","engine/src/workflow/context_pack/assembly.rs","engine/src/workflow/context_pack/mod.rs","engine/src/provider/stub.rs","engine/src/provider/mod.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/MODULE_MAP.md"],"allowed_outputs":["A runtime prompt composer that preserves PINNED/unknown/cancellation and does not make the provider the context owner."],"prerequisites":["PE7-CWS-REPOSITORY-INTEGRATION-1"],"prerequisite_receipts":["PE7-CWS-REPOSITORY-INTEGRATION-1 COMPLETE: PR #584 exact head `323d479d73f26f280cf28502e3c609d4baf78298`; squash merge `d33d7d04709575d1f6fb9fdbe94169175a261108`; exact-head review comments `5346743411` and `5346743657`; canonical workflow `32290928328`; exact-head check `32290928230`"],"forbidden_changes":["Do not change Provider credentials, retry, or budget.","Do not remap unknown or cancelled outcomes.","Do not start PE7-RWE-CR-RUN-1."],"ordered_steps":["Implement compose_runtime_prompt.","Wire context_pack adapter.","Prove stub replay and unknown/cancel preservation."],"verification":["cargo test -p engine --lib context_working_set -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this documentation and composer PR; provider, scheduler, and Store owners remain unchanged and no Provider POST is introduced.","pause_gates":["Stop if the provider would own context.","Stop before Provider POST or RUN-1."],"expected_artifacts":["compose_runtime_prompt"],"forbidden_next_actions":["Do not start PE7-RWE-CR-RUN-1."],"worker_tier":"T1","known_store_mutations":[]}
 -->
 
 ## Common Execution Protocol

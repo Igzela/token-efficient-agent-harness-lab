@@ -1,9 +1,9 @@
 use serde_json::{json, Value};
 
 use crate::context_working_set::{
-    project as project_working_set, project_repository_session, reduce_tool_result,
-    ProjectedWorkingSet, ProjectorBounds, ProjectorError, ReducedToolResult, RepositorySessionMode,
-    SourceItem, ToolResultAdmission,
+    compose_runtime_prompt, project as project_working_set, project_repository_session,
+    reduce_tool_result, ProjectedWorkingSet, ProjectorBounds, ProjectorError, ReducedToolResult,
+    RepositorySessionMode, SourceItem, ToolResultAdmission,
 };
 
 use super::budget::allocate_context_budget;
@@ -32,6 +32,14 @@ pub fn project_authorized_repository_session(
     bounds: ProjectorBounds,
 ) -> Result<ProjectedWorkingSet, ProjectorError> {
     project_repository_session(accepted_main_sha, head_sha, packet_id, mode, docs, bounds)
+}
+
+pub fn compose_authorized_runtime_prompt(
+    task_binding: &str,
+    projected: &ProjectedWorkingSet,
+    user_prompt: &str,
+) -> Result<String, ProjectorError> {
+    compose_runtime_prompt(task_binding, projected, user_prompt)
 }
 
 #[derive(Debug, Clone, PartialEq)]
