@@ -6,10 +6,10 @@ mod validation;
 
 pub use assembly::{
     assemble_context_injection, assemble_context_injection_with_bridge,
-    authorized_cws_benchmark_preflight, bridge_context_fields, compose_authorized_runtime_prompt,
-    partition_authorized_working_set, project_authorized_repository_session,
-    project_authorized_working_set, reduce_authorized_tool_result, ContextAssemblyConfig,
-    ContextSource,
+    authorized_cws_benchmark_preflight, authorized_cws_benchmark_run, bridge_context_fields,
+    compose_authorized_runtime_prompt, partition_authorized_working_set,
+    project_authorized_repository_session, project_authorized_working_set,
+    reduce_authorized_tool_result, ContextAssemblyConfig, ContextSource,
 };
 pub use budget::{allocate_context_budget, apply_prune_policy, check_budget_compliance};
 pub use rules::*;
@@ -444,6 +444,20 @@ mod tests {
         .unwrap();
         assert!(report.ready);
         assert!(!report.authorizations_issued);
+    }
+
+    #[test]
+    fn existing_context_owner_fail_closes_cws_run() {
+        let report = authorized_cws_benchmark_run(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            true,
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(!report.executed);
+        assert_eq!(report.provider_posts, 0);
     }
 
     #[test]

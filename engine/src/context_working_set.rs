@@ -526,6 +526,41 @@ pub fn cws_benchmark_preflight(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CwsBenchmarkRunReport {
+    pub executed: bool,
+    pub provider_posts: u32,
+    pub reason: String,
+    pub preflight: CwsBenchmarkPreflight,
+}
+
+/// T3 comparison runner. Fail-closed: never POSTs a Provider from this path.
+pub fn cws_benchmark_run(
+    head_sha: &str,
+    provider_capability_known: bool,
+    evidence_paths_bound: bool,
+    authorization_issued: bool,
+    provider_credential_present: bool,
+) -> Result<CwsBenchmarkRunReport, ProjectorError> {
+    let preflight =
+        cws_benchmark_preflight(head_sha, provider_capability_known, evidence_paths_bound)?;
+    let reason = if !preflight.ready {
+        "preflight_not_ready"
+    } else if !authorization_issued || !preflight.authorizations_issued {
+        "authorization_unissued"
+    } else if !provider_credential_present {
+        "provider_credential_absent"
+    } else {
+        "transport_unregistered"
+    };
+    Ok(CwsBenchmarkRunReport {
+        executed: false,
+        provider_posts: 0,
+        reason: reason.to_string(),
+        preflight,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolOutcome {
     Success,
@@ -1267,5 +1302,20 @@ mod tests {
                 .code,
             "binding_invalid"
         );
+    }
+
+    #[test]
+    fn cws_run_fail_closes_without_provider_post() {
+        let head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let blocked = cws_benchmark_run(head, false, false, false, false).unwrap();
+        assert!(!blocked.executed);
+        assert_eq!(blocked.provider_posts, 0);
+        assert_eq!(blocked.reason, "preflight_not_ready");
+
+        let unissued = cws_benchmark_run(head, true, true, true, true).unwrap();
+        assert!(!unissued.executed);
+        assert_eq!(unissued.provider_posts, 0);
+        assert_eq!(unissued.reason, "authorization_unissued");
+        assert!(!unissued.preflight.authorizations_issued);
     }
 }
