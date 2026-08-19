@@ -221,6 +221,38 @@ next_packet: PE7-RWE-CR-RUN-1
 next_packet_state: DECISION_REQUIRED
 ```
 
+## Context working-set ingress inventory (`PE7-CWS-INGRESS-INVENTORY-1`)
+
+Provider-free read-only inventory. Conversation text is not durable truth. No prompt/runtime/store change. Harvest `candidate_status` is not an implementation disposition.
+
+### Ingress matrix
+
+| Path | Owner | Authority class | Size/repetition | Sensitivity | Current reduction | Exact recovery |
+|---|---|---|---|---|---|---|
+| Coding session entry JSON | `scripts/session_context.py` | packet/dispatch capsule; not product truth | bounded JSON; one entry per session | no secrets; paths allowlisted | digest-bound projection | yes, regenerate from accepted main |
+| Frontier evidence capsule | `scripts/project_context.py` | live GitHub observation; not accepted truth | truncated live fields | no raw transcripts | short-lived artifact | yes, regenerate |
+| Plan/implement/review prompts | `scripts/agent-control/prompt_builder.py` | repository-maintenance only | template + exact-head diff bound | no credential values | max review-diff chars | yes, from PR/issue + template |
+| Local claim-bound plan run | `scripts/agent-control/local_run_once.py` | existing plan-lane owners | one claim per run | no reusable child credential | existing prompt builders | yes, from claim receipts |
+| HTTP product/task handlers | `engine/src/http_server/` | LocalProductStore-backed | request-scoped | auth-scoped; no secret echo | existing handlers | store-owned records |
+| Provider transport | `engine/src/provider/` | existing provider owner; default-off in CI | request-scoped | credentials stay in env, not prompts | existing redaction | no: raw provider payloads are not retained as authority |
+| Agent scratchpad/notes | `engine/src/node_executor.rs` | agent-state summary only | bounded summary | summaries, not raw bodies, in audit | `update_scratchpad_summary` | store agent_state; raw bodies excluded |
+| Durable memory versions | `engine/src/storage/local_product_store/` `durable_memory_versions` | experimental/store-owned; not CWS authority | versioned rows | store-scoped | existing retrieval events | yes, store versions |
+| Tool results / artifacts | existing artifact/evidence owners | evidence, not model truth | large logs possible | may contain diagnostics | not yet a CWS reducer | rehydrate from artifact identity when present |
+| Canonical docs / Git | `docs/*`, Git objects | accepted-main truth | full files | public prose | role-targeted reads | yes, exact Git identity |
+
+Unknown ingress: none identified beyond the rows above at this checkout. A later packet must not treat chat history as a source row.
+
+### Harvest matrix (non-authoritative; `REFRESH_AT_PROMOTION`)
+
+| Candidate | Public source | License/NOTICE | `candidate_status` | Notes |
+|---|---|---|---|---|
+| Gemini CLI | github.com/google-gemini/gemini-cli | re-verify at promotion | `UNKNOWN` | harvest identity not frozen |
+| OpenAI Codex CLI | github.com/openai/codex | re-verify at promotion | `UNKNOWN` | harvest identity not frozen |
+| Aider | github.com/Aider-AI/aider | re-verify at promotion | `UNKNOWN` | harvest identity not frozen |
+| Command Code | unpublished harness source | n/a | `INELIGIBLE_SOURCE` | architecture/behavior reference only; not a transplant candidate |
+
+No `TRANSPLANT` / `ADAPT` / `REIMPLEMENT` / `REJECT` disposition is recorded.
+
 ## Invalidated Historical Receipts (Repair Required)
 
 The following 34 packets from the AC3 through EC2 chain (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), were merged on historical PRs without complete production implementations, valid independent reviews, or required gate enforcement. They are explicitly marked `INVALIDATED` / `SUPERSEDED` / `REPAIR_REQUIRED` and removed from the accepted receipts prerequisite index until genuine sequential re-execution and re-proof are achieved:
