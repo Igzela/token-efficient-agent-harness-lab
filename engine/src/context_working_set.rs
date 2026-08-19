@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 pub const SCHEMA_VERSION: &str = "context_working_set.v1";
 pub const IMPLEMENTATION_DISPOSITION: &str = "REIMPLEMENT";
+pub const REDUCER_DISPOSITION: &str = "REIMPLEMENT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Residency {
@@ -275,6 +276,130 @@ pub fn rehydrate(
     Ok(offered_bytes.to_vec())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOutcome {
+    Success,
+    Failure,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolResultAdmission {
+    pub outcome: ToolOutcome,
+    pub raw: Vec<u8>,
+    pub artifact_id: String,
+    pub owner: String,
+    pub max_visible_bytes: usize,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReducedToolResult {
+    pub outcome: ToolOutcome,
+    pub visible: Vec<u8>,
+    pub handle: RehydrationHandle,
+    pub truncated: bool,
+    pub redacted: bool,
+}
+
+fn is_salient_line(line: &str) -> bool {
+    let upper = line.to_ascii_uppercase();
+    upper.contains("ERROR")
+        || upper.contains("FAIL")
+        || upper.contains("PANIC")
+        || upper.contains("BLOCKER")
+        || upper.contains("UNKNOWN")
+}
+
+fn bound_visible(text: &str, max_bytes: usize, must_keep_salient: bool) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text.to_string(), false);
+    }
+    let mut kept = String::new();
+    if must_keep_salient {
+        for line in text.lines() {
+            if is_salient_line(line) {
+                let candidate = if kept.is_empty() {
+                    line.to_string()
+                } else {
+                    format!("{kept}\n{line}")
+                };
+                if candidate.len() <= max_bytes {
+                    kept = candidate;
+                }
+            }
+        }
+    }
+    if kept.len() >= max_bytes {
+        return (kept, true);
+    }
+    let remaining = max_bytes.saturating_sub(kept.len().saturating_add(1));
+    let mut split = remaining.min(text.len());
+    while split > 0 && !text.is_char_boundary(split) {
+        split -= 1;
+    }
+    let head = text[..split].to_string();
+    if kept.is_empty() {
+        (head, true)
+    } else if head.is_empty() {
+        (kept, true)
+    } else {
+        (format!("{kept}\n{head}"), true)
+    }
+}
+
+/// Deterministic admission reduction. Raw bytes stay with the artifact owner;
+/// the model sees bounded status, diagnostics, and a rehydration handle.
+/// Failure/unknown never become success.
+pub fn reduce_tool_result(
+    admission: &ToolResultAdmission,
+) -> Result<ReducedToolResult, ProjectorError> {
+    if admission.stale {
+        return Err(ProjectorError {
+            code: "unavailable".to_string(),
+            message: "stale tool-result artifact cannot be reduced".to_string(),
+        });
+    }
+    if admission.artifact_id.trim().is_empty() {
+        return Err(ProjectorError {
+            code: "unbound_evidence".to_string(),
+            message: "tool result has no artifact identity".to_string(),
+        });
+    }
+    let raw_digest = content_sha256(&admission.raw);
+    let lossy = String::from_utf8_lossy(&admission.raw);
+    let redacted = crate::provider::redaction::redact_sensitive_patterns(&lossy);
+    let redacted_flag = redacted != lossy.as_ref();
+    let keep_salient = matches!(
+        admission.outcome,
+        ToolOutcome::Failure | ToolOutcome::Unknown
+    );
+    let (visible_text, truncated) =
+        bound_visible(&redacted, admission.max_visible_bytes.max(1), keep_salient);
+    if keep_salient {
+        let had_salient = redacted.lines().any(is_salient_line);
+        let kept_salient = visible_text.lines().any(is_salient_line);
+        if had_salient && !kept_salient {
+            return Err(ProjectorError {
+                code: "blocker_dropped".to_string(),
+                message: "reduction would drop required failure diagnostics".to_string(),
+            });
+        }
+    }
+    Ok(ReducedToolResult {
+        outcome: admission.outcome,
+        visible: visible_text.into_bytes(),
+        handle: RehydrationHandle {
+            source_owner: admission.owner.clone(),
+            source_identity: admission.artifact_id.clone(),
+            content_sha256: raw_digest,
+            recipe_kind: RecipeKind::ArtifactRef,
+        },
+        truncated,
+        redacted: redacted_flag,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,5 +584,90 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, "integrity_mismatch");
+    }
+
+    fn admit(outcome: ToolOutcome, raw: &str, max_visible: usize) -> ToolResultAdmission {
+        ToolResultAdmission {
+            outcome,
+            raw: raw.as_bytes().to_vec(),
+            artifact_id: "art-tool-1".to_string(),
+            owner: "artifacts".to_string(),
+            max_visible_bytes: max_visible,
+            stale: false,
+        }
+    }
+
+    #[test]
+    fn failure_log_keeps_error_line_and_never_becomes_success() {
+        let raw = "ok start\nerror: compile failed\n".repeat(40);
+        let reduced = reduce_tool_result(&admit(ToolOutcome::Failure, &raw, 80)).unwrap();
+        assert_eq!(reduced.outcome, ToolOutcome::Failure);
+        assert!(reduced.truncated);
+        let visible = String::from_utf8(reduced.visible).unwrap();
+        assert!(visible.to_ascii_uppercase().contains("ERROR"));
+        assert_eq!(REDUCER_DISPOSITION, "REIMPLEMENT");
+        assert_eq!(
+            rehydrate(&reduced.handle, raw.as_bytes()).unwrap(),
+            raw.as_bytes()
+        );
+    }
+
+    #[test]
+    fn success_truncation_does_not_invent_failure() {
+        let raw = "a".repeat(200);
+        let reduced = reduce_tool_result(&admit(ToolOutcome::Success, &raw, 40)).unwrap();
+        assert_eq!(reduced.outcome, ToolOutcome::Success);
+        assert!(reduced.truncated);
+        assert!(reduced.visible.len() <= 40);
+    }
+
+    #[test]
+    fn unknown_outcome_stays_unknown() {
+        let reduced = reduce_tool_result(&admit(
+            ToolOutcome::Unknown,
+            "status UNKNOWN: probe incomplete",
+            200,
+        ))
+        .unwrap();
+        assert_eq!(reduced.outcome, ToolOutcome::Unknown);
+    }
+
+    #[test]
+    fn redacts_secret_patterns_without_dropping_failure() {
+        let raw = "error: boom\napi_key=sk-abcdefghijklmnopqrstuvwxyz\n";
+        let reduced = reduce_tool_result(&admit(ToolOutcome::Failure, raw, 400)).unwrap();
+        let visible = String::from_utf8(reduced.visible).unwrap();
+        assert!(reduced.redacted);
+        assert!(!visible.contains("sk-abcdefghijklmnopqrstuvwxyz"));
+        assert!(visible.to_ascii_uppercase().contains("ERROR"));
+    }
+
+    #[test]
+    fn malformed_bytes_are_lossy_and_hash_binds_raw() {
+        let mut raw = b"error: ".to_vec();
+        raw.extend_from_slice(&[0xff, 0xfe]);
+        let admission = ToolResultAdmission {
+            outcome: ToolOutcome::Failure,
+            raw: raw.clone(),
+            artifact_id: "art-bin".to_string(),
+            owner: "artifacts".to_string(),
+            max_visible_bytes: 100,
+            stale: false,
+        };
+        let reduced = reduce_tool_result(&admission).unwrap();
+        assert_eq!(rehydrate(&reduced.handle, &raw).unwrap(), raw);
+    }
+
+    #[test]
+    fn stale_or_unbound_tool_result_fails_closed() {
+        let mut stale = admit(ToolOutcome::Success, "ok", 10);
+        stale.stale = true;
+        assert_eq!(reduce_tool_result(&stale).unwrap_err().code, "unavailable");
+        let mut unbound = admit(ToolOutcome::Failure, "error: x", 10);
+        unbound.artifact_id.clear();
+        assert_eq!(
+            reduce_tool_result(&unbound).unwrap_err().code,
+            "unbound_evidence"
+        );
     }
 }

@@ -1,8 +1,8 @@
 use serde_json::{json, Value};
 
 use crate::context_working_set::{
-    project as project_working_set, ProjectedWorkingSet, ProjectorBounds, ProjectorError,
-    SourceItem,
+    project as project_working_set, reduce_tool_result, ProjectedWorkingSet, ProjectorBounds,
+    ProjectorError, ReducedToolResult, SourceItem, ToolResultAdmission,
 };
 
 use super::budget::allocate_context_budget;
@@ -14,6 +14,12 @@ pub fn project_authorized_working_set(
     bounds: ProjectorBounds,
 ) -> Result<ProjectedWorkingSet, ProjectorError> {
     project_working_set(items, bounds)
+}
+
+pub fn reduce_authorized_tool_result(
+    admission: &ToolResultAdmission,
+) -> Result<ReducedToolResult, ProjectorError> {
+    reduce_tool_result(admission)
 }
 
 #[derive(Debug, Clone, PartialEq)]

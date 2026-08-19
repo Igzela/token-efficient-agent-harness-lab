@@ -79,6 +79,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-CWS-INGRESS-INVENTORY-1` | `COMPLETE` | PR #579 exact head `b91f207eba8d5910dd97c626c458be0e369c577e`; squash merge `76d21ea2fd4d8a691bc83c28d680e5affff77ba2`; exact-head review comment `5345445854`; canonical workflow `32279656821`; exact-head check `32279656781`; owner-bound ingress matrix and non-final harvest matrix; no TRANSPLANT disposition; RUN-1 not started |
 | `PE7-CWS-PROJECTION-CONTRACT-1` | `COMPLETE` | PR #580 exact head `0a750a3a5cda92b419efbfb35f89f5cfee0fe429`; squash merge `4129ca5d08cd7a2e89ad2485864ba28900ecc645`; exact-head review comments `5345585496` and `5345585819`; canonical workflow `32280864211`; exact-head check `32280864192`; PINNED/HOT/WARM/COLD residency; scoring cannot evict PINNED; RUN-1 not started |
 | `PE7-CWS-REHYDRATION-CONTRACT-1` | `COMPLETE` | PR #581 exact head `b7b4037bd31731e1ba0f16904006d38bf4c78b82`; squash merge `1b6d73fce72cb195578ae5af784203f7de274e9f`; exact-head review comments `5345676315` and `5345676536`; canonical workflow `32281612446`; exact-head check `32281612505`; source-bound handles; reconstruction does not authorize EFFECT |
+| `PE7-CWS-PROJECTOR-CORE-1` | `COMPLETE` | PR #582 exact head `cdcd41655aa098b46cdf7d2ee12031d1860e71c2`; squash merge `07446ffe1cb31e49ace25e36deb6233433a3814e`; exact-head review comments `5345989055` and `5345989325`; canonical workflow `32284433657`; exact-head check `32284433705`; `REIMPLEMENT` projector in `engine/src/context_working_set.rs`; PINNED cannot be bound-evicted |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -296,6 +297,10 @@ Named fail-closed vectors for later IMPLEMENT packets:
 ### Projector-core disposition (`PE7-CWS-PROJECTOR-CORE-1`)
 
 Implementation-selection disposition is `REIMPLEMENT`. Ingress `candidate_status` values remain `UNKNOWN` or `INELIGIBLE_SOURCE` and are not a TRANSPLANT decision. The pure projector lives in `engine/src/context_working_set.rs` and is consumed by the existing `context_pack` owner. It does not persist, call a Provider, or become a second memory/store/evaluator.
+
+### Tool-result reducer disposition (`PE7-CWS-TOOL-RESULT-REDUCTION-1`)
+
+Reducer disposition is `REIMPLEMENT`. Large tool results stay with existing artifact owners. The model-visible slice is bounded, redacted through the existing provider redaction owner, and bound to a raw `ARTIFACT_REF` handle. Failure and unknown outcomes cannot become success; required failure diagnostics cannot be dropped by truncation.
 
 ## Invalidated Historical Receipts (Repair Required)
 
