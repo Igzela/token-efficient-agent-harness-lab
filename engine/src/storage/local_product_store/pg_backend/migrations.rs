@@ -607,6 +607,8 @@ fn apply_pg_v36_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map(|r| r.get::<_, i64>(0))
         .map_err(|e| e.to_string())?;
     if current_version >= version {
+        tx.batch_execute(schema::EC1_IDENTITY_LINEAGE_DDL)
+            .map_err(|e| format!("m36 ec1 identity lineage repair: {e}"))?;
         repair_pg_v36_delegated_plan_owner(&mut tx)?;
         validate_pg_v36_schema(&mut tx)?;
         tx.commit().map_err(|e| e.to_string())?;
