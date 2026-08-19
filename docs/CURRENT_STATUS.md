@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-19.
+Last updated: 2026-08-20.
 
 This document owns accepted repository truth and confirmed capability gaps only. It separates two states that must not be conflated:
 
@@ -75,6 +75,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-AC7-CLOSEOUT-1` | `COMPLETE` | PR #563 exact head `80e68a108eb1d752f6632944300786fe9ea6511d`; merge `42fcfa5ad7e349d27d3caa815163340f9c0d5c0b`; exact-head `PASS`; canonical workflow `32030794178` |
 | `PE7-RWE-CR-RECONSTRUCTION-1` | `COMPLETE` | PR #566 exact head `57f4a5ee3a9be48a6ebdc20eddbd5df978c4440f`; squash merge `7cfa817a82ea3a638bd3e50af5266ee54eefe0c0`; exact-head review receipt comment `5324095735`; canonical workflow `32103730088`; exact-head check `32103730089`; explicit Python 3.14.4 verifier and provider-free traces passed; no Provider call, target write, authority consumption, or effect |
 | `PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1` | `COMPLETE` | PR #572 exact head `0f63ad49c2b5ba87bf5e661bcbae9fd5fab9a9a8`; squash merge `262b67b675c36859c3dee6e1556fa0090654b75c`; exact-head review receipt comment `5328249811`; canonical workflow `32137758400`; exact-head check `32137758389`; existing-owner SQLite read-only Store/auth/preflight seam and old/new identity projection accepted; no Provider call, credential-value read, target write, authority consumption, or effect; not a live-ready claim |
+| `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` | `COMPLETE` | Freeze PR #576 exact head `7b9e51bd12d7cb4007915edb9d5809f2db488416`; squash merge `837ae2aadc0470713121361d5c529d6936e8926f`; exact-head review comment `5344672600`; canonical workflow `32273292076`; exact-head check `32273291960`; idle-SHM PR #577 exact head `1bfffe1c620cff79caf37bd566f9ee80073d252e`; squash merge `9c25d193d3b85ad9e7cc66af21a0c78ba0171d7a`; exact-head review comment `5345103991`; canonical workflow `32276756829`; exact-head check `32276756856`; captured `rwe-live-baseline preflight` against existing `.agent-control-plane/local-team.db` failed closed at principal auth (`no such column: tenant_id`); not a live-ready claim |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -196,6 +197,28 @@ exact_head_check: 32137758389
 scope: provider-free existing-owner SQLite read-only Store/auth/preflight seam and contemporary old/new identity projection; no schema/migration, live preflight run, or live-ready claim
 external_effects: none; no Provider call, credential-value read, target write, authority consumption, EFFECT, or T3 action
 next_packet: PE7-RWE-CR-PROTOCOL-PREFLIGHT-1
+```
+
+**PE7-RWE-CR-PROTOCOL-PREFLIGHT-1 closeout_receipt:**
+
+```yaml
+packet: PE7-RWE-CR-PROTOCOL-PREFLIGHT-1
+state: COMPLETE
+accepted_prs: [576, 577]
+accepted_heads: [7b9e51bd12d7cb4007915edb9d5809f2db488416, 1bfffe1c620cff79caf37bd566f9ee80073d252e]
+accepted_merges: [837ae2aadc0470713121361d5c529d6936e8926f, 9c25d193d3b85ad9e7cc66af21a0c78ba0171d7a]
+exact_head_review: PASS
+review_receipt_comments: [5344672600, 5345103991]
+canonical_workflows: [32273292076, 32276756829]
+exact_head_checks: [32273291960, 32276756856]
+captured_preflight: |
+  rwe-live-baseline --db-path .agent-control-plane/local-team.db --tenant-id local --operator-key-id op-missing preflight
+  EXIT 2
+  principal auth failed: no such column: tenant_id
+ready: false
+external_effects: none
+next_packet: PE7-RWE-CR-RUN-1
+next_packet_state: DECISION_REQUIRED
 ```
 
 ## Invalidated Historical Receipts (Repair Required)
@@ -335,7 +358,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | AC7 cleanup | `COMPLETE` | PR #562 accepted; fixed-string inventory is zero across tracked source, tests, SDK, Dashboard, scripts, tools, and replay/fixture paths; separate approve/output authority and recovery semantics remain; rollback is the pre-cleanup tree `eb692703…` |
 | AC7 closeout | `COMPLETE` | PR #563 accepted; exact cleanup convergence, implementation-cost aggregation, rollback index, and contemporary old/new replay inputs are bound |
 | Contemporary old/new replay reconstruction | `COMPLETE` | PR #566 accepted; reconstruction verifier, frozen bindings, provider-free traces, and exact old/new identities are accepted |
-| Contemporary old/new replay | `BLOCKED_PREREQUISITE` | Protocol/preflight freeze is the current window; authorized run remains blocked until a ready preflight |
+| Contemporary old/new replay | `DECISION_REQUIRED` | Protocol/preflight freeze is complete; captured CLI is not `ready=true`; `PE7-RWE-CR-RUN-1` is parked on a pre-tenant empty Store |
 | EC1–EC5 experiment control | `BLOCKED_PREREQUISITE` | 17 packets; causal mutation evidence and each control family freeze before implementation |
 | Level-1 core without memory/skill | `BLOCKED_PREREQUISITE` | Preflight, one authorized generation, independent closeout |
 | Level-1 transfer pilot | `BLOCKED_PREREQUISITE` | Sealed protocol, authorized run, analysis |
@@ -497,13 +520,13 @@ A NO-GO, saturation result, diversity collapse, transfer failure, or inability t
 1. No accepted four-cell v2 RWE baseline exists. A provider-free preflight ran ready=true with zero blockers (unissued request package digest `015c94e9d65a902f3aba5eae4f3da6cba6d534cc3c57af3a6faf89125663469a`). The later operator EFFECT `run-live-20260813-v2c` executed the four frozen v2 cells through the genuine delegated lifecycle and terminated `controlled_failure`: `cell-rwe-minimum-t1-fix_flow_linkage-r1-bp-standard-s2026080601`, `cell-rwe-minimum-t1-fix_flow_linkage-r2-bp-standard-s2026080602`, `cell-rwe-minimum-t2-draft_contract_tests-r1-bp-standard-s2026080601`, `cell-rwe-minimum-t2-draft_contract_tests-r2-bp-standard-s2026080602`. Planning completed on `deepseek-v4-pro`; implementation failed closed after 36–39s with `managed workspace action rejected: implementer output must be one JSON workspace action`; review/verify blocked; no seal; no target-default-branch write. Restricted-bundle sha256 `9b345faf744c14d67157856a512b39d90c6e03ff1081783c793b987d6f93bf82`; redacted-bundle sha256 `e2eafa226700061cb000b35dec776ef0b49417aa5faece0b065923b49ee83d3f`. Coordinator aggregate still reports zero provider requests; truthful planning usage is in store-owned workflow events (planning cost about USD 0.00135). Two earlier same-day one-use attempts (`auth-live-v2-001`/`-002`) failed before Provider POST (Golden Path intake off; detached HEAD). The durable B2 rule remains caller-supplied finite `expires_at`.
 2. The current two-task/four-cell design is lifecycle viability evidence, not a statistically decision-grade architecture baseline.
 3. No accepted operations/evidence manifest, larger decision baseline, or executed contemporary old/new comparison exists; the reconstructable snapshot verifier, real provider-free CLI preflight, and one separately authorized DB RUN now exist. That effect is uniquely bound to packet `PE7-RWE-DB-RUN-1`, run `run-goal-db-baseline-20260814-2340`, authorization `auth-goal-db-run-20260814-2340`, and run-evidence sha256 `a841e6d092d2946de2ee96bef03409ab8c276111c3ace53aef827bd0c00c277e`. ProductTasks `ptask-20260814154014-18cbb634bffe42c2`, `ptask-20260814154055-18cbb63e1d04419d`, `ptask-20260814154136-18cbb647bf8562c7`, and `ptask-20260814154219-18cbb651c35d869f` all ended `failed/execution_failed`; their exact attempt evidence retains workspace IDs `rwe-ws:run-goal-db-baseline-20260814-2340:cell-rwe-minimum-t1-fix_flow_linkage-r1-bp-standard-s2026080601`, `rwe-ws:run-goal-db-baseline-20260814-2340:cell-rwe-minimum-t1-fix_flow_linkage-r2-bp-standard-s2026080602`, `rwe-ws:run-goal-db-baseline-20260814-2340:cell-rwe-minimum-t2-draft_contract_tests-r1-bp-standard-s2026080601`, and `rwe-ws:run-goal-db-baseline-20260814-2340:cell-rwe-minimum-t2-draft_contract_tests-r2-bp-standard-s2026080602`, with `cleanup_status=not_required` for each. No route T3/owner-outcome receipt, analysis receipt, or decision-grade baseline is claimed. `PE7-RWE-DB-ANALYSIS-1` is parked with the run so provider-free AC0 can proceed; do not replay the effect or infer acceptance from its evidence.
-4. The AC0 data/trace freeze is complete as a provider-free contract and closeout; AC1 shared ProcessSupervisor hardening remains deferred and is not an active implementation frontier. AC2–AC7 are accepted through the closeout merge `42fcfa5a`; `PE7-RWE-CR-RECONSTRUCTION-1` is accepted through `7cfa817a`; `PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1` is accepted through `262b67b6`; and `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` is the current provider-free protocol/preflight freeze. All replay effects remain gated successors.
+4. The AC0 data/trace freeze is complete as a provider-free contract and closeout; AC1 shared ProcessSupervisor hardening remains deferred and is not an active implementation frontier. AC2–AC7 are accepted through the closeout merge `42fcfa5a`; `PE7-RWE-CR-RECONSTRUCTION-1` is accepted through `7cfa817a`; `PE7-RWE-CR-PROTOCOL-PREFLIGHT-REPAIR-1` is accepted through `262b67b6`; and `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` is accepted through `837ae2aa` / `9c25d193`. All replay effects remain gated. `PE7-RWE-CR-RUN-1` is `DECISION_REQUIRED`.
 5. Accepted Harness-Evolution identity/lineage, causal-manifest, mutation-registry, and evaluator/holdout contract boundaries are provider-free and non-authoritative. The EC2 contract freezes evaluator ownership, sealed-holdout access, immutable labels/rubric, contamination/gaming/safety invalidation, and evaluator-owned prediction-outcome derivation; its holdout-seal, sentinel-conformance, and `PredictionOutcomeV1` implementation packets remain gated successors. No accepted lifecycle-budget, diversity/exploration, or Pareto/stop/recovery implementation exists.
 6. No Level-2 rule audit, controller contract, provider-free conformance, live pilot, final transfer, adoption decision, or fixed Meta operator-comparison result exists.
 7. No accepted metacognitive-operator, parameter-efficient training adapter, weight/harness factorial, co-evolution, or outer-policy research contract exists; full-weight and model-architecture evolution remain unrouted.
 8. The failed bootstrap from accepted main `aa83ac1f5eada74199e0ce28ecb91d37a48769d6` remains valid non-authorizing evidence: it stopped with `route_controller_unavailable_timeout` after GitHub rejected 28 workflow inputs with HTTP 422, before any workflow run, PR, claim, Provider call, target write, or external effect. PR #416 and accepted-main smoke `31631388199` removed that exact dispatch blocker. The route remains stopped until the one-time merge-backed bootstrap starts from current main; route10 remains non-resumable obsolete-main evidence.
-9. The invalidated historical packets from `PE7-AC3-ORCHESTRATOR-CORE-1` through `PE7-HE-EC2-CONTRACT-1` (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), remain non-authorizing historical evidence. Accepted AC3–AC7, Contemporary RWE reconstruction, and the read-only preflight repair receipts are listed above; the predecessor semantic frontier remains parked at `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1`. Every downstream packet must be executed sequentially with genuine evidence, exact-head reviews, and canonical CI before promotion.
-10. `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` is the current provider-free window after the accepted read-only repair on `262b67b675c36859c3dee6e1556fa0090654b75c`. Redacted credential presence uses the environment-symbol owner without decoding the secret. The two-arm comparison protocol freeze binds window, allocation, concealment, drift, capacity pairing, and two unissued authorization slots onto the existing hashes. The only existing LocalProductStore on this host is `.agent-control-plane/local-team.db` (gitignored; empty WAL, leftover idle SHM). A real `rwe-live-baseline preflight` against that file opened read-only after accepting idle WAL-index leftovers, then failed closed at principal auth: the store's `api_key_metadata` has no `tenant_id` column (pre-tenant schema) and zero keys / product tasks. No Store was created, no schema/data write, no credential-value read, and `ready=true` is not claimed. Encrypted SQLCipher remaining `encryption_readiness_unavailable` is unchanged. `PE7-RWE-CR-RUN-1` remains blocked until `ready=true`.
+9. The invalidated historical packets from `PE7-AC3-ORCHESTRATOR-CORE-1` through `PE7-HE-EC2-CONTRACT-1` (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), remain non-authorizing historical evidence. Accepted AC3–AC7, Contemporary RWE reconstruction, read-only preflight repair, and protocol/preflight freeze receipts are listed above. `PE7-RWE-CR-RUN-1` is parked `DECISION_REQUIRED`. Every downstream packet must be executed sequentially with genuine evidence, exact-head reviews, and canonical CI before promotion.
+10. `PE7-RWE-CR-PROTOCOL-PREFLIGHT-1` is complete on `837ae2aa` / `9c25d193`. A real `rwe-live-baseline preflight` against existing `.agent-control-plane/local-team.db` opened read-only then failed closed at principal auth (`no such column: tenant_id`; zero keys/tasks). `ready=true` is not claimed. `PE7-RWE-CR-RUN-1` is `DECISION_REQUIRED`. No Store was created, migrated, or seeded.
 
 ## Maintenance Boundary
 
