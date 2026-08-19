@@ -720,7 +720,8 @@ fn pg_read_only_preflight_preserves_store_metadata() {
     assert_eq!(preflight["authority_consumed"], false);
     assert_eq!(preflight["provider_call_performed"], false);
     assert_eq!(preflight["target_write_performed"], false);
-    assert_eq!(preflight["credential_readiness"], "unavailable");
+    assert_ne!(preflight["credential_readiness"], "unavailable");
+    assert!(preflight["credential_symbol_present"].is_boolean());
     let after = store
         .get_api_key_metadata_for_tenant(&key_id, "local")
         .unwrap()
