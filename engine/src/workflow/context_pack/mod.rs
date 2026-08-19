@@ -6,10 +6,11 @@ mod validation;
 
 pub use assembly::{
     assemble_context_injection, assemble_context_injection_with_bridge,
-    authorized_cws_benchmark_preflight, authorized_cws_benchmark_run, bridge_context_fields,
-    compose_authorized_runtime_prompt, partition_authorized_working_set,
-    project_authorized_repository_session, project_authorized_working_set,
-    reduce_authorized_tool_result, ContextAssemblyConfig, ContextSource,
+    authorized_cws_benchmark_analyze, authorized_cws_benchmark_preflight,
+    authorized_cws_benchmark_run, bridge_context_fields, compose_authorized_runtime_prompt,
+    partition_authorized_working_set, project_authorized_repository_session,
+    project_authorized_working_set, reduce_authorized_tool_result, ContextAssemblyConfig,
+    ContextSource,
 };
 pub use budget::{allocate_context_budget, apply_prune_policy, check_budget_compliance};
 pub use rules::*;
@@ -458,6 +459,25 @@ mod tests {
         .unwrap();
         assert!(!report.executed);
         assert_eq!(report.provider_posts, 0);
+    }
+
+    #[test]
+    fn existing_context_owner_analyzes_fail_closed_run() {
+        use crate::context_working_set::CwsAnalysisDisposition;
+        let run = authorized_cws_benchmark_run(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            false,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        let analysis = authorized_cws_benchmark_analyze(&run);
+        assert_eq!(
+            analysis.disposition,
+            CwsAnalysisDisposition::InsufficientDefaultOff
+        );
+        assert!(!analysis.live_arms_observed);
     }
 
     #[test]

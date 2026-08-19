@@ -1,11 +1,11 @@
 use serde_json::{json, Value};
 
 use crate::context_working_set::{
-    compose_runtime_prompt, cws_benchmark_preflight, cws_benchmark_run, partition_working_set,
-    project as project_working_set, project_repository_session, reduce_tool_result, CachePartition,
-    CacheTelemetryObservation, CwsBenchmarkPreflight, CwsBenchmarkRunReport, ProjectedWorkingSet,
-    ProjectorBounds, ProjectorError, ReducedToolResult, RepositorySessionMode, SourceItem,
-    ToolResultAdmission,
+    compose_runtime_prompt, cws_benchmark_analyze, cws_benchmark_preflight, cws_benchmark_run,
+    partition_working_set, project as project_working_set, project_repository_session,
+    reduce_tool_result, CachePartition, CacheTelemetryObservation, CwsAnalysisReceipt,
+    CwsBenchmarkPreflight, CwsBenchmarkRunReport, ProjectedWorkingSet, ProjectorBounds,
+    ProjectorError, ReducedToolResult, RepositorySessionMode, SourceItem, ToolResultAdmission,
 };
 
 use super::budget::allocate_context_budget;
@@ -73,6 +73,10 @@ pub fn authorized_cws_benchmark_run(
         authorization_issued,
         provider_credential_present,
     )
+}
+
+pub fn authorized_cws_benchmark_analyze(run: &CwsBenchmarkRunReport) -> CwsAnalysisReceipt {
+    cws_benchmark_analyze(run)
 }
 
 #[derive(Debug, Clone, PartialEq)]

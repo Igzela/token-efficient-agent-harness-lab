@@ -561,6 +561,42 @@ pub fn cws_benchmark_run(
     })
 }
 
+pub const CWS_ACTIVE_HARNESS_DEFAULT_OFF_SHA: &str = "84b1933bc3d9e657acae94d9e5f14810c0651917";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CwsAnalysisDisposition {
+    Enable,
+    Disable,
+    InsufficientDefaultOff,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CwsAnalysisReceipt {
+    pub disposition: CwsAnalysisDisposition,
+    pub active_harness_identity: String,
+    pub hard_gates_passed: bool,
+    pub live_arms_observed: bool,
+}
+
+/// Hard-gate-first analysis. Missing live arms cannot ENABLE CWS.
+pub fn cws_benchmark_analyze(run: &CwsBenchmarkRunReport) -> CwsAnalysisReceipt {
+    let live_arms_observed = run.executed && run.provider_posts > 0;
+    if !live_arms_observed {
+        return CwsAnalysisReceipt {
+            disposition: CwsAnalysisDisposition::InsufficientDefaultOff,
+            active_harness_identity: CWS_ACTIVE_HARNESS_DEFAULT_OFF_SHA.to_string(),
+            hard_gates_passed: false,
+            live_arms_observed: false,
+        };
+    }
+    CwsAnalysisReceipt {
+        disposition: CwsAnalysisDisposition::InsufficientDefaultOff,
+        active_harness_identity: CWS_ACTIVE_HARNESS_DEFAULT_OFF_SHA.to_string(),
+        hard_gates_passed: false,
+        live_arms_observed: true,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolOutcome {
     Success,
@@ -1317,5 +1353,30 @@ mod tests {
         assert_eq!(unissued.provider_posts, 0);
         assert_eq!(unissued.reason, "authorization_unissued");
         assert!(!unissued.preflight.authorizations_issued);
+    }
+
+    #[test]
+    fn fail_closed_run_analyzes_as_insufficient_default_off() {
+        let run = cws_benchmark_run(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            true,
+            true,
+            true,
+            true,
+        )
+        .unwrap();
+        let analysis = cws_benchmark_analyze(&run);
+        assert_eq!(
+            analysis.disposition,
+            CwsAnalysisDisposition::InsufficientDefaultOff
+        );
+        assert_ne!(analysis.disposition, CwsAnalysisDisposition::Enable);
+        assert_ne!(analysis.disposition, CwsAnalysisDisposition::Disable);
+        assert!(!analysis.hard_gates_passed);
+        assert!(!analysis.live_arms_observed);
+        assert_eq!(
+            analysis.active_harness_identity,
+            CWS_ACTIVE_HARNESS_DEFAULT_OFF_SHA
+        );
     }
 }

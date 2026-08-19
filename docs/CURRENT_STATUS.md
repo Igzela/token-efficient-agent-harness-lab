@@ -86,6 +86,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-CWS-CACHE-PARTITION-1` | `COMPLETE` | PR #586 exact head `ecb1367a26d56a633902f0685b3d13d02efff9b4`; squash merge `5a3929dc97b0a94bcec0a95b6e77450238d437da`; exact-head review comments `5347162514` and `5347162743`; canonical workflow `32294752392`; exact-head check `32294752539`; partition digests ignore cache telemetry |
 | `PE7-CWS-BENCHMARK-PROTOCOL-1` | `COMPLETE` | PR #587 exact head `fe9372732559ffab61b7e98fb81c578cd61bd3fc`; squash merge `f561089103a4a6e51b47f38d6640054ec8a660d0`; exact-head review comments `5347317462` and `5347317666`; canonical workflow `32296178643`; exact-head check `32296178560`; hard-gate-first protocol freeze; no Provider |
 | `PE7-CWS-BENCHMARK-PREFLIGHT-1` | `COMPLETE` | PR #588 exact head `c806f75c5910b117c3cf7e44ad1c6a6503e48ddd`; squash merge `1569c70e9f2034bb4f7bc5ccbc24d889b66645ab`; exact-head review comments `5347437430` and `5347437722`; canonical workflow `32297108984`; exact-head check `32297109030`; one unissued T3 package; not a live-ready claim |
+| `PE7-CWS-BENCHMARK-RUN-1` | `COMPLETE` | PR #589 exact head `0f9cad12a850a7ed2ffcc823ebd2da29318c5ae6`; squash merge `84b1933bc3d9e657acae94d9e5f14810c0651917`; exact-head review comments `5347630853` and `5347631083`; canonical workflow `32298813456`; exact-head check `32298813444`; fail-closed; `executed=false`; `provider_posts=0` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -348,6 +349,10 @@ Maintenance-burden metrics are not evaluator or acceptance authority.
 ### CWS benchmark run (`PE7-CWS-BENCHMARK-RUN-1`)
 
 `cws_benchmark_run` fail-closes when preflight is not ready or the T3 package is unissued. Observed this environment: no Provider credential in process env; preflight `authorizations_issued=false`. The runner records `executed=false` and `provider_posts=0`. It does not invent arm terminals or POST a Provider.
+
+### CWS analysis (`PE7-CWS-ANALYSIS-1`)
+
+Disposition is `INSUFFICIENT_DEFAULT_OFF`. Live arms were not observed; hard gates did not pass. The active Harness identity for later HE packets is accepted main `84b1933bc3d9e657acae94d9e5f14810c0651917` with CWS default-off. ENABLE is not recorded. Implementation-maintenance burden (REIMPLEMENT projector/reducer, no upstream transplant LOC) is decision evidence only and is not evaluator authority.
 
 ## Invalidated Historical Receipts (Repair Required)
 
