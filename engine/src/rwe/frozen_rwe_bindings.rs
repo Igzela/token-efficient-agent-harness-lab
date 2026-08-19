@@ -125,6 +125,16 @@ pub struct FrozenRweComparisonArm {
     pub source_tree_hash: String,
 }
 
+/// Frozen comparison-window rules projected onto the existing protocol/schedule
+/// hashes. This does not mutate those hashes or authorize a replay.
+pub const FROZEN_RWE_COMPARISON_WINDOW: &str = "single_randomized_interleaved_window";
+pub const FROZEN_RWE_COMPARISON_ALLOCATION: &str = "paired_old_new_same_schedule";
+pub const FROZEN_RWE_COMPARISON_CONCEALMENT: &str =
+    "arm_source_identity_bound_not_operator_assigned";
+pub const FROZEN_RWE_COMPARISON_DRIFT: &str = "fail_closed_on_protocol_schedule_corpus_drift";
+pub const FROZEN_RWE_COMPARISON_CAPACITY: &str = "shared_frozen_cell_budget_envelopes";
+pub const FROZEN_RWE_COMPARISON_UNISSUED_PACKAGES: u32 = 2;
+
 /// Existing-owner projection of the reconstructable old/new comparison.
 ///
 /// The corpus, protocol, schedule, lockfile, and toolchain are shared
@@ -139,6 +149,12 @@ pub struct FrozenRweComparisonManifest {
     pub corpus_sha256: String,
     pub protocol_sha256: String,
     pub schedule_sha256: String,
+    pub window: String,
+    pub allocation: String,
+    pub concealment: String,
+    pub drift: String,
+    pub capacity_pairing: String,
+    pub unissued_authorization_packages: u32,
 }
 
 impl FrozenRweComparisonManifest {
@@ -185,6 +201,15 @@ impl FrozenRweComparisonManifest {
         {
             return Err("comparison manifest build identity mismatch".into());
         }
+        if self.window != FROZEN_RWE_COMPARISON_WINDOW
+            || self.allocation != FROZEN_RWE_COMPARISON_ALLOCATION
+            || self.concealment != FROZEN_RWE_COMPARISON_CONCEALMENT
+            || self.drift != FROZEN_RWE_COMPARISON_DRIFT
+            || self.capacity_pairing != FROZEN_RWE_COMPARISON_CAPACITY
+            || self.unissued_authorization_packages != FROZEN_RWE_COMPARISON_UNISSUED_PACKAGES
+        {
+            return Err("comparison protocol freeze is missing or mutated".into());
+        }
         Ok(())
     }
 
@@ -206,6 +231,13 @@ impl FrozenRweComparisonManifest {
             "corpus_sha256": self.corpus_sha256,
             "protocol_sha256": self.protocol_sha256,
             "schedule_sha256": self.schedule_sha256,
+            "window": self.window,
+            "allocation": self.allocation,
+            "concealment": self.concealment,
+            "drift": self.drift,
+            "capacity_pairing": self.capacity_pairing,
+            "unissued_authorization_packages": self.unissued_authorization_packages,
+            "authorizations_issued": false,
         })
     }
 }
@@ -230,6 +262,12 @@ pub fn current_comparison_manifest() -> Result<FrozenRweComparisonManifest, Stri
         corpus_sha256: binding.corpus_sha256.into(),
         protocol_sha256: binding.protocol_sha256.into(),
         schedule_sha256: binding.schedule_sha256.into(),
+        window: FROZEN_RWE_COMPARISON_WINDOW.into(),
+        allocation: FROZEN_RWE_COMPARISON_ALLOCATION.into(),
+        concealment: FROZEN_RWE_COMPARISON_CONCEALMENT.into(),
+        drift: FROZEN_RWE_COMPARISON_DRIFT.into(),
+        capacity_pairing: FROZEN_RWE_COMPARISON_CAPACITY.into(),
+        unissued_authorization_packages: FROZEN_RWE_COMPARISON_UNISSUED_PACKAGES,
     };
     manifest.validate()?;
     Ok(manifest)
@@ -648,6 +686,23 @@ mod tests {
             error.contains("colliding"),
             "unexpected validation error: {error}"
         );
+    }
+
+    #[test]
+    fn current_comparison_manifest_rejects_protocol_freeze_mutation() {
+        let mut manifest = current_comparison_manifest().unwrap();
+        manifest.window = "operator_chosen_window".into();
+        let error = manifest.validate().unwrap_err();
+        assert!(
+            error.contains("comparison protocol freeze"),
+            "unexpected validation error: {error}"
+        );
+        let json = current_comparison_manifest().unwrap().to_json();
+        assert_eq!(json["window"], FROZEN_RWE_COMPARISON_WINDOW);
+        assert_eq!(json["allocation"], FROZEN_RWE_COMPARISON_ALLOCATION);
+        assert_eq!(json["concealment"], FROZEN_RWE_COMPARISON_CONCEALMENT);
+        assert_eq!(json["authorizations_issued"], false);
+        assert_eq!(json["unissued_authorization_packages"], 2);
     }
 
     #[test]
