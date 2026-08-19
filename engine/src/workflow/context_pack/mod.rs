@@ -6,7 +6,7 @@ mod validation;
 
 pub use assembly::{
     assemble_context_injection, assemble_context_injection_with_bridge, bridge_context_fields,
-    ContextAssemblyConfig, ContextSource,
+    project_authorized_working_set, ContextAssemblyConfig, ContextSource,
 };
 pub use budget::{allocate_context_budget, apply_prune_policy, check_budget_compliance};
 pub use rules::*;
@@ -321,6 +321,35 @@ mod tests {
         let d = HashMap::new();
         let (_, action) = apply_prune_policy(&d, 500, 1000).unwrap();
         assert_eq!(action, "no_pruning_needed");
+    }
+
+    #[test]
+    fn existing_context_owner_delegates_working_set_projection() {
+        use crate::context_working_set::{
+            content_sha256, ItemKind, ProjectorBounds, Residency, SourceIdentity, SourceItem,
+        };
+        let bytes = b"auth".to_vec();
+        let items = vec![SourceItem {
+            identity: SourceIdentity {
+                owner: "docs".to_string(),
+                identity: "pinned".to_string(),
+                content_sha256: content_sha256(&bytes),
+            },
+            kind: ItemKind::Authority,
+            residency: Residency::Pinned,
+            bytes,
+            supersedes: None,
+            source_stale: false,
+        }];
+        let projected = project_authorized_working_set(
+            &items,
+            ProjectorBounds {
+                max_bytes: 100,
+                max_tokens: 100,
+            },
+        )
+        .unwrap();
+        assert_eq!(projected.prefix.len(), 1);
     }
 
     #[test]
