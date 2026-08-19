@@ -6,7 +6,8 @@ mod validation;
 
 pub use assembly::{
     assemble_context_injection, assemble_context_injection_with_bridge, bridge_context_fields,
-    project_authorized_working_set, ContextAssemblyConfig, ContextSource,
+    project_authorized_working_set, reduce_authorized_tool_result, ContextAssemblyConfig,
+    ContextSource,
 };
 pub use budget::{allocate_context_budget, apply_prune_policy, check_budget_compliance};
 pub use rules::*;
@@ -350,6 +351,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(projected.prefix.len(), 1);
+    }
+
+    #[test]
+    fn existing_context_owner_delegates_tool_result_reduction() {
+        use crate::context_working_set::{ToolOutcome, ToolResultAdmission};
+        let reduced = reduce_authorized_tool_result(&ToolResultAdmission {
+            outcome: ToolOutcome::Failure,
+            raw: b"error: boom".to_vec(),
+            artifact_id: "art-1".to_string(),
+            owner: "artifacts".to_string(),
+            max_visible_bytes: 64,
+            stale: false,
+        })
+        .unwrap();
+        assert_eq!(reduced.outcome, ToolOutcome::Failure);
     }
 
     #[test]
