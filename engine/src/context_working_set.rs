@@ -146,10 +146,7 @@ fn collapse(items: &[SourceItem]) -> Result<Vec<SourceItem>, ProjectorError> {
         if item.identity.content_sha256 != expected {
             return Err(ProjectorError {
                 code: "integrity_mismatch".to_string(),
-                message: format!(
-                    "content_sha256 mismatch for {}",
-                    item.identity.identity
-                ),
+                message: format!("content_sha256 mismatch for {}", item.identity.identity),
             });
         }
         if matches!(

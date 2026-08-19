@@ -111,7 +111,10 @@ Replace stale status in place.
             if commands[-1][:2] == ["git", "show"]:
                 return completed(
                     commands[-1],
-                    stdout="## Packet PE7-RWE-V2-VIABILITY-PREFLIGHT-1\n",
+                    stdout=(
+                        "## Packet PE7-RWE-CR-RUN-1\n"
+                        "## Packet PE7-RWE-V2-VIABILITY-PREFLIGHT-1\n"
+                    ),
                 )
             return completed(commands[-1])
 
