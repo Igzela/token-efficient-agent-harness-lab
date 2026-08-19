@@ -83,6 +83,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-CWS-TOOL-RESULT-REDUCTION-1` | `COMPLETE` | PR #583 exact head `bd793a7ea449e96df9576876bc38003d6f295be1`; squash merge `2af00e19463a10a58c44a52587ceb78114b23538`; exact-head review comments `5346266783` and `5346267002`; canonical workflow `32286825170`; exact-head check `32286825482`; reducer never promotes failure/unknown |
 | `PE7-CWS-REPOSITORY-INTEGRATION-1` | `COMPLETE` | PR #584 exact head `323d479d73f26f280cf28502e3c609d4baf78298`; squash merge `d33d7d04709575d1f6fb9fdbe94169175a261108`; exact-head review comments `5346743411` and `5346743657`; canonical workflow `32290928328`; exact-head check `32290928230`; fresh changed-head fail-closed |
 | `PE7-CWS-RUNTIME-INTEGRATION-1` | `COMPLETE` | PR #585 exact head `7cbe7a0f3660468862302075f024b627a26a0a2e`; squash merge `1dffbc4271a68aebce93a540e7a5793eacefa546`; exact-head review comments `5346942802` and `5346943054`; canonical workflow `32292746487`; exact-head check `32292746231`; stub hashes composed prompts and does not own context |
+| `PE7-CWS-CACHE-PARTITION-1` | `COMPLETE` | PR #586 exact head `ecb1367a26d56a633902f0685b3d13d02efff9b4`; squash merge `5a3929dc97b0a94bcec0a95b6e77450238d437da`; exact-head review comments `5347162514` and `5347162743`; canonical workflow `32294752392`; exact-head check `32294752539`; partition digests ignore cache telemetry |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -316,6 +317,27 @@ Reducer disposition is `REIMPLEMENT`. Large tool results stay with existing arti
 ### Cache partition (`PE7-CWS-CACHE-PARTITION-1`)
 
 Disposition is `REIMPLEMENT`. `partition_working_set` hashes the PINNED prefix separately from dynamic items and cold handles. Optional `CacheTelemetryObservation` is attached as observation only: missing cached-token or cache-write fields stay `None` and never become zero. Changing telemetry cannot change digests or authorize work.
+
+### CWS benchmark protocol (`PE7-CWS-BENCHMARK-PROTOCOL-1`)
+
+Hard-gate-first comparison. Treatment may differ from the post-AC baseline only in accepted CWS projection (`compose_runtime_prompt` + `partition_working_set`). This freeze does not authorize a Provider request.
+
+| Field | Frozen value |
+|---|---|
+| Arms | `baseline` = post-AC runtime without CWS compose/partition; `treatment` = same runtime with CWS compose/partition |
+| Tasks | Reconstructable post-AC scorecard/fixture task identities only; no selective replacement after freeze |
+| Seeds | Packet-bound, recorded before observation |
+| Provider/model/tool | Then-current accepted identities at preflight; must match both arms |
+| Toggle | Explicit `cws_projection=off\|on`; no other treatment delta |
+| Quality / non-inferiority | Existing scorecard/evaluator owners; gates frozen before outcomes |
+| Context metrics | Repeated and total input tokens/bytes from existing usage owners |
+| Cache telemetry | Observe `cached_input_tokens` / `cache_write_tokens` when present; missing stays missing, never zero |
+| Rehydration / tool / retry / latency / cost | Existing artifact, tool, retry, and cost owners |
+| Missingness | Unknown stays unknown; incomplete arm is not success |
+| Analysis | Hard gates first; then maintenance-burden evidence only (upstream-derived LOC, adapter LOC, new LOC, retained tests, dependency delta, source identities, patch/upgrade burden) |
+| Stop | Authority expiry, unknown EFFECT, incomparable arms, post-hoc threshold, burden used as evaluator |
+
+Maintenance-burden metrics are not evaluator or acceptance authority.
 
 ## Invalidated Historical Receipts (Repair Required)
 
