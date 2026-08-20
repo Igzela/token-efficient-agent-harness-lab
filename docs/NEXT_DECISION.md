@@ -6,19 +6,19 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-HE-EC1-MUTATION-REGISTRY-1` is complete. The current window is `PE7-HE-EC2-CONTRACT-1`: freeze evaluator constellation, sealed holdout policy, access classes, sentinels, invalidation, and evaluator-owned `PredictionOutcomeV1` derivation. No holdout access implementation, ENABLE, or Level-1.
+`PE7-HE-EC2-CONTRACT-1` is complete. The current window is `PE7-HE-EC2-HOLDOUT-SEAL-1`: materialize sealed holdout identities, hash-only labels, access mediation, audit, and invalidation/rotation. No candidate run, ENABLE, or Level-1.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-HE-EC2-CONTRACT-1 — READY_FOR_EXECUTION, provider-free; freeze evaluator/holdout contract]
+[window: PE7-HE-EC2-HOLDOUT-SEAL-1 — READY_FOR_EXECUTION, provider-free; seal holdout identities and mediate access]
 
 
 ```
 
 ## Active Routing
 
-1. `PE7-HE-EC2-CONTRACT-1` — `READY_FOR_EXECUTION`
+1. `PE7-HE-EC2-HOLDOUT-SEAL-1` — `READY_FOR_EXECUTION`
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -68,41 +68,47 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Accepted evidence:** PR #594 exact head `b3199736d85312083c45a3522211ae086f5fe756`; squash merge `b970226181957de98859f26f03db3bf101b1f8a0`; exact-head review comments `5349266593` and `5349266718`; canonical workflow `32313718374`.
 
-## Packet PE7-HE-EC2-CONTRACT-1
+## Completed (PE7-HE-EC2-CONTRACT-1)
+
+**State:** `COMPLETE`
+
+**Accepted evidence:** PR #595 exact head `e0585701dec206fca5645299d65cbb3341257008`; squash merge `f996ded631f12f74f42528c70e76ccf0f040bdfd`; exact-head review comments `5349652629` and `5349652752`; canonical workflow `32317253205`.
+
+## Packet PE7-HE-EC2-HOLDOUT-SEAL-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-HE-EC1-MUTATION-REGISTRY-1`
+**Prerequisite:** `PE7-HE-EC2-CONTRACT-1`
 
-**Class:** `CONTRACT`
+**Class:** `IMPLEMENT`
 
-**Outcome:** Freeze evaluator constellation, sealed holdout, reviewer policy, immutable labels, access classes, contamination/gaming/safety sentinels, invalidation, and evaluator-owned `PredictionOutcomeV1` derivation rules.
+**Outcome:** Materialize sealed holdout identities, hash-only labels, access mediation, audit, and invalidation/rotation under the existing evaluator and LocalProductStore owners.
 
-**Allowed delta:** `engine/src/harness_evolution_eval.rs`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. No evaluator implementation or holdout access.
+**Allowed delta:** `engine/src/harness_evolution_eval.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `engine/src/storage/local_product_store/schema.rs`, `engine/src/storage/local_product_store/migrations.rs`, `engine/src/storage/local_product_store/pg_backend/migrations.rs`, `engine/src/storage/local_product_store/integrity.rs`, `engine/tests/test_data_operations.rs`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. No candidate run or evaluator rule change.
 
-**Exit:** Threat model and exact evaluator/label/access/outcome manifest reusing existing verification/replay/scorecard/review owners, with prediction accuracy explicitly non-authoritative.
+**Exit:** Unauthorized-read, label-tamper, leakage, restart, audit, and deletion/rotation tests pass.
 
-**Stop:** Candidate path can observe or mutate labels/rubric; sentinel independence is unprovable; a second evaluator owner is proposed; Level-1.
+**Stop:** Raw sensitive content would be committed, candidate identity gains access, or seal cannot survive restart.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Contract freeze only. No holdout access, evaluation run, ENABLE, or Level-1.
-2. **Prerequisites and evidence.** Mutation-registry COMPLETE on PR #594 / `b970226181957de98859f26f03db3bf101b1f8a0`.
-3. **Owners and paths.** Existing `engine/src/harness_evolution_eval.rs`.
-4. **Frozen invariants.** Evaluator owner is `harness_evolution_eval.rs`. Candidates cannot observe plaintext labels. Prediction accuracy is not selection authority. Three independent sentinel input owners.
-5. **Only semantic delta.** `Ec2ContractManifest` seal/validate.
-6. **Forbidden changes.** No holdout plaintext access, no second evaluator, no Level-1.
-7. **Ordered slices.** Freeze owners and access classes; freeze sentinels; freeze outcome non-authority; stop before holdout seal implementation.
-8. **Failure taxonomy.** Second evaluator, access-class drift, coupled sentinel owners, empty hashes.
-9. **Verification.** Focused cargo tests, handoff, security, rustfmt.
-10. **Compatibility and rollback.** Revert this PR.
-11. **Exit artifact.** Digest-bound EC2 contract manifest.
-12. **Next action.** Promote `PE7-HE-EC2-HOLDOUT-SEAL-1`.
+1. **Outcome and non-goals.** Seal identities and mediate hash-only membership reads. No candidate run, ENABLE, or Level-1.
+2. **Prerequisites and evidence.** EC2 CONTRACT COMPLETE on PR #595 / `f996ded631f12f74f42528c70e76ccf0f040bdfd`.
+3. **Owners and paths.** Existing `harness_evolution_eval.rs` and LocalProductStore HE tables.
+4. **Frozen invariants.** Candidates cannot observe plaintext labels. Operator controller cannot read membership. Evaluator/reviewer see hashes only. Sensitive keys refused. Additive v36 `CREATE TABLE IF NOT EXISTS`.
+5. **Only semantic delta.** `Ec2HoldoutSeal` persist/read/rotate plus access mediation.
+6. **Forbidden changes.** No plaintext labels, no candidate run, no second store/evaluator, no schema_version bump, no Level-1.
+7. **Ordered slices.** Seal vault; persist insert-only; mediate reads; rotate/invalidate; stop before sentinel wiring.
+8. **Failure taxonomy.** Unauthorized read, label tamper, leakage, missing actor, immutable vault collision.
+9. **Verification.** Focused cargo tests, integrity census 72, handoff, security, rustfmt.
+10. **Compatibility and rollback.** Revert this PR; table is additive IF NOT EXISTS.
+11. **Exit artifact.** Digest-bound `Ec2HoldoutSeal` rows and audit events.
+12. **Next action.** Promote `PE7-HE-EC2-SENTINEL-CONFORMANCE-1`.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC2-CONTRACT-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Freeze the EC2 evaluator/holdout/access/sentinel/outcome contract without holdout access or Level-1.","allowed_paths":["engine/src/harness_evolution_eval.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md"],"read_paths":["engine/src/harness_evolution_eval.rs","engine/src/harness_evolution.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/MODULE_MAP.md"],"allowed_outputs":["Digest-bound Ec2ContractManifest."],"prerequisites":["PE7-HE-EC1-MUTATION-REGISTRY-1"],"prerequisite_receipts":["PE7-HE-EC1-MUTATION-REGISTRY-1 COMPLETE: PR #594 exact head b3199736d85312083c45a3522211ae086f5fe756; squash merge b970226181957de98859f26f03db3bf101b1f8a0"],"forbidden_changes":["Do not implement holdout plaintext access.","Do not create a second evaluator.","Do not ENABLE the laboratory.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Freeze evaluator owner and access classes.","Freeze independent sentinel input owners.","Freeze PredictionOutcomeV1 as non-authoritative.","Stop before holdout-seal implementation."],"verification":["cargo test -p engine --lib ec2_contract_freezes_evaluator_and_rejects_second_owner -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; the laboratory stays default-off and no holdout is accessed.","pause_gates":["Stop before holdout seal implementation.","Stop before Level-1."],"expected_artifacts":["Ec2ContractManifest","seal_ec2_contract_manifest"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T2","known_store_mutations":[]}
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC2-HOLDOUT-SEAL-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Materialize sealed holdout identities, hash-only labels, access mediation, audit, and rotation without a candidate run.","allowed_paths":["engine/src/harness_evolution_eval.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/tests/test_data_operations.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md"],"read_paths":["engine/src/harness_evolution_eval.rs","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/tests/test_data_operations.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/MODULE_MAP.md"],"allowed_outputs":["Digest-bound Ec2HoldoutSeal rows and audit events."],"prerequisites":["PE7-HE-EC2-CONTRACT-1"],"prerequisite_receipts":["PE7-HE-EC2-CONTRACT-1 COMPLETE: PR #595 exact head e0585701dec206fca5645299d65cbb3341257008; squash merge f996ded631f12f74f42528c70e76ccf0f040bdfd"],"forbidden_changes":["Do not persist plaintext labels or secrets.","Do not run a candidate evaluation.","Do not create a second evaluator or store.","Do not ENABLE the laboratory.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Seal holdout vault from family label hashes.","Persist insert-only rows with audit.","Mediate evaluator/reviewer hash-only reads.","Rotate and invalidate prior vaults.","Stop before sentinel conformance."],"verification":["cargo test -p engine --lib holdout_seal_denies_candidate_and_detects_label_tamper -- --test-threads=1","cargo test -p engine --lib persists_ec2_holdout_seal_with_access_mediation_and_rotation -- --test-threads=1","cargo test -p engine --test test_data_operations check_integrity_on_clean_database -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; additive harness_evolution_ec2_holdout_seals is unused and the laboratory stays default-off.","pause_gates":["Stop before sentinel conformance.","Stop before Level-1."],"expected_artifacts":["engine/src/harness_evolution_eval.rs Ec2HoldoutSeal seal_ec2_holdout","engine/src/storage/local_product_store/harness_evolution.rs persist_ec2_holdout_seal"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":["harness_evolution_ec2_holdout_seals"]}
 -->
 
 ## Common Execution Protocol

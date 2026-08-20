@@ -852,6 +852,123 @@ pub fn build_sealed_vault(
     Ok(vault)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ec2AccessClass {
+    CandidateWorker,
+    Evaluator,
+    Reviewer,
+    OperatorController,
+}
+
+impl Ec2AccessClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CandidateWorker => "candidate_worker",
+            Self::Evaluator => "evaluator",
+            Self::Reviewer => "reviewer",
+            Self::OperatorController => "operator_controller",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ec2HoldoutSeal {
+    pub schema_version: String,
+    pub family_id: String,
+    pub vault: SealedHoldoutVault,
+    pub invalidation: String,
+    pub epoch: u64,
+    pub record_sha256: String,
+}
+
+pub fn holdout_body_contains_sensitive(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map.iter().any(|(key, child)| {
+            matches!(
+                key.as_str(),
+                "raw_prompt"
+                    | "prompt_text"
+                    | "model_output"
+                    | "transcript"
+                    | "plaintext_label"
+                    | "label_text"
+                    | "secret"
+                    | "credential"
+                    | "private_path"
+                    | "api_key"
+            ) || holdout_body_contains_sensitive(child)
+        }),
+        Value::Array(items) => items.iter().any(holdout_body_contains_sensitive),
+        _ => false,
+    }
+}
+
+pub fn detect_holdout_label_tamper(
+    family: &TaskFamilyManifest,
+    vault: &SealedHoldoutVault,
+) -> Result<(), EvolutionAdmissionError> {
+    let rebuilt = build_sealed_vault(family)?;
+    if rebuilt.vault_sha256 != vault.vault_sha256 {
+        return Err(EvolutionAdmissionError::new(
+            "ec2_label_tamper",
+            "sealed holdout membership does not match family label hashes",
+        ));
+    }
+    Ok(())
+}
+
+pub fn mediate_holdout_membership_read<'a>(
+    class: Ec2AccessClass,
+    seal: &'a Ec2HoldoutSeal,
+) -> Result<&'a SealedHoldoutVault, EvolutionAdmissionError> {
+    if seal.invalidation != "VALID" {
+        return Err(EvolutionAdmissionError::new(
+            "ec2_holdout_invalidated",
+            "invalidated or unknown holdout cannot be read",
+        ));
+    }
+    match class {
+        Ec2AccessClass::Evaluator | Ec2AccessClass::Reviewer => Ok(&seal.vault),
+        Ec2AccessClass::CandidateWorker | Ec2AccessClass::OperatorController => {
+            Err(EvolutionAdmissionError::new(
+                "ec2_unauthorized_holdout_read",
+                "candidate and operator classes cannot read sealed membership",
+            ))
+        }
+    }
+}
+
+pub fn seal_ec2_holdout(
+    family: &TaskFamilyManifest,
+    epoch: u64,
+) -> Result<Ec2HoldoutSeal, EvolutionAdmissionError> {
+    let vault = build_sealed_vault(family)?;
+    detect_holdout_label_tamper(family, &vault)?;
+    let mut seal = Ec2HoldoutSeal {
+        schema_version: SEALED_SCHEMA_VERSION.to_string(),
+        family_id: family.family_id.clone(),
+        vault,
+        invalidation: "VALID".into(),
+        epoch,
+        record_sha256: String::new(),
+    };
+    let mut value = serde_json::to_value(&seal)
+        .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e.to_string()))?;
+    if holdout_body_contains_sensitive(&value) {
+        return Err(EvolutionAdmissionError::new(
+            "ec2_holdout_leak",
+            "sealed holdout body must not contain plaintext labels or secrets",
+        ));
+    }
+    if let Value::Object(map) = &mut value {
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    seal.record_sha256 = crate::harness_evolution::canonical_json_sha256(&value)
+        .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e))?;
+    Ok(seal)
+}
+
 /// Low-level synthetic metrics for unit tests only.
 ///
 /// Must **not** create authoritative `evaluated` receipts, Pareto archive entries, or
@@ -1691,6 +1808,39 @@ mod tests {
             validate_ec2_contract_manifest(&stale).unwrap_err().code,
             "ec2_digest_mismatch"
         );
+    }
+
+    #[test]
+    fn holdout_seal_denies_candidate_and_detects_label_tamper() {
+        let family = sample_task_family("fam-seal");
+        let seal = seal_ec2_holdout(&family, 1).unwrap();
+        assert_eq!(seal.invalidation, "VALID");
+        assert!(mediate_holdout_membership_read(Ec2AccessClass::Evaluator, &seal).is_ok());
+        assert_eq!(
+            mediate_holdout_membership_read(Ec2AccessClass::CandidateWorker, &seal)
+                .unwrap_err()
+                .code,
+            "ec2_unauthorized_holdout_read"
+        );
+        assert_eq!(
+            mediate_holdout_membership_read(Ec2AccessClass::OperatorController, &seal)
+                .unwrap_err()
+                .code,
+            "ec2_unauthorized_holdout_read"
+        );
+        let body = serde_json::to_value(&seal).unwrap();
+        assert!(!holdout_body_contains_sensitive(&body));
+        let mut tampered = family.clone();
+        tampered.sealed_holdout[0].label_sha256 = sha256_hex("tampered-label");
+        assert_eq!(
+            detect_holdout_label_tamper(&tampered, &seal.vault)
+                .unwrap_err()
+                .code,
+            "ec2_label_tamper"
+        );
+        let mut leaked = body;
+        leaked["plaintext_label"] = json!("secret-label");
+        assert!(holdout_body_contains_sensitive(&leaked));
     }
 
     #[test]

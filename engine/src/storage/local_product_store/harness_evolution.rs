@@ -16,11 +16,13 @@ use crate::harness_evolution::{
     RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
-    build_eval_receipt, build_pareto_archive, build_sealed_vault,
-    evaluate_candidate_from_workspace, redacted_eval_evidence, CandidateEvaluationBundle,
-    EqualBudgetContract, EvalReceipt, ParetoArchiveEntry, SealedHoldoutVault, TaskFamilyManifest,
-    ARCHIVE_SCHEMA_VERSION, EVAL_RECEIPT_SCHEMA_VERSION, EVAL_SCHEMA_VERSION, MAX_SEALED_ENTRANTS,
-    MIN_SEALED_ENTRANTS, SEALED_SCHEMA_VERSION,
+    build_eval_receipt, build_pareto_archive, build_sealed_vault, detect_holdout_label_tamper,
+    evaluate_candidate_from_workspace, holdout_body_contains_sensitive,
+    mediate_holdout_membership_read, redacted_eval_evidence, seal_ec2_holdout,
+    CandidateEvaluationBundle, Ec2AccessClass, Ec2HoldoutSeal, EqualBudgetContract, EvalReceipt,
+    ParetoArchiveEntry, SealedHoldoutVault, TaskFamilyManifest, ARCHIVE_SCHEMA_VERSION,
+    EVAL_RECEIPT_SCHEMA_VERSION, EVAL_SCHEMA_VERSION, MAX_SEALED_ENTRANTS, MIN_SEALED_ENTRANTS,
+    SEALED_SCHEMA_VERSION,
 };
 use crate::harness_evolution_pr_ready::{
     finalize_pr_ready_bundle, redacted_pr_ready_evidence, PrReadyCandidateBundle, PrReadyReceipt,
@@ -1045,6 +1047,157 @@ impl LocalProductStore {
                 )),
                 None => Ok(None),
             }
+        })
+    }
+
+    pub fn persist_ec2_holdout_seal(
+        &self,
+        family: &TaskFamilyManifest,
+        epoch: u64,
+        actor_id: &str,
+    ) -> Result<Ec2HoldoutSeal, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec2_holdout_actor: authenticated actor_id is required".into());
+        }
+        let seal =
+            seal_ec2_holdout(family, epoch).map_err(|e| format!("{}: {}", e.code, e.message))?;
+        detect_holdout_label_tamper(family, &seal.vault)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        let body = serde_json::to_value(&seal).map_err(|e| e.to_string())?;
+        if holdout_body_contains_sensitive(&body) {
+            return Err("ec2_holdout_leak: plaintext labels cannot be persisted".into());
+        }
+        let body_json = serde_json::to_string(&body).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec2_holdout_seals WHERE vault_sha256=?1",
+                    params![seal.vault.vault_sha256],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(existing_body) = existing {
+                if existing_body == body_json {
+                    let stored = serde_json::from_str(&existing_body).map_err(|e| e.to_string())?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(stored);
+                }
+                return Err(format!(
+                    "ec2_holdout_immutable: {} already exists",
+                    seal.vault.vault_sha256
+                ));
+            }
+            tx.execute(
+                "INSERT INTO harness_evolution_ec2_holdout_seals
+                    (vault_sha256, family_id, epoch, invalidation, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    seal.vault.vault_sha256,
+                    seal.family_id,
+                    seal.epoch as i64,
+                    seal.invalidation,
+                    body_json,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec2_holdout_sealed",
+                &seal.vault.vault_sha256,
+                &serde_json::json!({
+                    "family_id": seal.family_id,
+                    "epoch": seal.epoch,
+                    "invalidation": seal.invalidation,
+                    "actor_id": actor_id,
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(seal)
+        })
+    }
+
+    pub fn get_ec2_holdout_seal(
+        &self,
+        vault_sha256: &str,
+    ) -> Result<Option<Ec2HoldoutSeal>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec2_holdout_seals WHERE vault_sha256=?1",
+                    params![vault_sha256],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    pub fn read_ec2_holdout_membership(
+        &self,
+        vault_sha256: &str,
+        class: Ec2AccessClass,
+    ) -> Result<SealedHoldoutVault, String> {
+        let seal = self
+            .get_ec2_holdout_seal(vault_sha256)?
+            .ok_or_else(|| format!("ec2_holdout_missing: {vault_sha256}"))?;
+        mediate_holdout_membership_read(class, &seal)
+            .map_err(|e| format!("{}: {}", e.code, e.message))
+            .cloned()
+    }
+
+    pub fn rotate_ec2_holdout_seal(
+        &self,
+        previous_vault_sha256: &str,
+        family: &TaskFamilyManifest,
+        actor_id: &str,
+    ) -> Result<Ec2HoldoutSeal, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec2_holdout_actor: authenticated actor_id is required".into());
+        }
+        let previous = self
+            .get_ec2_holdout_seal(previous_vault_sha256)?
+            .ok_or_else(|| format!("ec2_holdout_missing: {previous_vault_sha256}"))?;
+        let next_epoch = previous.epoch.saturating_add(1);
+        let next = self.persist_ec2_holdout_seal(family, next_epoch, actor_id)?;
+        let mut invalidated = previous.clone();
+        invalidated.invalidation = "INVALIDATED".into();
+        let invalidated_body = serde_json::to_string(&invalidated).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            tx.execute(
+                "UPDATE harness_evolution_ec2_holdout_seals
+                 SET invalidation='INVALIDATED', body_json=?2
+                 WHERE vault_sha256=?1",
+                params![previous_vault_sha256, invalidated_body],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec2_holdout_rotated",
+                previous_vault_sha256,
+                &serde_json::json!({
+                    "previous_vault_sha256": previous_vault_sha256,
+                    "next_vault_sha256": next.vault.vault_sha256,
+                    "actor_id": actor_id,
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(next)
         })
     }
 
@@ -2779,5 +2932,72 @@ mod tests {
                 .manifest_id,
             stored_h.manifest_id
         );
+    }
+
+    #[test]
+    fn persists_ec2_holdout_seal_with_access_mediation_and_rotation() {
+        use crate::harness_evolution_eval::{sample_task_family, Ec2AccessClass};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec2-holdout.db");
+        let store = LocalProductStore::new(&db).unwrap();
+        let family = sample_task_family("fam-holdout");
+        let sealed = store
+            .persist_ec2_holdout_seal(&family, 1, "evaluator-actor")
+            .unwrap();
+        assert!(store
+            .read_ec2_holdout_membership(&sealed.vault.vault_sha256, Ec2AccessClass::Evaluator)
+            .is_ok());
+        assert!(store
+            .persist_ec2_holdout_seal(&family, 1, "")
+            .unwrap_err()
+            .contains("actor_id"));
+        assert!(store
+            .read_ec2_holdout_membership(
+                &sealed.vault.vault_sha256,
+                Ec2AccessClass::CandidateWorker
+            )
+            .unwrap_err()
+            .contains("unauthorized"));
+        assert!(store
+            .read_ec2_holdout_membership(
+                &sealed.vault.vault_sha256,
+                Ec2AccessClass::OperatorController
+            )
+            .unwrap_err()
+            .contains("unauthorized"));
+        let body = serde_json::to_value(&sealed).unwrap();
+        assert!(!crate::harness_evolution_eval::holdout_body_contains_sensitive(&body));
+        drop(store);
+        let reopened = LocalProductStore::new(&db).unwrap();
+        let loaded = reopened
+            .get_ec2_holdout_seal(&sealed.vault.vault_sha256)
+            .unwrap()
+            .expect("seal survives restart");
+        assert_eq!(loaded.vault.vault_sha256, sealed.vault.vault_sha256);
+        let mut rotated_family = family.clone();
+        rotated_family.sealed_holdout[0].label_sha256 =
+            crate::harness_evolution::sha256_hex("rotated-label");
+        let rotated = reopened
+            .rotate_ec2_holdout_seal(
+                &sealed.vault.vault_sha256,
+                &rotated_family,
+                "evaluator-actor",
+            )
+            .unwrap();
+        assert_ne!(rotated.vault.vault_sha256, sealed.vault.vault_sha256);
+        assert!(reopened
+            .read_ec2_holdout_membership(&sealed.vault.vault_sha256, Ec2AccessClass::Evaluator)
+            .unwrap_err()
+            .contains("invalidated"));
+        let audits: i64 = {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE action IN ('harness_evolution.ec2_holdout_sealed','harness_evolution.ec2_holdout_rotated')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert!(audits >= 2);
     }
 }
