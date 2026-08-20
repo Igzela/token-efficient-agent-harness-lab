@@ -239,9 +239,18 @@ pub fn seal_ec2_contract_manifest(
     Ok(manifest)
 }
 
+struct Ec2ComponentDigests {
+    access: String,
+    outcome: String,
+    invalidation: String,
+    review: String,
+    sentinels: Vec<String>,
+    manifest_sha: String,
+}
+
 fn expected_ec2_component_digests(
     manifest: &Ec2ContractManifest,
-) -> Result<(String, String, String, String, Vec<String>, String), EvolutionAdmissionError> {
+) -> Result<Ec2ComponentDigests, EvolutionAdmissionError> {
     let access_payload = json!({
         "classes": manifest.access.classes,
         "candidate_may_observe_plaintext_labels": candidate_may_observe_plaintext_labels(),
@@ -289,14 +298,14 @@ fn expected_ec2_component_digests(
     }
     let manifest_sha = crate::harness_evolution::canonical_json_sha256(&for_digest)
         .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e))?;
-    Ok((
+    Ok(Ec2ComponentDigests {
         access,
         outcome,
         invalidation,
         review,
         sentinels,
         manifest_sha,
-    ))
+    })
 }
 
 pub fn validate_ec2_contract_manifest(
@@ -399,21 +408,20 @@ pub fn validate_ec2_contract_manifest(
     require_hex64(&manifest.invalidation.policy_sha256)?;
     require_hex64(&manifest.outcome.rule_sha256)?;
     require_hex64(&manifest.review.policy_sha256)?;
-    let (access, outcome, invalidation, review, sentinel_digests, manifest_sha) =
-        expected_ec2_component_digests(manifest)?;
-    if manifest.access.policy_sha256 != access
-        || manifest.outcome.rule_sha256 != outcome
-        || manifest.invalidation.policy_sha256 != invalidation
-        || manifest.review.policy_sha256 != review
-        || manifest.manifest_sha256 != manifest_sha
+    let expected = expected_ec2_component_digests(manifest)?;
+    if manifest.access.policy_sha256 != expected.access
+        || manifest.outcome.rule_sha256 != expected.outcome
+        || manifest.invalidation.policy_sha256 != expected.invalidation
+        || manifest.review.policy_sha256 != expected.review
+        || manifest.manifest_sha256 != expected.manifest_sha
     {
         return Err(EvolutionAdmissionError::new(
             "ec2_digest_mismatch",
             "EC2 component or manifest digest does not match canonical content",
         ));
     }
-    for (sentinel, expected) in manifest.sentinels.iter().zip(sentinel_digests.iter()) {
-        if &sentinel.policy_sha256 != expected {
+    for (sentinel, expected_digest) in manifest.sentinels.iter().zip(expected.sentinels.iter()) {
+        if &sentinel.policy_sha256 != expected_digest {
             return Err(EvolutionAdmissionError::new(
                 "ec2_digest_mismatch",
                 "sentinel policy digest does not match canonical content",
