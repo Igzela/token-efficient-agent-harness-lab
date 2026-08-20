@@ -91,6 +91,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-HE-EC1-CONTRACT-1` | `COMPLETE` | PR #591 exact head `50661a622c19e1f6da1f934a43bcbbaa4b52a003`; squash merge `e116e212ed043d773e215f2ba029e5b2f1763e4d`; exact-head review comments `5348443154` and `5348443354`; canonical workflow `32306087501`; default-off Harness `84b1933bc3d9e657acae94d9e5f14810c0651917` |
 | `PE7-HE-EC1-IDENTITY-LINEAGE-1` | `COMPLETE` | PR #592 exact head `155fa749effdcd790fb954eefcf64d12790d21b6`; squash merge `3dc2d3b12fbb95ec2b26220681cba5ad7547c6d2`; exact-head review comments `5348823217` and `5348823396`; canonical workflow `32309602816` |
 | `PE7-HE-EC1-CAUSAL-MANIFEST-1` | `COMPLETE` | PR #593 exact head `c00f24dac433d9b3fc23f5b0df746c89442097dd`; squash merge `b2fa400395a0502bf52ea5fd9468af5830766422`; exact-head review comments `5349023567` and `5349023702`; canonical workflow `32311374839` |
+| `PE7-HE-EC1-MUTATION-REGISTRY-1` | `COMPLETE` | PR #594 exact head `b3199736d85312083c45a3522211ae086f5fe756`; squash merge `b970226181957de98859f26f03db3bf101b1f8a0`; exact-head review comments `5349266593` and `5349266718`; canonical workflow `32313718374` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -372,7 +373,11 @@ Source-bound `FailurePatternEvidenceV1` and pre-execution `MutationHypothesisMan
 
 ### HE EC1 mutation registry (`PE7-HE-EC1-MUTATION-REGISTRY-1`)
 
-This packet records bounded generator adapters so each candidate binding uses the accepted mutation-family registry and an addressable causal hypothesis. Unknown families are rejected. The adapter cannot edit the registry or evaluator. No ENABLE or Level-1.
+Bounded generator adapters bind each candidate to the accepted mutation-family registry and an addressable causal hypothesis. Unknown families are rejected. The adapter cannot edit the registry or evaluator. No ENABLE or Level-1. Receipt: PR #594 merge `b970226181957de98859f26f03db3bf101b1f8a0`.
+
+### HE EC2 contract (`PE7-HE-EC2-CONTRACT-1`)
+
+This packet freezes the evaluator/holdout/access/sentinel/outcome/review constellation in `engine/src/harness_evolution_eval.rs`. Candidates cannot observe plaintext labels. Prediction accuracy is not selection authority. No holdout access implementation and no Level-1.
 
 ## Invalidated Historical Receipts (Repair Required)
 
