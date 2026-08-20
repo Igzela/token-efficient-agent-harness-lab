@@ -918,10 +918,10 @@ pub fn detect_holdout_label_tamper(
     Ok(())
 }
 
-pub fn mediate_holdout_membership_read<'a>(
+pub fn mediate_holdout_membership_read(
     class: Ec2AccessClass,
-    seal: &'a Ec2HoldoutSeal,
-) -> Result<&'a SealedHoldoutVault, EvolutionAdmissionError> {
+    seal: &Ec2HoldoutSeal,
+) -> Result<&SealedHoldoutVault, EvolutionAdmissionError> {
     if seal.invalidation != "VALID" {
         return Err(EvolutionAdmissionError::new(
             "ec2_holdout_invalidated",
