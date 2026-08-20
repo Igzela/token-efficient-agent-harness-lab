@@ -92,6 +92,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-HE-EC1-IDENTITY-LINEAGE-1` | `COMPLETE` | PR #592 exact head `155fa749effdcd790fb954eefcf64d12790d21b6`; squash merge `3dc2d3b12fbb95ec2b26220681cba5ad7547c6d2`; exact-head review comments `5348823217` and `5348823396`; canonical workflow `32309602816` |
 | `PE7-HE-EC1-CAUSAL-MANIFEST-1` | `COMPLETE` | PR #593 exact head `c00f24dac433d9b3fc23f5b0df746c89442097dd`; squash merge `b2fa400395a0502bf52ea5fd9468af5830766422`; exact-head review comments `5349023567` and `5349023702`; canonical workflow `32311374839` |
 | `PE7-HE-EC1-MUTATION-REGISTRY-1` | `COMPLETE` | PR #594 exact head `b3199736d85312083c45a3522211ae086f5fe756`; squash merge `b970226181957de98859f26f03db3bf101b1f8a0`; exact-head review comments `5349266593` and `5349266718`; canonical workflow `32313718374` |
+| `PE7-HE-EC2-CONTRACT-1` | `COMPLETE` | PR #595 exact head `e0585701dec206fca5645299d65cbb3341257008`; squash merge `f996ded631f12f74f42528c70e76ccf0f040bdfd`; exact-head review comments `5349652629` and `5349652752`; canonical workflow `32317253205` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -377,7 +378,7 @@ Bounded generator adapters bind each candidate to the accepted mutation-family r
 
 ### HE EC2 contract (`PE7-HE-EC2-CONTRACT-1`)
 
-This packet freezes the evaluator/holdout/access/sentinel/outcome/review constellation in `engine/src/harness_evolution_eval.rs`. Candidates cannot observe plaintext labels. Prediction accuracy is not selection authority. No holdout access implementation and no Level-1.
+`engine/src/harness_evolution_eval.rs` freezes the evaluator/holdout/access/sentinel/outcome/review constellation. Candidates cannot observe plaintext labels. Prediction accuracy is not selection authority. Validate recomputes component and manifest digests. No holdout access implementation and no Level-1. Receipt: PR #595 exact head `e0585701dec206fca5645299d65cbb3341257008`; squash merge `f996ded631f12f74f42528c70e76ccf0f040bdfd`.
 
 ## Invalidated Historical Receipts (Repair Required)
 
