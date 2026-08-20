@@ -1,6 +1,6 @@
 //! Durable storage for PE7 Harness Evolution B1 evidence + B2 evaluation/archive.
 
-use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::{append_audit_locked, LocalProductStore};
 use crate::harness_evolution::{
@@ -1050,6 +1050,39 @@ impl LocalProductStore {
         })
     }
 
+    fn load_ec2_holdout_seal_row(
+        conn: &Connection,
+        vault_sha256: &str,
+    ) -> Result<Option<Ec2HoldoutSeal>, String> {
+        let row: Option<String> = conn
+            .query_row(
+                "SELECT body_json FROM harness_evolution_ec2_holdout_seals WHERE vault_sha256=?1",
+                params![vault_sha256],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match row {
+            Some(body) => {
+                let mut seal: Ec2HoldoutSeal =
+                    serde_json::from_str(&body).map_err(|e| e.to_string())?;
+                let superseded: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM harness_evolution_ec2_holdout_seals
+                         WHERE family_id=?1 AND epoch > ?2",
+                        params![seal.family_id, seal.epoch as i64],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                if superseded > 0 {
+                    seal.invalidation = "INVALIDATED".into();
+                }
+                Ok(Some(seal))
+            }
+            None => Ok(None),
+        }
+    }
+
     pub fn persist_ec2_holdout_seal(
         &self,
         family: &TaskFamilyManifest,
@@ -1126,20 +1159,15 @@ impl LocalProductStore {
     pub fn get_ec2_holdout_seal(
         &self,
         vault_sha256: &str,
+        class: Ec2AccessClass,
     ) -> Result<Option<Ec2HoldoutSeal>, String> {
         self.with_conn(|conn| {
-            let row: Option<String> = conn
-                .query_row(
-                    "SELECT body_json FROM harness_evolution_ec2_holdout_seals WHERE vault_sha256=?1",
-                    params![vault_sha256],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            match row {
-                Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
-                None => Ok(None),
-            }
+            let Some(seal) = Self::load_ec2_holdout_seal_row(conn, vault_sha256)? else {
+                return Ok(None);
+            };
+            mediate_holdout_membership_read(class, &seal)
+                .map_err(|e| format!("{}: {}", e.code, e.message))?;
+            Ok(Some(seal))
         })
     }
 
@@ -1149,11 +1177,9 @@ impl LocalProductStore {
         class: Ec2AccessClass,
     ) -> Result<SealedHoldoutVault, String> {
         let seal = self
-            .get_ec2_holdout_seal(vault_sha256)?
+            .get_ec2_holdout_seal(vault_sha256, class)?
             .ok_or_else(|| format!("ec2_holdout_missing: {vault_sha256}"))?;
-        mediate_holdout_membership_read(class, &seal)
-            .map_err(|e| format!("{}: {}", e.code, e.message))
-            .cloned()
+        Ok(seal.vault)
     }
 
     pub fn rotate_ec2_holdout_seal(
@@ -1165,25 +1191,19 @@ impl LocalProductStore {
         if actor_id.trim().is_empty() {
             return Err("ec2_holdout_actor: authenticated actor_id is required".into());
         }
-        let previous = self
-            .get_ec2_holdout_seal(previous_vault_sha256)?
-            .ok_or_else(|| format!("ec2_holdout_missing: {previous_vault_sha256}"))?;
+        let previous = self.with_conn(|conn| {
+            Self::load_ec2_holdout_seal_row(conn, previous_vault_sha256)?
+                .ok_or_else(|| format!("ec2_holdout_missing: {previous_vault_sha256}"))
+        })?;
+        if previous.invalidation != "VALID" {
+            return Err("ec2_holdout_invalidated: previous seal cannot rotate".into());
+        }
         let next_epoch = previous.epoch.saturating_add(1);
         let next = self.persist_ec2_holdout_seal(family, next_epoch, actor_id)?;
-        let mut invalidated = previous.clone();
-        invalidated.invalidation = "INVALIDATED".into();
-        let invalidated_body = serde_json::to_string(&invalidated).map_err(|e| e.to_string())?;
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         self.with_conn(|conn| {
             let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                 .map_err(|e| e.to_string())?;
-            tx.execute(
-                "UPDATE harness_evolution_ec2_holdout_seals
-                 SET invalidation='INVALIDATED', body_json=?2
-                 WHERE vault_sha256=?1",
-                params![previous_vault_sha256, invalidated_body],
-            )
-            .map_err(|e| e.to_string())?;
             append_audit_locked(
                 &tx,
                 &now,
@@ -2952,6 +2972,10 @@ mod tests {
             .unwrap_err()
             .contains("actor_id"));
         assert!(store
+            .persist_ec2_holdout_seal(&family, 2, "evaluator-actor")
+            .unwrap_err()
+            .contains("immutable"));
+        assert!(store
             .read_ec2_holdout_membership(
                 &sealed.vault.vault_sha256,
                 Ec2AccessClass::CandidateWorker
@@ -2970,7 +2994,7 @@ mod tests {
         drop(store);
         let reopened = LocalProductStore::new(&db).unwrap();
         let loaded = reopened
-            .get_ec2_holdout_seal(&sealed.vault.vault_sha256)
+            .get_ec2_holdout_seal(&sealed.vault.vault_sha256, Ec2AccessClass::Evaluator)
             .unwrap()
             .expect("seal survives restart");
         assert_eq!(loaded.vault.vault_sha256, sealed.vault.vault_sha256);
