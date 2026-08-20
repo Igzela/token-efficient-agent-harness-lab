@@ -712,6 +712,8 @@ pub struct EvalReceipt {
     pub candidate_id: String,
     pub terminal: String,
     pub bundle_sha256: String,
+    #[serde(default)]
+    pub sentinel_receipts: Vec<Ec2SentinelReceipt>,
     pub created_at: String,
 }
 
@@ -967,6 +969,154 @@ pub fn seal_ec2_holdout(
     seal.record_sha256 = crate::harness_evolution::canonical_json_sha256(&value)
         .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e))?;
     Ok(seal)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ec2SentinelReceipt {
+    pub schema_version: String,
+    pub sentinel_id: String,
+    pub policy_version: String,
+    pub input_owner: String,
+    pub receipt_schema: String,
+    pub policy_sha256: String,
+    pub observation: String,
+    pub invalidation: String,
+    pub candidate_id: String,
+    pub evaluation_id: String,
+    pub evaluator_identity_hash: String,
+    pub source_evidence_digest: String,
+    pub evidence_sha256: String,
+    pub receipt_sha256: String,
+}
+
+fn frozen_sentinel_input_owner(id: &str) -> Result<&'static str, EvolutionAdmissionError> {
+    match id {
+        "contamination" => Ok("workspace-access-audit+LocalProductStore"),
+        "gaming" => Ok("harness_evolution_eval+verification"),
+        "safety" => Ok("product_golden_path+tool_policy+output_boundary"),
+        _ => Err(EvolutionAdmissionError::new(
+            "ec2_sentinel_set",
+            "unknown sentinel identity",
+        )),
+    }
+}
+
+fn seal_sentinel_receipt(
+    mut receipt: Ec2SentinelReceipt,
+) -> Result<Ec2SentinelReceipt, EvolutionAdmissionError> {
+    receipt.schema_version = EC2_SENTINEL_RECEIPT_SCHEMA.to_string();
+    receipt.receipt_sha256.clear();
+    let mut value = serde_json::to_value(&receipt)
+        .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("receipt_sha256".into(), Value::String(String::new()));
+    }
+    receipt.receipt_sha256 = crate::harness_evolution::canonical_json_sha256(&value)
+        .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e))?;
+    Ok(receipt)
+}
+
+/// Observe contamination, gaming, and safety sentinels. Observation cannot mutate labels
+/// or be candidate-disabled. UNKNOWN never becomes PASS.
+pub fn observe_ec2_sentinels(
+    bundle: &CandidateEvaluationBundle,
+) -> Result<Vec<Ec2SentinelReceipt>, EvolutionAdmissionError> {
+    let mut receipts = Vec::new();
+    for id in EC2_SENTINEL_IDS {
+        let owner = frozen_sentinel_input_owner(id)?;
+        let (observation, evidence) = match *id {
+            "contamination" => {
+                let leaked = bundle.sealed_feedback_into_mutation
+                    || bundle.baselines.iter().any(|baseline| {
+                        baseline.used_sealed_holdout
+                            && !matches!(baseline.split, TaskSplit::SealedHoldout)
+                    });
+                if leaked {
+                    ("FAIL", "sealed_holdout_feedback_or_split_leak")
+                } else {
+                    ("PASS", "holdout_isolated")
+                }
+            }
+            "gaming" => {
+                if bundle.claims_improvement {
+                    ("FAIL", "candidate_claimed_improvement")
+                } else {
+                    ("PASS", "no_improvement_claim")
+                }
+            }
+            "safety" => {
+                let uncertainty_as_pass = bundle
+                    .baselines
+                    .iter()
+                    .any(|baseline| baseline.usage.incomplete && baseline.hard_gate.is_pass());
+                if uncertainty_as_pass {
+                    ("FAIL", "incomplete_evidence_treated_as_pass")
+                } else if bundle.evaluation_id.trim().is_empty() {
+                    ("UNKNOWN", "missing_evaluation_identity")
+                } else {
+                    ("PASS", "incomplete_evidence_not_passed")
+                }
+            }
+            _ => ("UNKNOWN", "unrecognized"),
+        };
+        let invalidation = match observation {
+            "PASS" => "VALID",
+            "UNKNOWN" => "UNKNOWN",
+            _ => "INVALIDATED",
+        };
+        let policy_payload = json!({
+            "id": id,
+            "input_owner": owner,
+        });
+        let policy_sha256 = component_digest(id, EC2_SENTINEL_POLICY_VERSION, &policy_payload)
+            .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e))?;
+        receipts.push(seal_sentinel_receipt(Ec2SentinelReceipt {
+            schema_version: EC2_SENTINEL_RECEIPT_SCHEMA.to_string(),
+            sentinel_id: (*id).to_string(),
+            policy_version: EC2_SENTINEL_POLICY_VERSION.to_string(),
+            input_owner: owner.to_string(),
+            receipt_schema: EC2_SENTINEL_RECEIPT_SCHEMA.to_string(),
+            policy_sha256,
+            observation: observation.to_string(),
+            invalidation: invalidation.to_string(),
+            candidate_id: bundle.candidate_id.clone(),
+            evaluation_id: bundle.evaluation_id.clone(),
+            evaluator_identity_hash: bundle.evaluator_identity_hash.clone(),
+            source_evidence_digest: sha256_hex(evidence),
+            evidence_sha256: sha256_hex(evidence),
+            receipt_sha256: String::new(),
+        })?);
+    }
+    Ok(receipts)
+}
+
+pub fn sentinels_admit_pareto(
+    receipts: &[Ec2SentinelReceipt],
+) -> Result<(), EvolutionAdmissionError> {
+    if receipts.len() != EC2_SENTINEL_IDS.len() {
+        return Err(EvolutionAdmissionError::new(
+            "ec2_sentinel_set",
+            "exactly contamination, gaming, and safety receipts are required",
+        ));
+    }
+    for (index, receipt) in receipts.iter().enumerate() {
+        if receipt.sentinel_id != EC2_SENTINEL_IDS[index] {
+            return Err(EvolutionAdmissionError::new(
+                "ec2_sentinel_order",
+                "sentinels must be contamination, gaming, safety",
+            ));
+        }
+        if receipt.observation != "PASS" || receipt.invalidation != "VALID" {
+            return Err(EvolutionAdmissionError::new(
+                "ec2_sentinel_fail",
+                format!(
+                    "{} sentinel {} closed before Pareto",
+                    receipt.observation, receipt.sentinel_id
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Low-level synthetic metrics for unit tests only.
@@ -1537,6 +1687,8 @@ pub fn build_pareto_archive(
             "evaluation bundle schema mismatch",
         ));
     }
+    let sentinel_receipts = observe_ec2_sentinels(bundle)?;
+    sentinels_admit_pareto(&sentinel_receipts)?;
     if bundle.claims_improvement {
         return Err(EvolutionAdmissionError::new(
             "evolution_eval_forbidden_claim",
@@ -1631,6 +1783,15 @@ pub fn build_eval_receipt(
     terminal: &str,
     created_at: &str,
 ) -> EvalReceipt {
+    build_eval_receipt_with_sentinels(bundle, terminal, created_at, Vec::new())
+}
+
+pub fn build_eval_receipt_with_sentinels(
+    bundle: &CandidateEvaluationBundle,
+    terminal: &str,
+    created_at: &str,
+    sentinel_receipts: Vec<Ec2SentinelReceipt>,
+) -> EvalReceipt {
     EvalReceipt {
         schema_version: EVAL_RECEIPT_SCHEMA_VERSION.to_string(),
         receipt_id: derive_eval_receipt_id(&bundle.evaluation_id, terminal),
@@ -1638,6 +1799,7 @@ pub fn build_eval_receipt(
         candidate_id: bundle.candidate_id.clone(),
         terminal: terminal.to_string(),
         bundle_sha256: bundle.bundle_sha256.clone(),
+        sentinel_receipts,
         created_at: created_at.to_string(),
     }
 }
@@ -1844,6 +2006,84 @@ mod tests {
     }
 
     #[test]
+    fn sentinels_fail_closed_before_pareto_and_keep_rejected_receipts() {
+        let _g = EnvGuard::enable_lab();
+        let family = sample_task_family("fam-sentinel");
+        let vault = build_sealed_vault(&family).unwrap();
+        let budget = sample_budget(3);
+        let clean = evaluate_candidate_fixture(
+            "cand-s",
+            "lin-s",
+            "active-s",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &budget,
+            &family,
+            &vault,
+            false,
+            "2026-08-20T00:00:00Z",
+        )
+        .unwrap();
+        let pass = observe_ec2_sentinels(&clean).unwrap();
+        sentinels_admit_pareto(&pass).unwrap();
+        assert!(build_pareto_archive(&clean, "t").is_ok());
+
+        let mut contamination = clean.clone();
+        contamination.sealed_feedback_into_mutation = true;
+        let receipts = observe_ec2_sentinels(&contamination).unwrap();
+        assert_eq!(receipts[0].sentinel_id, "contamination");
+        assert_eq!(receipts[0].observation, "FAIL");
+        assert_eq!(
+            build_pareto_archive(&contamination, "t").unwrap_err().code,
+            "ec2_sentinel_fail"
+        );
+        assert_eq!(receipts.len(), 3);
+
+        let mut gaming = clean.clone();
+        gaming.claims_improvement = true;
+        assert_eq!(
+            observe_ec2_sentinels(&gaming).unwrap()[1].observation,
+            "FAIL"
+        );
+        assert_eq!(
+            build_pareto_archive(&gaming, "t").unwrap_err().code,
+            "ec2_sentinel_fail"
+        );
+
+        let mut safety = clean.clone();
+        safety.baselines[0].usage.incomplete = true;
+        safety.baselines[0].hard_gate = HardGateResult::Passed;
+        assert_eq!(
+            observe_ec2_sentinels(&safety).unwrap()[2].observation,
+            "FAIL"
+        );
+        assert_eq!(
+            build_pareto_archive(&safety, "t").unwrap_err().code,
+            "ec2_sentinel_fail"
+        );
+
+        let mut unknown = clean.clone();
+        unknown.evaluation_id.clear();
+        let unknown_receipts = observe_ec2_sentinels(&unknown).unwrap();
+        assert_eq!(unknown_receipts[2].observation, "UNKNOWN");
+        assert_eq!(unknown_receipts[2].invalidation, "UNKNOWN");
+        assert_eq!(
+            sentinels_admit_pareto(&unknown_receipts).unwrap_err().code,
+            "ec2_sentinel_fail"
+        );
+        assert_eq!(
+            sentinels_admit_pareto(&unknown_receipts[..1])
+                .unwrap_err()
+                .code,
+            "ec2_sentinel_set"
+        );
+        let rejected =
+            build_eval_receipt_with_sentinels(&contamination, "rejected_sentinel", "t", receipts);
+        assert_eq!(rejected.terminal, "rejected_sentinel");
+        assert_eq!(rejected.sentinel_receipts.len(), 3);
+    }
+
+    #[test]
     fn equal_budget_fixture_evaluation_is_deterministic() {
         let _g = EnvGuard::enable_lab();
         let family = sample_task_family("fam-a");
@@ -1988,13 +2228,13 @@ mod tests {
         bundle.claims_improvement = true;
         assert_eq!(
             build_pareto_archive(&bundle, "t").unwrap_err().code,
-            "evolution_eval_forbidden_claim"
+            "ec2_sentinel_fail"
         );
         bundle.claims_improvement = false;
         bundle.sealed_feedback_into_mutation = true;
         assert_eq!(
             build_pareto_archive(&bundle, "t").unwrap_err().code,
-            "evolution_eval_sealed_feedback"
+            "ec2_sentinel_fail"
         );
     }
 

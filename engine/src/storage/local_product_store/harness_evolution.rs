@@ -16,7 +16,7 @@ use crate::harness_evolution::{
     RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
-    build_eval_receipt, build_pareto_archive, build_sealed_vault, detect_holdout_label_tamper,
+    build_pareto_archive, build_sealed_vault, detect_holdout_label_tamper,
     evaluate_candidate_from_workspace, holdout_body_contains_sensitive,
     mediate_holdout_membership_read, redacted_eval_evidence, seal_ec2_holdout,
     CandidateEvaluationBundle, Ec2AccessClass, Ec2HoldoutSeal, EqualBudgetContract, EvalReceipt,
@@ -1561,16 +1561,56 @@ impl LocalProductStore {
         if bundle.schema_version != EVAL_SCHEMA_VERSION {
             return Err("evaluation bundle schema mismatch".into());
         }
-        if bundle.claims_improvement || bundle.sealed_feedback_into_mutation {
-            return Err("evaluation violated immutable laboratory claims contract".into());
+        let sentinel_receipts = crate::harness_evolution_eval::observe_ec2_sentinels(&bundle)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        if crate::harness_evolution_eval::sentinels_admit_pareto(&sentinel_receipts).is_err() {
+            let receipt = crate::harness_evolution_eval::build_eval_receipt_with_sentinels(
+                &bundle,
+                "rejected_sentinel",
+                &created_at,
+                sentinel_receipts,
+            );
+            self.persist_evaluation_bundle_and_receipt(
+                &bundle,
+                &[],
+                &receipt,
+                budget.seed,
+                &created_at,
+            )?;
+            return Err(format!(
+                "ec2_sentinel_fail: rejected evidence retained as {}",
+                receipt.receipt_id
+            ));
         }
         let archive = build_pareto_archive(&bundle, &created_at)
             .map_err(|e| format!("{}: {}", e.code, e.message))?;
-        let receipt = build_eval_receipt(&bundle, "evaluated", &created_at);
-        let redacted = redacted_eval_evidence(&bundle);
-        let bundle_json = serde_json::to_string(&bundle).map_err(|e| e.to_string())?;
-        let receipt_json = serde_json::to_string(&receipt).map_err(|e| e.to_string())?;
+        let receipt = crate::harness_evolution_eval::build_eval_receipt_with_sentinels(
+            &bundle,
+            "evaluated",
+            &created_at,
+            sentinel_receipts,
+        );
+        self.persist_evaluation_bundle_and_receipt(
+            &bundle,
+            &archive,
+            &receipt,
+            budget.seed,
+            &created_at,
+        )?;
+        Ok((bundle, archive, receipt))
+    }
 
+    fn persist_evaluation_bundle_and_receipt(
+        &self,
+        bundle: &CandidateEvaluationBundle,
+        archive: &[ParetoArchiveEntry],
+        receipt: &EvalReceipt,
+        budget_seed: u64,
+        created_at: &str,
+    ) -> Result<(), String> {
+        let redacted = redacted_eval_evidence(bundle);
+        let bundle_json = serde_json::to_string(bundle).map_err(|e| e.to_string())?;
+        let receipt_json = serde_json::to_string(receipt).map_err(|e| e.to_string())?;
         self.with_conn(|conn| {
             let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                 .map_err(|e| e.to_string())?;
@@ -1578,7 +1618,7 @@ impl LocalProductStore {
                 .query_row(
                     "SELECT evaluation_id FROM harness_evolution_evaluations
                      WHERE candidate_id=?1 AND budget_seed=?2 AND family_id=?3",
-                    params![candidate_id, budget.seed as i64, family.family_id],
+                    params![bundle.candidate_id, budget_seed as i64, bundle.family_id],
                     |r| r.get(0),
                 )
                 .optional()
@@ -1586,7 +1626,7 @@ impl LocalProductStore {
             if existing.is_some() {
                 return Err(format!(
                     "evolution_duplicate_evaluation: candidate {} seed {} family {}",
-                    candidate_id, budget.seed, family.family_id
+                    bundle.candidate_id, budget_seed, bundle.family_id
                 ));
             }
             tx.execute(
@@ -1604,7 +1644,7 @@ impl LocalProductStore {
                     bundle.active_version_hash,
                     bundle.evaluator_identity_hash,
                     bundle.family_id,
-                    budget.seed as i64,
+                    budget_seed as i64,
                     bundle.bundle_sha256,
                     bundle.sealed_entrant_count as i64,
                     bundle_json,
@@ -1612,7 +1652,7 @@ impl LocalProductStore {
                 ],
             )
             .map_err(|e| e.to_string())?;
-            for entry in &archive {
+            for entry in archive {
                 if entry.schema_version != ARCHIVE_SCHEMA_VERSION {
                     return Err("pareto archive schema mismatch".into());
                 }
@@ -1655,16 +1695,21 @@ impl LocalProductStore {
                 ],
             )
             .map_err(|e| e.to_string())?;
+            let audit_action = if receipt.terminal == "rejected_sentinel" {
+                "harness_evolution.evaluation_rejected_sentinel"
+            } else {
+                "harness_evolution.evaluation_recorded"
+            };
             append_audit_locked(
                 &tx,
-                &created_at,
+                created_at,
                 "system",
-                "harness_evolution.evaluation_recorded",
+                audit_action,
                 &bundle.evaluation_id,
                 &redacted,
             )?;
             tx.commit().map_err(|e| e.to_string())?;
-            Ok((bundle, archive, receipt))
+            Ok(())
         })
     }
 
