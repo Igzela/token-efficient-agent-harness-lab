@@ -712,6 +712,8 @@ pub struct EvalReceipt {
     pub candidate_id: String,
     pub terminal: String,
     pub bundle_sha256: String,
+    #[serde(default)]
+    pub sentinel_receipts: Vec<Ec2SentinelReceipt>,
     pub created_at: String,
 }
 
@@ -973,11 +975,16 @@ pub fn seal_ec2_holdout(
 pub struct Ec2SentinelReceipt {
     pub schema_version: String,
     pub sentinel_id: String,
+    pub policy_version: String,
     pub input_owner: String,
+    pub receipt_schema: String,
+    pub policy_sha256: String,
     pub observation: String,
     pub invalidation: String,
     pub candidate_id: String,
     pub evaluation_id: String,
+    pub evaluator_identity_hash: String,
+    pub source_evidence_digest: String,
     pub evidence_sha256: String,
     pub receipt_sha256: String,
 }
@@ -1052,19 +1059,30 @@ pub fn observe_ec2_sentinels(
             }
             _ => ("UNKNOWN", "unrecognized"),
         };
-        let invalidation = if observation == "PASS" {
-            "VALID"
-        } else {
-            "INVALIDATED"
+        let invalidation = match observation {
+            "PASS" => "VALID",
+            "UNKNOWN" => "UNKNOWN",
+            _ => "INVALIDATED",
         };
+        let policy_payload = json!({
+            "id": id,
+            "input_owner": owner,
+        });
+        let policy_sha256 = component_digest(id, EC2_SENTINEL_POLICY_VERSION, &policy_payload)
+            .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e))?;
         receipts.push(seal_sentinel_receipt(Ec2SentinelReceipt {
             schema_version: EC2_SENTINEL_RECEIPT_SCHEMA.to_string(),
             sentinel_id: (*id).to_string(),
+            policy_version: EC2_SENTINEL_POLICY_VERSION.to_string(),
             input_owner: owner.to_string(),
+            receipt_schema: EC2_SENTINEL_RECEIPT_SCHEMA.to_string(),
+            policy_sha256,
             observation: observation.to_string(),
             invalidation: invalidation.to_string(),
             candidate_id: bundle.candidate_id.clone(),
             evaluation_id: bundle.evaluation_id.clone(),
+            evaluator_identity_hash: bundle.evaluator_identity_hash.clone(),
+            source_evidence_digest: sha256_hex(evidence),
             evidence_sha256: sha256_hex(evidence),
             receipt_sha256: String::new(),
         })?);
@@ -1765,6 +1783,15 @@ pub fn build_eval_receipt(
     terminal: &str,
     created_at: &str,
 ) -> EvalReceipt {
+    build_eval_receipt_with_sentinels(bundle, terminal, created_at, Vec::new())
+}
+
+pub fn build_eval_receipt_with_sentinels(
+    bundle: &CandidateEvaluationBundle,
+    terminal: &str,
+    created_at: &str,
+    sentinel_receipts: Vec<Ec2SentinelReceipt>,
+) -> EvalReceipt {
     EvalReceipt {
         schema_version: EVAL_RECEIPT_SCHEMA_VERSION.to_string(),
         receipt_id: derive_eval_receipt_id(&bundle.evaluation_id, terminal),
@@ -1772,6 +1799,7 @@ pub fn build_eval_receipt(
         candidate_id: bundle.candidate_id.clone(),
         terminal: terminal.to_string(),
         bundle_sha256: bundle.bundle_sha256.clone(),
+        sentinel_receipts,
         created_at: created_at.to_string(),
     }
 }
@@ -2033,6 +2061,26 @@ mod tests {
             build_pareto_archive(&safety, "t").unwrap_err().code,
             "ec2_sentinel_fail"
         );
+
+        let mut unknown = clean.clone();
+        unknown.evaluation_id.clear();
+        let unknown_receipts = observe_ec2_sentinels(&unknown).unwrap();
+        assert_eq!(unknown_receipts[2].observation, "UNKNOWN");
+        assert_eq!(unknown_receipts[2].invalidation, "UNKNOWN");
+        assert_eq!(
+            sentinels_admit_pareto(&unknown_receipts).unwrap_err().code,
+            "ec2_sentinel_fail"
+        );
+        assert_eq!(
+            sentinels_admit_pareto(&unknown_receipts[..1])
+                .unwrap_err()
+                .code,
+            "ec2_sentinel_set"
+        );
+        let rejected =
+            build_eval_receipt_with_sentinels(&contamination, "rejected_sentinel", "t", receipts);
+        assert_eq!(rejected.terminal, "rejected_sentinel");
+        assert_eq!(rejected.sentinel_receipts.len(), 3);
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::harness_evolution::{
     RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
-    build_eval_receipt, build_pareto_archive, build_sealed_vault, detect_holdout_label_tamper,
+    build_pareto_archive, build_sealed_vault, detect_holdout_label_tamper,
     evaluate_candidate_from_workspace, holdout_body_contains_sensitive,
     mediate_holdout_membership_read, redacted_eval_evidence, seal_ec2_holdout,
     CandidateEvaluationBundle, Ec2AccessClass, Ec2HoldoutSeal, EqualBudgetContract, EvalReceipt,
@@ -1564,7 +1564,12 @@ impl LocalProductStore {
         let sentinel_receipts = crate::harness_evolution_eval::observe_ec2_sentinels(&bundle)
             .map_err(|e| format!("{}: {}", e.code, e.message))?;
         if crate::harness_evolution_eval::sentinels_admit_pareto(&sentinel_receipts).is_err() {
-            let receipt = build_eval_receipt(&bundle, "rejected_sentinel", &created_at);
+            let receipt = crate::harness_evolution_eval::build_eval_receipt_with_sentinels(
+                &bundle,
+                "rejected_sentinel",
+                &created_at,
+                sentinel_receipts,
+            );
             self.persist_evaluation_bundle_and_receipt(
                 &bundle,
                 &[],
@@ -1579,7 +1584,12 @@ impl LocalProductStore {
         }
         let archive = build_pareto_archive(&bundle, &created_at)
             .map_err(|e| format!("{}: {}", e.code, e.message))?;
-        let receipt = build_eval_receipt(&bundle, "evaluated", &created_at);
+        let receipt = crate::harness_evolution_eval::build_eval_receipt_with_sentinels(
+            &bundle,
+            "evaluated",
+            &created_at,
+            sentinel_receipts,
+        );
         self.persist_evaluation_bundle_and_receipt(
             &bundle,
             &archive,
