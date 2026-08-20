@@ -239,6 +239,66 @@ pub fn seal_ec2_contract_manifest(
     Ok(manifest)
 }
 
+fn expected_ec2_component_digests(
+    manifest: &Ec2ContractManifest,
+) -> Result<(String, String, String, String, Vec<String>, String), EvolutionAdmissionError> {
+    let access_payload = json!({
+        "classes": manifest.access.classes,
+        "candidate_may_observe_plaintext_labels": candidate_may_observe_plaintext_labels(),
+    });
+    let access = component_digest("access", EC2_ACCESS_POLICY_VERSION, &access_payload)
+        .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e))?;
+    let outcome_payload = json!({
+        "prediction_accuracy_is_selection_authority": prediction_accuracy_is_selection_authority(),
+        "schema_version": PREDICTION_OUTCOME_SCHEMA,
+    });
+    let outcome = component_digest("outcome", EC2_OUTCOME_RULE_VERSION, &outcome_payload)
+        .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e))?;
+    let invalidation_payload = json!({ "states": manifest.invalidation.states });
+    let invalidation = component_digest(
+        "invalidation",
+        EC2_SENTINEL_POLICY_VERSION,
+        &invalidation_payload,
+    )
+    .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e))?;
+    let review_payload = json!({
+        "blinding": manifest.review.blinding,
+        "disagreement": manifest.review.disagreement,
+        "identity_class": manifest.review.identity_class,
+        "permitted_repair": manifest.review.permitted_repair,
+        "rubric": manifest.review.rubric,
+        "time_measurement": manifest.review.time_measurement,
+    });
+    let review = component_digest("review", EC2_REVIEW_POLICY_VERSION, &review_payload)
+        .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e))?;
+    let mut sentinels = Vec::new();
+    for sentinel in &manifest.sentinels {
+        let payload = json!({
+            "id": sentinel.id,
+            "input_owner": sentinel.input_owner,
+        });
+        sentinels.push(
+            component_digest(&sentinel.id, EC2_SENTINEL_POLICY_VERSION, &payload)
+                .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e))?,
+        );
+    }
+    let mut for_digest = serde_json::to_value(manifest)
+        .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e.to_string()))?;
+    if let Value::Object(map) = &mut for_digest {
+        map.insert("manifest_sha256".into(), Value::String(String::new()));
+    }
+    let manifest_sha = crate::harness_evolution::canonical_json_sha256(&for_digest)
+        .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e))?;
+    Ok((
+        access,
+        outcome,
+        invalidation,
+        review,
+        sentinels,
+        manifest_sha,
+    ))
+}
+
 pub fn validate_ec2_contract_manifest(
     manifest: &Ec2ContractManifest,
 ) -> Result<(), EvolutionAdmissionError> {
@@ -334,6 +394,31 @@ pub fn validate_ec2_contract_manifest(
             "ec2_owner_drift",
             "EC2 owners must reuse the frozen existing owners",
         ));
+    }
+    require_hex64(&manifest.access.policy_sha256)?;
+    require_hex64(&manifest.invalidation.policy_sha256)?;
+    require_hex64(&manifest.outcome.rule_sha256)?;
+    require_hex64(&manifest.review.policy_sha256)?;
+    let (access, outcome, invalidation, review, sentinel_digests, manifest_sha) =
+        expected_ec2_component_digests(manifest)?;
+    if manifest.access.policy_sha256 != access
+        || manifest.outcome.rule_sha256 != outcome
+        || manifest.invalidation.policy_sha256 != invalidation
+        || manifest.review.policy_sha256 != review
+        || manifest.manifest_sha256 != manifest_sha
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec2_digest_mismatch",
+            "EC2 component or manifest digest does not match canonical content",
+        ));
+    }
+    for (sentinel, expected) in manifest.sentinels.iter().zip(sentinel_digests.iter()) {
+        if &sentinel.policy_sha256 != expected {
+            return Err(EvolutionAdmissionError::new(
+                "ec2_digest_mismatch",
+                "sentinel policy digest does not match canonical content",
+            ));
+        }
     }
     Ok(())
 }
@@ -1580,11 +1665,23 @@ mod tests {
             validate_ec2_contract_manifest(&leaked).unwrap_err().code,
             "ec2_access_classes"
         );
-        let mut coupled = sealed;
+        let mut coupled = sealed.clone();
         coupled.sentinels[1].input_owner = coupled.sentinels[0].input_owner.clone();
         assert_eq!(
             validate_ec2_contract_manifest(&coupled).unwrap_err().code,
             "ec2_sentinel_independence"
+        );
+        let mut empty = sealed.clone();
+        empty.access.policy_sha256.clear();
+        assert_eq!(
+            validate_ec2_contract_manifest(&empty).unwrap_err().code,
+            "evolution_hash_invalid"
+        );
+        let mut stale = sealed;
+        stale.review.policy_sha256 = sha256_hex("stale-review");
+        assert_eq!(
+            validate_ec2_contract_manifest(&stale).unwrap_err().code,
+            "ec2_digest_mismatch"
         );
     }
 
