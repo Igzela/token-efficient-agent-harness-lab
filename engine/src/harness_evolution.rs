@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 
 pub const EVOLUTION_LAB_SCHEMA_VERSION: &str = "harness_evolution_lab.v1";
@@ -103,6 +103,7 @@ pub enum CandidateTerminalReason {
     RejectedExactDuplicate,
     RejectedNearDuplicate,
     RejectedExplorationCollapse,
+    RejectedHardGate,
     WorkspaceDiscarded,
 }
 
@@ -124,6 +125,7 @@ impl CandidateTerminalReason {
             Self::RejectedExactDuplicate => "rejected_exact_duplicate",
             Self::RejectedNearDuplicate => "rejected_near_duplicate",
             Self::RejectedExplorationCollapse => "rejected_exploration_collapse",
+            Self::RejectedHardGate => "rejected_hard_gate",
             Self::WorkspaceDiscarded => "workspace_discarded",
         }
     }
@@ -2801,6 +2803,211 @@ pub fn sample_ec5_selection_contract() -> Ec5SelectionContractV1 {
     .unwrap()
 }
 
+pub const EC5_SELECTION_RESULT_SCHEMA: &str = "ec5_selection_result.v1";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CandidateSelectionEvaluation {
+    pub candidate_id: String,
+    pub lineage_id: String,
+    pub parent_candidate_id: Option<String>,
+    pub proposal_id: String,
+    pub hard_gate_passes: HashMap<String, bool>,
+    pub metrics: HashMap<String, f64>,
+    pub seed: u64,
+    pub causal_manifest_digest: Option<String>,
+    pub counterevidence_digest: Option<String>,
+    pub prediction_outcome_digest: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CandidateSelectionResult {
+    pub schema_version: String,
+    pub result_id: String,
+    pub contract_id: String,
+    pub candidate_id: String,
+    pub lineage_id: String,
+    pub is_hard_gate_passed: bool,
+    pub failing_hard_gates: Vec<HardGateKind>,
+    pub is_dominated: bool,
+    pub dominating_candidate_ids: Vec<String>,
+    pub sequential_rank: u32,
+    pub selected_for_archive: bool,
+    pub causal_manifest_digest: Option<String>,
+    pub counterevidence_digest: Option<String>,
+    pub prediction_outcome_digest: Option<String>,
+    pub record_sha256: String,
+}
+
+pub fn evaluate_candidate_selection(
+    contract: &Ec5SelectionContractV1,
+    candidates: &[CandidateSelectionEvaluation],
+) -> Result<Vec<CandidateSelectionResult>, EvolutionAdmissionError> {
+    validate_ec5_selection_contract(contract)?;
+
+    // First: evaluate hard gates for each candidate in strict order of contract.hard_gate_order
+    let mut initial_results = Vec::new();
+    for candidate in candidates {
+        let mut failing_gates = Vec::new();
+        for gate in &contract.hard_gate_order {
+            let passed = candidate
+                .hard_gate_passes
+                .get(gate.as_str())
+                .copied()
+                .unwrap_or(false);
+            if !passed {
+                failing_gates.push(*gate);
+            }
+        }
+        let is_hard_gate_passed = failing_gates.is_empty();
+        initial_results.push((candidate, is_hard_gate_passed, failing_gates));
+    }
+
+    // Second: for candidates that passed all hard gates, perform Pareto dominance comparison across contract.pareto_objectives
+    let eligible_indices: Vec<usize> = initial_results
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, (_, passed, _))| if *passed { Some(idx) } else { None })
+        .collect();
+
+    let mut dominance_map: HashMap<usize, (bool, Vec<String>)> = HashMap::new();
+    for &idx_a in &eligible_indices {
+        let cand_a = initial_results[idx_a].0;
+        let mut dominating_ids = Vec::new();
+        for &idx_b in &eligible_indices {
+            if idx_a == idx_b {
+                continue;
+            }
+            let cand_b = initial_results[idx_b].0;
+            if candidate_dominates(&contract.pareto_objectives, cand_b, cand_a) {
+                dominating_ids.push(cand_b.candidate_id.clone());
+            }
+        }
+        let is_dominated = !dominating_ids.is_empty();
+        dominance_map.insert(idx_a, (is_dominated, dominating_ids));
+    }
+
+    // Third: assemble results and sort with tie-breaking rules
+    let mut results = Vec::new();
+    for (idx, (candidate, is_hard_gate_passed, failing_gates)) in
+        initial_results.into_iter().enumerate()
+    {
+        let (is_dominated, dominating_candidate_ids) = if is_hard_gate_passed {
+            dominance_map.remove(&idx).unwrap_or((false, Vec::new()))
+        } else {
+            (true, Vec::new())
+        };
+        let selected_for_archive = is_hard_gate_passed && !is_dominated;
+        let result = CandidateSelectionResult {
+            schema_version: EC5_SELECTION_RESULT_SCHEMA.to_string(),
+            result_id: format!(
+                "ec5_sel:{}",
+                &sha256_hex(&format!(
+                    "sel|{}|{}",
+                    candidate.candidate_id, contract.contract_id
+                ))[..16]
+            ),
+            contract_id: contract.contract_id.clone(),
+            candidate_id: candidate.candidate_id.clone(),
+            lineage_id: candidate.lineage_id.clone(),
+            is_hard_gate_passed,
+            failing_hard_gates: failing_gates,
+            is_dominated,
+            dominating_candidate_ids,
+            sequential_rank: 0,
+            selected_for_archive,
+            causal_manifest_digest: candidate.causal_manifest_digest.clone(),
+            counterevidence_digest: candidate.counterevidence_digest.clone(),
+            prediction_outcome_digest: candidate.prediction_outcome_digest.clone(),
+            record_sha256: String::new(),
+        };
+        results.push((candidate, result));
+    }
+
+    // Sorting:
+    // 1. Passing hard gates & non-dominated (selected_for_archive == true) first
+    // 2. Passing hard gates but dominated second
+    // 3. Failed hard gates last
+    // Ties within each bucket broken by contract.tie_breaking_rule
+    results.sort_by(|(cand_a, res_a), (cand_b, res_b)| {
+        let bucket_a = if res_a.selected_for_archive {
+            0
+        } else if res_a.is_hard_gate_passed {
+            1
+        } else {
+            2
+        };
+        let bucket_b = if res_b.selected_for_archive {
+            0
+        } else if res_b.is_hard_gate_passed {
+            1
+        } else {
+            2
+        };
+        bucket_a
+            .cmp(&bucket_b)
+            .then_with(|| match contract.tie_breaking_rule {
+                ParetoTieBreakingRule::OldestCreatedFirst => cand_a
+                    .created_at
+                    .cmp(&cand_b.created_at)
+                    .then_with(|| cand_a.candidate_id.cmp(&cand_b.candidate_id)),
+                ParetoTieBreakingRule::DeterministicSeedHash => cand_a
+                    .seed
+                    .cmp(&cand_b.seed)
+                    .then_with(|| cand_a.candidate_id.cmp(&cand_b.candidate_id)),
+                ParetoTieBreakingRule::StrictNonDominatedSetOnly => {
+                    cand_a.candidate_id.cmp(&cand_b.candidate_id)
+                }
+            })
+    });
+
+    let mut final_results = Vec::new();
+    for (rank, (_cand, mut res)) in results.into_iter().enumerate() {
+        res.sequential_rank = rank as u32;
+        let mut value = serde_json::to_value(&res)
+            .map_err(|e| EvolutionAdmissionError::new("ec5_result_json", e.to_string()))?;
+        value["record_sha256"] = Value::String(String::new());
+        res.record_sha256 = record_digest_excluding_sha256(&value)?;
+        final_results.push(res);
+    }
+
+    Ok(final_results)
+}
+
+fn candidate_dominates(
+    objectives: &[ParetoObjectiveSpec],
+    a: &CandidateSelectionEvaluation,
+    b: &CandidateSelectionEvaluation,
+) -> bool {
+    let mut better_or_equal_all = true;
+    let mut strictly_better_any = false;
+    for obj in objectives {
+        let val_a = a.metrics.get(&obj.name).copied().unwrap_or(0.0);
+        let val_b = b.metrics.get(&obj.name).copied().unwrap_or(0.0);
+        match obj.direction {
+            OptimizationDirection::Maximize => {
+                if val_a < val_b {
+                    better_or_equal_all = false;
+                    break;
+                }
+                if val_a > val_b {
+                    strictly_better_any = true;
+                }
+            }
+            OptimizationDirection::Minimize => {
+                if val_a > val_b {
+                    better_or_equal_all = false;
+                    break;
+                }
+                if val_a < val_b {
+                    strictly_better_any = true;
+                }
+            }
+        }
+    }
+    better_or_equal_all && strictly_better_any
+}
+
 pub fn sample_ec3_budget_contract() -> Ec3LifecycleBudgetContractV1 {
     let phase_envelopes = REQUIRED_LIFECYCLE_COST_PHASES
         .iter()
@@ -3730,5 +3937,175 @@ mod tests {
             sealed.unwrap_err().code,
             "ec5_deterministic_replay_required"
         );
+    }
+
+    #[test]
+    fn ec5_selection_hard_gates_filter_prior_to_pareto() {
+        let contract = sample_ec5_selection_contract();
+
+        let mut gates_pass = HashMap::new();
+        for gate in &contract.hard_gate_order {
+            gates_pass.insert(gate.as_str().to_string(), true);
+        }
+        let mut gates_fail_verifier = gates_pass.clone();
+        gates_fail_verifier.insert("verifier_pass".to_string(), false);
+
+        let mut metrics_high = HashMap::new();
+        metrics_high.insert("quality_score".to_string(), 9900.0);
+        metrics_high.insert("token_cost".to_string(), 100.0);
+        metrics_high.insert("wall_clock_seconds".to_string(), 5.0);
+
+        let mut metrics_low = HashMap::new();
+        metrics_low.insert("quality_score".to_string(), 5000.0);
+        metrics_low.insert("token_cost".to_string(), 5000.0);
+        metrics_low.insert("wall_clock_seconds".to_string(), 60.0);
+
+        let cand_perfect_but_failed_gate = CandidateSelectionEvaluation {
+            candidate_id: "cand-perfect-failed-gate".to_string(),
+            lineage_id: "lin-1".to_string(),
+            parent_candidate_id: None,
+            proposal_id: "prop-1".to_string(),
+            hard_gate_passes: gates_fail_verifier,
+            metrics: metrics_high.clone(),
+            seed: 101,
+            causal_manifest_digest: Some("c".repeat(64)),
+            counterevidence_digest: None,
+            prediction_outcome_digest: Some("p".repeat(64)),
+            created_at: "2026-08-20T00:01:00Z".to_string(),
+        };
+
+        let cand_normal_passed = CandidateSelectionEvaluation {
+            candidate_id: "cand-normal-passed".to_string(),
+            lineage_id: "lin-1".to_string(),
+            parent_candidate_id: None,
+            proposal_id: "prop-2".to_string(),
+            hard_gate_passes: gates_pass,
+            metrics: metrics_low,
+            seed: 102,
+            causal_manifest_digest: Some("d".repeat(64)),
+            counterevidence_digest: None,
+            prediction_outcome_digest: Some("q".repeat(64)),
+            created_at: "2026-08-20T00:02:00Z".to_string(),
+        };
+
+        let results = evaluate_candidate_selection(
+            &contract,
+            &[
+                cand_perfect_but_failed_gate.clone(),
+                cand_normal_passed.clone(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 2);
+        // cand_normal_passed must be rank 0 (selected for archive) because cand_perfect_but_failed_gate failed hard gate
+        let res_passed = results
+            .iter()
+            .find(|r| r.candidate_id == "cand-normal-passed")
+            .unwrap();
+        assert!(res_passed.is_hard_gate_passed);
+        assert!(res_passed.selected_for_archive);
+        assert_eq!(res_passed.sequential_rank, 0);
+
+        let res_failed = results
+            .iter()
+            .find(|r| r.candidate_id == "cand-perfect-failed-gate")
+            .unwrap();
+        assert!(!res_failed.is_hard_gate_passed);
+        assert!(!res_failed.selected_for_archive);
+        assert_eq!(
+            res_failed.failing_hard_gates,
+            vec![HardGateKind::VerifierPass]
+        );
+        assert_eq!(res_failed.sequential_rank, 1);
+    }
+
+    #[test]
+    fn ec5_selection_pareto_dominance_and_archive() {
+        let contract = sample_ec5_selection_contract();
+
+        let mut gates_pass = HashMap::new();
+        for gate in &contract.hard_gate_order {
+            gates_pass.insert(gate.as_str().to_string(), true);
+        }
+
+        // Candidate A: quality 9000, cost 1000, latency 10
+        let mut m_a = HashMap::new();
+        m_a.insert("quality_score".to_string(), 9000.0);
+        m_a.insert("token_cost".to_string(), 1000.0);
+        m_a.insert("wall_clock_seconds".to_string(), 10.0);
+
+        // Candidate B (dominated by A): quality 8000, cost 2000, latency 20
+        let mut m_b = HashMap::new();
+        m_b.insert("quality_score".to_string(), 8000.0);
+        m_b.insert("token_cost".to_string(), 2000.0);
+        m_b.insert("wall_clock_seconds".to_string(), 20.0);
+
+        // Candidate C (trade-off with A): quality 9500 (better), cost 3000 (worse), latency 30 (worse)
+        let mut m_c = HashMap::new();
+        m_c.insert("quality_score".to_string(), 9500.0);
+        m_c.insert("token_cost".to_string(), 3000.0);
+        m_c.insert("wall_clock_seconds".to_string(), 30.0);
+
+        let cand_a = CandidateSelectionEvaluation {
+            candidate_id: "cand-a".to_string(),
+            lineage_id: "lin-1".to_string(),
+            parent_candidate_id: None,
+            proposal_id: "prop-a".to_string(),
+            hard_gate_passes: gates_pass.clone(),
+            metrics: m_a,
+            seed: 201,
+            causal_manifest_digest: Some("a".repeat(64)),
+            counterevidence_digest: None,
+            prediction_outcome_digest: None,
+            created_at: "2026-08-20T00:01:00Z".to_string(),
+        };
+
+        let cand_b = CandidateSelectionEvaluation {
+            candidate_id: "cand-b".to_string(),
+            lineage_id: "lin-1".to_string(),
+            parent_candidate_id: None,
+            proposal_id: "prop-b".to_string(),
+            hard_gate_passes: gates_pass.clone(),
+            metrics: m_b,
+            seed: 202,
+            causal_manifest_digest: Some("b".repeat(64)),
+            counterevidence_digest: None,
+            prediction_outcome_digest: None,
+            created_at: "2026-08-20T00:02:00Z".to_string(),
+        };
+
+        let cand_c = CandidateSelectionEvaluation {
+            candidate_id: "cand-c".to_string(),
+            lineage_id: "lin-1".to_string(),
+            parent_candidate_id: None,
+            proposal_id: "prop-c".to_string(),
+            hard_gate_passes: gates_pass,
+            metrics: m_c,
+            seed: 203,
+            causal_manifest_digest: Some("c".repeat(64)),
+            counterevidence_digest: None,
+            prediction_outcome_digest: None,
+            created_at: "2026-08-20T00:03:00Z".to_string(),
+        };
+
+        let results = evaluate_candidate_selection(
+            &contract,
+            &[cand_a.clone(), cand_b.clone(), cand_c.clone()],
+        )
+        .unwrap();
+
+        let res_a = results.iter().find(|r| r.candidate_id == "cand-a").unwrap();
+        assert!(!res_a.is_dominated);
+        assert!(res_a.selected_for_archive);
+
+        let res_c = results.iter().find(|r| r.candidate_id == "cand-c").unwrap();
+        assert!(!res_c.is_dominated);
+        assert!(res_c.selected_for_archive);
+
+        let res_b = results.iter().find(|r| r.candidate_id == "cand-b").unwrap();
+        assert!(res_b.is_dominated);
+        assert!(!res_b.selected_for_archive);
+        assert_eq!(res_b.dominating_candidate_ids, vec!["cand-a"]);
     }
 }

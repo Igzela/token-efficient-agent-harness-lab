@@ -2037,6 +2037,73 @@ impl LocalProductStore {
         })
     }
 
+    pub fn record_ec5_candidate_selection_results(
+        &self,
+        contract: &crate::harness_evolution::Ec5SelectionContractV1,
+        evaluations: &[crate::harness_evolution::CandidateSelectionEvaluation],
+        actor_id: &str,
+    ) -> Result<Vec<crate::harness_evolution::CandidateSelectionResult>, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec5_selection_actor: authenticated actor_id is required".into());
+        }
+        let results = crate::harness_evolution::evaluate_candidate_selection(contract, evaluations)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+
+            for res in &results {
+                if !res.is_hard_gate_passed {
+                    let row: Option<String> = tx
+                        .query_row(
+                            "SELECT body_json FROM harness_evolution_candidates WHERE candidate_id=?1",
+                            params![res.candidate_id],
+                            |r| r.get(0),
+                        )
+                        .optional()
+                        .map_err(|e| e.to_string())?;
+                    if let Some(body) = row {
+                        if let Ok(mut cand) = serde_json::from_str::<EvolutionCandidate>(&body) {
+                            cand.status = CandidateStatus::Rejected;
+                            cand.terminal_reason = CandidateTerminalReason::RejectedHardGate;
+                            if let Ok(cand_json) = serde_json::to_string(&cand) {
+                                let _ = tx.execute(
+                                    "UPDATE harness_evolution_candidates SET status=?1, terminal_reason=?2, body_json=?3, updated_at=?4 WHERE candidate_id=?5",
+                                    params![
+                                        cand.status.as_str(),
+                                        cand.terminal_reason.as_str(),
+                                        cand_json,
+                                        now,
+                                        cand.candidate_id
+                                    ],
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec5_selection_evaluated",
+                &contract.contract_id,
+                &serde_json::json!({
+                    "contract_id": contract.contract_id,
+                    "candidates_count": evaluations.len(),
+                    "selected_count": results.iter().filter(|r| r.selected_for_archive).count(),
+                    "actor_id": actor_id,
+                }),
+            )?;
+
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(results)
+        })
+    }
+
     /// Register an evaluator-owned task family (trusted configuration owner).
     pub fn register_harness_evolution_task_family(
         &self,
@@ -4564,6 +4631,173 @@ mod tests {
         assert_eq!(
             updated_c4.terminal_reason,
             CandidateTerminalReason::RejectedExplorationCollapse
+        );
+    }
+
+    #[test]
+    fn ec5_store_selection_archive_and_rejection_lifecycle() {
+        use crate::harness_evolution::{
+            sample_active_identity, sample_ec5_selection_contract, CandidateSelectionEvaluation,
+            CandidateStatus, CandidateTerminalReason, CANDIDATE_SCHEMA_VERSION,
+        };
+        use std::collections::HashMap;
+        let _g = LabEnvGuard::enable();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec5-sel.db");
+        let store = LocalProductStore::new(&db).unwrap();
+
+        let active = sample_active_identity();
+        store
+            .register_harness_evolution_active_identity(&active, "actor-1")
+            .unwrap();
+
+        let contract = sample_ec5_selection_contract();
+
+        // Insert proposals
+        for i in 1..=2 {
+            let prop_id = format!("prop-sel-{}", i);
+            store
+                .with_conn(|conn| {
+                    conn.execute(
+                        "INSERT INTO harness_evolution_proposals (proposal_id, active_version_id, active_version_hash, evaluator_identity_hash, proposal_body_sha256, body_json, seed, created_at) VALUES (?1, ?2, ?3, ?4, ?5, '{}', 1, '2026-08-20T00:00:00Z')",
+                        params![prop_id, active.active_version_id, active.active_version_hash, active.evaluator_identity_hash, "0".repeat(64)],
+                    ).map_err(|e| e.to_string())
+                })
+                .unwrap();
+        }
+
+        // Insert candidates
+        for i in 1..=2 {
+            let cand_id = format!("cand-sel-{}", i);
+            let hash = i.to_string().repeat(64);
+            let c = EvolutionCandidate {
+                schema_version: CANDIDATE_SCHEMA_VERSION.to_string(),
+                candidate_id: cand_id.clone(),
+                lineage_id: format!("lin-sel-{}", i),
+                parent_candidate_id: None,
+                proposal_id: format!("prop-sel-{}", i),
+                active_version_id: active.active_version_id.clone(),
+                active_version_hash: active.active_version_hash.clone(),
+                evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+                mutable_surface: crate::harness_evolution::MutableSurfaceDeclaration {
+                    schema_version: "mutable_surface_declaration.v1".to_string(),
+                    surfaces: vec!["prompt".to_string()],
+                },
+                workspace: crate::harness_evolution::CandidateWorkspace {
+                    schema_version: "candidate_workspace.v1".to_string(),
+                    workspace_id: format!("ws-{}", i),
+                    relative_path: format!("ws/{}", i),
+                    content_hash: hash.clone(),
+                },
+                content_hash: hash,
+                status: CandidateStatus::Proposed,
+                terminal_reason: CandidateTerminalReason::Admitted,
+                seed: 300 + i,
+                created_at: format!("2026-08-20T00:0{}:00Z", i),
+            };
+            let c_body = serde_json::to_string(&c).unwrap();
+            store
+                .with_conn(|conn| {
+                    conn.execute(
+                        "INSERT INTO harness_evolution_candidates (candidate_id, lineage_id, proposal_id, active_version_id, active_version_hash, evaluator_identity_hash, content_hash, status, terminal_reason, workspace_id, workspace_rel_path, body_json, seed, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+                        params![
+                            c.candidate_id, c.lineage_id, c.proposal_id, c.active_version_id,
+                            c.active_version_hash, c.evaluator_identity_hash, c.content_hash,
+                            c.status.as_str(), c.terminal_reason.as_str(), c.workspace.workspace_id,
+                            c.workspace.relative_path, c_body, c.seed as i64, c.created_at
+                        ],
+                    ).map_err(|e| e.to_string())
+                })
+                .unwrap();
+        }
+
+        let mut gates_pass = HashMap::new();
+        for gate in &contract.hard_gate_order {
+            gates_pass.insert(gate.as_str().to_string(), true);
+        }
+        let mut gates_fail = gates_pass.clone();
+        gates_fail.insert("verifier_pass".to_string(), false);
+
+        let mut m1 = HashMap::new();
+        m1.insert("quality_score".to_string(), 9000.0);
+        m1.insert("token_cost".to_string(), 1000.0);
+        m1.insert("wall_clock_seconds".to_string(), 10.0);
+
+        let mut m2 = HashMap::new();
+        m2.insert("quality_score".to_string(), 9500.0);
+        m2.insert("token_cost".to_string(), 500.0);
+        m2.insert("wall_clock_seconds".to_string(), 5.0);
+
+        let eval1 = CandidateSelectionEvaluation {
+            candidate_id: "cand-sel-1".to_string(),
+            lineage_id: "lin-sel-1".to_string(),
+            parent_candidate_id: None,
+            proposal_id: "prop-sel-1".to_string(),
+            hard_gate_passes: gates_pass,
+            metrics: m1,
+            seed: 301,
+            causal_manifest_digest: Some("1".repeat(64)),
+            counterevidence_digest: None,
+            prediction_outcome_digest: Some("p1".repeat(32)),
+            created_at: "2026-08-20T00:01:00Z".to_string(),
+        };
+
+        let eval2 = CandidateSelectionEvaluation {
+            candidate_id: "cand-sel-2".to_string(),
+            lineage_id: "lin-sel-2".to_string(),
+            parent_candidate_id: None,
+            proposal_id: "prop-sel-2".to_string(),
+            hard_gate_passes: gates_fail,
+            metrics: m2,
+            seed: 302,
+            causal_manifest_digest: Some("2".repeat(64)),
+            counterevidence_digest: None,
+            prediction_outcome_digest: Some("p2".repeat(32)),
+            created_at: "2026-08-20T00:02:00Z".to_string(),
+        };
+
+        let results = store
+            .record_ec5_candidate_selection_results(
+                &contract,
+                &[eval1.clone(), eval2.clone()],
+                "selection-actor",
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        let r1 = results
+            .iter()
+            .find(|r| r.candidate_id == "cand-sel-1")
+            .unwrap();
+        assert!(r1.is_hard_gate_passed);
+        assert!(r1.selected_for_archive);
+        assert_eq!(r1.sequential_rank, 0);
+
+        let r2 = results
+            .iter()
+            .find(|r| r.candidate_id == "cand-sel-2")
+            .unwrap();
+        assert!(!r2.is_hard_gate_passed);
+        assert!(!r2.selected_for_archive);
+        assert_eq!(r2.sequential_rank, 1);
+
+        // Verify cand-sel-2 is updated to Rejected in database
+        let updated_c2: EvolutionCandidate = store
+            .with_conn(|conn| {
+                let b: String = conn
+                    .query_row(
+                        "SELECT body_json FROM harness_evolution_candidates WHERE candidate_id='cand-sel-2'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                Ok(serde_json::from_str(&b).unwrap())
+            })
+            .unwrap();
+        assert_eq!(updated_c2.status, CandidateStatus::Rejected);
+        assert_eq!(
+            updated_c2.terminal_reason,
+            CandidateTerminalReason::RejectedHardGate
         );
     }
 }
