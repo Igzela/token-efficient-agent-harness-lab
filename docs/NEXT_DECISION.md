@@ -6,18 +6,18 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-HE-EC2-PREDICTION-OUTCOME-1` is complete. The current window is `PE7-HE-EC3-CONTRACT-1`: freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and the cost of diagnosis, hypothesis construction, prediction, and outcome reconciliation. No spend or runtime behavior change.
+`PE7-HE-EC3-CONTRACT-1` is complete. The current window is `PE7-HE-EC3-INSTRUMENTATION-1`: capture and normalize the accepted lifecycle-cost evidence through existing usage/artifact/store owners. Observation and immutable evidence only; no admission decision yet.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-HE-EC3-CONTRACT-1 — READY_FOR_EXECUTION, provider-free; freeze lifecycle-cost ontology and budget contract]
-[successor: PE7-HE-EC3-INSTRUMENTATION-1 — BLOCKED_PREREQUISITE, provider-free; capture/normalize lifecycle-cost evidence]
+[window: PE7-HE-EC3-INSTRUMENTATION-1 — READY_FOR_EXECUTION, provider-free; capture/normalize lifecycle-cost evidence]
+[successor: PE7-HE-EC3-ENFORCEMENT-1 — BLOCKED_PREREQUISITE, provider-free; enforce equal lifecycle envelopes]
 ```
 
 ## Active Routing
 
-1. `PE7-HE-EC3-CONTRACT-1` — `READY_FOR_EXECUTION`
+1. `PE7-HE-EC3-INSTRUMENTATION-1` — `READY_FOR_EXECUTION`
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -91,41 +91,47 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Accepted evidence:** PR #598 exact head `0d048126b84050d2f09919f8bda912f27715f53c`; squash merge `0d048126b84050d2f09919f8bda912f27715f53c`; exact-head review comments `5350320011` and `5350320022`; canonical workflow `32323812001`.
 
-## Packet PE7-HE-EC3-CONTRACT-1
+## Completed (PE7-HE-EC3-CONTRACT-1)
+
+**State:** `COMPLETE`
+
+**Accepted evidence:** PR #599 exact head `14c87504eb28189679f2913e6d19ca7df61a86ce`; squash merge `14c87504eb28189679f2913e6d19ca7df61a86ce`; exact-head review comments `5350480011` and `5350480022`; canonical workflow `32325412001`.
+
+## Packet PE7-HE-EC3-INSTRUMENTATION-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-HE-EC2-PREDICTION-OUTCOME-1`
+**Prerequisite:** `PE7-HE-EC3-CONTRACT-1`
 
-**Class:** `CONTRACT`
+**Class:** `IMPLEMENT`
 
-**Outcome:** Freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and the cost of diagnosis, hypothesis construction, prediction, and outcome reconciliation.
+**Outcome:** Capture and normalize the accepted lifecycle-cost evidence through existing usage/artifact/store owners.
 
-**Allowed delta:** `engine/src/harness_evolution.rs`, `tests/test_session_context.py`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Lifecycle budget contract and ontology types only; no spend or runtime behavior change.
+**Allowed delta:** `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `engine/src/storage/local_product_store/schema.rs`, `engine/src/storage/local_product_store/migrations.rs`, `engine/src/storage/local_product_store/pg_backend/migrations.rs`, `engine/src/storage/local_product_store/integrity.rs`, `engine/tests/test_data_operations.rs`, `tests/test_session_context.py`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Lifecycle cost instrumentation and persistence only; no admission decision, no second store owner, no Level-1.
 
-**Exit:** Versioned budget/accounting contract covering generation, evaluation, review, repair, CI, recovery, human effort, and failed attempts.
+**Exit:** Source/partial/unavailable semantics, failure-path cost retention, restart, and parity tests pass.
 
-**Stop:** A material cost class is silently zero, source semantics are ambiguous, or contract creates a second spend owner.
+**Stop:** Instrumentation drops rejected/failed cost, guesses unavailable values, or exposes sensitive raw evidence.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and the cost of diagnosis, hypothesis construction, prediction, and outcome reconciliation. No spend or runtime behavior change.
-2. **Prerequisites and evidence.** PREDICTION-OUTCOME COMPLETE: PR #598 exact head `0d048126b84050d2f09919f8bda912f27715f53c`; squash merge `0d048126b84050d2f09919f8bda912f27715f53c`; exact-head review comments `5350320011` and `5350320022`; canonical workflow `32323812001`.
-3. **Owners and paths.** Existing `harness_evolution.rs`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`.
-4. **Frozen invariants.** A material cost class cannot be silently zero. Source semantics are unambiguous (measured direct, derived deterministic, or unavailable fail-closed). Failed attempts must be accounted for in total budget. Contract cannot create a second spend owner.
-5. **Only semantic delta.** `Ec3LifecycleBudgetContractV1`, `LifecycleCostPhase`, `CostTrustSource`, `CandidateLifecycleEnvelope`, `GlobalLifecycleEnvelope`, `PhaseBudgetEnvelope`, `validate_ec3_lifecycle_budget_contract`, `seal_ec3_lifecycle_budget_contract` in `harness_evolution.rs`.
-6. **Forbidden changes.** No spend or runtime behavior change, no second spend owner, no candidate execution, no Level-1.
-7. **Ordered slices.** Define lifecycle-cost ontology types; implement validation and sealing functions; add adversarial negative unit tests; synchronize canonical docs; stop before instrumentation.
-8. **Failure taxonomy.** Silently zero material cost, ambiguous source, spend authority delegation, unmeasured phase allowed without flag, failed attempts uncounted.
+1. **Outcome and non-goals.** Capture and normalize the accepted lifecycle-cost evidence through existing usage/artifact/store owners. Observation and immutable evidence only; no admission decision, no second store owner, no Level-1.
+2. **Prerequisites and evidence.** CONTRACT COMPLETE: PR #599 exact head `14c87504eb28189679f2913e6d19ca7df61a86ce`; squash merge `14c87504eb28189679f2913e6d19ca7df61a86ce`; exact-head review comments `5350480011` and `5350480022`; canonical workflow `32325412001`.
+3. **Owners and paths.** Existing `harness_evolution.rs`, LocalProductStore `harness_evolution_ec3_lifecycle_costs` table.
+4. **Frozen invariants.** Failed/rejected attempt costs are retained. Unavailable values fail closed without guessing. Immutability and audit append preserved.
+5. **Only semantic delta.** `LifecycleCostRecordV1` + LocalProductStore persistence/query methods + schema / migration v36 + table registration in integrity checks.
+6. **Forbidden changes.** No admission decision yet, no dropped failure costs, no second store owner, no Level-1.
+7. **Ordered slices.** Define `LifecycleCostRecordV1`; persist immutably in LocalProductStore; retain failure-path costs; reject guessing; stop before enforcement.
+8. **Failure taxonomy.** Dropped failure cost, guessed unmeasured value, mutable cost record, missing record digest.
 9. **Verification.** Focused cargo tests, handoff, rustfmt.
 10. **Compatibility and rollback.** Revert this PR.
-11. **Exit artifact.** `Ec3LifecycleBudgetContractV1` type and validation in `engine/src/harness_evolution.rs`.
-12. **Next action.** Promote `PE7-HE-EC3-INSTRUMENTATION-1`.
+11. **Exit artifact.** Stored `LifecycleCostRecordV1` records and migration v36.
+12. **Next action.** Promote `PE7-HE-EC3-ENFORCEMENT-1`.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC3-CONTRACT-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and the cost of diagnosis, hypothesis construction, prediction, and outcome reconciliation.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","tests/test_session_context.py"],"allowed_outputs":["Versioned Ec3LifecycleBudgetContractV1 type definitions and validation in harness_evolution.rs."],"prerequisites":["PE7-HE-EC2-PREDICTION-OUTCOME-1"],"prerequisite_receipts":["PE7-HE-EC2-PREDICTION-OUTCOME-1 COMPLETE: PR #598 exact head `0d048126b84050d2f09919f8bda912f27715f53c`; squash merge `0d048126b84050d2f09919f8bda912f27715f53c`; exact-head review comments `5350320011` and `5350320022`; canonical workflow `32323812001`"],"forbidden_changes":["Do not change spend or runtime behavior.","Do not create a second spend owner.","Do not execute candidates.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Define lifecycle cost phases, sources, and envelope types.","Implement Ec3LifecycleBudgetContractV1 and validation/sealing functions.","Add positive and negative unit tests.","Stop before instrumentation."],"verification":["cargo test -p engine --lib ec3_lifecycle_budget -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; budget contract remains unpersisted and laboratory stays default-off.","pause_gates":["Stop before instrumentation."],"expected_artifacts":["engine/src/harness_evolution.rs Ec3LifecycleBudgetContractV1"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T2","known_store_mutations":[]}
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC3-INSTRUMENTATION-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Capture and normalize the accepted lifecycle-cost evidence through existing usage/artifact/store owners.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/integrity.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/schema.rs","engine/tests/test_data_operations.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/integrity.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/schema.rs","engine/tests/test_data_operations.rs","tests/test_session_context.py"],"allowed_outputs":["Stored LifecycleCostRecordV1 records and schema v36 migration."],"prerequisites":["PE7-HE-EC3-CONTRACT-1"],"prerequisite_receipts":["PE7-HE-EC3-CONTRACT-1 COMPLETE: PR #599 exact head `14c87504eb28189679f2913e6d19ca7df61a86ce`; squash merge `14c87504eb28189679f2913e6d19ca7df61a86ce`; exact-head review comments `5350480011` and `5350480022`; canonical workflow `32325412001`"],"forbidden_changes":["Do not make admission decisions yet.","Do not drop failure or rejected attempt costs.","Do not guess unmeasured values.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Define LifecycleCostRecordV1 and validation rules.","Implement LocalProductStore persistence and query methods.","Verify failure-path cost retention and immutable audit append.","Stop before enforcement."],"verification":["cargo test -p engine --lib lifecycle_cost -- --test-threads=1","cargo test -p engine --test test_data_operations -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; lifecycle cost records remain unpersisted and laboratory stays default-off.","pause_gates":["Stop before enforcement."],"expected_artifacts":["engine/src/harness_evolution.rs LifecycleCostRecordV1","engine/src/storage/local_product_store/harness_evolution.rs persist_ec3_lifecycle_cost_record"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":["harness_evolution_ec3_lifecycle_costs"]}
 -->
 
 ## Common Execution Protocol

@@ -96,6 +96,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-HE-EC2-HOLDOUT-SEAL-1` | `COMPLETE` | PR #596 exact head `cffd49edfc36fe602cc311f025367cadb15a425a`; squash merge `5c367b85d79f680b5f76b7aa4f2f1656c0a460ae`; exact-head review comments `5349963606` and `5349963725`; canonical workflow `32320235684` |
 | `PE7-HE-EC2-SENTINEL-CONFORMANCE-1` | `COMPLETE` | PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265` |
 | `PE7-HE-EC2-PREDICTION-OUTCOME-1` | `COMPLETE` | PR #598 exact head `0d048126b84050d2f09919f8bda912f27715f53c`; squash merge `0d048126b84050d2f09919f8bda912f27715f53c`; exact-head review comments `5350320011` and `5350320022`; canonical workflow `32323812001` |
+| `PE7-HE-EC3-CONTRACT-1` | `COMPLETE` | PR #599 exact head `14c87504eb28189679f2913e6d19ca7df61a86ce`; squash merge `14c87504eb28189679f2913e6d19ca7df61a86ce`; exact-head review comments `5350480011` and `5350480022`; canonical workflow `32325412001` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -394,6 +395,10 @@ Contamination, gaming, and safety sentinels observe the existing evaluator path 
 ### HE EC2 prediction outcome (`PE7-HE-EC2-PREDICTION-OUTCOME-1`)
 
 Evaluator-owned immutable `PredictionOutcomeV1` records compare frozen predictions with actual evaluation evidence under `LocalProductStore` table `harness_evolution_ec2_prediction_outcomes` (migration v36). Prediction accuracy cannot gate Pareto selection or candidate status. Receipt: PR #598 exact head `0d048126b84050d2f09919f8bda912f27715f53c`; squash merge `0d048126b84050d2f09919f8bda912f27715f53c`.
+
+### HE EC3 contract (`PE7-HE-EC3-CONTRACT-1`)
+
+`engine/src/harness_evolution.rs` freezes the versioned lifecycle-cost ontology and budget contract (`Ec3LifecycleBudgetContractV1`). Ten required cost phases cover diagnosis through outcome reconciliation. Failure accounting and reservation before spend are required. Spend authority delegation is forbidden. Receipt: PR #599 exact head `14c87504eb28189679f2913e6d19ca7df61a86ce`; squash merge `14c87504eb28189679f2913e6d19ca7df61a86ce`.
 
 ## Invalidated Historical Receipts (Repair Required)
 
