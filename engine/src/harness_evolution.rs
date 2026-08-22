@@ -28,6 +28,7 @@ pub const PREDICTION_OUTCOME_SCHEMA: &str = "prediction_outcome.v1";
 pub const MUTATION_FAMILY_REGISTRY_SCHEMA: &str = "mutation_family_registry.v1";
 pub const EC1_IDENTITY_LINEAGE_SCHEMA: &str = "harness_evolution_ec1_identity_lineage.v1";
 pub const EC1_CANDIDATE_BINDING_SCHEMA: &str = "harness_evolution_ec1_candidate_binding.v1";
+pub const EC3_LIFECYCLE_BUDGET_SCHEMA: &str = "harness_evolution_ec3_lifecycle_budget.v1";
 
 /// CWS analysis bound this SHA as the default-off active Harness. EC1 freezes it;
 /// it is not a live ENABLE and does not authorize candidate generation.
@@ -277,6 +278,111 @@ pub struct MutationFamilyRecord {
 pub struct MutationFamilyRegistry {
     pub schema_version: String,
     pub families: Vec<MutationFamilyRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleCostPhase {
+    Diagnosis,
+    HypothesisGeneration,
+    CandidateMaterialization,
+    Evaluation,
+    Review,
+    Repair,
+    Ci,
+    Recovery,
+    HumanEffort,
+    OutcomeReconciliation,
+}
+
+impl LifecycleCostPhase {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Diagnosis => "diagnosis",
+            Self::HypothesisGeneration => "hypothesis_generation",
+            Self::CandidateMaterialization => "candidate_materialization",
+            Self::Evaluation => "evaluation",
+            Self::Review => "review",
+            Self::Repair => "repair",
+            Self::Ci => "ci",
+            Self::Recovery => "recovery",
+            Self::HumanEffort => "human_effort",
+            Self::OutcomeReconciliation => "outcome_reconciliation",
+        }
+    }
+}
+
+pub const REQUIRED_LIFECYCLE_COST_PHASES: &[LifecycleCostPhase] = &[
+    LifecycleCostPhase::Diagnosis,
+    LifecycleCostPhase::HypothesisGeneration,
+    LifecycleCostPhase::CandidateMaterialization,
+    LifecycleCostPhase::Evaluation,
+    LifecycleCostPhase::Review,
+    LifecycleCostPhase::Repair,
+    LifecycleCostPhase::Ci,
+    LifecycleCostPhase::Recovery,
+    LifecycleCostPhase::HumanEffort,
+    LifecycleCostPhase::OutcomeReconciliation,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CostTrustSource {
+    MeasuredDirect,
+    DerivedDeterministic,
+    UnavailableFailClosed,
+}
+
+impl CostTrustSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MeasuredDirect => "measured_direct",
+            Self::DerivedDeterministic => "derived_deterministic",
+            Self::UnavailableFailClosed => "unavailable_fail_closed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhaseBudgetEnvelope {
+    pub phase: LifecycleCostPhase,
+    pub token_limit: u64,
+    pub call_limit: u64,
+    pub wall_clock_seconds_limit: u64,
+    pub required_source: CostTrustSource,
+    pub allow_unmeasured: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateLifecycleEnvelope {
+    pub total_token_limit: u64,
+    pub total_call_limit: u64,
+    pub total_wall_clock_seconds_limit: u64,
+    pub max_repair_iterations: u32,
+    pub max_ci_runs: u32,
+    pub phase_envelopes: Vec<PhaseBudgetEnvelope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GlobalLifecycleEnvelope {
+    pub total_token_limit: u64,
+    pub total_call_limit: u64,
+    pub total_wall_clock_seconds_limit: u64,
+    pub max_total_candidates: u32,
+    pub max_failed_candidates: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ec3LifecycleBudgetContractV1 {
+    pub schema_version: String,
+    pub contract_id: String,
+    pub candidate_envelope: CandidateLifecycleEnvelope,
+    pub global_envelope: GlobalLifecycleEnvelope,
+    pub failure_accounting_included: bool,
+    pub reservation_required: bool,
+    pub exact_reconciliation_required: bool,
+    pub allow_spend_authority_delegation: bool,
+    pub record_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -714,6 +820,138 @@ pub fn validate_mutation_family_registry(
         }
     }
     Ok(())
+}
+
+pub fn derive_ec3_lifecycle_budget_contract_id(
+    candidate_envelope: &CandidateLifecycleEnvelope,
+    global_envelope: &GlobalLifecycleEnvelope,
+) -> String {
+    let candidate_json = serde_json::to_string(candidate_envelope).unwrap_or_default();
+    let global_json = serde_json::to_string(global_envelope).unwrap_or_default();
+    format!(
+        "hebc-{}",
+        &sha256_hex(&format!("ec3-budget.v1|{candidate_json}|{global_json}"))[..32]
+    )
+}
+
+pub fn validate_ec3_lifecycle_budget_contract(
+    contract: &Ec3LifecycleBudgetContractV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if contract.schema_version != EC3_LIFECYCLE_BUDGET_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_schema_invalid",
+            "lifecycle budget contract schema mismatch",
+        ));
+    }
+    if contract.contract_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_contract_id_missing",
+            "contract_id is required",
+        ));
+    }
+    if !contract.failure_accounting_included {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_failure_accounting_required",
+            "failed attempts must be accounted for in total lifecycle budget",
+        ));
+    }
+    if !contract.reservation_required {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_reservation_required",
+            "lifecycle budget reservation before execution is required",
+        ));
+    }
+    if !contract.exact_reconciliation_required {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_reconciliation_required",
+            "exact post-execution cost reconciliation is required",
+        ));
+    }
+    if contract.allow_spend_authority_delegation {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_spend_delegation_forbidden",
+            "contract cannot delegate spend authority or create a second spend owner",
+        ));
+    }
+    if contract.candidate_envelope.total_token_limit == 0
+        || contract.candidate_envelope.total_call_limit == 0
+        || contract.candidate_envelope.total_wall_clock_seconds_limit == 0
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_candidate_limits_zero",
+            "candidate lifecycle limits must be positive",
+        ));
+    }
+    if contract.global_envelope.total_token_limit < contract.candidate_envelope.total_token_limit
+        || contract.global_envelope.total_call_limit < contract.candidate_envelope.total_call_limit
+        || contract.global_envelope.total_wall_clock_seconds_limit
+            < contract.candidate_envelope.total_wall_clock_seconds_limit
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_global_limit_smaller",
+            "global envelope cannot be smaller than candidate envelope",
+        ));
+    }
+    if contract.global_envelope.max_total_candidates == 0 {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_global_candidates_zero",
+            "max_total_candidates must be positive",
+        ));
+    }
+    let mut observed_phases = std::collections::HashSet::new();
+    for phase_env in &contract.candidate_envelope.phase_envelopes {
+        if !observed_phases.insert(phase_env.phase) {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_phase_duplicate",
+                format!("duplicate phase envelope for {:?}", phase_env.phase),
+            ));
+        }
+        if phase_env.token_limit == 0
+            && phase_env.call_limit == 0
+            && phase_env.wall_clock_seconds_limit == 0
+            && !phase_env.allow_unmeasured
+        {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_phase_silent_zero",
+                format!(
+                    "phase {:?} cannot have all zero limits without allow_unmeasured flag",
+                    phase_env.phase
+                ),
+            ));
+        }
+    }
+    for required_phase in REQUIRED_LIFECYCLE_COST_PHASES {
+        if !observed_phases.contains(required_phase) {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_phase_missing",
+                format!("missing required lifecycle cost phase {:?}", required_phase),
+            ));
+        }
+    }
+    let value = serde_json::to_value(contract)
+        .map_err(|error| EvolutionAdmissionError::new("ec3_record_digest", error.to_string()))?;
+    require_record_sha256(&value, &contract.record_sha256)?;
+    Ok(())
+}
+
+pub fn seal_ec3_lifecycle_budget_contract(
+    mut contract: Ec3LifecycleBudgetContractV1,
+) -> Result<Ec3LifecycleBudgetContractV1, EvolutionAdmissionError> {
+    contract.schema_version = EC3_LIFECYCLE_BUDGET_SCHEMA.to_string();
+    if contract.contract_id.trim().is_empty() {
+        contract.contract_id = derive_ec3_lifecycle_budget_contract_id(
+            &contract.candidate_envelope,
+            &contract.global_envelope,
+        );
+    }
+    let mut value = serde_json::to_value(&contract)
+        .map_err(|error| EvolutionAdmissionError::new("ec3_record_digest", error.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    contract.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_ec3_lifecycle_budget_contract(&contract)?;
+    Ok(contract)
 }
 
 pub fn frozen_ec1_active_harness_sha() -> &'static str {
@@ -1954,5 +2192,98 @@ mod tests {
         let candidate = candidate_from_proposal(&proposal, &ws, "2026-07-21T00:00:00Z").unwrap();
         let err = validate_candidate_for_admission(&candidate, &active, true).unwrap_err();
         assert_eq!(err.code, "evolution_kill_switch");
+    }
+
+    fn sample_ec3_budget_contract() -> Ec3LifecycleBudgetContractV1 {
+        let phase_envelopes = REQUIRED_LIFECYCLE_COST_PHASES
+            .iter()
+            .map(|phase| PhaseBudgetEnvelope {
+                phase: *phase,
+                token_limit: 10_000,
+                call_limit: 5,
+                wall_clock_seconds_limit: 120,
+                required_source: CostTrustSource::MeasuredDirect,
+                allow_unmeasured: false,
+            })
+            .collect();
+        let candidate_envelope = CandidateLifecycleEnvelope {
+            total_token_limit: 100_000,
+            total_call_limit: 50,
+            total_wall_clock_seconds_limit: 1200,
+            max_repair_iterations: 3,
+            max_ci_runs: 2,
+            phase_envelopes,
+        };
+        let global_envelope = GlobalLifecycleEnvelope {
+            total_token_limit: 1_000_000,
+            total_call_limit: 500,
+            total_wall_clock_seconds_limit: 12000,
+            max_total_candidates: 10,
+            max_failed_candidates: 5,
+        };
+        seal_ec3_lifecycle_budget_contract(Ec3LifecycleBudgetContractV1 {
+            schema_version: EC3_LIFECYCLE_BUDGET_SCHEMA.to_string(),
+            contract_id: String::new(),
+            candidate_envelope,
+            global_envelope,
+            failure_accounting_included: true,
+            reservation_required: true,
+            exact_reconciliation_required: true,
+            allow_spend_authority_delegation: false,
+            record_sha256: String::new(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn ec3_lifecycle_budget_contract_seals_and_validates() {
+        let contract = sample_ec3_budget_contract();
+        assert!(validate_ec3_lifecycle_budget_contract(&contract).is_ok());
+        assert_eq!(contract.schema_version, EC3_LIFECYCLE_BUDGET_SCHEMA);
+        assert!(!contract.contract_id.is_empty());
+        assert!(!contract.record_sha256.is_empty());
+    }
+
+    #[test]
+    fn ec3_lifecycle_budget_contract_rejects_missing_phase() {
+        let mut contract = sample_ec3_budget_contract();
+        contract.candidate_envelope.phase_envelopes.pop();
+        let err = seal_ec3_lifecycle_budget_contract(contract).unwrap_err();
+        assert_eq!(err.code, "ec3_phase_missing");
+    }
+
+    #[test]
+    fn ec3_lifecycle_budget_contract_rejects_silently_zero_phase() {
+        let mut contract = sample_ec3_budget_contract();
+        contract.candidate_envelope.phase_envelopes[0].token_limit = 0;
+        contract.candidate_envelope.phase_envelopes[0].call_limit = 0;
+        contract.candidate_envelope.phase_envelopes[0].wall_clock_seconds_limit = 0;
+        contract.candidate_envelope.phase_envelopes[0].allow_unmeasured = false;
+        let err = seal_ec3_lifecycle_budget_contract(contract).unwrap_err();
+        assert_eq!(err.code, "ec3_phase_silent_zero");
+    }
+
+    #[test]
+    fn ec3_lifecycle_budget_contract_rejects_missing_failure_accounting() {
+        let mut contract = sample_ec3_budget_contract();
+        contract.failure_accounting_included = false;
+        let err = seal_ec3_lifecycle_budget_contract(contract).unwrap_err();
+        assert_eq!(err.code, "ec3_failure_accounting_required");
+    }
+
+    #[test]
+    fn ec3_lifecycle_budget_contract_rejects_spend_delegation() {
+        let mut contract = sample_ec3_budget_contract();
+        contract.allow_spend_authority_delegation = true;
+        let err = seal_ec3_lifecycle_budget_contract(contract).unwrap_err();
+        assert_eq!(err.code, "ec3_spend_delegation_forbidden");
+    }
+
+    #[test]
+    fn ec3_lifecycle_budget_contract_rejects_global_envelope_smaller_than_candidate() {
+        let mut contract = sample_ec3_budget_contract();
+        contract.global_envelope.total_token_limit = 500; // smaller than candidate total of 100_000
+        let err = seal_ec3_lifecycle_budget_contract(contract).unwrap_err();
+        assert_eq!(err.code, "ec3_global_limit_smaller");
     }
 }
