@@ -619,6 +619,10 @@ fn apply_pg_v36_migration(client: &mut postgres::Client) -> Result<(), String> {
             .map_err(|e| format!("m36 ec2 prediction outcome repair: {e}"))?;
         tx.batch_execute(schema::EC3_LIFECYCLE_COST_DDL)
             .map_err(|e| format!("m36 ec3 lifecycle cost repair: {e}"))?;
+        tx.batch_execute(schema::EC3_LIFECYCLE_BUDGET_DDL)
+            .map_err(|e| format!("m36 ec3 lifecycle budget repair: {e}"))?;
+        tx.batch_execute(schema::EC3_LIFECYCLE_RECONCILIATION_DDL)
+            .map_err(|e| format!("m36 ec3 lifecycle reconciliation repair: {e}"))?;
         repair_pg_v36_delegated_plan_owner(&mut tx)?;
         validate_pg_v36_schema(&mut tx)?;
         tx.commit().map_err(|e| e.to_string())?;
@@ -638,6 +642,10 @@ fn apply_pg_v36_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map_err(|e| format!("m36 ec2 prediction outcome: {e}"))?;
     tx.batch_execute(schema::EC3_LIFECYCLE_COST_DDL)
         .map_err(|e| format!("m36 ec3 lifecycle cost: {e}"))?;
+    tx.batch_execute(schema::EC3_LIFECYCLE_BUDGET_DDL)
+        .map_err(|e| format!("m36 ec3 lifecycle budget: {e}"))?;
+    tx.batch_execute(schema::EC3_LIFECYCLE_RECONCILIATION_DDL)
+        .map_err(|e| format!("m36 ec3 lifecycle reconciliation: {e}"))?;
     repair_pg_v36_delegated_plan_owner(&mut tx)?;
     tx.execute(
         "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",

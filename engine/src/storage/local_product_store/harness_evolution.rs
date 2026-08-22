@@ -5,17 +5,20 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use super::{append_audit_locked, LocalProductStore};
 use crate::harness_evolution::{
     build_admission_receipt, configured_workspace_root, generate_ec1_candidate_binding,
-    revalidate_workspace_content, seal_ec1_identity_lineage, seal_failure_pattern_evidence,
-    seal_lifecycle_cost_record, seal_mutation_hypothesis_manifest,
-    validate_candidate_for_admission, validate_ec1_candidate_binding,
-    validate_ec1_identity_lineage, validate_failure_pattern_evidence,
-    validate_lifecycle_cost_record, validate_mutation_hypothesis_manifest,
-    validate_prediction_outcome_contract, validate_proposal, ActiveHarnessIdentity,
-    CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding, Ec1IdentityLineageRecord,
-    EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal, EvolutionReceipt,
-    FailurePatternEvidenceV1, LifecycleCostRecordV1, MutationHypothesisManifestV1,
-    PredictionOutcomeV1, ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION,
-    EVOLUTION_LAB_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION,
+    reconcile_candidate_lifecycle_costs, revalidate_workspace_content, seal_ec1_identity_lineage,
+    seal_failure_pattern_evidence, seal_lifecycle_budget_reservation, seal_lifecycle_cost_record,
+    seal_mutation_hypothesis_manifest, validate_candidate_for_admission,
+    validate_ec1_candidate_binding, validate_ec1_identity_lineage,
+    validate_failure_pattern_evidence, validate_lifecycle_cost_record,
+    validate_mutation_hypothesis_manifest, validate_prediction_outcome_contract, validate_proposal,
+    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding,
+    Ec1IdentityLineageRecord, Ec3LifecycleBudgetContractV1, EvolutionAdmissionError,
+    EvolutionCandidate, EvolutionProposal, EvolutionReceipt, FailurePatternEvidenceV1,
+    LifecycleBudgetReconciliationOutcome, LifecycleBudgetReconciliationV1,
+    LifecycleBudgetReservationStatus, LifecycleBudgetReservationV1, LifecycleCostRecordV1,
+    MutationHypothesisManifestV1, PredictionOutcomeV1, ACTIVE_VERSION_SCHEMA,
+    CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION, LIFECYCLE_BUDGET_RESERVATION_SCHEMA,
+    RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
     build_pareto_archive, build_sealed_vault, derive_ec2_prediction_outcome,
@@ -1437,6 +1440,333 @@ impl LocalProductStore {
                 out.push(rec);
             }
             Ok(out)
+        })
+    }
+
+    pub fn reserve_candidate_lifecycle_budget(
+        &self,
+        contract: &Ec3LifecycleBudgetContractV1,
+        candidate_id: &str,
+        actor_id: &str,
+    ) -> Result<LifecycleBudgetReservationV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec3_budget_actor: authenticated actor_id is required".into());
+        }
+        if candidate_id.trim().is_empty() {
+            return Err("ec3_budget_candidate: non-empty candidate_id is required".into());
+        }
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let reservation = seal_lifecycle_budget_reservation(LifecycleBudgetReservationV1 {
+            schema_version: LIFECYCLE_BUDGET_RESERVATION_SCHEMA.to_string(),
+            reservation_id: String::new(),
+            candidate_id: candidate_id.to_string(),
+            contract_id: contract.contract_id.clone(),
+            reserved_token_cost: contract.candidate_envelope.total_token_limit,
+            reserved_call_count: contract.candidate_envelope.total_call_limit,
+            reserved_wall_clock_seconds: contract.candidate_envelope.total_wall_clock_seconds_limit,
+            status: LifecycleBudgetReservationStatus::Active,
+            record_sha256: String::new(),
+        })
+        .map_err(|e| format!("{}: {}", e.code, e.message))?;
+
+        let body_json = serde_json::to_string(&reservation).map_err(|e| e.to_string())?;
+
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+
+            let existing: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT reservation_id, body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=?1",
+                    params![candidate_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+
+            if let Some((_res_id, existing_body)) = existing {
+                if existing_body == body_json {
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return serde_json::from_str(&existing_body).map_err(|e| e.to_string());
+                }
+                return Err(format!(
+                    "ec3_reservation_duplicate: candidate {} already has a budget reservation",
+                    candidate_id
+                ));
+            }
+
+            // Check global envelope constraints
+            let active_count: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM harness_evolution_ec3_lifecycle_budgets WHERE contract_id=?1 AND status != 'cancelled'",
+                    params![contract.contract_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+
+            if active_count as u32 >= contract.global_envelope.max_total_candidates {
+                return Err(format!(
+                    "ec3_global_candidates_exhausted: active/reconciled count {} reaches max {}",
+                    active_count, contract.global_envelope.max_total_candidates
+                ));
+            }
+
+            let sums: (i64, i64, i64) = tx
+                .query_row(
+                    "SELECT COALESCE(SUM(reserved_token_cost), 0), COALESCE(SUM(reserved_call_count), 0), COALESCE(SUM(reserved_wall_clock_seconds), 0)
+                     FROM harness_evolution_ec3_lifecycle_budgets WHERE contract_id=?1 AND status != 'cancelled'",
+                    params![contract.contract_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|e| e.to_string())?;
+
+            let new_tokens = (sums.0 as u64).saturating_add(reservation.reserved_token_cost);
+            let new_calls = (sums.1 as u64).saturating_add(reservation.reserved_call_count);
+            let new_seconds = (sums.2 as u64).saturating_add(reservation.reserved_wall_clock_seconds);
+
+            if new_tokens > contract.global_envelope.total_token_limit
+                || new_calls > contract.global_envelope.total_call_limit
+                || new_seconds > contract.global_envelope.total_wall_clock_seconds_limit
+            {
+                return Err(format!(
+                    "ec3_global_budget_exhausted: reservation would exceed global limits (tokens: {}/{}, calls: {}/{}, seconds: {}/{})",
+                    new_tokens,
+                    contract.global_envelope.total_token_limit,
+                    new_calls,
+                    contract.global_envelope.total_call_limit,
+                    new_seconds,
+                    contract.global_envelope.total_wall_clock_seconds_limit
+                ));
+            }
+
+            tx.execute(
+                "INSERT INTO harness_evolution_ec3_lifecycle_budgets
+                    (reservation_id, candidate_id, contract_id, reserved_token_cost, reserved_call_count, reserved_wall_clock_seconds, status, reconciliation_id, body_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?9)",
+                params![
+                    reservation.reservation_id,
+                    reservation.candidate_id,
+                    reservation.contract_id,
+                    reservation.reserved_token_cost as i64,
+                    reservation.reserved_call_count as i64,
+                    reservation.reserved_wall_clock_seconds as i64,
+                    reservation.status.as_str(),
+                    body_json,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec3_budget_reserved",
+                &reservation.reservation_id,
+                &serde_json::json!({
+                    "candidate_id": reservation.candidate_id,
+                    "contract_id": reservation.contract_id,
+                    "reserved_token_cost": reservation.reserved_token_cost,
+                    "reserved_call_count": reservation.reserved_call_count,
+                    "reserved_wall_clock_seconds": reservation.reserved_wall_clock_seconds,
+                    "actor_id": actor_id,
+                }),
+            )?;
+
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(reservation)
+        })
+    }
+
+    pub fn get_candidate_lifecycle_budget_reservation(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<LifecycleBudgetReservationV1>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=?1",
+                    params![candidate_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    pub fn reconcile_candidate_lifecycle_budget(
+        &self,
+        contract: &Ec3LifecycleBudgetContractV1,
+        candidate_id: &str,
+        actor_id: &str,
+    ) -> Result<LifecycleBudgetReconciliationV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec3_budget_actor: authenticated actor_id is required".into());
+        }
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let cost_records = self.list_ec3_lifecycle_cost_records_for_candidate(candidate_id)?;
+
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+
+            let reservation_row: Option<(String, String, String)> = tx
+                .query_row(
+                    "SELECT reservation_id, status, body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=?1",
+                    params![candidate_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+
+            let (reservation_id, _status_str, reservation_body) = match reservation_row {
+                Some(r) => r,
+                None => return Err(format!("ec3_reservation_missing: candidate {candidate_id} has no budget reservation")),
+            };
+
+            let reservation: LifecycleBudgetReservationV1 =
+                serde_json::from_str(&reservation_body).map_err(|e| e.to_string())?;
+
+            let existing_reconciliation: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec3_lifecycle_reconciliations WHERE reservation_id=?1",
+                    params![reservation_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+
+            if let Some(recon_body) = existing_reconciliation {
+                tx.commit().map_err(|e| e.to_string())?;
+                return serde_json::from_str(&recon_body).map_err(|e| e.to_string());
+            }
+
+            let reconciliation = reconcile_candidate_lifecycle_costs(
+                contract,
+                &reservation,
+                &cost_records,
+            )
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+
+            let recon_body = serde_json::to_string(&reconciliation).map_err(|e| e.to_string())?;
+
+            tx.execute(
+                "INSERT INTO harness_evolution_ec3_lifecycle_reconciliations
+                    (reconciliation_id, reservation_id, candidate_id, contract_id, total_token_cost, total_call_count, total_wall_clock_seconds, total_failure_attempts, outcome, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    reconciliation.reconciliation_id,
+                    reconciliation.reservation_id,
+                    reconciliation.candidate_id,
+                    reconciliation.contract_id,
+                    reconciliation.total_token_cost as i64,
+                    reconciliation.total_call_count as i64,
+                    reconciliation.total_wall_clock_seconds as i64,
+                    reconciliation.total_failure_attempts as i64,
+                    reconciliation.outcome.as_str(),
+                    recon_body,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            let new_reservation_status = match reconciliation.outcome {
+                LifecycleBudgetReconciliationOutcome::WithinEnvelope => {
+                    LifecycleBudgetReservationStatus::Reconciled
+                }
+                LifecycleBudgetReconciliationOutcome::OverrunStopped => {
+                    LifecycleBudgetReservationStatus::Overrun
+                }
+                LifecycleBudgetReconciliationOutcome::CancelledReleased => {
+                    LifecycleBudgetReservationStatus::Cancelled
+                }
+            };
+
+            let mut updated_reservation = reservation.clone();
+            updated_reservation.status = new_reservation_status;
+            let updated_res_body =
+                serde_json::to_string(&updated_reservation).map_err(|e| e.to_string())?;
+
+            tx.execute(
+                "UPDATE harness_evolution_ec3_lifecycle_budgets
+                 SET status=?1, reconciliation_id=?2, body_json=?3, updated_at=?4
+                 WHERE reservation_id=?5",
+                params![
+                    new_reservation_status.as_str(),
+                    reconciliation.reconciliation_id,
+                    updated_res_body,
+                    now,
+                    reservation_id
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            if let Some(reason) = reconciliation.terminal_reason {
+                let candidate_exists: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM harness_evolution_candidates WHERE candidate_id=?1)",
+                        params![candidate_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+
+                if candidate_exists {
+                    tx.execute(
+                        "UPDATE harness_evolution_candidates
+                         SET status='rejected', terminal_reason=?1, updated_at=?2
+                         WHERE candidate_id=?3",
+                        params![reason.as_str(), now, candidate_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec3_budget_reconciled",
+                &reconciliation.reconciliation_id,
+                &serde_json::json!({
+                    "reservation_id": reconciliation.reservation_id,
+                    "candidate_id": reconciliation.candidate_id,
+                    "contract_id": reconciliation.contract_id,
+                    "total_token_cost": reconciliation.total_token_cost,
+                    "total_call_count": reconciliation.total_call_count,
+                    "total_wall_clock_seconds": reconciliation.total_wall_clock_seconds,
+                    "total_failure_attempts": reconciliation.total_failure_attempts,
+                    "outcome": reconciliation.outcome.as_str(),
+                    "terminal_reason": reconciliation.terminal_reason.map(|t| t.as_str()),
+                    "actor_id": actor_id,
+                }),
+            )?;
+
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(reconciliation)
+        })
+    }
+
+    pub fn get_candidate_lifecycle_budget_reconciliation(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<LifecycleBudgetReconciliationV1>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec3_lifecycle_reconciliations WHERE candidate_id=?1",
+                    params![candidate_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
+                None => Ok(None),
+            }
         })
     }
 
@@ -3506,5 +3836,110 @@ mod tests {
             .unwrap()
             .expect("cost record survives restart");
         assert_eq!(loaded.record_sha256, stored1.record_sha256);
+    }
+
+    #[test]
+    fn persists_ec3_budget_reservation_and_reconciles_with_overrun_stop() {
+        use crate::harness_evolution::{
+            sample_ec3_budget_contract, seal_lifecycle_cost_record, CandidateTerminalReason,
+            CostTrustSource, LifecycleBudgetReconciliationOutcome,
+            LifecycleBudgetReservationStatus, LifecycleCostPhase, LifecycleCostRecordV1,
+            LIFECYCLE_COST_RECORD_SCHEMA,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec3-enforce.db");
+        let store = LocalProductStore::new(&db).unwrap();
+
+        let mut contract = sample_ec3_budget_contract();
+        contract.global_envelope.max_total_candidates = 2;
+
+        // 1. Reserve budget for candidate 1
+        let res1 = store
+            .reserve_candidate_lifecycle_budget(&contract, "cand-enforce-1", "worker-actor")
+            .unwrap();
+        assert_eq!(res1.status, LifecycleBudgetReservationStatus::Active);
+
+        // 2. Reserve budget for candidate 2
+        let res2 = store
+            .reserve_candidate_lifecycle_budget(&contract, "cand-enforce-2", "worker-actor")
+            .unwrap();
+        assert_eq!(res2.status, LifecycleBudgetReservationStatus::Active);
+
+        // 3. Candidate 3 should be rejected because max_total_candidates = 2 is reached
+        assert!(store
+            .reserve_candidate_lifecycle_budget(&contract, "cand-enforce-3", "worker-actor")
+            .unwrap_err()
+            .contains("ec3_global_candidates_exhausted"));
+
+        // 4. Record cost for candidate 1 (within envelope)
+        let cost1 = seal_lifecycle_cost_record(LifecycleCostRecordV1 {
+            schema_version: LIFECYCLE_COST_RECORD_SCHEMA.to_string(),
+            record_id: String::new(),
+            candidate_id: "cand-enforce-1".to_string(),
+            phase: LifecycleCostPhase::Evaluation,
+            token_cost: 5_000,
+            call_count: 2,
+            wall_clock_seconds: 30,
+            trust_source: CostTrustSource::MeasuredDirect,
+            unmeasured: false,
+            failure_attempt: false,
+            evidence_payload_digest: crate::harness_evolution::sha256_hex("c1_eval"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        store
+            .persist_ec3_lifecycle_cost_record(cost1, "worker-actor")
+            .unwrap();
+
+        let recon1 = store
+            .reconcile_candidate_lifecycle_budget(&contract, "cand-enforce-1", "worker-actor")
+            .unwrap();
+        assert_eq!(
+            recon1.outcome,
+            LifecycleBudgetReconciliationOutcome::WithinEnvelope
+        );
+        assert_eq!(recon1.terminal_reason, None);
+
+        // 5. Record cost for candidate 2 (overrun in candidate materialization phase: 60_000 > 50_000 phase limit)
+        let cost2 = seal_lifecycle_cost_record(LifecycleCostRecordV1 {
+            schema_version: LIFECYCLE_COST_RECORD_SCHEMA.to_string(),
+            record_id: String::new(),
+            candidate_id: "cand-enforce-2".to_string(),
+            phase: LifecycleCostPhase::CandidateMaterialization,
+            token_cost: 60_000,
+            call_count: 10,
+            wall_clock_seconds: 50,
+            trust_source: CostTrustSource::MeasuredDirect,
+            unmeasured: false,
+            failure_attempt: false,
+            evidence_payload_digest: crate::harness_evolution::sha256_hex("c2_mat"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        store
+            .persist_ec3_lifecycle_cost_record(cost2, "worker-actor")
+            .unwrap();
+
+        let recon2 = store
+            .reconcile_candidate_lifecycle_budget(&contract, "cand-enforce-2", "worker-actor")
+            .unwrap();
+        assert_eq!(
+            recon2.outcome,
+            LifecycleBudgetReconciliationOutcome::OverrunStopped
+        );
+        assert_eq!(
+            recon2.terminal_reason,
+            Some(CandidateTerminalReason::RejectedLifecycleBudgetOverrun)
+        );
+
+        // Check updated reservation status
+        let updated_res2 = store
+            .get_candidate_lifecycle_budget_reservation("cand-enforce-2")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            updated_res2.status,
+            LifecycleBudgetReservationStatus::Overrun
+        );
     }
 }

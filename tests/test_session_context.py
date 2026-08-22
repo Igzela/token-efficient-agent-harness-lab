@@ -1237,15 +1237,15 @@ class CheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-EC3-ENFORCEMENT-1",
+            packet_id="PE7-HE-EC4-CONTRACT-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertFalse(extract["execution_authorized"])
         self.assertEqual(
-            extract["profile_id"], "PE7-HE-EC3-ENFORCEMENT-1.v1"
+            extract["profile_id"], "PE7-HE-EC4-CONTRACT-1.v1"
         )
-        self.assertEqual(extract["worker_tier"], "T1")
+        self.assertEqual(extract["worker_tier"], "T2")
 
 
 
@@ -1686,12 +1686,12 @@ class AdversarialCheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-EC3-ENFORCEMENT-1",
+            packet_id="PE7-HE-EC4-CONTRACT-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertEqual(extract["packet_state"], "BLOCKED_PREREQUISITE")
-        self.assertEqual(extract["worker_tier"], "T1")
+        self.assertEqual(extract["worker_tier"], "T2")
         self.assertFalse(extract["execution_authorized"])
 
 
