@@ -2634,6 +2634,19 @@ pub enum Ec5StopTriggerKind {
     DiversityCollapseStop,
 }
 
+impl Ec5StopTriggerKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SaturationStop => "saturation_stop",
+            Self::ContaminationStop => "contamination_stop",
+            Self::GamingDetectedStop => "gaming_detected_stop",
+            Self::RegressionStop => "regression_stop",
+            Self::BudgetExhaustionStop => "budget_exhaustion_stop",
+            Self::DiversityCollapseStop => "diversity_collapse_stop",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ec5SelectionContractV1 {
     pub schema_version: String,
@@ -3006,6 +3019,328 @@ fn candidate_dominates(
         }
     }
     better_or_equal_all && strictly_better_any
+}
+
+pub const EXPERIMENT_RUN_SCHEMA_VERSION: &str = "experiment_run_record.v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExperimentRunState {
+    Initialized,
+    LeaseAcquired,
+    Running,
+    StopRequested,
+    Stopped,
+    Canceled,
+    Completed,
+    Failed,
+}
+
+impl ExperimentRunState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Initialized => "initialized",
+            Self::LeaseAcquired => "lease_acquired",
+            Self::Running => "running",
+            Self::StopRequested => "stop_requested",
+            Self::Stopped => "stopped",
+            Self::Canceled => "canceled",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Stopped | Self::Canceled | Self::Completed | Self::Failed
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExperimentRunRecordV1 {
+    pub schema_version: String,
+    pub run_id: String,
+    pub experiment_id: String,
+    pub contract_id: String,
+    pub state: ExperimentRunState,
+    pub lease_holder: Option<String>,
+    pub lease_expires_at: Option<String>,
+    pub stop_reason: Option<Ec5StopTriggerKind>,
+    pub stop_detail: Option<String>,
+    pub executed_effects_count: u32,
+    pub total_token_cost: u64,
+    pub total_wall_clock_seconds: u64,
+    pub active_version_hash: String,
+    pub evaluator_identity_hash: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub record_sha256: String,
+}
+
+pub fn seal_experiment_run_record(
+    mut record: ExperimentRunRecordV1,
+) -> Result<ExperimentRunRecordV1, EvolutionAdmissionError> {
+    record.schema_version = EXPERIMENT_RUN_SCHEMA_VERSION.to_string();
+    let mut value = serde_json::to_value(&record)
+        .map_err(|e| EvolutionAdmissionError::new("ec5_run_json", e.to_string()))?;
+    value["record_sha256"] = Value::String(String::new());
+    record.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_experiment_run_record(&record)?;
+    Ok(record)
+}
+
+pub fn validate_experiment_run_record(
+    record: &ExperimentRunRecordV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if record.schema_version != EXPERIMENT_RUN_SCHEMA_VERSION {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_run_schema_mismatch",
+            "schema version mismatch",
+        ));
+    }
+    if record.run_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_run_id_empty",
+            "run_id must not be empty",
+        ));
+    }
+    if record.record_sha256.len() != 64 {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_run_sha_invalid",
+            "record_sha256 must be 64-char hex",
+        ));
+    }
+    let mut value = serde_json::to_value(record)
+        .map_err(|e| EvolutionAdmissionError::new("ec5_run_json", e.to_string()))?;
+    value["record_sha256"] = Value::String(String::new());
+    let expected = record_digest_excluding_sha256(&value)?;
+    if expected != record.record_sha256 {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_run_sha_mismatch",
+            "computed sha256 mismatch",
+        ));
+    }
+    Ok(())
+}
+
+pub fn acquire_or_renew_run_lease(
+    run: &mut ExperimentRunRecordV1,
+    worker_id: &str,
+    lease_expires_at: &str,
+    now: &str,
+) -> Result<(), EvolutionAdmissionError> {
+    if run.state.is_terminal() {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_lease_terminal_forbidden",
+            "cannot acquire lease on terminal run",
+        ));
+    }
+    if let (Some(holder), Some(expires)) = (&run.lease_holder, &run.lease_expires_at) {
+        if holder != worker_id && expires.as_str() > now {
+            return Err(EvolutionAdmissionError::new(
+                "ec5_lease_conflict",
+                format!("lease active by holder {}", holder),
+            ));
+        }
+    }
+    run.lease_holder = Some(worker_id.to_string());
+    run.lease_expires_at = Some(lease_expires_at.to_string());
+    run.state = ExperimentRunState::LeaseAcquired;
+    run.updated_at = now.to_string();
+    Ok(())
+}
+
+pub fn request_run_stop(
+    run: &mut ExperimentRunRecordV1,
+    stop_trigger: Ec5StopTriggerKind,
+    detail: &str,
+    now: &str,
+) -> Result<(), EvolutionAdmissionError> {
+    run.stop_reason = Some(stop_trigger);
+    run.stop_detail = Some(detail.to_string());
+    run.state = ExperimentRunState::Stopped;
+    run.lease_holder = None;
+    run.lease_expires_at = None;
+    run.updated_at = now.to_string();
+    Ok(())
+}
+
+pub fn cancel_run(
+    run: &mut ExperimentRunRecordV1,
+    detail: &str,
+    now: &str,
+) -> Result<(), EvolutionAdmissionError> {
+    run.stop_detail = Some(detail.to_string());
+    run.state = ExperimentRunState::Canceled;
+    run.lease_holder = None;
+    run.lease_expires_at = None;
+    run.updated_at = now.to_string();
+    Ok(())
+}
+
+pub fn reconcile_and_restart_run(
+    run: &mut ExperimentRunRecordV1,
+    expected_active_version_hash: &str,
+    expected_evaluator_hash: &str,
+    now: &str,
+) -> Result<(), EvolutionAdmissionError> {
+    if run.state == ExperimentRunState::Stopped || run.state == ExperimentRunState::Canceled {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_restart_terminal_forbidden",
+            "stopped or canceled run cannot restart without re-authorization",
+        ));
+    }
+    if run.active_version_hash != expected_active_version_hash {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_active_version_immutable",
+            "active version hash changed during run",
+        ));
+    }
+    if run.evaluator_identity_hash != expected_evaluator_hash {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_evaluator_identity_immutable",
+            "evaluator identity hash changed during run",
+        ));
+    }
+    // Budget / cost and executed effects count are NEVER reset on restart
+    run.lease_holder = None;
+    run.lease_expires_at = None;
+    run.state = ExperimentRunState::Initialized;
+    run.updated_at = now.to_string();
+    Ok(())
+}
+
+pub const LEVEL1_CONTRACT_SCHEMA_VERSION: &str = "level1_experiment_contract.v1";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Level1ExperimentContractV1 {
+    pub schema_version: String,
+    pub contract_id: String,
+    pub active_version_id: String,
+    pub active_version_hash: String,
+    pub evaluator_identity_hash: String,
+    pub parent_candidate_ids: Vec<String>,
+    pub mutation_family_ids: Vec<String>,
+    pub causal_manifest_identities: Vec<String>,
+    pub generation_seed: u64,
+    pub max_candidate_limit: u32,
+    pub total_token_budget: u64,
+    pub total_wall_clock_seconds_budget: u64,
+    pub holdout_split_identities: Vec<String>,
+    pub prediction_outcome_rule_hash: String,
+    pub selection_contract_id: String,
+    pub memory_projections_enabled: bool,
+    pub skill_projections_enabled: bool,
+    pub record_sha256: String,
+}
+
+pub fn seal_level1_experiment_contract(
+    mut contract: Level1ExperimentContractV1,
+) -> Result<Level1ExperimentContractV1, EvolutionAdmissionError> {
+    contract.schema_version = LEVEL1_CONTRACT_SCHEMA_VERSION.to_string();
+    let mut value = serde_json::to_value(&contract)
+        .map_err(|e| EvolutionAdmissionError::new("level1_contract_json", e.to_string()))?;
+    value["record_sha256"] = Value::String(String::new());
+    contract.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_level1_experiment_contract(&contract)?;
+    Ok(contract)
+}
+
+pub fn validate_level1_experiment_contract(
+    contract: &Level1ExperimentContractV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if contract.schema_version != LEVEL1_CONTRACT_SCHEMA_VERSION {
+        return Err(EvolutionAdmissionError::new(
+            "level1_schema_mismatch",
+            "level 1 schema mismatch",
+        ));
+    }
+    if contract.contract_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "level1_contract_id_empty",
+            "contract_id must not be empty",
+        ));
+    }
+    if contract.memory_projections_enabled {
+        return Err(EvolutionAdmissionError::new(
+            "level1_memory_projections_forbidden",
+            "memory projections must be disabled in Level-1",
+        ));
+    }
+    if contract.skill_projections_enabled {
+        return Err(EvolutionAdmissionError::new(
+            "level1_skill_projections_forbidden",
+            "skill projections must be disabled in Level-1",
+        ));
+    }
+    if contract.parent_candidate_ids.is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "level1_parents_empty",
+            "parent_candidate_ids must not be empty",
+        ));
+    }
+    if contract.mutation_family_ids.is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "level1_families_empty",
+            "mutation_family_ids must not be empty",
+        ));
+    }
+    if contract.max_candidate_limit == 0 {
+        return Err(EvolutionAdmissionError::new(
+            "level1_candidate_limit_zero",
+            "max_candidate_limit must be > 0",
+        ));
+    }
+    if contract.total_token_budget == 0 {
+        return Err(EvolutionAdmissionError::new(
+            "level1_token_budget_zero",
+            "total_token_budget must be > 0",
+        ));
+    }
+    if contract.record_sha256.len() != 64 {
+        return Err(EvolutionAdmissionError::new(
+            "level1_sha_invalid",
+            "record_sha256 must be 64-char hex",
+        ));
+    }
+    let mut value = serde_json::to_value(contract)
+        .map_err(|e| EvolutionAdmissionError::new("level1_contract_json", e.to_string()))?;
+    value["record_sha256"] = Value::String(String::new());
+    let expected = record_digest_excluding_sha256(&value)?;
+    if expected != contract.record_sha256 {
+        return Err(EvolutionAdmissionError::new(
+            "level1_sha_mismatch",
+            "computed sha256 mismatch",
+        ));
+    }
+    Ok(())
+}
+
+pub fn sample_level1_experiment_contract() -> Level1ExperimentContractV1 {
+    let active = sample_active_identity();
+    seal_level1_experiment_contract(Level1ExperimentContractV1 {
+        schema_version: LEVEL1_CONTRACT_SCHEMA_VERSION.to_string(),
+        contract_id: "PE7-HE-LEVEL1-RUNNABLE-CONTRACT-1".to_string(),
+        active_version_id: active.active_version_id,
+        active_version_hash: active.active_version_hash,
+        evaluator_identity_hash: active.evaluator_identity_hash,
+        parent_candidate_ids: vec!["cand-parent-1".to_string()],
+        mutation_family_ids: vec!["prompt_instruction_tuning".to_string()],
+        causal_manifest_identities: vec!["cm-1".to_string()],
+        generation_seed: 42,
+        max_candidate_limit: 10,
+        total_token_budget: 1_000_000,
+        total_wall_clock_seconds_budget: 3600,
+        holdout_split_identities: vec!["holdout-val-1".to_string()],
+        prediction_outcome_rule_hash: "a".repeat(64),
+        selection_contract_id: "PE7-HE-EC5-CONTRACT-1".to_string(),
+        memory_projections_enabled: false,
+        skill_projections_enabled: false,
+        record_sha256: String::new(),
+    })
+    .unwrap()
 }
 
 pub fn sample_ec3_budget_contract() -> Ec3LifecycleBudgetContractV1 {
@@ -4107,5 +4442,196 @@ mod tests {
         assert!(res_b.is_dominated);
         assert!(!res_b.selected_for_archive);
         assert_eq!(res_b.dominating_candidate_ids, vec!["cand-a"]);
+    }
+
+    #[test]
+    fn ec5_run_lease_acquisition_and_conflict_handling() {
+        let active = sample_active_identity();
+        let mut run = ExperimentRunRecordV1 {
+            schema_version: EXPERIMENT_RUN_SCHEMA_VERSION.to_string(),
+            run_id: "run-test-1".to_string(),
+            experiment_id: "exp-1".to_string(),
+            contract_id: "PE7-HE-EC5-CONTRACT-1".to_string(),
+            state: ExperimentRunState::Initialized,
+            lease_holder: None,
+            lease_expires_at: None,
+            stop_reason: None,
+            stop_detail: None,
+            executed_effects_count: 0,
+            total_token_cost: 0,
+            total_wall_clock_seconds: 0,
+            active_version_hash: active.active_version_hash.clone(),
+            evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+            created_at: "2026-08-20T00:00:00Z".to_string(),
+            updated_at: "2026-08-20T00:00:00Z".to_string(),
+            record_sha256: String::new(),
+        };
+
+        // Worker 1 acquires lease until 2026-08-20T00:10:00Z
+        acquire_or_renew_run_lease(
+            &mut run,
+            "worker-1",
+            "2026-08-20T00:10:00Z",
+            "2026-08-20T00:01:00Z",
+        )
+        .unwrap();
+        assert_eq!(run.state, ExperimentRunState::LeaseAcquired);
+        assert_eq!(run.lease_holder.as_deref(), Some("worker-1"));
+
+        // Worker 2 attempts before expiration -> conflict
+        let conflict = acquire_or_renew_run_lease(
+            &mut run,
+            "worker-2",
+            "2026-08-20T00:15:00Z",
+            "2026-08-20T00:05:00Z",
+        );
+        assert!(conflict.is_err());
+        assert_eq!(conflict.unwrap_err().code, "ec5_lease_conflict");
+
+        // Worker 2 acquires after expiration -> success
+        acquire_or_renew_run_lease(
+            &mut run,
+            "worker-2",
+            "2026-08-20T00:20:00Z",
+            "2026-08-20T00:11:00Z",
+        )
+        .unwrap();
+        assert_eq!(run.lease_holder.as_deref(), Some("worker-2"));
+    }
+
+    #[test]
+    fn ec5_run_stop_and_cancellation_lifecycle() {
+        let active = sample_active_identity();
+        let mut run = ExperimentRunRecordV1 {
+            schema_version: EXPERIMENT_RUN_SCHEMA_VERSION.to_string(),
+            run_id: "run-test-2".to_string(),
+            experiment_id: "exp-2".to_string(),
+            contract_id: "PE7-HE-EC5-CONTRACT-1".to_string(),
+            state: ExperimentRunState::Running,
+            lease_holder: Some("worker-1".to_string()),
+            lease_expires_at: Some("2026-08-20T00:10:00Z".to_string()),
+            stop_reason: None,
+            stop_detail: None,
+            executed_effects_count: 5,
+            total_token_cost: 25000,
+            total_wall_clock_seconds: 60,
+            active_version_hash: active.active_version_hash.clone(),
+            evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+            created_at: "2026-08-20T00:00:00Z".to_string(),
+            updated_at: "2026-08-20T00:00:00Z".to_string(),
+            record_sha256: String::new(),
+        };
+
+        request_run_stop(
+            &mut run,
+            Ec5StopTriggerKind::SaturationStop,
+            "quality delta below threshold",
+            "2026-08-20T00:05:00Z",
+        )
+        .unwrap();
+        assert_eq!(run.state, ExperimentRunState::Stopped);
+        assert_eq!(run.stop_reason, Some(Ec5StopTriggerKind::SaturationStop));
+        assert!(run.lease_holder.is_none());
+
+        // Cannot acquire lease on stopped run
+        let res = acquire_or_renew_run_lease(
+            &mut run,
+            "worker-1",
+            "2026-08-20T00:15:00Z",
+            "2026-08-20T00:06:00Z",
+        );
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().code, "ec5_lease_terminal_forbidden");
+    }
+
+    #[test]
+    fn ec5_run_restart_preserves_budget_and_prevents_repeated_effects() {
+        let active = sample_active_identity();
+        let mut run = ExperimentRunRecordV1 {
+            schema_version: EXPERIMENT_RUN_SCHEMA_VERSION.to_string(),
+            run_id: "run-test-3".to_string(),
+            experiment_id: "exp-3".to_string(),
+            contract_id: "PE7-HE-EC5-CONTRACT-1".to_string(),
+            state: ExperimentRunState::LeaseAcquired,
+            lease_holder: Some("worker-crashed".to_string()),
+            lease_expires_at: Some("2026-08-20T00:05:00Z".to_string()),
+            stop_reason: None,
+            stop_detail: None,
+            executed_effects_count: 8,
+            total_token_cost: 40000,
+            total_wall_clock_seconds: 90,
+            active_version_hash: active.active_version_hash.clone(),
+            evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+            created_at: "2026-08-20T00:00:00Z".to_string(),
+            updated_at: "2026-08-20T00:00:00Z".to_string(),
+            record_sha256: String::new(),
+        };
+
+        // Reconcile and restart after worker crash
+        reconcile_and_restart_run(
+            &mut run,
+            &active.active_version_hash,
+            &active.evaluator_identity_hash,
+            "2026-08-20T00:06:00Z",
+        )
+        .unwrap();
+
+        assert_eq!(run.state, ExperimentRunState::Initialized);
+        assert!(run.lease_holder.is_none());
+        // Executed effects, token cost, and wall clock NEVER reset
+        assert_eq!(run.executed_effects_count, 8);
+        assert_eq!(run.total_token_cost, 40000);
+        assert_eq!(run.total_wall_clock_seconds, 90);
+
+        // Attempting restart with mutated active version fails
+        let err_active = reconcile_and_restart_run(
+            &mut run,
+            "mutated_active_version_hash_value",
+            &active.evaluator_identity_hash,
+            "2026-08-20T00:07:00Z",
+        );
+        assert!(err_active.is_err());
+        assert_eq!(err_active.unwrap_err().code, "ec5_active_version_immutable");
+
+        // Attempting restart with mutated evaluator identity fails
+        let err_eval = reconcile_and_restart_run(
+            &mut run,
+            &active.active_version_hash,
+            "mutated_evaluator_identity_hash",
+            "2026-08-20T00:07:00Z",
+        );
+        assert!(err_eval.is_err());
+        assert_eq!(
+            err_eval.unwrap_err().code,
+            "ec5_evaluator_identity_immutable"
+        );
+    }
+
+    #[test]
+    fn level1_contract_seals_and_validates() {
+        let contract = sample_level1_experiment_contract();
+        assert_eq!(contract.schema_version, LEVEL1_CONTRACT_SCHEMA_VERSION);
+        assert_eq!(contract.record_sha256.len(), 64);
+        assert!(validate_level1_experiment_contract(&contract).is_ok());
+
+        // Rejects memory projections in Level-1
+        let mut invalid_mem = contract.clone();
+        invalid_mem.memory_projections_enabled = true;
+        let sealed_mem = seal_level1_experiment_contract(invalid_mem);
+        assert!(sealed_mem.is_err());
+        assert_eq!(
+            sealed_mem.unwrap_err().code,
+            "level1_memory_projections_forbidden"
+        );
+
+        // Rejects skill projections in Level-1
+        let mut invalid_skill = contract.clone();
+        invalid_skill.skill_projections_enabled = true;
+        let sealed_skill = seal_level1_experiment_contract(invalid_skill);
+        assert!(sealed_skill.is_err());
+        assert_eq!(
+            sealed_skill.unwrap_err().code,
+            "level1_skill_projections_forbidden"
+        );
     }
 }

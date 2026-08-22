@@ -2104,6 +2104,45 @@ impl LocalProductStore {
         })
     }
 
+    pub fn record_ec5_run_lifecycle_event(
+        &self,
+        run: &crate::harness_evolution::ExperimentRunRecordV1,
+        event_kind: &str,
+        actor_id: &str,
+    ) -> Result<(), String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec5_run_actor: authenticated actor_id is required".into());
+        }
+        crate::harness_evolution::validate_experiment_run_record(run)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+        self.with_conn(|conn| {
+            let audit_action = format!("harness_evolution.ec5_run_{}", event_kind);
+            append_audit_locked(
+                conn,
+                &now,
+                actor_id,
+                &audit_action,
+                &run.run_id,
+                &serde_json::json!({
+                    "run_id": run.run_id,
+                    "experiment_id": run.experiment_id,
+                    "contract_id": run.contract_id,
+                    "state": run.state.as_str(),
+                    "lease_holder": run.lease_holder,
+                    "lease_expires_at": run.lease_expires_at,
+                    "stop_reason": run.stop_reason.map(|r| r.as_str()),
+                    "executed_effects_count": run.executed_effects_count,
+                    "total_token_cost": run.total_token_cost,
+                    "total_wall_clock_seconds": run.total_wall_clock_seconds,
+                    "actor_id": actor_id,
+                }),
+            )?;
+            Ok(())
+        })
+    }
+
     /// Register an evaluator-owned task family (trusted configuration owner).
     pub fn register_harness_evolution_task_family(
         &self,
@@ -4799,5 +4838,103 @@ mod tests {
             updated_c2.terminal_reason,
             CandidateTerminalReason::RejectedHardGate
         );
+    }
+
+    #[test]
+    fn ec5_store_run_recovery_lifecycle_and_audit() {
+        use crate::harness_evolution::{
+            acquire_or_renew_run_lease, reconcile_and_restart_run, request_run_stop,
+            sample_active_identity, seal_experiment_run_record, Ec5StopTriggerKind,
+            ExperimentRunRecordV1, ExperimentRunState, EXPERIMENT_RUN_SCHEMA_VERSION,
+        };
+        let _g = LabEnvGuard::enable();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec5-run.db");
+        let store = LocalProductStore::new(&db).unwrap();
+
+        let active = sample_active_identity();
+        store
+            .register_harness_evolution_active_identity(&active, "actor-1")
+            .unwrap();
+
+        let mut run = ExperimentRunRecordV1 {
+            schema_version: EXPERIMENT_RUN_SCHEMA_VERSION.to_string(),
+            run_id: "run-rec-1".to_string(),
+            experiment_id: "exp-1".to_string(),
+            contract_id: "PE7-HE-EC5-CONTRACT-1".to_string(),
+            state: ExperimentRunState::Initialized,
+            lease_holder: None,
+            lease_expires_at: None,
+            stop_reason: None,
+            stop_detail: None,
+            executed_effects_count: 0,
+            total_token_cost: 0,
+            total_wall_clock_seconds: 0,
+            active_version_hash: active.active_version_hash.clone(),
+            evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+            created_at: "2026-08-20T00:00:00Z".to_string(),
+            updated_at: "2026-08-20T00:00:00Z".to_string(),
+            record_sha256: String::new(),
+        };
+
+        // 1. Acquire lease
+        acquire_or_renew_run_lease(
+            &mut run,
+            "worker-1",
+            "2026-08-20T00:10:00Z",
+            "2026-08-20T00:01:00Z",
+        )
+        .unwrap();
+        let sealed_1 = seal_experiment_run_record(run.clone()).unwrap();
+        store
+            .record_ec5_run_lifecycle_event(&sealed_1, "lease_acquired", "worker-1")
+            .unwrap();
+
+        // 2. Stop run on diversity collapse
+        request_run_stop(
+            &mut run,
+            Ec5StopTriggerKind::DiversityCollapseStop,
+            "exploration diversity collapsed",
+            "2026-08-20T00:05:00Z",
+        )
+        .unwrap();
+        let sealed_2 = seal_experiment_run_record(run.clone()).unwrap();
+        store
+            .record_ec5_run_lifecycle_event(&sealed_2, "stopped", "supervisor")
+            .unwrap();
+
+        // 3. Reconcile and restart (simulated fresh run)
+        let mut fresh_run = ExperimentRunRecordV1 {
+            schema_version: EXPERIMENT_RUN_SCHEMA_VERSION.to_string(),
+            run_id: "run-rec-2".to_string(),
+            experiment_id: "exp-2".to_string(),
+            contract_id: "PE7-HE-EC5-CONTRACT-1".to_string(),
+            state: ExperimentRunState::LeaseAcquired,
+            lease_holder: Some("crashed-worker".to_string()),
+            lease_expires_at: Some("2026-08-20T00:04:00Z".to_string()),
+            stop_reason: None,
+            stop_detail: None,
+            executed_effects_count: 3,
+            total_token_cost: 15000,
+            total_wall_clock_seconds: 45,
+            active_version_hash: active.active_version_hash.clone(),
+            evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+            created_at: "2026-08-20T00:00:00Z".to_string(),
+            updated_at: "2026-08-20T00:00:00Z".to_string(),
+            record_sha256: String::new(),
+        };
+        reconcile_and_restart_run(
+            &mut fresh_run,
+            &active.active_version_hash,
+            &active.evaluator_identity_hash,
+            "2026-08-20T00:05:00Z",
+        )
+        .unwrap();
+        let sealed_3 = seal_experiment_run_record(fresh_run).unwrap();
+        assert_eq!(sealed_3.executed_effects_count, 3);
+        assert_eq!(sealed_3.total_token_cost, 15000);
+        store
+            .record_ec5_run_lifecycle_event(&sealed_3, "restarted", "supervisor")
+            .unwrap();
     }
 }
