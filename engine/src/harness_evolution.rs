@@ -2575,6 +2575,232 @@ pub fn sample_ec4_diversity_contract() -> Ec4DiversityContractV1 {
     .unwrap()
 }
 
+pub const EC5_SELECTION_CONTRACT_SCHEMA: &str = "ec5_selection_contract.v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HardGateKind {
+    VerifierPass,
+    SecurityBaselinePass,
+    ContaminationCheckPass,
+    BudgetCapPass,
+    DiversityAdmissionPass,
+}
+
+impl HardGateKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::VerifierPass => "verifier_pass",
+            Self::SecurityBaselinePass => "security_baseline_pass",
+            Self::ContaminationCheckPass => "contamination_check_pass",
+            Self::BudgetCapPass => "budget_cap_pass",
+            Self::DiversityAdmissionPass => "diversity_admission_pass",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OptimizationDirection {
+    Maximize,
+    Minimize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParetoObjectiveSpec {
+    pub name: String,
+    pub direction: OptimizationDirection,
+    pub unit: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParetoTieBreakingRule {
+    OldestCreatedFirst,
+    StrictNonDominatedSetOnly,
+    DeterministicSeedHash,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ec5StopTriggerKind {
+    SaturationStop,
+    ContaminationStop,
+    GamingDetectedStop,
+    RegressionStop,
+    BudgetExhaustionStop,
+    DiversityCollapseStop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ec5SelectionContractV1 {
+    pub schema_version: String,
+    pub contract_id: String,
+    pub active_version_id: String,
+    pub active_version_hash: String,
+    pub evaluator_identity_hash: String,
+    pub hard_gate_order: Vec<HardGateKind>,
+    pub pareto_objectives: Vec<ParetoObjectiveSpec>,
+    pub tie_breaking_rule: ParetoTieBreakingRule,
+    pub stop_triggers: Vec<Ec5StopTriggerKind>,
+    pub scalar_override_forbidden: bool,
+    pub require_comparable_bases: bool,
+    pub require_deterministic_replay: bool,
+    pub recovery_invariants: Vec<String>,
+    pub record_sha256: String,
+}
+
+pub fn derive_ec5_selection_contract_id(
+    contract: &Ec5SelectionContractV1,
+) -> Result<String, EvolutionAdmissionError> {
+    let mut value = serde_json::to_value(contract)
+        .map_err(|e| EvolutionAdmissionError::new("ec5_contract_json", e.to_string()))?;
+    value["contract_id"] = Value::String(String::new());
+    value["record_sha256"] = Value::String(String::new());
+    let digest = canonical_json_sha256(&value)
+        .map_err(|e| EvolutionAdmissionError::new("ec5_contract_digest", e.to_string()))?;
+    Ok(format!("ec5_contract:{}", &digest[..16]))
+}
+
+pub fn seal_ec5_selection_contract(
+    mut contract: Ec5SelectionContractV1,
+) -> Result<Ec5SelectionContractV1, EvolutionAdmissionError> {
+    if contract.contract_id.is_empty() {
+        contract.contract_id = derive_ec5_selection_contract_id(&contract)?;
+    }
+    let mut value = serde_json::to_value(&contract)
+        .map_err(|e| EvolutionAdmissionError::new("ec5_contract_json", e.to_string()))?;
+    value["record_sha256"] = Value::String(String::new());
+    contract.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_ec5_selection_contract(&contract)?;
+    Ok(contract)
+}
+
+pub fn validate_ec5_selection_contract(
+    contract: &Ec5SelectionContractV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if contract.schema_version != EC5_SELECTION_CONTRACT_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_contract_schema_version",
+            "schema_version mismatch for Ec5SelectionContractV1",
+        ));
+    }
+    if contract.contract_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_contract_id_missing",
+            "contract_id is required",
+        ));
+    }
+    if contract.active_version_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_active_version_id_missing",
+            "active_version_id is required",
+        ));
+    }
+    validate_sha256_hex(&contract.active_version_hash)?;
+    validate_sha256_hex(&contract.evaluator_identity_hash)?;
+    if contract.hard_gate_order.is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_hard_gates_empty",
+            "hard_gate_order must contain at least one hard gate",
+        ));
+    }
+    if contract.pareto_objectives.is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_pareto_objectives_empty",
+            "pareto_objectives must contain at least one objective",
+        ));
+    }
+    if !contract.scalar_override_forbidden {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_scalar_override_forbidden_required",
+            "scalar_override_forbidden must be true (scalar metrics cannot override hard gates)",
+        ));
+    }
+    if !contract.require_comparable_bases {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_comparable_bases_required",
+            "require_comparable_bases must be true",
+        ));
+    }
+    if !contract.require_deterministic_replay {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_deterministic_replay_required",
+            "require_deterministic_replay must be true",
+        ));
+    }
+    validate_sha256_hex(&contract.record_sha256)?;
+    let mut value = serde_json::to_value(contract)
+        .map_err(|e| EvolutionAdmissionError::new("ec5_contract_json", e.to_string()))?;
+    value["record_sha256"] = Value::String(String::new());
+    let expected = record_digest_excluding_sha256(&value)?;
+    if contract.record_sha256 != expected {
+        return Err(EvolutionAdmissionError::new(
+            "ec5_contract_digest_mismatch",
+            format!(
+                "record_sha256 {} does not match expected {}",
+                contract.record_sha256, expected
+            ),
+        ));
+    }
+    Ok(())
+}
+
+pub fn sample_ec5_selection_contract() -> Ec5SelectionContractV1 {
+    let active = sample_active_identity();
+    seal_ec5_selection_contract(Ec5SelectionContractV1 {
+        schema_version: EC5_SELECTION_CONTRACT_SCHEMA.to_string(),
+        contract_id: String::new(),
+        active_version_id: active.active_version_id,
+        active_version_hash: active.active_version_hash,
+        evaluator_identity_hash: active.evaluator_identity_hash,
+        hard_gate_order: vec![
+            HardGateKind::VerifierPass,
+            HardGateKind::SecurityBaselinePass,
+            HardGateKind::ContaminationCheckPass,
+            HardGateKind::BudgetCapPass,
+            HardGateKind::DiversityAdmissionPass,
+        ],
+        pareto_objectives: vec![
+            ParetoObjectiveSpec {
+                name: "quality_score".to_string(),
+                direction: OptimizationDirection::Maximize,
+                unit: "bps".to_string(),
+            },
+            ParetoObjectiveSpec {
+                name: "token_cost".to_string(),
+                direction: OptimizationDirection::Minimize,
+                unit: "tokens".to_string(),
+            },
+            ParetoObjectiveSpec {
+                name: "wall_clock_seconds".to_string(),
+                direction: OptimizationDirection::Minimize,
+                unit: "seconds".to_string(),
+            },
+        ],
+        tie_breaking_rule: ParetoTieBreakingRule::OldestCreatedFirst,
+        stop_triggers: vec![
+            Ec5StopTriggerKind::SaturationStop,
+            Ec5StopTriggerKind::ContaminationStop,
+            Ec5StopTriggerKind::GamingDetectedStop,
+            Ec5StopTriggerKind::RegressionStop,
+            Ec5StopTriggerKind::BudgetExhaustionStop,
+            Ec5StopTriggerKind::DiversityCollapseStop,
+        ],
+        scalar_override_forbidden: true,
+        require_comparable_bases: true,
+        require_deterministic_replay: true,
+        recovery_invariants: vec![
+            "active_harness_immutable".to_string(),
+            "evaluator_identity_immutable".to_string(),
+            "budget_never_resets".to_string(),
+            "no_replayed_effects".to_string(),
+        ],
+        record_sha256: String::new(),
+    })
+    .unwrap()
+}
+
 pub fn sample_ec3_budget_contract() -> Ec3LifecycleBudgetContractV1 {
     let phase_envelopes = REQUIRED_LIFECYCLE_COST_PHASES
         .iter()
@@ -3453,6 +3679,56 @@ mod tests {
         assert_eq!(
             replay1.family_concentration_bps,
             replay2.family_concentration_bps
+        );
+    }
+
+    #[test]
+    fn ec5_selection_contract_seals_and_validates() {
+        let contract = sample_ec5_selection_contract();
+        assert_eq!(contract.schema_version, EC5_SELECTION_CONTRACT_SCHEMA);
+        assert!(contract.contract_id.starts_with("ec5_contract:"));
+        assert!(validate_ec5_selection_contract(&contract).is_ok());
+    }
+
+    #[test]
+    fn ec5_selection_contract_rejects_scalar_override() {
+        let mut contract = sample_ec5_selection_contract();
+        contract.scalar_override_forbidden = false;
+        let sealed = seal_ec5_selection_contract(contract);
+        assert!(sealed.is_err());
+        assert_eq!(
+            sealed.unwrap_err().code,
+            "ec5_scalar_override_forbidden_required"
+        );
+    }
+
+    #[test]
+    fn ec5_selection_contract_rejects_empty_gates() {
+        let mut contract = sample_ec5_selection_contract();
+        contract.hard_gate_order.clear();
+        let sealed = seal_ec5_selection_contract(contract);
+        assert!(sealed.is_err());
+        assert_eq!(sealed.unwrap_err().code, "ec5_hard_gates_empty");
+    }
+
+    #[test]
+    fn ec5_selection_contract_rejects_incomparable_bases() {
+        let mut contract = sample_ec5_selection_contract();
+        contract.require_comparable_bases = false;
+        let sealed = seal_ec5_selection_contract(contract);
+        assert!(sealed.is_err());
+        assert_eq!(sealed.unwrap_err().code, "ec5_comparable_bases_required");
+    }
+
+    #[test]
+    fn ec5_selection_contract_rejects_non_deterministic_replay() {
+        let mut contract = sample_ec5_selection_contract();
+        contract.require_deterministic_replay = false;
+        let sealed = seal_ec5_selection_contract(contract);
+        assert!(sealed.is_err());
+        assert_eq!(
+            sealed.unwrap_err().code,
+            "ec5_deterministic_replay_required"
         );
     }
 }
