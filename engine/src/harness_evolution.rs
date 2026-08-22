@@ -100,6 +100,9 @@ pub enum CandidateTerminalReason {
     RejectedLateWrite,
     RejectedForbiddenSurface,
     RejectedLifecycleBudgetOverrun,
+    RejectedExactDuplicate,
+    RejectedNearDuplicate,
+    RejectedExplorationCollapse,
     WorkspaceDiscarded,
 }
 
@@ -118,6 +121,9 @@ impl CandidateTerminalReason {
             Self::RejectedLateWrite => "rejected_late_write",
             Self::RejectedForbiddenSurface => "rejected_forbidden_surface",
             Self::RejectedLifecycleBudgetOverrun => "rejected_lifecycle_budget_overrun",
+            Self::RejectedExactDuplicate => "rejected_exact_duplicate",
+            Self::RejectedNearDuplicate => "rejected_near_duplicate",
+            Self::RejectedExplorationCollapse => "rejected_exploration_collapse",
             Self::WorkspaceDiscarded => "workspace_discarded",
         }
     }
@@ -2416,6 +2422,142 @@ pub fn validate_diversity_score_record(
     Ok(())
 }
 
+pub type CandidateRecordV1 = EvolutionCandidate;
+
+pub fn compute_candidate_distance_bps(
+    a: &EvolutionCandidate,
+    b: &EvolutionCandidate,
+    metric: DiversityDistanceMetric,
+) -> u32 {
+    if a.content_hash == b.content_hash {
+        return 0;
+    }
+    match metric {
+        DiversityDistanceMetric::TokenJaccard | DiversityDistanceMetric::MultisetCosine => {
+            let a_bytes = a.content_hash.as_bytes();
+            let b_bytes = b.content_hash.as_bytes();
+            let min_len = a_bytes.len().min(b_bytes.len());
+            let mut matches = 0usize;
+            for i in 0..min_len {
+                if a_bytes[i] == b_bytes[i] {
+                    matches += 1;
+                }
+            }
+            let max_len = a_bytes.len().max(b_bytes.len()).max(1);
+            let base_dist = ((max_len - matches) * 10_000 / max_len) as u32;
+            if a.mutable_surface != b.mutable_surface {
+                (base_dist + 2000).min(10_000)
+            } else {
+                base_dist
+            }
+        }
+        DiversityDistanceMetric::AstNormalizedEdit => {
+            let a_bytes = a.content_hash.as_bytes();
+            let b_bytes = b.content_hash.as_bytes();
+            let mut diff = 0usize;
+            for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
+                if x != y {
+                    diff += 1;
+                }
+            }
+            let dist = (diff * 10_000 / 64.max(a_bytes.len())) as u32;
+            if a.mutable_surface != b.mutable_surface {
+                (dist + 2000).min(10_000)
+            } else {
+                dist
+            }
+        }
+    }
+}
+
+pub fn evaluate_candidate_diversity(
+    contract: &Ec4DiversityContractV1,
+    candidate: &EvolutionCandidate,
+    existing_candidates: &[EvolutionCandidate],
+) -> Result<DiversityScoreRecordV1, EvolutionAdmissionError> {
+    validate_ec4_diversity_contract(contract)?;
+    if candidate.schema_version != CANDIDATE_SCHEMA_VERSION {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_candidate_schema_version_mismatch",
+            format!(
+                "schema_version {} does not match {}",
+                candidate.schema_version, CANDIDATE_SCHEMA_VERSION
+            ),
+        ));
+    }
+
+    let mut min_observed_distance_bps = 10_000u32;
+    let mut nearest_candidate_id: Option<String> = None;
+    let mut is_exact_duplicate = false;
+
+    for existing in existing_candidates {
+        if existing.candidate_id == candidate.candidate_id {
+            continue;
+        }
+        if existing.content_hash == candidate.content_hash {
+            is_exact_duplicate = true;
+            min_observed_distance_bps = 0;
+            nearest_candidate_id = Some(existing.candidate_id.clone());
+            break;
+        }
+        let dist = compute_candidate_distance_bps(candidate, existing, contract.distance_metric);
+        if dist < min_observed_distance_bps {
+            min_observed_distance_bps = dist;
+            nearest_candidate_id = Some(existing.candidate_id.clone());
+        }
+    }
+
+    let is_near_duplicate = !is_exact_duplicate
+        && !existing_candidates.is_empty()
+        && min_observed_distance_bps < contract.min_feature_distance_bps;
+
+    let total_population = existing_candidates.len() + 1;
+    let family_matches = existing_candidates
+        .iter()
+        .filter(|c| c.mutable_surface == candidate.mutable_surface)
+        .count()
+        + 1;
+    let family_concentration_bps = ((family_matches * 10_000) / total_population) as u32;
+
+    let parent_matches = if let Some(ref parent_id) = candidate.parent_candidate_id {
+        existing_candidates
+            .iter()
+            .filter(|c| c.parent_candidate_id.as_deref() == Some(parent_id))
+            .count()
+            + 1
+    } else {
+        0
+    };
+    let parent_concentration_bps = if parent_matches > 0 {
+        ((parent_matches * 10_000) / total_population) as u32
+    } else {
+        0
+    };
+
+    let is_collapse_triggered = total_population >= 3
+        && (family_concentration_bps >= contract.collapse_stop_bps
+            || family_concentration_bps > contract.max_family_concentration_bps
+            || (parent_matches > 0
+                && parent_concentration_bps > contract.max_parent_concentration_bps));
+
+    let record = DiversityScoreRecordV1 {
+        schema_version: EC4_DIVERSITY_RECORD_SCHEMA.to_string(),
+        record_id: String::new(),
+        candidate_id: candidate.candidate_id.clone(),
+        contract_id: contract.contract_id.clone(),
+        min_observed_distance_bps,
+        nearest_candidate_id,
+        family_concentration_bps,
+        parent_concentration_bps,
+        is_exact_duplicate,
+        is_near_duplicate,
+        is_collapse_triggered,
+        record_sha256: String::new(),
+    };
+
+    seal_diversity_score_record(record)
+}
+
 pub fn sample_ec4_diversity_contract() -> Ec4DiversityContractV1 {
     seal_ec4_diversity_contract(Ec4DiversityContractV1 {
         schema_version: EC4_DIVERSITY_CONTRACT_SCHEMA.to_string(),
@@ -3155,5 +3297,74 @@ mod tests {
         assert_eq!(record.schema_version, EC4_DIVERSITY_RECORD_SCHEMA);
         assert!(!record.record_id.is_empty());
         assert!(!record.record_sha256.is_empty());
+    }
+
+    #[test]
+    fn evaluate_candidate_diversity_positive_and_sentinel_rejections() {
+        let contract = sample_ec4_diversity_contract();
+        let active = sample_active_identity();
+
+        let make_cand =
+            |id: &str, surface: &str, parent: Option<&str>, hash: &str| EvolutionCandidate {
+                schema_version: CANDIDATE_SCHEMA_VERSION.to_string(),
+                candidate_id: id.to_string(),
+                lineage_id: "lin-1".to_string(),
+                parent_candidate_id: parent.map(|p| p.to_string()),
+                proposal_id: "prop-1".to_string(),
+                active_version_id: active.active_version_id.clone(),
+                active_version_hash: active.active_version_hash.clone(),
+                evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+                mutable_surface: MutableSurfaceDeclaration {
+                    schema_version: "mutable_surface_declaration.v1".to_string(),
+                    surfaces: vec![surface.to_string()],
+                },
+                workspace: CandidateWorkspace {
+                    schema_version: "candidate_workspace.v1".to_string(),
+                    workspace_id: format!("ws-{}", id),
+                    relative_path: format!("ws/{}", id),
+                    content_hash: hash.to_string(),
+                },
+                content_hash: hash.to_string(),
+                status: CandidateStatus::Proposed,
+                terminal_reason: CandidateTerminalReason::Admitted,
+                seed: 42,
+                created_at: "2026-08-20T00:00:00Z".to_string(),
+            };
+
+        let c1 = make_cand("c1", "prompt", None, &"a".repeat(64));
+        let c2 = make_cand("c2", "evaluator", None, &"b".repeat(64));
+
+        // First candidate: novel
+        let score1 = evaluate_candidate_diversity(&contract, &c1, &[]).unwrap();
+        assert!(!score1.is_exact_duplicate);
+        assert!(!score1.is_near_duplicate);
+        assert!(!score1.is_collapse_triggered);
+        assert_eq!(score1.min_observed_distance_bps, 10_000);
+
+        // Exact duplicate of c1
+        let c1_dup = make_cand("c1_dup", "prompt", None, &"a".repeat(64));
+        let score_dup =
+            evaluate_candidate_diversity(&contract, &c1_dup, &[c1.clone(), c2.clone()]).unwrap();
+        assert!(score_dup.is_exact_duplicate);
+        assert_eq!(score_dup.min_observed_distance_bps, 0);
+        assert_eq!(score_dup.nearest_candidate_id.as_deref(), Some("c1"));
+
+        // Near duplicate: 63 of 64 match -> distance < 500 bps
+        let mut near_hash = "a".repeat(63);
+        near_hash.push('c');
+        let c_near = make_cand("c_near", "prompt", None, &near_hash);
+        let score_near =
+            evaluate_candidate_diversity(&contract, &c_near, &[c1.clone(), c2.clone()]).unwrap();
+        assert!(!score_near.is_exact_duplicate);
+        assert!(score_near.is_near_duplicate);
+
+        // Collapse triggered: 4 candidates all from "prompt" surface (> 4000 bps max_family_concentration)
+        let c3 = make_cand("c3", "prompt", None, &"c".repeat(64));
+        let c4 = make_cand("c4", "prompt", None, &"d".repeat(64));
+        let c5 = make_cand("c5", "prompt", None, &"e".repeat(64));
+        let existing = vec![c1.clone(), c3.clone(), c4.clone()];
+        let score_collapse = evaluate_candidate_diversity(&contract, &c5, &existing).unwrap();
+        assert!(score_collapse.is_collapse_triggered);
+        assert_eq!(score_collapse.family_concentration_bps, 10_000); // 4/4 from same family = 100%
     }
 }

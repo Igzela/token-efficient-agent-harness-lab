@@ -11,14 +11,14 @@ use crate::harness_evolution::{
     validate_ec1_candidate_binding, validate_ec1_identity_lineage,
     validate_failure_pattern_evidence, validate_lifecycle_cost_record,
     validate_mutation_hypothesis_manifest, validate_prediction_outcome_contract, validate_proposal,
-    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding,
-    Ec1IdentityLineageRecord, Ec3LifecycleBudgetContractV1, EvolutionAdmissionError,
-    EvolutionCandidate, EvolutionProposal, EvolutionReceipt, FailurePatternEvidenceV1,
-    LifecycleBudgetReconciliationOutcome, LifecycleBudgetReconciliationV1,
-    LifecycleBudgetReservationStatus, LifecycleBudgetReservationV1, LifecycleCostRecordV1,
-    MutationHypothesisManifestV1, PredictionOutcomeV1, ACTIVE_VERSION_SCHEMA,
-    CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION, LIFECYCLE_BUDGET_RESERVATION_SCHEMA,
-    RECEIPT_SCHEMA_VERSION,
+    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, DiversityScoreRecordV1,
+    Ec1CandidateCausalBinding, Ec1IdentityLineageRecord, Ec3LifecycleBudgetContractV1,
+    Ec4DiversityContractV1, EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal,
+    EvolutionReceipt, FailurePatternEvidenceV1, LifecycleBudgetReconciliationOutcome,
+    LifecycleBudgetReconciliationV1, LifecycleBudgetReservationStatus,
+    LifecycleBudgetReservationV1, LifecycleCostRecordV1, MutationHypothesisManifestV1,
+    PredictionOutcomeV1, ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION,
+    EVOLUTION_LAB_SCHEMA_VERSION, LIFECYCLE_BUDGET_RESERVATION_SCHEMA, RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
     build_pareto_archive, build_sealed_vault, derive_ec2_prediction_outcome,
@@ -1767,6 +1767,273 @@ impl LocalProductStore {
                 Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
                 None => Ok(None),
             }
+        })
+    }
+
+    pub fn record_candidate_diversity_score(
+        &self,
+        record: &DiversityScoreRecordV1,
+        actor_id: &str,
+    ) -> Result<DiversityScoreRecordV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec4_diversity_actor: authenticated actor_id is required".into());
+        }
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let sealed = crate::harness_evolution::seal_diversity_score_record(record.clone())
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        let body_json = serde_json::to_string(&sealed).map_err(|e| e.to_string())?;
+
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec4_diversity_scores WHERE candidate_id=?1",
+                    params![sealed.candidate_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+
+            if let Some(existing_body) = existing {
+                if existing_body == body_json {
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(sealed);
+                }
+                return Err(format!(
+                    "ec4_diversity_immutable: diversity score already recorded for candidate {}",
+                    sealed.candidate_id
+                ));
+            }
+
+            tx.execute(
+                "INSERT INTO harness_evolution_ec4_diversity_scores
+                    (record_id, candidate_id, contract_id, min_observed_distance_bps,
+                     nearest_candidate_id, family_concentration_bps, parent_concentration_bps,
+                     is_exact_duplicate, is_near_duplicate, is_collapse_triggered, record_sha256,
+                     body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    sealed.record_id,
+                    sealed.candidate_id,
+                    sealed.contract_id,
+                    sealed.min_observed_distance_bps as i64,
+                    sealed.nearest_candidate_id,
+                    sealed.family_concentration_bps as i64,
+                    sealed.parent_concentration_bps as i64,
+                    if sealed.is_exact_duplicate { 1 } else { 0 },
+                    if sealed.is_near_duplicate { 1 } else { 0 },
+                    if sealed.is_collapse_triggered { 1 } else { 0 },
+                    sealed.record_sha256,
+                    body_json,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec4_diversity_recorded",
+                &sealed.record_id,
+                &serde_json::json!({
+                    "candidate_id": sealed.candidate_id,
+                    "contract_id": sealed.contract_id,
+                    "min_observed_distance_bps": sealed.min_observed_distance_bps,
+                    "is_exact_duplicate": sealed.is_exact_duplicate,
+                    "is_near_duplicate": sealed.is_near_duplicate,
+                    "is_collapse_triggered": sealed.is_collapse_triggered,
+                    "actor_id": actor_id,
+                }),
+            )?;
+
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(sealed)
+        })
+    }
+
+    pub fn get_candidate_diversity_score(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<DiversityScoreRecordV1>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec4_diversity_scores WHERE candidate_id=?1",
+                    params![candidate_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    pub fn evaluate_and_record_candidate_diversity(
+        &self,
+        contract: &Ec4DiversityContractV1,
+        candidate_id: &str,
+        actor_id: &str,
+    ) -> Result<DiversityScoreRecordV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec4_diversity_actor: authenticated actor_id is required".into());
+        }
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+
+            let candidate_row: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_candidates WHERE candidate_id=?1",
+                    params![candidate_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+
+            let candidate_body = match candidate_row {
+                Some(b) => b,
+                None => return Err(format!("ec4_candidate_missing: candidate {candidate_id} not found")),
+            };
+            let mut candidate: crate::harness_evolution::EvolutionCandidate =
+                serde_json::from_str(&candidate_body).map_err(|e| e.to_string())?;
+
+            let existing_candidates: Vec<crate::harness_evolution::EvolutionCandidate> = {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT body_json FROM harness_evolution_candidates WHERE candidate_id != ?1 ORDER BY created_at ASC",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let bodies = stmt
+                    .query_map(params![candidate_id], |row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?;
+                let mut cands = Vec::new();
+                for b in bodies {
+                    let c: crate::harness_evolution::EvolutionCandidate =
+                        serde_json::from_str(&b).map_err(|e| e.to_string())?;
+                    cands.push(c);
+                }
+                cands
+            };
+
+            let score_record = crate::harness_evolution::evaluate_candidate_diversity(
+                contract,
+                &candidate,
+                &existing_candidates,
+            )
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+
+            let body_json = serde_json::to_string(&score_record).map_err(|e| e.to_string())?;
+
+            tx.execute(
+                "INSERT INTO harness_evolution_ec4_diversity_scores
+                    (record_id, candidate_id, contract_id, min_observed_distance_bps,
+                     nearest_candidate_id, family_concentration_bps, parent_concentration_bps,
+                     is_exact_duplicate, is_near_duplicate, is_collapse_triggered, record_sha256,
+                     body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    score_record.record_id,
+                    score_record.candidate_id,
+                    score_record.contract_id,
+                    score_record.min_observed_distance_bps as i64,
+                    score_record.nearest_candidate_id,
+                    score_record.family_concentration_bps as i64,
+                    score_record.parent_concentration_bps as i64,
+                    if score_record.is_exact_duplicate { 1 } else { 0 },
+                    if score_record.is_near_duplicate { 1 } else { 0 },
+                    if score_record.is_collapse_triggered { 1 } else { 0 },
+                    score_record.record_sha256,
+                    body_json,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            if score_record.is_exact_duplicate {
+                let term_reason = match contract.exact_duplicate_policy {
+                    crate::harness_evolution::ExactDuplicatePolicy::Reject => {
+                        CandidateTerminalReason::RejectedExactDuplicate
+                    }
+                    _ => CandidateTerminalReason::RejectedDuplicate,
+                };
+                candidate.status = CandidateStatus::Rejected;
+                candidate.terminal_reason = term_reason;
+                let updated_candidate_body =
+                    serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
+                tx.execute(
+                    "UPDATE harness_evolution_candidates SET status=?1, terminal_reason=?2, body_json=?3, updated_at=?4 WHERE candidate_id=?5",
+                    params![
+                        candidate.status.as_str(),
+                        candidate.terminal_reason.as_str(),
+                        updated_candidate_body,
+                        now,
+                        candidate.candidate_id
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            } else if score_record.is_near_duplicate {
+                candidate.status = CandidateStatus::Rejected;
+                candidate.terminal_reason = CandidateTerminalReason::RejectedNearDuplicate;
+                let updated_candidate_body =
+                    serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
+                tx.execute(
+                    "UPDATE harness_evolution_candidates SET status=?1, terminal_reason=?2, body_json=?3, updated_at=?4 WHERE candidate_id=?5",
+                    params![
+                        candidate.status.as_str(),
+                        candidate.terminal_reason.as_str(),
+                        updated_candidate_body,
+                        now,
+                        candidate.candidate_id
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            } else if score_record.is_collapse_triggered {
+                candidate.status = CandidateStatus::Rejected;
+                candidate.terminal_reason = CandidateTerminalReason::RejectedExplorationCollapse;
+                let updated_candidate_body =
+                    serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
+                tx.execute(
+                    "UPDATE harness_evolution_candidates SET status=?1, terminal_reason=?2, body_json=?3, updated_at=?4 WHERE candidate_id=?5",
+                    params![
+                        candidate.status.as_str(),
+                        candidate.terminal_reason.as_str(),
+                        updated_candidate_body,
+                        now,
+                        candidate.candidate_id
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec4_diversity_evaluated",
+                &score_record.record_id,
+                &serde_json::json!({
+                    "candidate_id": score_record.candidate_id,
+                    "contract_id": score_record.contract_id,
+                    "min_observed_distance_bps": score_record.min_observed_distance_bps,
+                    "is_exact_duplicate": score_record.is_exact_duplicate,
+                    "is_near_duplicate": score_record.is_near_duplicate,
+                    "is_collapse_triggered": score_record.is_collapse_triggered,
+                    "actor_id": actor_id,
+                }),
+            )?;
+
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(score_record)
         })
     }
 
@@ -3940,6 +4207,218 @@ mod tests {
         assert_eq!(
             updated_res2.status,
             LifecycleBudgetReservationStatus::Overrun
+        );
+    }
+
+    #[test]
+    fn ec4_diversity_admission_rejection_and_persistence_lifecycle() {
+        use crate::harness_evolution::{
+            sample_active_identity, sample_ec4_diversity_contract, CandidateStatus,
+            CandidateTerminalReason, CANDIDATE_SCHEMA_VERSION,
+        };
+        let _g = LabEnvGuard::enable();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec4-div.db");
+        let store = LocalProductStore::new(&db).unwrap();
+
+        let active = sample_active_identity();
+        store
+            .register_harness_evolution_active_identity(&active, "actor-1")
+            .unwrap();
+
+        let contract = sample_ec4_diversity_contract();
+
+        // Insert proposals
+        for prop_id in ["prop-1", "prop-2", "prop-3"] {
+            store
+                .with_conn(|conn| {
+                    conn.execute(
+                        "INSERT INTO harness_evolution_proposals (proposal_id, active_version_id, active_version_hash, evaluator_identity_hash, proposal_body_sha256, body_json, seed, created_at) VALUES (?1, ?2, ?3, ?4, ?5, '{}', 1, '2026-08-20T00:00:00Z')",
+                        params![prop_id, active.active_version_id, active.active_version_hash, active.evaluator_identity_hash, "0".repeat(64)],
+                    ).map_err(|e| e.to_string())
+                })
+                .unwrap();
+        }
+
+        // 1. Candidate 1 (first candidate, novel)
+        let c1 = EvolutionCandidate {
+            schema_version: CANDIDATE_SCHEMA_VERSION.to_string(),
+            candidate_id: "cand-ec4-1".to_string(),
+            lineage_id: "lin-ec4-1".to_string(),
+            parent_candidate_id: None,
+            proposal_id: "prop-1".to_string(),
+            active_version_id: active.active_version_id.clone(),
+            active_version_hash: active.active_version_hash.clone(),
+            evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+            mutable_surface: crate::harness_evolution::MutableSurfaceDeclaration {
+                schema_version: "mutable_surface_declaration.v1".to_string(),
+                surfaces: vec!["prompt".to_string()],
+            },
+            workspace: crate::harness_evolution::CandidateWorkspace {
+                schema_version: "candidate_workspace.v1".to_string(),
+                workspace_id: "ws-1".to_string(),
+                relative_path: "ws/1".to_string(),
+                content_hash: "1".repeat(64),
+            },
+            content_hash: "1".repeat(64),
+            status: CandidateStatus::Proposed,
+            terminal_reason: CandidateTerminalReason::Admitted,
+            seed: 100,
+            created_at: "2026-08-20T00:00:00Z".to_string(),
+        };
+        let c1_body = serde_json::to_string(&c1).unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO harness_evolution_candidates (candidate_id, lineage_id, proposal_id, active_version_id, active_version_hash, evaluator_identity_hash, content_hash, status, terminal_reason, workspace_id, workspace_rel_path, body_json, seed, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+                    params![
+                        c1.candidate_id, c1.lineage_id, c1.proposal_id, c1.active_version_id,
+                        c1.active_version_hash, c1.evaluator_identity_hash, c1.content_hash,
+                        c1.status.as_str(), c1.terminal_reason.as_str(), c1.workspace.workspace_id,
+                        c1.workspace.relative_path, c1_body, c1.seed as i64, c1.created_at
+                    ],
+                ).map_err(|e| e.to_string())
+            })
+            .unwrap();
+
+        let div1 = store
+            .evaluate_and_record_candidate_diversity(&contract, "cand-ec4-1", "worker-actor")
+            .unwrap();
+        assert!(!div1.is_exact_duplicate);
+        assert!(!div1.is_near_duplicate);
+        assert!(!div1.is_collapse_triggered);
+        assert_eq!(div1.min_observed_distance_bps, 10_000);
+
+        // 2. Candidate 2 (exact duplicate of c1 -> content_hash identical)
+        let c2 = EvolutionCandidate {
+            schema_version: CANDIDATE_SCHEMA_VERSION.to_string(),
+            candidate_id: "cand-ec4-2".to_string(),
+            lineage_id: "lin-ec4-2".to_string(),
+            parent_candidate_id: None,
+            proposal_id: "prop-2".to_string(),
+            active_version_id: active.active_version_id.clone(),
+            active_version_hash: active.active_version_hash.clone(),
+            evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+            mutable_surface: crate::harness_evolution::MutableSurfaceDeclaration {
+                schema_version: "mutable_surface_declaration.v1".to_string(),
+                surfaces: vec!["prompt".to_string()],
+            },
+            workspace: crate::harness_evolution::CandidateWorkspace {
+                schema_version: "candidate_workspace.v1".to_string(),
+                workspace_id: "ws-2".to_string(),
+                relative_path: "ws/2".to_string(),
+                content_hash: "1".repeat(64),
+            },
+            content_hash: "1".repeat(64),
+            status: CandidateStatus::Proposed,
+            terminal_reason: CandidateTerminalReason::Admitted,
+            seed: 101,
+            created_at: "2026-08-20T00:01:00Z".to_string(),
+        };
+        let c2_body = serde_json::to_string(&c2).unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO harness_evolution_candidates (candidate_id, lineage_id, proposal_id, active_version_id, active_version_hash, evaluator_identity_hash, content_hash, status, terminal_reason, workspace_id, workspace_rel_path, body_json, seed, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+                    params![
+                        c2.candidate_id, c2.lineage_id, c2.proposal_id, c2.active_version_id,
+                        c2.active_version_hash, c2.evaluator_identity_hash, c2.content_hash,
+                        c2.status.as_str(), c2.terminal_reason.as_str(), c2.workspace.workspace_id,
+                        c2.workspace.relative_path, c2_body, c2.seed as i64, c2.created_at
+                    ],
+                ).map_err(|e| e.to_string())
+            })
+            .unwrap();
+
+        let div2 = store
+            .evaluate_and_record_candidate_diversity(&contract, "cand-ec4-2", "worker-actor")
+            .unwrap();
+        assert!(div2.is_exact_duplicate);
+        assert_eq!(div2.min_observed_distance_bps, 0);
+
+        let updated_c2: EvolutionCandidate = store
+            .with_conn(|conn| {
+                let b: String = conn
+                    .query_row(
+                        "SELECT body_json FROM harness_evolution_candidates WHERE candidate_id='cand-ec4-2'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                Ok(serde_json::from_str(&b).unwrap())
+            })
+            .unwrap();
+        assert_eq!(updated_c2.status, CandidateStatus::Rejected);
+        assert_eq!(
+            updated_c2.terminal_reason,
+            CandidateTerminalReason::RejectedExactDuplicate
+        );
+
+        // 3. Candidate 3 (near duplicate of c1 -> 63 out of 64 chars match -> distance = 156 bps < 500 bps)
+        let mut near_hash = "1".repeat(63);
+        near_hash.push('2');
+        let c3 = EvolutionCandidate {
+            schema_version: CANDIDATE_SCHEMA_VERSION.to_string(),
+            candidate_id: "cand-ec4-3".to_string(),
+            lineage_id: "lin-ec4-3".to_string(),
+            parent_candidate_id: None,
+            proposal_id: "prop-3".to_string(),
+            active_version_id: active.active_version_id.clone(),
+            active_version_hash: active.active_version_hash.clone(),
+            evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+            mutable_surface: crate::harness_evolution::MutableSurfaceDeclaration {
+                schema_version: "mutable_surface_declaration.v1".to_string(),
+                surfaces: vec!["prompt".to_string()],
+            },
+            workspace: crate::harness_evolution::CandidateWorkspace {
+                schema_version: "candidate_workspace.v1".to_string(),
+                workspace_id: "ws-3".to_string(),
+                relative_path: "ws/3".to_string(),
+                content_hash: near_hash.clone(),
+            },
+            content_hash: near_hash,
+            status: CandidateStatus::Proposed,
+            terminal_reason: CandidateTerminalReason::Admitted,
+            seed: 102,
+            created_at: "2026-08-20T00:02:00Z".to_string(),
+        };
+        let c3_body = serde_json::to_string(&c3).unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO harness_evolution_candidates (candidate_id, lineage_id, proposal_id, active_version_id, active_version_hash, evaluator_identity_hash, content_hash, status, terminal_reason, workspace_id, workspace_rel_path, body_json, seed, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+                    params![
+                        c3.candidate_id, c3.lineage_id, c3.proposal_id, c3.active_version_id,
+                        c3.active_version_hash, c3.evaluator_identity_hash, c3.content_hash,
+                        c3.status.as_str(), c3.terminal_reason.as_str(), c3.workspace.workspace_id,
+                        c3.workspace.relative_path, c3_body, c3.seed as i64, c3.created_at
+                    ],
+                ).map_err(|e| e.to_string())
+            })
+            .unwrap();
+
+        let div3 = store
+            .evaluate_and_record_candidate_diversity(&contract, "cand-ec4-3", "worker-actor")
+            .unwrap();
+        assert!(!div3.is_exact_duplicate);
+        assert!(div3.is_near_duplicate);
+
+        let updated_c3: EvolutionCandidate = store
+            .with_conn(|conn| {
+                let b: String = conn
+                    .query_row(
+                        "SELECT body_json FROM harness_evolution_candidates WHERE candidate_id='cand-ec4-3'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                Ok(serde_json::from_str(&b).unwrap())
+            })
+            .unwrap();
+        assert_eq!(updated_c3.status, CandidateStatus::Rejected);
+        assert_eq!(
+            updated_c3.terminal_reason,
+            CandidateTerminalReason::RejectedNearDuplicate
         );
     }
 }
