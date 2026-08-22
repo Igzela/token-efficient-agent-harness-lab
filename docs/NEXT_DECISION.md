@@ -6,18 +6,18 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-HE-EC5-CONTRACT-1` is complete. The current window is `PE7-HE-EC5-SELECTION-ARCHIVE-1`: implement hard-gate filtering, Pareto comparison, tie/disagreement handling, and an immutable candidate archive retaining causal manifests, counterevidence, and prediction outcomes. Selection evidence only; hard safety/quality gates remain separate and prior.
+`PE7-HE-EC5-SELECTION-ARCHIVE-1` is complete. The current window is `PE7-HE-EC5-STOP-RECOVERY-1`: implement bounded stop, lease, cancellation, restart, exactly-once, and recovery transitions; freeze the exact Level-1 runnable contract. Laboratory control state only; no Provider call or Level-2 loop.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-HE-EC5-SELECTION-ARCHIVE-1 — READY_FOR_EXECUTION, provider-free; implement selection and immutable archive]
-[successor: PE7-HE-EC5-STOP-RECOVERY-1 — BLOCKED_PREREQUISITE, provider-free; implement stop and recovery state machine]
+[window: PE7-HE-EC5-STOP-RECOVERY-1 — READY_FOR_EXECUTION, provider-free; implement stop and recovery state machine]
+[successor: PE7-HE-LEVEL1-PREFLIGHT-1 — BLOCKED_PREREQUISITE, provider-free; freeze Level-1 runnable contract and preflight]
 ```
 
 ## Active Routing
 
-1. `PE7-HE-EC5-SELECTION-ARCHIVE-1` — `READY_FOR_EXECUTION`
+1. `PE7-HE-EC5-STOP-RECOVERY-1` — `READY_FOR_EXECUTION`
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -133,41 +133,47 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Accepted evidence:** PR #605 exact head `230c3a88cbfcf874e42ccec1b0f759ab5cc1f5fc`; squash merge `230c3a88cbfcf874e42ccec1b0f759ab5cc1f5fc`; exact-head review comments `5351420011` and `5351420022`; canonical workflow `32335212001`.
 
-## Packet PE7-HE-EC5-SELECTION-ARCHIVE-1
+## Completed (PE7-HE-EC5-SELECTION-ARCHIVE-1)
+
+**State:** `COMPLETE`
+
+**Accepted evidence:** PR #606 exact head `c2fcc12276387d7f9cd9322f775735e348c873a5`; squash merge `c2fcc12276387d7f9cd9322f775735e348c873a5`; exact-head review comments `5351620011` and `5351620022`; canonical workflow `32337212001`.
+
+## Packet PE7-HE-EC5-STOP-RECOVERY-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-HE-EC5-CONTRACT-1`
+**Prerequisite:** `PE7-HE-EC5-SELECTION-ARCHIVE-1`
 
 **Class:** `IMPLEMENT`
 
-**Outcome:** Implement hard-gate filtering, Pareto comparison, tie/disagreement handling, and an immutable candidate archive retaining causal manifests, counterevidence, and prediction outcomes.
+**Outcome:** Implement bounded stop, lease, cancellation, restart, exactly-once, and recovery transitions; freeze the exact Level-1 runnable contract.
 
-**Allowed delta:** `engine/src/harness_evolution.rs`, `engine/src/harness_evolution_eval.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `tests/test_session_context.py`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Selection evidence only; no active-Harness replacement or production adoption.
+**Allowed delta:** `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `tests/test_session_context.py`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Laboratory control state only; no Provider call or Level-2 loop.
 
-**Exit:** Dominance, incomparable basis, tie, rejection, archive tamper, and full-cost fixtures pass.
+**Exit:** Crash/concurrency/late-write/stop/replay tests and SQLite/PostgreSQL parity pass; Level-1 contract is hash-bound.
 
-**Stop:** Best-only reporting, scalar override, candidate-controlled metric, hidden rejection, or prediction accuracy becoming selection authority becomes possible.
+**Stop:** A restart can repeat an effect, budget resets, evaluator changes, or a stopped run can resume without authority.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Implement hard-gate filtering, Pareto comparison, tie/disagreement handling, and an immutable candidate archive retaining causal manifests, counterevidence, and prediction outcomes. Selection evidence only; no active-Harness replacement or production adoption.
-2. **Prerequisites and evidence.** CONTRACT COMPLETE: PR #605 exact head `230c3a88cbfcf874e42ccec1b0f759ab5cc1f5fc`; squash merge `230c3a88cbfcf874e42ccec1b0f759ab5cc1f5fc`; exact-head review comments `5351420011` and `5351420022`; canonical workflow `32335212001`.
-3. **Owners and paths.** Existing `engine/src/harness_evolution.rs`, `engine/src/harness_evolution_eval.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`.
-4. **Frozen invariants.** Hard gates filter candidates before Pareto comparison. Non-dominated archive entries retain causal manifests, failure evidence, and prediction outcomes. Scalar metrics never override hard gates.
-5. **Only semantic delta.** Selection filtering and ranking functions, archive entry persistence/retrieval in LocalProductStore.
-6. **Forbidden changes.** No candidate generation, no active harness mutation, no second store owner, no Level-1 execution.
-7. **Ordered slices.** Implement selection ranking and hard-gate filtering functions; update LocalProductStore archive persistence; add unit/store tests; stop before STOP-RECOVERY-1.
-8. **Failure taxonomy.** Best-only reporting, scalar overriding hard gate, candidate-controlled metric, hidden rejection.
+1. **Outcome and non-goals.** Implement bounded stop, lease, cancellation, restart, exactly-once, and recovery transitions; freeze the exact Level-1 runnable contract. Laboratory control state only; no Provider call or Level-2 loop.
+2. **Prerequisites and evidence.** SELECTION-ARCHIVE COMPLETE: PR #606 exact head `c2fcc12276387d7f9cd9322f775735e348c873a5`; squash merge `c2fcc12276387d7f9cd9322f775735e348c873a5`; exact-head review comments `5351620011` and `5351620022`; canonical workflow `32337212001`.
+3. **Owners and paths.** Existing `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`.
+4. **Frozen invariants.** A restart can never repeat an effect. Budget never resets across restarts. Evaluator identity remains immutable. A stopped run cannot resume without authority.
+5. **Only semantic delta.** Experiment control state machine transitions (Stop, Lease, Cancel, Restart, Reconcile), state persistence/retrieval in LocalProductStore.
+6. **Forbidden changes.** No candidate generation, no Level-2 loop, no second store owner, no provider calls.
+7. **Ordered slices.** Implement experiment execution state machine and recovery transitions in `harness_evolution.rs`; add LocalProductStore methods for experiment lifecycle; add unit/store tests; stop before LEVEL1-PREFLIGHT-1.
+8. **Failure taxonomy.** Repeated effect on restart, budget reset, lost stop state, untracked lease expiration.
 9. **Verification.** Focused cargo tests, handoff, rustfmt.
-10. **Compatibility and rollback.** Revert this PR; selection logic and archive methods remain unpersisted.
-11. **Exit artifact.** Stored selection filtering and archive methods in LocalProductStore.
-12. **Next action.** Promote `PE7-HE-EC5-STOP-RECOVERY-1`.
+10. **Compatibility and rollback.** Revert this PR; stop and recovery state transitions remain unpersisted.
+11. **Exit artifact.** Stored stop and recovery transition methods in `engine/src/harness_evolution.rs` and LocalProductStore.
+12. **Next action.** Promote `PE7-HE-LEVEL1-PREFLIGHT-1`.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC5-SELECTION-ARCHIVE-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Implement hard-gate filtering, Pareto comparison, tie/disagreement handling, and an immutable candidate archive retaining causal manifests, counterevidence, and prediction outcomes.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/harness_evolution_eval.rs","engine/src/storage/local_product_store/harness_evolution.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/harness_evolution_eval.rs","engine/src/storage/local_product_store/harness_evolution.rs","tests/test_session_context.py"],"allowed_outputs":["Hard-gate filtering, Pareto comparison, tie-breaking, and LocalProductStore candidate archive persistence."],"prerequisites":["PE7-HE-EC5-CONTRACT-1"],"prerequisite_receipts":["PE7-HE-EC5-CONTRACT-1 COMPLETE: PR #605 exact head `230c3a88cbfcf874e42ccec1b0f759ab5cc1f5fc`; squash merge `230c3a88cbfcf874e42ccec1b0f759ab5cc1f5fc`; exact-head review comments `5351420011` and `5351420022`; canonical workflow `32335212001`"],"forbidden_changes":["Do not treat Pareto dominance as active harness mutation authority.","Do not change evaluator authority.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Implement evaluate_candidate_selection function respecting hard gates and Pareto dominance.","Implement archive persistence and retrieval in LocalProductStore.","Add unit and store integration tests.","Stop before STOP-RECOVERY-1."],"verification":["cargo test -p engine --lib selection -- --test-threads=1","cargo test -p engine --lib harness_evolution -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; selection logic and archive methods remain unpersisted.","pause_gates":["Stop before STOP-RECOVERY-1."],"expected_artifacts":["engine/src/storage/local_product_store/harness_evolution.rs candidate archive persistence"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":[]}
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC5-STOP-RECOVERY-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Implement bounded stop, lease, cancellation, restart, exactly-once, and recovery transitions; freeze the exact Level-1 runnable contract.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","tests/test_session_context.py"],"allowed_outputs":["Bounded stop, lease, cancellation, restart, exactly-once, and recovery transitions in harness_evolution and LocalProductStore."],"prerequisites":["PE7-HE-EC5-SELECTION-ARCHIVE-1"],"prerequisite_receipts":["PE7-HE-EC5-SELECTION-ARCHIVE-1 COMPLETE: PR #606 exact head `c2fcc12276387d7f9cd9322f775735e348c873a5`; squash merge `c2fcc12276387d7f9cd9322f775735e348c873a5`; exact-head review comments `5351620011` and `5351620022`; canonical workflow `32337212001`"],"forbidden_changes":["Do not restart an effect that may have already executed.","Do not reset budget on restart.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Implement experiment run lifecycle state machine (Stop, Lease, Cancel, Restart) in harness_evolution.rs.","Implement LocalProductStore run lifecycle persistence methods.","Add unit and store integration tests for crash, restart, stop, and idempotency.","Stop before LEVEL1-PREFLIGHT-1."],"verification":["cargo test -p engine --lib recovery -- --test-threads=1","cargo test -p engine --lib harness_evolution -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; stop and recovery transitions remain unpersisted.","pause_gates":["Stop before LEVEL1-PREFLIGHT-1."],"expected_artifacts":["engine/src/harness_evolution.rs and engine/src/storage/local_product_store/harness_evolution.rs recovery transitions"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":[]}
 -->
 
 ## Common Execution Protocol
