@@ -4421,4 +4421,149 @@ mod tests {
             CandidateTerminalReason::RejectedNearDuplicate
         );
     }
+
+    #[test]
+    fn ec4_store_exploration_collapse_rejection_lifecycle() {
+        use crate::harness_evolution::{
+            sample_active_identity, sample_ec4_diversity_contract, CandidateStatus,
+            CandidateTerminalReason, CANDIDATE_SCHEMA_VERSION,
+        };
+        let _g = LabEnvGuard::enable();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec4-col.db");
+        let store = LocalProductStore::new(&db).unwrap();
+
+        let active = sample_active_identity();
+        store
+            .register_harness_evolution_active_identity(&active, "actor-1")
+            .unwrap();
+
+        let mut contract = sample_ec4_diversity_contract();
+        contract.max_family_concentration_bps = 4000;
+        contract.collapse_stop_bps = 8000;
+        let contract = crate::harness_evolution::seal_ec4_diversity_contract(contract).unwrap();
+
+        // Insert proposals
+        for i in 1..=5 {
+            let prop_id = format!("prop-col-{}", i);
+            store
+                .with_conn(|conn| {
+                    conn.execute(
+                        "INSERT INTO harness_evolution_proposals (proposal_id, active_version_id, active_version_hash, evaluator_identity_hash, proposal_body_sha256, body_json, seed, created_at) VALUES (?1, ?2, ?3, ?4, ?5, '{}', 1, '2026-08-20T00:00:00Z')",
+                        params![prop_id, active.active_version_id, active.active_version_hash, active.evaluator_identity_hash, "0".repeat(64)],
+                    ).map_err(|e| e.to_string())
+                })
+                .unwrap();
+        }
+
+        // Insert 3 candidates all in the "prompt" mutable surface
+        for i in 1..=3 {
+            let cand_id = format!("cand-col-{}", i);
+            let hash = i.to_string().repeat(64);
+            let c = EvolutionCandidate {
+                schema_version: CANDIDATE_SCHEMA_VERSION.to_string(),
+                candidate_id: cand_id.clone(),
+                lineage_id: format!("lin-col-{}", i),
+                parent_candidate_id: None,
+                proposal_id: format!("prop-col-{}", i),
+                active_version_id: active.active_version_id.clone(),
+                active_version_hash: active.active_version_hash.clone(),
+                evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+                mutable_surface: crate::harness_evolution::MutableSurfaceDeclaration {
+                    schema_version: "mutable_surface_declaration.v1".to_string(),
+                    surfaces: vec!["prompt".to_string()],
+                },
+                workspace: crate::harness_evolution::CandidateWorkspace {
+                    schema_version: "candidate_workspace.v1".to_string(),
+                    workspace_id: format!("ws-{}", i),
+                    relative_path: format!("ws/{}", i),
+                    content_hash: hash.clone(),
+                },
+                content_hash: hash,
+                status: CandidateStatus::Proposed,
+                terminal_reason: CandidateTerminalReason::Admitted,
+                seed: 200 + i,
+                created_at: format!("2026-08-20T00:0{}:00Z", i),
+            };
+            let c_body = serde_json::to_string(&c).unwrap();
+            store
+                .with_conn(|conn| {
+                    conn.execute(
+                        "INSERT INTO harness_evolution_candidates (candidate_id, lineage_id, proposal_id, active_version_id, active_version_hash, evaluator_identity_hash, content_hash, status, terminal_reason, workspace_id, workspace_rel_path, body_json, seed, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+                        params![
+                            c.candidate_id, c.lineage_id, c.proposal_id, c.active_version_id,
+                            c.active_version_hash, c.evaluator_identity_hash, c.content_hash,
+                            c.status.as_str(), c.terminal_reason.as_str(), c.workspace.workspace_id,
+                            c.workspace.relative_path, c_body, c.seed as i64, c.created_at
+                        ],
+                    ).map_err(|e| e.to_string())
+                })
+                .unwrap();
+        }
+
+        // Insert 4th candidate also in "prompt" surface -> 4/4 from same family = 100% > 40% and >= 80% stop
+        let cand_4 = EvolutionCandidate {
+            schema_version: CANDIDATE_SCHEMA_VERSION.to_string(),
+            candidate_id: "cand-col-4".to_string(),
+            lineage_id: "lin-col-4".to_string(),
+            parent_candidate_id: None,
+            proposal_id: "prop-col-4".to_string(),
+            active_version_id: active.active_version_id.clone(),
+            active_version_hash: active.active_version_hash.clone(),
+            evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+            mutable_surface: crate::harness_evolution::MutableSurfaceDeclaration {
+                schema_version: "mutable_surface_declaration.v1".to_string(),
+                surfaces: vec!["prompt".to_string()],
+            },
+            workspace: crate::harness_evolution::CandidateWorkspace {
+                schema_version: "candidate_workspace.v1".to_string(),
+                workspace_id: "ws-4".to_string(),
+                relative_path: "ws/4".to_string(),
+                content_hash: "4".repeat(64),
+            },
+            content_hash: "4".repeat(64),
+            status: CandidateStatus::Proposed,
+            terminal_reason: CandidateTerminalReason::Admitted,
+            seed: 204,
+            created_at: "2026-08-20T00:04:00Z".to_string(),
+        };
+        let c4_body = serde_json::to_string(&cand_4).unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO harness_evolution_candidates (candidate_id, lineage_id, proposal_id, active_version_id, active_version_hash, evaluator_identity_hash, content_hash, status, terminal_reason, workspace_id, workspace_rel_path, body_json, seed, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+                    params![
+                        cand_4.candidate_id, cand_4.lineage_id, cand_4.proposal_id, cand_4.active_version_id,
+                        cand_4.active_version_hash, cand_4.evaluator_identity_hash, cand_4.content_hash,
+                        cand_4.status.as_str(), cand_4.terminal_reason.as_str(), cand_4.workspace.workspace_id,
+                        cand_4.workspace.relative_path, c4_body, cand_4.seed as i64, cand_4.created_at
+                    ],
+                ).map_err(|e| e.to_string())
+            })
+            .unwrap();
+
+        let div4 = store
+            .evaluate_and_record_candidate_diversity(&contract, "cand-col-4", "worker-actor")
+            .unwrap();
+        assert!(div4.is_collapse_triggered);
+        assert_eq!(div4.family_concentration_bps, 10_000);
+
+        let updated_c4: EvolutionCandidate = store
+            .with_conn(|conn| {
+                let b: String = conn
+                    .query_row(
+                        "SELECT body_json FROM harness_evolution_candidates WHERE candidate_id='cand-col-4'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                Ok(serde_json::from_str(&b).unwrap())
+            })
+            .unwrap();
+        assert_eq!(updated_c4.status, CandidateStatus::Rejected);
+        assert_eq!(
+            updated_c4.terminal_reason,
+            CandidateTerminalReason::RejectedExplorationCollapse
+        );
+    }
 }

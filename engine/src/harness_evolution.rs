@@ -3367,4 +3367,92 @@ mod tests {
         assert!(score_collapse.is_collapse_triggered);
         assert_eq!(score_collapse.family_concentration_bps, 10_000); // 4/4 from same family = 100%
     }
+
+    #[test]
+    fn ec4_exploration_coverage_metrics_and_collapse_matrix() {
+        let mut contract = sample_ec4_diversity_contract();
+        contract.distance_metric = DiversityDistanceMetric::AstNormalizedEdit;
+        contract.max_parent_concentration_bps = 5000;
+        contract.collapse_stop_bps = 8000;
+        let contract = seal_ec4_diversity_contract(contract).unwrap();
+        let active = sample_active_identity();
+
+        let make_cand =
+            |id: &str, surface: &str, parent: Option<&str>, hash: &str| EvolutionCandidate {
+                schema_version: CANDIDATE_SCHEMA_VERSION.to_string(),
+                candidate_id: id.to_string(),
+                lineage_id: "lin-cov".to_string(),
+                parent_candidate_id: parent.map(|p| p.to_string()),
+                proposal_id: format!("prop-{}", id),
+                active_version_id: active.active_version_id.clone(),
+                active_version_hash: active.active_version_hash.clone(),
+                evaluator_identity_hash: active.evaluator_identity_hash.clone(),
+                mutable_surface: MutableSurfaceDeclaration {
+                    schema_version: "mutable_surface_declaration.v1".to_string(),
+                    surfaces: vec![surface.to_string()],
+                },
+                workspace: CandidateWorkspace {
+                    schema_version: "candidate_workspace.v1".to_string(),
+                    workspace_id: format!("ws-{}", id),
+                    relative_path: format!("ws/{}", id),
+                    content_hash: hash.to_string(),
+                },
+                content_hash: hash.to_string(),
+                status: CandidateStatus::Proposed,
+                terminal_reason: CandidateTerminalReason::Admitted,
+                seed: 77,
+                created_at: "2026-08-20T00:00:00Z".to_string(),
+            };
+
+        // Test AstNormalizedEdit distance metric
+        let c_parent = make_cand("c_parent", "prompt", None, &"0".repeat(64));
+        let c_child1 = make_cand("c_child1", "prompt", Some("c_parent"), &"1".repeat(64));
+        let c_child2 = make_cand("c_child2", "prompt", Some("c_parent"), &"2".repeat(64));
+        let c_child3 = make_cand("c_child3", "prompt", Some("c_parent"), &"3".repeat(64));
+
+        let dist_ast = compute_candidate_distance_bps(
+            &c_child1,
+            &c_child2,
+            DiversityDistanceMetric::AstNormalizedEdit,
+        );
+        assert_eq!(dist_ast, 10_000); // completely different 64-char hashes
+
+        let score_p1 =
+            evaluate_candidate_diversity(&contract, &c_child1, std::slice::from_ref(&c_parent))
+                .unwrap();
+        assert!(!score_p1.is_collapse_triggered);
+
+        // 3 out of 4 candidates sharing same parent (c_parent) -> parent concentration = 75% > 50%
+        let score_p3 = evaluate_candidate_diversity(
+            &contract,
+            &c_child3,
+            &[c_parent.clone(), c_child1.clone(), c_child2.clone()],
+        )
+        .unwrap();
+        assert!(score_p3.is_collapse_triggered);
+        assert_eq!(score_p3.parent_concentration_bps, 7500);
+
+        // Deterministic replay check
+        let replay1 = evaluate_candidate_diversity(
+            &contract,
+            &c_child3,
+            &[c_parent.clone(), c_child1.clone(), c_child2.clone()],
+        )
+        .unwrap();
+        let replay2 = evaluate_candidate_diversity(
+            &contract,
+            &c_child3,
+            &[c_parent.clone(), c_child1.clone(), c_child2.clone()],
+        )
+        .unwrap();
+        assert_eq!(replay1.record_sha256, replay2.record_sha256);
+        assert_eq!(
+            replay1.min_observed_distance_bps,
+            replay2.min_observed_distance_bps
+        );
+        assert_eq!(
+            replay1.family_concentration_bps,
+            replay2.family_concentration_bps
+        );
+    }
 }

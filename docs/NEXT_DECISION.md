@@ -6,18 +6,18 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-HE-EC4-CONTRACT-1` is complete. The current window is `PE7-HE-EC4-ADMISSION-1`: implement duplicate/near-duplicate admission and immutable distance evidence. Diversity admission only; hard safety/quality gates remain separate and prior.
+`PE7-HE-EC4-ADMISSION-1` is complete. The current window is `PE7-HE-EC4-COVERAGE-CLOSEOUT-1`: validate family/parent/seed exploration coverage and collapse sentinel behavior on provider-free fixtures. Conformance and validation only; hard safety/quality gates remain separate and prior.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-HE-EC4-ADMISSION-1 — READY_FOR_EXECUTION, provider-free; implement diversity admission]
-[successor: PE7-HE-EC4-COVERAGE-CLOSEOUT-1 — BLOCKED_PREREQUISITE, provider-free; validate coverage and sentinel behavior]
+[window: PE7-HE-EC4-COVERAGE-CLOSEOUT-1 — READY_FOR_EXECUTION, provider-free; validate coverage and sentinel behavior]
+[successor: PE7-HE-EC5-CONTRACT-1 — BLOCKED_PREREQUISITE, provider-free; freeze hard-gate order and Pareto archive contract]
 ```
 
 ## Active Routing
 
-1. `PE7-HE-EC4-ADMISSION-1` — `READY_FOR_EXECUTION`
+1. `PE7-HE-EC4-COVERAGE-CLOSEOUT-1` — `READY_FOR_EXECUTION`
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -115,41 +115,47 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Accepted evidence:** PR #602 exact head `c6ad73ff3ba983eaefcefb5fdf757ef0c1da0011`; squash merge `c6ad73ff3ba983eaefcefb5fdf757ef0c1da0011`; exact-head review comments `5350920011` and `5350920022`; canonical workflow `32330112001`.
 
-## Packet PE7-HE-EC4-ADMISSION-1
+## Completed (PE7-HE-EC4-ADMISSION-1)
+
+**State:** `COMPLETE`
+
+**Accepted evidence:** PR #603 exact head `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; squash merge `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; exact-head review comments `5351120011` and `5351120022`; canonical workflow `32332112001`.
+
+## Packet PE7-HE-EC4-COVERAGE-CLOSEOUT-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-HE-EC4-CONTRACT-1`
+**Prerequisite:** `PE7-HE-EC4-ADMISSION-1`
 
-**Class:** `IMPLEMENT`
+**Class:** `CLOSEOUT`
 
-**Outcome:** Implement duplicate/near-duplicate admission and immutable distance evidence.
+**Outcome:** Validate family/parent/seed exploration coverage and collapse sentinel behavior on provider-free fixtures.
 
-**Allowed delta:** `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `engine/src/storage/local_product_store/schema.rs`, `engine/src/storage/local_product_store/migrations.rs`, `engine/src/storage/local_product_store/pg_backend/migrations.rs`, `engine/src/storage/local_product_store/integrity.rs`, `engine/tests/test_data_operations.rs`, `tests/test_session_context.py`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Diversity evaluation, score record persistence, and rejection only; no candidate generation or Level-1.
+**Allowed delta:** `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/FUTURE_ROUTE.md`, `tests/test_session_context.py`, `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`. Conformance tests and validation only; no live experiment.
 
-**Exit:** Exact/near duplicate, collision, order, restart, lineage, and rejected-candidate preservation tests pass.
+**Exit:** Coverage matrix, collapse triggers, replay determinism, and reporting completeness accepted for EC5.
 
-**Stop:** Admissibility becomes a quality score, evidence is nondeterministic, or rejected work disappears.
+**Stop:** Fixtures cannot distinguish exploration from superficial textual variation or thresholds require post-result tuning.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Implement duplicate/near-duplicate admission and immutable distance evidence. Diversity admission only; hard safety/quality gates remain separate and prior.
-2. **Prerequisites and evidence.** CONTRACT COMPLETE: PR #602 exact head `c6ad73ff3ba983eaefcefb5fdf757ef0c1da0011`; squash merge `c6ad73ff3ba983eaefcefb5fdf757ef0c1da0011`; exact-head review comments `5350920011` and `5350920022`; canonical workflow `32330112001`.
-3. **Owners and paths.** Existing `engine/src/harness_evolution.rs`, LocalProductStore `harness_evolution_ec4_diversity_scores` table.
-4. **Frozen invariants.** Novelty/diversity never grants quality or production-adoption authority. Exact duplicate, near duplicate, and exploration collapse reject candidate with deterministic reasons (`RejectedExactDuplicate`, `RejectedNearDuplicate`, `RejectedExplorationCollapse`).
-5. **Only semantic delta.** `evaluate_candidate_diversity` + LocalProductStore persistence/query methods + schema / migration v37 + table registration in integrity checks.
+1. **Outcome and non-goals.** Validate family/parent/seed exploration coverage and collapse sentinel behavior on provider-free fixtures. Closeout and test coverage only; no live experiment or Level-1 execution.
+2. **Prerequisites and evidence.** ADMISSION COMPLETE: PR #603 exact head `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; squash merge `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; exact-head review comments `5351120011` and `5351120022`; canonical workflow `32332112001`.
+3. **Owners and paths.** Existing `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`.
+4. **Frozen invariants.** Exploration coverage fixtures verify exact duplicate rejection, near duplicate rejection, family concentration collapse triggers, parent concentration collapse triggers, and replay determinism.
+5. **Only semantic delta.** Comprehensive coverage tests for diversity evaluation, collapse sentinels, and store audit logs.
 6. **Forbidden changes.** No candidate generation, no quality score substitution, no second store owner, no Level-1.
-7. **Ordered slices.** Define diversity evaluation function; implement LocalProductStore persistence; add migration v37; add negative tests; stop before COVERAGE-CLOSEOUT-1.
-8. **Failure taxonomy.** Admissibility treated as quality score, missing distance evidence, non-deterministic feature replay, unhandled duplicate policy.
+7. **Ordered slices.** Add comprehensive exploration coverage fixture tests; verify all 9 gates; stop before EC5.
+8. **Failure taxonomy.** Unverified collapse trigger, superficial variation passing as diversity, non-deterministic replay, missing audit events.
 9. **Verification.** Focused cargo tests, handoff, rustfmt.
 10. **Compatibility and rollback.** Revert this PR.
-11. **Exit artifact.** Stored `DiversityScoreRecordV1` records and migration v37.
-12. **Next action.** Promote `PE7-HE-EC4-COVERAGE-CLOSEOUT-1`.
+11. **Exit artifact.** Comprehensive provider-free fixture test suite for EC4 coverage.
+12. **Next action.** Promote `PE7-HE-EC5-CONTRACT-1`.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC4-ADMISSION-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Implement duplicate/near-duplicate admission and immutable distance evidence.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/integrity.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/schema.rs","engine/tests/test_data_operations.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/integrity.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/schema.rs","engine/tests/test_data_operations.rs","tests/test_session_context.py"],"allowed_outputs":["Diversity admission logic and LocalProductStore score record persistence."],"prerequisites":["PE7-HE-EC4-CONTRACT-1"],"prerequisite_receipts":["PE7-HE-EC4-CONTRACT-1 COMPLETE: PR #602 exact head `c6ad73ff3ba983eaefcefb5fdf757ef0c1da0011`; squash merge `c6ad73ff3ba983eaefcefb5fdf757ef0c1da0011`; exact-head review comments `5350920011` and `5350920022`; canonical workflow `32330112001`"],"forbidden_changes":["Do not treat diversity as quality authority.","Do not change evaluator authority.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Implement evaluate_candidate_diversity in harness_evolution.rs.","Implement LocalProductStore diversity score persistence and getters.","Add schema/migrations v37.","Add unit and integration tests.","Stop before COVERAGE-CLOSEOUT-1."],"verification":["cargo test -p engine --lib diversity -- --test-threads=1","cargo test -p engine --test test_data_operations -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; diversity admission remains unpersisted.","pause_gates":["Stop before COVERAGE-CLOSEOUT-1."],"expected_artifacts":["engine/src/storage/local_product_store/harness_evolution.rs record_candidate_diversity_score"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":["harness_evolution_ec4_diversity_scores"]}
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC4-COVERAGE-CLOSEOUT-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Validate family/parent/seed exploration coverage and collapse sentinel behavior on provider-free fixtures.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","tests/test_session_context.py"],"allowed_outputs":["EC4 exploration coverage and collapse sentinel test suite."],"prerequisites":["PE7-HE-EC4-ADMISSION-1"],"prerequisite_receipts":["PE7-HE-EC4-ADMISSION-1 COMPLETE: PR #603 exact head `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; squash merge `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; exact-head review comments `5351120011` and `5351120022`; canonical workflow `32332112001`"],"forbidden_changes":["Do not treat diversity as quality authority.","Do not change evaluator authority.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Add comprehensive coverage tests for exploration collapse and diversity sentinels in harness_evolution.rs and store.","Verify 9 verification gates.","Stop before EC5."],"verification":["cargo test -p engine --lib diversity -- --test-threads=1","cargo test -p engine --lib harness_evolution -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; candidate exploration coverage tests are removed.","pause_gates":["Stop before EC5."],"expected_artifacts":["engine/src/harness_evolution.rs exploration coverage tests"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T2","known_store_mutations":[]}
 -->
 
 ## Common Execution Protocol
