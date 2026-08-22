@@ -940,6 +940,26 @@ CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_reconciliations_c
     ON harness_evolution_ec3_lifecycle_reconciliations(candidate_id, contract_id, created_at);
 ";
 
+pub(super) const EC4_DIVERSITY_DDL: &str = "
+CREATE TABLE IF NOT EXISTS harness_evolution_ec4_diversity_scores (
+    record_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL UNIQUE,
+    contract_id TEXT NOT NULL,
+    min_observed_distance_bps BIGINT NOT NULL,
+    nearest_candidate_id TEXT,
+    family_concentration_bps BIGINT NOT NULL,
+    parent_concentration_bps BIGINT NOT NULL,
+    is_exact_duplicate BOOLEAN NOT NULL DEFAULT 0,
+    is_near_duplicate BOOLEAN NOT NULL DEFAULT 0,
+    is_collapse_triggered BOOLEAN NOT NULL DEFAULT 0,
+    record_sha256 TEXT NOT NULL CHECK (length(record_sha256) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec4_diversity_scores_candidate
+    ON harness_evolution_ec4_diversity_scores(candidate_id, contract_id, created_at);
+";
+
 pub(super) const V28_DDL: &str = "
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
@@ -1884,6 +1904,24 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_reconciliations (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_reconciliations_candidate
     ON harness_evolution_ec3_lifecycle_reconciliations(candidate_id, contract_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_ec4_diversity_scores (
+    record_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL UNIQUE,
+    contract_id TEXT NOT NULL,
+    min_observed_distance_bps BIGINT NOT NULL,
+    nearest_candidate_id TEXT,
+    family_concentration_bps BIGINT NOT NULL,
+    parent_concentration_bps BIGINT NOT NULL,
+    is_exact_duplicate BOOLEAN NOT NULL DEFAULT 0,
+    is_near_duplicate BOOLEAN NOT NULL DEFAULT 0,
+    is_collapse_triggered BOOLEAN NOT NULL DEFAULT 0,
+    record_sha256 TEXT NOT NULL CHECK (length(record_sha256) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec4_diversity_scores_candidate
+    ON harness_evolution_ec4_diversity_scores(candidate_id, contract_id, created_at);
 
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
@@ -3201,6 +3239,24 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_reconciliations (
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_reconciliations_candidate
     ON harness_evolution_ec3_lifecycle_reconciliations(candidate_id, contract_id, created_at);
 
+CREATE TABLE IF NOT EXISTS harness_evolution_ec4_diversity_scores (
+    record_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL UNIQUE,
+    contract_id TEXT NOT NULL,
+    min_observed_distance_bps BIGINT NOT NULL,
+    nearest_candidate_id TEXT,
+    family_concentration_bps BIGINT NOT NULL,
+    parent_concentration_bps BIGINT NOT NULL,
+    is_exact_duplicate BOOLEAN NOT NULL DEFAULT 0,
+    is_near_duplicate BOOLEAN NOT NULL DEFAULT 0,
+    is_collapse_triggered BOOLEAN NOT NULL DEFAULT 0,
+    record_sha256 TEXT NOT NULL CHECK (length(record_sha256) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec4_diversity_scores_candidate
+    ON harness_evolution_ec4_diversity_scores(candidate_id, contract_id, created_at);
+
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
     family_id TEXT NOT NULL,
@@ -3632,6 +3688,8 @@ mod tests {
         assert!(POSTGRES_DDL.contains(EC3_LIFECYCLE_BUDGET_DDL.trim()));
         assert!(SQLITE_DDL.contains(EC3_LIFECYCLE_RECONCILIATION_DDL.trim()));
         assert!(POSTGRES_DDL.contains(EC3_LIFECYCLE_RECONCILIATION_DDL.trim()));
+        assert!(SQLITE_DDL.contains(EC4_DIVERSITY_DDL.trim()));
+        assert!(POSTGRES_DDL.contains(EC4_DIVERSITY_DDL.trim()));
         for expected in [
             "controlled_loop_policy_snapshots",
             "idx_policy_snapshots_status",
@@ -3683,6 +3741,8 @@ mod tests {
             "idx_harness_evolution_ec3_lifecycle_budgets_contract",
             "harness_evolution_ec3_lifecycle_reconciliations",
             "idx_harness_evolution_ec3_lifecycle_reconciliations_candidate",
+            "harness_evolution_ec4_diversity_scores",
+            "idx_harness_evolution_ec4_diversity_scores_candidate",
             "idx_harness_evolution_candidates_lineage",
             "harness_evolution_sealed_holdouts",
             "harness_evolution_evaluations",
