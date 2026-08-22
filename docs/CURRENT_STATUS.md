@@ -100,6 +100,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-HE-EC3-INSTRUMENTATION-1` | `COMPLETE` | PR #600 exact head `bc97c675c9a7dbabefeeff7e1634b07d6d333066`; squash merge `bc97c675c9a7dbabefeeff7e1634b07d6d333066`; exact-head review comments `5350620011` and `5350620022`; canonical workflow `32326812001` |
 | `PE7-HE-EC3-ENFORCEMENT-1` | `COMPLETE` | PR #601 exact head `af91f31f99c2794eb84e55e0947700ce8145ee2b`; squash merge `af91f31f99c2794eb84e55e0947700ce8145ee2b`; exact-head review comments `5350780011` and `5350780022`; canonical workflow `32328212001` |
 | `PE7-HE-EC4-CONTRACT-1` | `COMPLETE` | PR #602 exact head `c6ad73ff3ba983eaefcefb5fdf757ef0c1da0011`; squash merge `c6ad73ff3ba983eaefcefb5fdf757ef0c1da0011`; exact-head review comments `5350920011` and `5350920022`; canonical workflow `32330112001` |
+| `PE7-HE-EC4-ADMISSION-1` | `COMPLETE` | PR #603 exact head `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; squash merge `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; exact-head review comments `5351120011` and `5351120022`; canonical workflow `32332112001` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
