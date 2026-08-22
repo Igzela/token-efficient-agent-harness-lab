@@ -885,6 +885,25 @@ CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec2_prediction_outcomes_eval
     ON harness_evolution_ec2_prediction_outcomes(evaluation_digest, created_at);
 ";
 
+pub(super) const EC3_LIFECYCLE_COST_DDL: &str = "
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_costs (
+    record_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    token_cost BIGINT NOT NULL,
+    call_count BIGINT NOT NULL,
+    wall_clock_seconds BIGINT NOT NULL,
+    trust_source TEXT NOT NULL,
+    unmeasured BOOLEAN NOT NULL DEFAULT 0,
+    failure_attempt BOOLEAN NOT NULL DEFAULT 0,
+    evidence_payload_digest TEXT NOT NULL CHECK (length(evidence_payload_digest) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_costs_candidate
+    ON harness_evolution_ec3_lifecycle_costs(candidate_id, phase, created_at);
+";
+
 pub(super) const V28_DDL: &str = "
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
@@ -1780,6 +1799,23 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec2_prediction_outcomes (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec2_prediction_outcomes_eval
     ON harness_evolution_ec2_prediction_outcomes(evaluation_digest, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_costs (
+    record_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    token_cost BIGINT NOT NULL,
+    call_count BIGINT NOT NULL,
+    wall_clock_seconds BIGINT NOT NULL,
+    trust_source TEXT NOT NULL,
+    unmeasured BOOLEAN NOT NULL DEFAULT 0,
+    failure_attempt BOOLEAN NOT NULL DEFAULT 0,
+    evidence_payload_digest TEXT NOT NULL CHECK (length(evidence_payload_digest) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_costs_candidate
+    ON harness_evolution_ec3_lifecycle_costs(candidate_id, phase, created_at);
 
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
@@ -3048,6 +3084,23 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec2_prediction_outcomes (
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec2_prediction_outcomes_eval
     ON harness_evolution_ec2_prediction_outcomes(evaluation_digest, created_at);
 
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_costs (
+    record_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    token_cost BIGINT NOT NULL,
+    call_count BIGINT NOT NULL,
+    wall_clock_seconds BIGINT NOT NULL,
+    trust_source TEXT NOT NULL,
+    unmeasured BOOLEAN NOT NULL DEFAULT 0,
+    failure_attempt BOOLEAN NOT NULL DEFAULT 0,
+    evidence_payload_digest TEXT NOT NULL CHECK (length(evidence_payload_digest) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_costs_candidate
+    ON harness_evolution_ec3_lifecycle_costs(candidate_id, phase, created_at);
+
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
     family_id TEXT NOT NULL,
@@ -3473,6 +3526,8 @@ mod tests {
         assert!(POSTGRES_DDL.contains(EC2_HOLDOUT_SEAL_DDL.trim()));
         assert!(SQLITE_DDL.contains(EC2_PREDICTION_OUTCOME_DDL.trim()));
         assert!(POSTGRES_DDL.contains(EC2_PREDICTION_OUTCOME_DDL.trim()));
+        assert!(SQLITE_DDL.contains(EC3_LIFECYCLE_COST_DDL.trim()));
+        assert!(POSTGRES_DDL.contains(EC3_LIFECYCLE_COST_DDL.trim()));
         for expected in [
             "controlled_loop_policy_snapshots",
             "idx_policy_snapshots_status",
@@ -3518,6 +3573,8 @@ mod tests {
             "idx_harness_evolution_ec2_holdout_seals_family",
             "harness_evolution_ec2_prediction_outcomes",
             "idx_harness_evolution_ec2_prediction_outcomes_eval",
+            "harness_evolution_ec3_lifecycle_costs",
+            "idx_harness_evolution_ec3_lifecycle_costs_candidate",
             "idx_harness_evolution_candidates_lineage",
             "harness_evolution_sealed_holdouts",
             "harness_evolution_evaluations",

@@ -6,15 +6,16 @@ use super::{append_audit_locked, LocalProductStore};
 use crate::harness_evolution::{
     build_admission_receipt, configured_workspace_root, generate_ec1_candidate_binding,
     revalidate_workspace_content, seal_ec1_identity_lineage, seal_failure_pattern_evidence,
-    seal_mutation_hypothesis_manifest, validate_candidate_for_admission,
-    validate_ec1_candidate_binding, validate_ec1_identity_lineage,
-    validate_failure_pattern_evidence, validate_mutation_hypothesis_manifest,
+    seal_lifecycle_cost_record, seal_mutation_hypothesis_manifest,
+    validate_candidate_for_admission, validate_ec1_candidate_binding,
+    validate_ec1_identity_lineage, validate_failure_pattern_evidence,
+    validate_lifecycle_cost_record, validate_mutation_hypothesis_manifest,
     validate_prediction_outcome_contract, validate_proposal, ActiveHarnessIdentity,
     CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding, Ec1IdentityLineageRecord,
     EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal, EvolutionReceipt,
-    FailurePatternEvidenceV1, MutationHypothesisManifestV1, PredictionOutcomeV1,
-    ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION,
-    RECEIPT_SCHEMA_VERSION,
+    FailurePatternEvidenceV1, LifecycleCostRecordV1, MutationHypothesisManifestV1,
+    PredictionOutcomeV1, ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION,
+    EVOLUTION_LAB_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
     build_pareto_archive, build_sealed_vault, derive_ec2_prediction_outcome,
@@ -1316,6 +1317,126 @@ impl LocalProductStore {
                 Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
                 None => Ok(None),
             }
+        })
+    }
+
+    pub fn persist_ec3_lifecycle_cost_record(
+        &self,
+        record: LifecycleCostRecordV1,
+        actor_id: &str,
+    ) -> Result<LifecycleCostRecordV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec3_cost_actor: authenticated actor_id is required".into());
+        }
+        let sealed =
+            seal_lifecycle_cost_record(record).map_err(|e| format!("{}: {}", e.code, e.message))?;
+        validate_lifecycle_cost_record(&sealed)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        let body_json = serde_json::to_string(&sealed).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs WHERE record_id=?1",
+                    params![sealed.record_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(existing_body) = existing {
+                if existing_body == body_json {
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return serde_json::from_str(&existing_body).map_err(|e| e.to_string());
+                }
+                return Err(format!(
+                    "ec3_cost_immutable: {} already exists",
+                    sealed.record_id
+                ));
+            }
+            tx.execute(
+                "INSERT INTO harness_evolution_ec3_lifecycle_costs
+                    (record_id, candidate_id, phase, token_cost, call_count, wall_clock_seconds, trust_source, unmeasured, failure_attempt, evidence_payload_digest, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    sealed.record_id,
+                    sealed.candidate_id,
+                    sealed.phase.as_str(),
+                    sealed.token_cost as i64,
+                    sealed.call_count as i64,
+                    sealed.wall_clock_seconds as i64,
+                    sealed.trust_source.as_str(),
+                    if sealed.unmeasured { 1 } else { 0 },
+                    if sealed.failure_attempt { 1 } else { 0 },
+                    sealed.evidence_payload_digest,
+                    body_json,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec3_lifecycle_cost",
+                &sealed.record_id,
+                &serde_json::json!({
+                    "candidate_id": sealed.candidate_id,
+                    "phase": sealed.phase.as_str(),
+                    "token_cost": sealed.token_cost,
+                    "call_count": sealed.call_count,
+                    "trust_source": sealed.trust_source.as_str(),
+                    "unmeasured": sealed.unmeasured,
+                    "failure_attempt": sealed.failure_attempt,
+                    "actor_id": actor_id,
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(sealed)
+        })
+    }
+
+    pub fn get_ec3_lifecycle_cost_record(
+        &self,
+        record_id: &str,
+    ) -> Result<Option<LifecycleCostRecordV1>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs WHERE record_id=?1",
+                    params![record_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    pub fn list_ec3_lifecycle_cost_records_for_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Vec<LifecycleCostRecordV1>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs WHERE candidate_id=?1 ORDER BY created_at ASC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![candidate_id], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            for r in rows {
+                let body = r.map_err(|e| e.to_string())?;
+                let rec: LifecycleCostRecordV1 = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+                out.push(rec);
+            }
+            Ok(out)
         })
     }
 
@@ -3290,5 +3411,100 @@ mod tests {
         assert_eq!(loaded.record_sha256, stored.record_sha256);
         let summary = summarize_prediction_outcomes(&[loaded]);
         assert!(!summary.accuracy_is_selection_authority);
+    }
+
+    #[test]
+    fn persists_ec3_lifecycle_cost_records_with_failure_retention_and_immutability() {
+        use crate::harness_evolution::{
+            seal_lifecycle_cost_record, CostTrustSource, LifecycleCostPhase, LifecycleCostRecordV1,
+            LIFECYCLE_COST_RECORD_SCHEMA,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec3-cost.db");
+        let store = LocalProductStore::new(&db).unwrap();
+
+        let rec1 = seal_lifecycle_cost_record(LifecycleCostRecordV1 {
+            schema_version: LIFECYCLE_COST_RECORD_SCHEMA.to_string(),
+            record_id: String::new(),
+            candidate_id: "cand-ec3-1".to_string(),
+            phase: LifecycleCostPhase::HypothesisGeneration,
+            token_cost: 8_000,
+            call_count: 2,
+            wall_clock_seconds: 15,
+            trust_source: CostTrustSource::MeasuredDirect,
+            unmeasured: false,
+            failure_attempt: false,
+            evidence_payload_digest: crate::harness_evolution::sha256_hex("hyp_payload"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+
+        let rec2_failure = seal_lifecycle_cost_record(LifecycleCostRecordV1 {
+            schema_version: LIFECYCLE_COST_RECORD_SCHEMA.to_string(),
+            record_id: String::new(),
+            candidate_id: "cand-ec3-1".to_string(),
+            phase: LifecycleCostPhase::Repair,
+            token_cost: 25_000,
+            call_count: 5,
+            wall_clock_seconds: 60,
+            trust_source: CostTrustSource::MeasuredDirect,
+            unmeasured: false,
+            failure_attempt: true,
+            evidence_payload_digest: crate::harness_evolution::sha256_hex("repair_failed_attempt"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+
+        // Must reject empty actor
+        assert!(store
+            .persist_ec3_lifecycle_cost_record(rec1.clone(), "")
+            .unwrap_err()
+            .contains("actor_id"));
+
+        let stored1 = store
+            .persist_ec3_lifecycle_cost_record(rec1.clone(), "worker-actor")
+            .unwrap();
+        assert_eq!(stored1.record_sha256, rec1.record_sha256);
+
+        let stored2 = store
+            .persist_ec3_lifecycle_cost_record(rec2_failure.clone(), "worker-actor")
+            .unwrap();
+        assert!(stored2.failure_attempt);
+
+        // Idempotency
+        assert_eq!(
+            store
+                .persist_ec3_lifecycle_cost_record(rec1.clone(), "worker-actor")
+                .unwrap()
+                .record_sha256,
+            stored1.record_sha256
+        );
+
+        // Immutability: different body for same record_id fails
+        let mut tampered = rec1.clone();
+        tampered.token_cost = 99_999;
+        tampered.record_sha256 = crate::harness_evolution::sha256_hex("tampered");
+        assert!(store
+            .persist_ec3_lifecycle_cost_record(tampered, "worker-actor")
+            .unwrap_err()
+            .contains("immutable"));
+
+        // Query by candidate_id
+        let list = store
+            .list_ec3_lifecycle_cost_records_for_candidate("cand-ec3-1")
+            .unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].record_id, stored1.record_id);
+        assert_eq!(list[1].record_id, stored2.record_id);
+        assert!(list[1].failure_attempt);
+
+        // Restart survival
+        drop(store);
+        let reopened = LocalProductStore::new(&db).unwrap();
+        let loaded = reopened
+            .get_ec3_lifecycle_cost_record(&stored1.record_id)
+            .unwrap()
+            .expect("cost record survives restart");
+        assert_eq!(loaded.record_sha256, stored1.record_sha256);
     }
 }

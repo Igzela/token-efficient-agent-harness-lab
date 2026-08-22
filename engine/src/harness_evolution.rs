@@ -29,6 +29,7 @@ pub const MUTATION_FAMILY_REGISTRY_SCHEMA: &str = "mutation_family_registry.v1";
 pub const EC1_IDENTITY_LINEAGE_SCHEMA: &str = "harness_evolution_ec1_identity_lineage.v1";
 pub const EC1_CANDIDATE_BINDING_SCHEMA: &str = "harness_evolution_ec1_candidate_binding.v1";
 pub const EC3_LIFECYCLE_BUDGET_SCHEMA: &str = "harness_evolution_ec3_lifecycle_budget.v1";
+pub const LIFECYCLE_COST_RECORD_SCHEMA: &str = "harness_evolution_ec3_lifecycle_cost.v1";
 
 /// CWS analysis bound this SHA as the default-off active Harness. EC1 freezes it;
 /// it is not a live ENABLE and does not authorize candidate generation.
@@ -382,6 +383,22 @@ pub struct Ec3LifecycleBudgetContractV1 {
     pub reservation_required: bool,
     pub exact_reconciliation_required: bool,
     pub allow_spend_authority_delegation: bool,
+    pub record_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleCostRecordV1 {
+    pub schema_version: String,
+    pub record_id: String,
+    pub candidate_id: String,
+    pub phase: LifecycleCostPhase,
+    pub token_cost: u64,
+    pub call_count: u64,
+    pub wall_clock_seconds: u64,
+    pub trust_source: CostTrustSource,
+    pub unmeasured: bool,
+    pub failure_attempt: bool,
+    pub evidence_payload_digest: String,
     pub record_sha256: String,
 }
 
@@ -952,6 +969,77 @@ pub fn seal_ec3_lifecycle_budget_contract(
     contract.record_sha256 = record_digest_excluding_sha256(&value)?;
     validate_ec3_lifecycle_budget_contract(&contract)?;
     Ok(contract)
+}
+
+pub fn derive_lifecycle_cost_record_id(
+    candidate_id: &str,
+    phase: LifecycleCostPhase,
+    evidence_payload_digest: &str,
+) -> String {
+    format!(
+        "helc-{}",
+        &sha256_hex(&format!(
+            "ec3-cost.v1|{candidate_id}|{}|{evidence_payload_digest}",
+            phase.as_str()
+        ))[..32]
+    )
+}
+
+pub fn validate_lifecycle_cost_record(
+    record: &LifecycleCostRecordV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if record.schema_version != LIFECYCLE_COST_RECORD_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_schema_invalid",
+            "lifecycle cost record schema mismatch",
+        ));
+    }
+    if record.candidate_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_candidate_id_missing",
+            "candidate_id is required",
+        ));
+    }
+    validate_sha256_hex(&record.evidence_payload_digest)?;
+    if record.record_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_record_id_missing",
+            "record_id is required",
+        ));
+    }
+    if record.unmeasured
+        && (record.token_cost > 0 || record.call_count > 0 || record.wall_clock_seconds > 0)
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_unmeasured_nonzero",
+            "unmeasured cost record cannot claim non-zero measured values",
+        ));
+    }
+    let value = serde_json::to_value(record)
+        .map_err(|error| EvolutionAdmissionError::new("ec3_record_digest", error.to_string()))?;
+    require_record_sha256(&value, &record.record_sha256)?;
+    Ok(())
+}
+
+pub fn seal_lifecycle_cost_record(
+    mut record: LifecycleCostRecordV1,
+) -> Result<LifecycleCostRecordV1, EvolutionAdmissionError> {
+    record.schema_version = LIFECYCLE_COST_RECORD_SCHEMA.to_string();
+    if record.record_id.trim().is_empty() {
+        record.record_id = derive_lifecycle_cost_record_id(
+            &record.candidate_id,
+            record.phase,
+            &record.evidence_payload_digest,
+        );
+    }
+    let mut value = serde_json::to_value(&record)
+        .map_err(|error| EvolutionAdmissionError::new("ec3_record_digest", error.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    record.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_lifecycle_cost_record(&record)?;
+    Ok(record)
 }
 
 pub fn frozen_ec1_active_harness_sha() -> &'static str {
@@ -2285,5 +2373,49 @@ mod tests {
         contract.global_envelope.total_token_limit = 500; // smaller than candidate total of 100_000
         let err = seal_ec3_lifecycle_budget_contract(contract).unwrap_err();
         assert_eq!(err.code, "ec3_global_limit_smaller");
+    }
+
+    fn sample_lifecycle_cost_record() -> LifecycleCostRecordV1 {
+        seal_lifecycle_cost_record(LifecycleCostRecordV1 {
+            schema_version: LIFECYCLE_COST_RECORD_SCHEMA.to_string(),
+            record_id: String::new(),
+            candidate_id: "hec-c1".to_string(),
+            phase: LifecycleCostPhase::Evaluation,
+            token_cost: 15_000,
+            call_count: 3,
+            wall_clock_seconds: 45,
+            trust_source: CostTrustSource::MeasuredDirect,
+            unmeasured: false,
+            failure_attempt: false,
+            evidence_payload_digest: sha256_hex("evidence_payload"),
+            record_sha256: String::new(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn lifecycle_cost_record_seals_and_validates() {
+        let record = sample_lifecycle_cost_record();
+        assert!(validate_lifecycle_cost_record(&record).is_ok());
+        assert_eq!(record.schema_version, LIFECYCLE_COST_RECORD_SCHEMA);
+        assert!(!record.record_id.is_empty());
+        assert!(!record.record_sha256.is_empty());
+    }
+
+    #[test]
+    fn lifecycle_cost_record_rejects_unmeasured_nonzero() {
+        let mut record = sample_lifecycle_cost_record();
+        record.unmeasured = true;
+        record.token_cost = 100;
+        let err = seal_lifecycle_cost_record(record).unwrap_err();
+        assert_eq!(err.code, "ec3_unmeasured_nonzero");
+    }
+
+    #[test]
+    fn lifecycle_cost_record_rejects_empty_candidate_id() {
+        let mut record = sample_lifecycle_cost_record();
+        record.candidate_id = "   ".to_string();
+        let err = seal_lifecycle_cost_record(record).unwrap_err();
+        assert_eq!(err.code, "ec3_candidate_id_missing");
     }
 }
