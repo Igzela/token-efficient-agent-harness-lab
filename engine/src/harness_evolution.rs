@@ -2186,6 +2186,253 @@ pub fn candidate_from_proposal(
     Ok(candidate)
 }
 
+pub const EC4_DIVERSITY_CONTRACT_SCHEMA: &str = "harness_evolution_ec4_diversity_contract.v1";
+pub const EC4_DIVERSITY_RECORD_SCHEMA: &str = "harness_evolution_ec4_diversity_record.v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExactDuplicatePolicy {
+    Reject,
+    Quarantine,
+    SkipReplay,
+}
+
+impl ExactDuplicatePolicy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Reject => "reject",
+            Self::Quarantine => "quarantine",
+            Self::SkipReplay => "skip_replay",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiversityDistanceMetric {
+    TokenJaccard,
+    AstNormalizedEdit,
+    MultisetCosine,
+}
+
+impl DiversityDistanceMetric {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::TokenJaccard => "token_jaccard",
+            Self::AstNormalizedEdit => "ast_normalized_edit",
+            Self::MultisetCosine => "multiset_cosine",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ec4DiversityContractV1 {
+    pub schema_version: String,
+    pub contract_id: String,
+    pub exact_duplicate_policy: ExactDuplicatePolicy,
+    pub distance_metric: DiversityDistanceMetric,
+    pub min_feature_distance_bps: u32,
+    pub max_family_concentration_bps: u32,
+    pub max_parent_concentration_bps: u32,
+    pub collapse_stop_bps: u32,
+    pub require_deterministic_feature_replay: bool,
+    pub novelty_never_grants_quality_authority: bool,
+    pub record_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiversityScoreRecordV1 {
+    pub schema_version: String,
+    pub record_id: String,
+    pub candidate_id: String,
+    pub contract_id: String,
+    pub min_observed_distance_bps: u32,
+    pub nearest_candidate_id: Option<String>,
+    pub family_concentration_bps: u32,
+    pub parent_concentration_bps: u32,
+    pub is_exact_duplicate: bool,
+    pub is_near_duplicate: bool,
+    pub is_collapse_triggered: bool,
+    pub record_sha256: String,
+}
+
+pub fn derive_ec4_diversity_contract_id(
+    contract: &Ec4DiversityContractV1,
+) -> Result<String, EvolutionAdmissionError> {
+    let mut value = serde_json::to_value(contract)
+        .map_err(|e| EvolutionAdmissionError::new("ec4_contract_json", e.to_string()))?;
+    value["contract_id"] = Value::String(String::new());
+    value["record_sha256"] = Value::String(String::new());
+    let digest = canonical_json_sha256(&value)
+        .map_err(|e| EvolutionAdmissionError::new("ec4_contract_digest", e.to_string()))?;
+    Ok(format!("ec4_contract:{}", &digest[..16]))
+}
+
+pub fn seal_ec4_diversity_contract(
+    mut contract: Ec4DiversityContractV1,
+) -> Result<Ec4DiversityContractV1, EvolutionAdmissionError> {
+    if contract.contract_id.is_empty() {
+        contract.contract_id = derive_ec4_diversity_contract_id(&contract)?;
+    }
+    let mut value = serde_json::to_value(&contract)
+        .map_err(|e| EvolutionAdmissionError::new("ec4_contract_json", e.to_string()))?;
+    value["record_sha256"] = Value::String(String::new());
+    contract.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_ec4_diversity_contract(&contract)?;
+    Ok(contract)
+}
+
+pub fn validate_ec4_diversity_contract(
+    contract: &Ec4DiversityContractV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if contract.schema_version != EC4_DIVERSITY_CONTRACT_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_schema_version",
+            "schema_version mismatch for Ec4DiversityContractV1",
+        ));
+    }
+    if contract.contract_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_contract_id_missing",
+            "contract_id is required",
+        ));
+    }
+    if !contract.novelty_never_grants_quality_authority {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_novelty_authority_forbidden",
+            "novelty_never_grants_quality_authority must remain true",
+        ));
+    }
+    if !contract.require_deterministic_feature_replay {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_deterministic_replay_required",
+            "require_deterministic_feature_replay must remain true",
+        ));
+    }
+    if contract.min_feature_distance_bps > 10_000
+        || contract.max_family_concentration_bps > 10_000
+        || contract.max_parent_concentration_bps > 10_000
+        || contract.collapse_stop_bps > 10_000
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_invalid_bps",
+            "basis points must be <= 10_000 (100%)",
+        ));
+    }
+    if contract.collapse_stop_bps < contract.max_family_concentration_bps {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_collapse_threshold_inversion",
+            "collapse_stop_bps must be >= max_family_concentration_bps",
+        ));
+    }
+    validate_sha256_hex(&contract.record_sha256)?;
+    let mut value = serde_json::to_value(contract)
+        .map_err(|e| EvolutionAdmissionError::new("ec4_contract_json", e.to_string()))?;
+    value["record_sha256"] = Value::String(String::new());
+    let expected = record_digest_excluding_sha256(&value)?;
+    if contract.record_sha256 != expected {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_digest_mismatch",
+            format!(
+                "record_sha256 {} does not match expected {}",
+                contract.record_sha256, expected
+            ),
+        ));
+    }
+    Ok(())
+}
+
+pub fn derive_diversity_score_record_id(candidate_id: &str, contract_id: &str) -> String {
+    let raw = format!("{candidate_id}:{contract_id}");
+    let digest = sha256_hex(&raw);
+    format!("ec4_rec:{}", &digest[..16])
+}
+
+pub fn seal_diversity_score_record(
+    mut record: DiversityScoreRecordV1,
+) -> Result<DiversityScoreRecordV1, EvolutionAdmissionError> {
+    if record.record_id.is_empty() {
+        record.record_id =
+            derive_diversity_score_record_id(&record.candidate_id, &record.contract_id);
+    }
+    let mut value = serde_json::to_value(&record)
+        .map_err(|e| EvolutionAdmissionError::new("ec4_record_json", e.to_string()))?;
+    value["record_sha256"] = Value::String(String::new());
+    record.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_diversity_score_record(&record)?;
+    Ok(record)
+}
+
+pub fn validate_diversity_score_record(
+    record: &DiversityScoreRecordV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if record.schema_version != EC4_DIVERSITY_RECORD_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_record_schema_version",
+            "schema_version mismatch for DiversityScoreRecordV1",
+        ));
+    }
+    if record.record_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_record_id_missing",
+            "record_id is required",
+        ));
+    }
+    if record.candidate_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_candidate_id_missing",
+            "candidate_id is required",
+        ));
+    }
+    if record.contract_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_contract_id_missing",
+            "contract_id is required",
+        ));
+    }
+    if record.min_observed_distance_bps > 10_000
+        || record.family_concentration_bps > 10_000
+        || record.parent_concentration_bps > 10_000
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_invalid_bps",
+            "basis points must be <= 10_000",
+        ));
+    }
+    validate_sha256_hex(&record.record_sha256)?;
+    let mut value = serde_json::to_value(record)
+        .map_err(|e| EvolutionAdmissionError::new("ec4_record_json", e.to_string()))?;
+    value["record_sha256"] = Value::String(String::new());
+    let expected = record_digest_excluding_sha256(&value)?;
+    if record.record_sha256 != expected {
+        return Err(EvolutionAdmissionError::new(
+            "ec4_record_digest_mismatch",
+            format!(
+                "record_sha256 {} does not match expected {}",
+                record.record_sha256, expected
+            ),
+        ));
+    }
+    Ok(())
+}
+
+pub fn sample_ec4_diversity_contract() -> Ec4DiversityContractV1 {
+    seal_ec4_diversity_contract(Ec4DiversityContractV1 {
+        schema_version: EC4_DIVERSITY_CONTRACT_SCHEMA.to_string(),
+        contract_id: String::new(),
+        exact_duplicate_policy: ExactDuplicatePolicy::Reject,
+        distance_metric: DiversityDistanceMetric::TokenJaccard,
+        min_feature_distance_bps: 500,
+        max_family_concentration_bps: 4000,
+        max_parent_concentration_bps: 3000,
+        collapse_stop_bps: 8000,
+        require_deterministic_feature_replay: true,
+        novelty_never_grants_quality_authority: true,
+        record_sha256: String::new(),
+    })
+    .unwrap()
+}
+
 pub fn sample_ec3_budget_contract() -> Ec3LifecycleBudgetContractV1 {
     let phase_envelopes = REQUIRED_LIFECYCLE_COST_PHASES
         .iter()
@@ -2841,5 +3088,72 @@ mod tests {
             reconciliation.terminal_reason,
             Some(CandidateTerminalReason::RejectedLifecycleBudgetOverrun)
         );
+    }
+
+    #[test]
+    fn ec4_diversity_contract_seals_and_validates() {
+        let contract = sample_ec4_diversity_contract();
+        assert!(validate_ec4_diversity_contract(&contract).is_ok());
+        assert_eq!(contract.schema_version, EC4_DIVERSITY_CONTRACT_SCHEMA);
+        assert!(!contract.contract_id.is_empty());
+        assert!(!contract.record_sha256.is_empty());
+    }
+
+    #[test]
+    fn ec4_diversity_contract_rejects_novelty_authority() {
+        let mut contract = sample_ec4_diversity_contract();
+        contract.novelty_never_grants_quality_authority = false;
+        let err = seal_ec4_diversity_contract(contract).unwrap_err();
+        assert_eq!(err.code, "ec4_novelty_authority_forbidden");
+    }
+
+    #[test]
+    fn ec4_diversity_contract_rejects_non_deterministic_replay() {
+        let mut contract = sample_ec4_diversity_contract();
+        contract.require_deterministic_feature_replay = false;
+        let err = seal_ec4_diversity_contract(contract).unwrap_err();
+        assert_eq!(err.code, "ec4_deterministic_replay_required");
+    }
+
+    #[test]
+    fn ec4_diversity_contract_rejects_invalid_bps() {
+        let mut contract = sample_ec4_diversity_contract();
+        contract.min_feature_distance_bps = 15_000;
+        let err = seal_ec4_diversity_contract(contract).unwrap_err();
+        assert_eq!(err.code, "ec4_invalid_bps");
+    }
+
+    #[test]
+    fn ec4_diversity_contract_rejects_collapse_inversion() {
+        let mut contract = sample_ec4_diversity_contract();
+        contract.max_family_concentration_bps = 5000;
+        contract.collapse_stop_bps = 3000; // collapse_stop_bps < max_family_concentration_bps
+        let err = seal_ec4_diversity_contract(contract).unwrap_err();
+        assert_eq!(err.code, "ec4_collapse_threshold_inversion");
+    }
+
+    #[test]
+    fn ec4_diversity_score_record_seals_and_validates() {
+        let contract = sample_ec4_diversity_contract();
+        let record = seal_diversity_score_record(DiversityScoreRecordV1 {
+            schema_version: EC4_DIVERSITY_RECORD_SCHEMA.to_string(),
+            record_id: String::new(),
+            candidate_id: "cand-ec4-1".to_string(),
+            contract_id: contract.contract_id.clone(),
+            min_observed_distance_bps: 1200,
+            nearest_candidate_id: Some("cand-ec4-0".to_string()),
+            family_concentration_bps: 2000,
+            parent_concentration_bps: 1500,
+            is_exact_duplicate: false,
+            is_near_duplicate: false,
+            is_collapse_triggered: false,
+            record_sha256: String::new(),
+        })
+        .unwrap();
+
+        assert!(validate_diversity_score_record(&record).is_ok());
+        assert_eq!(record.schema_version, EC4_DIVERSITY_RECORD_SCHEMA);
+        assert!(!record.record_id.is_empty());
+        assert!(!record.record_sha256.is_empty());
     }
 }
