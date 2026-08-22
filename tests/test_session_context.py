@@ -1213,13 +1213,13 @@ class CheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-EC2-PREDICTION-OUTCOME-1",
+            packet_id="PE7-HE-EC3-INSTRUMENTATION-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertFalse(extract["execution_authorized"])
         self.assertEqual(
-            extract["profile_id"], "PE7-HE-EC2-PREDICTION-OUTCOME-1.v1"
+            extract["profile_id"], "PE7-HE-EC3-INSTRUMENTATION-1.v1"
         )
         self.assertEqual(extract["worker_tier"], "T1")
 
@@ -1662,7 +1662,7 @@ class AdversarialCheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-EC2-PREDICTION-OUTCOME-1",
+            packet_id="PE7-HE-EC3-INSTRUMENTATION-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )

@@ -8,21 +8,22 @@ use crate::harness_evolution::{
     revalidate_workspace_content, seal_ec1_identity_lineage, seal_failure_pattern_evidence,
     seal_mutation_hypothesis_manifest, validate_candidate_for_admission,
     validate_ec1_candidate_binding, validate_ec1_identity_lineage,
-    validate_failure_pattern_evidence, validate_mutation_hypothesis_manifest, validate_proposal,
-    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding,
-    Ec1IdentityLineageRecord, EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal,
-    EvolutionReceipt, FailurePatternEvidenceV1, MutationHypothesisManifestV1,
+    validate_failure_pattern_evidence, validate_mutation_hypothesis_manifest,
+    validate_prediction_outcome_contract, validate_proposal, ActiveHarnessIdentity,
+    CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding, Ec1IdentityLineageRecord,
+    EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal, EvolutionReceipt,
+    FailurePatternEvidenceV1, MutationHypothesisManifestV1, PredictionOutcomeV1,
     ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION,
     RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
-    build_pareto_archive, build_sealed_vault, detect_holdout_label_tamper,
-    evaluate_candidate_from_workspace, holdout_body_contains_sensitive,
-    mediate_holdout_membership_read, redacted_eval_evidence, seal_ec2_holdout,
-    CandidateEvaluationBundle, Ec2AccessClass, Ec2HoldoutSeal, EqualBudgetContract, EvalReceipt,
-    ParetoArchiveEntry, SealedHoldoutVault, TaskFamilyManifest, ARCHIVE_SCHEMA_VERSION,
-    EVAL_RECEIPT_SCHEMA_VERSION, EVAL_SCHEMA_VERSION, MAX_SEALED_ENTRANTS, MIN_SEALED_ENTRANTS,
-    SEALED_SCHEMA_VERSION,
+    build_pareto_archive, build_sealed_vault, derive_ec2_prediction_outcome,
+    detect_holdout_label_tamper, evaluate_candidate_from_workspace,
+    holdout_body_contains_sensitive, mediate_holdout_membership_read, redacted_eval_evidence,
+    seal_ec2_holdout, CandidateEvaluationBundle, Ec2AccessClass, Ec2HoldoutSeal,
+    EqualBudgetContract, EvalReceipt, ParetoArchiveEntry, SealedHoldoutVault, TaskFamilyManifest,
+    ARCHIVE_SCHEMA_VERSION, EVAL_RECEIPT_SCHEMA_VERSION, EVAL_SCHEMA_VERSION, MAX_SEALED_ENTRANTS,
+    MIN_SEALED_ENTRANTS, SEALED_SCHEMA_VERSION,
 };
 use crate::harness_evolution_pr_ready::{
     finalize_pr_ready_bundle, redacted_pr_ready_evidence, PrReadyCandidateBundle, PrReadyReceipt,
@@ -1218,6 +1219,103 @@ impl LocalProductStore {
             )?;
             tx.commit().map_err(|e| e.to_string())?;
             Ok(next)
+        })
+    }
+
+    pub fn persist_ec2_prediction_outcome(
+        &self,
+        hypothesis: &MutationHypothesisManifestV1,
+        bundle: &CandidateEvaluationBundle,
+        class: Ec2AccessClass,
+        actor_id: &str,
+    ) -> Result<PredictionOutcomeV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec2_prediction_actor: authenticated actor_id is required".into());
+        }
+        if class != Ec2AccessClass::Evaluator {
+            return Err("ec2_prediction_author: only the evaluator may write outcomes".into());
+        }
+        if crate::harness_evolution_eval::prediction_accuracy_is_selection_authority() {
+            return Err("ec2_prediction_authority: accuracy cannot gate selection".into());
+        }
+        let outcome = derive_ec2_prediction_outcome(hypothesis, bundle)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        if outcome.evaluator_identity_hash != bundle.evaluator_identity_hash {
+            return Err("ec2_prediction_evaluator: outcome evaluator must match bundle".into());
+        }
+        validate_prediction_outcome_contract(&outcome)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        let body_json = serde_json::to_string(&outcome).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec2_prediction_outcomes WHERE outcome_id=?1",
+                    params![outcome.outcome_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(existing_body) = existing {
+                if existing_body == body_json {
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return serde_json::from_str(&existing_body).map_err(|e| e.to_string());
+                }
+                return Err(format!(
+                    "ec2_prediction_immutable: {} already exists",
+                    outcome.outcome_id
+                ));
+            }
+            tx.execute(
+                "INSERT INTO harness_evolution_ec2_prediction_outcomes
+                    (outcome_id, hypothesis_manifest_digest, evaluation_digest, outcome, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    outcome.outcome_id,
+                    outcome.hypothesis_manifest_digest,
+                    outcome.evaluation_digest,
+                    outcome.outcome.as_str(),
+                    body_json,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec2_prediction_outcome",
+                &outcome.outcome_id,
+                &serde_json::json!({
+                    "outcome": outcome.outcome.as_str(),
+                    "evaluation_digest": outcome.evaluation_digest,
+                    "actor_id": actor_id,
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(outcome)
+        })
+    }
+
+    pub fn get_ec2_prediction_outcome(
+        &self,
+        outcome_id: &str,
+    ) -> Result<Option<PredictionOutcomeV1>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec2_prediction_outcomes WHERE outcome_id=?1",
+                    params![outcome_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
+                None => Ok(None),
+            }
         })
     }
 
@@ -2609,6 +2707,45 @@ mod tests {
     }
 
     #[test]
+    fn real_workspace_store_sentinels_fail_closed_and_refuse_pareto_archive() {
+        let env = LabEnvGuard::enable();
+        use crate::harness_evolution_eval::sample_budget;
+        let store = LocalProductStore::new(":memory:").unwrap();
+        let active = sample_active_identity();
+        store
+            .register_harness_evolution_active_identity(&active, "operator-test")
+            .unwrap();
+        let proposal = proposal_from_body(
+            &active,
+            None,
+            &["prompts_and_bounded_rules"],
+            &json!({"kind": "real-eval"}),
+            vec![],
+            21,
+        )
+        .unwrap();
+        let bound = store.admit_harness_evolution_proposal(&proposal).unwrap();
+        let ws = materialize_for(&env, &bound, "real-eval-content");
+        let candidate = candidate_from_proposal(&bound, &ws, "2026-07-21T00:00:00Z").unwrap();
+        let (admitted, _) = store.admit_harness_evolution_candidate(candidate).unwrap();
+        let family = register_family_and_vault(&store, "fam-real-store");
+        let (bundle, archive, receipt) = store
+            .record_harness_evolution_evaluation(
+                &admitted.candidate_id,
+                &sample_budget(2),
+                &family.family_id,
+            )
+            .unwrap();
+        assert_eq!(receipt.terminal, "evaluated");
+        assert_eq!(receipt.sentinel_receipts.len(), 3);
+        assert!(!archive.is_empty());
+        let loaded_pareto = store
+            .list_harness_evolution_pareto_for_evaluation(&bundle.evaluation_id)
+            .unwrap();
+        assert!(!loaded_pareto.is_empty());
+    }
+
+    #[test]
     fn submits_pr_ready_from_store_owned_evidence_only() {
         let env = LabEnvGuard::enable();
         use crate::harness_evolution_eval::sample_budget;
@@ -3068,5 +3205,90 @@ mod tests {
             .unwrap()
         };
         assert!(audits >= 2);
+    }
+
+    #[test]
+    fn persists_evaluator_owned_prediction_outcomes_and_rejects_candidate_authors() {
+        use crate::harness_evolution::{
+            seal_mutation_hypothesis_manifest, MutationHypothesisManifestV1,
+            MUTATION_HYPOTHESIS_MANIFEST_SCHEMA,
+        };
+        use crate::harness_evolution_eval::{
+            actual_improvement_digest, actual_regression_digest, derive_ec2_prediction_outcome,
+            sample_budget, sample_task_family, summarize_prediction_outcomes, Ec2AccessClass,
+        };
+        let _g = LabEnvGuard::enable();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec2-po.db");
+        let store = LocalProductStore::new(&db).unwrap();
+        let family = sample_task_family("fam-po-store");
+        let vault = crate::harness_evolution_eval::build_sealed_vault(&family).unwrap();
+        let bundle = crate::harness_evolution_eval::evaluate_candidate_fixture(
+            "cand-po",
+            "lin-po",
+            "active-po",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &sample_budget(3),
+            &family,
+            &vault,
+            false,
+            "2026-08-20T00:00:00Z",
+        )
+        .unwrap();
+        let hypothesis = seal_mutation_hypothesis_manifest(MutationHypothesisManifestV1 {
+            schema_version: MUTATION_HYPOTHESIS_MANIFEST_SCHEMA.to_string(),
+            manifest_id: String::new(),
+            lineage_id: "heil-fixture-root".into(),
+            failure_evidence_id: "ev-fixture".into(),
+            proposal_body_sha256: crate::harness_evolution::sha256_hex("proposal"),
+            candidate_delta_digest: crate::harness_evolution::sha256_hex("delta"),
+            predicted_improvement_digest: actual_improvement_digest(&bundle),
+            predicted_regression_digest: actual_regression_digest(&bundle),
+            invariant_digest: crate::harness_evolution::sha256_hex("inv"),
+            evaluation_plan_digest: crate::harness_evolution::sha256_hex("plan"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        assert!(store
+            .persist_ec2_prediction_outcome(
+                &hypothesis,
+                &bundle,
+                Ec2AccessClass::CandidateWorker,
+                "candidate"
+            )
+            .unwrap_err()
+            .contains("only the evaluator"));
+        let stored = store
+            .persist_ec2_prediction_outcome(
+                &hypothesis,
+                &bundle,
+                Ec2AccessClass::Evaluator,
+                "evaluator-actor",
+            )
+            .unwrap();
+        let replay = derive_ec2_prediction_outcome(&hypothesis, &bundle).unwrap();
+        assert_eq!(stored.outcome_id, replay.outcome_id);
+        assert_eq!(
+            store
+                .persist_ec2_prediction_outcome(
+                    &hypothesis,
+                    &bundle,
+                    Ec2AccessClass::Evaluator,
+                    "evaluator-actor",
+                )
+                .unwrap()
+                .record_sha256,
+            stored.record_sha256
+        );
+        drop(store);
+        let reopened = LocalProductStore::new(&db).unwrap();
+        let loaded = reopened
+            .get_ec2_prediction_outcome(&stored.outcome_id)
+            .unwrap()
+            .expect("outcome survives restart");
+        assert_eq!(loaded.record_sha256, stored.record_sha256);
+        let summary = summarize_prediction_outcomes(&[loaded]);
+        assert!(!summary.accuracy_is_selection_authority);
     }
 }

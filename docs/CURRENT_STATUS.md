@@ -388,7 +388,7 @@ Sealed holdout membership is hash-only under `LocalProductStore` table `harness_
 
 ### HE EC2 sentinel conformance (`PE7-HE-EC2-SENTINEL-CONFORMANCE-1`)
 
-Contamination, evaluator-gaming, and safety sentinel observations now fail closed before Pareto selection and retain rejected-candidate evidence. No ENABLE, Level-1, or second evaluator. Receipt: PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`.
+Contamination, gaming, and safety sentinels observe the existing evaluator path and refuse Pareto on FAIL or UNKNOWN. Rejected evaluations persist `rejected_sentinel` receipts with digest-bound `Ec2SentinelReceipt` vectors and no archive rows. Receipt: PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`.
 
 ## Invalidated Historical Receipts (Repair Required)
 
