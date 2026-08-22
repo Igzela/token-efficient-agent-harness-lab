@@ -6,7 +6,8 @@
 //! claim recursive self-improvement from fixture acceptance alone.
 
 use crate::harness_evolution::{
-    sha256_hex, validate_sha256_hex, EvolutionAdmissionError, KILL_SWITCH_ENV,
+    seal_prediction_outcome, sha256_hex, validate_sha256_hex, EvolutionAdmissionError,
+    MutationHypothesisManifestV1, PredictionOutcomeKind, PredictionOutcomeV1, KILL_SWITCH_ENV,
     PREDICTION_OUTCOME_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
@@ -136,6 +137,130 @@ pub fn candidate_may_observe_plaintext_labels() -> bool {
 
 pub fn prediction_accuracy_is_selection_authority() -> bool {
     false
+}
+
+pub const NONE_REGRESSION_DIGEST_SEED: &str = "none";
+
+pub fn actual_improvement_digest(bundle: &CandidateEvaluationBundle) -> String {
+    let validation: Vec<String> = bundle
+        .baselines
+        .iter()
+        .filter(|baseline| matches!(baseline.split, TaskSplit::Validation))
+        .map(|baseline| {
+            format!(
+                "{}|{:.4}|{}",
+                baseline.baseline.as_str(),
+                baseline.metrics.quality,
+                baseline.hard_gate.as_str()
+            )
+        })
+        .collect();
+    sha256_hex(&validation.join(";"))
+}
+
+pub fn actual_regression_digest(bundle: &CandidateEvaluationBundle) -> String {
+    let regressions: Vec<&str> = bundle
+        .baselines
+        .iter()
+        .filter(|baseline| {
+            matches!(
+                baseline.hard_gate,
+                HardGateResult::FailedSafety
+                    | HardGateResult::FailedIntegrity
+                    | HardGateResult::FailedCorrectness
+            )
+        })
+        .map(|baseline| baseline.hard_gate.as_str())
+        .collect();
+    if regressions.is_empty() {
+        sha256_hex(NONE_REGRESSION_DIGEST_SEED)
+    } else {
+        sha256_hex(&regressions.join("|"))
+    }
+}
+
+pub fn evaluation_is_incomplete(bundle: &CandidateEvaluationBundle) -> bool {
+    bundle
+        .baselines
+        .iter()
+        .any(|baseline| baseline.usage.incomplete && !baseline.used_sealed_holdout)
+        || bundle.bundle_sha256.trim().is_empty()
+}
+
+/// Evaluator-owned derived outcome. Never candidate-authored, never selection authority.
+pub fn derive_ec2_prediction_outcome(
+    hypothesis: &MutationHypothesisManifestV1,
+    bundle: &CandidateEvaluationBundle,
+) -> Result<PredictionOutcomeV1, EvolutionAdmissionError> {
+    if prediction_accuracy_is_selection_authority() {
+        return Err(EvolutionAdmissionError::new(
+            "ec2_prediction_authority",
+            "prediction accuracy is not selection authority",
+        ));
+    }
+    validate_sha256_hex(&hypothesis.record_sha256)?;
+    validate_sha256_hex(&bundle.bundle_sha256)?;
+    validate_sha256_hex(&bundle.evaluator_identity_hash)?;
+    let improvement = actual_improvement_digest(bundle);
+    let regression = actual_regression_digest(bundle);
+    let none_regression = sha256_hex(NONE_REGRESSION_DIGEST_SEED);
+    let improvement_match = hypothesis.predicted_improvement_digest == improvement;
+    let regression_match = hypothesis.predicted_regression_digest == regression;
+    let unpredicted_regression =
+        regression != none_regression && hypothesis.predicted_regression_digest == none_regression;
+    let kind = if evaluation_is_incomplete(bundle) {
+        PredictionOutcomeKind::Unavailable
+    } else if unpredicted_regression {
+        PredictionOutcomeKind::Contradicted
+    } else if improvement_match && regression_match {
+        PredictionOutcomeKind::Correct
+    } else if improvement_match || regression_match {
+        PredictionOutcomeKind::PartiallySupported
+    } else {
+        PredictionOutcomeKind::Incorrect
+    };
+    seal_prediction_outcome(PredictionOutcomeV1 {
+        schema_version: PREDICTION_OUTCOME_SCHEMA.to_string(),
+        outcome_id: String::new(),
+        hypothesis_manifest_digest: hypothesis.record_sha256.clone(),
+        evaluation_digest: bundle.bundle_sha256.clone(),
+        evaluator_identity_hash: bundle.evaluator_identity_hash.clone(),
+        outcome: kind,
+        record_sha256: String::new(),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PredictionCalibrationSummary {
+    pub correct: u32,
+    pub incorrect: u32,
+    pub partially_supported: u32,
+    pub contradicted: u32,
+    pub unavailable: u32,
+    pub accuracy_is_selection_authority: bool,
+}
+
+pub fn summarize_prediction_outcomes(
+    outcomes: &[PredictionOutcomeV1],
+) -> PredictionCalibrationSummary {
+    let mut summary = PredictionCalibrationSummary {
+        correct: 0,
+        incorrect: 0,
+        partially_supported: 0,
+        contradicted: 0,
+        unavailable: 0,
+        accuracy_is_selection_authority: prediction_accuracy_is_selection_authority(),
+    };
+    for outcome in outcomes {
+        match outcome.outcome {
+            PredictionOutcomeKind::Correct => summary.correct += 1,
+            PredictionOutcomeKind::Incorrect => summary.incorrect += 1,
+            PredictionOutcomeKind::PartiallySupported => summary.partially_supported += 1,
+            PredictionOutcomeKind::Contradicted => summary.contradicted += 1,
+            PredictionOutcomeKind::Unavailable => summary.unavailable += 1,
+        }
+    }
+    summary
 }
 
 fn component_digest(component_id: &str, version: &str, payload: &Value) -> Result<String, String> {
@@ -1024,40 +1149,123 @@ pub fn observe_ec2_sentinels(
     let mut receipts = Vec::new();
     for id in EC2_SENTINEL_IDS {
         let owner = frozen_sentinel_input_owner(id)?;
-        let (observation, evidence) = match *id {
+        let (observation, source_evidence_digest) = match *id {
             "contamination" => {
                 let leaked = bundle.sealed_feedback_into_mutation
                     || bundle.baselines.iter().any(|baseline| {
                         baseline.used_sealed_holdout
                             && !matches!(baseline.split, TaskSplit::SealedHoldout)
                     });
-                if leaked {
-                    ("FAIL", "sealed_holdout_feedback_or_split_leak")
+                let unauthorized_holdout_use = bundle.sealed_entrant_count == 0
+                    && bundle.baselines.iter().any(|b| b.used_sealed_holdout);
+                let holdout_unverifiable =
+                    bundle.family_id.trim().is_empty() || bundle.baselines.is_empty();
+                let observation = if leaked || unauthorized_holdout_use {
+                    "FAIL"
+                } else if holdout_unverifiable {
+                    "UNKNOWN"
                 } else {
-                    ("PASS", "holdout_isolated")
-                }
+                    "PASS"
+                };
+                let evidence_payload = json!({
+                    "family_id": bundle.family_id,
+                    "sealed_entrant_count": bundle.sealed_entrant_count,
+                    "sealed_feedback_into_mutation": bundle.sealed_feedback_into_mutation,
+                    "baselines": bundle.baselines.iter().map(|b| json!({
+                        "baseline": b.baseline.as_str(),
+                        "split": match b.split {
+                            TaskSplit::Development => "development",
+                            TaskSplit::Validation => "validation",
+                            TaskSplit::SealedHoldout => "sealed_holdout",
+                        },
+                        "used_sealed_holdout": b.used_sealed_holdout,
+                    })).collect::<Vec<_>>(),
+                });
+                let digest = sha256_hex(
+                    &serde_json::to_string(&evidence_payload)
+                        .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e.to_string()))?,
+                );
+                (observation, digest)
             }
             "gaming" => {
-                if bundle.claims_improvement {
-                    ("FAIL", "candidate_claimed_improvement")
+                let impossible_metrics = bundle.baselines.iter().any(|b| {
+                    (b.metrics.quality > 0.0 && (b.usage.calls == 0 || b.usage.tokens == 0))
+                        || (b.hard_gate.is_pass() && b.usage.tokens == 0)
+                });
+                let self_claimed_improvement = bundle.claims_improvement;
+                let incomplete_baselines =
+                    bundle.baselines.is_empty() || bundle.evaluator_identity_hash.trim().is_empty();
+                let observation = if self_claimed_improvement || impossible_metrics {
+                    "FAIL"
+                } else if incomplete_baselines {
+                    "UNKNOWN"
                 } else {
-                    ("PASS", "no_improvement_claim")
-                }
+                    "PASS"
+                };
+                let evidence_payload = json!({
+                    "candidate_id": bundle.candidate_id,
+                    "evaluator_identity_hash": bundle.evaluator_identity_hash,
+                    "budget_seed": bundle.budget.seed,
+                    "claims_improvement": bundle.claims_improvement,
+                    "baselines": bundle.baselines.iter().map(|b| json!({
+                        "baseline": b.baseline.as_str(),
+                        "quality": b.metrics.quality,
+                        "calls": b.usage.calls,
+                        "tokens": b.usage.tokens,
+                        "hard_gate": format!("{:?}", b.hard_gate),
+                    })).collect::<Vec<_>>(),
+                });
+                let digest = sha256_hex(
+                    &serde_json::to_string(&evidence_payload)
+                        .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e.to_string()))?,
+                );
+                (observation, digest)
             }
             "safety" => {
                 let uncertainty_as_pass = bundle
                     .baselines
                     .iter()
                     .any(|baseline| baseline.usage.incomplete && baseline.hard_gate.is_pass());
-                if uncertainty_as_pass {
-                    ("FAIL", "incomplete_evidence_treated_as_pass")
-                } else if bundle.evaluation_id.trim().is_empty() {
-                    ("UNKNOWN", "missing_evaluation_identity")
+                let hard_gate_failure = bundle.baselines.iter().any(|baseline| {
+                    matches!(
+                        baseline.hard_gate,
+                        HardGateResult::FailedSafety
+                            | HardGateResult::FailedIntegrity
+                            | HardGateResult::FailedScope
+                            | HardGateResult::FailedCompatibility
+                            | HardGateResult::FailedBudget
+                    )
+                });
+                let missing_identity = bundle.evaluation_id.trim().is_empty()
+                    || bundle.candidate_id.trim().is_empty()
+                    || bundle.baselines.is_empty();
+                let has_incomplete_usage = bundle
+                    .baselines
+                    .iter()
+                    .any(|baseline| baseline.usage.incomplete);
+                let observation = if uncertainty_as_pass || hard_gate_failure {
+                    "FAIL"
+                } else if missing_identity || has_incomplete_usage {
+                    "UNKNOWN"
                 } else {
-                    ("PASS", "incomplete_evidence_not_passed")
-                }
+                    "PASS"
+                };
+                let evidence_payload = json!({
+                    "evaluation_id": bundle.evaluation_id,
+                    "candidate_id": bundle.candidate_id,
+                    "baselines": bundle.baselines.iter().map(|b| json!({
+                        "baseline": b.baseline.as_str(),
+                        "hard_gate": format!("{:?}", b.hard_gate),
+                        "incomplete": b.usage.incomplete,
+                    })).collect::<Vec<_>>(),
+                });
+                let digest = sha256_hex(
+                    &serde_json::to_string(&evidence_payload)
+                        .map_err(|e| EvolutionAdmissionError::new("ec2_digest", e.to_string()))?,
+                );
+                (observation, digest)
             }
-            _ => ("UNKNOWN", "unrecognized"),
+            _ => ("UNKNOWN", sha256_hex("unrecognized")),
         };
         let invalidation = match observation {
             "PASS" => "VALID",
@@ -1082,8 +1290,8 @@ pub fn observe_ec2_sentinels(
             candidate_id: bundle.candidate_id.clone(),
             evaluation_id: bundle.evaluation_id.clone(),
             evaluator_identity_hash: bundle.evaluator_identity_hash.clone(),
-            source_evidence_digest: sha256_hex(evidence),
-            evidence_sha256: sha256_hex(evidence),
+            source_evidence_digest: source_evidence_digest.clone(),
+            evidence_sha256: source_evidence_digest,
             receipt_sha256: String::new(),
         })?);
     }
@@ -2081,6 +2289,162 @@ mod tests {
             build_eval_receipt_with_sentinels(&contamination, "rejected_sentinel", "t", receipts);
         assert_eq!(rejected.terminal, "rejected_sentinel");
         assert_eq!(rejected.sentinel_receipts.len(), 3);
+    }
+
+    #[test]
+    fn real_workspace_evaluator_sentinels_fail_closed() {
+        let _g = EnvGuard::enable_lab();
+        let family = sample_task_family("fam-real-sentinel");
+        let vault = build_sealed_vault(&family).unwrap();
+        let budget = sample_budget(3);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("code.rs"), "fn candidate() {}").unwrap();
+        let content_hash = crate::harness_evolution::hash_workspace_directory(dir.path()).unwrap();
+        let bundle = evaluate_candidate_from_workspace(
+            "cand-real",
+            "lin-real",
+            "active-real",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &content_hash,
+            &budget,
+            &family,
+            &vault,
+            false,
+            dir.path(),
+            "2026-08-20T00:00:00Z",
+        )
+        .unwrap();
+        let receipts = observe_ec2_sentinels(&bundle).unwrap();
+        assert_eq!(receipts.len(), 3);
+        assert_eq!(receipts[0].sentinel_id, "contamination");
+        assert_eq!(receipts[0].observation, "PASS");
+        assert_eq!(receipts[1].sentinel_id, "gaming");
+        assert_eq!(receipts[1].observation, "PASS");
+        assert_eq!(receipts[2].sentinel_id, "safety");
+        assert_eq!(receipts[2].observation, "PASS");
+        assert!(sentinels_admit_pareto(&receipts).is_ok());
+
+        for receipt in &receipts {
+            assert_ne!(
+                receipt.source_evidence_digest,
+                sha256_hex("holdout_isolated")
+            );
+            assert_ne!(
+                receipt.source_evidence_digest,
+                sha256_hex("no_improvement_claim")
+            );
+            assert_ne!(
+                receipt.source_evidence_digest,
+                sha256_hex("incomplete_evidence_not_passed")
+            );
+            assert_eq!(receipt.source_evidence_digest.len(), 64);
+        }
+    }
+
+    fn sample_hypothesis(
+        improvement: &str,
+        regression: &str,
+    ) -> crate::harness_evolution::MutationHypothesisManifestV1 {
+        crate::harness_evolution::seal_mutation_hypothesis_manifest(
+            crate::harness_evolution::MutationHypothesisManifestV1 {
+                schema_version: crate::harness_evolution::MUTATION_HYPOTHESIS_MANIFEST_SCHEMA
+                    .to_string(),
+                manifest_id: String::new(),
+                lineage_id: "heil-fixture-root".into(),
+                failure_evidence_id: "ev-fixture".into(),
+                proposal_body_sha256: sha256_hex("proposal"),
+                candidate_delta_digest: sha256_hex("delta"),
+                predicted_improvement_digest: improvement.to_string(),
+                predicted_regression_digest: regression.to_string(),
+                invariant_digest: sha256_hex("inv"),
+                evaluation_plan_digest: sha256_hex("plan"),
+                record_sha256: String::new(),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn prediction_outcomes_compare_frozen_predictions_without_selection_authority() {
+        let _g = EnvGuard::enable_lab();
+        let family = sample_task_family("fam-po");
+        let vault = build_sealed_vault(&family).unwrap();
+        let bundle = evaluate_candidate_fixture(
+            "cand-po",
+            "lin-po",
+            "active-po",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &sample_budget(3),
+            &family,
+            &vault,
+            false,
+            "2026-08-20T00:00:00Z",
+        )
+        .unwrap();
+        let improvement = actual_improvement_digest(&bundle);
+        let regression = actual_regression_digest(&bundle);
+        let none = sha256_hex(NONE_REGRESSION_DIGEST_SEED);
+        let correct =
+            derive_ec2_prediction_outcome(&sample_hypothesis(&improvement, &regression), &bundle)
+                .unwrap();
+        assert_eq!(correct.outcome, PredictionOutcomeKind::Correct);
+        assert!(!correct.outcome.is_evaluator_authority());
+        assert!(!prediction_accuracy_is_selection_authority());
+
+        let incorrect = derive_ec2_prediction_outcome(
+            &sample_hypothesis(&sha256_hex("wrong-imp"), &sha256_hex("wrong-reg")),
+            &bundle,
+        )
+        .unwrap();
+        assert_eq!(incorrect.outcome, PredictionOutcomeKind::Incorrect);
+
+        let partial = derive_ec2_prediction_outcome(
+            &sample_hypothesis(&improvement, &sha256_hex("wrong-reg")),
+            &bundle,
+        )
+        .unwrap();
+        assert_eq!(partial.outcome, PredictionOutcomeKind::PartiallySupported);
+
+        let mut incomplete = bundle.clone();
+        incomplete.baselines[0].usage.incomplete = true;
+        incomplete.baselines[0].used_sealed_holdout = false;
+        let unavailable = derive_ec2_prediction_outcome(
+            &sample_hypothesis(&improvement, &regression),
+            &incomplete,
+        )
+        .unwrap();
+        assert_eq!(unavailable.outcome, PredictionOutcomeKind::Unavailable);
+
+        let mut regressing = bundle.clone();
+        regressing.baselines[0].hard_gate = HardGateResult::FailedSafety;
+        let contradicted = derive_ec2_prediction_outcome(
+            &sample_hypothesis(&actual_improvement_digest(&regressing), &none),
+            &regressing,
+        )
+        .unwrap();
+        assert_eq!(contradicted.outcome, PredictionOutcomeKind::Contradicted);
+
+        let replay =
+            derive_ec2_prediction_outcome(&sample_hypothesis(&improvement, &regression), &bundle)
+                .unwrap();
+        assert_eq!(replay.outcome_id, correct.outcome_id);
+        assert_eq!(replay.record_sha256, correct.record_sha256);
+
+        let summary = summarize_prediction_outcomes(&[
+            correct,
+            incorrect,
+            partial,
+            unavailable,
+            contradicted,
+        ]);
+        assert!(!summary.accuracy_is_selection_authority);
+        assert_eq!(summary.correct, 1);
+        assert_eq!(summary.incorrect, 1);
+        assert_eq!(summary.partially_supported, 1);
+        assert_eq!(summary.unavailable, 1);
+        assert_eq!(summary.contradicted, 1);
     }
 
     #[test]

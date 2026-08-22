@@ -872,6 +872,19 @@ CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec2_holdout_seals_family
     ON harness_evolution_ec2_holdout_seals(family_id, epoch, created_at);
 ";
 
+pub(super) const EC2_PREDICTION_OUTCOME_DDL: &str = "
+CREATE TABLE IF NOT EXISTS harness_evolution_ec2_prediction_outcomes (
+    outcome_id TEXT PRIMARY KEY,
+    hypothesis_manifest_digest TEXT NOT NULL CHECK (length(hypothesis_manifest_digest) = 64),
+    evaluation_digest TEXT NOT NULL CHECK (length(evaluation_digest) = 64),
+    outcome TEXT NOT NULL CHECK (outcome IN ('correct','incorrect','partially_supported','contradicted','unavailable')),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec2_prediction_outcomes_eval
+    ON harness_evolution_ec2_prediction_outcomes(evaluation_digest, created_at);
+";
+
 pub(super) const V28_DDL: &str = "
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
@@ -1756,6 +1769,17 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec2_holdout_seals (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec2_holdout_seals_family
     ON harness_evolution_ec2_holdout_seals(family_id, epoch, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_ec2_prediction_outcomes (
+    outcome_id TEXT PRIMARY KEY,
+    hypothesis_manifest_digest TEXT NOT NULL CHECK (length(hypothesis_manifest_digest) = 64),
+    evaluation_digest TEXT NOT NULL CHECK (length(evaluation_digest) = 64),
+    outcome TEXT NOT NULL CHECK (outcome IN ('correct','incorrect','partially_supported','contradicted','unavailable')),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec2_prediction_outcomes_eval
+    ON harness_evolution_ec2_prediction_outcomes(evaluation_digest, created_at);
 
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
@@ -3013,6 +3037,17 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec2_holdout_seals (
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec2_holdout_seals_family
     ON harness_evolution_ec2_holdout_seals(family_id, epoch, created_at);
 
+CREATE TABLE IF NOT EXISTS harness_evolution_ec2_prediction_outcomes (
+    outcome_id TEXT PRIMARY KEY,
+    hypothesis_manifest_digest TEXT NOT NULL CHECK (length(hypothesis_manifest_digest) = 64),
+    evaluation_digest TEXT NOT NULL CHECK (length(evaluation_digest) = 64),
+    outcome TEXT NOT NULL CHECK (outcome IN ('correct','incorrect','partially_supported','contradicted','unavailable')),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec2_prediction_outcomes_eval
+    ON harness_evolution_ec2_prediction_outcomes(evaluation_digest, created_at);
+
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
     family_id TEXT NOT NULL,
@@ -3436,6 +3471,8 @@ mod tests {
         assert!(POSTGRES_DDL.contains(EC1_CANDIDATE_BINDING_DDL.trim()));
         assert!(SQLITE_DDL.contains(EC2_HOLDOUT_SEAL_DDL.trim()));
         assert!(POSTGRES_DDL.contains(EC2_HOLDOUT_SEAL_DDL.trim()));
+        assert!(SQLITE_DDL.contains(EC2_PREDICTION_OUTCOME_DDL.trim()));
+        assert!(POSTGRES_DDL.contains(EC2_PREDICTION_OUTCOME_DDL.trim()));
         for expected in [
             "controlled_loop_policy_snapshots",
             "idx_policy_snapshots_status",
@@ -3479,6 +3516,8 @@ mod tests {
             "idx_harness_evolution_ec1_candidate_bindings_hypothesis",
             "harness_evolution_ec2_holdout_seals",
             "idx_harness_evolution_ec2_holdout_seals_family",
+            "harness_evolution_ec2_prediction_outcomes",
+            "idx_harness_evolution_ec2_prediction_outcomes_eval",
             "idx_harness_evolution_candidates_lineage",
             "harness_evolution_sealed_holdouts",
             "harness_evolution_evaluations",

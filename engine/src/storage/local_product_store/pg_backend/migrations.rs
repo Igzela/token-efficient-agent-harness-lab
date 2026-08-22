@@ -615,6 +615,8 @@ fn apply_pg_v36_migration(client: &mut postgres::Client) -> Result<(), String> {
             .map_err(|e| format!("m36 ec1 candidate binding repair: {e}"))?;
         tx.batch_execute(schema::EC2_HOLDOUT_SEAL_DDL)
             .map_err(|e| format!("m36 ec2 holdout seal repair: {e}"))?;
+        tx.batch_execute(schema::EC2_PREDICTION_OUTCOME_DDL)
+            .map_err(|e| format!("m36 ec2 prediction outcome repair: {e}"))?;
         repair_pg_v36_delegated_plan_owner(&mut tx)?;
         validate_pg_v36_schema(&mut tx)?;
         tx.commit().map_err(|e| e.to_string())?;
@@ -630,6 +632,8 @@ fn apply_pg_v36_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map_err(|e| format!("m36 ec1 candidate binding: {e}"))?;
     tx.batch_execute(schema::EC2_HOLDOUT_SEAL_DDL)
         .map_err(|e| format!("m36 ec2 holdout seal: {e}"))?;
+    tx.batch_execute(schema::EC2_PREDICTION_OUTCOME_DDL)
+        .map_err(|e| format!("m36 ec2 prediction outcome: {e}"))?;
     repair_pg_v36_delegated_plan_owner(&mut tx)?;
     tx.execute(
         "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",

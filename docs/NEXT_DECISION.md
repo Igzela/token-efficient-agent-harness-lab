@@ -6,19 +6,19 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-HE-EC2-HOLDOUT-SEAL-1` is complete. The current window is `PE7-HE-EC2-SENTINEL-CONFORMANCE-1`: wire contamination, gaming, and safety sentinels into the existing evaluator path so each fails closed before Pareto selection and retains rejected-candidate evidence. No ENABLE or Level-1.
+`PE7-HE-EC2-SENTINEL-CONFORMANCE-1` is complete. The current window is `PE7-HE-EC2-PREDICTION-OUTCOME-1`: evaluator-owned immutable `PredictionOutcomeV1` comparing frozen predictions with actual evidence. No candidate-authored outcome, selection weight, or safety inference. No ENABLE or Level-1.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-HE-EC2-SENTINEL-CONFORMANCE-1 — READY_FOR_EXECUTION, provider-free; sentinel fail-closed before Pareto]
+[window: PE7-HE-EC2-PREDICTION-OUTCOME-1 — READY_FOR_EXECUTION, provider-free; derive non-authoritative PredictionOutcomeV1]
 
 
 ```
 
 ## Active Routing
 
-1. `PE7-HE-EC2-SENTINEL-CONFORMANCE-1` — `READY_FOR_EXECUTION`
+1. `PE7-HE-EC2-PREDICTION-OUTCOME-1` — `READY_FOR_EXECUTION`
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -80,41 +80,47 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Accepted evidence:** PR #596 exact head `cffd49edfc36fe602cc311f025367cadb15a425a`; squash merge `5c367b85d79f680b5f76b7aa4f2f1656c0a460ae`; exact-head review comments `5349963606` and `5349963725`; canonical workflow `32320235684`.
 
-## Packet PE7-HE-EC2-SENTINEL-CONFORMANCE-1
+## Completed (PE7-HE-EC2-SENTINEL-CONFORMANCE-1)
+
+**State:** `COMPLETE`
+
+**Accepted evidence:** PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265`.
+
+## Packet PE7-HE-EC2-PREDICTION-OUTCOME-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-HE-EC2-HOLDOUT-SEAL-1`
+**Prerequisite:** `PE7-HE-EC2-SENTINEL-CONFORMANCE-1`
 
 **Class:** `IMPLEMENT`
 
-**Outcome:** Wire safety, contamination, and evaluator-gaming sentinels into the existing evaluator path.
+**Outcome:** Wire evaluator-owned immutable `PredictionOutcomeV1` comparing frozen predictions with actual evaluation evidence.
 
-**Allowed delta:** `engine/src/harness_evolution_eval.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Sentinel observation/invalidation only; no scalar override or new evaluator.
+**Allowed delta:** `engine/src/harness_evolution.rs`, `engine/src/harness_evolution_eval.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `engine/src/storage/local_product_store/schema.rs`, `engine/src/storage/local_product_store/migrations.rs`, `engine/src/storage/local_product_store/pg_backend/migrations.rs`, `engine/src/storage/local_product_store/integrity.rs`, `engine/tests/test_data_operations.rs`, `tests/test_session_context.py`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Prediction outcome derivation and persistence only; no scalar override, selection gating, or new evaluator.
 
-**Exit:** Adversarial fixtures prove each sentinel fails closed before Pareto selection and preserves complete rejected-candidate evidence.
+**Exit:** Adversarial fixtures prove `PredictionOutcomeV1` records are derived solely by the evaluator, stored immutably in `LocalProductStore`, and prediction accuracy does not gate Pareto selection or candidate status.
 
-**Stop:** A sentinel can be candidate-disabled, mutates labels, or turns uncertainty into pass.
+**Stop:** Prediction accuracy is used as selection authority, candidate can author or mutate prediction outcomes, or outcomes can be modified after recording.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Sentinel observation and Pareto gate only. No ENABLE, Level-1, or second evaluator.
-2. **Prerequisites and evidence.** HOLDOUT-SEAL COMPLETE on PR #596 / `5c367b85d79f680b5f76b7aa4f2f1656c0a460ae`.
-3. **Owners and paths.** Existing `harness_evolution_eval.rs` and LocalProductStore evaluation receipts.
-4. **Frozen invariants.** Contamination, gaming, and safety sentinels have independent input owners. UNKNOWN is never PASS. Candidates cannot disable sentinels. Labels are not mutated.
-5. **Only semantic delta.** `observe_ec2_sentinels` plus Pareto admission gate and rejected_sentinel receipts.
-6. **Forbidden changes.** No scalar override, no second evaluator, no ENABLE, no Level-1.
-7. **Ordered slices.** Observe three sentinels; refuse Pareto on FAIL/UNKNOWN; persist rejected evidence; stop before prediction-outcome derivation.
-8. **Failure taxonomy.** Contamination leak, improvement claim, incomplete-as-pass, missing sentinel set.
+1. **Outcome and non-goals.** Evaluator-owned immutable `PredictionOutcomeV1` comparing frozen predictions with actual evidence. No candidate-authored outcome, selection weight, or safety inference. No ENABLE or Level-1.
+2. **Prerequisites and evidence.** SENTINEL-CONFORMANCE COMPLETE: PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265`.
+3. **Owners and paths.** Existing `harness_evolution.rs`, `harness_evolution_eval.rs`, and LocalProductStore `harness_evolution_ec2_prediction_outcomes` table.
+4. **Frozen invariants.** Evaluator is the sole author of prediction outcomes. Outcomes are immutable once written. Prediction accuracy cannot gate Pareto selection or candidate status.
+5. **Only semantic delta.** `derive_ec2_prediction_outcome` + LocalProductStore persistence / query methods + schema / migration v36 + table registration in integrity checks.
+6. **Forbidden changes.** No candidate authoring, no selection gating on accuracy, no ENABLE, no Level-1, no second runtime/store owner.
+7. **Ordered slices.** Define `PredictionOutcomeV1`; derive outcome in evaluator; persist immutably in LocalProductStore; reject candidate mutation or selection weight; stop before Level-1.
+8. **Failure taxonomy.** Candidate-authored outcome, mutable outcome record, accuracy selection gate, missing evaluator identity hash.
 9. **Verification.** Focused cargo tests, handoff, rustfmt.
 10. **Compatibility and rollback.** Revert this PR.
-11. **Exit artifact.** Digest-bound `Ec2SentinelReceipt` rows and rejected eval receipts.
-12. **Next action.** Promote `PE7-HE-EC2-PREDICTION-OUTCOME-1`.
+11. **Exit artifact.** Stored `PredictionOutcomeV1` records and migration v36.
+12. **Next action.** Promote `PE7-HE-EC3-CONTRACT-1`.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC2-SENTINEL-CONFORMANCE-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Wire contamination, gaming, and safety sentinels so each fails closed before Pareto and rejected evidence is retained.","allowed_paths":["engine/src/harness_evolution_eval.rs","engine/src/storage/local_product_store/harness_evolution.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md"],"read_paths":["engine/src/harness_evolution_eval.rs","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","docs/ARCHITECTURE_BOOK.md","docs/MODULE_MAP.md"],"allowed_outputs":["Digest-bound Ec2SentinelReceipt observations and rejected_sentinel eval receipts."],"prerequisites":["PE7-HE-EC2-HOLDOUT-SEAL-1"],"prerequisite_receipts":["PE7-HE-EC2-HOLDOUT-SEAL-1 COMPLETE: PR #596 exact head cffd49edfc36fe602cc311f025367cadb15a425a; squash merge 5c367b85d79f680b5f76b7aa4f2f1656c0a460ae"],"forbidden_changes":["Do not add a second evaluator.","Do not let candidates disable sentinels.","Do not treat UNKNOWN as PASS.","Do not ENABLE the laboratory.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Observe contamination, gaming, and safety.","Refuse Pareto on FAIL or UNKNOWN.","Persist rejected_sentinel receipts without archive rows.","Stop before prediction-outcome derivation."],"verification":["cargo test -p engine --lib sentinels_fail_closed -- --test-threads=1","cargo test -p engine --lib pareto_archive_refuses -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; Pareto archive remains gated only by prior hard-gate filters and the laboratory stays default-off.","pause_gates":["Stop before prediction-outcome derivation.","Stop before Level-1."],"expected_artifacts":["engine/src/harness_evolution_eval.rs observe_ec2_sentinels","engine/src/storage/local_product_store/harness_evolution.rs rejected_sentinel receipts"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":["harness_evolution_evaluations","harness_evolution_eval_receipts"]}
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC2-PREDICTION-OUTCOME-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Implement evaluator-owned immutable PredictionOutcomeV1 comparing frozen predictions with actual evidence.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/harness_evolution_eval.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/integrity.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/schema.rs","engine/tests/test_data_operations.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/harness_evolution_eval.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/integrity.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/schema.rs","engine/tests/test_data_operations.rs","tests/test_session_context.py"],"allowed_outputs":["Evaluator-owned immutable PredictionOutcomeV1 records and schema v36 migration."],"prerequisites":["PE7-HE-EC2-SENTINEL-CONFORMANCE-1"],"prerequisite_receipts":["PE7-HE-EC2-SENTINEL-CONFORMANCE-1 COMPLETE: PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265`"],"forbidden_changes":["Do not let candidates author or mutate prediction outcomes.","Do not gate selection or candidate status on prediction accuracy.","Do not ENABLE the laboratory.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Define PredictionOutcomeV1 and validation rules.","Derive prediction outcome in evaluator.","Persist immutably in LocalProductStore with schema v36 migration.","Verify accuracy cannot gate selection.","Stop before Level-1."],"verification":["cargo test -p engine --lib prediction_outcomes -- --test-threads=1","cargo test -p engine --test test_data_operations -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; prediction outcomes remain unpersisted and laboratory stays default-off.","pause_gates":["Stop before Level-1."],"expected_artifacts":["engine/src/harness_evolution.rs PredictionOutcomeV1","engine/src/storage/local_product_store/harness_evolution.rs persist_ec2_prediction_outcome"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":["harness_evolution_ec2_prediction_outcomes"]}
 -->
 
 ## Common Execution Protocol

@@ -1159,7 +1159,7 @@ class CheckpointTests(unittest.TestCase):
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         status_document = (root / "docs/CURRENT_STATUS.md").read_text(encoding="utf-8")
         self.assertIn(
-            "No Provider call, credential read/output/persistence, target write, "
+            "No Provider call, credential-value read/output/persistence, target write, "
             "EFFECT/T3 action, auto-merge, or second runtime/store/authority owner",
             next_document,
         )
@@ -1237,13 +1237,13 @@ class CheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-EC2-SENTINEL-CONFORMANCE-1",
+            packet_id="PE7-HE-EC3-INSTRUMENTATION-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertFalse(extract["execution_authorized"])
         self.assertEqual(
-            extract["profile_id"], "PE7-HE-EC2-SENTINEL-CONFORMANCE-1.v1"
+            extract["profile_id"], "PE7-HE-EC3-INSTRUMENTATION-1.v1"
         )
         self.assertEqual(extract["worker_tier"], "T1")
 
@@ -1686,7 +1686,7 @@ class AdversarialCheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-EC2-SENTINEL-CONFORMANCE-1",
+            packet_id="PE7-HE-EC3-INSTRUMENTATION-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
