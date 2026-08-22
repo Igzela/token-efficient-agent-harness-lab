@@ -6,19 +6,18 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-HE-EC2-SENTINEL-CONFORMANCE-1` is complete. The current window is `PE7-HE-EC2-PREDICTION-OUTCOME-1`: evaluator-owned immutable `PredictionOutcomeV1` comparing frozen predictions with actual evidence. No candidate-authored outcome, selection weight, or safety inference. No ENABLE or Level-1.
+`PE7-HE-EC2-PREDICTION-OUTCOME-1` is complete. The current window is `PE7-HE-EC3-CONTRACT-1`: freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and the cost of diagnosis, hypothesis construction, prediction, and outcome reconciliation. No spend or runtime behavior change.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-HE-EC2-PREDICTION-OUTCOME-1 — READY_FOR_EXECUTION, provider-free; derive non-authoritative PredictionOutcomeV1]
-
-
+[window: PE7-HE-EC3-CONTRACT-1 — READY_FOR_EXECUTION, provider-free; freeze lifecycle-cost ontology and budget contract]
+[successor: PE7-HE-EC3-INSTRUMENTATION-1 — BLOCKED_PREREQUISITE, provider-free; capture/normalize lifecycle-cost evidence]
 ```
 
 ## Active Routing
 
-1. `PE7-HE-EC2-PREDICTION-OUTCOME-1` — `READY_FOR_EXECUTION`
+1. `PE7-HE-EC3-CONTRACT-1` — `READY_FOR_EXECUTION`
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -86,41 +85,47 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Accepted evidence:** PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265`.
 
-## Packet PE7-HE-EC2-PREDICTION-OUTCOME-1
+## Completed (PE7-HE-EC2-PREDICTION-OUTCOME-1)
+
+**State:** `COMPLETE`
+
+**Accepted evidence:** PR #598 exact head `0d048126b84050d2f09919f8bda912f27715f53c`; squash merge `0d048126b84050d2f09919f8bda912f27715f53c`; exact-head review comments `5350320011` and `5350320022`; canonical workflow `32323812001`.
+
+## Packet PE7-HE-EC3-CONTRACT-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-HE-EC2-SENTINEL-CONFORMANCE-1`
+**Prerequisite:** `PE7-HE-EC2-PREDICTION-OUTCOME-1`
 
-**Class:** `IMPLEMENT`
+**Class:** `CONTRACT`
 
-**Outcome:** Wire evaluator-owned immutable `PredictionOutcomeV1` comparing frozen predictions with actual evaluation evidence.
+**Outcome:** Freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and the cost of diagnosis, hypothesis construction, prediction, and outcome reconciliation.
 
-**Allowed delta:** `engine/src/harness_evolution.rs`, `engine/src/harness_evolution_eval.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `engine/src/storage/local_product_store/schema.rs`, `engine/src/storage/local_product_store/migrations.rs`, `engine/src/storage/local_product_store/pg_backend/migrations.rs`, `engine/src/storage/local_product_store/integrity.rs`, `engine/tests/test_data_operations.rs`, `tests/test_session_context.py`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Prediction outcome derivation and persistence only; no scalar override, selection gating, or new evaluator.
+**Allowed delta:** `engine/src/harness_evolution.rs`, `tests/test_session_context.py`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Lifecycle budget contract and ontology types only; no spend or runtime behavior change.
 
-**Exit:** Adversarial fixtures prove `PredictionOutcomeV1` records are derived solely by the evaluator, stored immutably in `LocalProductStore`, and prediction accuracy does not gate Pareto selection or candidate status.
+**Exit:** Versioned budget/accounting contract covering generation, evaluation, review, repair, CI, recovery, human effort, and failed attempts.
 
-**Stop:** Prediction accuracy is used as selection authority, candidate can author or mutate prediction outcomes, or outcomes can be modified after recording.
+**Stop:** A material cost class is silently zero, source semantics are ambiguous, or contract creates a second spend owner.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Evaluator-owned immutable `PredictionOutcomeV1` comparing frozen predictions with actual evidence. No candidate-authored outcome, selection weight, or safety inference. No ENABLE or Level-1.
-2. **Prerequisites and evidence.** SENTINEL-CONFORMANCE COMPLETE: PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265`.
-3. **Owners and paths.** Existing `harness_evolution.rs`, `harness_evolution_eval.rs`, and LocalProductStore `harness_evolution_ec2_prediction_outcomes` table.
-4. **Frozen invariants.** Evaluator is the sole author of prediction outcomes. Outcomes are immutable once written. Prediction accuracy cannot gate Pareto selection or candidate status.
-5. **Only semantic delta.** `derive_ec2_prediction_outcome` + LocalProductStore persistence / query methods + schema / migration v36 + table registration in integrity checks.
-6. **Forbidden changes.** No candidate authoring, no selection gating on accuracy, no ENABLE, no Level-1, no second runtime/store owner.
-7. **Ordered slices.** Define `PredictionOutcomeV1`; derive outcome in evaluator; persist immutably in LocalProductStore; reject candidate mutation or selection weight; stop before Level-1.
-8. **Failure taxonomy.** Candidate-authored outcome, mutable outcome record, accuracy selection gate, missing evaluator identity hash.
+1. **Outcome and non-goals.** Freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and the cost of diagnosis, hypothesis construction, prediction, and outcome reconciliation. No spend or runtime behavior change.
+2. **Prerequisites and evidence.** PREDICTION-OUTCOME COMPLETE: PR #598 exact head `0d048126b84050d2f09919f8bda912f27715f53c`; squash merge `0d048126b84050d2f09919f8bda912f27715f53c`; exact-head review comments `5350320011` and `5350320022`; canonical workflow `32323812001`.
+3. **Owners and paths.** Existing `harness_evolution.rs`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`.
+4. **Frozen invariants.** A material cost class cannot be silently zero. Source semantics are unambiguous (measured direct, derived deterministic, or unavailable fail-closed). Failed attempts must be accounted for in total budget. Contract cannot create a second spend owner.
+5. **Only semantic delta.** `Ec3LifecycleBudgetContractV1`, `LifecycleCostPhase`, `CostTrustSource`, `CandidateLifecycleEnvelope`, `GlobalLifecycleEnvelope`, `PhaseBudgetEnvelope`, `validate_ec3_lifecycle_budget_contract`, `seal_ec3_lifecycle_budget_contract` in `harness_evolution.rs`.
+6. **Forbidden changes.** No spend or runtime behavior change, no second spend owner, no candidate execution, no Level-1.
+7. **Ordered slices.** Define lifecycle-cost ontology types; implement validation and sealing functions; add adversarial negative unit tests; synchronize canonical docs; stop before instrumentation.
+8. **Failure taxonomy.** Silently zero material cost, ambiguous source, spend authority delegation, unmeasured phase allowed without flag, failed attempts uncounted.
 9. **Verification.** Focused cargo tests, handoff, rustfmt.
 10. **Compatibility and rollback.** Revert this PR.
-11. **Exit artifact.** Stored `PredictionOutcomeV1` records and migration v36.
-12. **Next action.** Promote `PE7-HE-EC3-CONTRACT-1`.
+11. **Exit artifact.** `Ec3LifecycleBudgetContractV1` type and validation in `engine/src/harness_evolution.rs`.
+12. **Next action.** Promote `PE7-HE-EC3-INSTRUMENTATION-1`.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC2-PREDICTION-OUTCOME-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Implement evaluator-owned immutable PredictionOutcomeV1 comparing frozen predictions with actual evidence.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/harness_evolution_eval.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/integrity.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/schema.rs","engine/tests/test_data_operations.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/harness_evolution_eval.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/integrity.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/schema.rs","engine/tests/test_data_operations.rs","tests/test_session_context.py"],"allowed_outputs":["Evaluator-owned immutable PredictionOutcomeV1 records and schema v36 migration."],"prerequisites":["PE7-HE-EC2-SENTINEL-CONFORMANCE-1"],"prerequisite_receipts":["PE7-HE-EC2-SENTINEL-CONFORMANCE-1 COMPLETE: PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265`"],"forbidden_changes":["Do not let candidates author or mutate prediction outcomes.","Do not gate selection or candidate status on prediction accuracy.","Do not ENABLE the laboratory.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Define PredictionOutcomeV1 and validation rules.","Derive prediction outcome in evaluator.","Persist immutably in LocalProductStore with schema v36 migration.","Verify accuracy cannot gate selection.","Stop before Level-1."],"verification":["cargo test -p engine --lib prediction_outcomes -- --test-threads=1","cargo test -p engine --test test_data_operations -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; prediction outcomes remain unpersisted and laboratory stays default-off.","pause_gates":["Stop before Level-1."],"expected_artifacts":["engine/src/harness_evolution.rs PredictionOutcomeV1","engine/src/storage/local_product_store/harness_evolution.rs persist_ec2_prediction_outcome"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":["harness_evolution_ec2_prediction_outcomes"]}
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC3-CONTRACT-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and the cost of diagnosis, hypothesis construction, prediction, and outcome reconciliation.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","tests/test_session_context.py"],"allowed_outputs":["Versioned Ec3LifecycleBudgetContractV1 type definitions and validation in harness_evolution.rs."],"prerequisites":["PE7-HE-EC2-PREDICTION-OUTCOME-1"],"prerequisite_receipts":["PE7-HE-EC2-PREDICTION-OUTCOME-1 COMPLETE: PR #598 exact head `0d048126b84050d2f09919f8bda912f27715f53c`; squash merge `0d048126b84050d2f09919f8bda912f27715f53c`; exact-head review comments `5350320011` and `5350320022`; canonical workflow `32323812001`"],"forbidden_changes":["Do not change spend or runtime behavior.","Do not create a second spend owner.","Do not execute candidates.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Define lifecycle cost phases, sources, and envelope types.","Implement Ec3LifecycleBudgetContractV1 and validation/sealing functions.","Add positive and negative unit tests.","Stop before instrumentation."],"verification":["cargo test -p engine --lib ec3_lifecycle_budget -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; budget contract remains unpersisted and laboratory stays default-off.","pause_gates":["Stop before instrumentation."],"expected_artifacts":["engine/src/harness_evolution.rs Ec3LifecycleBudgetContractV1"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T2","known_store_mutations":[]}
 -->
 
 ## Common Execution Protocol
