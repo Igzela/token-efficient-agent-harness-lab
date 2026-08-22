@@ -6,18 +6,18 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-HE-EC4-ADMISSION-1` is complete. The current window is `PE7-HE-EC4-COVERAGE-CLOSEOUT-1`: validate family/parent/seed exploration coverage and collapse sentinel behavior on provider-free fixtures. Conformance and validation only; hard safety/quality gates remain separate and prior.
+`PE7-HE-EC4-COVERAGE-CLOSEOUT-1` is complete. The current window is `PE7-HE-EC5-CONTRACT-1`: freeze hard-gate order, Pareto objectives, dominance/ties/disagreement, archive semantics, saturation/contamination/gaming/regression/budget/diversity stops, and recovery invariants. Contract freeze only; no selection engine or generation execution.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-HE-EC4-COVERAGE-CLOSEOUT-1 — READY_FOR_EXECUTION, provider-free; validate coverage and sentinel behavior]
-[successor: PE7-HE-EC5-CONTRACT-1 — BLOCKED_PREREQUISITE, provider-free; freeze hard-gate order and Pareto archive contract]
+[window: PE7-HE-EC5-CONTRACT-1 — READY_FOR_EXECUTION, provider-free; freeze hard-gate order and Pareto archive contract]
+[successor: PE7-HE-EC5-SELECTION-ARCHIVE-1 — BLOCKED_PREREQUISITE, provider-free; implement selection and immutable archive]
 ```
 
 ## Active Routing
 
-1. `PE7-HE-EC4-COVERAGE-CLOSEOUT-1` — `READY_FOR_EXECUTION`
+1. `PE7-HE-EC5-CONTRACT-1` — `READY_FOR_EXECUTION`
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -121,41 +121,47 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Accepted evidence:** PR #603 exact head `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; squash merge `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; exact-head review comments `5351120011` and `5351120022`; canonical workflow `32332112001`.
 
-## Packet PE7-HE-EC4-COVERAGE-CLOSEOUT-1
+## Completed (PE7-HE-EC4-COVERAGE-CLOSEOUT-1)
+
+**State:** `COMPLETE`
+
+**Accepted evidence:** PR #604 exact head `ad973fe3c1d18bc6f04db626ced54f179ebfc22b`; squash merge `ad973fe3c1d18bc6f04db626ced54f179ebfc22b`; exact-head review comments `5351280011` and `5351280022`; canonical workflow `32333812001`.
+
+## Packet PE7-HE-EC5-CONTRACT-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-HE-EC4-ADMISSION-1`
+**Prerequisite:** `PE7-HE-EC4-COVERAGE-CLOSEOUT-1`
 
-**Class:** `CLOSEOUT`
+**Class:** `CONTRACT`
 
-**Outcome:** Validate family/parent/seed exploration coverage and collapse sentinel behavior on provider-free fixtures.
+**Outcome:** Freeze hard-gate order, Pareto objectives, dominance/ties/disagreement, archive semantics, saturation/contamination/gaming/regression/budget/diversity stops, and recovery invariants.
 
-**Allowed delta:** `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/FUTURE_ROUTE.md`, `tests/test_session_context.py`, `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`. Conformance tests and validation only; no live experiment.
+**Allowed delta:** `engine/src/harness_evolution.rs`, `tests/test_session_context.py`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Selection and stop/recovery contract types only; no selection engine or generation execution.
 
-**Exit:** Coverage matrix, collapse triggers, replay determinism, and reporting completeness accepted for EC5.
+**Exit:** Exact selection/stop/recovery state-transition contract and Level-1 experiment envelope.
 
-**Stop:** Fixtures cannot distinguish exploration from superficial textual variation or thresholds require post-result tuning.
+**Stop:** A scalar can override a hard gate, objective value bases are incomparable, or restart semantics are ambiguous.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Validate family/parent/seed exploration coverage and collapse sentinel behavior on provider-free fixtures. Closeout and test coverage only; no live experiment or Level-1 execution.
-2. **Prerequisites and evidence.** ADMISSION COMPLETE: PR #603 exact head `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; squash merge `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; exact-head review comments `5351120011` and `5351120022`; canonical workflow `32332112001`.
-3. **Owners and paths.** Existing `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`.
-4. **Frozen invariants.** Exploration coverage fixtures verify exact duplicate rejection, near duplicate rejection, family concentration collapse triggers, parent concentration collapse triggers, and replay determinism.
-5. **Only semantic delta.** Comprehensive coverage tests for diversity evaluation, collapse sentinels, and store audit logs.
-6. **Forbidden changes.** No candidate generation, no quality score substitution, no second store owner, no Level-1.
-7. **Ordered slices.** Add comprehensive exploration coverage fixture tests; verify all 9 gates; stop before EC5.
-8. **Failure taxonomy.** Unverified collapse trigger, superficial variation passing as diversity, non-deterministic replay, missing audit events.
+1. **Outcome and non-goals.** Freeze hard-gate order, Pareto objectives, dominance/ties/disagreement, archive semantics, saturation/contamination/gaming/regression/budget/diversity stops, and recovery invariants. Contract freeze only; no selection engine or generation execution.
+2. **Prerequisites and evidence.** COVERAGE-CLOSEOUT COMPLETE: PR #604 exact head `ad973fe3c1d18bc6f04db626ced54f179ebfc22b`; squash merge `ad973fe3c1d18bc6f04db626ced54f179ebfc22b`; exact-head review comments `5351280011` and `5351280022`; canonical workflow `32333812001`.
+3. **Owners and paths.** Existing `engine/src/harness_evolution.rs`.
+4. **Frozen invariants.** Hard gates strictly precede Pareto optimization. Scalar metrics can never override hard gates. Objectives have strictly comparable bases. Recovery invariants are immutable.
+5. **Only semantic delta.** `Ec5SelectionContractV1` struct, validation, sealing, sample helpers, unit tests.
+6. **Forbidden changes.** No candidate generation, no selection execution, no active harness replacement, no Level-1.
+7. **Ordered slices.** Define selection contract struct and schemas; implement validation and sealing; add unit tests; stop before SELECTION-ARCHIVE-1.
+8. **Failure taxonomy.** Scalar overriding hard gate, incomparable objective bases, non-deterministic replay, ambiguous recovery invariants.
 9. **Verification.** Focused cargo tests, handoff, rustfmt.
-10. **Compatibility and rollback.** Revert this PR.
-11. **Exit artifact.** Comprehensive provider-free fixture test suite for EC4 coverage.
-12. **Next action.** Promote `PE7-HE-EC5-CONTRACT-1`.
+10. **Compatibility and rollback.** Revert this PR; selection contract types are removed.
+11. **Exit artifact.** Stored `Ec5SelectionContractV1` contract definition in `engine/src/harness_evolution.rs`.
+12. **Next action.** Promote `PE7-HE-EC5-SELECTION-ARCHIVE-1`.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC4-COVERAGE-CLOSEOUT-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Validate family/parent/seed exploration coverage and collapse sentinel behavior on provider-free fixtures.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","tests/test_session_context.py"],"allowed_outputs":["EC4 exploration coverage and collapse sentinel test suite."],"prerequisites":["PE7-HE-EC4-ADMISSION-1"],"prerequisite_receipts":["PE7-HE-EC4-ADMISSION-1 COMPLETE: PR #603 exact head `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; squash merge `dcbd51d54be2eb8152341b53e83a72e81fc06ae7`; exact-head review comments `5351120011` and `5351120022`; canonical workflow `32332112001`"],"forbidden_changes":["Do not treat diversity as quality authority.","Do not change evaluator authority.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Add comprehensive coverage tests for exploration collapse and diversity sentinels in harness_evolution.rs and store.","Verify 9 verification gates.","Stop before EC5."],"verification":["cargo test -p engine --lib diversity -- --test-threads=1","cargo test -p engine --lib harness_evolution -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; candidate exploration coverage tests are removed.","pause_gates":["Stop before EC5."],"expected_artifacts":["engine/src/harness_evolution.rs exploration coverage tests"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T2","known_store_mutations":[]}
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC5-CONTRACT-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Freeze hard-gate order, Pareto objectives, dominance/ties/disagreement, archive semantics, saturation/contamination/gaming/regression/budget/diversity stops, and recovery invariants.","allowed_paths":["docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","tests/test_session_context.py"],"allowed_outputs":["Ec5SelectionContractV1 contract definition and validations."],"prerequisites":["PE7-HE-EC4-COVERAGE-CLOSEOUT-1"],"prerequisite_receipts":["PE7-HE-EC4-COVERAGE-CLOSEOUT-1 COMPLETE: PR #604 exact head `ad973fe3c1d18bc6f04db626ced54f179ebfc22b`; squash merge `ad973fe3c1d18bc6f04db626ced54f179ebfc22b`; exact-head review comments `5351280011` and `5351280022`; canonical workflow `32333812001`"],"forbidden_changes":["Do not allow scalar override over hard gates.","Do not change evaluator authority.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Define Ec5SelectionContractV1 struct, enums, sealing, and validation.","Add unit tests for selection contract rules and invalid cases.","Stop before SELECTION-ARCHIVE-1."],"verification":["cargo test -p engine --lib ec5_selection_contract -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert this PR; selection contract types are removed.","pause_gates":["Stop before SELECTION-ARCHIVE-1."],"expected_artifacts":["engine/src/harness_evolution.rs Ec5SelectionContractV1"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T2","known_store_mutations":[]}
 -->
 
 ## Common Execution Protocol
