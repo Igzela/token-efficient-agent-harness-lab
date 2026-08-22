@@ -86,6 +86,8 @@ const INTEGRITY_TABLES: &[&str] = &[
     "harness_evolution_ec2_holdout_seals",
     "harness_evolution_ec2_prediction_outcomes",
     "harness_evolution_ec3_lifecycle_costs",
+    "harness_evolution_ec3_lifecycle_budgets",
+    "harness_evolution_ec3_lifecycle_reconciliations",
     "harness_evolution_sealed_holdouts",
     "harness_evolution_evaluations",
     "harness_evolution_pareto_archive",

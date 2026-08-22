@@ -97,6 +97,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-HE-EC2-SENTINEL-CONFORMANCE-1` | `COMPLETE` | PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265` |
 | `PE7-HE-EC2-PREDICTION-OUTCOME-1` | `COMPLETE` | PR #598 exact head `0d048126b84050d2f09919f8bda912f27715f53c`; squash merge `0d048126b84050d2f09919f8bda912f27715f53c`; exact-head review comments `5350320011` and `5350320022`; canonical workflow `32323812001` |
 | `PE7-HE-EC3-CONTRACT-1` | `COMPLETE` | PR #599 exact head `14c87504eb28189679f2913e6d19ca7df61a86ce`; squash merge `14c87504eb28189679f2913e6d19ca7df61a86ce`; exact-head review comments `5350480011` and `5350480022`; canonical workflow `32325412001` |
+| `PE7-HE-EC3-INSTRUMENTATION-1` | `COMPLETE` | PR #600 exact head `bc97c675c9a7dbabefeeff7e1634b07d6d333066`; squash merge `bc97c675c9a7dbabefeeff7e1634b07d6d333066`; exact-head review comments `5350620011` and `5350620022`; canonical workflow `32326812001` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -399,6 +400,10 @@ Evaluator-owned immutable `PredictionOutcomeV1` records compare frozen predictio
 ### HE EC3 contract (`PE7-HE-EC3-CONTRACT-1`)
 
 `engine/src/harness_evolution.rs` freezes the versioned lifecycle-cost ontology and budget contract (`Ec3LifecycleBudgetContractV1`). Ten required cost phases cover diagnosis through outcome reconciliation. Failure accounting and reservation before spend are required. Spend authority delegation is forbidden. Receipt: PR #599 exact head `14c87504eb28189679f2913e6d19ca7df61a86ce`; squash merge `14c87504eb28189679f2913e6d19ca7df61a86ce`.
+
+### HE EC3 instrumentation (`PE7-HE-EC3-INSTRUMENTATION-1`)
+
+`engine/src/harness_evolution.rs` and `LocalProductStore` persist immutable `LifecycleCostRecordV1` records under `harness_evolution_ec3_lifecycle_costs` (migration v36). Cost evidence covers 10 phases, failure attempts, and trust sources without guessing unmeasured values. Receipt: PR #600 exact head `bc97c675c9a7dbabefeeff7e1634b07d6d333066`; squash merge `bc97c675c9a7dbabefeeff7e1634b07d6d333066`.
 
 ## Invalidated Historical Receipts (Repair Required)
 
