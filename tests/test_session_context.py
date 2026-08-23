@@ -1153,7 +1153,7 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_packet_requires_prediction_contract_promotion(self):
+    def test_current_repository_packet_issues_prediction_contract(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
@@ -1170,14 +1170,12 @@ class CheckpointTests(unittest.TestCase):
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
-        self.assertEqual(packet["packet_id"], "PE7-HE-ROUTE-RECOVERY-1")
-        self.assertEqual(packet["state"], "DECISION_REQUIRED")
-        self.assertFalse(packet["checkpoint_allowed"])
+        self.assertEqual(packet["packet_id"], "PE7-HE-EC2-PREDICTION-OUTCOME-1")
+        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
+        self.assertTrue(packet["checkpoint_allowed"])
         self.assertFalse(packet["execution_authorized"])
-        with self.assertRaisesRegex(
-            session_context.SessionContextError, "weak_dispatch_missing_or_duplicated"
-        ):
-            session_context.current_dispatch_capsule(next_document, packet)
+        capsule = session_context.current_dispatch_capsule(next_document, packet)
+        self.assertEqual(capsule["packet_id"], packet["packet_id"])
         snapshot = checkout_snapshot(
             head_sha=MAIN,
             branch="main",
@@ -1192,19 +1190,19 @@ class CheckpointTests(unittest.TestCase):
             document_source="accepted",
             document_source_binding=MAIN,
             packet=packet,
-            dispatch_capsule=None,
+            dispatch_capsule=capsule,
             snapshot=snapshot,
             checkpoint=None,
         )
-        self.assertEqual(entry["context_mode"], "STOP")
-        self.assertEqual(entry["resume_disposition"], "DECISION_REQUIRED")
-        self.assertEqual(entry["resume_reason"], "packet_not_executable")
-        self.assertFalse(entry["checkpoint_allowed"])
-        self.assertIsNone(entry["dispatch_capsule"])
+        self.assertEqual(entry["context_mode"], "FRESH_PACKET")
+        self.assertEqual(entry["resume_disposition"], "RESUME")
+        self.assertEqual(entry["resume_reason"], "clean_accepted_baseline")
+        self.assertTrue(entry["checkpoint_allowed"])
+        self.assertEqual(entry["dispatch_capsule"]["packet_id"], packet["packet_id"])
         self.assertFalse(entry["execution_authorized"])
-        self.assertIsNone(entry["checkpoint_write_commands"])
-        self.assertIsNone(entry["verification_contract_sha256"])
-        self.assertEqual(entry["verification_commands"], [])
+        self.assertIsNotNone(entry["checkpoint_write_commands"])
+        self.assertIsNotNone(entry["verification_contract_sha256"])
+        self.assertTrue(entry["verification_commands"])
         self.assertLessEqual(len(json.dumps(entry).encode("utf-8")), 16 * 1024)
         self.assertEqual(session_context.SessionEntry.from_wire(entry).to_wire(), entry)
 
@@ -1213,15 +1211,15 @@ class CheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-EC2-PREDICTION-OUTCOME-1",
+            packet_id="PE7-HE-EC3-CONTRACT-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertFalse(extract["execution_authorized"])
         self.assertEqual(
-            extract["profile_id"], "PE7-HE-EC2-PREDICTION-OUTCOME-1.v1"
+            extract["profile_id"], "PE7-HE-EC3-CONTRACT-1.v1"
         )
-        self.assertEqual(extract["worker_tier"], "T1")
+        self.assertEqual(extract["worker_tier"], "T2")
 
 
 
@@ -1662,12 +1660,12 @@ class AdversarialCheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-EC2-PREDICTION-OUTCOME-1",
+            packet_id="PE7-HE-EC3-CONTRACT-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertEqual(extract["packet_state"], "BLOCKED_PREREQUISITE")
-        self.assertEqual(extract["worker_tier"], "T1")
+        self.assertEqual(extract["worker_tier"], "T2")
         self.assertFalse(extract["execution_authorized"])
 
 
