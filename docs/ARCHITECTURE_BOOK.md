@@ -991,11 +991,14 @@ diagnosis, hypothesis construction, prediction, candidate materialization,
 evaluation, review, repair, CI, recovery, human effort, and outcome
 reconciliation. Its candidate and global envelopes name model tokens,
 Provider calls and cost, wall-clock time, compute, and human effort explicitly.
-Only directly measured or deterministically derived evidence is trustworthy;
-caller estimates are not cost evidence, and partial or unavailable required
-cost makes the candidate ineligible. A true zero requires explicit evidence
-rather than absence. Every terminal attempt, including rejected, failed, cancelled, and
-recovery work, remains charged. The contract requires reservation before
+Only directly measured or deterministically derived values are trustworthy;
+`unavailable` remains an explicit source state. Caller estimates are not cost
+evidence, and partial or unavailable required cost makes the candidate
+ineligible. A true zero requires explicit evidence rather than absence. Every
+terminal attempt, including rejected, failed, cancelled, and recovery work,
+remains charged. Candidate limits apply per candidate; global limits aggregate
+all candidates, and the first exhausted resource or count cap rejects the next
+reservation before execution. The contract requires reservation before
 execution and exact-once reconciliation after terminal outcome, but performs
 neither operation itself: existing spend, admission, runtime, evaluator, and
 `LocalProductStore` owners remain unchanged.

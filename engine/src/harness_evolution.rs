@@ -339,8 +339,15 @@ pub const REQUIRED_LIFECYCLE_COST_DIMENSIONS: &[LifecycleCostDimension] = &[
 pub enum CostTrustSource {
     MeasuredDirect,
     DerivedDeterministic,
+    Unavailable,
     CallerEstimate,
 }
+
+pub const REQUIRED_COST_SOURCE_SEMANTICS: &[CostTrustSource] = &[
+    CostTrustSource::MeasuredDirect,
+    CostTrustSource::DerivedDeterministic,
+    CostTrustSource::Unavailable,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -377,11 +384,30 @@ pub enum FailureAccountingRule {
     ChargeSuccessfulOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvelopeScope {
+    PerCandidate,
+    AggregateAcrossCandidates,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvelopeExhaustionRule {
+    RejectReservationBeforeExecution,
+    AllowAndEstimateAfterExecution,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LifecyclePhasePolicy {
     pub phase: LifecycleCostPhase,
     pub required_dimensions: Vec<LifecycleCostDimension>,
-    pub allowed_sources: Vec<CostTrustSource>,
+    /// Complete values may be direct or deterministic. `Unavailable` is an
+    /// explicit evidence state, not a zero or an eligible value.
+    pub source_semantics: Vec<CostTrustSource>,
+    /// Applies to every required dimension in this phase; both partial and
+    /// unavailable evidence are incomplete.
+    pub incomplete_cost_disposition: IncompleteCostDisposition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -394,6 +420,7 @@ pub struct LifecycleResourceLimit {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CandidateLifecycleEnvelope {
+    pub scope: EnvelopeScope,
     pub resource_limits: Vec<LifecycleResourceLimit>,
     pub max_repair_attempts: u32,
     pub max_ci_runs: u32,
@@ -402,6 +429,7 @@ pub struct CandidateLifecycleEnvelope {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobalLifecycleEnvelope {
+    pub scope: EnvelopeScope,
     pub resource_limits: Vec<LifecycleResourceLimit>,
     pub max_candidates: u32,
     pub max_failed_candidates: u32,
@@ -416,11 +444,11 @@ pub struct Ec3LifecycleBudgetContractV1 {
     pub phase_policies: Vec<LifecyclePhasePolicy>,
     pub candidate_envelope: CandidateLifecycleEnvelope,
     pub global_envelope: GlobalLifecycleEnvelope,
-    pub incomplete_cost_disposition: IncompleteCostDisposition,
     pub zero_cost_rule: ZeroCostRule,
     pub reservation_rule: ReservationRule,
     pub reconciliation_rule: ReconciliationRule,
     pub failure_accounting_rule: FailureAccountingRule,
+    pub envelope_exhaustion_rule: EnvelopeExhaustionRule,
     pub grants_spend_authority: bool,
     pub record_sha256: String,
 }
@@ -914,14 +942,14 @@ fn validate_ec3_phase_policies(
             }
             covered_dimensions.insert(*dimension);
         }
-        if policy.allowed_sources.is_empty() {
+        if policy.source_semantics.is_empty() {
             return Err(EvolutionAdmissionError::new(
                 "ec3_source_missing",
-                "each lifecycle phase must name at least one trustworthy source",
+                "each lifecycle phase must define complete and unavailable source semantics",
             ));
         }
         let mut sources = BTreeSet::new();
-        for source in &policy.allowed_sources {
+        for source in &policy.source_semantics {
             if *source == CostTrustSource::CallerEstimate {
                 return Err(EvolutionAdmissionError::new(
                     "ec3_source_untrusted",
@@ -934,6 +962,29 @@ fn validate_ec3_phase_policies(
                     "a phase cannot repeat a cost source",
                 ));
             }
+        }
+        for source in REQUIRED_COST_SOURCE_SEMANTICS {
+            if !sources.contains(source) {
+                return Err(EvolutionAdmissionError::new(
+                    "ec3_source_semantics_incomplete",
+                    format!(
+                        "phase {:?} is missing source state {source:?}",
+                        policy.phase
+                    ),
+                ));
+            }
+        }
+        if sources.len() != REQUIRED_COST_SOURCE_SEMANTICS.len() {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_source_semantics_unknown",
+                "phase source semantics must match the frozen set exactly",
+            ));
+        }
+        if policy.incomplete_cost_disposition != IncompleteCostDisposition::CandidateIneligible {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_missing_cost_must_fail_closed",
+                "partial or unavailable required phase cost makes the candidate ineligible",
+            ));
         }
     }
     for phase in REQUIRED_LIFECYCLE_COST_PHASES {
@@ -1012,12 +1063,6 @@ pub fn validate_ec3_lifecycle_budget_contract(
             "contract_id must be derived from the complete accounting contract",
         ));
     }
-    if contract.incomplete_cost_disposition != IncompleteCostDisposition::CandidateIneligible {
-        return Err(EvolutionAdmissionError::new(
-            "ec3_missing_cost_must_fail_closed",
-            "partial or unavailable required cost makes the candidate ineligible",
-        ));
-    }
     if contract.zero_cost_rule != ZeroCostRule::ExplicitEvidenceRequired {
         return Err(EvolutionAdmissionError::new(
             "ec3_implicit_zero_forbidden",
@@ -1049,6 +1094,21 @@ pub fn validate_ec3_lifecycle_budget_contract(
         ));
     }
     validate_ec3_phase_policies(&contract.phase_policies)?;
+    if contract.candidate_envelope.scope != EnvelopeScope::PerCandidate
+        || contract.global_envelope.scope != EnvelopeScope::AggregateAcrossCandidates
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_envelope_scope_invalid",
+            "candidate limits are per-candidate and global limits aggregate every candidate",
+        ));
+    }
+    if contract.envelope_exhaustion_rule != EnvelopeExhaustionRule::RejectReservationBeforeExecution
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_envelope_overflow_forbidden",
+            "the first exhausted resource or count cap rejects reservation before execution",
+        ));
+    }
     let candidate =
         validate_ec3_resource_limits(&contract.candidate_envelope.resource_limits, "candidate")?;
     let global = validate_ec3_resource_limits(&contract.global_envelope.resource_limits, "global")?;
@@ -1074,7 +1134,12 @@ pub fn validate_ec3_lifecycle_budget_contract(
     }
     let value = serde_json::to_value(contract)
         .map_err(|error| EvolutionAdmissionError::new("ec3_record_digest", error.to_string()))?;
-    require_record_sha256(&value, &contract.record_sha256)?;
+    if contract.record_sha256 != record_digest_excluding_sha256(&value)? {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_record_tamper",
+            "record_sha256 must bind the complete EC3 contract",
+        ));
+    }
     Ok(())
 }
 
@@ -1937,14 +2002,16 @@ mod tests {
     }
 
     fn sample_ec3_lifecycle_budget_contract() -> Ec3LifecycleBudgetContractV1 {
-        let measured = vec![
+        let source_semantics = vec![
             CostTrustSource::MeasuredDirect,
             CostTrustSource::DerivedDeterministic,
+            CostTrustSource::Unavailable,
         ];
         let policy = |phase, required_dimensions| LifecyclePhasePolicy {
             phase,
             required_dimensions,
-            allowed_sources: measured.clone(),
+            source_semantics: source_semantics.clone(),
+            incomplete_cost_disposition: IncompleteCostDisposition::CandidateIneligible,
         };
         let phase_policies = vec![
             policy(
@@ -2050,21 +2117,23 @@ mod tests {
             contract_id: String::new(),
             phase_policies,
             candidate_envelope: CandidateLifecycleEnvelope {
+                scope: EnvelopeScope::PerCandidate,
                 resource_limits: limits(100),
                 max_repair_attempts: 2,
                 max_ci_runs: 2,
                 max_recovery_attempts: 1,
             },
             global_envelope: GlobalLifecycleEnvelope {
+                scope: EnvelopeScope::AggregateAcrossCandidates,
                 resource_limits: limits(1_000),
                 max_candidates: 10,
                 max_failed_candidates: 5,
             },
-            incomplete_cost_disposition: IncompleteCostDisposition::CandidateIneligible,
             zero_cost_rule: ZeroCostRule::ExplicitEvidenceRequired,
             reservation_rule: ReservationRule::RequiredBeforeExecution,
             reconciliation_rule: ReconciliationRule::ExactOnceAfterTerminal,
             failure_accounting_rule: FailureAccountingRule::ChargeAllAttempts,
+            envelope_exhaustion_rule: EnvelopeExhaustionRule::RejectReservationBeforeExecution,
             grants_spend_authority: false,
             record_sha256: String::new(),
         })
@@ -2085,6 +2154,9 @@ mod tests {
             .phase_policies
             .iter()
             .any(|policy| policy.phase == LifecycleCostPhase::Prediction));
+        assert!(contract.phase_policies.iter().all(|policy| policy
+            .source_semantics
+            .contains(&CostTrustSource::Unavailable)));
     }
 
     #[test]
@@ -2111,7 +2183,7 @@ mod tests {
     #[test]
     fn ec3_lifecycle_budget_rejects_untrusted_or_missing_cost() {
         let mut untrusted = sample_ec3_lifecycle_budget_contract();
-        untrusted.phase_policies[0].allowed_sources = vec![CostTrustSource::CallerEstimate];
+        untrusted.phase_policies[0].source_semantics = vec![CostTrustSource::CallerEstimate];
         assert_eq!(
             seal_ec3_lifecycle_budget_contract(untrusted)
                 .unwrap_err()
@@ -2120,7 +2192,8 @@ mod tests {
         );
 
         let mut missing = sample_ec3_lifecycle_budget_contract();
-        missing.incomplete_cost_disposition = IncompleteCostDisposition::TreatAsZero;
+        missing.phase_policies[0].incomplete_cost_disposition =
+            IncompleteCostDisposition::TreatAsZero;
         assert_eq!(
             seal_ec3_lifecycle_budget_contract(missing)
                 .unwrap_err()
@@ -2214,6 +2287,46 @@ mod tests {
                 .unwrap_err()
                 .code,
             "ec3_failed_candidates_overflow"
+        );
+
+        let mut wrong_scope = sample_ec3_lifecycle_budget_contract();
+        wrong_scope.global_envelope.scope = EnvelopeScope::PerCandidate;
+        assert_eq!(
+            seal_ec3_lifecycle_budget_contract(wrong_scope)
+                .unwrap_err()
+                .code,
+            "ec3_envelope_scope_invalid"
+        );
+
+        let mut late_overflow = sample_ec3_lifecycle_budget_contract();
+        late_overflow.envelope_exhaustion_rule =
+            EnvelopeExhaustionRule::AllowAndEstimateAfterExecution;
+        assert_eq!(
+            seal_ec3_lifecycle_budget_contract(late_overflow)
+                .unwrap_err()
+                .code,
+            "ec3_envelope_overflow_forbidden"
+        );
+    }
+
+    #[test]
+    fn ec3_lifecycle_budget_rejects_contract_id_and_record_tamper() {
+        let mut identity_tamper = sample_ec3_lifecycle_budget_contract();
+        identity_tamper.contract_id = "hebc-tampered".to_string();
+        assert_eq!(
+            validate_ec3_lifecycle_budget_contract(&identity_tamper)
+                .unwrap_err()
+                .code,
+            "ec3_contract_id_mismatch"
+        );
+
+        let mut record_tamper = sample_ec3_lifecycle_budget_contract();
+        record_tamper.record_sha256 = sha256_hex("tampered");
+        assert_eq!(
+            validate_ec3_lifecycle_budget_contract(&record_tamper)
+                .unwrap_err()
+                .code,
+            "ec3_record_tamper"
         );
     }
 
