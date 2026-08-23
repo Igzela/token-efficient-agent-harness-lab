@@ -1167,6 +1167,8 @@ class CheckpointTests(unittest.TestCase):
             "| `PE7-HE-EC2-SENTINEL-CONFORMANCE-1` | `COMPLETE` | PR #597 ",
             status_document,
         )
+        self.assertIn("new additive schema / migration v37", next_document)
+        self.assertIn("v36 is accepted baseline and must not be modified or reused", next_document)
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
@@ -1176,6 +1178,11 @@ class CheckpointTests(unittest.TestCase):
         self.assertFalse(packet["execution_authorized"])
         capsule = session_context.current_dispatch_capsule(next_document, packet)
         self.assertEqual(capsule["packet_id"], packet["packet_id"])
+        self.assertIn("cargo fmt --all -- --check", capsule["verification"])
+        self.assertIn(
+            "cargo test -p engine --features pg-tests -- --test-threads=1",
+            capsule["verification"],
+        )
         snapshot = checkout_snapshot(
             head_sha=MAIN,
             branch="main",

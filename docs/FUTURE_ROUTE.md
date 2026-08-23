@@ -1,6 +1,6 @@
 # Future Route
 
-Last updated: 2026-08-20.
+Last updated: 2026-08-23.
 
 This document is the sole long-horizon routing index. Every packet here is `BLOCKED_PREREQUISITE` and routing-only: its order, prerequisite, intended class, bounded sketch, and promotion profile are accepted planning context, not implementation or external-effect authority.
 
