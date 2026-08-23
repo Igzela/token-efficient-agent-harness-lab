@@ -985,6 +985,24 @@ model confidence are calibration/audit evidence only: they cannot satisfy a
 hard gate, select a Pareto parent, grant safety, authorize adoption, or change
 the evaluator.
 
+EC3 freezes total lifecycle budget as an accounting contract before any
+instrumentation or enforcement exists. `Ec3LifecycleBudgetContractV1` covers
+diagnosis, hypothesis construction, prediction, candidate materialization,
+evaluation, review, repair, CI, recovery, human effort, and outcome
+reconciliation. Its candidate and global envelopes name model tokens,
+Provider calls and cost, wall-clock time, compute, and human effort explicitly.
+Only directly measured or deterministically derived values are trustworthy;
+`unavailable` remains an explicit source state. Caller estimates are not cost
+evidence, and partial or unavailable required cost makes the candidate
+ineligible. A true zero requires explicit evidence rather than absence. Every
+terminal attempt, including rejected, failed, cancelled, and recovery work,
+remains charged. Candidate limits apply per candidate; global limits aggregate
+all candidates, and the first exhausted resource or count cap rejects the next
+reservation before execution. The contract requires reservation before
+execution and exact-once reconciliation after terminal outcome, but performs
+neither operation itself: existing spend, admission, runtime, evaluator, and
+`LocalProductStore` owners remain unchanged.
+
 Candidate generation uses one source-bound causal-mutation evidence chain. `FailurePatternEvidenceV1` separates observed verifier/runtime facts, causal status, counterevidence, Harness addressability, and the admitted mutable surface; existing feedback traces, pattern detection, and outcome attribution remain observation inputs rather than a second failure-intelligence authority. `MutationHypothesisManifestV1` freezes the exact candidate delta, predicted improvements and regressions, invariants, thresholds, and evaluation plan before execution. The existing evaluator path alone derives `PredictionOutcomeV1` after evaluation under the binding above.
 
 Level-1 core is a default-off one-generation laboratory with immutable active-Harness identity, candidate lineage, total-lifecycle-budget evaluation, hard gates, sealed holdout, Pareto archive, operator acknowledgement, and PR_READY output. Memory and skill projections are disabled in the core comparison so attribution remains identifiable. Optional memory-only and skill-only factor experiments may follow Level-1 but do not block the core Level-2 route. VDE does not rewrite or silently broaden the current evaluator or `MetricVector`.
