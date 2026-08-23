@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-20.
+Last updated: 2026-08-23.
 
 This document owns accepted repository truth and confirmed capability gaps only. It separates two states that must not be conflated:
 
@@ -95,6 +95,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-HE-EC2-CONTRACT-1` | `COMPLETE` | PR #595 exact head `e0585701dec206fca5645299d65cbb3341257008`; squash merge `f996ded631f12f74f42528c70e76ccf0f040bdfd`; exact-head review comments `5349652629` and `5349652752`; canonical workflow `32317253205` |
 | `PE7-HE-EC2-HOLDOUT-SEAL-1` | `COMPLETE` | PR #596 exact head `cffd49edfc36fe602cc311f025367cadb15a425a`; squash merge `5c367b85d79f680b5f76b7aa4f2f1656c0a460ae`; exact-head review comments `5349963606` and `5349963725`; canonical workflow `32320235684` |
 | `PE7-HE-EC2-SENTINEL-CONFORMANCE-1` | `COMPLETE` | PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265` |
+| `PE7-HE-EC2-PREDICTION-OUTCOME-1` | `COMPLETE` | PR #600 exact head `0ccdbefa59e18b241cba7cb6f26f3d267608a9a9`; squash merge `ac2b2f640406ca766b0cd567c2782e426d8dad2b`; exact-head review comments `5385499271` and `5385499345`; canonical workflow `32633510108` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -389,6 +390,10 @@ Sealed holdout membership is hash-only under `LocalProductStore` table `harness_
 ### HE EC2 sentinel conformance (`PE7-HE-EC2-SENTINEL-CONFORMANCE-1`)
 
 Contamination, evaluator-gaming, and safety sentinel observations now fail closed before Pareto selection and retain rejected-candidate evidence. No ENABLE, Level-1, or second evaluator. Receipt: PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`.
+
+### HE EC2 prediction outcome (`PE7-HE-EC2-PREDICTION-OUTCOME-1`)
+
+The existing evaluator path now derives immutable `PredictionOutcomeV1` records from frozen EC1 hypotheses and actual evaluation evidence, then persists them atomically with the evaluation bundle and receipt through `LocalProductStore` table `harness_evolution_ec2_prediction_outcomes` (additive migration v37 with SQLite/PostgreSQL parity). Candidate and operator reads fail closed, sentinel-rejected evidence records an unavailable outcome when a bound hypothesis exists, and prediction accuracy cannot gate Pareto selection or candidate status. Receipt: PR #600 exact head `0ccdbefa59e18b241cba7cb6f26f3d267608a9a9`; squash merge `ac2b2f640406ca766b0cd567c2782e426d8dad2b`.
 
 ## Invalidated Historical Receipts (Repair Required)
 

@@ -1153,7 +1153,7 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_packet_issues_prediction_contract(self):
+    def test_current_repository_packet_issues_ec3_lifecycle_budget_contract(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
@@ -1164,15 +1164,15 @@ class CheckpointTests(unittest.TestCase):
             next_document,
         )
         self.assertIn(
-            "| `PE7-HE-EC2-SENTINEL-CONFORMANCE-1` | `COMPLETE` | PR #597 ",
+            "| `PE7-HE-EC2-PREDICTION-OUTCOME-1` | `COMPLETE` | PR #600 ",
             status_document,
         )
-        self.assertIn("new additive schema / migration v37", next_document)
-        self.assertIn("v36 is accepted baseline and must not be modified or reused", next_document)
+        self.assertIn("lifecycle-cost ontology", next_document)
+        self.assertIn("No spend or runtime behavior change", next_document)
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
-        self.assertEqual(packet["packet_id"], "PE7-HE-EC2-PREDICTION-OUTCOME-1")
+        self.assertEqual(packet["packet_id"], "PE7-HE-EC3-CONTRACT-1")
         self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
         self.assertTrue(packet["checkpoint_allowed"])
         self.assertFalse(packet["execution_authorized"])
@@ -1180,7 +1180,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(capsule["packet_id"], packet["packet_id"])
         self.assertIn("cargo fmt --all -- --check", capsule["verification"])
         self.assertIn(
-            "cargo test -p engine --features pg-tests -- --test-threads=1",
+            "cargo test -p engine --lib ec3_lifecycle_budget -- --test-threads=1",
             capsule["verification"],
         )
         snapshot = checkout_snapshot(
@@ -1218,15 +1218,15 @@ class CheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-EC3-CONTRACT-1",
+            packet_id="PE7-HE-EC3-INSTRUMENTATION-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertFalse(extract["execution_authorized"])
         self.assertEqual(
-            extract["profile_id"], "PE7-HE-EC3-CONTRACT-1.v1"
+            extract["profile_id"], "PE7-HE-EC3-INSTRUMENTATION-1.v1"
         )
-        self.assertEqual(extract["worker_tier"], "T2")
+        self.assertEqual(extract["worker_tier"], "T1")
 
 
 
@@ -1667,12 +1667,12 @@ class AdversarialCheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-EC3-CONTRACT-1",
+            packet_id="PE7-HE-EC3-INSTRUMENTATION-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertEqual(extract["packet_state"], "BLOCKED_PREREQUISITE")
-        self.assertEqual(extract["worker_tier"], "T2")
+        self.assertEqual(extract["worker_tier"], "T1")
         self.assertFalse(extract["execution_authorized"])
 
 
