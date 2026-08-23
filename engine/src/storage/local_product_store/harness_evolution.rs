@@ -8,21 +8,22 @@ use crate::harness_evolution::{
     revalidate_workspace_content, seal_ec1_identity_lineage, seal_failure_pattern_evidence,
     seal_mutation_hypothesis_manifest, validate_candidate_for_admission,
     validate_ec1_candidate_binding, validate_ec1_identity_lineage,
-    validate_failure_pattern_evidence, validate_mutation_hypothesis_manifest, validate_proposal,
-    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding,
-    Ec1IdentityLineageRecord, EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal,
-    EvolutionReceipt, FailurePatternEvidenceV1, MutationHypothesisManifestV1,
+    validate_failure_pattern_evidence, validate_mutation_hypothesis_manifest,
+    validate_prediction_outcome_contract, validate_proposal, ActiveHarnessIdentity,
+    CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding, Ec1IdentityLineageRecord,
+    EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal, EvolutionReceipt,
+    FailurePatternEvidenceV1, MutationHypothesisManifestV1, PredictionOutcomeV1,
     ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION,
     RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
-    build_pareto_archive, build_sealed_vault, detect_holdout_label_tamper,
-    evaluate_candidate_from_workspace, holdout_body_contains_sensitive,
-    mediate_holdout_membership_read, redacted_eval_evidence, seal_ec2_holdout,
-    CandidateEvaluationBundle, Ec2AccessClass, Ec2HoldoutSeal, EqualBudgetContract, EvalReceipt,
-    ParetoArchiveEntry, SealedHoldoutVault, TaskFamilyManifest, ARCHIVE_SCHEMA_VERSION,
-    EVAL_RECEIPT_SCHEMA_VERSION, EVAL_SCHEMA_VERSION, MAX_SEALED_ENTRANTS, MIN_SEALED_ENTRANTS,
-    SEALED_SCHEMA_VERSION,
+    build_pareto_archive, build_sealed_vault, derive_ec2_prediction_outcome,
+    detect_holdout_label_tamper, evaluate_candidate_from_workspace,
+    holdout_body_contains_sensitive, mediate_holdout_membership_read, redacted_eval_evidence,
+    seal_ec2_holdout, CandidateEvaluationBundle, Ec2AccessClass, Ec2HoldoutSeal,
+    EqualBudgetContract, EvalReceipt, ParetoArchiveEntry, SealedHoldoutVault, TaskFamilyManifest,
+    ARCHIVE_SCHEMA_VERSION, EVAL_RECEIPT_SCHEMA_VERSION, EVAL_SCHEMA_VERSION, MAX_SEALED_ENTRANTS,
+    MIN_SEALED_ENTRANTS, SEALED_SCHEMA_VERSION,
 };
 use crate::harness_evolution_pr_ready::{
     finalize_pr_ready_bundle, redacted_pr_ready_evidence, PrReadyCandidateBundle, PrReadyReceipt,
@@ -1221,6 +1222,155 @@ impl LocalProductStore {
         })
     }
 
+    /// Persist one evaluator-derived prediction outcome from the store-owned evaluator path.
+    ///
+    /// This is deliberately private: caller-provided roles and actor strings cannot establish
+    /// evaluator authority. The active evaluator identity is read from LocalProductStore.
+    fn persist_ec2_prediction_outcome(
+        &self,
+        hypothesis: &MutationHypothesisManifestV1,
+        bundle: &CandidateEvaluationBundle,
+    ) -> Result<PredictionOutcomeV1, String> {
+        let active = self
+            .get_current_harness_evolution_active_identity()?
+            .ok_or_else(|| "ec2_prediction_evaluator: active evaluator is required".to_string())?;
+        if bundle.evaluator_identity_hash != active.evaluator_identity_hash {
+            return Err(
+                "ec2_prediction_evaluator: bundle does not bind the active evaluator".into(),
+            );
+        }
+        if crate::harness_evolution_eval::prediction_accuracy_is_selection_authority() {
+            return Err("ec2_prediction_authority: accuracy cannot gate selection".into());
+        }
+        let outcome = derive_ec2_prediction_outcome(hypothesis, bundle)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        if outcome.evaluator_identity_hash != bundle.evaluator_identity_hash {
+            return Err("ec2_prediction_evaluator: outcome evaluator must match bundle".into());
+        }
+        validate_prediction_outcome_contract(&outcome)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        let body_json = serde_json::to_string(&outcome).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec2_prediction_outcomes WHERE outcome_id=?1",
+                    params![outcome.outcome_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(existing_body) = existing {
+                if existing_body == body_json {
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return serde_json::from_str(&existing_body).map_err(|e| e.to_string());
+                }
+                return Err(format!(
+                    "ec2_prediction_immutable: {} already exists",
+                    outcome.outcome_id
+                ));
+            }
+            tx.execute(
+                "INSERT INTO harness_evolution_ec2_prediction_outcomes
+                    (outcome_id, hypothesis_manifest_digest, evaluation_digest, evaluator_identity_hash, outcome, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    outcome.outcome_id,
+                    outcome.hypothesis_manifest_digest,
+                    outcome.evaluation_digest,
+                    outcome.evaluator_identity_hash,
+                    outcome.outcome.as_str(),
+                    body_json,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &now,
+                &active.evaluator_identity_hash,
+                "harness_evolution.ec2_prediction_outcome",
+                &outcome.outcome_id,
+                &serde_json::json!({
+                    "outcome": outcome.outcome.as_str(),
+                    "evaluation_digest": outcome.evaluation_digest,
+                    "evaluator_identity_hash": active.evaluator_identity_hash,
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(outcome)
+        })
+    }
+
+    fn load_ec1_hypothesis_for_evaluation(
+        &self,
+        candidate: &EvolutionCandidate,
+        family_id: &str,
+    ) -> Result<Option<MutationHypothesisManifestV1>, String> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT binding.body_json, hypothesis.body_json
+                     FROM harness_evolution_ec1_candidate_bindings AS binding
+                     JOIN harness_evolution_ec1_hypotheses AS hypothesis
+                       ON hypothesis.manifest_id = binding.hypothesis_manifest_id
+                     WHERE binding.family_id=?1 AND binding.lineage_id=?2 AND binding.seed=?3",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = statement
+                .query_map(
+                    params![family_id, candidate.lineage_id, candidate.seed as i64],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .map_err(|e| e.to_string())?;
+            let mut matches = Vec::new();
+            for row in rows {
+                let (binding_body, hypothesis_body) = row.map_err(|e| e.to_string())?;
+                let binding: Ec1CandidateCausalBinding =
+                    serde_json::from_str(&binding_body).map_err(|e| e.to_string())?;
+                let hypothesis: MutationHypothesisManifestV1 =
+                    serde_json::from_str(&hypothesis_body).map_err(|e| e.to_string())?;
+                validate_ec1_candidate_binding(&binding).map_err(|e| e.message)?;
+                validate_mutation_hypothesis_manifest(&hypothesis).map_err(|e| e.message)?;
+                if binding.hypothesis_manifest_id == hypothesis.manifest_id
+                    && binding.candidate_delta_digest == candidate.content_hash
+                    && hypothesis.candidate_delta_digest == candidate.content_hash
+                {
+                    matches.push(hypothesis);
+                }
+            }
+            match matches.len() {
+                0 => Ok(None),
+                1 => Ok(matches.pop()),
+                _ => Err(
+                    "ec2_prediction_binding_ambiguous: candidate has multiple hypotheses".into(),
+                ),
+            }
+        })
+    }
+
+    pub fn get_ec2_prediction_outcome(
+        &self,
+        outcome_id: &str,
+    ) -> Result<Option<PredictionOutcomeV1>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec2_prediction_outcomes WHERE outcome_id=?1",
+                    params![outcome_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
+                None => Ok(None),
+            }
+        })
+    }
+
     /// Register an evaluator-owned task family (trusted configuration owner).
     pub fn register_harness_evolution_task_family(
         &self,
@@ -1597,6 +1747,9 @@ impl LocalProductStore {
             budget.seed,
             &created_at,
         )?;
+        if let Some(hypothesis) = self.load_ec1_hypothesis_for_evaluation(&candidate, family_id)? {
+            self.persist_ec2_prediction_outcome(&hypothesis, &bundle)?;
+        }
         Ok((bundle, archive, receipt))
     }
 
@@ -3068,5 +3221,86 @@ mod tests {
             .unwrap()
         };
         assert!(audits >= 2);
+    }
+
+    #[test]
+    fn persists_evaluator_owned_prediction_outcome_with_replay_and_restart() {
+        use crate::harness_evolution::{
+            seal_mutation_hypothesis_manifest, MutationHypothesisManifestV1,
+            MUTATION_HYPOTHESIS_MANIFEST_SCHEMA,
+        };
+        use crate::harness_evolution_eval::{
+            actual_improvement_digest, actual_regression_digest, evaluate_candidate_fixture,
+            sample_budget, sample_task_family, summarize_prediction_outcomes,
+        };
+        let env = LabEnvGuard::enable();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec2-prediction-outcome.db");
+        let store = LocalProductStore::new(&db).unwrap();
+        let active = sample_active_identity();
+        store
+            .register_harness_evolution_active_identity(&active, "operator-test")
+            .unwrap();
+        let family = sample_task_family("fam-prediction-store");
+        let vault = crate::harness_evolution_eval::build_sealed_vault(&family).unwrap();
+        let bundle = evaluate_candidate_fixture(
+            "candidate-store",
+            "lineage-store",
+            &active.active_version_id,
+            &active.active_version_hash,
+            &active.evaluator_identity_hash,
+            &sample_budget(23),
+            &family,
+            &vault,
+            false,
+            "2026-08-23T00:00:00Z",
+        )
+        .unwrap();
+        let hypothesis = seal_mutation_hypothesis_manifest(MutationHypothesisManifestV1 {
+            schema_version: MUTATION_HYPOTHESIS_MANIFEST_SCHEMA.to_string(),
+            manifest_id: String::new(),
+            lineage_id: "lineage-store".into(),
+            failure_evidence_id: "evidence-store".into(),
+            proposal_body_sha256: sha256_hex("proposal-store"),
+            candidate_delta_digest: sha256_hex("delta-store"),
+            predicted_improvement_digest: actual_improvement_digest(&bundle),
+            predicted_regression_digest: actual_regression_digest(&bundle),
+            invariant_digest: sha256_hex("invariant-store"),
+            evaluation_plan_digest: sha256_hex("plan-store"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+
+        let mut impersonating_bundle = bundle.clone();
+        impersonating_bundle.evaluator_identity_hash = "c".repeat(64);
+        let rejected = store
+            .persist_ec2_prediction_outcome(&hypothesis, &impersonating_bundle)
+            .unwrap_err();
+        assert!(rejected.contains("active evaluator"), "{rejected}");
+
+        let stored = store
+            .persist_ec2_prediction_outcome(&hypothesis, &bundle)
+            .unwrap();
+        assert_eq!(
+            stored.outcome,
+            crate::harness_evolution::PredictionOutcomeKind::Correct
+        );
+        let replay = store
+            .persist_ec2_prediction_outcome(&hypothesis, &bundle)
+            .unwrap();
+        assert_eq!(replay.record_sha256, stored.record_sha256);
+        drop(store);
+
+        let reopened = LocalProductStore::new(&db).unwrap();
+        let loaded = reopened
+            .get_ec2_prediction_outcome(&stored.outcome_id)
+            .unwrap()
+            .expect("prediction outcome survives restart");
+        assert_eq!(loaded.outcome_id, stored.outcome_id);
+        assert_eq!(loaded.record_sha256, stored.record_sha256);
+        let summary = summarize_prediction_outcomes(&[loaded]);
+        assert_eq!(summary.correct, 1);
+        assert!(!summary.accuracy_is_selection_authority);
+        drop(env);
     }
 }

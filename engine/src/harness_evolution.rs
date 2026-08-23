@@ -663,6 +663,24 @@ pub fn validate_prediction_outcome_contract(
     Ok(())
 }
 
+pub fn seal_prediction_outcome(
+    mut outcome: PredictionOutcomeV1,
+) -> Result<PredictionOutcomeV1, EvolutionAdmissionError> {
+    outcome.schema_version = PREDICTION_OUTCOME_SCHEMA.to_string();
+    outcome.outcome_id = derive_prediction_outcome_id(
+        &outcome.hypothesis_manifest_digest,
+        &outcome.evaluation_digest,
+    );
+    let mut value = serde_json::to_value(&outcome)
+        .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    outcome.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_prediction_outcome_contract(&outcome)?;
+    Ok(outcome)
+}
+
 pub fn validate_mutation_family_registry(
     registry: &MutationFamilyRegistry,
 ) -> Result<(), EvolutionAdmissionError> {

@@ -639,6 +639,58 @@ fn apply_pg_v36_migration(client: &mut postgres::Client) -> Result<(), String> {
     tx.commit().map_err(|e| e.to_string())
 }
 
+fn apply_pg_v37_migration(client: &mut postgres::Client) -> Result<(), String> {
+    let version = super::super::migrations::V37_SCHEMA_VERSION;
+    let mut tx = client.transaction().map_err(|e| format!("m37 tx: {e}"))?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(hashtext(current_database()), hashtext(current_schema()))",
+        &[],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.batch_execute(schema::EC2_PREDICTION_OUTCOME_DDL)
+        .map_err(|e| format!("m37 prediction outcome: {e}"))?;
+    tx.execute(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&version],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+fn validate_pg_v37_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    let version = client
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+        .get::<_, i64>(0);
+    if version != super::super::migrations::V37_SCHEMA_VERSION {
+        return Err(format!("PostgreSQL v37 schema version mismatch: {version}"));
+    }
+    for table in super::super::migrations::V37_TABLES {
+        if !pg_table_present(client, table)? {
+            return Err(format!("PostgreSQL v37 schema missing table {table}"));
+        }
+    }
+    for index in super::super::migrations::V37_INDEXES {
+        let present = client
+            .query_one(
+                "SELECT EXISTS (
+                    SELECT 1 FROM pg_indexes
+                    WHERE schemaname=current_schema() AND indexname=$1
+                 )",
+                &[&index],
+            )
+            .map_err(|e| e.to_string())?
+            .get::<_, bool>(0);
+        if !present {
+            return Err(format!("PostgreSQL v37 schema missing index {index}"));
+        }
+    }
+    validate_pg_v36_schema(client)
+}
+
 fn repair_pg_v36_delegated_plan_owner(
     client: &mut impl postgres::GenericClient,
 ) -> Result<(), String> {
@@ -2575,6 +2627,10 @@ impl LocalProductStore {
                     apply_pg_v36_migration(client)?;
                     continue;
                 }
+                if migration.version == 37 {
+                    apply_pg_v37_migration(client)?;
+                    continue;
+                }
                 if migration.version <= current {
                     continue;
                 }
@@ -2683,7 +2739,7 @@ impl LocalProductStore {
                 }
             }
 
-            validate_pg_v36_schema(client)?;
+            validate_pg_v37_schema(client)?;
 
             // Seed the scheduler_heartbeat singleton row.
             client

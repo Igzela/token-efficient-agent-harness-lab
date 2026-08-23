@@ -23,6 +23,16 @@ fn budget() -> RecursiveBudget {
     }
 }
 
+fn establish_v36_fixture(store: &LocalProductStore) {
+    let connection = rusqlite::Connection::open(store.db_path()).expect("open sqlite fixture");
+    connection
+        .execute_batch(
+            "DROP TABLE harness_evolution_ec2_prediction_outcomes;
+             PRAGMA user_version = 36;",
+        )
+        .expect("establish v36 fixture");
+}
+
 fn bind_test_workflow(store: &LocalProductStore, tree: &mut RecursiveTree) {
     let root_node_id = tree.root_node_id.clone();
     tree.bind_root_identity(
@@ -117,6 +127,7 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     // Peel delegated autonomy (v36), workspace preparation (v35), RWE (v34), managed
     // acceptance (v33/v32), terminal evidence (v31), product-task (v30),
     // then PR_READY/evolution so v26 recursive rollback can be attempted.
+    establish_v36_fixture(&occupied);
     occupied
         .rollback_v36_to_v35("test", true)
         .expect("empty delegated autonomy rollback");
@@ -155,6 +166,7 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
 
     let empty_path = tempfile::NamedTempFile::new().expect("path");
     let empty = LocalProductStore::new(empty_path.path()).expect("store");
+    establish_v36_fixture(&empty);
     empty
         .rollback_v36_to_v35("test", true)
         .expect("rollback v36");
@@ -191,5 +203,5 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     assert_eq!(empty.schema_version().expect("version"), 25);
     drop(empty);
     let reapplied = LocalProductStore::new(empty_path.path()).expect("reopen");
-    assert_eq!(reapplied.schema_version().expect("version"), 36);
+    assert_eq!(reapplied.schema_version().expect("version"), 37);
 }
