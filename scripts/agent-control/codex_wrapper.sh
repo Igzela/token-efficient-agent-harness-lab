@@ -12,7 +12,7 @@ OUTPUT_DIR="${3:?Missing output dir}"
 WORKSPACE="${4:-$PWD}"
 
 case "$WORKER_TYPE" in
-  implement|ci-repair|review) OPENCODE_MODEL="opencode/deepseek-v4-flash-free" ;;
+  implement|ci-repair|review) OPENCODE_MODEL="deepseek/deepseek-v4-flash" ;;
   *)
     mkdir -p "$OUTPUT_DIR"
     printf '%s\n' '{"kind":"agent-orchestrator-failure","reason":"unsupported_worker_type"}' > "$OUTPUT_DIR/failure_reason.json"
