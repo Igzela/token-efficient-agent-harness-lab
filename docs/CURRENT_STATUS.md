@@ -94,6 +94,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-HE-EC1-MUTATION-REGISTRY-1` | `COMPLETE` | PR #594 exact head `b3199736d85312083c45a3522211ae086f5fe756`; squash merge `b970226181957de98859f26f03db3bf101b1f8a0`; exact-head review comments `5349266593` and `5349266718`; canonical workflow `32313718374` |
 | `PE7-HE-EC2-CONTRACT-1` | `COMPLETE` | PR #595 exact head `e0585701dec206fca5645299d65cbb3341257008`; squash merge `f996ded631f12f74f42528c70e76ccf0f040bdfd`; exact-head review comments `5349652629` and `5349652752`; canonical workflow `32317253205` |
 | `PE7-HE-EC2-HOLDOUT-SEAL-1` | `COMPLETE` | PR #596 exact head `cffd49edfc36fe602cc311f025367cadb15a425a`; squash merge `5c367b85d79f680b5f76b7aa4f2f1656c0a460ae`; exact-head review comments `5349963606` and `5349963725`; canonical workflow `32320235684` |
+| `PE7-HE-EC2-SENTINEL-CONFORMANCE-1` | `COMPLETE` | PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -384,6 +385,10 @@ Bounded generator adapters bind each candidate to the accepted mutation-family r
 ### HE EC2 holdout seal (`PE7-HE-EC2-HOLDOUT-SEAL-1`)
 
 Sealed holdout membership is hash-only under `LocalProductStore` table `harness_evolution_ec2_holdout_seals`. Candidate and operator reads fail closed. Evaluator/reviewer see hashes. Rotation inserts a later epoch; prior vaults are derived `INVALIDATED`. No candidate run. Receipt: PR #596 exact head `cffd49edfc36fe602cc311f025367cadb15a425a`; squash merge `5c367b85d79f680b5f76b7aa4f2f1656c0a460ae`.
+
+### HE EC2 sentinel conformance (`PE7-HE-EC2-SENTINEL-CONFORMANCE-1`)
+
+Contamination, evaluator-gaming, and safety sentinel observations now fail closed before Pareto selection and retain rejected-candidate evidence. No ENABLE, Level-1, or second evaluator. Receipt: PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`.
 
 ## Invalidated Historical Receipts (Repair Required)
 
