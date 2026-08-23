@@ -1153,40 +1153,31 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_packet_binds_safe_live_capsule(self):
+    def test_current_repository_packet_requires_prediction_contract_promotion(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         status_document = (root / "docs/CURRENT_STATUS.md").read_text(encoding="utf-8")
         self.assertIn(
-            "No Provider call, credential read/output/persistence, target write, "
+            "No Provider call, credential-value read/output/persistence, target write, "
             "EFFECT/T3 action, auto-merge, or second runtime/store/authority owner",
             next_document,
+        )
+        self.assertIn(
+            "| `PE7-HE-EC2-SENTINEL-CONFORMANCE-1` | `COMPLETE` | PR #597 ",
+            status_document,
         )
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
-        self.assertIn(packet["state"], {"READY_FOR_EXECUTION", "T3_REQUIRED"})
-        self.assertEqual(packet["checkpoint_allowed"], packet["state"] in session_context.EXECUTABLE_PACKET_STATES)
-        capsule = session_context.current_dispatch_capsule(next_document, packet)
-        self.assertEqual(capsule["packet_id"], packet["packet_id"])
-        self.assertEqual(capsule["packet_state"], packet["state"])
-        self.assertEqual(capsule["dispatch_lane"], "provider_free_repository_maintenance")
-        self.assertEqual(capsule["external_effect_limit"], 0)
-        self.assertIs(capsule["authority_consumption_allowed"], False)
-        self.assertIs(capsule["secret_values_allowed"], False)
-        self.assertIs(capsule["private_paths_allowed"], False)
-        self.assertEqual(
-            capsule["plan_lane_state"], "plan_lane_active"
-        )
-        self.assertEqual(capsule["allowed_paths"], packet["allowed_paths"])
-        self.assertTrue(capsule["allowed_paths"])
-        self.assertNotIn("tests/", capsule["allowed_paths"])
-        self.assertTrue(capsule["verification"])
-        self.assertTrue(capsule["forbidden_next_actions"])
-        self.assertEqual(
-            capsule["forbidden_next_actions"], packet["forbidden_next_actions"]
-        )
+        self.assertEqual(packet["packet_id"], "PE7-HE-ROUTE-RECOVERY-1")
+        self.assertEqual(packet["state"], "DECISION_REQUIRED")
+        self.assertFalse(packet["checkpoint_allowed"])
+        self.assertFalse(packet["execution_authorized"])
+        with self.assertRaisesRegex(
+            session_context.SessionContextError, "weak_dispatch_missing_or_duplicated"
+        ):
+            session_context.current_dispatch_capsule(next_document, packet)
         snapshot = checkout_snapshot(
             head_sha=MAIN,
             branch="main",
@@ -1201,34 +1192,19 @@ class CheckpointTests(unittest.TestCase):
             document_source="accepted",
             document_source_binding=MAIN,
             packet=packet,
-            dispatch_capsule=capsule,
+            dispatch_capsule=None,
             snapshot=snapshot,
             checkpoint=None,
         )
-        if packet["state"] == "READY_FOR_EXECUTION":
-            self.assertEqual(entry["context_mode"], "FRESH_PACKET")
-            self.assertEqual(entry["resume_disposition"], "RESUME")
-            self.assertEqual(entry["resume_reason"], "clean_accepted_baseline")
-            self.assertTrue(entry["checkpoint_allowed"])
-        else:
-            self.assertEqual(entry["context_mode"], "STOP")
-            self.assertEqual(entry["resume_disposition"], "DECISION_REQUIRED")
-            self.assertEqual(entry["resume_reason"], "packet_not_executable")
-            self.assertFalse(entry["checkpoint_allowed"])
-        self.assertIsNotNone(entry["dispatch_capsule"])
-        self.assertEqual(
-            entry["dispatch_capsule"]["packet_id"],
-            packet["packet_id"],
-        )
+        self.assertEqual(entry["context_mode"], "STOP")
+        self.assertEqual(entry["resume_disposition"], "DECISION_REQUIRED")
+        self.assertEqual(entry["resume_reason"], "packet_not_executable")
+        self.assertFalse(entry["checkpoint_allowed"])
+        self.assertIsNone(entry["dispatch_capsule"])
         self.assertFalse(entry["execution_authorized"])
-        if entry["checkpoint_allowed"]:
-            self.assertIsNotNone(entry["checkpoint_write_commands"])
-        else:
-            self.assertIsNone(entry["checkpoint_write_commands"])
-        self.assertIsNotNone(entry["verification_contract_sha256"])
-        self.assertEqual(
-            entry["verification_commands"], list(capsule["verification"])
-        )
+        self.assertIsNone(entry["checkpoint_write_commands"])
+        self.assertIsNone(entry["verification_contract_sha256"])
+        self.assertEqual(entry["verification_commands"], [])
         self.assertLessEqual(len(json.dumps(entry).encode("utf-8")), 16 * 1024)
         self.assertEqual(session_context.SessionEntry.from_wire(entry).to_wire(), entry)
 
@@ -1237,13 +1213,13 @@ class CheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-EC2-SENTINEL-CONFORMANCE-1",
+            packet_id="PE7-HE-EC2-PREDICTION-OUTCOME-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertFalse(extract["execution_authorized"])
         self.assertEqual(
-            extract["profile_id"], "PE7-HE-EC2-SENTINEL-CONFORMANCE-1.v1"
+            extract["profile_id"], "PE7-HE-EC2-PREDICTION-OUTCOME-1.v1"
         )
         self.assertEqual(extract["worker_tier"], "T1")
 
@@ -1686,7 +1662,7 @@ class AdversarialCheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-EC2-SENTINEL-CONFORMANCE-1",
+            packet_id="PE7-HE-EC2-PREDICTION-OUTCOME-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
