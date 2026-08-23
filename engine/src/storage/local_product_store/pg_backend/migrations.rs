@@ -688,7 +688,7 @@ fn validate_pg_v37_schema(client: &mut impl postgres::GenericClient) -> Result<(
             return Err(format!("PostgreSQL v37 schema missing index {index}"));
         }
     }
-    validate_pg_v36_schema(client)
+    validate_pg_v36_structure(client)
 }
 
 fn repair_pg_v36_delegated_plan_owner(
@@ -775,6 +775,10 @@ fn validate_pg_v36_schema(client: &mut impl postgres::GenericClient) -> Result<(
     if version != super::super::migrations::V36_SCHEMA_VERSION {
         return Err(format!("PostgreSQL v36 schema version mismatch: {version}"));
     }
+    validate_pg_v36_structure(client)
+}
+
+fn validate_pg_v36_structure(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     for table in super::super::migrations::V36_TABLES {
         if !pg_table_present(client, table)? {
             return Err(format!("PostgreSQL v36 schema missing table {table}"));
@@ -3152,6 +3156,26 @@ mod tests {
                 _cleanup: cleanup,
             })
         }
+
+        /// Build an explicit pre-v37 fixture for rollback tests. Production
+        /// never downgrades v37 implicitly; the v36 rollback contract is
+        /// exercised only after removing the v37 prediction-outcome state.
+        fn remove_v37_state(&self) {
+            self.store
+                .with_pg_conn(|client| {
+                    client
+                        .batch_execute(
+                            "DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
+                             DELETE FROM schema_migrations WHERE version = 37;",
+                        )
+                        .map_err(|error| error.to_string())
+                })
+                .expect("remove v37 state for rollback fixture");
+            assert_eq!(self.store.schema_version().unwrap(), 36);
+            self.store
+                .with_pg_conn(validate_pg_v36_schema)
+                .expect("the explicit v36 PostgreSQL fixture must validate");
+        }
     }
 
     #[cfg(feature = "pg-tests")]
@@ -3187,6 +3211,18 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     fn prepare_v25_rollback_fixture(store: &LocalProductStore) {
+        // This helper exercises the pre-v37 rollback chain. Keep the fixture
+        // explicit now that normal PostgreSQL startup migrates to v37.
+        store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(
+                        "DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
+                         DELETE FROM schema_migrations WHERE version = 37;",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
         assert_eq!(store.schema_version().unwrap(), 36);
         store
             .rollback_v36_to_v35("migration-test-setup", true)
@@ -3240,6 +3276,7 @@ mod tests {
         let Some(fixture) = IsolatedPgStore::from_environment() else {
             return;
         };
+        fixture.remove_v37_state();
         let store = &fixture.store;
         store
             .rollback_v36_to_v35("migration-test", true)
@@ -3290,6 +3327,7 @@ mod tests {
         let Some(fixture) = IsolatedPgStore::from_environment() else {
             return;
         };
+        fixture.remove_v37_state();
         let store = &fixture.store;
 
         store
@@ -3310,6 +3348,7 @@ mod tests {
         let Some(fixture) = IsolatedPgStore::from_environment() else {
             return;
         };
+        fixture.remove_v37_state();
         let store = &fixture.store;
         let body = serde_json::json!({
             "schema_version": "managed_delegation_contract.v1",
@@ -3597,6 +3636,7 @@ mod tests {
         let Some(fixture) = IsolatedPgStore::from_environment() else {
             return;
         };
+        fixture.remove_v37_state();
         let store = &fixture.store;
         store
             .rollback_v36_to_v35("migration-test", true)
