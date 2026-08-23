@@ -616,7 +616,7 @@ fn apply_pg_v36_migration(client: &mut postgres::Client) -> Result<(), String> {
         tx.batch_execute(schema::EC2_HOLDOUT_SEAL_DDL)
             .map_err(|e| format!("m36 ec2 holdout seal repair: {e}"))?;
         repair_pg_v36_delegated_plan_owner(&mut tx)?;
-        validate_pg_v36_schema(&mut tx)?;
+        validate_pg_v36_structure(&mut tx)?;
         tx.commit().map_err(|e| e.to_string())?;
         return Ok(());
     }
@@ -764,6 +764,7 @@ fn validate_pg_v35_structure(client: &mut impl postgres::GenericClient) -> Resul
     validate_pg_v34_tables(client)
 }
 
+#[cfg(test)]
 fn validate_pg_v36_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     let version = client
         .query_one(
