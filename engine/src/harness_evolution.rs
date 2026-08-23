@@ -261,6 +261,10 @@ pub struct PredictionOutcomeV1 {
     pub hypothesis_manifest_digest: String,
     pub evaluation_digest: String,
     pub evaluator_identity_hash: String,
+    /// Evaluator-owned digest of development/validation counterevidence. Older
+    /// v1 rows may omit this field; every newly derived row records it.
+    #[serde(default)]
+    pub counterevidence_digest: String,
     pub outcome: PredictionOutcomeKind,
     pub record_sha256: String,
 }
@@ -644,6 +648,9 @@ pub fn validate_prediction_outcome_contract(
     validate_sha256_hex(&outcome.hypothesis_manifest_digest)?;
     validate_sha256_hex(&outcome.evaluation_digest)?;
     validate_sha256_hex(&outcome.evaluator_identity_hash)?;
+    if !outcome.counterevidence_digest.is_empty() {
+        validate_sha256_hex(&outcome.counterevidence_digest)?;
+    }
     require_derived_id(
         &outcome.outcome_id,
         &derive_prediction_outcome_id(
@@ -1745,6 +1752,7 @@ mod tests {
             hypothesis_manifest_digest: hyp,
             evaluation_digest: evaluation,
             evaluator_identity_hash: digest("evaluator"),
+            counterevidence_digest: digest("counterevidence"),
             outcome: PredictionOutcomeKind::Unavailable,
             record_sha256: String::new(),
         })

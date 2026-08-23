@@ -140,71 +140,106 @@ pub fn prediction_accuracy_is_selection_authority() -> bool {
 }
 
 pub const NONE_REGRESSION_DIGEST_SEED: &str = "none";
+pub const NONE_COUNTEREVIDENCE_DIGEST_SEED: &str = "none-counterevidence";
+
+fn participates_in_prediction(baseline: &BaselineEvaluation) -> bool {
+    matches!(
+        baseline.split,
+        TaskSplit::Development | TaskSplit::Validation
+    ) && !baseline.used_sealed_holdout
+}
+
+fn metric_evidence(baseline: &BaselineEvaluation) -> String {
+    format!(
+        "baseline={}|seed={}|split={:?}|sealed={}|quality={:.8}|token_cost={:.8}|latency_ms={:.8}|robustness={:.8}|behavioral_diversity={:.8}|calls={}|tokens={}|incomplete={}|gate={}",
+        baseline.baseline.as_str(),
+        baseline.seed,
+        baseline.split,
+        if baseline.used_sealed_holdout { 1 } else { 0 },
+        baseline.metrics.quality,
+        baseline.metrics.token_cost,
+        baseline.metrics.latency_ms,
+        baseline.metrics.robustness,
+        baseline.metrics.behavioral_diversity,
+        baseline.usage.calls,
+        baseline.usage.tokens,
+        if baseline.usage.incomplete { 1 } else { 0 },
+        baseline.hard_gate.as_str(),
+    )
+}
 
 pub fn actual_improvement_digest(bundle: &CandidateEvaluationBundle) -> String {
     let validation: Vec<String> = bundle
         .baselines
         .iter()
-        .filter(|baseline| matches!(baseline.split, TaskSplit::Validation))
-        .map(|baseline| {
-            format!(
-                "{}|{}|{:.4}|{:.4}|{:.4}|{}",
-                baseline.baseline.as_str(),
-                if baseline.used_sealed_holdout { 1 } else { 0 },
-                baseline.metrics.quality,
-                baseline.metrics.token_cost,
-                baseline.metrics.latency_ms,
-                baseline.hard_gate.as_str()
-            )
+        .filter(|baseline| {
+            matches!(baseline.split, TaskSplit::Validation) && !baseline.used_sealed_holdout
         })
+        .map(metric_evidence)
         .collect();
     sha256_hex(&format!(
-        "ec2-actual-improvement.v1|candidate={}|lineage={}|family={}|active={}|evaluator={}|validation={}",
+        "ec2-actual-improvement.v2|candidate={}|lineage={}|family={}|active={}|evaluator={}|validation_missing={}|validation={}",
         bundle.candidate_id,
         bundle.lineage_id,
         bundle.family_id,
         bundle.active_version_id,
         bundle.evaluator_identity_hash,
+        if validation.is_empty() { 1 } else { 0 },
         validation.join(";")
     ))
 }
 
 pub fn actual_regression_digest(bundle: &CandidateEvaluationBundle) -> String {
-    // Sealed holdout execution is never prediction evidence. Only development and
-    // validation evidence may participate in the evaluator-owned prediction join.
     let regressions: Vec<String> = bundle
         .baselines
         .iter()
-        .filter(|baseline| {
-            matches!(
-                baseline.split,
-                TaskSplit::Development | TaskSplit::Validation
-            ) && matches!(
-                baseline.hard_gate,
-                HardGateResult::FailedSafety
-                    | HardGateResult::FailedIntegrity
-                    | HardGateResult::FailedCorrectness
-            )
-        })
-        .map(|baseline| {
-            format!(
-                "{}|{}",
-                baseline.baseline.as_str(),
-                baseline.hard_gate.as_str()
-            )
-        })
+        .filter(|baseline| participates_in_prediction(baseline) && !baseline.hard_gate.is_pass())
+        .map(metric_evidence)
         .collect();
     if regressions.is_empty() {
         sha256_hex(NONE_REGRESSION_DIGEST_SEED)
     } else {
         sha256_hex(&format!(
-            "ec2-actual-regression.v1|candidate={}|lineage={}|family={}|active={}|evaluator={}|regressions={}",
+            "ec2-actual-regression.v2|candidate={}|lineage={}|family={}|active={}|evaluator={}|regressions={}",
             bundle.candidate_id,
             bundle.lineage_id,
             bundle.family_id,
             bundle.active_version_id,
             bundle.evaluator_identity_hash,
             regressions.join(";")
+        ))
+    }
+}
+
+/// Hash all evaluator-owned counterevidence, including non-safety hard-gate
+/// failures and metric/usage missingness. Sealed execution is excluded.
+pub fn actual_counterevidence_digest(bundle: &CandidateEvaluationBundle) -> String {
+    let counterevidence: Vec<String> = bundle
+        .baselines
+        .iter()
+        .filter(|baseline| {
+            participates_in_prediction(baseline)
+                && (!baseline.hard_gate.is_pass()
+                    || baseline.usage.incomplete
+                    || !baseline.metrics.quality.is_finite()
+                    || !baseline.metrics.token_cost.is_finite()
+                    || !baseline.metrics.latency_ms.is_finite()
+                    || !baseline.metrics.robustness.is_finite()
+                    || !baseline.metrics.behavioral_diversity.is_finite())
+        })
+        .map(metric_evidence)
+        .collect();
+    if counterevidence.is_empty() {
+        sha256_hex(NONE_COUNTEREVIDENCE_DIGEST_SEED)
+    } else {
+        sha256_hex(&format!(
+            "ec2-counterevidence.v1|candidate={}|lineage={}|family={}|active={}|evaluator={}|evidence={}",
+            bundle.candidate_id,
+            bundle.lineage_id,
+            bundle.family_id,
+            bundle.active_version_id,
+            bundle.evaluator_identity_hash,
+            counterevidence.join(";"),
         ))
     }
 }
@@ -233,12 +268,27 @@ pub fn bound_prediction_digest(
 }
 
 pub fn evaluation_is_incomplete(bundle: &CandidateEvaluationBundle) -> bool {
+    let usable_validation = bundle.baselines.iter().any(|baseline| {
+        matches!(baseline.split, TaskSplit::Validation) && !baseline.used_sealed_holdout
+    });
     bundle.schema_version != EVAL_SCHEMA_VERSION
+        || bundle.candidate_id.trim().is_empty()
+        || bundle.lineage_id.trim().is_empty()
+        || bundle.family_id.trim().is_empty()
+        || bundle.active_version_id.trim().is_empty()
+        || bundle.active_version_hash.trim().is_empty()
+        || bundle.evaluator_identity_hash.trim().is_empty()
         || bundle.baselines.is_empty()
         || bundle
             .baselines
             .iter()
-            .any(|baseline| baseline.usage.incomplete)
+            .filter(|baseline| participates_in_prediction(baseline))
+            .any(|baseline| {
+                baseline.usage.incomplete
+                    || matches!(baseline.hard_gate, HardGateResult::FailedIncompleteEvidence)
+            })
+        || !usable_validation
+        || bundle.sealed_feedback_into_mutation
         || bundle.bundle_sha256.trim().is_empty()
         || bundle_content_hash(bundle)
             .map(|digest| digest != bundle.bundle_sha256)
@@ -269,20 +319,15 @@ pub fn derive_ec2_prediction_outcome_with_invalidation(
     validate_sha256_hex(&bundle.evaluator_identity_hash)?;
     let improvement = actual_improvement_digest(bundle);
     let regression = actual_regression_digest(bundle);
+    let counterevidence = actual_counterevidence_digest(bundle);
     let expected_improvement =
         bound_prediction_digest(hypothesis, bundle, "improvement", &improvement);
     let expected_regression =
         bound_prediction_digest(hypothesis, bundle, "regression", &regression);
-    let expected_none_regression = bound_prediction_digest(
-        hypothesis,
-        bundle,
-        "regression",
-        &sha256_hex(NONE_REGRESSION_DIGEST_SEED),
-    );
     let improvement_match = hypothesis.predicted_improvement_digest == expected_improvement;
     let regression_match = hypothesis.predicted_regression_digest == expected_regression;
-    let unpredicted_regression = regression != sha256_hex(NONE_REGRESSION_DIGEST_SEED)
-        && hypothesis.predicted_regression_digest == expected_none_regression;
+    let counterevidence_present = counterevidence != sha256_hex(NONE_COUNTEREVIDENCE_DIGEST_SEED);
+    let unpredicted_regression = counterevidence_present && !regression_match;
     let kind = if invalidated || evaluation_is_incomplete(bundle) {
         PredictionOutcomeKind::Unavailable
     } else if unpredicted_regression {
@@ -300,6 +345,7 @@ pub fn derive_ec2_prediction_outcome_with_invalidation(
         hypothesis_manifest_digest: hypothesis.record_sha256.clone(),
         evaluation_digest: bundle.bundle_sha256.clone(),
         evaluator_identity_hash: bundle.evaluator_identity_hash.clone(),
+        counterevidence_digest: counterevidence,
         outcome: kind,
         record_sha256: String::new(),
     })
@@ -2388,6 +2434,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sealed_ignored.outcome, PredictionOutcomeKind::Correct);
+
+        // Incomplete sealed evidence is also outside the prediction join. It
+        // must not turn an otherwise complete development/validation outcome
+        // into Unavailable.
+        let mut sealed_incomplete = sealed_only.clone();
+        sealed_incomplete
+            .baselines
+            .iter_mut()
+            .find(|baseline| matches!(baseline.split, TaskSplit::SealedHoldout))
+            .expect("fixture includes sealed evidence")
+            .usage
+            .incomplete = true;
+        sealed_incomplete.bundle_sha256 = bundle_content_hash(&sealed_incomplete).unwrap();
+        let sealed_incomplete_outcome = derive_ec2_prediction_outcome(
+            &hypothesis(
+                bound_prediction_digest(
+                    &sealed_context,
+                    &sealed_incomplete,
+                    "improvement",
+                    &actual_improvement_digest(&sealed_incomplete),
+                ),
+                bound_prediction_digest(
+                    &sealed_context,
+                    &sealed_incomplete,
+                    "regression",
+                    &actual_regression_digest(&sealed_incomplete),
+                ),
+            ),
+            &sealed_incomplete,
+        )
+        .unwrap();
+        assert_eq!(
+            sealed_incomplete_outcome.outcome,
+            PredictionOutcomeKind::Correct
+        );
 
         let incorrect = derive_ec2_prediction_outcome(
             &hypothesis(
