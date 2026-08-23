@@ -2191,6 +2191,17 @@ mod tests {
             "ec3_source_untrusted"
         );
 
+        let mut unavailable_omitted = sample_ec3_lifecycle_budget_contract();
+        unavailable_omitted.phase_policies[0]
+            .source_semantics
+            .retain(|source| *source != CostTrustSource::Unavailable);
+        assert_eq!(
+            seal_ec3_lifecycle_budget_contract(unavailable_omitted)
+                .unwrap_err()
+                .code,
+            "ec3_source_semantics_incomplete"
+        );
+
         let mut missing = sample_ec3_lifecycle_budget_contract();
         missing.phase_policies[0].incomplete_cost_disposition =
             IncompleteCostDisposition::TreatAsZero;
