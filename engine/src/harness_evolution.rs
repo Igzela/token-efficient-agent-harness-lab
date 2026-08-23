@@ -261,6 +261,10 @@ pub struct PredictionOutcomeV1 {
     pub hypothesis_manifest_digest: String,
     pub evaluation_digest: String,
     pub evaluator_identity_hash: String,
+    /// Evaluator-owned digest of development/validation counterevidence. Older
+    /// v1 rows may omit this field; every newly derived row records it.
+    #[serde(default)]
+    pub counterevidence_digest: String,
     pub outcome: PredictionOutcomeKind,
     pub record_sha256: String,
 }
@@ -644,6 +648,9 @@ pub fn validate_prediction_outcome_contract(
     validate_sha256_hex(&outcome.hypothesis_manifest_digest)?;
     validate_sha256_hex(&outcome.evaluation_digest)?;
     validate_sha256_hex(&outcome.evaluator_identity_hash)?;
+    if !outcome.counterevidence_digest.is_empty() {
+        validate_sha256_hex(&outcome.counterevidence_digest)?;
+    }
     require_derived_id(
         &outcome.outcome_id,
         &derive_prediction_outcome_id(
@@ -661,6 +668,24 @@ pub fn validate_prediction_outcome_contract(
         .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error.to_string()))?;
     require_record_sha256(&value, &outcome.record_sha256)?;
     Ok(())
+}
+
+pub fn seal_prediction_outcome(
+    mut outcome: PredictionOutcomeV1,
+) -> Result<PredictionOutcomeV1, EvolutionAdmissionError> {
+    outcome.schema_version = PREDICTION_OUTCOME_SCHEMA.to_string();
+    outcome.outcome_id = derive_prediction_outcome_id(
+        &outcome.hypothesis_manifest_digest,
+        &outcome.evaluation_digest,
+    );
+    let mut value = serde_json::to_value(&outcome)
+        .map_err(|error| EvolutionAdmissionError::new("ec1_record_digest", error.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    outcome.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_prediction_outcome_contract(&outcome)?;
+    Ok(outcome)
 }
 
 pub fn validate_mutation_family_registry(
@@ -1727,6 +1752,7 @@ mod tests {
             hypothesis_manifest_digest: hyp,
             evaluation_digest: evaluation,
             evaluator_identity_hash: digest("evaluator"),
+            counterevidence_digest: digest("counterevidence"),
             outcome: PredictionOutcomeKind::Unavailable,
             record_sha256: String::new(),
         })

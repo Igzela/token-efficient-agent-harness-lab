@@ -2789,6 +2789,17 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_preserves_spend_rollback_gua
         )
         .unwrap();
 
+    // This rollback chain exercises the accepted v36 contract. The runtime
+    // schema is now v37, so construct an explicit pre-v37 fixture rather
+    // than weakening production rollback to silently downgrade v37.
+    let mut fixture_client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+    fixture_client
+        .batch_execute(
+            "DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
+             DELETE FROM schema_migrations WHERE version = 37;",
+        )
+        .unwrap();
+
     // Drain through v36 only when the shared PG fixture has no incomplete
     // delegated rows. Residual incomplete delegated authority must fail closed
     // rather than soft-pass; the spend residual assertion below applies only

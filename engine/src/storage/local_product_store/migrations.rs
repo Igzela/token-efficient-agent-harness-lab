@@ -18,6 +18,7 @@ pub(super) const V33_SCHEMA_VERSION: i64 = 33;
 pub(super) const V34_SCHEMA_VERSION: i64 = 34;
 pub(super) const V35_SCHEMA_VERSION: i64 = 35;
 pub(super) const V36_SCHEMA_VERSION: i64 = 36;
+pub(super) const V37_SCHEMA_VERSION: i64 = 37;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -66,6 +67,8 @@ pub(super) const V34_TABLES: [&str; 3] =
     ["rwe_run_authorizations", "rwe_runs", "rwe_task_attempts"];
 pub(super) const V35_TABLES: [&str; 1] = ["product_task_workspace_preparations"];
 pub(super) const V36_TABLES: [&str; 1] = ["managed_acceptance_delegations"];
+pub(super) const V37_TABLES: [&str; 1] = ["harness_evolution_ec2_prediction_outcomes"];
+pub(super) const V37_INDEXES: [&str; 1] = ["idx_harness_evolution_ec2_prediction_outcomes_eval"];
 pub(super) const V36_DELEGATED_PLAN_OWNER_COLUMN: &str = "delegated_plan_owner_id";
 pub(super) const V36_DELEGATED_PLAN_OWNER_INDEX: &str = "idx_workflow_plans_delegated_owner";
 pub(super) const V36_API_KEY_TENANT_COLUMN: &str = "tenant_id";
@@ -499,6 +502,12 @@ impl LocalProductStore {
                     validate_sqlite_v36_schema(conn)?;
                     continue;
                 }
+                if migration.version == V37_SCHEMA_VERSION && current_version >= V37_SCHEMA_VERSION
+                {
+                    Self::migrate_v37_add_prediction_outcomes(conn)?;
+                    validate_sqlite_v37_schema(conn)?;
+                    continue;
+                }
                 if migration.version <= current_version {
                     continue;
                 }
@@ -546,6 +555,7 @@ impl LocalProductStore {
                         Self::migrate_v35_add_product_workspace_preparations(conn)?
                     }
                     V36_SCHEMA_VERSION => Self::migrate_v36_add_delegations(conn)?,
+                    V37_SCHEMA_VERSION => Self::migrate_v37_add_prediction_outcomes(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -554,7 +564,9 @@ impl LocalProductStore {
             let final_version: i64 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
-            if final_version == V36_SCHEMA_VERSION {
+            if final_version == V37_SCHEMA_VERSION {
+                validate_sqlite_v37_schema(conn)?;
+            } else if final_version == V36_SCHEMA_VERSION {
                 validate_sqlite_v36_schema(conn)?;
             } else if final_version == V35_SCHEMA_VERSION {
                 validate_sqlite_v35_schema(conn)?;
@@ -2559,6 +2571,14 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         tx.commit().map_err(|error| error.to_string())
     }
 
+    fn migrate_v37_add_prediction_outcomes(conn: &Connection) -> Result<(), String> {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        tx.execute_batch(schema::EC2_PREDICTION_OUTCOME_DDL)
+            .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())
+    }
+
     fn migrate_v33_add_managed_acceptance_spend(conn: &Connection) -> Result<(), String> {
         repair_sqlite_v32_transition_schema(conn)?;
         let spend_table_exists =
@@ -2880,6 +2900,35 @@ fn validate_sqlite_v36_schema(conn: &Connection) -> Result<(), String> {
             "SQLite v36 schema missing index {}",
             V36_DELEGATED_PLAN_OWNER_INDEX
         ));
+    }
+    Ok(())
+}
+
+fn validate_sqlite_v37_schema(conn: &Connection) -> Result<(), String> {
+    validate_sqlite_v36_schema(conn)?;
+    for table in V37_TABLES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v37 schema missing table {table}"));
+        }
+    }
+    for index in V37_INDEXES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                [index],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v37 schema missing index {index}"));
+        }
     }
     Ok(())
 }
@@ -3895,11 +3944,29 @@ mod tests {
             .unwrap();
     }
 
+    /// Build an explicit pre-v37 fixture for the v36 rollback contract tests.
+    /// Production never downgrades v37 implicitly; these tests exercise the
+    /// already-accepted v36 rollback implementation without v37 state.
+    fn store_at_v36(path: impl AsRef<std::path::Path>) -> LocalProductStore {
+        let store = LocalProductStore::new(path).unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "DROP TABLE harness_evolution_ec2_prediction_outcomes;
+                     PRAGMA user_version = 36;",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        store.with_conn(validate_sqlite_v36_schema).unwrap();
+        store
+    }
+
     #[test]
     fn sqlite_v36_rollback_archives_terminal_delegation_evidence_without_raw_payloads() {
         let directory = tempdir().unwrap();
         let database_path = directory.path().join("terminal-v36.db");
-        let store = LocalProductStore::new(&database_path).unwrap();
+        let store = store_at_v36(&database_path);
         insert_terminal_v36_delegation(&store, "expired");
         store
             .record_api_key_metadata_for_tenant(
@@ -4014,7 +4081,7 @@ mod tests {
     #[test]
     fn sqlite_v36_rollback_still_blocks_active_or_ambiguous_delegation_evidence() {
         let directory = tempdir().unwrap();
-        let store = LocalProductStore::new(directory.path().join("active-v36.db")).unwrap();
+        let store = store_at_v36(directory.path().join("active-v36.db"));
         insert_terminal_v36_delegation(&store, "active");
         let error = store
             .rollback_v36_to_v35("migration-test", true)
@@ -4025,7 +4092,7 @@ mod tests {
     }
 
     fn store_at_v25(path: impl AsRef<std::path::Path>) -> LocalProductStore {
-        let store = LocalProductStore::new(path).unwrap();
+        let store = store_at_v36(path);
         store.rollback_v36_to_v35("migration-test", true).unwrap();
         store.rollback_v35_to_v34("migration-test", true).unwrap();
         store.rollback_v34_to_v33("migration-test", true).unwrap();

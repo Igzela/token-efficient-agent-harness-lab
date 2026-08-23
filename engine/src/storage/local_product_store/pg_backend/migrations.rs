@@ -616,7 +616,7 @@ fn apply_pg_v36_migration(client: &mut postgres::Client) -> Result<(), String> {
         tx.batch_execute(schema::EC2_HOLDOUT_SEAL_DDL)
             .map_err(|e| format!("m36 ec2 holdout seal repair: {e}"))?;
         repair_pg_v36_delegated_plan_owner(&mut tx)?;
-        validate_pg_v36_schema(&mut tx)?;
+        validate_pg_v36_structure(&mut tx)?;
         tx.commit().map_err(|e| e.to_string())?;
         return Ok(());
     }
@@ -637,6 +637,58 @@ fn apply_pg_v36_migration(client: &mut postgres::Client) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
+}
+
+fn apply_pg_v37_migration(client: &mut postgres::Client) -> Result<(), String> {
+    let version = super::super::migrations::V37_SCHEMA_VERSION;
+    let mut tx = client.transaction().map_err(|e| format!("m37 tx: {e}"))?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(hashtext(current_database()), hashtext(current_schema()))",
+        &[],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.batch_execute(schema::EC2_PREDICTION_OUTCOME_DDL)
+        .map_err(|e| format!("m37 prediction outcome: {e}"))?;
+    tx.execute(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&version],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+fn validate_pg_v37_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    let version = client
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+        .get::<_, i64>(0);
+    if version != super::super::migrations::V37_SCHEMA_VERSION {
+        return Err(format!("PostgreSQL v37 schema version mismatch: {version}"));
+    }
+    for table in super::super::migrations::V37_TABLES {
+        if !pg_table_present(client, table)? {
+            return Err(format!("PostgreSQL v37 schema missing table {table}"));
+        }
+    }
+    for index in super::super::migrations::V37_INDEXES {
+        let present = client
+            .query_one(
+                "SELECT EXISTS (
+                    SELECT 1 FROM pg_indexes
+                    WHERE schemaname=current_schema() AND indexname=$1
+                 )",
+                &[&index],
+            )
+            .map_err(|e| e.to_string())?
+            .get::<_, bool>(0);
+        if !present {
+            return Err(format!("PostgreSQL v37 schema missing index {index}"));
+        }
+    }
+    validate_pg_v36_structure(client)
 }
 
 fn repair_pg_v36_delegated_plan_owner(
@@ -712,6 +764,7 @@ fn validate_pg_v35_structure(client: &mut impl postgres::GenericClient) -> Resul
     validate_pg_v34_tables(client)
 }
 
+#[cfg(test)]
 fn validate_pg_v36_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     let version = client
         .query_one(
@@ -723,6 +776,10 @@ fn validate_pg_v36_schema(client: &mut impl postgres::GenericClient) -> Result<(
     if version != super::super::migrations::V36_SCHEMA_VERSION {
         return Err(format!("PostgreSQL v36 schema version mismatch: {version}"));
     }
+    validate_pg_v36_structure(client)
+}
+
+fn validate_pg_v36_structure(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     for table in super::super::migrations::V36_TABLES {
         if !pg_table_present(client, table)? {
             return Err(format!("PostgreSQL v36 schema missing table {table}"));
@@ -2575,6 +2632,10 @@ impl LocalProductStore {
                     apply_pg_v36_migration(client)?;
                     continue;
                 }
+                if migration.version == 37 {
+                    apply_pg_v37_migration(client)?;
+                    continue;
+                }
                 if migration.version <= current {
                     continue;
                 }
@@ -2683,7 +2744,7 @@ impl LocalProductStore {
                 }
             }
 
-            validate_pg_v36_schema(client)?;
+            validate_pg_v37_schema(client)?;
 
             // Seed the scheduler_heartbeat singleton row.
             client
@@ -3096,6 +3157,26 @@ mod tests {
                 _cleanup: cleanup,
             })
         }
+
+        /// Build an explicit pre-v37 fixture for rollback tests. Production
+        /// never downgrades v37 implicitly; the v36 rollback contract is
+        /// exercised only after removing the v37 prediction-outcome state.
+        fn remove_v37_state(&self) {
+            self.store
+                .with_pg_conn(|client| {
+                    client
+                        .batch_execute(
+                            "DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
+                             DELETE FROM schema_migrations WHERE version = 37;",
+                        )
+                        .map_err(|error| error.to_string())
+                })
+                .expect("remove v37 state for rollback fixture");
+            assert_eq!(self.store.schema_version().unwrap(), 36);
+            self.store
+                .with_pg_conn(validate_pg_v36_schema)
+                .expect("the explicit v36 PostgreSQL fixture must validate");
+        }
     }
 
     #[cfg(feature = "pg-tests")]
@@ -3131,6 +3212,18 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     fn prepare_v25_rollback_fixture(store: &LocalProductStore) {
+        // This helper exercises the pre-v37 rollback chain. Keep the fixture
+        // explicit now that normal PostgreSQL startup migrates to v37.
+        store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(
+                        "DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
+                         DELETE FROM schema_migrations WHERE version = 37;",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
         assert_eq!(store.schema_version().unwrap(), 36);
         store
             .rollback_v36_to_v35("migration-test-setup", true)
@@ -3184,6 +3277,7 @@ mod tests {
         let Some(fixture) = IsolatedPgStore::from_environment() else {
             return;
         };
+        fixture.remove_v37_state();
         let store = &fixture.store;
         store
             .rollback_v36_to_v35("migration-test", true)
@@ -3234,6 +3328,7 @@ mod tests {
         let Some(fixture) = IsolatedPgStore::from_environment() else {
             return;
         };
+        fixture.remove_v37_state();
         let store = &fixture.store;
 
         store
@@ -3254,6 +3349,7 @@ mod tests {
         let Some(fixture) = IsolatedPgStore::from_environment() else {
             return;
         };
+        fixture.remove_v37_state();
         let store = &fixture.store;
         let body = serde_json::json!({
             "schema_version": "managed_delegation_contract.v1",
@@ -3541,6 +3637,7 @@ mod tests {
         let Some(fixture) = IsolatedPgStore::from_environment() else {
             return;
         };
+        fixture.remove_v37_state();
         let store = &fixture.store;
         store
             .rollback_v36_to_v35("migration-test", true)

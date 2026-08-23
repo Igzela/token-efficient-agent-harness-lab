@@ -33,6 +33,16 @@ fn temp_store() -> (tempfile::TempDir, LocalProductStore) {
     (dir, store)
 }
 
+fn establish_v36_fixture(store: &LocalProductStore) {
+    let connection = rusqlite::Connection::open(store.db_path()).expect("open sqlite fixture");
+    connection
+        .execute_batch(
+            "DROP TABLE harness_evolution_ec2_prediction_outcomes;
+             PRAGMA user_version = 36;",
+        )
+        .expect("establish v36 fixture");
+}
+
 fn init_git_repo(root: &std::path::Path) -> String {
     std::fs::create_dir_all(root).unwrap();
     std::fs::write(root.join("README.md"), "hello\n").unwrap();
@@ -104,7 +114,7 @@ fn sample_intake(target: &std::path::Path, rev: &str, key: &str) -> ProductTaskI
 #[test]
 fn schema_includes_product_tasks_at_v30() {
     let (_dir, store) = temp_store();
-    assert_eq!(store.schema_version().unwrap(), 36);
+    assert_eq!(store.schema_version().unwrap(), 37);
 }
 
 #[test]
@@ -278,7 +288,8 @@ fn rejects_absolute_verification_binary() {
 #[test]
 fn empty_v30_rollback_works() {
     let (_dir, store) = temp_store();
-    assert_eq!(store.schema_version().unwrap(), 36);
+    assert_eq!(store.schema_version().unwrap(), 37);
+    establish_v36_fixture(&store);
     store.rollback_v36_to_v35("tester", true).unwrap();
     store.rollback_v35_to_v34("tester", true).unwrap();
     store.rollback_v34_to_v33("tester", true).unwrap();
@@ -299,6 +310,7 @@ fn empty_v30_rollback_works() {
 fn v35_rollback_requires_drained_receipts_and_records_redacted_audit() {
     with_gates(|| {
         let (store_dir, store) = temp_store();
+        establish_v36_fixture(&store);
         store
             .rollback_v36_to_v35("rollback-operator", true)
             .unwrap();
@@ -374,6 +386,7 @@ fn occupied_v30_rollback_blocked() {
         let intake = sample_intake(&repo, &rev, "idem-rollback-block");
         let validated = validate_intake(&intake, "local", "default").unwrap();
         store.admit_product_task(&validated, "tester").unwrap();
+        establish_v36_fixture(&store);
         store.rollback_v36_to_v35("tester", true).unwrap();
         store.rollback_v35_to_v34("tester", true).unwrap();
         store.rollback_v34_to_v33("tester", true).unwrap();

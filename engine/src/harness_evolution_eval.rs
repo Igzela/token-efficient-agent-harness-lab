@@ -6,7 +6,8 @@
 //! claim recursive self-improvement from fixture acceptance alone.
 
 use crate::harness_evolution::{
-    sha256_hex, validate_sha256_hex, EvolutionAdmissionError, KILL_SWITCH_ENV,
+    seal_prediction_outcome, sha256_hex, validate_sha256_hex, EvolutionAdmissionError,
+    MutationHypothesisManifestV1, PredictionOutcomeKind, PredictionOutcomeV1, KILL_SWITCH_ENV,
     PREDICTION_OUTCOME_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
@@ -136,6 +137,251 @@ pub fn candidate_may_observe_plaintext_labels() -> bool {
 
 pub fn prediction_accuracy_is_selection_authority() -> bool {
     false
+}
+
+pub const NONE_REGRESSION_DIGEST_SEED: &str = "none";
+pub const NONE_COUNTEREVIDENCE_DIGEST_SEED: &str = "none-counterevidence";
+
+fn participates_in_prediction(baseline: &BaselineEvaluation) -> bool {
+    matches!(
+        baseline.split,
+        TaskSplit::Development | TaskSplit::Validation
+    ) && !baseline.used_sealed_holdout
+}
+
+fn metric_evidence(baseline: &BaselineEvaluation) -> String {
+    format!(
+        "baseline={}|seed={}|split={:?}|sealed={}|quality_bits={:016x}|token_cost_bits={:016x}|latency_ms_bits={:016x}|robustness_bits={:016x}|behavioral_diversity_bits={:016x}|calls={}|tokens={}|incomplete={}|gate={}",
+        baseline.baseline.as_str(),
+        baseline.seed,
+        baseline.split,
+        if baseline.used_sealed_holdout { 1 } else { 0 },
+        baseline.metrics.quality.to_bits(),
+        baseline.metrics.token_cost.to_bits(),
+        baseline.metrics.latency_ms.to_bits(),
+        baseline.metrics.robustness.to_bits(),
+        baseline.metrics.behavioral_diversity.to_bits(),
+        baseline.usage.calls,
+        baseline.usage.tokens,
+        if baseline.usage.incomplete { 1 } else { 0 },
+        baseline.hard_gate.as_str(),
+    )
+}
+
+pub fn actual_improvement_digest(bundle: &CandidateEvaluationBundle) -> String {
+    let validation: Vec<String> = bundle
+        .baselines
+        .iter()
+        .filter(|baseline| {
+            matches!(baseline.split, TaskSplit::Validation) && !baseline.used_sealed_holdout
+        })
+        .map(metric_evidence)
+        .collect();
+    sha256_hex(&format!(
+        "ec2-actual-improvement.v2|candidate={}|lineage={}|family={}|active={}|evaluator={}|validation_missing={}|validation={}",
+        bundle.candidate_id,
+        bundle.lineage_id,
+        bundle.family_id,
+        bundle.active_version_id,
+        bundle.evaluator_identity_hash,
+        if validation.is_empty() { 1 } else { 0 },
+        validation.join(";")
+    ))
+}
+
+pub fn actual_regression_digest(bundle: &CandidateEvaluationBundle) -> String {
+    let regressions: Vec<String> = bundle
+        .baselines
+        .iter()
+        .filter(|baseline| participates_in_prediction(baseline) && !baseline.hard_gate.is_pass())
+        .map(metric_evidence)
+        .collect();
+    if regressions.is_empty() {
+        sha256_hex(NONE_REGRESSION_DIGEST_SEED)
+    } else {
+        sha256_hex(&format!(
+            "ec2-actual-regression.v2|candidate={}|lineage={}|family={}|active={}|evaluator={}|regressions={}",
+            bundle.candidate_id,
+            bundle.lineage_id,
+            bundle.family_id,
+            bundle.active_version_id,
+            bundle.evaluator_identity_hash,
+            regressions.join(";")
+        ))
+    }
+}
+
+/// Hash all evaluator-owned counterevidence, including non-safety hard-gate
+/// failures and metric/usage missingness. Sealed execution is excluded.
+pub fn actual_counterevidence_digest(bundle: &CandidateEvaluationBundle) -> String {
+    let counterevidence: Vec<String> = bundle
+        .baselines
+        .iter()
+        .filter(|baseline| {
+            participates_in_prediction(baseline)
+                && (!baseline.hard_gate.is_pass()
+                    || baseline.usage.incomplete
+                    || !baseline.metrics.quality.is_finite()
+                    || !baseline.metrics.token_cost.is_finite()
+                    || !baseline.metrics.latency_ms.is_finite()
+                    || !baseline.metrics.robustness.is_finite()
+                    || !baseline.metrics.behavioral_diversity.is_finite())
+        })
+        .map(metric_evidence)
+        .collect();
+    if counterevidence.is_empty() {
+        sha256_hex(NONE_COUNTEREVIDENCE_DIGEST_SEED)
+    } else {
+        sha256_hex(&format!(
+            "ec2-counterevidence.v1|candidate={}|lineage={}|family={}|active={}|evaluator={}|evidence={}",
+            bundle.candidate_id,
+            bundle.lineage_id,
+            bundle.family_id,
+            bundle.active_version_id,
+            bundle.evaluator_identity_hash,
+            counterevidence.join(";"),
+        ))
+    }
+}
+
+/// Bind an evaluator assertion to the exact candidate, task family, invariant,
+/// evaluation plan, and actual evidence digest it describes. The hypothesis
+/// carries these identity digests as immutable pre-execution inputs; this
+/// helper makes them part of the comparison rather than treating a bare metric
+/// digest as portable across candidates or evaluation epochs.
+pub fn bound_prediction_digest(
+    hypothesis: &MutationHypothesisManifestV1,
+    bundle: &CandidateEvaluationBundle,
+    assertion: &str,
+    actual_digest: &str,
+) -> String {
+    sha256_hex(&format!(
+        "ec2-prediction-evidence.v1|assertion={assertion}|candidate={}|lineage={}|family={}|active={}|evaluator={}|invariant={}|plan={}|actual={actual_digest}",
+        bundle.candidate_id,
+        bundle.lineage_id,
+        bundle.family_id,
+        bundle.active_version_id,
+        bundle.evaluator_identity_hash,
+        hypothesis.invariant_digest,
+        hypothesis.evaluation_plan_digest,
+    ))
+}
+
+pub fn evaluation_is_incomplete(bundle: &CandidateEvaluationBundle) -> bool {
+    let usable_validation = bundle.baselines.iter().any(|baseline| {
+        matches!(baseline.split, TaskSplit::Validation) && !baseline.used_sealed_holdout
+    });
+    bundle.schema_version != EVAL_SCHEMA_VERSION
+        || bundle.candidate_id.trim().is_empty()
+        || bundle.lineage_id.trim().is_empty()
+        || bundle.family_id.trim().is_empty()
+        || bundle.active_version_id.trim().is_empty()
+        || bundle.active_version_hash.trim().is_empty()
+        || bundle.evaluator_identity_hash.trim().is_empty()
+        || bundle.baselines.is_empty()
+        || bundle
+            .baselines
+            .iter()
+            .filter(|baseline| participates_in_prediction(baseline))
+            .any(|baseline| {
+                baseline.usage.incomplete
+                    || matches!(baseline.hard_gate, HardGateResult::FailedIncompleteEvidence)
+            })
+        || !usable_validation
+        || bundle.sealed_feedback_into_mutation
+        || bundle.bundle_sha256.trim().is_empty()
+        || bundle_content_hash(bundle)
+            .map(|digest| digest != bundle.bundle_sha256)
+            .unwrap_or(true)
+}
+
+/// Evaluator-owned derived outcome. Never candidate-authored, never selection authority.
+pub fn derive_ec2_prediction_outcome(
+    hypothesis: &MutationHypothesisManifestV1,
+    bundle: &CandidateEvaluationBundle,
+) -> Result<PredictionOutcomeV1, EvolutionAdmissionError> {
+    derive_ec2_prediction_outcome_with_invalidation(hypothesis, bundle, false)
+}
+
+pub fn derive_ec2_prediction_outcome_with_invalidation(
+    hypothesis: &MutationHypothesisManifestV1,
+    bundle: &CandidateEvaluationBundle,
+    invalidated: bool,
+) -> Result<PredictionOutcomeV1, EvolutionAdmissionError> {
+    if prediction_accuracy_is_selection_authority() {
+        return Err(EvolutionAdmissionError::new(
+            "ec2_prediction_authority",
+            "prediction accuracy is not selection authority",
+        ));
+    }
+    validate_sha256_hex(&hypothesis.record_sha256)?;
+    validate_sha256_hex(&bundle.bundle_sha256)?;
+    validate_sha256_hex(&bundle.evaluator_identity_hash)?;
+    let improvement = actual_improvement_digest(bundle);
+    let regression = actual_regression_digest(bundle);
+    let counterevidence = actual_counterevidence_digest(bundle);
+    let expected_improvement =
+        bound_prediction_digest(hypothesis, bundle, "improvement", &improvement);
+    let expected_regression =
+        bound_prediction_digest(hypothesis, bundle, "regression", &regression);
+    let improvement_match = hypothesis.predicted_improvement_digest == expected_improvement;
+    let regression_match = hypothesis.predicted_regression_digest == expected_regression;
+    let counterevidence_present = counterevidence != sha256_hex(NONE_COUNTEREVIDENCE_DIGEST_SEED);
+    let unpredicted_regression = counterevidence_present && !regression_match;
+    let kind = if invalidated || evaluation_is_incomplete(bundle) {
+        PredictionOutcomeKind::Unavailable
+    } else if unpredicted_regression {
+        PredictionOutcomeKind::Contradicted
+    } else if improvement_match && regression_match {
+        PredictionOutcomeKind::Correct
+    } else if improvement_match || regression_match {
+        PredictionOutcomeKind::PartiallySupported
+    } else {
+        PredictionOutcomeKind::Incorrect
+    };
+    seal_prediction_outcome(PredictionOutcomeV1 {
+        schema_version: PREDICTION_OUTCOME_SCHEMA.to_string(),
+        outcome_id: String::new(),
+        hypothesis_manifest_digest: hypothesis.record_sha256.clone(),
+        evaluation_digest: bundle.bundle_sha256.clone(),
+        evaluator_identity_hash: bundle.evaluator_identity_hash.clone(),
+        counterevidence_digest: counterevidence,
+        outcome: kind,
+        record_sha256: String::new(),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PredictionCalibrationSummary {
+    pub correct: u32,
+    pub incorrect: u32,
+    pub partially_supported: u32,
+    pub contradicted: u32,
+    pub unavailable: u32,
+    pub accuracy_is_selection_authority: bool,
+}
+
+pub fn summarize_prediction_outcomes(
+    outcomes: &[PredictionOutcomeV1],
+) -> PredictionCalibrationSummary {
+    let mut summary = PredictionCalibrationSummary {
+        correct: 0,
+        incorrect: 0,
+        partially_supported: 0,
+        contradicted: 0,
+        unavailable: 0,
+        accuracy_is_selection_authority: prediction_accuracy_is_selection_authority(),
+    };
+    for outcome in outcomes {
+        match outcome.outcome {
+            PredictionOutcomeKind::Correct => summary.correct += 1,
+            PredictionOutcomeKind::Incorrect => summary.incorrect += 1,
+            PredictionOutcomeKind::PartiallySupported => summary.partially_supported += 1,
+            PredictionOutcomeKind::Contradicted => summary.contradicted += 1,
+            PredictionOutcomeKind::Unavailable => summary.unavailable += 1,
+        }
+    }
+    summary
 }
 
 fn component_digest(component_id: &str, version: &str, payload: &Value) -> Result<String, String> {
@@ -936,6 +1182,21 @@ pub fn mediate_holdout_membership_read(
             Err(EvolutionAdmissionError::new(
                 "ec2_unauthorized_holdout_read",
                 "candidate and operator classes cannot read sealed membership",
+            ))
+        }
+    }
+}
+
+pub fn mediate_prediction_outcome_read(
+    class: Ec2AccessClass,
+    outcome: &PredictionOutcomeV1,
+) -> Result<&PredictionOutcomeV1, EvolutionAdmissionError> {
+    match class {
+        Ec2AccessClass::Evaluator | Ec2AccessClass::Reviewer => Ok(outcome),
+        Ec2AccessClass::CandidateWorker | Ec2AccessClass::OperatorController => {
+            Err(EvolutionAdmissionError::new(
+                "ec2_unauthorized_prediction_read",
+                "candidate and operator classes cannot read prediction outcomes",
             ))
         }
     }
@@ -1895,7 +2156,10 @@ pub fn archive_non_dominated(entries: &[ParetoArchiveEntry]) -> Vec<&ParetoArchi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness_evolution::{ENABLE_ENV, KILL_SWITCH_ENV};
+    use crate::harness_evolution::{
+        seal_mutation_hypothesis_manifest, MutationHypothesisManifestV1, ENABLE_ENV,
+        KILL_SWITCH_ENV, MUTATION_HYPOTHESIS_MANIFEST_SCHEMA,
+    };
 
     struct EnvGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
@@ -2081,6 +2345,219 @@ mod tests {
             build_eval_receipt_with_sentinels(&contamination, "rejected_sentinel", "t", receipts);
         assert_eq!(rejected.terminal, "rejected_sentinel");
         assert_eq!(rejected.sentinel_receipts.len(), 3);
+    }
+
+    #[test]
+    fn prediction_outcomes_are_evaluator_derived_and_never_selection_authority() {
+        let _g = EnvGuard::enable_lab();
+        let family = sample_task_family("fam-prediction-outcome");
+        let vault = build_sealed_vault(&family).unwrap();
+        let bundle = evaluate_candidate_fixture(
+            "candidate-prediction",
+            "lineage-prediction",
+            "active-prediction",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &sample_budget(17),
+            &family,
+            &vault,
+            true,
+            "2026-08-23T00:00:00Z",
+        )
+        .unwrap();
+
+        // Evidence digests must bind the exact IEEE-754 values, not a rounded
+        // display representation. A sub-1e-8 metric change is still a
+        // different evaluator observation and must change every digest that
+        // includes that baseline.
+        let mut precision_changed = bundle.clone();
+        let validation = precision_changed
+            .baselines
+            .iter_mut()
+            .find(|baseline| matches!(baseline.split, TaskSplit::Validation))
+            .expect("fixture includes validation evidence");
+        validation.metrics.quality += 1e-9;
+        validation.hard_gate = HardGateResult::FailedSafety;
+        precision_changed.bundle_sha256 = bundle_content_hash(&precision_changed).unwrap();
+        assert_ne!(
+            actual_improvement_digest(&bundle),
+            actual_improvement_digest(&precision_changed)
+        );
+        assert_ne!(
+            actual_regression_digest(&bundle),
+            actual_regression_digest(&precision_changed)
+        );
+        assert_ne!(
+            actual_counterevidence_digest(&bundle),
+            actual_counterevidence_digest(&precision_changed)
+        );
+
+        let hypothesis = |improvement: String, regression: String| {
+            seal_mutation_hypothesis_manifest(MutationHypothesisManifestV1 {
+                schema_version: MUTATION_HYPOTHESIS_MANIFEST_SCHEMA.to_string(),
+                manifest_id: String::new(),
+                lineage_id: "lineage-prediction".into(),
+                failure_evidence_id: "evidence-prediction".into(),
+                proposal_body_sha256: sha256_hex("proposal"),
+                candidate_delta_digest: sha256_hex(&format!("delta-{improvement}-{regression}")),
+                predicted_improvement_digest: improvement,
+                predicted_regression_digest: regression,
+                invariant_digest: sha256_hex("invariant"),
+                evaluation_plan_digest: sha256_hex("plan"),
+                record_sha256: String::new(),
+            })
+            .unwrap()
+        };
+        let context = hypothesis(
+            sha256_hex("context-improvement"),
+            sha256_hex("context-regression"),
+        );
+        let improvement = bound_prediction_digest(
+            &context,
+            &bundle,
+            "improvement",
+            &actual_improvement_digest(&bundle),
+        );
+        let regression = bound_prediction_digest(
+            &context,
+            &bundle,
+            "regression",
+            &actual_regression_digest(&bundle),
+        );
+        let correct = derive_ec2_prediction_outcome(
+            &hypothesis(improvement.clone(), regression.clone()),
+            &bundle,
+        )
+        .unwrap();
+        assert_eq!(correct.outcome, PredictionOutcomeKind::Correct);
+
+        let mut sealed_only = bundle.clone();
+        let sealed = sealed_only
+            .baselines
+            .iter_mut()
+            .find(|baseline| matches!(baseline.split, TaskSplit::SealedHoldout))
+            .expect("fixture includes sealed evidence");
+        sealed.hard_gate = HardGateResult::FailedSafety;
+        sealed_only.bundle_sha256 = bundle_content_hash(&sealed_only).unwrap();
+        let sealed_context = hypothesis(
+            sha256_hex("sealed-context-improvement"),
+            sha256_hex("sealed-context-regression"),
+        );
+        let sealed_improvement = bound_prediction_digest(
+            &sealed_context,
+            &sealed_only,
+            "improvement",
+            &actual_improvement_digest(&sealed_only),
+        );
+        let sealed_regression = bound_prediction_digest(
+            &sealed_context,
+            &sealed_only,
+            "regression",
+            &actual_regression_digest(&sealed_only),
+        );
+        let sealed_ignored = derive_ec2_prediction_outcome(
+            &hypothesis(sealed_improvement, sealed_regression),
+            &sealed_only,
+        )
+        .unwrap();
+        assert_eq!(sealed_ignored.outcome, PredictionOutcomeKind::Correct);
+
+        // Incomplete sealed evidence is also outside the prediction join. It
+        // must not turn an otherwise complete development/validation outcome
+        // into Unavailable.
+        let mut sealed_incomplete = sealed_only.clone();
+        sealed_incomplete
+            .baselines
+            .iter_mut()
+            .find(|baseline| matches!(baseline.split, TaskSplit::SealedHoldout))
+            .expect("fixture includes sealed evidence")
+            .usage
+            .incomplete = true;
+        sealed_incomplete.bundle_sha256 = bundle_content_hash(&sealed_incomplete).unwrap();
+        let sealed_incomplete_outcome = derive_ec2_prediction_outcome(
+            &hypothesis(
+                bound_prediction_digest(
+                    &sealed_context,
+                    &sealed_incomplete,
+                    "improvement",
+                    &actual_improvement_digest(&sealed_incomplete),
+                ),
+                bound_prediction_digest(
+                    &sealed_context,
+                    &sealed_incomplete,
+                    "regression",
+                    &actual_regression_digest(&sealed_incomplete),
+                ),
+            ),
+            &sealed_incomplete,
+        )
+        .unwrap();
+        assert_eq!(
+            sealed_incomplete_outcome.outcome,
+            PredictionOutcomeKind::Correct
+        );
+
+        let incorrect = derive_ec2_prediction_outcome(
+            &hypothesis(
+                sha256_hex("wrong-improvement"),
+                sha256_hex("wrong-regression"),
+            ),
+            &bundle,
+        )
+        .unwrap();
+        assert_eq!(incorrect.outcome, PredictionOutcomeKind::Incorrect);
+
+        let mut incomplete = bundle.clone();
+        incomplete.baselines[0].usage.incomplete = true;
+        incomplete.baselines[0].used_sealed_holdout = true;
+        let unavailable = derive_ec2_prediction_outcome(
+            &hypothesis(improvement.clone(), regression.clone()),
+            &incomplete,
+        )
+        .unwrap();
+        assert_eq!(unavailable.outcome, PredictionOutcomeKind::Unavailable);
+
+        let mut tampered = bundle.clone();
+        tampered.baselines[0].metrics.quality += 1.0;
+        let tampered_outcome = derive_ec2_prediction_outcome(
+            &hypothesis(improvement.clone(), regression.clone()),
+            &tampered,
+        )
+        .unwrap();
+        assert_eq!(tampered_outcome.outcome, PredictionOutcomeKind::Unavailable);
+
+        let mut regressing = bundle.clone();
+        regressing.baselines[0].hard_gate = HardGateResult::FailedSafety;
+        regressing.bundle_sha256 = bundle_content_hash(&regressing).unwrap();
+        let regressing_improvement = bound_prediction_digest(
+            &context,
+            &regressing,
+            "improvement",
+            &actual_improvement_digest(&regressing),
+        );
+        let contradicted = derive_ec2_prediction_outcome(
+            &hypothesis(
+                regressing_improvement,
+                bound_prediction_digest(
+                    &context,
+                    &regressing,
+                    "regression",
+                    &sha256_hex(NONE_REGRESSION_DIGEST_SEED),
+                ),
+            ),
+            &regressing,
+        )
+        .unwrap();
+        assert_eq!(contradicted.outcome, PredictionOutcomeKind::Contradicted);
+
+        let summary =
+            summarize_prediction_outcomes(&[correct, incorrect, unavailable, contradicted]);
+        assert_eq!(summary.correct, 1);
+        assert_eq!(summary.incorrect, 1);
+        assert_eq!(summary.unavailable, 1);
+        assert_eq!(summary.contradicted, 1);
+        assert!(!summary.accuracy_is_selection_authority);
+        assert!(!prediction_accuracy_is_selection_authority());
     }
 
     #[test]

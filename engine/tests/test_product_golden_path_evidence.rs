@@ -428,6 +428,16 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
         assert_eq!(again, serde_json::Value::Object(evidence.clone()));
         assert_eq!(emitted_again, again);
         assert_eq!(store.audit_events(10_000).unwrap(), audit_before_reads);
+        // This rollback chain exercises the accepted v36 contract. The runtime
+        // schema is now v37, so construct an explicit pre-v37 fixture rather
+        // than weakening production rollback to silently downgrade v37.
+        let sqlite = rusqlite::Connection::open(dir.path().join("store.db")).unwrap();
+        sqlite
+            .execute_batch(
+                "DROP TABLE harness_evolution_ec2_prediction_outcomes;
+                 PRAGMA user_version = 36;",
+            )
+            .unwrap();
         store
             .rollback_v36_to_v35("rollback-operator", true)
             .unwrap();
