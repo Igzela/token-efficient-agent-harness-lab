@@ -6,19 +6,18 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-HE-EC2-SENTINEL-CONFORMANCE-1` is complete. The current window is `PE7-HE-EC2-PREDICTION-OUTCOME-1`: evaluator-owned immutable `PredictionOutcomeV1` comparing frozen predictions with actual evidence. No candidate-authored outcome, selection weight, or safety inference. No ENABLE or Level-1.
+`PE7-HE-EC2-PREDICTION-OUTCOME-1` is complete. The current window is `PE7-HE-EC3-CONTRACT-1`: freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and the cost of diagnosis, hypothesis construction, prediction, and outcome reconciliation. No spend or runtime behavior change.
 
 ## Authoritative Forward Order
 
 ```text
-[window: PE7-HE-EC2-PREDICTION-OUTCOME-1 — READY_FOR_EXECUTION, provider-free; derive non-authoritative PredictionOutcomeV1]
-
-
+[window: PE7-HE-EC3-CONTRACT-1 — READY_FOR_EXECUTION, provider-free; freeze lifecycle-cost ontology and budget contract]
+[successor: PE7-HE-EC3-INSTRUMENTATION-1 — BLOCKED_PREREQUISITE, provider-free; capture and normalize lifecycle-cost evidence]
 ```
 
 ## Active Routing
 
-1. `PE7-HE-EC2-PREDICTION-OUTCOME-1` — `READY_FOR_EXECUTION`
+1. `PE7-HE-EC3-CONTRACT-1` — `READY_FOR_EXECUTION`
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -86,41 +85,47 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Accepted evidence:** PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265`.
 
-## Packet PE7-HE-EC2-PREDICTION-OUTCOME-1
+## Completed (PE7-HE-EC2-PREDICTION-OUTCOME-1)
+
+**State:** `COMPLETE`
+
+**Accepted evidence:** PR #600 exact head `0ccdbefa59e18b241cba7cb6f26f3d267608a9a9`; squash merge `ac2b2f640406ca766b0cd567c2782e426d8dad2b`; exact-head review comments `5385499271` and `5385499345`; canonical workflow `32633510108`.
+
+## Packet PE7-HE-EC3-CONTRACT-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** `PE7-HE-EC2-SENTINEL-CONFORMANCE-1`
+**Prerequisite:** `PE7-HE-EC2-PREDICTION-OUTCOME-1`
 
-**Class:** `IMPLEMENT`
+**Class:** `CONTRACT`
 
-**Outcome:** Wire evaluator-owned immutable `PredictionOutcomeV1` comparing frozen predictions with actual evaluation evidence.
+**Outcome:** Freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and the cost of diagnosis, hypothesis construction, prediction, and outcome reconciliation.
 
-**Allowed delta:** `docs/ARCHITECTURE_BOOK.md`, `engine/src/harness_evolution.rs`, `engine/src/harness_evolution_eval.rs`, `engine/src/storage/local_product_store/harness_evolution.rs`, `engine/src/storage/local_product_store/schema.rs`, `engine/src/storage/local_product_store/migrations.rs`, `engine/src/storage/local_product_store/pg_backend/migrations.rs`, `engine/src/storage/local_product_store/integrity.rs`, `engine/tests/test_data_operations.rs`, `engine/tests/test_product_golden_path_evidence.rs` (v36 rollback fixture only), `engine/tests/test_product_golden_path_g1.rs` (v37 assertion/v36 rollback fixture only), `engine/tests/test_recursive_execution.rs` (v37 assertion/v36 rollback fixture only), `engine/tests/test_pg_integration.rs` (v37 assertion/v36 rollback fixture only), `tests/test_session_context.py`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/FUTURE_ROUTE.md`. Prediction outcome derivation and persistence only; no scalar override, selection gating, or new evaluator.
+**Allowed delta:** `docs/ARCHITECTURE_BOOK.md`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/FUTURE_ROUTE.md`, `engine/src/harness_evolution.rs`, and `tests/test_session_context.py`. Lifecycle-budget contract and ontology types only; no spend, persistence, admission, or runtime behavior change.
 
-**Exit:** Adversarial fixtures prove `PredictionOutcomeV1` records are derived solely by the evaluator, stored immutably in `LocalProductStore`, and prediction accuracy does not gate Pareto selection or candidate status.
+**Exit:** A versioned budget/accounting contract covers generation, evaluation, review, repair, CI, recovery, human effort, and failed attempts with explicit source and missingness semantics.
 
-**Stop:** Prediction accuracy is used as selection authority, candidate can author or mutate prediction outcomes, or outcomes can be modified after recording.
+**Stop:** A material cost class is silently zero, source semantics are ambiguous, failed attempts can escape accounting, or the contract creates a second spend owner.
 
 ### Twelve-field contract
 
-1. **Outcome and non-goals.** Evaluator-owned immutable `PredictionOutcomeV1` comparing frozen predictions with actual evidence. No candidate-authored outcome, selection weight, or safety inference. No ENABLE or Level-1.
-2. **Prerequisites and evidence.** SENTINEL-CONFORMANCE COMPLETE: PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265`.
-3. **Owners and paths.** Existing `harness_evolution.rs`, `harness_evolution_eval.rs`, and LocalProductStore `harness_evolution_ec2_prediction_outcomes` table.
-4. **Frozen invariants.** Evaluator is the sole author of prediction outcomes. Outcomes are immutable once written. Prediction accuracy cannot gate Pareto selection or candidate status.
-5. **Only semantic delta.** `derive_ec2_prediction_outcome` + LocalProductStore persistence / query methods + new additive schema / migration v37 + table registration in integrity checks. v36 is accepted baseline and must not be modified or reused.
-6. **Forbidden changes.** No candidate authoring, no selection gating on accuracy, no ENABLE, no Level-1, no second runtime/store owner.
-7. **Ordered slices.** Define `PredictionOutcomeV1`; derive outcome in evaluator; persist immutably in LocalProductStore; reject candidate mutation or selection weight; stop before Level-1.
-8. **Failure taxonomy.** Candidate-authored outcome, mutable outcome record, accuracy selection gate, missing evaluator identity hash.
-9. **Verification.** `cargo fmt --all -- --check`; focused prediction-outcome and data-operation cargo tests; `cargo test -p engine --features pg-tests -- --test-threads=1` for SQLite/PostgreSQL migration parity; `git diff --check`; security baseline; and handoff.
-10. **Compatibility and rollback.** Add only v37: register it in the SQLite migration list and PostgreSQL migration dispatcher, with matching DDL, constraints, indexes, integrity registration, and v36-to-v37 forward upgrades in both stores. A runtime revert is safe because the additive v37 table is ignored by v36 binaries; do not perform a destructive schema downgrade. Any requested v37-to-v36 downgrade requires a separately accepted recovery packet that preserves or archives immutable outcome records.
-11. **Exit artifact.** Stored `PredictionOutcomeV1` records and additive v37 migration with SQLite/PostgreSQL parity.
-12. **Next action.** Promote `PE7-HE-EC3-CONTRACT-1`.
+1. **Outcome and non-goals.** Freeze lifecycle-cost ontology, trustworthy sources, missingness/eligibility rules, reservation/reconciliation, per-candidate/global envelopes, failure accounting, and diagnosis/hypothesis/prediction/outcome-reconciliation cost. No spend or runtime behavior change.
+2. **Prerequisites and evidence.** PREDICTION-OUTCOME COMPLETE: PR #600 exact head `0ccdbefa59e18b241cba7cb6f26f3d267608a9a9`; squash merge `ac2b2f640406ca766b0cd567c2782e426d8dad2b`; exact-head review comments `5385499271` and `5385499345`; canonical workflow `32633510108`.
+3. **Owners and paths.** Existing Harness-Evolution contract owner in `engine/src/harness_evolution.rs`; architecture/status/routing owners remain their existing documents.
+4. **Frozen invariants.** Material costs cannot be silently zero. Sources are measured-direct, deterministic-derived, or explicitly unavailable. Missing required cost is ineligible, failed attempts remain charged, and the contract grants no spend authority.
+5. **Only semantic delta.** Versioned lifecycle-cost phases, trust-source and missingness semantics, candidate/global envelopes, reservation/reconciliation vocabulary, and validation/sealing helpers in `harness_evolution.rs`.
+6. **Forbidden changes.** No spend, persistence, admission, candidate execution, Provider call, second budget/spend owner, ENABLE, or Level-1.
+7. **Ordered slices.** Define cost phases and source semantics; define candidate/global envelopes and failure accounting; validate and seal the contract; add positive and adversarial unit tests; synchronize the smallest canonical documents; stop before instrumentation.
+8. **Failure taxonomy.** Silently zero material cost, ambiguous source, unavailable required phase, failed-attempt omission, envelope overflow ambiguity, spend-authority delegation.
+9. **Verification.** `cargo fmt --all -- --check`; `cargo test -p engine --lib ec3_lifecycle_budget -- --test-threads=1`; `cargo clippy -p engine --all-targets --all-features -- -D warnings`; `git diff --check`; security baseline; and handoff.
+10. **Compatibility and rollback.** Additive contract types only. Revert the contract PR; no durable data or external effect exists to undo.
+11. **Exit artifact.** Versioned lifecycle-budget contract types and fail-closed validation in `engine/src/harness_evolution.rs`.
+12. **Next action.** Promote `PE7-HE-EC3-INSTRUMENTATION-1`.
 
 ### 11. Bounded Autonomous Worker Dispatch Capsule
 
 <!-- weak-agent-dispatch:v1
-{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC2-PREDICTION-OUTCOME-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Implement evaluator-owned immutable PredictionOutcomeV1 comparing frozen predictions with actual evidence.","allowed_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/harness_evolution_eval.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/integrity.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/schema.rs","engine/tests/test_data_operations.rs","engine/tests/test_product_golden_path_g1.rs","engine/tests/test_recursive_execution.rs","engine/tests/test_product_golden_path_evidence.rs","engine/tests/test_pg_integration.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/harness_evolution_eval.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/integrity.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/storage/local_product_store/schema.rs","engine/tests/test_data_operations.rs","engine/tests/test_product_golden_path_g1.rs","engine/tests/test_recursive_execution.rs","engine/tests/test_product_golden_path_evidence.rs","engine/tests/test_pg_integration.rs","tests/test_session_context.py"],"allowed_outputs":["Evaluator-owned immutable PredictionOutcomeV1 records and additive schema v37 migration with SQLite/PostgreSQL parity."],"prerequisites":["PE7-HE-EC2-SENTINEL-CONFORMANCE-1"],"prerequisite_receipts":["PE7-HE-EC2-SENTINEL-CONFORMANCE-1 COMPLETE: PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265`"],"forbidden_changes":["Do not modify or reuse accepted migration v36.","Do not let candidates author or mutate prediction outcomes.","Do not gate selection or candidate status on prediction accuracy.","Do not ENABLE the laboratory.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Define PredictionOutcomeV1 and validation rules.","Derive prediction outcome in evaluator.","Add and register migration v37 in SQLite and PostgreSQL, including matching DDL, constraints, indexes, integrity registration, and v36 forward upgrades.","Persist immutably in LocalProductStore.","Verify accuracy cannot gate selection and SQLite/PostgreSQL parity.","Stop before Level-1."],"verification":["cargo fmt --all -- --check","cargo test -p engine --lib prediction_outcomes -- --test-threads=1","cargo test -p engine --test test_data_operations -- --test-threads=1","cargo test -p engine --features pg-tests -- --test-threads=1","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert the runtime PR safely; the additive v37 table is ignored by v36 binaries. Do not destructively downgrade schema. A v37-to-v36 downgrade needs a separately accepted recovery packet that preserves or archives immutable outcome records.","pause_gates":["Stop before Level-1."],"expected_artifacts":["engine/src/harness_evolution.rs PredictionOutcomeV1","engine/src/storage/local_product_store/harness_evolution.rs persist_ec2_prediction_outcome","SQLite and PostgreSQL v37 migration registration and parity evidence"],"forbidden_next_actions":["Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T1","known_store_mutations":["harness_evolution_ec2_prediction_outcomes"]}
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC3-CONTRACT-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Freeze lifecycle-cost ontology, trustworthy sources, missingness and eligibility rules, reservation and reconciliation, per-candidate and global envelopes, failure accounting, and diagnosis, hypothesis, prediction, and outcome-reconciliation cost.","allowed_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","tests/test_session_context.py"],"allowed_outputs":["Versioned lifecycle-budget contract types and fail-closed validation in engine/src/harness_evolution.rs."],"prerequisites":["PE7-HE-EC2-PREDICTION-OUTCOME-1"],"prerequisite_receipts":["PE7-HE-EC2-PREDICTION-OUTCOME-1 COMPLETE: PR #600 exact head `0ccdbefa59e18b241cba7cb6f26f3d267608a9a9`; squash merge `ac2b2f640406ca766b0cd567c2782e426d8dad2b`; exact-head review comments `5385499271` and `5385499345`; canonical workflow `32633510108`"],"forbidden_changes":["Do not change spend, persistence, admission, or runtime behavior.","Do not create a second budget or spend owner.","Do not execute candidates or call a Provider.","Do not ENABLE the laboratory.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"ordered_steps":["Define lifecycle cost phases and source semantics.","Define candidate and global envelopes, reservation and reconciliation vocabulary, and failure accounting.","Implement versioned validation and sealing helpers.","Add positive and adversarial unit tests.","Stop before instrumentation."],"verification":["cargo fmt --all -- --check","cargo test -p engine --lib ec3_lifecycle_budget -- --test-threads=1","cargo clippy -p engine --all-targets --all-features -- -D warnings","git diff --check","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py"],"rollback":"Revert the contract PR; no durable data or external effect exists to undo.","pause_gates":["Stop before instrumentation."],"expected_artifacts":["engine/src/harness_evolution.rs lifecycle-budget contract types and validation"],"forbidden_next_actions":["Do not start PE7-HE-EC3-INSTRUMENTATION-1.","Do not start PE7-HE-LEVEL1-PREFLIGHT-1."],"worker_tier":"T2","known_store_mutations":[]}
 -->
 
 ## Common Execution Protocol
