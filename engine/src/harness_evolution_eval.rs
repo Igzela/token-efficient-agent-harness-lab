@@ -151,16 +151,16 @@ fn participates_in_prediction(baseline: &BaselineEvaluation) -> bool {
 
 fn metric_evidence(baseline: &BaselineEvaluation) -> String {
     format!(
-        "baseline={}|seed={}|split={:?}|sealed={}|quality={:.8}|token_cost={:.8}|latency_ms={:.8}|robustness={:.8}|behavioral_diversity={:.8}|calls={}|tokens={}|incomplete={}|gate={}",
+        "baseline={}|seed={}|split={:?}|sealed={}|quality_bits={:016x}|token_cost_bits={:016x}|latency_ms_bits={:016x}|robustness_bits={:016x}|behavioral_diversity_bits={:016x}|calls={}|tokens={}|incomplete={}|gate={}",
         baseline.baseline.as_str(),
         baseline.seed,
         baseline.split,
         if baseline.used_sealed_holdout { 1 } else { 0 },
-        baseline.metrics.quality,
-        baseline.metrics.token_cost,
-        baseline.metrics.latency_ms,
-        baseline.metrics.robustness,
-        baseline.metrics.behavioral_diversity,
+        baseline.metrics.quality.to_bits(),
+        baseline.metrics.token_cost.to_bits(),
+        baseline.metrics.latency_ms.to_bits(),
+        baseline.metrics.robustness.to_bits(),
+        baseline.metrics.behavioral_diversity.to_bits(),
         baseline.usage.calls,
         baseline.usage.tokens,
         if baseline.usage.incomplete { 1 } else { 0 },
@@ -2365,6 +2365,33 @@ mod tests {
             "2026-08-23T00:00:00Z",
         )
         .unwrap();
+
+        // Evidence digests must bind the exact IEEE-754 values, not a rounded
+        // display representation. A sub-1e-8 metric change is still a
+        // different evaluator observation and must change every digest that
+        // includes that baseline.
+        let mut precision_changed = bundle.clone();
+        let validation = precision_changed
+            .baselines
+            .iter_mut()
+            .find(|baseline| matches!(baseline.split, TaskSplit::Validation))
+            .expect("fixture includes validation evidence");
+        validation.metrics.quality += 1e-9;
+        validation.hard_gate = HardGateResult::FailedSafety;
+        precision_changed.bundle_sha256 = bundle_content_hash(&precision_changed).unwrap();
+        assert_ne!(
+            actual_improvement_digest(&bundle),
+            actual_improvement_digest(&precision_changed)
+        );
+        assert_ne!(
+            actual_regression_digest(&bundle),
+            actual_regression_digest(&precision_changed)
+        );
+        assert_ne!(
+            actual_counterevidence_digest(&bundle),
+            actual_counterevidence_digest(&precision_changed)
+        );
+
         let hypothesis = |improvement: String, regression: String| {
             seal_mutation_hypothesis_manifest(MutationHypothesisManifestV1 {
                 schema_version: MUTATION_HYPOTHESIS_MANIFEST_SCHEMA.to_string(),
