@@ -116,7 +116,9 @@ fn require_bootstrap_for_managed_delegation(
             "the bootstrap delegation capability cannot be delegated",
         ));
     }
-    if matches!(role, "reviewer" | "output_operator") || requests_managed_acceptance_scope(scopes) {
+    if matches!(role, "reviewer" | "output_operator" | "operator")
+        || requests_managed_acceptance_scope(scopes)
+    {
         if context.api_key_id != LOCAL_BOOTSTRAP_API_KEY_ID
             || !context.scopes.contains(SCOPE_IDENTITY_DELEGATE)
         {
@@ -155,7 +157,10 @@ fn require_key_target_authority(
             "a key may only be managed within the authenticated tenant",
         ));
     }
-    if matches!(target_role, Some("reviewer" | "output_operator")) {
+    if matches!(
+        target_role,
+        Some("reviewer" | "output_operator" | "operator")
+    ) {
         if context.api_key_id != LOCAL_BOOTSTRAP_API_KEY_ID
             || !context.scopes.contains(SCOPE_IDENTITY_DELEGATE)
         {
@@ -189,7 +194,10 @@ fn require_managed_actor_key_mutation_allowed(
                 .and_then(|value| value.as_str())
                 .map(str::to_string)
         });
-    if matches!(actor_role.as_deref(), Some("reviewer" | "output_operator")) {
+    if matches!(
+        actor_role.as_deref(),
+        Some("reviewer" | "output_operator" | "operator")
+    ) {
         return Err(ApiError::new(
             axum::http::StatusCode::FORBIDDEN,
             "managed identities cannot mutate API key authority",
