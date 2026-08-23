@@ -25,6 +25,29 @@ use std::sync::{Arc, Mutex};
 
 pub const MANAGED_DEEPSEEK_EXECUTOR_TYPE: &str = "managed_deepseek";
 const MANAGED_DEEPSEEK_NODE_METADATA: &str = "managed_deepseek";
+const MANAGED_WORKSPACE_ACTION_TOOL: &str = "apply_workspace_action";
+
+fn managed_workspace_action_tool() -> super::managed_deepseek::ManagedTool {
+    super::managed_deepseek::ManagedTool {
+        tool_type: "function".to_string(),
+        function: super::managed_deepseek::ManagedToolFunction {
+            name: MANAGED_WORKSPACE_ACTION_TOOL.to_string(),
+            description: "Apply one bounded replacement in one concrete regular file from allowed_file_paths; never target a directory.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "schema_version": {"type": "string", "description": "Always managed_workspace_action.v1"},
+                    "action": {"type": "string", "description": "Always replace_text"},
+                    "path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"}
+                },
+                "required": ["schema_version", "action", "path", "old_text", "new_text"]
+            }),
+        },
+        strict: true,
+    }
+}
 
 #[derive(Clone)]
 struct ManagedDeepSeekProviders {
@@ -300,6 +323,23 @@ impl ManagedDeepSeekNodeExecutor {
                 ),
             ));
         }
+        if role == ManagedModelRole::Implementer {
+            // Tool calling makes the implementation contract machine-readable
+            // at the provider boundary. The store remains the sole authority:
+            // it still validates the arguments against the exact workspace,
+            // path, lease, and change bounds before writing anything.
+            // DeepSeek V4 rejects forced tool_choice while thinking mode is
+            // enabled, so this bounded implementation turn uses the provider's
+            // non-thinking tool-call mode; planner and reviewer remain on the
+            // admitted reasoning route.
+            request.thinking.mode = "disabled".to_string();
+            request.thinking.reasoning_effort = None;
+            request.tools = vec![managed_workspace_action_tool()];
+            request.tool_choice = Some(json!({
+                "type": "function",
+                "function": {"name": MANAGED_WORKSPACE_ACTION_TOOL}
+            }));
+        }
         request.validate()?;
         Ok((request, role))
     }
@@ -478,6 +518,19 @@ impl NodeExecutor for ManagedDeepSeekNodeExecutor {
         match Self::execute_blocking(provider, authority, request.clone()) {
             Ok(response) => {
                 let action_receipt = if role == ManagedModelRole::Implementer {
+                    let model_output = if response.tool_calls.len() == 1
+                        && response.tool_calls[0].function.name == MANAGED_WORKSPACE_ACTION_TOOL
+                    {
+                        response.tool_calls[0].function.arguments.as_str()
+                    } else if response.tool_calls.is_empty() {
+                        response.output_text.as_str()
+                    } else {
+                        return failed(
+                            "managed implementer returned an unexpected workspace tool call"
+                                .to_string(),
+                            started.elapsed().as_millis() as i64,
+                        );
+                    };
                     // The store-owned sink revalidates the exact ProductTask,
                     // workflow run, node lease generation, delegated attempt
                     // lease, and reconciled provider claim while holding the
@@ -485,7 +538,7 @@ impl NodeExecutor for ManagedDeepSeekNodeExecutor {
                     match self.source.apply_workspace_action(
                         &request.binding,
                         &input.node_metadata,
-                        &response.output_text,
+                        model_output,
                     ) {
                         Ok(receipt) => Some(receipt),
                         Err(error) => {
@@ -685,6 +738,12 @@ mod tests {
 
     fn input(stage: &str) -> NodeExecutionInput {
         let binding = binding();
+        let role = match stage {
+            "planning" => "planner",
+            "implementation" => "implementer",
+            "review" => "reviewer",
+            _ => "planner",
+        };
         NodeExecutionInput {
             node_id: binding.node_id.clone(),
             task_type: MANAGED_DEEPSEEK_EXECUTOR_TYPE.to_string(),
@@ -693,13 +752,60 @@ mod tests {
             node_metadata: json!({
                 "managed_deepseek": {
                     "stage": stage,
-                    "role": "planner",
+                    "role": role,
                     "protocol": "openai_compatible",
                     "binding": binding,
                     "prompt": "bounded planning request"
                 }
             }),
         }
+    }
+
+    #[test]
+    fn implementer_request_requires_one_workspace_action_tool() {
+        let source = Arc::new(StaticAuthority {
+            snapshot: PersistedAuthoritySnapshot {
+                product_task_id: binding().product_task_id,
+                workflow_id: binding().workflow_id,
+                node_id: binding().node_id,
+                attempt_id: binding().attempt_id,
+                spend_authorization_id: binding().spend_authorization_id,
+                attempt_lease_id: binding().attempt_lease_id,
+                spend_status: "consumed".to_string(),
+                consumed_by_attempt_id: Some("attempt-1".to_string()),
+                lease_status: "current".to_string(),
+                execution_contract: Some(test_execution_contract()),
+            },
+        });
+        let transport = Arc::new(CountingTransport {
+            sends: Arc::new(AtomicUsize::new(0)),
+        });
+        let p = providers(transport);
+        let executor = ManagedDeepSeekNodeExecutor::new(
+            p.planner,
+            p.implementer,
+            p.reviewer,
+            source,
+            ManagedDeepSeekExecutorConfig::default(),
+        )
+        .unwrap();
+        let (request, role) = executor.request(&input("implementation")).unwrap();
+        assert_eq!(role, ManagedModelRole::Implementer);
+        assert_eq!(request.thinking.mode, "disabled");
+        assert_eq!(request.thinking.reasoning_effort, None);
+        assert_eq!(request.tools.len(), 1);
+        assert_eq!(
+            request.tools[0].function.name,
+            MANAGED_WORKSPACE_ACTION_TOOL
+        );
+        assert!(request.tools[0].strict);
+        assert_eq!(
+            request.tool_choice,
+            Some(json!({
+                "type": "function",
+                "function": {"name": MANAGED_WORKSPACE_ACTION_TOOL}
+            }))
+        );
     }
 
     #[test]

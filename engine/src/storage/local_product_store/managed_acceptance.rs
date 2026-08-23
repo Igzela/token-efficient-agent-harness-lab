@@ -55,6 +55,17 @@ pub const MANAGED_OUTPUT_OPERATOR_KEY_SCOPES: &[&str] = &[
     SCOPE_DELEGATED_EXECUTE,
     SCOPE_ATTEMPT_ADMIT,
 ];
+/// Least-privilege RWE run authority. This identity may acknowledge risk,
+/// authorize the frozen spend envelope, admit its one-use run, and revoke it;
+/// cell execution and artifact confirmation remain separate identities.
+pub const MANAGED_RWE_OPERATOR_KEY_SCOPES: &[&str] = &[
+    SCOPE_RISK_ACKNOWLEDGE,
+    SCOPE_SPEND_AUTHORIZE,
+    SCOPE_ATTEMPT_ADMIT,
+    SCOPE_REVOKE,
+    SCOPE_DELEGATED_AUTONOMY,
+    SCOPE_DELEGATED_MANIFEST_APPROVE,
+];
 
 pub const ALL_MANAGED_ACCEPTANCE_SCOPES: &[&str] = &[
     SCOPE_RISK_ACKNOWLEDGE,
@@ -75,7 +86,7 @@ pub fn validate_managed_acceptance_role_scopes(
     role: &str,
     scopes: &[String],
 ) -> Result<(), String> {
-    let managed_role = matches!(role, "reviewer" | "output_operator");
+    let managed_role = matches!(role, "reviewer" | "output_operator" | "operator");
     let managed_requested = scopes.iter().any(|scope| {
         ALL_MANAGED_ACCEPTANCE_SCOPES.contains(&scope.as_str())
             || scope.starts_with("managed_acceptance:")
@@ -86,9 +97,10 @@ pub fn validate_managed_acceptance_role_scopes(
     let allowed = match role {
         "reviewer" => MANAGED_REVIEWER_KEY_SCOPES,
         "output_operator" => MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
+        "operator" => MANAGED_RWE_OPERATOR_KEY_SCOPES,
         _ => {
             return Err(format!(
-                "managed-acceptance scopes require reviewer or output_operator role; got {role:?}"
+                "managed-acceptance scopes require reviewer, output_operator, or operator role; got {role:?}"
             ));
         }
     };
@@ -125,9 +137,10 @@ fn validate_bootstrap_identity_delegation_scopes(scopes: &[String]) -> Result<()
 mod managed_identity_scope_profile_tests {
     use super::{
         validate_managed_acceptance_role_scopes, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
-        MANAGED_REVIEWER_KEY_SCOPES, SCOPE_ATTEMPT_ADMIT, SCOPE_DELEGATED_ARTIFACT_CONFIRM,
-        SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_EXECUTE, SCOPE_DELEGATED_MANIFEST_APPROVE,
-        SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
+        MANAGED_REVIEWER_KEY_SCOPES, MANAGED_RWE_OPERATOR_KEY_SCOPES, SCOPE_ATTEMPT_ADMIT,
+        SCOPE_DELEGATED_ARTIFACT_CONFIRM, SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_EXECUTE,
+        SCOPE_DELEGATED_MANIFEST_APPROVE, SCOPE_REVOKE, SCOPE_RISK_ACKNOWLEDGE,
+        SCOPE_SPEND_AUTHORIZE,
     };
 
     fn strings(scopes: &[&str]) -> Vec<String> {
@@ -180,6 +193,36 @@ mod managed_identity_scope_profile_tests {
         assert!(validate_managed_acceptance_role_scopes(
             "output_operator",
             &strings(&[SCOPE_DELEGATED_MANIFEST_APPROVE]),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rwe_operator_profile_is_run_authority_only() {
+        assert_eq!(
+            MANAGED_RWE_OPERATOR_KEY_SCOPES,
+            &[
+                SCOPE_RISK_ACKNOWLEDGE,
+                SCOPE_SPEND_AUTHORIZE,
+                SCOPE_ATTEMPT_ADMIT,
+                SCOPE_REVOKE,
+                SCOPE_DELEGATED_AUTONOMY,
+                SCOPE_DELEGATED_MANIFEST_APPROVE,
+            ]
+        );
+        assert!(validate_managed_acceptance_role_scopes(
+            "operator",
+            &strings(MANAGED_RWE_OPERATOR_KEY_SCOPES),
+        )
+        .is_ok());
+        assert!(validate_managed_acceptance_role_scopes(
+            "operator",
+            &strings(&[SCOPE_RISK_ACKNOWLEDGE, "team:admin"]),
+        )
+        .is_err());
+        assert!(validate_managed_acceptance_role_scopes(
+            "operator",
+            &strings(&[SCOPE_DELEGATED_EXECUTE]),
         )
         .is_err());
     }
@@ -10010,9 +10053,14 @@ impl LocalProductStore {
         let stage_path = if docs_paths {
             "docs/USER_GUIDE.md".to_string()
         } else {
-            allowed_paths
-                .first()
-                .cloned()
+            node_metadata
+                .pointer("/managed_deepseek/prompt_path")
+                .and_then(Value::as_str)
+                .filter(|path| {
+                    crate::rwe::frozen_rwe_bindings::path_under_allowed_paths(path, &allowed_paths)
+                })
+                .map(str::to_string)
+                .or_else(|| allowed_paths.first().cloned())
                 .ok_or("managed stage context frozen RWE paths empty")?
         };
         let file_path = Path::new(workspace_path).join(&stage_path);
@@ -10033,7 +10081,10 @@ impl LocalProductStore {
                     "managed stage context secret scan failed before provider request".into(),
                 );
             }
-            (content, stage_path)
+            // Keep the request-time workspace context inside the frozen
+            // provider envelope. The action sink still reads the complete
+            // target file before applying the model's exact replacement.
+            (content.chars().take(4096).collect(), stage_path)
         } else if rwe_paths {
             // Directory prefixes are valid RWE allowed paths; stage a bounded path list only.
             (
@@ -10042,6 +10093,11 @@ impl LocalProductStore {
             )
         } else {
             return Err("managed stage context allowed file is unavailable".into());
+        };
+        let allowed_file_paths = if rwe_paths {
+            bounded_workspace_file_paths(workspace_path, &allowed_paths)?
+        } else {
+            Vec::new()
         };
         let run_id = task
             .get("run_id")
@@ -10102,7 +10158,8 @@ impl LocalProductStore {
                 "path": staged_path,
                 "content": content
             },
-            "allowed_paths": allowed_paths
+            "allowed_paths": allowed_paths,
+            "allowed_file_paths": allowed_file_paths
         }))))
     }
     pub(crate) fn store_current_managed_authority(
@@ -10184,6 +10241,65 @@ impl LocalProductStore {
             },
         )
     }
+}
+
+/// Return a deterministic, bounded index of regular files under frozen RWE
+/// directory prefixes. It exposes names only; the workspace action sink still
+/// revalidates the chosen path and opens it without symlink traversal.
+fn bounded_workspace_file_paths(
+    workspace_path: &str,
+    allowed_paths: &[String],
+) -> Result<Vec<String>, String> {
+    let workspace = Path::new(workspace_path);
+    let mut pending = Vec::new();
+    let mut files = Vec::new();
+    for allowed in allowed_paths {
+        let relative = Path::new(allowed);
+        let absolute = workspace.join(relative);
+        let metadata = std::fs::symlink_metadata(&absolute)
+            .map_err(|_| "managed stage context allowed path is unavailable")?;
+        if metadata.file_type().is_symlink() {
+            return Err("managed stage context allowed path is a symlink".into());
+        }
+        if metadata.is_file() {
+            files.push(allowed.clone());
+        } else if metadata.is_dir() {
+            pending.push((absolute, relative.to_path_buf()));
+        }
+    }
+    while let Some((directory, relative_directory)) = pending.pop() {
+        let mut entries = std::fs::read_dir(&directory)
+            .map_err(|_| "managed stage context allowed directory is unavailable")?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "managed stage context allowed directory is unavailable")?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let entry_path = entry.path();
+            let metadata = std::fs::symlink_metadata(&entry_path)
+                .map_err(|_| "managed stage context directory entry is unavailable")?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            let relative = relative_directory.join(entry.file_name());
+            if metadata.is_dir() {
+                pending.push((entry_path, relative));
+            } else if metadata.is_file() {
+                if let Some(path) = relative.to_str() {
+                    files.push(path.to_string());
+                }
+            }
+            if files.len() >= 128 {
+                break;
+            }
+        }
+        if files.len() >= 128 {
+            break;
+        }
+    }
+    files.sort();
+    files.dedup();
+    files.truncate(64);
+    Ok(files)
 }
 
 fn managed_deepseek_run_node<'a>(run: &'a Value, node_id: &str) -> Result<&'a Value, String> {

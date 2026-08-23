@@ -246,6 +246,8 @@ pub struct ManagedTool {
     #[serde(rename = "type")]
     pub tool_type: String,
     pub function: ManagedToolFunction,
+    #[serde(default)]
+    pub strict: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2692,6 +2694,7 @@ followed by a one-sentence summary of the change.";
                 description: "Read an approved file".into(),
                 parameters: json!({"type":"object","properties":{"path":{"type":"string"}}}),
             },
+            strict: false,
         }];
         req.tool_choice = Some(Value::String("required".into()));
         let provider = ManagedDeepSeekProvider::new_openai(
