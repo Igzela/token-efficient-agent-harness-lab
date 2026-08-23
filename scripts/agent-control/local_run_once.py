@@ -44,9 +44,12 @@ def select_live_plan_generation(
 
     A claimed, dispatched, or closed_out generation stays live even when
     accepted main has moved past its stored ``source_main_sha``.  An older
-    ``failed_unknown_output`` / ``outcome_unknown`` terminal does not shadow
-    a newer live generation.  Returns ``(kind, status, attempt, details)``
-    where kind is ``live``, ``unknown``, ``ambiguous``, or ``absent``.
+    ``failed_unknown_output`` terminal is a durable failed attempt, not a
+    live claim: it never proves the old output, but it also cannot indefinitely
+    shadow a fresh claim after ``block-plan`` has released capacity.
+    ``outcome_unknown`` remains fail-closed until an explicit terminalization.
+    Returns ``(kind, status, attempt, details)`` where kind is ``live``,
+    ``unknown``, ``ambiguous``, or ``absent``.
     """
 
     if not isinstance(packet_id, str) or plan_lane.PACKET_ID.fullmatch(packet_id) is None:
@@ -77,7 +80,13 @@ def select_live_plan_generation(
         if not isinstance(source_main, str) or local_loop.HEX40.fullmatch(source_main) is None:
             continue
         status = state.get("status")
-        if status in {"failed_unknown_output", "outcome_unknown"}:
+        if status == "failed_unknown_output":
+            # ``block-plan`` writes this terminal state only after binding the
+            # exact claim and releasing its capacity. Retain the record as
+            # evidence of the unproved old output, but do not make it a
+            # permanent live generation.
+            continue
+        if status == "outcome_unknown":
             if newest is None:
                 return "unknown", None, None, None
             continue

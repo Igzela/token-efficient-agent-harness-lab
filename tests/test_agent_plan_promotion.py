@@ -612,7 +612,7 @@ class TestBootstrapPromotionFallback(unittest.TestCase):
 
 
 class TestPromotionWait(unittest.TestCase):
-    def test_reconcile_unknown_generation_never_mints_a_fresh_attempt(self):
+    def test_reconcile_terminal_unknown_output_allows_a_fresh_attempt(self):
         github = mock.Mock()
         runner = local_run_once.LocalRunOnce(
             github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
@@ -627,6 +627,32 @@ class TestPromotionWait(unittest.TestCase):
                 "details": {
                     "subject_kind": "plan-packet",
                     "subject_id": CLOSED,
+                    "attempt_id": ATTEMPT,
+                    "source_main_sha": MAIN,
+                },
+            }),
+        }
+        with mock.patch.object(runner, "_live_plan", return_value=(candidate, LEDGER)), \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=[comment]):
+            result = runner.reconcile_plan(CLOSED)
+        self.assertIsNone(result)
+
+    def test_reconcile_unterminalized_outcome_unknown_remains_fail_closed(self):
+        github = mock.Mock()
+        runner = local_run_once.LocalRunOnce(
+            github, mock.Mock(), repository="acme/repo", repo_path=Path("/tmp"),
+        )
+        candidate = mock.Mock(source_main_sha=MAIN)
+        comment = {
+            "author": {"login": "github-actions[bot]"},
+            "body": json.dumps({
+                "action": "plan-run",
+                "dispatch_id": DISPATCH_ID,
+                "status": "outcome_unknown",
+                "details": {
+                    "subject_kind": "plan-packet",
+                    "subject_id": CLOSED,
+                    "attempt_id": ATTEMPT,
                     "source_main_sha": MAIN,
                 },
             }),
