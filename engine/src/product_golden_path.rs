@@ -1395,6 +1395,87 @@ fn require_rfc3339_utc(field: &str, value: &str) -> Result<String, String> {
     Ok(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
+/// Choose a concrete regular file for the managed implementer prompt when a
+/// frozen RWE binding grants directory prefixes. This is only a prompt hint;
+/// the store-owned workspace sink remains the authority that validates and
+/// applies the returned path/action.
+fn concrete_managed_prompt_path(
+    workspace_path: &str,
+    allowed_paths: &Value,
+    objective: &str,
+) -> String {
+    let allowed = allowed_paths
+        .as_array()
+        .map(|paths| {
+            paths
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut pending = allowed
+        .iter()
+        .map(|path| {
+            (
+                std::path::PathBuf::from(workspace_path).join(path),
+                std::path::PathBuf::from(path),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    while let Some((absolute, relative)) = pending.pop() {
+        let Ok(metadata) = std::fs::symlink_metadata(&absolute) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_file() {
+            if let Some(path) = relative.to_str() {
+                candidates.push(path.to_string());
+            }
+            continue;
+        }
+        if !metadata.is_dir() {
+            continue;
+        }
+        let Ok(mut entries) =
+            std::fs::read_dir(&absolute).and_then(|entries| entries.collect::<Result<Vec<_>, _>>())
+        else {
+            continue;
+        };
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries.into_iter().rev() {
+            pending.push((entry.path(), relative.join(entry.file_name())));
+        }
+        if candidates.len() >= 128 {
+            break;
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    if candidates.is_empty() {
+        return allowed.first().cloned().unwrap_or_default();
+    }
+    let terms = objective
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|term| term.len() >= 4)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    candidates
+        .into_iter()
+        .max_by_key(|path| {
+            let lower = path.to_ascii_lowercase();
+            terms
+                .iter()
+                .filter(|term| lower.contains(term.as_str()))
+                .count()
+        })
+        .unwrap_or_default()
+}
+
 /// Compile a versioned executable graph for a workspace-bound product task.
 ///
 /// Does not create a second scheduler. Nodes carry exact task/workspace/source
@@ -1712,11 +1793,11 @@ pub fn compile_product_executable_graph(
                 let mut stage_binding = binding.clone().unwrap_or_else(|| json!({}));
                 stage_binding["node_id"] = json!(node_id);
                 // Prefer a concrete allowed path for prompts (workspace-bound, not caller text).
-                let prompt_path = allowed_paths
-                    .as_array()
-                    .and_then(|a| a.first())
-                    .and_then(Value::as_str)
-                    .unwrap_or("docs/USER_GUIDE.md");
+                let prompt_path = concrete_managed_prompt_path(
+                    workspace_path,
+                    &allowed_paths,
+                    objective_preview.as_str().unwrap_or(""),
+                );
                 // The docs Golden Path planner gate admits only the legacy
                 // clarify intent for docs/USER_GUIDE.md; frozen RWE cells admit
                 // bounded_product_task inside the frozen union. Emit the intent
@@ -1733,7 +1814,7 @@ pub fn compile_product_executable_graph(
                         objective_preview
                     ),
                     "implementation" => format!(
-                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_workspace_action.v1\",\"action\":\"replace_text\",\"path\":\"{prompt_path}\",\"old_text\":\"...\",\"new_text\":\"...\"}}. Use only an exact allowed path and make one bounded replacement.",
+                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_workspace_action.v1\",\"action\":\"replace_text\",\"path\":\"{prompt_path}\",\"old_text\":\"...\",\"new_text\":\"...\"}}. Use one concrete regular file from allowed_file_paths (never a directory), make one bounded replacement, and keep all changes within the task objective.",
                         objective_preview
                     ),
                     "review" => format!(
@@ -1749,6 +1830,7 @@ pub fn compile_product_executable_graph(
                     "protocol": "openai_compatible",
                     "binding": stage_binding,
                     "binding_status": if deferred_binding { "deferred" } else { "bound" },
+                    "prompt_path": prompt_path,
                     "prompt": prompt,
                     "authority_binding_source": "LocalProductStore.managed_acceptance"
                 });
