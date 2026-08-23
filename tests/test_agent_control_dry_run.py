@@ -87,7 +87,7 @@ class TestDryRunAndVaderTrustBoundary(unittest.TestCase):
         self.assertNotIn("OPENCODE_SERVER_PASSWORD=", source)
         self.assertIn("command -v opencode", source)
         self.assertNotIn("command -v codex", source)
-        self.assertIn('"opencode/deepseek-v4-flash-free"', source)
+        self.assertIn('"deepseek/deepseek-v4-flash"', source)
         self.assertIn("--format json", source)
         self.assertNotIn("--auto", source)
         self.assertNotIn("--attach", source)

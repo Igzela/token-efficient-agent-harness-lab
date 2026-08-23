@@ -2026,7 +2026,7 @@ class TestOpenCodeWrapperPublicEntry(unittest.TestCase):
         self.assertIn("--format", args)
         self.assertEqual(args[args.index("--format") + 1], "json")
         self.assertIn("--model", args)
-        self.assertEqual(args[args.index("--model") + 1], "opencode/deepseek-v4-flash-free")
+        self.assertEqual(args[args.index("--model") + 1], "deepseek/deepseek-v4-flash")
         self.assertIn("--dir", args)
         self.assertEqual(args[args.index("--dir") + 1], str(worktree))
         self.assertIn("--file", args)
