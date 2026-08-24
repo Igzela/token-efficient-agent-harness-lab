@@ -360,9 +360,11 @@ impl LocalProductStore {
                 bundle_id: String::new(),
                 contract_id: contract_id.to_string(),
                 candidate_id: candidate_id.to_string(),
-                evaluation_id: None,
-                product_task_id: event.product_task_id.clone(),
-                run_id: None,
+                evaluation_id: evaluation_id.map(str::to_string),
+                product_task_id: product_task_id
+                    .map(str::to_string)
+                    .or_else(|| event.product_task_id.clone()),
+                run_id: run_id.map(str::to_string),
                 attempt_id: attempt_id.to_string(),
                 source_digests,
                 observations,

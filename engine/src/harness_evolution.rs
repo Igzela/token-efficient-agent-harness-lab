@@ -1479,6 +1479,15 @@ pub fn ec3_lifecycle_cost_observations_from_usage_event_with_identity(
     require_nonempty_id(terminal_class, "ec3_cost_required_missing")?;
     require_nonempty_id(&event.event_id, "ec3_cost_source_missing")?;
     require_nonempty_id(&event.source_schema_version, "ec3_cost_source_missing")?;
+    if product_task_id.is_some()
+        && event.product_task_id.as_deref().is_some()
+        && product_task_id != event.product_task_id.as_deref()
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_join_ambiguous",
+            "caller task identity disagrees with the canonical usage event",
+        ));
+    }
     if event.schema_version != crate::execution_usage::EXECUTION_USAGE_EVENT_SCHEMA {
         return Err(EvolutionAdmissionError::new(
             "ec3_cost_source_schema_drift",
@@ -3537,7 +3546,7 @@ mod tests {
         assert!(observations
             .iter()
             .all(|observation| observation.product_task_id.as_deref() == Some("task-1")));
-        let joined = ec3_lifecycle_cost_observations_from_usage_event_with_identity(
+        let ambiguous = ec3_lifecycle_cost_observations_from_usage_event_with_identity(
             "contract-1",
             "candidate-1",
             Some("evaluation-1"),
@@ -3548,10 +3557,23 @@ mod tests {
             "completed",
             &event,
         )
+        .unwrap_err();
+        assert_eq!(ambiguous.code, "ec3_cost_join_ambiguous");
+        let joined = ec3_lifecycle_cost_observations_from_usage_event_with_identity(
+            "contract-1",
+            "candidate-1",
+            Some("evaluation-1"),
+            Some("task-1"),
+            Some("run-joined"),
+            "attempt-1",
+            LifecycleCostPhase::Evaluation,
+            "completed",
+            &event,
+        )
         .unwrap();
         assert!(joined.iter().all(|observation| {
             observation.evaluation_id.as_deref() == Some("evaluation-1")
-                && observation.product_task_id.as_deref() == Some("task-joined")
+                && observation.product_task_id.as_deref() == Some("task-1")
                 && observation.run_id.as_deref() == Some("run-joined")
         }));
         let mut invalid = event;
