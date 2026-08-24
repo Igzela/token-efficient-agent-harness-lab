@@ -27,9 +27,10 @@ use engine::feedback::{
 };
 #[cfg(feature = "pg-tests")]
 use engine::harness_evolution::{
-    seal_ec3_lifecycle_cost_bundle, seal_ec3_lifecycle_cost_observation, CostTrustSource,
-    LifecycleCostDimension, LifecycleCostMissingReason, LifecycleCostMissingnessV1,
-    LifecycleCostObservationBundleV1, LifecycleCostObservationV1, LifecycleCostPhase,
+    sample_ec3_budget_contract, seal_ec3_lifecycle_cost_bundle,
+    seal_ec3_lifecycle_cost_observation, CostTrustSource, LifecycleCostDimension,
+    LifecycleCostMissingReason, LifecycleCostMissingnessV1, LifecycleCostObservationBundleV1,
+    LifecycleCostObservationV1, LifecycleCostPhase,
 };
 #[cfg(feature = "pg-tests")]
 use engine::http_server::{build_axum_router, AxumApiState};
@@ -389,6 +390,46 @@ fn pg_ec3_lifecycle_cost_bundle_missingness_and_atomic_conflict() {
             .len(),
         6,
         "bundle conflict must roll back all prior rows in the transaction"
+    );
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_ec3_budget_reservation_reconciliation_and_restart_replay() {
+    let Some(store) = test_store() else { return };
+    let candidate_id = format!("pg-ec3-budget-{}", uuid_tag());
+    let contract = sample_ec3_budget_contract();
+    let reservation = store
+        .reserve_candidate_lifecycle_budget(&contract, &candidate_id, "pg-ec3-budget-test")
+        .unwrap();
+    assert_eq!(reservation.status.as_str(), "active");
+    assert_eq!(
+        store
+            .get_candidate_lifecycle_budget_reservation(&candidate_id)
+            .unwrap()
+            .expect("PG reservation")
+            .reservation_id,
+        reservation.reservation_id
+    );
+
+    // No terminal usage is evidence of unknown spend, never an implicit zero.
+    let first = store
+        .reconcile_candidate_lifecycle_budget(&contract, &candidate_id, "pg-ec3-budget-test")
+        .unwrap();
+    assert_eq!(first.outcome.as_str(), "overrun_stopped");
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let restarted = LocalProductStore::new_postgres(&database_url, utc_now_string).unwrap();
+    let replay = restarted
+        .reconcile_candidate_lifecycle_budget(&contract, &candidate_id, "pg-ec3-budget-test")
+        .unwrap();
+    assert_eq!(replay.reconciliation_id, first.reconciliation_id);
+    assert_eq!(
+        restarted
+            .get_candidate_lifecycle_budget_reconciliation(&candidate_id)
+            .unwrap()
+            .expect("PG reconciliation")
+            .record_sha256,
+        first.record_sha256
     );
 }
 

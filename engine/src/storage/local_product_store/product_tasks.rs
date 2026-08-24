@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::harness_evolution::Ec3LifecycleBudgetContractV1;
 use crate::node_executor::{
     CommandNodeExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor,
     ProcessBoundaryMapping, ProcessEffectState, ProcessOutcome, ProcessOutcomeState,
@@ -1530,6 +1531,64 @@ impl LocalProductStore {
             "product task admit concurrent retry exhausted while workspace preparation remains in progress"
                 .to_string(),
         )
+    }
+
+    /// Admission variant for the EC3 packet.  ProductTask remains the sole
+    /// admission owner; this small bridge commits the complete lifecycle
+    /// reservation immediately after the task/workspace receipt and before a
+    /// caller can compile or schedule execution.
+    pub fn admit_product_task_with_ec3_budget(
+        &self,
+        intake: &ValidatedProductTaskIntake,
+        actor: &str,
+        contract: &Ec3LifecycleBudgetContractV1,
+    ) -> Result<Value, String> {
+        let task = self.admit_product_task(intake, actor)?;
+        let task_id = task
+            .get("task_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "admitted product task missing task_id".to_string())?;
+        let reservation = self.reserve_candidate_lifecycle_budget(contract, task_id, actor)?;
+        Ok(json!({
+            "task": task,
+            "ec3_budget_reservation": reservation,
+            "execution_admitted": false,
+        }))
+    }
+
+    /// Terminal bridge for the EC3 packet.  Reconciliation is owned by the
+    /// same LocalProductStore transaction as the reservation, so retries and
+    /// restart replay return the original reconciliation rather than charging
+    /// a second time.
+    pub fn reconcile_product_task_ec3_budget(
+        &self,
+        task_id: &str,
+        actor: &str,
+        contract: &Ec3LifecycleBudgetContractV1,
+    ) -> Result<Value, String> {
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        let status =
+            ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
+        if !status.is_terminal() {
+            return Err(format!(
+                "EC3 reconciliation requires a terminal ProductTask; status={}",
+                status.as_str()
+            ));
+        }
+        let already_reconciled = self
+            .get_candidate_lifecycle_budget_reconciliation(task_id)?
+            .is_some();
+        let reconciliation = self.reconcile_candidate_lifecycle_budget(contract, task_id, actor)?;
+        let task = self.get_product_task(task_id)?.ok_or_else(|| {
+            format!("product task disappeared during EC3 reconciliation: {task_id}")
+        })?;
+        Ok(json!({
+            "task": task,
+            "reconciliation": reconciliation,
+            "reused": already_reconciled,
+        }))
     }
 
     pub(super) fn get_product_task_locked(
@@ -3078,6 +3137,17 @@ impl LocalProductStore {
             .ok_or_else(|| format!("product task not found: {task_id}"))?;
         let status =
             ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
+        let ec3_reservation = self.get_candidate_lifecycle_budget_reservation(task_id)?;
+        if let Some(reservation) = &ec3_reservation {
+            if reservation.status
+                != crate::harness_evolution::LifecycleBudgetReservationStatus::Active
+            {
+                return Err(format!(
+                    "EC3 lifecycle reservation is not active: {}",
+                    reservation.status.as_str()
+                ));
+            }
+        }
         if matches!(
             status,
             ProductTaskStatus::GraphReady | ProductTaskStatus::Running
@@ -3096,6 +3166,10 @@ impl LocalProductStore {
             ));
         }
 
+        // Tasks that opted into EC3 must carry an active reservation before
+        // the existing scheduler/run owner is allowed to create execution
+        // state.  Legacy/default-off ProductTasks have no reservation and
+        // retain their established path.
         // Verify worktree still exists and matches binding before admitting execution.
         let binding = task
             .get("workspace_binding")
@@ -9423,6 +9497,7 @@ mod product_verification_failure_tests {
 #[cfg(test)]
 mod local_folder_product_task_tests {
     use super::*;
+    use crate::harness_evolution::sample_ec3_budget_contract;
     use crate::product_golden_path::{
         validate_intake, ProductExecutorPolicy, ProductTaskIntakeRequest,
         ProductVerificationCommand, PRODUCT_TASK_GATE,
@@ -9455,6 +9530,82 @@ mod local_folder_product_task_tests {
                 std::env::remove_var(PRODUCT_TASK_GATE);
             }
         }
+    }
+
+    #[test]
+    fn ec3_budget_is_reserved_at_admission_and_missing_terminal_usage_stays_overrun() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("operator-folder");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("README.md"), b"original").unwrap();
+        let _gate_guard = ProductGateGuard::enable();
+        let source = std::fs::canonicalize(&source).unwrap();
+        let request = ProductTaskIntakeRequest {
+            objective: "Reserve a bounded lifecycle envelope".to_string(),
+            target_id: "ec3-product-task-fixture".to_string(),
+            target_repo_path: source.to_string_lossy().into_owned(),
+            source_kind: Some("local_folder".to_string()),
+            source_revision: "operator-supplied-placeholder".to_string(),
+            source_tree_hash: None,
+            allowed_paths: vec!["README.md".to_string()],
+            verification_commands: vec![ProductVerificationCommand {
+                command: "test -f README.md".to_string(),
+                timeout_ms: 1_000,
+            }],
+            output_intent: "artifact_only".to_string(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["deterministic".to_string()],
+                prefer: Some("deterministic".to_string()),
+            },
+            budget: None,
+            risk_class: "low".to_string(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(false),
+            idempotency_key: "ec3-product-task".to_string(),
+            expected_version: None,
+            tenant_id: Some("tenant-local".to_string()),
+            workspace_id: Some("workspace-local".to_string()),
+            workspace_mode: Some("local_folder".to_string()),
+        };
+        let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
+        let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
+        let contract = sample_ec3_budget_contract();
+        let admitted = store
+            .admit_product_task_with_ec3_budget(&intake, "operator", &contract)
+            .unwrap();
+        let task_id = admitted["task"]["task_id"].as_str().unwrap().to_string();
+        assert_eq!(admitted["ec3_budget_reservation"]["status"], "active");
+        assert!(store
+            .get_candidate_lifecycle_budget_reservation(&task_id)
+            .unwrap()
+            .is_some());
+
+        // Simulate the existing ProductTask terminal owner publishing a
+        // failure before usage arrives. EC3 must retain an explicit overrun,
+        // never infer zero, and replay the same row after restart.
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE product_tasks SET status='failed' WHERE task_id=?1",
+                    rusqlite::params![task_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let first = store
+            .reconcile_product_task_ec3_budget(&task_id, "scheduler", &contract)
+            .unwrap();
+        assert_eq!(first["reconciliation"]["outcome"], "overrun_stopped");
+        assert_eq!(first["reused"], false);
+        drop(store);
+        let restarted = LocalProductStore::new(root.path().join("store.db")).unwrap();
+        let second = restarted
+            .reconcile_product_task_ec3_budget(&task_id, "scheduler", &contract)
+            .unwrap();
+        assert_eq!(second["reconciliation"]["outcome"], "overrun_stopped");
+        assert_eq!(second["reused"], true);
     }
 
     #[test]

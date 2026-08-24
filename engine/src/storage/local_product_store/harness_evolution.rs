@@ -6,18 +6,23 @@ use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::harness_evolution::{
     build_admission_receipt, configured_workspace_root,
     ec3_lifecycle_cost_observations_from_usage_event_with_identity, generate_ec1_candidate_binding,
-    revalidate_workspace_content, seal_ec1_identity_lineage, seal_ec3_lifecycle_cost_bundle,
-    seal_ec3_lifecycle_cost_observation, seal_failure_pattern_evidence,
+    reconcile_candidate_lifecycle_costs, revalidate_workspace_content, seal_ec1_identity_lineage,
+    seal_ec3_lifecycle_cost_bundle, seal_ec3_lifecycle_cost_observation,
+    seal_failure_pattern_evidence, seal_lifecycle_budget_reservation, seal_lifecycle_cost_record,
     seal_mutation_hypothesis_manifest, validate_candidate_for_admission,
     validate_ec1_candidate_binding, validate_ec1_identity_lineage,
-    validate_ec3_lifecycle_cost_bundle, validate_ec3_lifecycle_cost_observation,
-    validate_failure_pattern_evidence, validate_mutation_hypothesis_manifest,
-    validate_prediction_outcome_contract, validate_proposal, ActiveHarnessIdentity,
-    CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding, Ec1IdentityLineageRecord,
-    EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal, EvolutionReceipt,
-    FailurePatternEvidenceV1, LifecycleCostObservationBundleV1, LifecycleCostObservationV1,
+    validate_ec3_lifecycle_budget_contract, validate_ec3_lifecycle_cost_bundle,
+    validate_ec3_lifecycle_cost_observation, validate_failure_pattern_evidence,
+    validate_mutation_hypothesis_manifest, validate_prediction_outcome_contract, validate_proposal,
+    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding,
+    Ec1IdentityLineageRecord, Ec3LifecycleBudgetContractV1, EvolutionAdmissionError,
+    EvolutionCandidate, EvolutionProposal, EvolutionReceipt, FailurePatternEvidenceV1,
+    LifecycleBudgetReconciliationOutcome, LifecycleBudgetReconciliationV1,
+    LifecycleBudgetReservationStatus, LifecycleBudgetReservationV1, LifecycleCostDimension,
+    LifecycleCostObservationBundleV1, LifecycleCostObservationV1, LifecycleCostRecordV1,
     MutationHypothesisManifestV1, PredictionOutcomeV1, ACTIVE_VERSION_SCHEMA,
-    CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION,
+    CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION, LIFECYCLE_BUDGET_RESERVATION_SCHEMA,
+    RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
     build_pareto_archive, build_sealed_vault, derive_ec2_prediction_outcome_with_invalidation,
@@ -40,6 +45,21 @@ fn parse_stored_ec3_observation(body: &str) -> Result<LifecycleCostObservationV1
     validate_ec3_lifecycle_cost_observation(&observation)
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
     Ok(observation)
+}
+
+fn ec3_limit(
+    resources: &[crate::harness_evolution::LifecycleResourceLimit],
+    dimension: crate::harness_evolution::LifecycleCostDimension,
+) -> u64 {
+    resources
+        .iter()
+        .find(|resource| resource.dimension == dimension)
+        .map(|resource| resource.limit)
+        .unwrap_or(0)
+}
+
+fn ec3_limit_seconds(resources: &[crate::harness_evolution::LifecycleResourceLimit]) -> u64 {
+    ec3_limit(resources, LifecycleCostDimension::WallClockMilliseconds).saturating_add(999) / 1_000
 }
 
 fn ec3_missingness_observation(
@@ -87,6 +107,77 @@ fn ec3_missingness_observation(
         redacted_body: serde_json::json!({"missing_reason": reason}),
         record_sha256: String::new(),
     })
+}
+
+fn ec3_records_from_observations(
+    observations: Vec<LifecycleCostObservationV1>,
+) -> Result<Vec<LifecycleCostRecordV1>, String> {
+    observations
+        .into_iter()
+        .map(|observation| {
+            let (
+                token_cost,
+                call_count,
+                provider_cost_microunits,
+                wall_clock_seconds,
+                compute_milliseconds,
+                human_effort_milliseconds,
+                supported_dimension,
+            ) = match observation.dimension {
+                LifecycleCostDimension::ModelTokens => {
+                    (observation.amount.unwrap_or_default(), 0, 0, 0, 0, 0, true)
+                }
+                LifecycleCostDimension::ProviderCalls => {
+                    (0, observation.amount.unwrap_or_default(), 0, 0, 0, 0, true)
+                }
+                LifecycleCostDimension::ProviderCostMicrounits => {
+                    (0, 0, observation.amount.unwrap_or_default(), 0, 0, 0, true)
+                }
+                LifecycleCostDimension::WallClockMilliseconds => (
+                    0,
+                    0,
+                    0,
+                    observation
+                        .amount
+                        .map(|milliseconds| milliseconds.saturating_add(999) / 1_000)
+                        .unwrap_or_default(),
+                    0,
+                    0,
+                    true,
+                ),
+                LifecycleCostDimension::ComputeMilliseconds => {
+                    (0, 0, 0, 0, observation.amount.unwrap_or_default(), 0, true)
+                }
+                LifecycleCostDimension::HumanEffortMilliseconds => {
+                    (0, 0, 0, 0, 0, observation.amount.unwrap_or_default(), true)
+                }
+            };
+            seal_lifecycle_cost_record(LifecycleCostRecordV1 {
+                schema_version: String::new(),
+                record_id: String::new(),
+                candidate_id: observation.candidate_id,
+                phase: observation.phase,
+                token_cost,
+                call_count,
+                provider_cost_microunits,
+                wall_clock_seconds,
+                compute_milliseconds,
+                human_effort_milliseconds,
+                trust_source: observation.trust_source,
+                unmeasured: observation.amount.is_none()
+                    || !supported_dimension
+                    || observation.trust_source
+                        == crate::harness_evolution::CostTrustSource::Unavailable,
+                failure_attempt: !matches!(
+                    observation.terminal_class.as_str(),
+                    "completed" | "succeeded" | "within_envelope"
+                ),
+                evidence_payload_digest: observation.source_digest,
+                record_sha256: String::new(),
+            })
+            .map_err(|error| format!("{}: {}", error.code, error.message))
+        })
+        .collect()
 }
 
 fn persist_ec3_sqlite_tx(
@@ -2074,6 +2165,929 @@ impl LocalProductStore {
                 None => Ok(None),
             }
         })
+    }
+
+    pub fn list_ec3_lifecycle_cost_records_for_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Vec<LifecycleCostRecordV1>, String> {
+        let mut out: Vec<LifecycleCostRecordV1> = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs WHERE candidate_id=?1 ORDER BY created_at ASC, record_id ASC",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![candidate_id], |row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?;
+                rows.map(|row| {
+                    let body = row.map_err(|e| e.to_string())?;
+                    serde_json::from_str(&body).map_err(|e| e.to_string())
+                })
+                .collect()
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query(
+                        "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs WHERE candidate_id=$1 ORDER BY created_at ASC, record_id ASC",
+                        &[&candidate_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .map(|row| {
+                        let body: String = row.get(0);
+                        serde_json::from_str(&body).map_err(|e| e.to_string())
+                    })
+                    .collect()
+            })?,
+        };
+        // v38 observations are the canonical evidence owner.  The compact
+        // record adapter is only used at reconciliation time so existing
+        // enforcement rows and the accepted observation store join through
+        // one deterministic path.
+        let observations = self.list_ec3_lifecycle_cost_observations_for_candidate(candidate_id)?;
+        out.extend(ec3_records_from_observations(observations)?);
+        Ok(out)
+    }
+
+    pub fn persist_ec3_lifecycle_cost_record(
+        &self,
+        record: LifecycleCostRecordV1,
+        actor_id: &str,
+    ) -> Result<LifecycleCostRecordV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec3_cost_actor: authenticated actor_id is required".into());
+        }
+        let sealed = seal_lifecycle_cost_record(record)
+            .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        let body_json = serde_json::to_string(&sealed).map_err(|error| error.to_string())?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                let existing: Option<String> = tx
+                    .query_row(
+                        "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs WHERE record_id=?1",
+                        params![sealed.record_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                if let Some(existing) = existing {
+                    if existing == body_json {
+                        tx.commit().map_err(|error| error.to_string())?;
+                        return Ok(sealed.clone());
+                    }
+                    return Err("ec3_cost_observation_conflict: record already exists".into());
+                }
+                tx.execute(
+                    "INSERT INTO harness_evolution_ec3_lifecycle_costs
+                     (record_id, candidate_id, phase, token_cost, call_count, provider_cost_microunits,
+                      wall_clock_seconds, compute_milliseconds, human_effort_milliseconds,
+                      trust_source, unmeasured, failure_attempt, evidence_payload_digest, body_json, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    params![
+                        sealed.record_id,
+                        sealed.candidate_id,
+                        serde_json::to_value(sealed.phase)
+                            .map_err(|error| error.to_string())?
+                            .as_str()
+                            .unwrap_or("unknown"),
+                        sealed.token_cost as i64,
+                        sealed.call_count as i64,
+                        sealed.provider_cost_microunits as i64,
+                        sealed.wall_clock_seconds as i64,
+                        sealed.compute_milliseconds as i64,
+                        sealed.human_effort_milliseconds as i64,
+                        serde_json::to_value(sealed.trust_source)
+                            .map_err(|error| error.to_string())?
+                            .as_str()
+                            .unwrap_or("unknown"),
+                        sealed.unmeasured,
+                        sealed.failure_attempt,
+                        sealed.evidence_payload_digest,
+                        body_json,
+                        now,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    actor_id,
+                    "harness_evolution.ec3_lifecycle_cost_record",
+                    &sealed.record_id,
+                    &serde_json::json!({"candidate_id": sealed.candidate_id}),
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(sealed)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let existing = tx
+                    .query_opt(
+                        "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs WHERE record_id=$1 FOR UPDATE",
+                        &[&sealed.record_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if let Some(row) = existing {
+                    let existing_body: String = row.get(0);
+                    if existing_body == body_json {
+                        tx.commit().map_err(|error| error.to_string())?;
+                        return Ok(sealed.clone());
+                    }
+                    return Err("ec3_cost_observation_conflict: record already exists".into());
+                }
+                let phase = serde_json::to_value(sealed.phase)
+                    .map_err(|error| error.to_string())?
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_string();
+                let trust_source = serde_json::to_value(sealed.trust_source)
+                    .map_err(|error| error.to_string())?
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_string();
+                tx.execute(
+                    "INSERT INTO harness_evolution_ec3_lifecycle_costs
+                     (record_id, candidate_id, phase, token_cost, call_count, provider_cost_microunits,
+                      wall_clock_seconds, compute_milliseconds, human_effort_milliseconds,
+                      trust_source, unmeasured, failure_attempt, evidence_payload_digest, body_json, created_at)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+                    &[
+                        &sealed.record_id,
+                        &sealed.candidate_id,
+                        &phase,
+                        &(sealed.token_cost as i64),
+                        &(sealed.call_count as i64),
+                        &(sealed.provider_cost_microunits as i64),
+                        &(sealed.wall_clock_seconds as i64),
+                        &(sealed.compute_milliseconds as i64),
+                        &(sealed.human_effort_milliseconds as i64),
+                        &trust_source,
+                        &sealed.unmeasured,
+                        &sealed.failure_attempt,
+                        &sealed.evidence_payload_digest,
+                        &body_json,
+                        &now,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                let details = serde_json::json!({
+                    "candidate_id": sealed.candidate_id,
+                    "phase": serde_json::to_value(sealed.phase)
+                        .map_err(|error| error.to_string())?,
+                    "token_cost": sealed.token_cost,
+                    "call_count": sealed.call_count,
+                    "provider_cost_microunits": sealed.provider_cost_microunits,
+                    "wall_clock_seconds": sealed.wall_clock_seconds,
+                    "compute_milliseconds": sealed.compute_milliseconds,
+                    "human_effort_milliseconds": sealed.human_effort_milliseconds,
+                    "unmeasured": sealed.unmeasured,
+                    "failure_attempt": sealed.failure_attempt,
+                })
+                .to_string();
+                tx.execute(
+                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                     VALUES ($1, $2, $3, $4, $5)",
+                    &[
+                        &now,
+                        &actor_id,
+                        &"harness_evolution.ec3_lifecycle_cost_record",
+                        &sealed.record_id,
+                        &details,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(sealed)
+            }),
+        }
+    }
+
+    pub fn reserve_candidate_lifecycle_budget(
+        &self,
+        contract: &Ec3LifecycleBudgetContractV1,
+        candidate_id: &str,
+        actor_id: &str,
+    ) -> Result<LifecycleBudgetReservationV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec3_budget_actor: authenticated actor_id is required".into());
+        }
+        if candidate_id.trim().is_empty() {
+            return Err("ec3_budget_candidate: non-empty candidate_id is required".into());
+        }
+        validate_ec3_lifecycle_budget_contract(contract)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let reservation = seal_lifecycle_budget_reservation(LifecycleBudgetReservationV1 {
+            schema_version: LIFECYCLE_BUDGET_RESERVATION_SCHEMA.to_string(),
+            reservation_id: String::new(),
+            candidate_id: candidate_id.to_string(),
+            contract_id: contract.contract_id.clone(),
+            reserved_token_cost: ec3_limit(
+                &contract.candidate_envelope.resource_limits,
+                crate::harness_evolution::LifecycleCostDimension::ModelTokens,
+            ),
+            reserved_call_count: ec3_limit(
+                &contract.candidate_envelope.resource_limits,
+                crate::harness_evolution::LifecycleCostDimension::ProviderCalls,
+            ),
+            reserved_provider_cost_microunits: ec3_limit(
+                &contract.candidate_envelope.resource_limits,
+                crate::harness_evolution::LifecycleCostDimension::ProviderCostMicrounits,
+            ),
+            reserved_wall_clock_seconds: ec3_limit_seconds(
+                &contract.candidate_envelope.resource_limits,
+            ),
+            reserved_compute_milliseconds: ec3_limit(
+                &contract.candidate_envelope.resource_limits,
+                crate::harness_evolution::LifecycleCostDimension::ComputeMilliseconds,
+            ),
+            reserved_human_effort_milliseconds: ec3_limit(
+                &contract.candidate_envelope.resource_limits,
+                crate::harness_evolution::LifecycleCostDimension::HumanEffortMilliseconds,
+            ),
+            status: LifecycleBudgetReservationStatus::Active,
+            record_sha256: String::new(),
+        })
+        .map_err(|e| format!("{}: {}", e.code, e.message))?;
+
+        let body_json = serde_json::to_string(&reservation).map_err(|e| e.to_string())?;
+
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+
+            let existing: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT reservation_id, body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=?1",
+                    params![candidate_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+
+            if let Some((_res_id, existing_body)) = existing {
+                if existing_body == body_json {
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return serde_json::from_str(&existing_body).map_err(|e| e.to_string());
+                }
+                return Err(format!(
+                    "ec3_reservation_duplicate: candidate {} already has a budget reservation",
+                    candidate_id
+                ));
+            }
+
+            // Check global envelope constraints
+            let active_count: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM harness_evolution_ec3_lifecycle_budgets WHERE contract_id=?1 AND status != 'cancelled'",
+                    params![contract.contract_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+
+            if active_count as u32 >= contract.global_envelope.max_candidates {
+                return Err(format!(
+                    "ec3_global_candidates_exhausted: active/reconciled count {} reaches max {}",
+                    active_count, contract.global_envelope.max_candidates
+                ));
+            }
+
+            let sums: (i64, i64, i64, i64, i64, i64) = tx
+                .query_row(
+                    "SELECT COALESCE(SUM(reserved_token_cost), 0), COALESCE(SUM(reserved_call_count), 0),
+                            COALESCE(SUM(reserved_provider_cost_microunits), 0), COALESCE(SUM(reserved_wall_clock_seconds), 0),
+                            COALESCE(SUM(reserved_compute_milliseconds), 0), COALESCE(SUM(reserved_human_effort_milliseconds), 0)
+                     FROM harness_evolution_ec3_lifecycle_budgets WHERE contract_id=?1 AND status != 'cancelled'",
+                    params![contract.contract_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+
+            let new_tokens = (sums.0 as u64).saturating_add(reservation.reserved_token_cost);
+            let new_calls = (sums.1 as u64).saturating_add(reservation.reserved_call_count);
+            let new_provider_cost = (sums.2 as u64)
+                .saturating_add(reservation.reserved_provider_cost_microunits);
+            let new_seconds = (sums.3 as u64).saturating_add(reservation.reserved_wall_clock_seconds);
+            let new_compute = (sums.4 as u64).saturating_add(reservation.reserved_compute_milliseconds);
+            let new_human_effort = (sums.5 as u64)
+                .saturating_add(reservation.reserved_human_effort_milliseconds);
+
+            let global_token_limit = ec3_limit(
+                &contract.global_envelope.resource_limits,
+                crate::harness_evolution::LifecycleCostDimension::ModelTokens,
+            );
+            let global_call_limit = ec3_limit(
+                &contract.global_envelope.resource_limits,
+                crate::harness_evolution::LifecycleCostDimension::ProviderCalls,
+            );
+            let global_provider_cost_limit = ec3_limit(
+                &contract.global_envelope.resource_limits,
+                crate::harness_evolution::LifecycleCostDimension::ProviderCostMicrounits,
+            );
+            let global_wall_limit = ec3_limit_seconds(&contract.global_envelope.resource_limits);
+            let global_compute_limit = ec3_limit(
+                &contract.global_envelope.resource_limits,
+                crate::harness_evolution::LifecycleCostDimension::ComputeMilliseconds,
+            );
+            let global_human_effort_limit = ec3_limit(
+                &contract.global_envelope.resource_limits,
+                crate::harness_evolution::LifecycleCostDimension::HumanEffortMilliseconds,
+            );
+            if new_tokens > global_token_limit
+                || new_calls > global_call_limit
+                || new_provider_cost > global_provider_cost_limit
+                || new_seconds > global_wall_limit
+                || new_compute > global_compute_limit
+                || new_human_effort > global_human_effort_limit
+            {
+                return Err(format!(
+                    "ec3_global_budget_exhausted: reservation would exceed global limits (tokens: {}/{}, calls: {}/{}, provider_cost: {}/{}, seconds: {}/{}, compute: {}/{}, human_effort: {}/{})",
+                    new_tokens,
+                    global_token_limit,
+                    new_calls,
+                    global_call_limit,
+                    new_provider_cost,
+                    global_provider_cost_limit,
+                    new_seconds,
+                    global_wall_limit,
+                    new_compute,
+                    global_compute_limit,
+                    new_human_effort,
+                    global_human_effort_limit,
+                ));
+            }
+
+            tx.execute(
+                "INSERT INTO harness_evolution_ec3_lifecycle_budgets
+                    (reservation_id, candidate_id, contract_id, reserved_token_cost, reserved_call_count,
+                     reserved_provider_cost_microunits, reserved_wall_clock_seconds,
+                     reserved_compute_milliseconds, reserved_human_effort_milliseconds,
+                     status, reconciliation_id, body_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?12)",
+                params![
+                    reservation.reservation_id,
+                    reservation.candidate_id,
+                    reservation.contract_id,
+                    reservation.reserved_token_cost as i64,
+                    reservation.reserved_call_count as i64,
+                    reservation.reserved_provider_cost_microunits as i64,
+                    reservation.reserved_wall_clock_seconds as i64,
+                    reservation.reserved_compute_milliseconds as i64,
+                    reservation.reserved_human_effort_milliseconds as i64,
+                    reservation.status.as_str(),
+                    body_json,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec3_budget_reserved",
+                &reservation.reservation_id,
+                &serde_json::json!({
+                    "candidate_id": reservation.candidate_id,
+                    "contract_id": reservation.contract_id,
+                    "reserved_token_cost": reservation.reserved_token_cost,
+                    "reserved_call_count": reservation.reserved_call_count,
+                    "reserved_provider_cost_microunits": reservation.reserved_provider_cost_microunits,
+                    "reserved_wall_clock_seconds": reservation.reserved_wall_clock_seconds,
+                    "reserved_compute_milliseconds": reservation.reserved_compute_milliseconds,
+                    "reserved_human_effort_milliseconds": reservation.reserved_human_effort_milliseconds,
+                    "actor_id": actor_id,
+                }),
+            )?;
+
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(reservation)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                let existing = tx
+                    .query_opt(
+                        "SELECT body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=$1 FOR UPDATE",
+                        &[&candidate_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if let Some(row) = existing {
+                    let existing_body: String = row.get(0);
+                    if existing_body == body_json {
+                        tx.commit().map_err(|e| e.to_string())?;
+                        return serde_json::from_str(&existing_body).map_err(|e| e.to_string());
+                    }
+                    return Err(format!(
+                        "ec3_reservation_duplicate: candidate {} already has a budget reservation",
+                        candidate_id
+                    ));
+                }
+                let active_count: i64 = tx
+                    .query_one(
+                        "SELECT COUNT(*) FROM harness_evolution_ec3_lifecycle_budgets WHERE contract_id=$1 AND status <> 'cancelled'",
+                        &[&contract.contract_id],
+                    )
+                    .map(|row| row.get(0))
+                    .map_err(|e| e.to_string())?;
+                if active_count as u32 >= contract.global_envelope.max_candidates {
+                    return Err(format!(
+                        "ec3_global_candidates_exhausted: active/reconciled count {} reaches max {}",
+                        active_count, contract.global_envelope.max_candidates
+                    ));
+                }
+                let sums = tx
+                    .query_one(
+                        "SELECT COALESCE(SUM(reserved_token_cost), 0), COALESCE(SUM(reserved_call_count), 0),
+                                COALESCE(SUM(reserved_provider_cost_microunits), 0), COALESCE(SUM(reserved_wall_clock_seconds), 0),
+                                COALESCE(SUM(reserved_compute_milliseconds), 0), COALESCE(SUM(reserved_human_effort_milliseconds), 0)
+                         FROM harness_evolution_ec3_lifecycle_budgets WHERE contract_id=$1 AND status <> 'cancelled'",
+                        &[&contract.contract_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let new_tokens = (sums.get::<_, i64>(0) as u64)
+                    .saturating_add(reservation.reserved_token_cost);
+                let new_calls = (sums.get::<_, i64>(1) as u64)
+                    .saturating_add(reservation.reserved_call_count);
+                let new_provider_cost = (sums.get::<_, i64>(2) as u64)
+                    .saturating_add(reservation.reserved_provider_cost_microunits);
+                let new_seconds = (sums.get::<_, i64>(3) as u64)
+                    .saturating_add(reservation.reserved_wall_clock_seconds);
+                let new_compute = (sums.get::<_, i64>(4) as u64)
+                    .saturating_add(reservation.reserved_compute_milliseconds);
+                let new_human_effort = (sums.get::<_, i64>(5) as u64)
+                    .saturating_add(reservation.reserved_human_effort_milliseconds);
+                let global_token_limit = ec3_limit(
+                    &contract.global_envelope.resource_limits,
+                    crate::harness_evolution::LifecycleCostDimension::ModelTokens,
+                );
+                let global_call_limit = ec3_limit(
+                    &contract.global_envelope.resource_limits,
+                    crate::harness_evolution::LifecycleCostDimension::ProviderCalls,
+                );
+                let global_provider_cost_limit = ec3_limit(
+                    &contract.global_envelope.resource_limits,
+                    crate::harness_evolution::LifecycleCostDimension::ProviderCostMicrounits,
+                );
+                let global_wall_limit = ec3_limit_seconds(&contract.global_envelope.resource_limits);
+                let global_compute_limit = ec3_limit(
+                    &contract.global_envelope.resource_limits,
+                    crate::harness_evolution::LifecycleCostDimension::ComputeMilliseconds,
+                );
+                let global_human_effort_limit = ec3_limit(
+                    &contract.global_envelope.resource_limits,
+                    crate::harness_evolution::LifecycleCostDimension::HumanEffortMilliseconds,
+                );
+                if new_tokens > global_token_limit
+                    || new_calls > global_call_limit
+                    || new_provider_cost > global_provider_cost_limit
+                    || new_seconds > global_wall_limit
+                    || new_compute > global_compute_limit
+                    || new_human_effort > global_human_effort_limit
+                {
+                    return Err(format!(
+                        "ec3_global_budget_exhausted: reservation would exceed global limits (tokens: {}/{}, calls: {}/{}, provider_cost: {}/{}, seconds: {}/{}, compute: {}/{}, human_effort: {}/{})",
+                        new_tokens, global_token_limit, new_calls, global_call_limit,
+                        new_provider_cost, global_provider_cost_limit, new_seconds, global_wall_limit,
+                        new_compute, global_compute_limit, new_human_effort, global_human_effort_limit
+                    ));
+                }
+                tx.execute(
+                    "INSERT INTO harness_evolution_ec3_lifecycle_budgets
+                     (reservation_id, candidate_id, contract_id, reserved_token_cost, reserved_call_count,
+                      reserved_provider_cost_microunits, reserved_wall_clock_seconds,
+                      reserved_compute_milliseconds, reserved_human_effort_milliseconds,
+                      status, reconciliation_id, body_json, created_at, updated_at)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,$11,$12,$12)",
+                    &[
+                        &reservation.reservation_id,
+                        &reservation.candidate_id,
+                        &reservation.contract_id,
+                        &(reservation.reserved_token_cost as i64),
+                        &(reservation.reserved_call_count as i64),
+                        &(reservation.reserved_provider_cost_microunits as i64),
+                        &(reservation.reserved_wall_clock_seconds as i64),
+                        &(reservation.reserved_compute_milliseconds as i64),
+                        &(reservation.reserved_human_effort_milliseconds as i64),
+                        &reservation.status.as_str(),
+                        &body_json,
+                        &now,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                let details = serde_json::json!({
+                    "candidate_id": reservation.candidate_id,
+                    "contract_id": reservation.contract_id,
+                    "reserved_token_cost": reservation.reserved_token_cost,
+                    "reserved_call_count": reservation.reserved_call_count,
+                    "reserved_provider_cost_microunits": reservation.reserved_provider_cost_microunits,
+                    "reserved_wall_clock_seconds": reservation.reserved_wall_clock_seconds,
+                    "reserved_compute_milliseconds": reservation.reserved_compute_milliseconds,
+                    "reserved_human_effort_milliseconds": reservation.reserved_human_effort_milliseconds,
+                })
+                .to_string();
+                tx.execute(
+                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                     VALUES ($1,$2,$3,$4,$5)",
+                    &[
+                        &now,
+                        &actor_id,
+                        &"harness_evolution.ec3_budget_reserved",
+                        &reservation.reservation_id,
+                        &details,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(reservation)
+            }),
+        }
+    }
+
+    pub fn get_candidate_lifecycle_budget_reservation(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<LifecycleBudgetReservationV1>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=?1",
+                    params![candidate_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
+                None => Ok(None),
+            }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let body = client
+                    .query_opt(
+                        "SELECT body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=$1",
+                        &[&candidate_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .map(|row| row.get::<_, String>(0));
+                body.map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
+                    .transpose()
+            }),
+        }
+    }
+
+    pub fn reconcile_candidate_lifecycle_budget(
+        &self,
+        contract: &Ec3LifecycleBudgetContractV1,
+        candidate_id: &str,
+        actor_id: &str,
+    ) -> Result<LifecycleBudgetReconciliationV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec3_budget_actor: authenticated actor_id is required".into());
+        }
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let cost_records = self.list_ec3_lifecycle_cost_records_for_candidate(candidate_id)?;
+
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+
+            let reservation_row: Option<(String, String, String)> = tx
+                .query_row(
+                    "SELECT reservation_id, status, body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=?1",
+                    params![candidate_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+
+            let (reservation_id, _status_str, reservation_body) = match reservation_row {
+                Some(r) => r,
+                None => return Err(format!("ec3_reservation_missing: candidate {candidate_id} has no budget reservation")),
+            };
+
+            let reservation: LifecycleBudgetReservationV1 =
+                serde_json::from_str(&reservation_body).map_err(|e| e.to_string())?;
+
+            let existing_reconciliation: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec3_lifecycle_reconciliations WHERE reservation_id=?1",
+                    params![reservation_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+
+            if let Some(recon_body) = existing_reconciliation {
+                tx.commit().map_err(|e| e.to_string())?;
+                return serde_json::from_str(&recon_body).map_err(|e| e.to_string());
+            }
+
+            let reconciliation = reconcile_candidate_lifecycle_costs(
+                contract,
+                &reservation,
+                &cost_records,
+            )
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+
+            let recon_body = serde_json::to_string(&reconciliation).map_err(|e| e.to_string())?;
+
+            tx.execute(
+                "INSERT INTO harness_evolution_ec3_lifecycle_reconciliations
+                    (reconciliation_id, reservation_id, candidate_id, contract_id, total_token_cost,
+                     total_call_count, total_provider_cost_microunits, total_wall_clock_seconds,
+                     total_compute_milliseconds, total_human_effort_milliseconds,
+                     total_failure_attempts, outcome, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    reconciliation.reconciliation_id,
+                    reconciliation.reservation_id,
+                    reconciliation.candidate_id,
+                    reconciliation.contract_id,
+                    reconciliation.total_token_cost as i64,
+                    reconciliation.total_call_count as i64,
+                    reconciliation.total_provider_cost_microunits as i64,
+                    reconciliation.total_wall_clock_seconds as i64,
+                    reconciliation.total_compute_milliseconds as i64,
+                    reconciliation.total_human_effort_milliseconds as i64,
+                    reconciliation.total_failure_attempts as i64,
+                    reconciliation.outcome.as_str(),
+                    recon_body,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            let new_reservation_status = match reconciliation.outcome {
+                LifecycleBudgetReconciliationOutcome::WithinEnvelope => {
+                    LifecycleBudgetReservationStatus::Reconciled
+                }
+                LifecycleBudgetReconciliationOutcome::OverrunStopped => {
+                    LifecycleBudgetReservationStatus::Overrun
+                }
+                LifecycleBudgetReconciliationOutcome::CancelledReleased => {
+                    LifecycleBudgetReservationStatus::Cancelled
+                }
+            };
+
+            let mut updated_reservation = reservation.clone();
+            updated_reservation.status = new_reservation_status;
+            let updated_res_body =
+                serde_json::to_string(&updated_reservation).map_err(|e| e.to_string())?;
+
+            tx.execute(
+                "UPDATE harness_evolution_ec3_lifecycle_budgets
+                 SET status=?1, reconciliation_id=?2, body_json=?3, updated_at=?4
+                 WHERE reservation_id=?5",
+                params![
+                    new_reservation_status.as_str(),
+                    reconciliation.reconciliation_id,
+                    updated_res_body,
+                    now,
+                    reservation_id
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            if let Some(reason) = reconciliation.terminal_reason {
+                let candidate_exists: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM harness_evolution_candidates WHERE candidate_id=?1)",
+                        params![candidate_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+
+                if candidate_exists {
+                    tx.execute(
+                        "UPDATE harness_evolution_candidates
+                         SET status='rejected', terminal_reason=?1, updated_at=?2
+                         WHERE candidate_id=?3",
+                        params![reason.as_str(), now, candidate_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.ec3_budget_reconciled",
+                &reconciliation.reconciliation_id,
+                &serde_json::json!({
+                    "reservation_id": reconciliation.reservation_id,
+                    "candidate_id": reconciliation.candidate_id,
+                    "contract_id": reconciliation.contract_id,
+                    "total_token_cost": reconciliation.total_token_cost,
+                    "total_call_count": reconciliation.total_call_count,
+                    "total_provider_cost_microunits": reconciliation.total_provider_cost_microunits,
+                    "total_wall_clock_seconds": reconciliation.total_wall_clock_seconds,
+                    "total_compute_milliseconds": reconciliation.total_compute_milliseconds,
+                    "total_human_effort_milliseconds": reconciliation.total_human_effort_milliseconds,
+                    "total_failure_attempts": reconciliation.total_failure_attempts,
+                    "outcome": reconciliation.outcome.as_str(),
+                    "terminal_reason": reconciliation.terminal_reason.map(|t| t.as_str()),
+                    "actor_id": actor_id,
+                }),
+            )?;
+
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(reconciliation)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                let reservation_row = tx
+                    .query_opt(
+                        "SELECT reservation_id, body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=$1 FOR UPDATE",
+                        &[&candidate_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let (reservation_id, reservation_body) = match reservation_row {
+                    Some(row) => (row.get::<_, String>(0), row.get::<_, String>(1)),
+                    None => {
+                        return Err(format!(
+                            "ec3_reservation_missing: candidate {candidate_id} has no budget reservation"
+                        ))
+                    }
+                };
+                let reservation: LifecycleBudgetReservationV1 =
+                    serde_json::from_str(&reservation_body).map_err(|e| e.to_string())?;
+                if let Some(row) = tx
+                    .query_opt(
+                        "SELECT body_json FROM harness_evolution_ec3_lifecycle_reconciliations WHERE reservation_id=$1",
+                        &[&reservation_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                {
+                    let body: String = row.get(0);
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return serde_json::from_str(&body).map_err(|e| e.to_string());
+                }
+                let reconciliation = reconcile_candidate_lifecycle_costs(
+                    contract,
+                    &reservation,
+                    &cost_records,
+                )
+                .map_err(|e| format!("{}: {}", e.code, e.message))?;
+                let recon_body = serde_json::to_string(&reconciliation).map_err(|e| e.to_string())?;
+                tx.execute(
+                    "INSERT INTO harness_evolution_ec3_lifecycle_reconciliations
+                     (reconciliation_id, reservation_id, candidate_id, contract_id, total_token_cost,
+                      total_call_count, total_provider_cost_microunits, total_wall_clock_seconds,
+                      total_compute_milliseconds, total_human_effort_milliseconds,
+                      total_failure_attempts, outcome, body_json, created_at)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+                    &[
+                        &reconciliation.reconciliation_id,
+                        &reconciliation.reservation_id,
+                        &reconciliation.candidate_id,
+                        &reconciliation.contract_id,
+                        &(reconciliation.total_token_cost as i64),
+                        &(reconciliation.total_call_count as i64),
+                        &(reconciliation.total_provider_cost_microunits as i64),
+                        &(reconciliation.total_wall_clock_seconds as i64),
+                        &(reconciliation.total_compute_milliseconds as i64),
+                        &(reconciliation.total_human_effort_milliseconds as i64),
+                        &(reconciliation.total_failure_attempts as i64),
+                        &reconciliation.outcome.as_str(),
+                        &recon_body,
+                        &now,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                let new_status = match reconciliation.outcome {
+                    LifecycleBudgetReconciliationOutcome::WithinEnvelope => {
+                        LifecycleBudgetReservationStatus::Reconciled
+                    }
+                    LifecycleBudgetReconciliationOutcome::OverrunStopped => {
+                        LifecycleBudgetReservationStatus::Overrun
+                    }
+                    LifecycleBudgetReconciliationOutcome::CancelledReleased => {
+                        LifecycleBudgetReservationStatus::Cancelled
+                    }
+                };
+                let mut updated_reservation = reservation.clone();
+                updated_reservation.status = new_status;
+                let updated_body = serde_json::to_string(&updated_reservation)
+                    .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "UPDATE harness_evolution_ec3_lifecycle_budgets
+                     SET status=$1, reconciliation_id=$2, body_json=$3, updated_at=$4
+                     WHERE reservation_id=$5",
+                    &[
+                        &new_status.as_str(),
+                        &reconciliation.reconciliation_id,
+                        &updated_body,
+                        &now,
+                        &reservation_id,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                if let Some(reason) = reconciliation.terminal_reason {
+                    let candidate_exists: bool = tx
+                        .query_one(
+                            "SELECT EXISTS(SELECT 1 FROM harness_evolution_candidates WHERE candidate_id=$1)",
+                            &[&candidate_id],
+                        )
+                        .map(|row| row.get(0))
+                        .map_err(|e| e.to_string())?;
+                    if candidate_exists {
+                        tx.execute(
+                            "UPDATE harness_evolution_candidates
+                             SET status='rejected', terminal_reason=$1, updated_at=$2
+                             WHERE candidate_id=$3",
+                            &[&reason.as_str(), &now, &candidate_id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                }
+                let details = serde_json::json!({
+                    "reservation_id": reconciliation.reservation_id,
+                    "candidate_id": reconciliation.candidate_id,
+                    "contract_id": reconciliation.contract_id,
+                    "total_token_cost": reconciliation.total_token_cost,
+                    "total_call_count": reconciliation.total_call_count,
+                    "total_provider_cost_microunits": reconciliation.total_provider_cost_microunits,
+                    "total_wall_clock_seconds": reconciliation.total_wall_clock_seconds,
+                    "total_compute_milliseconds": reconciliation.total_compute_milliseconds,
+                    "total_human_effort_milliseconds": reconciliation.total_human_effort_milliseconds,
+                    "total_failure_attempts": reconciliation.total_failure_attempts,
+                    "outcome": reconciliation.outcome.as_str(),
+                    "terminal_reason": reconciliation.terminal_reason.map(|t| t.as_str()),
+                })
+                .to_string();
+                tx.execute(
+                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                     VALUES ($1,$2,$3,$4,$5)",
+                    &[
+                        &now,
+                        &actor_id,
+                        &"harness_evolution.ec3_budget_reconciled",
+                        &reconciliation.reconciliation_id,
+                        &details,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(reconciliation)
+            }),
+        }
+    }
+
+    pub fn get_candidate_lifecycle_budget_reconciliation(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<LifecycleBudgetReconciliationV1>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_ec3_lifecycle_reconciliations WHERE candidate_id=?1",
+                    params![candidate_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(serde_json::from_str(&body).map_err(|e| e.to_string())?)),
+                None => Ok(None),
+            }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let body = client
+                    .query_opt(
+                        "SELECT body_json FROM harness_evolution_ec3_lifecycle_reconciliations WHERE candidate_id=$1",
+                        &[&candidate_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .map(|row| row.get::<_, String>(0));
+                body.map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
+                    .transpose()
+            }),
+        }
     }
 
     /// Register an evaluator-owned task family (trusted configuration owner).
@@ -4313,5 +5327,118 @@ mod tests {
             .unwrap();
         let error = store.check_integrity().unwrap_err();
         assert!(error.contains("scalar columns disagree"), "{error}");
+    }
+
+    #[test]
+    fn persists_ec3_budget_reservation_and_reconciles_with_overrun_stop() {
+        use crate::harness_evolution::{
+            sample_ec3_budget_contract, seal_lifecycle_cost_record, CandidateTerminalReason,
+            CostTrustSource, LifecycleBudgetReconciliationOutcome,
+            LifecycleBudgetReservationStatus, LifecycleCostPhase, LifecycleCostRecordV1,
+            LIFECYCLE_COST_RECORD_SCHEMA,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec3-enforce.db");
+        let store = LocalProductStore::new(&db).unwrap();
+
+        let mut contract = sample_ec3_budget_contract();
+        contract.global_envelope.max_candidates = 2;
+        contract.global_envelope.max_failed_candidates = 2;
+        contract = crate::harness_evolution::seal_ec3_lifecycle_budget_contract(contract).unwrap();
+
+        // 1. Reserve budget for candidate 1
+        let res1 = store
+            .reserve_candidate_lifecycle_budget(&contract, "cand-enforce-1", "worker-actor")
+            .unwrap();
+        assert_eq!(res1.status, LifecycleBudgetReservationStatus::Active);
+
+        // 2. Reserve budget for candidate 2
+        let res2 = store
+            .reserve_candidate_lifecycle_budget(&contract, "cand-enforce-2", "worker-actor")
+            .unwrap();
+        assert_eq!(res2.status, LifecycleBudgetReservationStatus::Active);
+
+        // 3. Candidate 3 should be rejected because max_total_candidates = 2 is reached
+        assert!(store
+            .reserve_candidate_lifecycle_budget(&contract, "cand-enforce-3", "worker-actor")
+            .unwrap_err()
+            .contains("ec3_global_candidates_exhausted"));
+
+        // 4. Record cost for candidate 1 (within envelope)
+        let cost1 = seal_lifecycle_cost_record(LifecycleCostRecordV1 {
+            schema_version: LIFECYCLE_COST_RECORD_SCHEMA.to_string(),
+            record_id: String::new(),
+            candidate_id: "cand-enforce-1".to_string(),
+            phase: LifecycleCostPhase::Evaluation,
+            token_cost: 5_000,
+            call_count: 2,
+            provider_cost_microunits: 3_000,
+            wall_clock_seconds: 30,
+            compute_milliseconds: 4_000,
+            human_effort_milliseconds: 5_000,
+            trust_source: CostTrustSource::MeasuredDirect,
+            unmeasured: false,
+            failure_attempt: false,
+            evidence_payload_digest: crate::harness_evolution::sha256_hex("c1_eval"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        store
+            .persist_ec3_lifecycle_cost_record(cost1, "worker-actor")
+            .unwrap();
+
+        let recon1 = store
+            .reconcile_candidate_lifecycle_budget(&contract, "cand-enforce-1", "worker-actor")
+            .unwrap();
+        assert_eq!(
+            recon1.outcome,
+            LifecycleBudgetReconciliationOutcome::WithinEnvelope
+        );
+        assert_eq!(recon1.terminal_reason, None);
+
+        // 5. Record cost for candidate 2 above the per-candidate token envelope.
+        let cost2 = seal_lifecycle_cost_record(LifecycleCostRecordV1 {
+            schema_version: LIFECYCLE_COST_RECORD_SCHEMA.to_string(),
+            record_id: String::new(),
+            candidate_id: "cand-enforce-2".to_string(),
+            phase: LifecycleCostPhase::CandidateMaterialization,
+            token_cost: 120_000,
+            call_count: 10,
+            provider_cost_microunits: 10_000,
+            wall_clock_seconds: 50,
+            compute_milliseconds: 5_000,
+            human_effort_milliseconds: 5_000,
+            trust_source: CostTrustSource::MeasuredDirect,
+            unmeasured: false,
+            failure_attempt: false,
+            evidence_payload_digest: crate::harness_evolution::sha256_hex("c2_mat"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        store
+            .persist_ec3_lifecycle_cost_record(cost2, "worker-actor")
+            .unwrap();
+
+        let recon2 = store
+            .reconcile_candidate_lifecycle_budget(&contract, "cand-enforce-2", "worker-actor")
+            .unwrap();
+        assert_eq!(
+            recon2.outcome,
+            LifecycleBudgetReconciliationOutcome::OverrunStopped
+        );
+        assert_eq!(
+            recon2.terminal_reason,
+            Some(CandidateTerminalReason::RejectedLifecycleBudgetOverrun)
+        );
+
+        // Check updated reservation status
+        let updated_res2 = store
+            .get_candidate_lifecycle_budget_reservation("cand-enforce-2")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            updated_res2.status,
+            LifecycleBudgetReservationStatus::Overrun
+        );
     }
 }
