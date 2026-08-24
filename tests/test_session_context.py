@@ -1177,7 +1177,7 @@ class CheckpointTests(unittest.TestCase):
             status_document,
         )
         self.assertIn(
-            "`PE7-HE-CL0-PILOT-1` is the current `T3_REQUIRED` `NEXT_DECISION` window",
+            "`PE7-HE-MX1-CONTRACT-1` is the current `READY_FOR_EXECUTION` `NEXT_DECISION` window",
             future_document,
         )
         self.assertNotIn(
@@ -1185,19 +1185,19 @@ class CheckpointTests(unittest.TestCase):
             future_document,
         )
         self.assertIn(
-            "62 accounted units: 3 accepted + 1 current + 58 future",
+            "62 accounted units: 5 accepted + 1 current + 56 future",
             future_document,
         )
         self.assertIn("8 (`0 + 8`)", future_document)
         self.assertIn("16 (`1 + 15`)", future_document)
         self.assertIn("exact-once terminal reconciliation", next_document)
-        self.assertIn("PE7-HE-CL0-PILOT-1", next_document)
+        self.assertIn("PE7-HE-MX1-CONTRACT-1", next_document)
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
-        self.assertEqual(packet["packet_id"], "PE7-HE-CL0-PILOT-1")
-        self.assertEqual(packet["state"], "T3_REQUIRED")
-        self.assertFalse(packet["checkpoint_allowed"])
+        self.assertEqual(packet["packet_id"], "PE7-HE-MX1-CONTRACT-1")
+        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
+        self.assertTrue(packet["checkpoint_allowed"])
         self.assertFalse(packet["execution_authorized"])
         capsule = session_context.current_dispatch_capsule(next_document, packet)
         self.assertEqual(capsule["packet_id"], packet["packet_id"])
@@ -1208,13 +1208,13 @@ class CheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-CL0-CLOSEOUT-1",
+            packet_id="PE7-RWE-CR-ANALYSIS-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertFalse(extract["execution_authorized"])
         self.assertEqual(
-            extract["profile_id"], "PE7-HE-CL0-CLOSEOUT-1.v1"
+            extract["profile_id"], "PE7-RWE-CR-ANALYSIS-1.v1"
         )
         self.assertEqual(extract["worker_tier"], "T2")
 
@@ -1657,7 +1657,7 @@ class AdversarialCheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-CL0-CLOSEOUT-1",
+            packet_id="PE7-RWE-CR-ANALYSIS-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
