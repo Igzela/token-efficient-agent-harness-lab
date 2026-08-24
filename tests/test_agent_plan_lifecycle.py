@@ -1517,6 +1517,7 @@ class TestPlanLifecycleWorkflowTransport(unittest.TestCase):
             / "workflows"
             / "agent-controller.yml"
         ).read_text(encoding="utf-8")
+        self.assertIn("          fetch-depth: 0\n", workflow)
         self.assertIn("          - lifecycle-plan\n", workflow)
         self.assertIn("          - promote-plan\n", workflow)
         self.assertIn("      stage:\n", workflow)
