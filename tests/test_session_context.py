@@ -1184,6 +1184,12 @@ class CheckpointTests(unittest.TestCase):
             "enforcement is the current `NEXT_DECISION` window",
             future_document,
         )
+        self.assertIn(
+            "62 accounted units: 3 accepted + 1 current + 58 future",
+            future_document,
+        )
+        self.assertIn("8 (`0 + 8`)", future_document)
+        self.assertIn("16 (`1 + 15`)", future_document)
         self.assertIn("exact-once terminal reconciliation", next_document)
         self.assertIn("PE7-HE-CL0-PILOT-1", next_document)
         packet = session_context.current_packet_binding(

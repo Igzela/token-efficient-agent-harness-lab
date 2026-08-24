@@ -1181,13 +1181,13 @@ Compression rules:
 | R5 Harness/weight evolution | 7 | 7 | Training contract/adapter, factorial effect/analysis, co-evolution effect, transfer replication, and decision remain unchanged in strength |
 | R6 outer-policy evolution | 5 | 5 | Contract/adapter/comparison/replication/analysis remain separately bounded; no route beyond R6 is implied |
 | Dashboard | 3 | 3 | Disposition, presentation-only implementation, and exact-head closeout remain separate; optional research is shown truthfully but does not block the UI indefinitely |
-| **Total** | **69** | **62 accounted units: 2 accepted + 1 current + 59 future** | **Nine former contract/implementation headings are concentrated; two additional C0 effect/closeout packets strengthen real closed-loop proof, for a net reduction of seven headings without deleting a capability or evidence phase** |
+| **Total** | **69** | **62 accounted units: 3 accepted + 1 current + 58 future** | **Nine former contract/implementation headings are concentrated; two additional C0 effect/closeout packets strengthen real closed-loop proof, for a net reduction of seven headings without deleting a capability or evidence phase** |
 
 | Packet class | Former 69 | Accounted successor units | Remaining routed (`current + future`) | Structural result |
 |---|---:|---:|---:|---|
 | `CONTRACT` | 19 | 17 | 16 (`0 + 16`) | EC3 contract is already accepted; only the three compatible EC4/EC5/Level-1 preregistration contracts become one atomic C2 dossier, with separately owned, hashed, and reviewed subcontracts |
-| `IMPLEMENT` | 17 | 10 | 10 (`1 + 9`) | Seven headings converge on the four deep modules enumerated in the weak-model audit; instrumentation is current and no former implementation outcome or negative test is removed |
-| `EFFECT` | 15 | 16 | 16 (`0 + 16`) | Every former effect remains formal and C0 adds one real closed-loop pilot |
+| `IMPLEMENT` | 17 | 10 | 8 (`0 + 8`) | Seven headings converge on the four deep modules enumerated in the weak-model audit; accepted EC3 instrumentation/enforcement and no former implementation outcome or negative test is removed |
+| `EFFECT` | 15 | 16 | 16 (`1 + 15`) | Every former effect remains formal and C0 adds one real closed-loop pilot |
 | `CLOSEOUT` | 18 | 19 | 19 (`0 + 19`) | Every former analysis/closeout remains formal and C0 adds one independent usability closeout |
 
 ### Exact concentration and rename map
