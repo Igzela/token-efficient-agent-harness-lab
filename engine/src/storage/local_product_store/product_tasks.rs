@@ -2853,7 +2853,26 @@ impl LocalProductStore {
         // persisted workspace_preparing task recoverable and untouched.
         validate_product_task_workspace_prerequisites(intake)?;
         let receipt =
-            self.ensure_product_task_workspace_preparation_receipt(task_id, intake, actor)?;
+            match self.ensure_product_task_workspace_preparation_receipt(task_id, intake, actor) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    // Recovery may have observed `workspace_preparing` just before
+                    // the active owner bound the workspace and retired its
+                    // receipt. Re-read the durable task before reporting a stale
+                    // preparation error; the completed owner remains authoritative.
+                    if let Some(current) = self.get_product_task(task_id)? {
+                        if product_task_has_prepared_workspace(&current)
+                            || product_task_has_terminal_workspace_prepare_state(&current)
+                        {
+                            let _ = self.retire_completed_product_task_workspace_preparation(
+                                task_id, &current, actor,
+                            );
+                            return Ok(current);
+                        }
+                    }
+                    return Err(error);
+                }
+            };
         self.validate_product_task_workspace_preparation_root(task_id, &receipt)?;
         self.validate_product_task_workspace_preparation_target_boundary(intake, &receipt)?;
         self.ensure_product_task_workspace_preparation_root(task_id, &receipt)?;
