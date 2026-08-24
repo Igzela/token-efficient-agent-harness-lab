@@ -6,19 +6,19 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-HE-EC3-INSTRUMENTATION-1` and `PE7-HE-EC3-ENFORCEMENT-1` are complete on accepted `main`. The current window is `PE7-HE-CL0-PILOT-1`, which remains blocked until a separately authorized finite repository-maintenance effect is available; no effect is executed from this document.
+`PE7-HE-EC3-INSTRUMENTATION-1` and `PE7-HE-EC3-ENFORCEMENT-1` are complete on accepted `main`. The current window is `PE7-HE-CL0-PILOT-1`, prepared as a finite `T3_REQUIRED` repository-maintenance effect; the typed request below is a pause for separate operator authorization, not execution.
 
 ## Authoritative Forward Order
 
 ```text
 [completed: PE7-HE-EC3-INSTRUMENTATION-1 — COMPLETE, provider-free; capture, persist, and project immutable lifecycle-cost evidence]
 [completed: PE7-HE-EC3-ENFORCEMENT-1 — COMPLETE, provider-free; reserve and reconcile equal lifecycle envelopes through existing authorities]
-[window: PE7-HE-CL0-PILOT-1 — BLOCKED_PREREQUISITE, separately authorized EFFECT required; one finite repository-maintenance task only]
+[window: PE7-HE-CL0-PILOT-1 — T3_REQUIRED, separate operator receipt required; one finite repository-maintenance task only]
 ```
 
 ## Active Routing
 
-1. `PE7-HE-CL0-PILOT-1` — `BLOCKED_PREREQUISITE` (separate effect authorization required)
+1. `PE7-HE-CL0-PILOT-1` — `T3_REQUIRED` (separate effect authorization required)
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -114,13 +114,15 @@ The implementation binds v38 lifecycle-cost reservations and exact-once terminal
 
 ## Packet PE7-HE-CL0-PILOT-1
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `T3_REQUIRED`
 
-**Prerequisite:** EC3 enforcement is complete on accepted `main` through PR #610 / merge `720c9c90ce95c5831693916bd4feea81af513f4c`.
+**Prerequisite:** `PE7-HE-EC3-ENFORCEMENT-1` is complete on accepted `main` through PR #610 / merge `720c9c90ce95c5831693916bd4feea81af513f4c`.
 
 **Class:** `EFFECT`
 
 **Outcome and non-goals:** Execute one finite real repository-maintenance task through the frozen `1 Harness x 1 Model x 1 Strategy` loop in a disposable app-owned worktree, then verify, terminalize, reconcile, and expose the result. No second owner, general-purpose runner, or later-stage experiment is implied.
+
+**Allowed delta:** `docs/NEXT_DECISION.md` and `docs/CURRENT_STATUS.md` for the route/evidence projection only; the finite task itself may write only its disposable app-owned worktree and artifact-only output.
 
 **Owners:** Existing ProductTask, budget/spend, runtime, verification, terminal-evidence, recovery, LocalProductStore, and operator-evidence owners remain authoritative; no new scheduler, store, evaluator, or output owner.
 
@@ -130,7 +132,17 @@ The implementation binds v38 lifecycle-cost reservations and exact-once terminal
 
 **Stop conditions:** Authority or identity drift, unbounded spend, hidden rescue, verification ambiguity, outcome unknown, target write, cleanup failure, or lifecycle-cost evidence that cannot be joined and reconciled.
 
-**Next action:** Obtain and verify the separate effect authorization and one finite task definition. Until then, do not execute this packet and do not create a dispatch capsule.
+**Next action:** Obtain and verify the finite operator receipt bound to the typed request below. Until a valid `GO` receipt and existing-owner task outcome are recorded, do not execute the effect.
+
+### Bounded Autonomous Worker Dispatch Capsule
+
+<!-- weak-agent-dispatch:v1
+{"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-CL0-PILOT-1","packet_state":"T3_REQUIRED","dispatch_lane":"provider_backed_artifact_only","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Prepare one finite artifact-only repository-maintenance ProductTask in a disposable app-owned worktree, verify the bounded result, reconcile lifecycle cost, and expose only redacted evidence.","allowed_paths":["docs/NEXT_DECISION.md","docs/CURRENT_STATUS.md"],"read_paths":["docs/NEXT_DECISION.md","docs/CURRENT_STATUS.md","docs/ARCHITECTURE_BOOK.md","docs/RUNBOOK.md","engine/src/product_golden_path.rs","engine/src/http_server/handlers/product_tasks.rs","engine/src/storage/local_product_store/product_tasks.rs","engine/src/storage/local_product_store/costs.rs","engine/src/http_server/handlers/operator_evidence.rs","tests/test_session_context.py"],"allowed_outputs":["One finite artifact-only ProductTask dossier bound to a disposable worktree.","Redacted request, usage, cost, verification, terminal, cleanup, and recovery evidence."],"prerequisites":["PE7-HE-EC3-ENFORCEMENT-1"],"prerequisite_receipts":["PE7-HE-EC3-ENFORCEMENT-1 COMPLETE: PR #610 exact head `076885e88cc7d2dfe1f7a64da1ee5c88b8d97c3b`; squash merge `720c9c90ce95c5831693916bd4feea81af513f4c`; exact-head review receipt comment `5393050386`; canonical workflow `32710034017`; exact-head check `32710034005`; provider-free/default-off"],"forbidden_changes":["No target main write, merge, release, deployment, or second arm.","No unbounded task, second runtime/store/owner, hidden rescue, or retry after unknown outcome.","Do not persist credentials, raw prompts/outputs, private paths, or unredacted repository content."],"ordered_steps":["Wait for the exact finite T3 receipt.","Admit one artifact-only ProductTask through existing owners in a disposable worktree.","Verify, terminalize, reconcile full lifecycle cost, and retain redacted evidence."],"verification":["git diff --check","uv run --no-project python scripts/check_agent_handoff.py","uv run --no-project python tools/check_security_baseline.py"],"rollback":"Revert the disposable artifact before any durable output; retain outcome-unknown and cleanup evidence rather than retrying.","pause_gates":["Stop on authority or identity drift, unbounded spend, verification ambiguity, outcome unknown, target write, cleanup failure, or unjoinable lifecycle cost."],"expected_artifacts":["Disposable-worktree binding and bounded artifact-only patch.","Existing-owner terminal, usage/cost, verification, cleanup, recovery, and redacted operator evidence."],"forbidden_next_actions":["Do not write target main.","Do not merge, release, deploy, or start a successor packet."],"worker_tier":"T3","risk_class":"external_effect","promotion_evidence_sha256":"2f9ffdd0b950a6096f85687fc660280cce7ec2be96a8b7f7e5424fc1dd546b50","route_manifest_sha256":"2790cbcfb5acd015fa067d0df4e76da835d81aa8649a332ee65e801aa60a2d85","verification_family":"external_effect_evidence"}
+-->
+
+<!-- route-t3-request:v1
+{"schema_version":"route_t3_request.v1","packet_id":"PE7-HE-CL0-PILOT-1","accepted_main_sha":"9325d5e996d82a157c36c9220bec28c0c0bad5a6","candidate_digest":"2f9ffdd0b950a6096f85687fc660280cce7ec2be96a8b7f7e5424fc1dd546b50","action_digest":"89c12c8d735c31520ee6c314a798fb79f9edabd59c92420b59ff24137784b326","scope_digest":"6e6c188dc4f32fbe05e57c4e1f5fa0f04047a0a2ce577a0fd24f89cdf1350891","authority_owner_digest":"333dd67b92787eed8b8a47c978163642d4ae38de5e18def0d34b9cfbde1a882f","requested_action":"Run one finite artifact-only ProductTask in a disposable app-owned worktree through the existing 1 Harness x 1 Model x 1 Strategy path; verify, terminalize, reconcile lifecycle cost, and retain redacted evidence without target-main write."}
+-->
 
 ### Historical EC3 dispatch capsule (non-executable)
 

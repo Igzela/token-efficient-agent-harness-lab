@@ -60,6 +60,12 @@ the role when it satisfies the same contract. It may produce only an untrusted
 patch or proposal. It receives one compiled packet capsule and no GitHub merge token,
 provider credential, T3 authority, or arbitrary command execution capability.
 
+An EFFECT T3 request prepared in a promotion PR binds its source accepted-main
+SHA and may be consumed after merge only when that source is a proven ancestor
+of the current accepted main and the current route block still carries the same
+request digest. This bridge accounts for the merge commit without widening the
+finite action, scope, or operator receipt.
+
 The route controller may request a repository-maintenance merge only through
 the existing exact-head merge owner after canonical CI, independent exact
 `PASS`, no unresolved blocking objection, accepted-base freshness, and tested

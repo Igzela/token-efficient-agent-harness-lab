@@ -1104,8 +1104,21 @@ def validate_t3_receipt(
     return receipt, "t3_receipt_valid"
 
 
-def current_t3_request(document: str, accepted_main_sha: str) -> T3Request | None:
-    """Return the one current typed EFFECT pause, never an execution grant."""
+def current_t3_request(
+    document: str,
+    accepted_main_sha: str,
+    *,
+    allow_ancestor: bool = False,
+    repo_path: Path | None = None,
+) -> T3Request | None:
+    """Return the one current typed EFFECT pause, never an execution grant.
+
+    A promotion PR prepares the request against its source accepted ``main``;
+    merging that PR necessarily creates a new accepted-main SHA.  Transport
+    callers may therefore opt into the narrow ancestor bridge, which accepts
+    only a request whose source SHA is an ancestor of the current accepted
+    main.  Pure planning/test callers retain exact-SHA binding by default.
+    """
 
     if not plan_lane.SHA40.fullmatch(accepted_main_sha):
         raise RouteDriverError("route_t3_main_invalid")
@@ -1138,7 +1151,8 @@ def current_t3_request(document: str, accepted_main_sha: str) -> T3Request | Non
         or set(payload) != required
         or payload.get("schema_version") != "route_t3_request.v1"
         or payload.get("packet_id") != current
-        or payload.get("accepted_main_sha") != accepted_main_sha
+        or not isinstance(payload.get("accepted_main_sha"), str)
+        or plan_lane.SHA40.fullmatch(payload["accepted_main_sha"]) is None
         or not isinstance(payload.get("candidate_digest"), str)
         or plan_lane.SHA256.fullmatch(payload["candidate_digest"]) is None
         or not isinstance(payload.get("action_digest"), str)
@@ -1152,9 +1166,17 @@ def current_t3_request(document: str, accepted_main_sha: str) -> T3Request | Non
         or len(payload["requested_action"]) > MAX_SKETCH_FIELD_CHARS
     ):
         raise RouteDriverError("route_t3_request_invalid")
+    request_main_sha = payload["accepted_main_sha"]
+    if request_main_sha != accepted_main_sha:
+        if (
+            not allow_ancestor
+            or repo_path is None
+            or not _merge_is_ancestor(request_main_sha, accepted_main_sha, repo_path)
+        ):
+            raise RouteDriverError("route_t3_request_invalid")
     return T3Request(
         packet_id=current,
-        accepted_main_sha=accepted_main_sha,
+        accepted_main_sha=request_main_sha,
         candidate_digest=payload["candidate_digest"],
         action_digest=payload["action_digest"],
         scope_digest=payload["scope_digest"],
@@ -2664,7 +2686,12 @@ class RepositoryRouteRunner:
         status_document = github.accepted_status_document(accepted_main_sha)
         # Handle an authenticated EFFECT pause before asking the ordinary plan
         # parser for its deliberately READY-only execution candidate.
-        t3_request = current_t3_request(document, accepted_main_sha)
+        t3_request = current_t3_request(
+            document,
+            accepted_main_sha,
+            allow_ancestor=True,
+            repo_path=self.repo_path,
+        )
         if t3_request is not None:
             self._current_t3_request = t3_request
             return t3_request.packet_id, accepted_main_sha

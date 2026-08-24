@@ -1915,7 +1915,7 @@ class LocalRunOnce:
                 )
             accepted_main = self.github.accepted_main_sha(default_branch)
             local_main = self.git.origin_main_sha(self.repo_path, default_branch)
-            if accepted_main != request.accepted_main_sha or accepted_main != local_main:
+            if accepted_main != local_main:
                 return self._plan_result(
                     "stale_checkout", request.packet_id, attempt,
                     accepted_main_sha=accepted_main,
@@ -1923,7 +1923,10 @@ class LocalRunOnce:
                     local_origin_main_sha=local_main,
                 )
             current_request = route_driver.current_t3_request(
-                self.github.accepted_plan_document(accepted_main), accepted_main
+                self.github.accepted_plan_document(accepted_main),
+                accepted_main,
+                allow_ancestor=True,
+                repo_path=self.repo_path,
             )
             if current_request != request:
                 return self._plan_result(

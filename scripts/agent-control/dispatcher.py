@@ -1528,7 +1528,10 @@ def record_route_t3_receipt(
             return {"authorized": False, "reason": "route_t3_request_unavailable"}
         current_main = adapter.accepted_main_sha(branch)
         request = route_driver.current_t3_request(
-            adapter.accepted_plan_document(current_main), current_main
+            adapter.accepted_plan_document(current_main),
+            current_main,
+            allow_ancestor=True,
+            repo_path=Path(os.environ.get("GITHUB_WORKSPACE", ".")),
         )
     except (local_loop.LoopUnavailable, route_driver.RouteDriverError):
         return {"authorized": False, "reason": "route_t3_request_unavailable"}
@@ -1647,7 +1650,10 @@ def record_route_owner_outcome(
             return {"recorded": False, "reason": "route_owner_outcome_owner_unproved"}
         current_main = adapter.accepted_main_sha(branch)
         request = route_driver.current_t3_request(
-            adapter.accepted_plan_document(current_main), current_main
+            adapter.accepted_plan_document(current_main),
+            current_main,
+            allow_ancestor=True,
+            repo_path=Path(os.environ.get("GITHUB_WORKSPACE", ".")),
         )
     except (local_loop.LoopUnavailable, route_driver.RouteDriverError):
         return {"recorded": False, "reason": "route_t3_request_unavailable"}

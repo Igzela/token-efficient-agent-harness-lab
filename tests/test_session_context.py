@@ -1177,7 +1177,7 @@ class CheckpointTests(unittest.TestCase):
             status_document,
         )
         self.assertIn(
-            "`PE7-HE-CL0-PILOT-1` is the current blocked `NEXT_DECISION` window",
+            "`PE7-HE-CL0-PILOT-1` is the current `T3_REQUIRED` `NEXT_DECISION` window",
             future_document,
         )
         self.assertNotIn(
@@ -1196,11 +1196,12 @@ class CheckpointTests(unittest.TestCase):
             next_document, status_document, MAIN
         )
         self.assertEqual(packet["packet_id"], "PE7-HE-CL0-PILOT-1")
-        self.assertEqual(packet["state"], "BLOCKED_PREREQUISITE")
+        self.assertEqual(packet["state"], "T3_REQUIRED")
         self.assertFalse(packet["checkpoint_allowed"])
         self.assertFalse(packet["execution_authorized"])
-        with self.assertRaises(session_context.SessionContextError):
-            session_context.current_dispatch_capsule(next_document, packet)
+        capsule = session_context.current_dispatch_capsule(next_document, packet)
+        self.assertEqual(capsule["packet_id"], packet["packet_id"])
+        self.assertEqual(capsule["external_effect_limit"], 0)
 
     def test_future_route_profile_extraction_is_routing_projection_only(self):
         root = Path(__file__).resolve().parents[1]
