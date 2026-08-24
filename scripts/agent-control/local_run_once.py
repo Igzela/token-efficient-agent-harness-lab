@@ -1923,7 +1923,10 @@ class LocalRunOnce:
                     local_origin_main_sha=local_main,
                 )
             current_request = route_driver.current_t3_request(
-                self.github.accepted_plan_document(accepted_main), accepted_main
+                self.github.accepted_plan_document(accepted_main),
+                accepted_main,
+                allow_ancestor=True,
+                repo_path=self.repo_path,
             )
             if current_request != request:
                 return self._plan_result(

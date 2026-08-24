@@ -927,6 +927,15 @@ class TestEvidenceBackedPromotion(unittest.TestCase):
         with self.assertRaises(route_driver.RouteDriverError) as ctx:
             route_driver.current_t3_request(stale, MAIN)
         self.assertEqual(ctx.exception.reason, "route_t3_request_invalid")
+        merged_main = "c" * 40
+        with mock.patch.object(route_driver, "_merge_is_ancestor", return_value=True):
+            bridged = route_driver.current_t3_request(
+                document,
+                merged_main,
+                allow_ancestor=True,
+                repo_path=Path("/tmp"),
+            )
+        self.assertEqual(bridged.accepted_main_sha, MAIN)
 
     def test_t3_receipt_requires_exact_finite_binding_and_expiry(self):
         request = route_driver.T3Request(
