@@ -3096,6 +3096,8 @@ impl LocalProductStore {
         if actor_id.trim().is_empty() {
             return Err("ec3_budget_actor: authenticated actor_id is required".into());
         }
+        validate_ec3_lifecycle_budget_contract(contract)
+            .map_err(|error| format!("{}: {}", error.code, error.message))?;
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -3169,6 +3171,9 @@ impl LocalProductStore {
                     serde_json::from_str(&recon_body).map_err(|e| e.to_string())?;
                 validate_lifecycle_budget_reconciliation(&reconciliation)
                     .map_err(|error| format!("{}: {}", error.code, error.message))?;
+                if reconciliation.contract_id != contract.contract_id {
+                    return Err("ec3_reconciliation_contract_mismatch: replay contract does not match stored reconciliation".into());
+                }
                 validate_ec3_reconciliation_storage_fields(
                     &reconciliation,
                     &reconciliation_id,
@@ -3372,6 +3377,9 @@ impl LocalProductStore {
                         serde_json::from_str(&row.get::<_, String>(12)).map_err(|e| e.to_string())?;
                     validate_lifecycle_budget_reconciliation(&reconciliation)
                         .map_err(|error| format!("{}: {}", error.code, error.message))?;
+                    if reconciliation.contract_id != contract.contract_id {
+                        return Err("ec3_reconciliation_contract_mismatch: replay contract does not match stored reconciliation".into());
+                    }
                     validate_ec3_reconciliation_storage_fields(
                         &reconciliation,
                         row.get(0), row.get(1), row.get(2), row.get(3),

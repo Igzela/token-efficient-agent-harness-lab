@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::harness_evolution::Ec3LifecycleBudgetContractV1;
+use crate::harness_evolution::{
+    validate_ec3_lifecycle_budget_contract, Ec3LifecycleBudgetContractV1,
+};
 use crate::node_executor::{
     CommandNodeExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor,
     ProcessBoundaryMapping, ProcessEffectState, ProcessOutcome, ProcessOutcomeState,
@@ -1653,7 +1655,7 @@ impl LocalProductStore {
     }
 
     pub fn get_product_task(&self, task_id: &str) -> Result<Option<Value>, String> {
-        match &self.db {
+        let task = match &self.db {
             DatabaseConnection::Sqlite(_) => {
                 self.with_conn(|conn| Self::get_product_task_locked(conn, task_id))
             }
@@ -1667,7 +1669,15 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?;
                 row.map(|r| product_task_row_to_json_pg(&r)).transpose()
             }),
+        }?;
+        if let Some(task) = &task {
+            self.reconcile_ec3_product_task_terminal_if_required(
+                task_id,
+                "product-task-terminal-reconciler",
+                task,
+            )?;
         }
+        Ok(task)
     }
 
     pub fn get_product_task_by_idempotency(
@@ -2173,6 +2183,11 @@ impl LocalProductStore {
             .and_then(Value::as_bool)
             != Some(true)
         {
+            return Ok(());
+        }
+        let status =
+            ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
+        if !status.is_terminal() {
             return Ok(());
         }
         if self
@@ -3353,8 +3368,26 @@ impl LocalProductStore {
             .pointer("/intake/ec3_budget_required")
             .and_then(Value::as_bool)
             == Some(true);
-        if ec3_required && task.pointer("/intake/ec3_budget_contract").is_none() {
-            return Err("EC3 budget contract binding is missing; execution remains blocked".into());
+        if ec3_required {
+            let contract_value = task.pointer("/intake/ec3_budget_contract").ok_or_else(|| {
+                "EC3 budget contract binding is missing; execution remains blocked".to_string()
+            })?;
+            let bound_contract: Ec3LifecycleBudgetContractV1 =
+                serde_json::from_value(contract_value.clone()).map_err(|error| {
+                    format!(
+                        "EC3 budget contract binding is invalid; execution remains blocked: {error}"
+                    )
+                })?;
+            validate_ec3_lifecycle_budget_contract(&bound_contract)
+                .map_err(|error| format!("{}: {}", error.code, error.message))?;
+            if let Some(reservation) = &ec3_reservation {
+                if bound_contract.contract_id != reservation.contract_id {
+                    return Err(
+                        "EC3 budget contract does not match its reservation; execution remains blocked"
+                            .into(),
+                    );
+                }
+            }
         }
         if ec3_required && ec3_reservation.is_none() {
             return Err("EC3 lifecycle reservation is missing; execution remains blocked".into());
