@@ -21,6 +21,71 @@ pub(crate) fn build_operator_evidence(
     let raw_proposals = store.list_proposals_by_run(run_id, 500, 0)?;
     let scorecard_artifacts = store.native_scorecard_artifacts_by_run(run_id, 20)?;
     let lifecycle_cost_observations = store.list_ec3_lifecycle_cost_observations_for_run(run_id)?;
+    let mut lifecycle_budget_candidate_ids = std::collections::BTreeSet::new();
+    lifecycle_budget_candidate_ids.extend(
+        lifecycle_cost_observations
+            .iter()
+            .map(|observation| observation.candidate_id.clone()),
+    );
+    // A ProductTask can reserve a budget and reach a terminal state without
+    // producing a usage observation. Include that owner so missing-usage and
+    // recovery evidence remains visible to the operator.
+    if let Some(task_id) = store.product_task_id_for_run(run_id)? {
+        lifecycle_budget_candidate_ids.insert(task_id);
+    }
+    let lifecycle_budget_views: Vec<serde_json::Value> = lifecycle_budget_candidate_ids
+        .into_iter()
+        .map(|candidate_id| -> Result<Option<serde_json::Value>, String> {
+            let reservation = store.get_candidate_lifecycle_budget_reservation(&candidate_id)?;
+            let reconciliation =
+                store.get_candidate_lifecycle_budget_reconciliation(&candidate_id)?;
+            if reservation.is_none() && reconciliation.is_none() {
+                return Ok(None);
+            }
+            let usage_unmeasured = reconciliation.as_ref().is_some_and(|value| {
+                value.terminal_state
+                    == crate::harness_evolution::LifecycleBudgetTerminalState::MissingUsage
+                    || value.per_phase_costs.iter().any(|phase| phase.unmeasured)
+            });
+            Ok(Some(json!({
+                "candidate_id": candidate_id,
+                "reservation": reservation.map(|value| json!({
+                    "reservation_id": value.reservation_id,
+                    "contract_id": value.contract_id,
+                    "reserved_token_cost": value.reserved_token_cost,
+                    "reserved_call_count": value.reserved_call_count,
+                    "reserved_provider_cost_microunits": value.reserved_provider_cost_microunits,
+                    "reserved_wall_clock_milliseconds": value.reserved_wall_clock_milliseconds,
+                    "reserved_compute_milliseconds": value.reserved_compute_milliseconds,
+                    "reserved_human_effort_milliseconds": value.reserved_human_effort_milliseconds,
+                    "status": value.status.as_str(),
+                    "record_sha256": value.record_sha256,
+                })),
+                "reconciliation": reconciliation.map(|value| json!({
+                    "reconciliation_id": value.reconciliation_id,
+                    "reservation_id": value.reservation_id,
+                    "contract_id": value.contract_id,
+                    "total_token_cost": value.total_token_cost,
+                    "total_call_count": value.total_call_count,
+                    "total_provider_cost_microunits": value.total_provider_cost_microunits,
+                    "total_wall_clock_milliseconds": value.total_wall_clock_milliseconds,
+                    "total_compute_milliseconds": value.total_compute_milliseconds,
+                    "total_human_effort_milliseconds": value.total_human_effort_milliseconds,
+                    "total_failure_attempts": value.total_failure_attempts,
+                    "terminal_state": value.terminal_state.as_str(),
+                    "outcome": value.outcome.as_str(),
+                    "usage_evidence": {
+                        "status": if usage_unmeasured { "unavailable" } else { "measured" },
+                        "unmeasured": usage_unmeasured,
+                    },
+                    "record_sha256": value.record_sha256,
+                })),
+            })))
+        })
+        .collect::<Result<Vec<_>, String>>()?
+        .into_iter()
+        .flatten()
+        .collect();
     let recursive_execution = store
         .load_recursive_tree(run_id)?
         .map(|tree| tree.redacted_read_model());
@@ -232,6 +297,8 @@ pub(crate) fn build_operator_evidence(
         "scorecards": scorecard_views,
         "lifecycle_cost_observation_count": lifecycle_cost_views.len(),
         "lifecycle_cost_observations": lifecycle_cost_views,
+        "lifecycle_budget_count": lifecycle_budget_views.len(),
+        "lifecycle_budgets": lifecycle_budget_views,
         "recursive_execution": recursive_execution,
         "blocked_signals_count": blocked_signals,
         "needs_human_decision": needs_human_decision,
@@ -284,6 +351,7 @@ mod tests {
         assert_eq!(evidence["debate_count"], 0);
         assert_eq!(evidence["needs_human_decision"], false);
         assert_eq!(evidence["lifecycle_cost_observation_count"], 0);
+        assert_eq!(evidence["lifecycle_budget_count"], 0);
         assert_eq!(
             evidence["lifecycle_cost_observations"]
                 .as_array()
@@ -332,6 +400,7 @@ mod tests {
         assert_eq!(projection["amount"], 42);
         assert!(projection.get("redacted_body").is_none());
         assert!(!evidence.to_string().contains("must-not-project"));
+        assert_eq!(evidence["lifecycle_budget_count"], 0);
     }
 
     #[test]

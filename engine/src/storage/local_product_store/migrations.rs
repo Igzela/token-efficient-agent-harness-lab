@@ -70,10 +70,18 @@ pub(super) const V35_TABLES: [&str; 1] = ["product_task_workspace_preparations"]
 pub(super) const V36_TABLES: [&str; 1] = ["managed_acceptance_delegations"];
 pub(super) const V37_TABLES: [&str; 1] = ["harness_evolution_ec2_prediction_outcomes"];
 pub(super) const V37_INDEXES: [&str; 1] = ["idx_harness_evolution_ec2_prediction_outcomes_eval"];
-pub(super) const V38_TABLES: [&str; 1] = ["harness_evolution_ec3_lifecycle_cost_records"];
-pub(super) const V38_INDEXES: [&str; 2] = [
+pub(super) const V38_TABLES: [&str; 4] = [
+    "harness_evolution_ec3_lifecycle_cost_records",
+    "harness_evolution_ec3_lifecycle_costs",
+    "harness_evolution_ec3_lifecycle_budgets",
+    "harness_evolution_ec3_lifecycle_reconciliations",
+];
+pub(super) const V38_INDEXES: [&str; 5] = [
     "idx_harness_evolution_ec3_cost_candidate",
     "idx_harness_evolution_ec3_cost_task_run",
+    "idx_harness_evolution_ec3_lifecycle_costs_candidate",
+    "idx_harness_evolution_ec3_lifecycle_budgets_contract",
+    "idx_harness_evolution_ec3_lifecycle_reconciliations_candidate",
 ];
 pub(super) const V36_DELEGATED_PLAN_OWNER_COLUMN: &str = "delegated_plan_owner_id";
 pub(super) const V36_DELEGATED_PLAN_OWNER_INDEX: &str = "idx_workflow_plans_delegated_owner";
@@ -1346,8 +1354,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                 ));
             }
             tx.execute_batch(
-                "DROP INDEX IF EXISTS idx_harness_evolution_ec3_cost_task_run;
+                "DROP INDEX IF EXISTS idx_harness_evolution_ec3_lifecycle_reconciliations_candidate;
+                 DROP INDEX IF EXISTS idx_harness_evolution_ec3_lifecycle_budgets_contract;
+                 DROP INDEX IF EXISTS idx_harness_evolution_ec3_lifecycle_costs_candidate;
+                 DROP INDEX IF EXISTS idx_harness_evolution_ec3_cost_task_run;
                  DROP INDEX IF EXISTS idx_harness_evolution_ec3_cost_candidate;
+                 DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_reconciliations;
+                 DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_budgets;
+                 DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_costs;
                  DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_cost_records;",
             )
             .map_err(|error| error.to_string())?;
@@ -2671,6 +2685,13 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
             .map_err(|error| error.to_string())?;
         tx.execute_batch(schema::EC3_LIFECYCLE_COST_OBSERVATION_DDL)
             .map_err(|error| error.to_string())?;
+        tx.execute_batch(schema::EC3_LIFECYCLE_COST_DDL)
+            .map_err(|error| error.to_string())?;
+        tx.execute_batch(schema::EC3_LIFECYCLE_BUDGET_DDL)
+            .map_err(|error| error.to_string())?;
+        tx.execute_batch(schema::EC3_LIFECYCLE_RECONCILIATION_DDL)
+            .map_err(|error| error.to_string())?;
+        repair_sqlite_v36_delegated_plan_owner(&tx)?;
         tx.commit().map_err(|error| error.to_string())
     }
 

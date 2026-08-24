@@ -921,6 +921,74 @@ CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_cost_task_run
     ON harness_evolution_ec3_lifecycle_cost_records(product_task_id, run_id, created_at);
 ";
 
+// Legacy normalized rows remain readable for the EC3 enforcement adapter and
+// are repaired on PostgreSQL v36 alongside the reservation/reconciliation
+// tables. New production evidence is written to the v38 observation owner
+// above.
+pub(super) const EC3_LIFECYCLE_COST_DDL: &str = "
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_costs (
+    record_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    token_cost BIGINT NOT NULL,
+    call_count BIGINT NOT NULL,
+    provider_cost_microunits BIGINT NOT NULL,
+    wall_clock_milliseconds BIGINT NOT NULL,
+    compute_milliseconds BIGINT NOT NULL,
+    human_effort_milliseconds BIGINT NOT NULL,
+    trust_source TEXT NOT NULL,
+    unmeasured BOOLEAN NOT NULL DEFAULT FALSE,
+    failure_attempt BOOLEAN NOT NULL DEFAULT FALSE,
+    evidence_payload_digest TEXT NOT NULL CHECK (length(evidence_payload_digest) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_costs_candidate
+    ON harness_evolution_ec3_lifecycle_costs(candidate_id, phase, created_at);
+";
+
+pub(super) const EC3_LIFECYCLE_BUDGET_DDL: &str = "
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_budgets (
+    reservation_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL UNIQUE,
+    contract_id TEXT NOT NULL,
+    reserved_token_cost BIGINT NOT NULL,
+    reserved_call_count BIGINT NOT NULL,
+    reserved_provider_cost_microunits BIGINT NOT NULL,
+    reserved_wall_clock_milliseconds BIGINT NOT NULL,
+    reserved_compute_milliseconds BIGINT NOT NULL,
+    reserved_human_effort_milliseconds BIGINT NOT NULL,
+    status TEXT NOT NULL,
+    reconciliation_id TEXT,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_budgets_contract
+    ON harness_evolution_ec3_lifecycle_budgets(contract_id, status, created_at);
+";
+
+pub(super) const EC3_LIFECYCLE_RECONCILIATION_DDL: &str = "
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_reconciliations (
+    reconciliation_id TEXT PRIMARY KEY,
+    reservation_id TEXT NOT NULL UNIQUE,
+    candidate_id TEXT NOT NULL,
+    contract_id TEXT NOT NULL,
+    total_token_cost BIGINT NOT NULL,
+    total_call_count BIGINT NOT NULL,
+    total_provider_cost_microunits BIGINT NOT NULL,
+    total_wall_clock_milliseconds BIGINT NOT NULL,
+    total_compute_milliseconds BIGINT NOT NULL,
+    total_human_effort_milliseconds BIGINT NOT NULL,
+    total_failure_attempts BIGINT NOT NULL,
+    outcome TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_reconciliations_candidate
+    ON harness_evolution_ec3_lifecycle_reconciliations(candidate_id, contract_id, created_at);
+";
+
 pub(super) const V28_DDL: &str = "
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
@@ -1817,6 +1885,64 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec2_prediction_outcomes (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec2_prediction_outcomes_eval
     ON harness_evolution_ec2_prediction_outcomes(evaluation_digest, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_costs (
+    record_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    token_cost BIGINT NOT NULL,
+    call_count BIGINT NOT NULL,
+    provider_cost_microunits BIGINT NOT NULL,
+    wall_clock_milliseconds BIGINT NOT NULL,
+    compute_milliseconds BIGINT NOT NULL,
+    human_effort_milliseconds BIGINT NOT NULL,
+    trust_source TEXT NOT NULL,
+    unmeasured BOOLEAN NOT NULL DEFAULT FALSE,
+    failure_attempt BOOLEAN NOT NULL DEFAULT FALSE,
+    evidence_payload_digest TEXT NOT NULL CHECK (length(evidence_payload_digest) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_costs_candidate
+    ON harness_evolution_ec3_lifecycle_costs(candidate_id, phase, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_budgets (
+    reservation_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL UNIQUE,
+    contract_id TEXT NOT NULL,
+    reserved_token_cost BIGINT NOT NULL,
+    reserved_call_count BIGINT NOT NULL,
+    reserved_provider_cost_microunits BIGINT NOT NULL,
+    reserved_wall_clock_milliseconds BIGINT NOT NULL,
+    reserved_compute_milliseconds BIGINT NOT NULL,
+    reserved_human_effort_milliseconds BIGINT NOT NULL,
+    status TEXT NOT NULL,
+    reconciliation_id TEXT,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_budgets_contract
+    ON harness_evolution_ec3_lifecycle_budgets(contract_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_reconciliations (
+    reconciliation_id TEXT PRIMARY KEY,
+    reservation_id TEXT NOT NULL UNIQUE,
+    candidate_id TEXT NOT NULL,
+    contract_id TEXT NOT NULL,
+    total_token_cost BIGINT NOT NULL,
+    total_call_count BIGINT NOT NULL,
+    total_provider_cost_microunits BIGINT NOT NULL,
+    total_wall_clock_milliseconds BIGINT NOT NULL,
+    total_compute_milliseconds BIGINT NOT NULL,
+    total_human_effort_milliseconds BIGINT NOT NULL,
+    total_failure_attempts BIGINT NOT NULL,
+    outcome TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_reconciliations_candidate
+    ON harness_evolution_ec3_lifecycle_reconciliations(candidate_id, contract_id, created_at);
 
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
@@ -3111,6 +3237,64 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec2_prediction_outcomes (
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec2_prediction_outcomes_eval
     ON harness_evolution_ec2_prediction_outcomes(evaluation_digest, created_at);
 
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_costs (
+    record_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    token_cost BIGINT NOT NULL,
+    call_count BIGINT NOT NULL,
+    provider_cost_microunits BIGINT NOT NULL,
+    wall_clock_milliseconds BIGINT NOT NULL,
+    compute_milliseconds BIGINT NOT NULL,
+    human_effort_milliseconds BIGINT NOT NULL,
+    trust_source TEXT NOT NULL,
+    unmeasured BOOLEAN NOT NULL DEFAULT FALSE,
+    failure_attempt BOOLEAN NOT NULL DEFAULT FALSE,
+    evidence_payload_digest TEXT NOT NULL CHECK (length(evidence_payload_digest) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_costs_candidate
+    ON harness_evolution_ec3_lifecycle_costs(candidate_id, phase, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_budgets (
+    reservation_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL UNIQUE,
+    contract_id TEXT NOT NULL,
+    reserved_token_cost BIGINT NOT NULL,
+    reserved_call_count BIGINT NOT NULL,
+    reserved_provider_cost_microunits BIGINT NOT NULL,
+    reserved_wall_clock_milliseconds BIGINT NOT NULL,
+    reserved_compute_milliseconds BIGINT NOT NULL,
+    reserved_human_effort_milliseconds BIGINT NOT NULL,
+    status TEXT NOT NULL,
+    reconciliation_id TEXT,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_budgets_contract
+    ON harness_evolution_ec3_lifecycle_budgets(contract_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_reconciliations (
+    reconciliation_id TEXT PRIMARY KEY,
+    reservation_id TEXT NOT NULL UNIQUE,
+    candidate_id TEXT NOT NULL,
+    contract_id TEXT NOT NULL,
+    total_token_cost BIGINT NOT NULL,
+    total_call_count BIGINT NOT NULL,
+    total_provider_cost_microunits BIGINT NOT NULL,
+    total_wall_clock_milliseconds BIGINT NOT NULL,
+    total_compute_milliseconds BIGINT NOT NULL,
+    total_human_effort_milliseconds BIGINT NOT NULL,
+    total_failure_attempts BIGINT NOT NULL,
+    outcome TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_lifecycle_reconciliations_candidate
+    ON harness_evolution_ec3_lifecycle_reconciliations(candidate_id, contract_id, created_at);
+
 CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
     vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
     family_id TEXT NOT NULL,
@@ -3563,6 +3747,12 @@ mod tests {
         assert!(POSTGRES_DDL.contains(EC2_PREDICTION_OUTCOME_DDL.trim()));
         assert!(SQLITE_DDL.contains(EC3_LIFECYCLE_COST_OBSERVATION_DDL.trim()));
         assert!(POSTGRES_DDL.contains(EC3_LIFECYCLE_COST_OBSERVATION_DDL.trim()));
+        assert!(SQLITE_DDL.contains("harness_evolution_ec3_lifecycle_costs"));
+        assert!(POSTGRES_DDL.contains("harness_evolution_ec3_lifecycle_costs"));
+        assert!(SQLITE_DDL.contains(EC3_LIFECYCLE_BUDGET_DDL.trim()));
+        assert!(POSTGRES_DDL.contains(EC3_LIFECYCLE_BUDGET_DDL.trim()));
+        assert!(SQLITE_DDL.contains(EC3_LIFECYCLE_RECONCILIATION_DDL.trim()));
+        assert!(POSTGRES_DDL.contains(EC3_LIFECYCLE_RECONCILIATION_DDL.trim()));
         for expected in [
             "controlled_loop_policy_snapshots",
             "idx_policy_snapshots_status",
@@ -3608,6 +3798,12 @@ mod tests {
             "idx_harness_evolution_ec2_holdout_seals_family",
             "harness_evolution_ec2_prediction_outcomes",
             "idx_harness_evolution_ec2_prediction_outcomes_eval",
+            "harness_evolution_ec3_lifecycle_costs",
+            "idx_harness_evolution_ec3_lifecycle_costs_candidate",
+            "harness_evolution_ec3_lifecycle_budgets",
+            "idx_harness_evolution_ec3_lifecycle_budgets_contract",
+            "harness_evolution_ec3_lifecycle_reconciliations",
+            "idx_harness_evolution_ec3_lifecycle_reconciliations_candidate",
             "idx_harness_evolution_candidates_lineage",
             "harness_evolution_sealed_holdouts",
             "harness_evolution_evaluations",

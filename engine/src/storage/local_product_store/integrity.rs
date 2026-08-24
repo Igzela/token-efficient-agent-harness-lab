@@ -5,8 +5,11 @@ use sha2::{Digest, Sha256};
 
 use super::{count_table, DatabaseConnection, LocalProductStore};
 use crate::harness_evolution::{
-    validate_ec3_lifecycle_cost_observation, CostTrustSource, LifecycleCostDimension,
-    LifecycleCostObservationV1, LifecycleCostPhase,
+    validate_ec3_lifecycle_cost_observation, validate_lifecycle_budget_reconciliation,
+    validate_lifecycle_budget_reservation, validate_lifecycle_cost_record, CostTrustSource,
+    LifecycleBudgetReconciliationOutcome, LifecycleBudgetReconciliationV1,
+    LifecycleBudgetReservationStatus, LifecycleBudgetReservationV1, LifecycleCostDimension,
+    LifecycleCostObservationV1, LifecycleCostPhase, LifecycleCostRecordV1,
 };
 use crate::provider::embedding::{
     is_supported_durable_embedding_contract, EmbeddingContractEvidence, ProviderEmbeddingMetadata,
@@ -90,6 +93,9 @@ const INTEGRITY_TABLES: &[&str] = &[
     "harness_evolution_ec2_holdout_seals",
     "harness_evolution_ec2_prediction_outcomes",
     "harness_evolution_ec3_lifecycle_cost_records",
+    "harness_evolution_ec3_lifecycle_costs",
+    "harness_evolution_ec3_lifecycle_budgets",
+    "harness_evolution_ec3_lifecycle_reconciliations",
     "harness_evolution_sealed_holdouts",
     "harness_evolution_evaluations",
     "harness_evolution_pareto_archive",
@@ -200,6 +206,7 @@ impl LocalProductStore {
                 validate_sqlite_durable_memory_rows(conn)?;
                 validate_sqlite_provider_embedding_operations(conn)?;
                 validate_sqlite_ec3_lifecycle_cost_rows(conn)?;
+                validate_sqlite_ec3_enforcement_rows(conn)?;
 
                 let mut table_reports = Vec::new();
                 for table in INTEGRITY_TABLES {
@@ -231,6 +238,7 @@ impl LocalProductStore {
                 validate_pg_durable_memory_rows(client)?;
                 validate_pg_provider_embedding_operations(client)?;
                 validate_pg_ec3_lifecycle_cost_rows(client)?;
+                validate_pg_ec3_enforcement_rows(client)?;
 
                 let mut table_reports = Vec::new();
                 for table in INTEGRITY_TABLES {
@@ -440,6 +448,400 @@ fn validate_pg_ec3_lifecycle_cost_rows(
             row.get(13),
             row.get(14),
             row.get(16),
+        )?;
+    }
+    Ok(())
+}
+
+fn ec3_u64_column(value: i64, field: &str) -> Result<u64, String> {
+    u64::try_from(value).map_err(|_| format!("negative EC3 {field} column"))
+}
+
+pub(crate) fn validate_ec3_cost_record_storage_fields(
+    record: &LifecycleCostRecordV1,
+    record_id: &str,
+    candidate_id: &str,
+    phase: &str,
+    token_cost: i64,
+    call_count: i64,
+    provider_cost_microunits: i64,
+    wall_clock_milliseconds: i64,
+    compute_milliseconds: i64,
+    human_effort_milliseconds: i64,
+    trust_source: &str,
+    unmeasured: bool,
+    failure_attempt: bool,
+    evidence_payload_digest: &str,
+) -> Result<(), String> {
+    let stored_phase: LifecycleCostPhase = serde_json::from_value(Value::String(phase.into()))
+        .map_err(|error| format!("invalid EC3 phase column: {error}"))?;
+    let stored_trust: CostTrustSource = serde_json::from_value(Value::String(trust_source.into()))
+        .map_err(|error| format!("invalid EC3 trust-source column: {error}"))?;
+    let values = [
+        ec3_u64_column(token_cost, "token_cost")?,
+        ec3_u64_column(call_count, "call_count")?,
+        ec3_u64_column(provider_cost_microunits, "provider_cost_microunits")?,
+        ec3_u64_column(wall_clock_milliseconds, "wall_clock_milliseconds")?,
+        ec3_u64_column(compute_milliseconds, "compute_milliseconds")?,
+        ec3_u64_column(human_effort_milliseconds, "human_effort_milliseconds")?,
+    ];
+    if record.record_id != record_id
+        || record.candidate_id != candidate_id
+        || record.phase != stored_phase
+        || record.token_cost != values[0]
+        || record.call_count != values[1]
+        || record.provider_cost_microunits != values[2]
+        || record.wall_clock_milliseconds != values[3]
+        || record.compute_milliseconds != values[4]
+        || record.human_effort_milliseconds != values[5]
+        || record.trust_source != stored_trust
+        || record.unmeasured != unmeasured
+        || record.failure_attempt != failure_attempt
+        || record.evidence_payload_digest != evidence_payload_digest
+    {
+        return Err("EC3 scalar columns disagree with hash-bound lifecycle cost body".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_ec3_budget_reservation_storage_fields(
+    reservation: &LifecycleBudgetReservationV1,
+    reservation_id: &str,
+    candidate_id: &str,
+    contract_id: &str,
+    values: [i64; 6],
+    status: &str,
+) -> Result<(), String> {
+    let stored_status: LifecycleBudgetReservationStatus =
+        serde_json::from_value(Value::String(status.into()))
+            .map_err(|error| format!("invalid EC3 reservation status column: {error}"))?;
+    let values = values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| ec3_u64_column(value, &format!("reservation_dimension_{index}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    if reservation.reservation_id != reservation_id
+        || reservation.candidate_id != candidate_id
+        || reservation.contract_id != contract_id
+        || reservation.reserved_token_cost != values[0]
+        || reservation.reserved_call_count != values[1]
+        || reservation.reserved_provider_cost_microunits != values[2]
+        || reservation.reserved_wall_clock_milliseconds != values[3]
+        || reservation.reserved_compute_milliseconds != values[4]
+        || reservation.reserved_human_effort_milliseconds != values[5]
+        || reservation.status != stored_status
+    {
+        return Err("EC3 scalar columns disagree with hash-bound reservation body".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_ec3_reconciliation_storage_fields(
+    reconciliation: &LifecycleBudgetReconciliationV1,
+    reconciliation_id: &str,
+    reservation_id: &str,
+    candidate_id: &str,
+    contract_id: &str,
+    values: [i64; 7],
+    outcome: &str,
+) -> Result<(), String> {
+    let stored_outcome: LifecycleBudgetReconciliationOutcome =
+        serde_json::from_value(Value::String(outcome.into()))
+            .map_err(|error| format!("invalid EC3 reconciliation outcome column: {error}"))?;
+    let values = values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| ec3_u64_column(value, &format!("reconciliation_dimension_{index}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    if reconciliation.reconciliation_id != reconciliation_id
+        || reconciliation.reservation_id != reservation_id
+        || reconciliation.candidate_id != candidate_id
+        || reconciliation.contract_id != contract_id
+        || reconciliation.total_token_cost != values[0]
+        || reconciliation.total_call_count != values[1]
+        || reconciliation.total_provider_cost_microunits != values[2]
+        || reconciliation.total_wall_clock_milliseconds != values[3]
+        || reconciliation.total_compute_milliseconds != values[4]
+        || reconciliation.total_human_effort_milliseconds != values[5]
+        || reconciliation.total_failure_attempts != values[6]
+        || reconciliation.outcome != stored_outcome
+    {
+        return Err("EC3 scalar columns disagree with hash-bound reconciliation body".into());
+    }
+    Ok(())
+}
+
+fn validate_sqlite_ec3_enforcement_rows(conn: &rusqlite::Connection) -> Result<(), String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT record_id, candidate_id, phase, token_cost, call_count,
+                    provider_cost_microunits, wall_clock_milliseconds, compute_milliseconds,
+                    human_effort_milliseconds, trust_source, unmeasured, failure_attempt,
+                    evidence_payload_digest, body_json
+             FROM harness_evolution_ec3_lifecycle_costs",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, bool>(10)?,
+                row.get::<_, bool>(11)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, String>(13)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        let (
+            record_id,
+            candidate_id,
+            phase,
+            token_cost,
+            call_count,
+            provider_cost_microunits,
+            wall_clock_milliseconds,
+            compute_milliseconds,
+            human_effort_milliseconds,
+            trust_source,
+            unmeasured,
+            failure_attempt,
+            evidence_payload_digest,
+            body,
+        ) = row.map_err(|error| error.to_string())?;
+        let record: LifecycleCostRecordV1 =
+            serde_json::from_str(&body).map_err(|e| e.to_string())?;
+        validate_lifecycle_cost_record(&record)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        validate_ec3_cost_record_storage_fields(
+            &record,
+            &record_id,
+            &candidate_id,
+            &phase,
+            token_cost,
+            call_count,
+            provider_cost_microunits,
+            wall_clock_milliseconds,
+            compute_milliseconds,
+            human_effort_milliseconds,
+            &trust_source,
+            unmeasured,
+            failure_attempt,
+            &evidence_payload_digest,
+        )?;
+    }
+
+    let mut statement = conn
+        .prepare(
+            "SELECT reservation_id, candidate_id, contract_id, reserved_token_cost,
+                    reserved_call_count, reserved_provider_cost_microunits,
+                    reserved_wall_clock_milliseconds, reserved_compute_milliseconds,
+                    reserved_human_effort_milliseconds, status, body_json
+             FROM harness_evolution_ec3_lifecycle_budgets",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, String>(10)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        let (reservation_id, candidate_id, contract_id, a, b, c, d, e, f, status, body) =
+            row.map_err(|error| error.to_string())?;
+        let reservation: LifecycleBudgetReservationV1 =
+            serde_json::from_str(&body).map_err(|e| e.to_string())?;
+        validate_lifecycle_budget_reservation(&reservation)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        validate_ec3_budget_reservation_storage_fields(
+            &reservation,
+            &reservation_id,
+            &candidate_id,
+            &contract_id,
+            [a, b, c, d, e, f],
+            &status,
+        )?;
+    }
+
+    let mut statement = conn
+        .prepare(
+            "SELECT reconciliation_id, reservation_id, candidate_id, contract_id,
+                    total_token_cost, total_call_count, total_provider_cost_microunits,
+                    total_wall_clock_milliseconds, total_compute_milliseconds,
+                    total_human_effort_milliseconds, total_failure_attempts, outcome, body_json
+             FROM harness_evolution_ec3_lifecycle_reconciliations",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, i64>(9)?,
+                row.get::<_, i64>(10)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, String>(12)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        let (
+            reconciliation_id,
+            reservation_id,
+            candidate_id,
+            contract_id,
+            a,
+            b,
+            c,
+            d,
+            e,
+            f,
+            g,
+            outcome,
+            body,
+        ) = row.map_err(|error| error.to_string())?;
+        let reconciliation: LifecycleBudgetReconciliationV1 =
+            serde_json::from_str(&body).map_err(|e| e.to_string())?;
+        validate_lifecycle_budget_reconciliation(&reconciliation)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        validate_ec3_reconciliation_storage_fields(
+            &reconciliation,
+            &reconciliation_id,
+            &reservation_id,
+            &candidate_id,
+            &contract_id,
+            [a, b, c, d, e, f, g],
+            &outcome,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn validate_pg_ec3_enforcement_rows(
+    client: &mut impl postgres::GenericClient,
+) -> Result<(), String> {
+    for row in client
+        .query(
+            "SELECT record_id, candidate_id, phase, token_cost, call_count,
+                    provider_cost_microunits, wall_clock_milliseconds, compute_milliseconds,
+                    human_effort_milliseconds, trust_source, unmeasured, failure_attempt,
+                    evidence_payload_digest, body_json
+             FROM harness_evolution_ec3_lifecycle_costs",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+    {
+        let record: LifecycleCostRecordV1 =
+            serde_json::from_str(row.get(13)).map_err(|e| e.to_string())?;
+        validate_lifecycle_cost_record(&record)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        validate_ec3_cost_record_storage_fields(
+            &record,
+            row.get(0),
+            row.get(1),
+            row.get(2),
+            row.get(3),
+            row.get(4),
+            row.get(5),
+            row.get(6),
+            row.get(7),
+            row.get(8),
+            row.get(9),
+            row.get(10),
+            row.get(11),
+            row.get(12),
+        )?;
+    }
+    for row in client
+        .query(
+            "SELECT reservation_id, candidate_id, contract_id, reserved_token_cost,
+                    reserved_call_count, reserved_provider_cost_microunits,
+                    reserved_wall_clock_milliseconds, reserved_compute_milliseconds,
+                    reserved_human_effort_milliseconds, status, body_json
+             FROM harness_evolution_ec3_lifecycle_budgets",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+    {
+        let reservation: LifecycleBudgetReservationV1 =
+            serde_json::from_str(row.get(10)).map_err(|e| e.to_string())?;
+        validate_lifecycle_budget_reservation(&reservation)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        validate_ec3_budget_reservation_storage_fields(
+            &reservation,
+            row.get(0),
+            row.get(1),
+            row.get(2),
+            [
+                row.get(3),
+                row.get(4),
+                row.get(5),
+                row.get(6),
+                row.get(7),
+                row.get(8),
+            ],
+            row.get(9),
+        )?;
+    }
+    for row in client
+        .query(
+            "SELECT reconciliation_id, reservation_id, candidate_id, contract_id,
+                    total_token_cost, total_call_count, total_provider_cost_microunits,
+                    total_wall_clock_milliseconds, total_compute_milliseconds,
+                    total_human_effort_milliseconds, total_failure_attempts, outcome, body_json
+             FROM harness_evolution_ec3_lifecycle_reconciliations",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+    {
+        let reconciliation: LifecycleBudgetReconciliationV1 =
+            serde_json::from_str(row.get(12)).map_err(|e| e.to_string())?;
+        validate_lifecycle_budget_reconciliation(&reconciliation)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        validate_ec3_reconciliation_storage_fields(
+            &reconciliation,
+            row.get(0),
+            row.get(1),
+            row.get(2),
+            row.get(3),
+            [
+                row.get(4),
+                row.get(5),
+                row.get(6),
+                row.get(7),
+                row.get(8),
+                row.get(9),
+                row.get(10),
+            ],
+            row.get(11),
         )?;
     }
     Ok(())

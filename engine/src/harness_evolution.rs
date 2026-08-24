@@ -103,6 +103,7 @@ pub enum CandidateTerminalReason {
     RejectedPaused,
     RejectedLateWrite,
     RejectedForbiddenSurface,
+    RejectedLifecycleBudgetOverrun,
     WorkspaceDiscarded,
 }
 
@@ -120,6 +121,7 @@ impl CandidateTerminalReason {
             Self::RejectedPaused => "rejected_paused",
             Self::RejectedLateWrite => "rejected_late_write",
             Self::RejectedForbiddenSurface => "rejected_forbidden_surface",
+            Self::RejectedLifecycleBudgetOverrun => "rejected_lifecycle_budget_overrun",
             Self::WorkspaceDiscarded => "workspace_discarded",
         }
     }
@@ -492,6 +494,107 @@ pub struct LifecycleCostObservationV1 {
     /// Redacted structured evidence only; never prompts, outputs, credentials, or paths.
     pub redacted_body: Value,
     pub record_sha256: String,
+}
+
+/// Normalized lifecycle accounting row used by the enforcement adapter.
+/// Production evidence remains owned by the v38 observation store; this
+/// compact shape is only the deterministic reconciliation input.
+pub const LIFECYCLE_COST_RECORD_SCHEMA: &str = "harness_evolution_ec3_lifecycle_cost_record.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleCostRecordV1 {
+    pub schema_version: String,
+    pub record_id: String,
+    pub candidate_id: String,
+    pub phase: LifecycleCostPhase,
+    pub token_cost: u64,
+    pub call_count: u64,
+    pub provider_cost_microunits: u64,
+    pub wall_clock_milliseconds: u64,
+    pub compute_milliseconds: u64,
+    pub human_effort_milliseconds: u64,
+    pub observed_dimensions: Vec<LifecycleCostDimension>,
+    pub trust_source: CostTrustSource,
+    pub terminal_class: String,
+    pub unmeasured: bool,
+    pub failure_attempt: bool,
+    pub evidence_payload_digest: String,
+    pub record_sha256: String,
+}
+
+pub fn seal_lifecycle_cost_record(
+    mut record: LifecycleCostRecordV1,
+) -> Result<LifecycleCostRecordV1, EvolutionAdmissionError> {
+    record.schema_version = LIFECYCLE_COST_RECORD_SCHEMA.to_string();
+    require_nonempty_id(&record.candidate_id, "ec3_identity_empty")?;
+    validate_sha256_hex(&record.evidence_payload_digest)?;
+    if record.trust_source == CostTrustSource::CallerEstimate {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_untrusted",
+            "caller estimates cannot reconcile lifecycle spend",
+        ));
+    }
+    if record.observed_dimensions.is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_dimensions_missing",
+            "lifecycle cost record must identify measured dimensions",
+        ));
+    }
+    require_nonempty_id(&record.terminal_class, "ec3_cost_terminal_missing")?;
+    let mut dimensions = record.observed_dimensions.clone();
+    dimensions.sort_unstable();
+    dimensions.dedup();
+    if dimensions.len() != record.observed_dimensions.len() {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_dimensions_duplicate",
+            "lifecycle cost record dimensions must be unique",
+        ));
+    }
+    record.observed_dimensions = dimensions;
+    if record.record_id.trim().is_empty() {
+        record.record_id = format!(
+            "helcr-{}",
+            &sha256_hex(&format!(
+                "helcr.v1|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{:?}|{}",
+                record.candidate_id,
+                record.phase,
+                record.evidence_payload_digest,
+                record.token_cost,
+                record.call_count,
+                record.provider_cost_microunits,
+                record.wall_clock_milliseconds,
+                record.compute_milliseconds,
+                record.human_effort_milliseconds,
+                record.observed_dimensions,
+                record.terminal_class
+            ))[..32]
+        );
+    }
+    let mut value = serde_json::to_value(&record)
+        .map_err(|error| EvolutionAdmissionError::new("ec3_record_digest", error.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    record.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_lifecycle_cost_record(&record)?;
+    Ok(record)
+}
+
+pub fn validate_lifecycle_cost_record(
+    record: &LifecycleCostRecordV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if record.schema_version != LIFECYCLE_COST_RECORD_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_schema_invalid",
+            "lifecycle cost record schema mismatch",
+        ));
+    }
+    require_nonempty_id(&record.record_id, "ec3_identity_empty")?;
+    require_nonempty_id(&record.candidate_id, "ec3_identity_empty")?;
+    validate_sha256_hex(&record.evidence_payload_digest)?;
+    let value = serde_json::to_value(record)
+        .map_err(|error| EvolutionAdmissionError::new("ec3_record_digest", error.to_string()))?;
+    require_record_sha256(&value, &record.record_sha256)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1803,6 +1906,434 @@ pub fn build_ec3_lifecycle_cost_read_model(
     Ok(model)
 }
 
+pub const LIFECYCLE_BUDGET_RESERVATION_SCHEMA: &str = "harness_evolution_ec3_budget_reservation.v1";
+pub const LIFECYCLE_BUDGET_RECONCILIATION_SCHEMA: &str =
+    "harness_evolution_ec3_budget_reconciliation.v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleBudgetReservationStatus {
+    Active,
+    Reconciled,
+    Cancelled,
+    Overrun,
+}
+
+impl LifecycleBudgetReservationStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Reconciled => "reconciled",
+            Self::Cancelled => "cancelled",
+            Self::Overrun => "overrun",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleBudgetReservationV1 {
+    pub schema_version: String,
+    pub reservation_id: String,
+    pub candidate_id: String,
+    pub contract_id: String,
+    pub reserved_token_cost: u64,
+    pub reserved_call_count: u64,
+    pub reserved_provider_cost_microunits: u64,
+    pub reserved_wall_clock_milliseconds: u64,
+    pub reserved_compute_milliseconds: u64,
+    pub reserved_human_effort_milliseconds: u64,
+    pub status: LifecycleBudgetReservationStatus,
+    pub record_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleBudgetReconciliationOutcome {
+    WithinEnvelope,
+    OverrunStopped,
+    CancelledReleased,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleBudgetTerminalState {
+    Completed,
+    Failed,
+    Cancelled,
+    OutcomeUnknown,
+    MissingUsage,
+    RecoveryRequired,
+}
+
+impl LifecycleBudgetTerminalState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::OutcomeUnknown => "outcome_unknown",
+            Self::MissingUsage => "missing_usage",
+            Self::RecoveryRequired => "recovery_required",
+        }
+    }
+}
+
+impl LifecycleBudgetReconciliationOutcome {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::WithinEnvelope => "within_envelope",
+            Self::OverrunStopped => "overrun_stopped",
+            Self::CancelledReleased => "cancelled_released",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhaseCostSummary {
+    pub phase: LifecycleCostPhase,
+    pub token_cost: u64,
+    pub call_count: u64,
+    pub provider_cost_microunits: u64,
+    pub wall_clock_milliseconds: u64,
+    pub compute_milliseconds: u64,
+    pub human_effort_milliseconds: u64,
+    pub observed_dimensions: Vec<LifecycleCostDimension>,
+    pub failure_attempts: u64,
+    pub unmeasured: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleBudgetReconciliationV1 {
+    pub schema_version: String,
+    pub reconciliation_id: String,
+    pub reservation_id: String,
+    pub candidate_id: String,
+    pub contract_id: String,
+    pub total_token_cost: u64,
+    pub total_call_count: u64,
+    pub total_provider_cost_microunits: u64,
+    pub total_wall_clock_milliseconds: u64,
+    pub total_compute_milliseconds: u64,
+    pub total_human_effort_milliseconds: u64,
+    pub total_failure_attempts: u64,
+    pub terminal_state: LifecycleBudgetTerminalState,
+    pub per_phase_costs: Vec<PhaseCostSummary>,
+    pub outcome: LifecycleBudgetReconciliationOutcome,
+    pub overrun_phase: Option<LifecycleCostPhase>,
+    pub terminal_reason: Option<CandidateTerminalReason>,
+    pub record_sha256: String,
+}
+
+pub fn derive_lifecycle_budget_reservation_id(candidate_id: &str, contract_id: &str) -> String {
+    format!(
+        "helbr-{}",
+        &sha256_hex(&format!("helbr.v1|{candidate_id}|{contract_id}"))[..32]
+    )
+}
+
+pub fn derive_lifecycle_budget_reconciliation_id(
+    reservation_id: &str,
+    candidate_id: &str,
+) -> String {
+    format!(
+        "helbc-{}",
+        &sha256_hex(&format!("helbc.v1|{reservation_id}|{candidate_id}"))[..32]
+    )
+}
+
+pub fn validate_lifecycle_budget_reservation(
+    reservation: &LifecycleBudgetReservationV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if reservation.schema_version != LIFECYCLE_BUDGET_RESERVATION_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_schema_invalid",
+            "lifecycle budget reservation schema mismatch",
+        ));
+    }
+    require_nonempty_id(&reservation.candidate_id, "ec3_identity_empty")?;
+    require_nonempty_id(&reservation.contract_id, "ec3_identity_empty")?;
+    require_derived_id(
+        &reservation.reservation_id,
+        &derive_lifecycle_budget_reservation_id(
+            &reservation.candidate_id,
+            &reservation.contract_id,
+        ),
+    )?;
+    let value = serde_json::to_value(reservation)
+        .map_err(|e| EvolutionAdmissionError::new("ec3_record_digest", e.to_string()))?;
+    require_record_sha256(&value, &reservation.record_sha256)?;
+    Ok(())
+}
+
+pub fn seal_lifecycle_budget_reservation(
+    mut reservation: LifecycleBudgetReservationV1,
+) -> Result<LifecycleBudgetReservationV1, EvolutionAdmissionError> {
+    reservation.schema_version = LIFECYCLE_BUDGET_RESERVATION_SCHEMA.to_string();
+    if reservation.reservation_id.trim().is_empty() {
+        reservation.reservation_id = derive_lifecycle_budget_reservation_id(
+            &reservation.candidate_id,
+            &reservation.contract_id,
+        );
+    }
+    let mut value = serde_json::to_value(&reservation)
+        .map_err(|e| EvolutionAdmissionError::new("ec3_record_digest", e.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    reservation.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_lifecycle_budget_reservation(&reservation)?;
+    Ok(reservation)
+}
+
+pub fn validate_lifecycle_budget_reconciliation(
+    reconciliation: &LifecycleBudgetReconciliationV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if reconciliation.schema_version != LIFECYCLE_BUDGET_RECONCILIATION_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_schema_invalid",
+            "lifecycle budget reconciliation schema mismatch",
+        ));
+    }
+    require_nonempty_id(&reconciliation.reservation_id, "ec3_identity_empty")?;
+    require_nonempty_id(&reconciliation.candidate_id, "ec3_identity_empty")?;
+    require_nonempty_id(&reconciliation.contract_id, "ec3_identity_empty")?;
+    require_derived_id(
+        &reconciliation.reconciliation_id,
+        &derive_lifecycle_budget_reconciliation_id(
+            &reconciliation.reservation_id,
+            &reconciliation.candidate_id,
+        ),
+    )?;
+    let value = serde_json::to_value(reconciliation)
+        .map_err(|e| EvolutionAdmissionError::new("ec3_record_digest", e.to_string()))?;
+    require_record_sha256(&value, &reconciliation.record_sha256)?;
+    Ok(())
+}
+
+pub fn seal_lifecycle_budget_reconciliation(
+    mut reconciliation: LifecycleBudgetReconciliationV1,
+) -> Result<LifecycleBudgetReconciliationV1, EvolutionAdmissionError> {
+    reconciliation.schema_version = LIFECYCLE_BUDGET_RECONCILIATION_SCHEMA.to_string();
+    if reconciliation.reconciliation_id.trim().is_empty() {
+        reconciliation.reconciliation_id = derive_lifecycle_budget_reconciliation_id(
+            &reconciliation.reservation_id,
+            &reconciliation.candidate_id,
+        );
+    }
+    let mut value = serde_json::to_value(&reconciliation)
+        .map_err(|e| EvolutionAdmissionError::new("ec3_record_digest", e.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    reconciliation.record_sha256 = record_digest_excluding_sha256(&value)?;
+    validate_lifecycle_budget_reconciliation(&reconciliation)?;
+    Ok(reconciliation)
+}
+
+pub fn reconcile_candidate_lifecycle_costs(
+    contract: &Ec3LifecycleBudgetContractV1,
+    reservation: &LifecycleBudgetReservationV1,
+    records: &[LifecycleCostRecordV1],
+) -> Result<LifecycleBudgetReconciliationV1, EvolutionAdmissionError> {
+    validate_ec3_lifecycle_budget_contract(contract)?;
+    if reservation.contract_id != contract.contract_id {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_contract_mismatch",
+            "reservation contract_id does not match contract",
+        ));
+    }
+    let mut total_tokens = 0_u64;
+    let mut total_calls = 0_u64;
+    let mut total_provider_cost = 0_u64;
+    let mut total_wall_clock = 0_u64;
+    let mut total_compute = 0_u64;
+    let mut total_human_effort = 0_u64;
+    let mut total_failures = 0_u64;
+    let mut phase_map: BTreeMap<LifecycleCostPhase, PhaseCostSummary> = BTreeMap::new();
+
+    for record in records {
+        if record.candidate_id != reservation.candidate_id {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_candidate_mismatch",
+                "record candidate_id does not match reservation",
+            ));
+        }
+        total_tokens = total_tokens.saturating_add(record.token_cost);
+        total_calls = total_calls.saturating_add(record.call_count);
+        total_provider_cost = total_provider_cost.saturating_add(record.provider_cost_microunits);
+        total_wall_clock = total_wall_clock.saturating_add(record.wall_clock_milliseconds);
+        total_compute = total_compute.saturating_add(record.compute_milliseconds);
+        total_human_effort = total_human_effort.saturating_add(record.human_effort_milliseconds);
+        if record.failure_attempt {
+            total_failures = total_failures.saturating_add(1);
+        }
+
+        let entry = phase_map
+            .entry(record.phase)
+            .or_insert_with(|| PhaseCostSummary {
+                phase: record.phase,
+                token_cost: 0,
+                call_count: 0,
+                provider_cost_microunits: 0,
+                wall_clock_milliseconds: 0,
+                compute_milliseconds: 0,
+                human_effort_milliseconds: 0,
+                observed_dimensions: record.observed_dimensions.clone(),
+                failure_attempts: 0,
+                unmeasured: record.unmeasured,
+            });
+        entry.token_cost = entry.token_cost.saturating_add(record.token_cost);
+        entry.call_count = entry.call_count.saturating_add(record.call_count);
+        entry.provider_cost_microunits = entry
+            .provider_cost_microunits
+            .saturating_add(record.provider_cost_microunits);
+        entry.wall_clock_milliseconds = entry
+            .wall_clock_milliseconds
+            .saturating_add(record.wall_clock_milliseconds);
+        entry.compute_milliseconds = entry
+            .compute_milliseconds
+            .saturating_add(record.compute_milliseconds);
+        entry.human_effort_milliseconds = entry
+            .human_effort_milliseconds
+            .saturating_add(record.human_effort_milliseconds);
+        if record.failure_attempt {
+            entry.failure_attempts = entry.failure_attempts.saturating_add(1);
+        }
+        if record.unmeasured {
+            entry.unmeasured = true;
+        }
+        entry
+            .observed_dimensions
+            .extend(record.observed_dimensions.iter().copied());
+        entry.observed_dimensions.sort_unstable();
+        entry.observed_dimensions.dedup();
+    }
+
+    let per_phase_costs: Vec<PhaseCostSummary> = phase_map.into_values().collect();
+    let terminal_state = if records.is_empty() {
+        LifecycleBudgetTerminalState::MissingUsage
+    } else if records.iter().any(|record| {
+        let class = record.terminal_class.to_ascii_lowercase();
+        class.contains("outcome_unknown") || class.contains("unknown")
+    }) {
+        LifecycleBudgetTerminalState::OutcomeUnknown
+    } else if records.iter().any(|record| {
+        let class = record.terminal_class.to_ascii_lowercase();
+        class.contains("recovery") || class.contains("cleanup")
+    }) {
+        LifecycleBudgetTerminalState::RecoveryRequired
+    } else if records.iter().any(|record| {
+        let class = record.terminal_class.to_ascii_lowercase();
+        class == "cancelled" || class == "canceled" || class == "killed"
+    }) {
+        LifecycleBudgetTerminalState::Cancelled
+    } else if records.iter().any(|record| record.failure_attempt) {
+        LifecycleBudgetTerminalState::Failed
+    } else {
+        LifecycleBudgetTerminalState::Completed
+    };
+    let limits = |resources: &[LifecycleResourceLimit]| -> BTreeMap<LifecycleCostDimension, u64> {
+        resources
+            .iter()
+            .map(|item| (item.dimension, item.limit))
+            .collect()
+    };
+    let candidate_limits = limits(&contract.candidate_envelope.resource_limits);
+    let token_limit = candidate_limits
+        .get(&LifecycleCostDimension::ModelTokens)
+        .copied()
+        .unwrap_or(0);
+    let call_limit = candidate_limits
+        .get(&LifecycleCostDimension::ProviderCalls)
+        .copied()
+        .unwrap_or(0);
+    let provider_cost_limit = candidate_limits
+        .get(&LifecycleCostDimension::ProviderCostMicrounits)
+        .copied()
+        .unwrap_or(0);
+    let wall_limit = candidate_limits
+        .get(&LifecycleCostDimension::WallClockMilliseconds)
+        .copied()
+        .unwrap_or(0);
+    let compute_limit = candidate_limits
+        .get(&LifecycleCostDimension::ComputeMilliseconds)
+        .copied()
+        .unwrap_or(0);
+    let human_effort_limit = candidate_limits
+        .get(&LifecycleCostDimension::HumanEffortMilliseconds)
+        .copied()
+        .unwrap_or(0);
+    // An empty record set or an explicitly unmeasured record is not evidence
+    // of zero spend.  Keep the terminal result conservative so a missing
+    // usage/late-write/outcome-unknown path cannot be accepted as within the
+    // envelope.
+    let incomplete = records.is_empty()
+        || records.iter().any(|record| record.unmeasured)
+        || per_phase_costs.iter().any(|summary| {
+            REQUIRED_LIFECYCLE_COST_DIMENSIONS
+                .iter()
+                .any(|dimension| !summary.observed_dimensions.contains(dimension))
+        });
+    let overrun = incomplete
+        || total_tokens > token_limit
+        || total_calls > call_limit
+        || total_provider_cost > provider_cost_limit
+        || total_wall_clock > wall_limit
+        || total_compute > compute_limit
+        || total_human_effort > human_effort_limit;
+    let overrun_phase = if overrun {
+        per_phase_costs.iter().find_map(|summary| {
+            let phase_over = summary.unmeasured
+                || summary.token_cost > token_limit
+                || summary.call_count > call_limit
+                || summary.provider_cost_microunits > provider_cost_limit
+                || summary.wall_clock_milliseconds > wall_limit
+                || summary.compute_milliseconds > compute_limit
+                || summary.human_effort_milliseconds > human_effort_limit;
+            phase_over.then_some(summary.phase)
+        })
+    } else {
+        None
+    };
+
+    let (outcome, terminal_reason) = if overrun {
+        (
+            LifecycleBudgetReconciliationOutcome::OverrunStopped,
+            Some(CandidateTerminalReason::RejectedLifecycleBudgetOverrun),
+        )
+    } else if terminal_state == LifecycleBudgetTerminalState::Cancelled {
+        (
+            LifecycleBudgetReconciliationOutcome::CancelledReleased,
+            None,
+        )
+    } else {
+        (LifecycleBudgetReconciliationOutcome::WithinEnvelope, None)
+    };
+
+    let rec = LifecycleBudgetReconciliationV1 {
+        schema_version: LIFECYCLE_BUDGET_RECONCILIATION_SCHEMA.to_string(),
+        reconciliation_id: String::new(),
+        reservation_id: reservation.reservation_id.clone(),
+        candidate_id: reservation.candidate_id.clone(),
+        contract_id: contract.contract_id.clone(),
+        total_token_cost: total_tokens,
+        total_call_count: total_calls,
+        total_provider_cost_microunits: total_provider_cost,
+        total_wall_clock_milliseconds: total_wall_clock,
+        total_compute_milliseconds: total_compute,
+        total_human_effort_milliseconds: total_human_effort,
+        total_failure_attempts: total_failures,
+        terminal_state,
+        per_phase_costs,
+        outcome,
+        overrun_phase,
+        terminal_reason,
+        record_sha256: String::new(),
+    };
+
+    seal_lifecycle_budget_reconciliation(rec)
+}
+
 pub fn frozen_ec1_active_harness_sha() -> &'static str {
     EC1_FROZEN_ACTIVE_HARNESS_SHA
 }
@@ -2635,6 +3166,59 @@ pub fn candidate_from_proposal(
     Ok(candidate)
 }
 
+pub fn sample_ec3_budget_contract() -> Ec3LifecycleBudgetContractV1 {
+    let source_semantics = vec![
+        CostTrustSource::MeasuredDirect,
+        CostTrustSource::DerivedDeterministic,
+        CostTrustSource::Unavailable,
+    ];
+    let phase_policies = REQUIRED_LIFECYCLE_COST_PHASES
+        .iter()
+        .map(|phase| LifecyclePhasePolicy {
+            phase: *phase,
+            required_dimensions: REQUIRED_LIFECYCLE_COST_DIMENSIONS.to_vec(),
+            source_semantics: source_semantics.clone(),
+            incomplete_cost_disposition: IncompleteCostDisposition::CandidateIneligible,
+        })
+        .collect();
+    let limits = |multiplier: u64| {
+        REQUIRED_LIFECYCLE_COST_DIMENSIONS
+            .iter()
+            .enumerate()
+            .map(|(index, dimension)| LifecycleResourceLimit {
+                dimension: *dimension,
+                limit: multiplier * (index as u64 + 1),
+            })
+            .collect()
+    };
+    seal_ec3_lifecycle_budget_contract(Ec3LifecycleBudgetContractV1 {
+        schema_version: String::new(),
+        contract_id: String::new(),
+        phase_policies,
+        candidate_envelope: CandidateLifecycleEnvelope {
+            scope: EnvelopeScope::PerCandidate,
+            resource_limits: limits(100_000),
+            max_repair_attempts: 2,
+            max_ci_runs: 2,
+            max_recovery_attempts: 1,
+        },
+        global_envelope: GlobalLifecycleEnvelope {
+            scope: EnvelopeScope::AggregateAcrossCandidates,
+            resource_limits: limits(1_000_000),
+            max_candidates: 10,
+            max_failed_candidates: 5,
+        },
+        zero_cost_rule: ZeroCostRule::ExplicitEvidenceRequired,
+        reservation_rule: ReservationRule::RequiredBeforeExecution,
+        reconciliation_rule: ReconciliationRule::ExactOnceAfterTerminal,
+        failure_accounting_rule: FailureAccountingRule::ChargeAllAttempts,
+        envelope_exhaustion_rule: EnvelopeExhaustionRule::RejectReservationBeforeExecution,
+        grants_spend_authority: false,
+        record_sha256: String::new(),
+    })
+    .unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2766,14 +3350,14 @@ mod tests {
             phase_policies,
             candidate_envelope: CandidateLifecycleEnvelope {
                 scope: EnvelopeScope::PerCandidate,
-                resource_limits: limits(100),
+                resource_limits: limits(100_000),
                 max_repair_attempts: 2,
                 max_ci_runs: 2,
                 max_recovery_attempts: 1,
             },
             global_envelope: GlobalLifecycleEnvelope {
                 scope: EnvelopeScope::AggregateAcrossCandidates,
-                resource_limits: limits(1_000),
+                resource_limits: limits(1_000_000),
                 max_candidates: 10,
                 max_failed_candidates: 5,
             },
@@ -3425,6 +4009,15 @@ mod tests {
     }
 
     #[test]
+    fn ec3_lifecycle_budget_contract_seals_and_validates() {
+        let contract = sample_ec3_budget_contract();
+        assert!(validate_ec3_lifecycle_budget_contract(&contract).is_ok());
+        assert_eq!(contract.schema_version, EC3_LIFECYCLE_BUDGET_SCHEMA);
+        assert!(!contract.contract_id.is_empty());
+        assert!(!contract.record_sha256.is_empty());
+    }
+
+    #[test]
     fn ec3_lifecycle_cost_observation_seals_and_validates() {
         let observation = sample_ec3_lifecycle_cost_observation();
         assert!(validate_ec3_lifecycle_cost_observation(&observation).is_ok());
@@ -3670,5 +4263,141 @@ mod tests {
         zero.redacted_body = json!({});
         let error = seal_ec3_lifecycle_cost_observation(zero).unwrap_err();
         assert_eq!(error.code, "ec3_cost_zero_unproved");
+    }
+
+    #[test]
+    fn lifecycle_budget_reservation_and_reconciliation_within_envelope() {
+        let contract = sample_ec3_budget_contract();
+        let reservation = seal_lifecycle_budget_reservation(LifecycleBudgetReservationV1 {
+            schema_version: LIFECYCLE_BUDGET_RESERVATION_SCHEMA.to_string(),
+            reservation_id: String::new(),
+            candidate_id: "cand-ec3-100".to_string(),
+            contract_id: contract.contract_id.clone(),
+            reserved_token_cost: 100_000,
+            reserved_call_count: 50,
+            reserved_provider_cost_microunits: 300_000,
+            reserved_wall_clock_milliseconds: 400_000,
+            reserved_compute_milliseconds: 500_000,
+            reserved_human_effort_milliseconds: 600_000,
+            status: LifecycleBudgetReservationStatus::Active,
+            record_sha256: String::new(),
+        })
+        .unwrap();
+
+        assert!(validate_lifecycle_budget_reservation(&reservation).is_ok());
+
+        let rec1 = seal_lifecycle_cost_record(LifecycleCostRecordV1 {
+            schema_version: LIFECYCLE_COST_RECORD_SCHEMA.to_string(),
+            record_id: String::new(),
+            candidate_id: "cand-ec3-100".to_string(),
+            phase: LifecycleCostPhase::Evaluation,
+            token_cost: 5_000,
+            call_count: 2,
+            provider_cost_microunits: 3_000,
+            wall_clock_milliseconds: 30_000,
+            compute_milliseconds: 4_000,
+            human_effort_milliseconds: 5_000,
+            observed_dimensions: REQUIRED_LIFECYCLE_COST_DIMENSIONS.to_vec(),
+            trust_source: CostTrustSource::MeasuredDirect,
+            terminal_class: "completed".to_string(),
+            unmeasured: false,
+            failure_attempt: false,
+            evidence_payload_digest: sha256_hex("eval_cost"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+
+        let rec2_failure = seal_lifecycle_cost_record(LifecycleCostRecordV1 {
+            schema_version: LIFECYCLE_COST_RECORD_SCHEMA.to_string(),
+            record_id: String::new(),
+            candidate_id: "cand-ec3-100".to_string(),
+            phase: LifecycleCostPhase::Repair,
+            token_cost: 4_000,
+            call_count: 2,
+            provider_cost_microunits: 2_000,
+            wall_clock_milliseconds: 40_000,
+            compute_milliseconds: 3_000,
+            human_effort_milliseconds: 4_000,
+            observed_dimensions: REQUIRED_LIFECYCLE_COST_DIMENSIONS.to_vec(),
+            trust_source: CostTrustSource::MeasuredDirect,
+            terminal_class: "failed".to_string(),
+            unmeasured: false,
+            failure_attempt: true,
+            evidence_payload_digest: sha256_hex("repair_failed"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+
+        let reconciliation =
+            reconcile_candidate_lifecycle_costs(&contract, &reservation, &[rec1, rec2_failure])
+                .unwrap();
+
+        assert_eq!(
+            reconciliation.outcome,
+            LifecycleBudgetReconciliationOutcome::WithinEnvelope
+        );
+        assert_eq!(reconciliation.terminal_reason, None);
+        assert_eq!(reconciliation.total_token_cost, 9_000);
+        assert_eq!(reconciliation.total_call_count, 4);
+        assert_eq!(reconciliation.total_provider_cost_microunits, 5_000);
+        assert_eq!(reconciliation.total_wall_clock_milliseconds, 70_000);
+        assert_eq!(reconciliation.total_compute_milliseconds, 7_000);
+        assert_eq!(reconciliation.total_human_effort_milliseconds, 9_000);
+        assert_eq!(reconciliation.total_failure_attempts, 1);
+        assert!(validate_lifecycle_budget_reconciliation(&reconciliation).is_ok());
+    }
+
+    #[test]
+    fn lifecycle_budget_reconciliation_stops_on_overrun() {
+        let contract = sample_ec3_budget_contract();
+        let reservation = seal_lifecycle_budget_reservation(LifecycleBudgetReservationV1 {
+            schema_version: LIFECYCLE_BUDGET_RESERVATION_SCHEMA.to_string(),
+            reservation_id: String::new(),
+            candidate_id: "cand-ec3-overrun".to_string(),
+            contract_id: contract.contract_id.clone(),
+            reserved_token_cost: 100_000,
+            reserved_call_count: 50,
+            reserved_provider_cost_microunits: 300_000,
+            reserved_wall_clock_milliseconds: 400_000,
+            reserved_compute_milliseconds: 500_000,
+            reserved_human_effort_milliseconds: 600_000,
+            status: LifecycleBudgetReservationStatus::Active,
+            record_sha256: String::new(),
+        })
+        .unwrap();
+
+        // 120_000 tokens exceeds 100_000 total token limit
+        let rec = seal_lifecycle_cost_record(LifecycleCostRecordV1 {
+            schema_version: LIFECYCLE_COST_RECORD_SCHEMA.to_string(),
+            record_id: String::new(),
+            candidate_id: "cand-ec3-overrun".to_string(),
+            phase: LifecycleCostPhase::CandidateMaterialization,
+            token_cost: 120_000,
+            call_count: 10,
+            provider_cost_microunits: 10_000,
+            wall_clock_milliseconds: 50_000,
+            compute_milliseconds: 5_000,
+            human_effort_milliseconds: 5_000,
+            observed_dimensions: REQUIRED_LIFECYCLE_COST_DIMENSIONS.to_vec(),
+            trust_source: CostTrustSource::MeasuredDirect,
+            terminal_class: "completed".to_string(),
+            unmeasured: false,
+            failure_attempt: false,
+            evidence_payload_digest: sha256_hex("huge_mat"),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+
+        let reconciliation =
+            reconcile_candidate_lifecycle_costs(&contract, &reservation, &[rec]).unwrap();
+
+        assert_eq!(
+            reconciliation.outcome,
+            LifecycleBudgetReconciliationOutcome::OverrunStopped
+        );
+        assert_eq!(
+            reconciliation.terminal_reason,
+            Some(CandidateTerminalReason::RejectedLifecycleBudgetOverrun)
+        );
     }
 }
