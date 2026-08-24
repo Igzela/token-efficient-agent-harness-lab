@@ -3340,15 +3340,16 @@ mod tests {
         }
 
         /// Build an explicit pre-v37 fixture for rollback tests. Production
-        /// never downgrades v37 implicitly; the v36 rollback contract is
-        /// exercised only after removing the v37 prediction-outcome state.
+        /// never downgrades v38 implicitly; the v36 rollback contract is
+        /// exercised only after removing the additive v38/v37 state.
         fn remove_v37_state(&self) {
             self.store
                 .with_pg_conn(|client| {
                     client
                         .batch_execute(
-                            "DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
-                             DELETE FROM schema_migrations WHERE version = 37;",
+                            "DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_cost_records;
+                             DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
+                             DELETE FROM schema_migrations WHERE version IN (38, 37);",
                         )
                         .map_err(|error| error.to_string())
                 })
@@ -3394,13 +3395,14 @@ mod tests {
     #[cfg(feature = "pg-tests")]
     fn prepare_v25_rollback_fixture(store: &LocalProductStore) {
         // This helper exercises the pre-v37 rollback chain. Keep the fixture
-        // explicit now that normal PostgreSQL startup migrates to v37.
+        // explicit now that normal PostgreSQL startup migrates to v38.
         store
             .with_pg_conn(|client| {
                 client
                     .batch_execute(
-                        "DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
-                         DELETE FROM schema_migrations WHERE version = 37;",
+                        "DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_cost_records;
+                         DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
+                         DELETE FROM schema_migrations WHERE version IN (38, 37);",
                     )
                     .map_err(|error| error.to_string())
             })
