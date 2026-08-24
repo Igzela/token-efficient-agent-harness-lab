@@ -1262,17 +1262,17 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
             "<!-- route-t3-request:v1\n" + json.dumps(marker) + "\n-->\n"
         )
 
-    def _runner(self, request, raw):
+    def _runner(self, request, raw, *, current_main=MAIN):
         github = mock.Mock()
         github.read_control_state.return_value = {"emergency_stop": False, "orchestrator_enabled": True}
         github.repository_metadata.return_value = {"name_with_owner": "acme/repo", "default_branch": "main"}
-        github.accepted_main_sha.return_value = MAIN
+        github.accepted_main_sha.return_value = current_main
         github.accepted_plan_document.return_value = self._t3_document(request)
         github.accepted_route_document.return_value = "future"
         github.accepted_status_document.return_value = status_document()
         github.plan_ledger_issue.return_value = LEDGER
         git = mock.Mock()
-        git.origin_main_sha.return_value = MAIN
+        git.origin_main_sha.return_value = current_main
         runner = local_run_once.LocalRunOnce(
             github, git, repository="acme/repo", repo_path=Path("/tmp"),
         )
@@ -1318,6 +1318,34 @@ class TestOperatorEffectRouteResume(unittest.TestCase):
         self.assertEqual(drive.call_args.args[0], CLOSED)
         self.assertEqual(drive.call_args.args[2], MAIN)
         self.assertEqual(drive.call_args.args[4], compiled)
+
+    def test_valid_operator_completion_survives_promotion_merge_main_drift(self):
+        request, receipt, raw = self._request_and_receipt()
+        merged_main = "c" * 40
+        runner, github, state = self._runner(request, raw, current_main=merged_main)
+        successor = mock.Mock(
+            profile=("PE7-EFFECT-CLOSEOUT-1", "CLOSEOUT", "T2", "none", "evidence_review"),
+        )
+        successor.sketch.prerequisites = (CLOSED,)
+        planned = route_driver.PromotionPlanResult(
+            "READY_FOR_EXECUTION", "proved", evidence=mock.Mock()
+        )
+        compiled = mock.Mock()
+        owner_state = self._owner_receipt(request, receipt)
+
+        def read_state(_issue, dispatch_id=None, _repo=""):
+            if dispatch_id == f"route-t3-owner-outcome:{request.packet_id}:{request.candidate_digest}":
+                return owner_state
+            return state
+
+        with mock.patch.object(route_driver, "_merge_is_ancestor", return_value=True), \
+             mock.patch.object(state_manager, "read_dispatch_state", side_effect=read_state), \
+             mock.patch.object(route_driver, "eligible_successor", return_value=successor), \
+             mock.patch.object(runner, "_plan_current_main_evidence", return_value=planned), \
+             mock.patch.object(route_driver, "compile_successor", return_value=compiled), \
+             mock.patch.object(runner, "_drive_promotion_pr", return_value=mock.Mock(status="promotion_pr")):
+            result = runner.run_effect_route_once(request, receipt)
+        self.assertEqual(result.status, "promotion_pr")
 
     def test_effect_closeout_planner_transport_unavailability_is_recoverable(self):
         request, receipt, raw = self._request_and_receipt()

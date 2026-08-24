@@ -1915,7 +1915,7 @@ class LocalRunOnce:
                 )
             accepted_main = self.github.accepted_main_sha(default_branch)
             local_main = self.git.origin_main_sha(self.repo_path, default_branch)
-            if accepted_main != request.accepted_main_sha or accepted_main != local_main:
+            if accepted_main != local_main:
                 return self._plan_result(
                     "stale_checkout", request.packet_id, attempt,
                     accepted_main_sha=accepted_main,
