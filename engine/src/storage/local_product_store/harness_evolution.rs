@@ -58,8 +58,8 @@ fn ec3_limit(
         .unwrap_or(0)
 }
 
-fn ec3_limit_seconds(resources: &[crate::harness_evolution::LifecycleResourceLimit]) -> u64 {
-    ec3_limit(resources, LifecycleCostDimension::WallClockMilliseconds).saturating_add(999) / 1_000
+fn ec3_limit_milliseconds(resources: &[crate::harness_evolution::LifecycleResourceLimit]) -> u64 {
+    ec3_limit(resources, LifecycleCostDimension::WallClockMilliseconds)
 }
 
 fn ec3_missingness_observation(
@@ -119,7 +119,7 @@ fn ec3_records_from_observations(
                 token_cost,
                 call_count,
                 provider_cost_microunits,
-                wall_clock_seconds,
+                wall_clock_milliseconds,
                 compute_milliseconds,
                 human_effort_milliseconds,
                 supported_dimension,
@@ -133,18 +133,9 @@ fn ec3_records_from_observations(
                 LifecycleCostDimension::ProviderCostMicrounits => {
                     (0, 0, observation.amount.unwrap_or_default(), 0, 0, 0, true)
                 }
-                LifecycleCostDimension::WallClockMilliseconds => (
-                    0,
-                    0,
-                    0,
-                    observation
-                        .amount
-                        .map(|milliseconds| milliseconds.saturating_add(999) / 1_000)
-                        .unwrap_or_default(),
-                    0,
-                    0,
-                    true,
-                ),
+                LifecycleCostDimension::WallClockMilliseconds => {
+                    (0, 0, 0, observation.amount.unwrap_or_default(), 0, 0, true)
+                }
                 LifecycleCostDimension::ComputeMilliseconds => {
                     (0, 0, 0, 0, observation.amount.unwrap_or_default(), 0, true)
                 }
@@ -160,10 +151,12 @@ fn ec3_records_from_observations(
                 token_cost,
                 call_count,
                 provider_cost_microunits,
-                wall_clock_seconds,
+                wall_clock_milliseconds,
                 compute_milliseconds,
                 human_effort_milliseconds,
+                observed_dimensions: vec![observation.dimension],
                 trust_source: observation.trust_source,
+                terminal_class: observation.terminal_class.clone(),
                 unmeasured: observation.amount.is_none()
                     || !supported_dimension
                     || observation.trust_source
@@ -178,6 +171,75 @@ fn ec3_records_from_observations(
             .map_err(|error| format!("{}: {}", error.code, error.message))
         })
         .collect()
+}
+
+fn list_ec3_lifecycle_cost_records_sqlite_tx(
+    tx: &Transaction<'_>,
+    candidate_id: &str,
+) -> Result<Vec<LifecycleCostRecordV1>, String> {
+    let mut records = tx
+        .prepare(
+            "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs
+             WHERE candidate_id=?1 ORDER BY created_at ASC, record_id ASC",
+        )
+        .map_err(|e| e.to_string())?
+        .query_map(params![candidate_id], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .map(|row| {
+            let body = row.map_err(|e| e.to_string())?;
+            serde_json::from_str(&body).map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<LifecycleCostRecordV1>, _>>()?;
+    let observations = tx
+        .prepare(
+            "SELECT redacted_body_json FROM harness_evolution_ec3_lifecycle_cost_records
+             WHERE candidate_id=?1 ORDER BY created_at ASC, record_id ASC",
+        )
+        .map_err(|e| e.to_string())?
+        .query_map(params![candidate_id], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .map(|row| {
+            let body = row.map_err(|e| e.to_string())?;
+            parse_stored_ec3_observation(&body)
+        })
+        .collect::<Result<Vec<LifecycleCostObservationV1>, _>>()?;
+    records.extend(ec3_records_from_observations(observations)?);
+    Ok(records)
+}
+
+#[cfg(feature = "pg")]
+fn list_ec3_lifecycle_cost_records_pg_tx(
+    tx: &mut postgres::Transaction<'_>,
+    candidate_id: &str,
+) -> Result<Vec<LifecycleCostRecordV1>, String> {
+    let mut records = tx
+        .query(
+            "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs
+             WHERE candidate_id=$1 ORDER BY created_at ASC, record_id ASC",
+            &[&candidate_id],
+        )
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|row| {
+            let body: String = row.get(0);
+            serde_json::from_str(&body).map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<LifecycleCostRecordV1>, _>>()?;
+    let observations = tx
+        .query(
+            "SELECT redacted_body_json FROM harness_evolution_ec3_lifecycle_cost_records
+             WHERE candidate_id=$1 ORDER BY created_at ASC, record_id ASC",
+            &[&candidate_id],
+        )
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|row| {
+            let body: String = row.get(0);
+            parse_stored_ec3_observation(&body)
+        })
+        .collect::<Result<Vec<LifecycleCostObservationV1>, _>>()?;
+    records.extend(ec3_records_from_observations(observations)?);
+    Ok(records)
 }
 
 fn persist_ec3_sqlite_tx(
@@ -207,6 +269,17 @@ fn persist_ec3_sqlite_tx(
         .map(i64::try_from)
         .transpose()
         .map_err(|_| "ec3_cost_amount_invalid: amount exceeds storage range")?;
+    let budget_status: Option<String> = tx
+        .query_row(
+            "SELECT status FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=?1",
+            params![observation.candidate_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if budget_status.is_some_and(|status| status != "active") {
+        return Err("ec3_cost_late_write: terminal budget reconciliation already committed".into());
+    }
     let existing: Option<(String, String)> = tx
         .query_row(
             "SELECT record_id, redacted_body_json
@@ -297,6 +370,16 @@ fn persist_ec3_pg_tx(
         .map(i64::try_from)
         .transpose()
         .map_err(|_| "ec3_cost_amount_invalid: amount exceeds storage range")?;
+    let budget_status = tx
+        .query_opt(
+            "SELECT status FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=$1 FOR UPDATE",
+            &[&observation.candidate_id],
+        )
+        .map_err(|error| error.to_string())?
+        .map(|row| row.get::<_, String>(0));
+    if budget_status.is_some_and(|status| status != "active") {
+        return Err("ec3_cost_late_write: terminal budget reconciliation already committed".into());
+    }
     let existing = tx
         .query_opt(
             "SELECT record_id, redacted_body_json
@@ -2228,6 +2311,17 @@ impl LocalProductStore {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                     .map_err(|error| error.to_string())?;
+                let budget_status: Option<String> = tx
+                    .query_row(
+                        "SELECT status FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=?1",
+                        params![sealed.candidate_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                if budget_status.is_some_and(|status| status != "active") {
+                    return Err("ec3_cost_late_write: terminal budget reconciliation already committed".into());
+                }
                 let existing: Option<String> = tx
                     .query_row(
                         "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs WHERE record_id=?1",
@@ -2246,7 +2340,7 @@ impl LocalProductStore {
                 tx.execute(
                     "INSERT INTO harness_evolution_ec3_lifecycle_costs
                      (record_id, candidate_id, phase, token_cost, call_count, provider_cost_microunits,
-                      wall_clock_seconds, compute_milliseconds, human_effort_milliseconds,
+                      wall_clock_milliseconds, compute_milliseconds, human_effort_milliseconds,
                       trust_source, unmeasured, failure_attempt, evidence_payload_digest, body_json, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                     params![
@@ -2259,7 +2353,7 @@ impl LocalProductStore {
                         sealed.token_cost as i64,
                         sealed.call_count as i64,
                         sealed.provider_cost_microunits as i64,
-                        sealed.wall_clock_seconds as i64,
+                        sealed.wall_clock_milliseconds as i64,
                         sealed.compute_milliseconds as i64,
                         sealed.human_effort_milliseconds as i64,
                         serde_json::to_value(sealed.trust_source)
@@ -2288,6 +2382,16 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let budget_status = tx
+                    .query_opt(
+                        "SELECT status FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=$1 FOR UPDATE",
+                        &[&sealed.candidate_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .map(|row| row.get::<_, String>(0));
+                if budget_status.is_some_and(|status| status != "active") {
+                    return Err("ec3_cost_late_write: terminal budget reconciliation already committed".into());
+                }
                 let existing = tx
                     .query_opt(
                         "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs WHERE record_id=$1 FOR UPDATE",
@@ -2315,7 +2419,7 @@ impl LocalProductStore {
                 tx.execute(
                     "INSERT INTO harness_evolution_ec3_lifecycle_costs
                      (record_id, candidate_id, phase, token_cost, call_count, provider_cost_microunits,
-                      wall_clock_seconds, compute_milliseconds, human_effort_milliseconds,
+                      wall_clock_milliseconds, compute_milliseconds, human_effort_milliseconds,
                       trust_source, unmeasured, failure_attempt, evidence_payload_digest, body_json, created_at)
                      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
                     &[
@@ -2325,7 +2429,7 @@ impl LocalProductStore {
                         &(sealed.token_cost as i64),
                         &(sealed.call_count as i64),
                         &(sealed.provider_cost_microunits as i64),
-                        &(sealed.wall_clock_seconds as i64),
+                        &(sealed.wall_clock_milliseconds as i64),
                         &(sealed.compute_milliseconds as i64),
                         &(sealed.human_effort_milliseconds as i64),
                         &trust_source,
@@ -2344,7 +2448,7 @@ impl LocalProductStore {
                     "token_cost": sealed.token_cost,
                     "call_count": sealed.call_count,
                     "provider_cost_microunits": sealed.provider_cost_microunits,
-                    "wall_clock_seconds": sealed.wall_clock_seconds,
+                    "wall_clock_milliseconds": sealed.wall_clock_milliseconds,
                     "compute_milliseconds": sealed.compute_milliseconds,
                     "human_effort_milliseconds": sealed.human_effort_milliseconds,
                     "unmeasured": sealed.unmeasured,
@@ -2401,7 +2505,7 @@ impl LocalProductStore {
                 &contract.candidate_envelope.resource_limits,
                 crate::harness_evolution::LifecycleCostDimension::ProviderCostMicrounits,
             ),
-            reserved_wall_clock_seconds: ec3_limit_seconds(
+            reserved_wall_clock_milliseconds: ec3_limit_milliseconds(
                 &contract.candidate_envelope.resource_limits,
             ),
             reserved_compute_milliseconds: ec3_limit(
@@ -2459,11 +2563,24 @@ impl LocalProductStore {
                     active_count, contract.global_envelope.max_candidates
                 ));
             }
+            let failed_count: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM harness_evolution_ec3_lifecycle_budgets WHERE contract_id=?1 AND status='overrun'",
+                    params![contract.contract_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if failed_count as u32 >= contract.global_envelope.max_failed_candidates {
+                return Err(format!(
+                    "ec3_global_failed_candidates_exhausted: failed candidate count {} reaches max {}",
+                    failed_count, contract.global_envelope.max_failed_candidates
+                ));
+            }
 
             let sums: (i64, i64, i64, i64, i64, i64) = tx
                 .query_row(
                     "SELECT COALESCE(SUM(reserved_token_cost), 0), COALESCE(SUM(reserved_call_count), 0),
-                            COALESCE(SUM(reserved_provider_cost_microunits), 0), COALESCE(SUM(reserved_wall_clock_seconds), 0),
+                            COALESCE(SUM(reserved_provider_cost_microunits), 0), COALESCE(SUM(reserved_wall_clock_milliseconds), 0),
                             COALESCE(SUM(reserved_compute_milliseconds), 0), COALESCE(SUM(reserved_human_effort_milliseconds), 0)
                      FROM harness_evolution_ec3_lifecycle_budgets WHERE contract_id=?1 AND status != 'cancelled'",
                     params![contract.contract_id],
@@ -2484,7 +2601,7 @@ impl LocalProductStore {
             let new_calls = (sums.1 as u64).saturating_add(reservation.reserved_call_count);
             let new_provider_cost = (sums.2 as u64)
                 .saturating_add(reservation.reserved_provider_cost_microunits);
-            let new_seconds = (sums.3 as u64).saturating_add(reservation.reserved_wall_clock_seconds);
+            let new_seconds = (sums.3 as u64).saturating_add(reservation.reserved_wall_clock_milliseconds);
             let new_compute = (sums.4 as u64).saturating_add(reservation.reserved_compute_milliseconds);
             let new_human_effort = (sums.5 as u64)
                 .saturating_add(reservation.reserved_human_effort_milliseconds);
@@ -2501,7 +2618,7 @@ impl LocalProductStore {
                 &contract.global_envelope.resource_limits,
                 crate::harness_evolution::LifecycleCostDimension::ProviderCostMicrounits,
             );
-            let global_wall_limit = ec3_limit_seconds(&contract.global_envelope.resource_limits);
+            let global_wall_limit = ec3_limit_milliseconds(&contract.global_envelope.resource_limits);
             let global_compute_limit = ec3_limit(
                 &contract.global_envelope.resource_limits,
                 crate::harness_evolution::LifecycleCostDimension::ComputeMilliseconds,
@@ -2537,7 +2654,7 @@ impl LocalProductStore {
             tx.execute(
                 "INSERT INTO harness_evolution_ec3_lifecycle_budgets
                     (reservation_id, candidate_id, contract_id, reserved_token_cost, reserved_call_count,
-                     reserved_provider_cost_microunits, reserved_wall_clock_seconds,
+                     reserved_provider_cost_microunits, reserved_wall_clock_milliseconds,
                      reserved_compute_milliseconds, reserved_human_effort_milliseconds,
                      status, reconciliation_id, body_json, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?12)",
@@ -2548,7 +2665,7 @@ impl LocalProductStore {
                     reservation.reserved_token_cost as i64,
                     reservation.reserved_call_count as i64,
                     reservation.reserved_provider_cost_microunits as i64,
-                    reservation.reserved_wall_clock_seconds as i64,
+                    reservation.reserved_wall_clock_milliseconds as i64,
                     reservation.reserved_compute_milliseconds as i64,
                     reservation.reserved_human_effort_milliseconds as i64,
                     reservation.status.as_str(),
@@ -2570,7 +2687,7 @@ impl LocalProductStore {
                     "reserved_token_cost": reservation.reserved_token_cost,
                     "reserved_call_count": reservation.reserved_call_count,
                     "reserved_provider_cost_microunits": reservation.reserved_provider_cost_microunits,
-                    "reserved_wall_clock_seconds": reservation.reserved_wall_clock_seconds,
+                    "reserved_wall_clock_milliseconds": reservation.reserved_wall_clock_milliseconds,
                     "reserved_compute_milliseconds": reservation.reserved_compute_milliseconds,
                     "reserved_human_effort_milliseconds": reservation.reserved_human_effort_milliseconds,
                     "actor_id": actor_id,
@@ -2613,10 +2730,23 @@ impl LocalProductStore {
                         active_count, contract.global_envelope.max_candidates
                     ));
                 }
+                let failed_count: i64 = tx
+                    .query_one(
+                        "SELECT COUNT(*) FROM harness_evolution_ec3_lifecycle_budgets WHERE contract_id=$1 AND status='overrun'",
+                        &[&contract.contract_id],
+                    )
+                    .map(|row| row.get(0))
+                    .map_err(|e| e.to_string())?;
+                if failed_count as u32 >= contract.global_envelope.max_failed_candidates {
+                    return Err(format!(
+                        "ec3_global_failed_candidates_exhausted: failed candidate count {} reaches max {}",
+                        failed_count, contract.global_envelope.max_failed_candidates
+                    ));
+                }
                 let sums = tx
                     .query_one(
                         "SELECT COALESCE(SUM(reserved_token_cost), 0), COALESCE(SUM(reserved_call_count), 0),
-                                COALESCE(SUM(reserved_provider_cost_microunits), 0), COALESCE(SUM(reserved_wall_clock_seconds), 0),
+                                COALESCE(SUM(reserved_provider_cost_microunits), 0), COALESCE(SUM(reserved_wall_clock_milliseconds), 0),
                                 COALESCE(SUM(reserved_compute_milliseconds), 0), COALESCE(SUM(reserved_human_effort_milliseconds), 0)
                          FROM harness_evolution_ec3_lifecycle_budgets WHERE contract_id=$1 AND status <> 'cancelled'",
                         &[&contract.contract_id],
@@ -2629,7 +2759,7 @@ impl LocalProductStore {
                 let new_provider_cost = (sums.get::<_, i64>(2) as u64)
                     .saturating_add(reservation.reserved_provider_cost_microunits);
                 let new_seconds = (sums.get::<_, i64>(3) as u64)
-                    .saturating_add(reservation.reserved_wall_clock_seconds);
+                    .saturating_add(reservation.reserved_wall_clock_milliseconds);
                 let new_compute = (sums.get::<_, i64>(4) as u64)
                     .saturating_add(reservation.reserved_compute_milliseconds);
                 let new_human_effort = (sums.get::<_, i64>(5) as u64)
@@ -2646,7 +2776,7 @@ impl LocalProductStore {
                     &contract.global_envelope.resource_limits,
                     crate::harness_evolution::LifecycleCostDimension::ProviderCostMicrounits,
                 );
-                let global_wall_limit = ec3_limit_seconds(&contract.global_envelope.resource_limits);
+                let global_wall_limit = ec3_limit_milliseconds(&contract.global_envelope.resource_limits);
                 let global_compute_limit = ec3_limit(
                     &contract.global_envelope.resource_limits,
                     crate::harness_evolution::LifecycleCostDimension::ComputeMilliseconds,
@@ -2672,7 +2802,7 @@ impl LocalProductStore {
                 tx.execute(
                     "INSERT INTO harness_evolution_ec3_lifecycle_budgets
                      (reservation_id, candidate_id, contract_id, reserved_token_cost, reserved_call_count,
-                      reserved_provider_cost_microunits, reserved_wall_clock_seconds,
+                      reserved_provider_cost_microunits, reserved_wall_clock_milliseconds,
                       reserved_compute_milliseconds, reserved_human_effort_milliseconds,
                       status, reconciliation_id, body_json, created_at, updated_at)
                      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,$11,$12,$12)",
@@ -2683,7 +2813,7 @@ impl LocalProductStore {
                         &(reservation.reserved_token_cost as i64),
                         &(reservation.reserved_call_count as i64),
                         &(reservation.reserved_provider_cost_microunits as i64),
-                        &(reservation.reserved_wall_clock_seconds as i64),
+                        &(reservation.reserved_wall_clock_milliseconds as i64),
                         &(reservation.reserved_compute_milliseconds as i64),
                         &(reservation.reserved_human_effort_milliseconds as i64),
                         &reservation.status.as_str(),
@@ -2698,7 +2828,7 @@ impl LocalProductStore {
                     "reserved_token_cost": reservation.reserved_token_cost,
                     "reserved_call_count": reservation.reserved_call_count,
                     "reserved_provider_cost_microunits": reservation.reserved_provider_cost_microunits,
-                    "reserved_wall_clock_seconds": reservation.reserved_wall_clock_seconds,
+                    "reserved_wall_clock_milliseconds": reservation.reserved_wall_clock_milliseconds,
                     "reserved_compute_milliseconds": reservation.reserved_compute_milliseconds,
                     "reserved_human_effort_milliseconds": reservation.reserved_human_effort_milliseconds,
                 })
@@ -2765,12 +2895,11 @@ impl LocalProductStore {
             return Err("ec3_budget_actor: authenticated actor_id is required".into());
         }
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let cost_records = self.list_ec3_lifecycle_cost_records_for_candidate(candidate_id)?;
-
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
             let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                 .map_err(|e| e.to_string())?;
+            let cost_records = list_ec3_lifecycle_cost_records_sqlite_tx(&tx, candidate_id)?;
 
             let reservation_row: Option<(String, String, String)> = tx
                 .query_row(
@@ -2815,7 +2944,7 @@ impl LocalProductStore {
             tx.execute(
                 "INSERT INTO harness_evolution_ec3_lifecycle_reconciliations
                     (reconciliation_id, reservation_id, candidate_id, contract_id, total_token_cost,
-                     total_call_count, total_provider_cost_microunits, total_wall_clock_seconds,
+                     total_call_count, total_provider_cost_microunits, total_wall_clock_milliseconds,
                      total_compute_milliseconds, total_human_effort_milliseconds,
                      total_failure_attempts, outcome, body_json, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
@@ -2827,7 +2956,7 @@ impl LocalProductStore {
                     reconciliation.total_token_cost as i64,
                     reconciliation.total_call_count as i64,
                     reconciliation.total_provider_cost_microunits as i64,
-                    reconciliation.total_wall_clock_seconds as i64,
+                    reconciliation.total_wall_clock_milliseconds as i64,
                     reconciliation.total_compute_milliseconds as i64,
                     reconciliation.total_human_effort_milliseconds as i64,
                     reconciliation.total_failure_attempts as i64,
@@ -2852,6 +2981,8 @@ impl LocalProductStore {
 
             let mut updated_reservation = reservation.clone();
             updated_reservation.status = new_reservation_status;
+            let updated_reservation = seal_lifecycle_budget_reservation(updated_reservation)
+                .map_err(|e| format!("{}: {}", e.code, e.message))?;
             let updated_res_body =
                 serde_json::to_string(&updated_reservation).map_err(|e| e.to_string())?;
 
@@ -2876,7 +3007,7 @@ impl LocalProductStore {
                         params![candidate_id],
                         |row| row.get(0),
                     )
-                    .unwrap_or(false);
+                    .map_err(|e| e.to_string())?;
 
                 if candidate_exists {
                     tx.execute(
@@ -2902,11 +3033,12 @@ impl LocalProductStore {
                     "total_token_cost": reconciliation.total_token_cost,
                     "total_call_count": reconciliation.total_call_count,
                     "total_provider_cost_microunits": reconciliation.total_provider_cost_microunits,
-                    "total_wall_clock_seconds": reconciliation.total_wall_clock_seconds,
+                    "total_wall_clock_milliseconds": reconciliation.total_wall_clock_milliseconds,
                     "total_compute_milliseconds": reconciliation.total_compute_milliseconds,
                     "total_human_effort_milliseconds": reconciliation.total_human_effort_milliseconds,
                     "total_failure_attempts": reconciliation.total_failure_attempts,
                     "outcome": reconciliation.outcome.as_str(),
+                    "terminal_state": reconciliation.terminal_state.as_str(),
                     "terminal_reason": reconciliation.terminal_reason.map(|t| t.as_str()),
                     "actor_id": actor_id,
                 }),
@@ -2918,6 +3050,7 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                let cost_records = list_ec3_lifecycle_cost_records_pg_tx(&mut tx, candidate_id)?;
                 let reservation_row = tx
                     .query_opt(
                         "SELECT reservation_id, body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=$1 FOR UPDATE",
@@ -2955,7 +3088,7 @@ impl LocalProductStore {
                 tx.execute(
                     "INSERT INTO harness_evolution_ec3_lifecycle_reconciliations
                      (reconciliation_id, reservation_id, candidate_id, contract_id, total_token_cost,
-                      total_call_count, total_provider_cost_microunits, total_wall_clock_seconds,
+                      total_call_count, total_provider_cost_microunits, total_wall_clock_milliseconds,
                       total_compute_milliseconds, total_human_effort_milliseconds,
                       total_failure_attempts, outcome, body_json, created_at)
                      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
@@ -2967,7 +3100,7 @@ impl LocalProductStore {
                         &(reconciliation.total_token_cost as i64),
                         &(reconciliation.total_call_count as i64),
                         &(reconciliation.total_provider_cost_microunits as i64),
-                        &(reconciliation.total_wall_clock_seconds as i64),
+                        &(reconciliation.total_wall_clock_milliseconds as i64),
                         &(reconciliation.total_compute_milliseconds as i64),
                         &(reconciliation.total_human_effort_milliseconds as i64),
                         &(reconciliation.total_failure_attempts as i64),
@@ -2990,6 +3123,8 @@ impl LocalProductStore {
                 };
                 let mut updated_reservation = reservation.clone();
                 updated_reservation.status = new_status;
+                let updated_reservation = seal_lifecycle_budget_reservation(updated_reservation)
+                    .map_err(|e| format!("{}: {}", e.code, e.message))?;
                 let updated_body = serde_json::to_string(&updated_reservation)
                     .map_err(|e| e.to_string())?;
                 tx.execute(
@@ -3030,11 +3165,12 @@ impl LocalProductStore {
                     "total_token_cost": reconciliation.total_token_cost,
                     "total_call_count": reconciliation.total_call_count,
                     "total_provider_cost_microunits": reconciliation.total_provider_cost_microunits,
-                    "total_wall_clock_seconds": reconciliation.total_wall_clock_seconds,
+                    "total_wall_clock_milliseconds": reconciliation.total_wall_clock_milliseconds,
                     "total_compute_milliseconds": reconciliation.total_compute_milliseconds,
                     "total_human_effort_milliseconds": reconciliation.total_human_effort_milliseconds,
                     "total_failure_attempts": reconciliation.total_failure_attempts,
                     "outcome": reconciliation.outcome.as_str(),
+                    "terminal_state": reconciliation.terminal_state.as_str(),
                     "terminal_reason": reconciliation.terminal_reason.map(|t| t.as_str()),
                 })
                 .to_string();
@@ -5373,10 +5509,13 @@ mod tests {
             token_cost: 5_000,
             call_count: 2,
             provider_cost_microunits: 3_000,
-            wall_clock_seconds: 30,
+            wall_clock_milliseconds: 30_000,
             compute_milliseconds: 4_000,
             human_effort_milliseconds: 5_000,
+            observed_dimensions: crate::harness_evolution::REQUIRED_LIFECYCLE_COST_DIMENSIONS
+                .to_vec(),
             trust_source: CostTrustSource::MeasuredDirect,
+            terminal_class: "completed".to_string(),
             unmeasured: false,
             failure_attempt: false,
             evidence_payload_digest: crate::harness_evolution::sha256_hex("c1_eval"),
@@ -5405,10 +5544,13 @@ mod tests {
             token_cost: 120_000,
             call_count: 10,
             provider_cost_microunits: 10_000,
-            wall_clock_seconds: 50,
+            wall_clock_milliseconds: 50_000,
             compute_milliseconds: 5_000,
             human_effort_milliseconds: 5_000,
+            observed_dimensions: crate::harness_evolution::REQUIRED_LIFECYCLE_COST_DIMENSIONS
+                .to_vec(),
             trust_source: CostTrustSource::MeasuredDirect,
+            terminal_class: "completed".to_string(),
             unmeasured: false,
             failure_attempt: false,
             evidence_payload_digest: crate::harness_evolution::sha256_hex("c2_mat"),

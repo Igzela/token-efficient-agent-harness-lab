@@ -510,10 +510,12 @@ pub struct LifecycleCostRecordV1 {
     pub token_cost: u64,
     pub call_count: u64,
     pub provider_cost_microunits: u64,
-    pub wall_clock_seconds: u64,
+    pub wall_clock_milliseconds: u64,
     pub compute_milliseconds: u64,
     pub human_effort_milliseconds: u64,
+    pub observed_dimensions: Vec<LifecycleCostDimension>,
     pub trust_source: CostTrustSource,
+    pub terminal_class: String,
     pub unmeasured: bool,
     pub failure_attempt: bool,
     pub evidence_payload_digest: String,
@@ -532,20 +534,39 @@ pub fn seal_lifecycle_cost_record(
             "caller estimates cannot reconcile lifecycle spend",
         ));
     }
+    if record.observed_dimensions.is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_dimensions_missing",
+            "lifecycle cost record must identify measured dimensions",
+        ));
+    }
+    require_nonempty_id(&record.terminal_class, "ec3_cost_terminal_missing")?;
+    let mut dimensions = record.observed_dimensions.clone();
+    dimensions.sort_unstable();
+    dimensions.dedup();
+    if dimensions.len() != record.observed_dimensions.len() {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_dimensions_duplicate",
+            "lifecycle cost record dimensions must be unique",
+        ));
+    }
+    record.observed_dimensions = dimensions;
     if record.record_id.trim().is_empty() {
         record.record_id = format!(
             "helcr-{}",
             &sha256_hex(&format!(
-                "helcr.v1|{}|{:?}|{}|{}|{}|{}|{}|{}|{}",
+                "helcr.v1|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{:?}|{}",
                 record.candidate_id,
                 record.phase,
                 record.evidence_payload_digest,
                 record.token_cost,
                 record.call_count,
                 record.provider_cost_microunits,
-                record.wall_clock_seconds,
+                record.wall_clock_milliseconds,
                 record.compute_milliseconds,
-                record.human_effort_milliseconds
+                record.human_effort_milliseconds,
+                record.observed_dimensions,
+                record.terminal_class
             ))[..32]
         );
     }
@@ -1918,7 +1939,7 @@ pub struct LifecycleBudgetReservationV1 {
     pub reserved_token_cost: u64,
     pub reserved_call_count: u64,
     pub reserved_provider_cost_microunits: u64,
-    pub reserved_wall_clock_seconds: u64,
+    pub reserved_wall_clock_milliseconds: u64,
     pub reserved_compute_milliseconds: u64,
     pub reserved_human_effort_milliseconds: u64,
     pub status: LifecycleBudgetReservationStatus,
@@ -1931,6 +1952,30 @@ pub enum LifecycleBudgetReconciliationOutcome {
     WithinEnvelope,
     OverrunStopped,
     CancelledReleased,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleBudgetTerminalState {
+    Completed,
+    Failed,
+    Cancelled,
+    OutcomeUnknown,
+    MissingUsage,
+    RecoveryRequired,
+}
+
+impl LifecycleBudgetTerminalState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::OutcomeUnknown => "outcome_unknown",
+            Self::MissingUsage => "missing_usage",
+            Self::RecoveryRequired => "recovery_required",
+        }
+    }
 }
 
 impl LifecycleBudgetReconciliationOutcome {
@@ -1949,9 +1994,10 @@ pub struct PhaseCostSummary {
     pub token_cost: u64,
     pub call_count: u64,
     pub provider_cost_microunits: u64,
-    pub wall_clock_seconds: u64,
+    pub wall_clock_milliseconds: u64,
     pub compute_milliseconds: u64,
     pub human_effort_milliseconds: u64,
+    pub observed_dimensions: Vec<LifecycleCostDimension>,
     pub failure_attempts: u64,
     pub unmeasured: bool,
 }
@@ -1966,10 +2012,11 @@ pub struct LifecycleBudgetReconciliationV1 {
     pub total_token_cost: u64,
     pub total_call_count: u64,
     pub total_provider_cost_microunits: u64,
-    pub total_wall_clock_seconds: u64,
+    pub total_wall_clock_milliseconds: u64,
     pub total_compute_milliseconds: u64,
     pub total_human_effort_milliseconds: u64,
     pub total_failure_attempts: u64,
+    pub terminal_state: LifecycleBudgetTerminalState,
     pub per_phase_costs: Vec<PhaseCostSummary>,
     pub outcome: LifecycleBudgetReconciliationOutcome,
     pub overrun_phase: Option<LifecycleCostPhase>,
@@ -2114,7 +2161,7 @@ pub fn reconcile_candidate_lifecycle_costs(
         total_tokens = total_tokens.saturating_add(record.token_cost);
         total_calls = total_calls.saturating_add(record.call_count);
         total_provider_cost = total_provider_cost.saturating_add(record.provider_cost_microunits);
-        total_wall_clock = total_wall_clock.saturating_add(record.wall_clock_seconds);
+        total_wall_clock = total_wall_clock.saturating_add(record.wall_clock_milliseconds);
         total_compute = total_compute.saturating_add(record.compute_milliseconds);
         total_human_effort = total_human_effort.saturating_add(record.human_effort_milliseconds);
         if record.failure_attempt {
@@ -2128,9 +2175,10 @@ pub fn reconcile_candidate_lifecycle_costs(
                 token_cost: 0,
                 call_count: 0,
                 provider_cost_microunits: 0,
-                wall_clock_seconds: 0,
+                wall_clock_milliseconds: 0,
                 compute_milliseconds: 0,
                 human_effort_milliseconds: 0,
+                observed_dimensions: record.observed_dimensions.clone(),
                 failure_attempts: 0,
                 unmeasured: record.unmeasured,
             });
@@ -2139,9 +2187,9 @@ pub fn reconcile_candidate_lifecycle_costs(
         entry.provider_cost_microunits = entry
             .provider_cost_microunits
             .saturating_add(record.provider_cost_microunits);
-        entry.wall_clock_seconds = entry
-            .wall_clock_seconds
-            .saturating_add(record.wall_clock_seconds);
+        entry.wall_clock_milliseconds = entry
+            .wall_clock_milliseconds
+            .saturating_add(record.wall_clock_milliseconds);
         entry.compute_milliseconds = entry
             .compute_milliseconds
             .saturating_add(record.compute_milliseconds);
@@ -2154,9 +2202,36 @@ pub fn reconcile_candidate_lifecycle_costs(
         if record.unmeasured {
             entry.unmeasured = true;
         }
+        entry
+            .observed_dimensions
+            .extend(record.observed_dimensions.iter().copied());
+        entry.observed_dimensions.sort_unstable();
+        entry.observed_dimensions.dedup();
     }
 
     let per_phase_costs: Vec<PhaseCostSummary> = phase_map.into_values().collect();
+    let terminal_state = if records.is_empty() {
+        LifecycleBudgetTerminalState::MissingUsage
+    } else if records.iter().any(|record| {
+        let class = record.terminal_class.to_ascii_lowercase();
+        class.contains("outcome_unknown") || class.contains("unknown")
+    }) {
+        LifecycleBudgetTerminalState::OutcomeUnknown
+    } else if records.iter().any(|record| {
+        let class = record.terminal_class.to_ascii_lowercase();
+        class.contains("recovery") || class.contains("cleanup")
+    }) {
+        LifecycleBudgetTerminalState::RecoveryRequired
+    } else if records.iter().any(|record| {
+        let class = record.terminal_class.to_ascii_lowercase();
+        class == "cancelled" || class == "canceled" || class == "killed"
+    }) {
+        LifecycleBudgetTerminalState::Cancelled
+    } else if records.iter().any(|record| record.failure_attempt) {
+        LifecycleBudgetTerminalState::Failed
+    } else {
+        LifecycleBudgetTerminalState::Completed
+    };
     let limits = |resources: &[LifecycleResourceLimit]| -> BTreeMap<LifecycleCostDimension, u64> {
         resources
             .iter()
@@ -2179,9 +2254,7 @@ pub fn reconcile_candidate_lifecycle_costs(
     let wall_limit = candidate_limits
         .get(&LifecycleCostDimension::WallClockMilliseconds)
         .copied()
-        .unwrap_or(0)
-        .saturating_add(999)
-        / 1_000;
+        .unwrap_or(0);
     let compute_limit = candidate_limits
         .get(&LifecycleCostDimension::ComputeMilliseconds)
         .copied()
@@ -2194,7 +2267,13 @@ pub fn reconcile_candidate_lifecycle_costs(
     // of zero spend.  Keep the terminal result conservative so a missing
     // usage/late-write/outcome-unknown path cannot be accepted as within the
     // envelope.
-    let incomplete = records.is_empty() || records.iter().any(|record| record.unmeasured);
+    let incomplete = records.is_empty()
+        || records.iter().any(|record| record.unmeasured)
+        || per_phase_costs.iter().any(|summary| {
+            REQUIRED_LIFECYCLE_COST_DIMENSIONS
+                .iter()
+                .any(|dimension| !summary.observed_dimensions.contains(dimension))
+        });
     let overrun = incomplete
         || total_tokens > token_limit
         || total_calls > call_limit
@@ -2208,7 +2287,7 @@ pub fn reconcile_candidate_lifecycle_costs(
                 || summary.token_cost > token_limit
                 || summary.call_count > call_limit
                 || summary.provider_cost_microunits > provider_cost_limit
-                || summary.wall_clock_seconds > wall_limit
+                || summary.wall_clock_milliseconds > wall_limit
                 || summary.compute_milliseconds > compute_limit
                 || summary.human_effort_milliseconds > human_effort_limit;
             phase_over.then_some(summary.phase)
@@ -2221,6 +2300,11 @@ pub fn reconcile_candidate_lifecycle_costs(
         (
             LifecycleBudgetReconciliationOutcome::OverrunStopped,
             Some(CandidateTerminalReason::RejectedLifecycleBudgetOverrun),
+        )
+    } else if terminal_state == LifecycleBudgetTerminalState::Cancelled {
+        (
+            LifecycleBudgetReconciliationOutcome::CancelledReleased,
+            None,
         )
     } else {
         (LifecycleBudgetReconciliationOutcome::WithinEnvelope, None)
@@ -2235,10 +2319,11 @@ pub fn reconcile_candidate_lifecycle_costs(
         total_token_cost: total_tokens,
         total_call_count: total_calls,
         total_provider_cost_microunits: total_provider_cost,
-        total_wall_clock_seconds: total_wall_clock,
+        total_wall_clock_milliseconds: total_wall_clock,
         total_compute_milliseconds: total_compute,
         total_human_effort_milliseconds: total_human_effort,
         total_failure_attempts: total_failures,
+        terminal_state,
         per_phase_costs,
         outcome,
         overrun_phase,
@@ -4191,7 +4276,7 @@ mod tests {
             reserved_token_cost: 100_000,
             reserved_call_count: 50,
             reserved_provider_cost_microunits: 300_000,
-            reserved_wall_clock_seconds: 400,
+            reserved_wall_clock_milliseconds: 400_000,
             reserved_compute_milliseconds: 500_000,
             reserved_human_effort_milliseconds: 600_000,
             status: LifecycleBudgetReservationStatus::Active,
@@ -4209,10 +4294,12 @@ mod tests {
             token_cost: 5_000,
             call_count: 2,
             provider_cost_microunits: 3_000,
-            wall_clock_seconds: 30,
+            wall_clock_milliseconds: 30_000,
             compute_milliseconds: 4_000,
             human_effort_milliseconds: 5_000,
+            observed_dimensions: REQUIRED_LIFECYCLE_COST_DIMENSIONS.to_vec(),
             trust_source: CostTrustSource::MeasuredDirect,
+            terminal_class: "completed".to_string(),
             unmeasured: false,
             failure_attempt: false,
             evidence_payload_digest: sha256_hex("eval_cost"),
@@ -4228,10 +4315,12 @@ mod tests {
             token_cost: 4_000,
             call_count: 2,
             provider_cost_microunits: 2_000,
-            wall_clock_seconds: 40,
+            wall_clock_milliseconds: 40_000,
             compute_milliseconds: 3_000,
             human_effort_milliseconds: 4_000,
+            observed_dimensions: REQUIRED_LIFECYCLE_COST_DIMENSIONS.to_vec(),
             trust_source: CostTrustSource::MeasuredDirect,
+            terminal_class: "failed".to_string(),
             unmeasured: false,
             failure_attempt: true,
             evidence_payload_digest: sha256_hex("repair_failed"),
@@ -4251,7 +4340,7 @@ mod tests {
         assert_eq!(reconciliation.total_token_cost, 9_000);
         assert_eq!(reconciliation.total_call_count, 4);
         assert_eq!(reconciliation.total_provider_cost_microunits, 5_000);
-        assert_eq!(reconciliation.total_wall_clock_seconds, 70);
+        assert_eq!(reconciliation.total_wall_clock_milliseconds, 70_000);
         assert_eq!(reconciliation.total_compute_milliseconds, 7_000);
         assert_eq!(reconciliation.total_human_effort_milliseconds, 9_000);
         assert_eq!(reconciliation.total_failure_attempts, 1);
@@ -4269,7 +4358,7 @@ mod tests {
             reserved_token_cost: 100_000,
             reserved_call_count: 50,
             reserved_provider_cost_microunits: 300_000,
-            reserved_wall_clock_seconds: 400,
+            reserved_wall_clock_milliseconds: 400_000,
             reserved_compute_milliseconds: 500_000,
             reserved_human_effort_milliseconds: 600_000,
             status: LifecycleBudgetReservationStatus::Active,
@@ -4286,10 +4375,12 @@ mod tests {
             token_cost: 120_000,
             call_count: 10,
             provider_cost_microunits: 10_000,
-            wall_clock_seconds: 50,
+            wall_clock_milliseconds: 50_000,
             compute_milliseconds: 5_000,
             human_effort_milliseconds: 5_000,
+            observed_dimensions: REQUIRED_LIFECYCLE_COST_DIMENSIONS.to_vec(),
             trust_source: CostTrustSource::MeasuredDirect,
+            terminal_class: "completed".to_string(),
             unmeasured: false,
             failure_attempt: false,
             evidence_payload_digest: sha256_hex("huge_mat"),

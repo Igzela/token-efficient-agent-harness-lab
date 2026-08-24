@@ -1909,7 +1909,12 @@ impl LocalProductStore {
             )
             .map_err(|e| e.to_string())?;
             tx.batch_execute(
-                "LOCK TABLE schema_migrations, harness_evolution_ec3_lifecycle_cost_records IN ACCESS EXCLUSIVE MODE",
+                "LOCK TABLE schema_migrations,
+                    harness_evolution_ec3_lifecycle_cost_records,
+                    harness_evolution_ec3_lifecycle_costs,
+                    harness_evolution_ec3_lifecycle_budgets,
+                    harness_evolution_ec3_lifecycle_reconciliations
+                 IN ACCESS EXCLUSIVE MODE",
             )
             .map_err(|e| e.to_string())?;
             let version: i64 = tx
@@ -1921,22 +1926,26 @@ impl LocalProductStore {
                     "v38 rollback requires current schema version 38; found {version}"
                 ));
             }
-            let occupied: i64 = tx
-                .query_one(
-                    "SELECT COUNT(*) FROM harness_evolution_ec3_lifecycle_cost_records",
-                    &[],
-                )
-                .map_err(|e| e.to_string())?
-                .get(0);
-            if occupied > 0 {
-                return Err(
-                    "v38 rollback blocked: lifecycle-cost observations exist in harness_evolution_ec3_lifecycle_cost_records"
-                        .into(),
-                );
+            for table in super::super::migrations::V38_TABLES {
+                let occupied: i64 = tx
+                    .query_one(&format!("SELECT COUNT(*) FROM {table}"), &[])
+                    .map_err(|e| e.to_string())?
+                    .get(0);
+                if occupied > 0 {
+                    return Err(format!(
+                        "v38 rollback blocked: lifecycle-cost rows exist in {table}"
+                    ));
+                }
             }
             tx.batch_execute(
-                "DROP INDEX IF EXISTS idx_harness_evolution_ec3_cost_task_run;
+                "DROP INDEX IF EXISTS idx_harness_evolution_ec3_lifecycle_reconciliations_candidate;
+                 DROP INDEX IF EXISTS idx_harness_evolution_ec3_lifecycle_budgets_contract;
+                 DROP INDEX IF EXISTS idx_harness_evolution_ec3_lifecycle_costs_candidate;
+                 DROP INDEX IF EXISTS idx_harness_evolution_ec3_cost_task_run;
                  DROP INDEX IF EXISTS idx_harness_evolution_ec3_cost_candidate;
+                 DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_reconciliations;
+                 DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_budgets;
+                 DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_costs;
                  DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_cost_records;",
             )
             .map_err(|e| e.to_string())?;
