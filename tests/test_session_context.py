@@ -1158,6 +1158,7 @@ class CheckpointTests(unittest.TestCase):
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         status_document = (root / "docs/CURRENT_STATUS.md").read_text(encoding="utf-8")
+        future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         self.assertIn(
             "No Provider call, credential-value read/output/persistence, target write, "
             "EFFECT/T3 action, auto-merge, or second runtime/store/authority owner",
@@ -1174,6 +1175,14 @@ class CheckpointTests(unittest.TestCase):
         self.assertNotIn(
             "no lifecycle-cost instrumentation or enforcement is accepted",
             status_document,
+        )
+        self.assertIn(
+            "`PE7-HE-CL0-PILOT-1` is the current blocked `NEXT_DECISION` window",
+            future_document,
+        )
+        self.assertNotIn(
+            "enforcement is the current `NEXT_DECISION` window",
+            future_document,
         )
         self.assertIn("exact-once terminal reconciliation", next_document)
         self.assertIn("PE7-HE-CL0-PILOT-1", next_document)
