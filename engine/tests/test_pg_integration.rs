@@ -2958,8 +2958,9 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_preserves_spend_rollback_gua
     let mut fixture_client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
     fixture_client
         .batch_execute(
-            "DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
-             DELETE FROM schema_migrations WHERE version = 37;",
+            "DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_cost_records;
+             DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
+             DELETE FROM schema_migrations WHERE version IN (38, 37);",
         )
         .unwrap();
 
