@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-23.
+Last updated: 2026-08-24.
 
 This document owns accepted repository truth and confirmed capability gaps only. It separates two states that must not be conflated:
 
@@ -12,7 +12,7 @@ Open PR heads, Draft/Ready state, CI, reviews, mergeability, and the next permit
 ## Verified Repository State
 
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
-- Latest accepted runtime/code baseline: PR #572 exact head `0f63ad49c2b5ba87bf5e661bcbae9fd5fab9a9a8` squash-merged as `262b67b675c36859c3dee6e1556fa0090654b75c`; it adds the existing-owner strict read-only Store/auth/preflight seam and contemporary old/new identity projection. No Provider call, credential-value read, target write, authority consumption, or replay effect was authorized, and the merge is not a live-ready claim.
+- Latest accepted runtime/code baseline: PR #608 exact head `36474545563bd1b91015d4e3f2005f12dd43bde9` squash-merged as `789b7dba9afdd5e1e6e41d191ebcbbfa933b2c12`; it adds immutable EC3 lifecycle-cost instrumentation, v38 SQLite/PostgreSQL persistence and integrity, and a redacted operator projection through existing owners. No Provider call, credential-value read, target write, authority consumption, enforcement, or live effect was authorized.
 - Latest accepted governing-document baseline prior to this closeout: PR #570 exact head `ec3cf3b90831de268a0a1b9f6afee5d093872c89` squash-merged as `37a4f752b2fdc3516b7581dffedcebb99c76f6a7`; it parked the contemporary protocol packet at `DECISION_REQUIRED` and opened the bounded T2 read-only repair window that PR #572 later implemented.
 - PR #368 accepted the provider timeout-ownership repair from exact head `17cc5d03…`; its exact-head review receipt reports `PASS` with no open findings, and its canonical exact-head workflow completed successfully before merge.
 - PR #369 accepted the operator-gated compatibility-calibration mechanism from exact head `b571c95a75a7c8eacda99a8f586d8f2360868ab7`; canonical exact-head workflow `31172449577` completed successfully and the exact-head review receipt reports `PASS` with no open findings.
@@ -97,6 +97,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-HE-EC2-SENTINEL-CONFORMANCE-1` | `COMPLETE` | PR #597 exact head `4e39a52a265d4a9e3a6902c68da142b424b15c36`; squash merge `dbe20eccb4980e595958d615cf937ba34cfdaed2`; exact-head review comments `5350149695` and `5350149805`; canonical workflow `32321977265` |
 | `PE7-HE-EC2-PREDICTION-OUTCOME-1` | `COMPLETE` | PR #600 exact head `0ccdbefa59e18b241cba7cb6f26f3d267608a9a9`; squash merge `ac2b2f640406ca766b0cd567c2782e426d8dad2b`; exact-head review comments `5385499271` and `5385499345`; canonical workflow `32633510108` |
 | `PE7-HE-EC3-CONTRACT-1` | `COMPLETE` | PR #603 exact head `c1c1c23eb68d11f38fd85623f412dd13b5c867e1`; squash merge `d1b939865e5dcf3b11093e1e6932078e55068054`; exact-head review receipt comment `5386543180` with Spec companion `5386543304`; canonical workflow `32646001459`; exact-head check `32646001422` |
+| `PE7-HE-EC3-INSTRUMENTATION-1` | `COMPLETE` | PR #608 exact head `36474545563bd1b91015d4e3f2005f12dd43bde9`; squash merge `789b7dba9afdd5e1e6e41d191ebcbbfa933b2c12`; exact-head review receipt comment `5390448906`; canonical workflow `32687392603`; exact-head check `32687392611` |
 
 **PE7-AC7-CLEANUP-1 implementation_cost_receipt:**
 
@@ -400,6 +401,10 @@ The existing evaluator path now derives immutable `PredictionOutcomeV1` records 
 
 `Ec3LifecycleBudgetContractV1` now freezes 11 lifecycle phases, six canonical resource dimensions, measured-direct/deterministic-derived/explicit-unavailable source semantics, fail-closed missingness, explicit-zero proof, per-candidate/global envelopes, reservation-before-execution vocabulary, exact-once terminal reconciliation vocabulary, and charge-all-attempts failure accounting. It is an accounting contract only: it performs no persistence, reservation, spend, admission, candidate execution, or external effect and creates no second authority owner. Receipt: PR #603 exact head `c1c1c23eb68d11f38fd85623f412dd13b5c867e1`; squash merge `d1b939865e5dcf3b11093e1e6932078e55068054`.
 
+### HE EC3 lifecycle-cost instrumentation (`PE7-HE-EC3-INSTRUMENTATION-1`)
+
+The accepted owner path now captures, normalizes, and immutably persists source-bound lifecycle-cost observations in additive schema v38 through `LocalProductStore`, with SQLite/PostgreSQL replay, conflict, integrity, rollback, and parity coverage. The read-only operator projection exposes only redacted metadata and explicit missingness; no reservation, enforcement, Provider call, target write, or live effect is accepted. Receipt: PR #608 exact head `36474545563bd1b91015d4e3f2005f12dd43bde9`; squash merge `789b7dba9afdd5e1e6e41d191ebcbbfa933b2c12`; canonical workflow `32687392603`.
+
 ## Invalidated Historical Receipts (Repair Required)
 
 The following 34 packets from the AC3 through EC2 chain (35 materially unfulfilled packets plus one separately invalid `PE7-HE-EC2-CONTRACT-1` receipt), along with earlier superseded route-automation receipts (`PE7-SUCCESSOR-PROMOTION-ESCALATION-1` and `PE7-ROUTE-AUTOMATION-1`), were merged on historical PRs without complete production implementations, valid independent reviews, or required gate enforcement. They are explicitly marked `INVALIDATED` / `SUPERSEDED` / `REPAIR_REQUIRED` and removed from the accepted receipts prerequisite index until genuine sequential re-execution and re-proof are achieved:
@@ -539,7 +544,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Contemporary old/new replay reconstruction | `COMPLETE` | PR #566 accepted; reconstruction verifier, frozen bindings, provider-free traces, and exact old/new identities are accepted |
 | Contemporary old/new replay | `DECISION_REQUIRED` | Protocol/preflight freeze is complete; captured CLI is not `ready=true`; `PE7-RWE-CR-RUN-1` is parked on a pre-tenant empty Store |
 | Contemporary old/new replay analysis | `BLOCKED_PREREQUISITE` | One independent RWE closeout remains behind the parked run; it neither blocks nor substitutes for the Harness-Evolution spiral |
-| Harness-Evolution C0–C4 capability spiral | `BLOCKED_PREREQUISITE` | The accepted EC3 contract, current `PE7-HE-EC3-INSTRUMENTATION-1` window, and 28 formal future packets progress from one usable verified-delivery loop through the Harness x Model x Strategy laboratory, one generation, bounded recursion, final sealed transfer, readiness, and human adoption decision; instrumentation is the exact current packet and does not authorize enforcement or an effect |
+| Harness-Evolution C0–C4 capability spiral | `BLOCKED_PREREQUISITE` | The accepted EC3 contract and instrumentation now precede current `PE7-HE-EC3-ENFORCEMENT-1`; the 28 formal future packets progress from one usable verified-delivery loop through the Harness x Model x Strategy laboratory, one generation, bounded recursion, final sealed transfer, readiness, and human adoption decision; enforcement remains provider-free and does not authorize a live effect |
 | Experimental C5–C8 research spiral | `BLOCKED_PREREQUISITE` | 28 formal default-off packets retain fixed-Meta, advanced gate/R4, Harness-plus-weight R5, and bounded outer-policy R6 contracts, effects, independent closeouts, and replications; negative or insufficient dispositions remain valid terminals |
 | Dashboard #225 / successor | `DEFERRED` | 3 formal packets: disposition, presentation-only refresh, exact-head closeout; it projects accepted core and optional-research dispositions without owning backend behavior |
 
