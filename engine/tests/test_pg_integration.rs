@@ -26,6 +26,12 @@ use engine::feedback::{
     CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
 };
 #[cfg(feature = "pg-tests")]
+use engine::harness_evolution::{
+    seal_ec3_lifecycle_cost_bundle, seal_ec3_lifecycle_cost_observation, CostTrustSource,
+    LifecycleCostDimension, LifecycleCostMissingReason, LifecycleCostMissingnessV1,
+    LifecycleCostObservationBundleV1, LifecycleCostObservationV1, LifecycleCostPhase,
+};
+#[cfg(feature = "pg-tests")]
 use engine::http_server::{build_axum_router, AxumApiState};
 #[cfg(feature = "pg-tests")]
 use engine::infrastructure::auth::{
@@ -227,6 +233,163 @@ fn test_store() -> Option<LocalProductStore> {
         .expect("PostgreSQL store bootstrap thread must not panic")
         .expect("new_postgres should succeed");
     Some(store)
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_ec3_lifecycle_cost_persistence_query_replay_and_conflict() {
+    let Some(store) = test_store() else { return };
+    let suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let observation = seal_ec3_lifecycle_cost_observation(LifecycleCostObservationV1 {
+        schema_version: String::new(),
+        observation_key: format!("pg-ec3-observation-{suffix}"),
+        record_id: String::new(),
+        contract_id: "pg-ec3-contract".into(),
+        candidate_id: format!("pg-ec3-candidate-{suffix}"),
+        evaluation_id: None,
+        product_task_id: None,
+        run_id: Some(format!("pg-ec3-run-{suffix}")),
+        attempt_id: format!("pg-ec3-attempt-{suffix}"),
+        phase: LifecycleCostPhase::Evaluation,
+        dimension: LifecycleCostDimension::ModelTokens,
+        amount: Some(12),
+        trust_source: CostTrustSource::MeasuredDirect,
+        terminal_class: "completed".into(),
+        source_schema_version: "execution_usage.v1".into(),
+        source_digest: engine::harness_evolution::sha256_hex(&format!("pg-source-{suffix}")),
+        redacted_body: serde_json::json!({"source":"pg-test"}),
+        record_sha256: String::new(),
+    })
+    .unwrap();
+    let stored = store
+        .persist_ec3_lifecycle_cost_observation(observation.clone(), "pg-ec3-test")
+        .unwrap();
+    let replay = store
+        .persist_ec3_lifecycle_cost_observation(observation.clone(), "pg-ec3-test")
+        .unwrap();
+    assert_eq!(stored.record_sha256, replay.record_sha256);
+    assert_eq!(
+        store
+            .list_ec3_lifecycle_cost_observations_for_run(
+                stored.run_id.as_deref().expect("run identity")
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .get_ec3_lifecycle_cost_observation(&stored.record_id)
+            .unwrap()
+            .expect("stored EC3 observation")
+            .record_sha256,
+        stored.record_sha256
+    );
+    let mut conflict = observation;
+    conflict.amount = Some(13);
+    assert!(store
+        .persist_ec3_lifecycle_cost_observation(conflict, "pg-ec3-test")
+        .unwrap_err()
+        .contains("conflict"));
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_ec3_lifecycle_cost_bundle_missingness_and_atomic_conflict() {
+    let Some(store) = test_store() else { return };
+    let suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let source_digest = engine::harness_evolution::sha256_hex(&format!("pg-bundle-{suffix}"));
+    let observed = seal_ec3_lifecycle_cost_observation(LifecycleCostObservationV1 {
+        schema_version: String::new(),
+        observation_key: format!("pg-ec3-bundle-observation-{suffix}"),
+        record_id: String::new(),
+        contract_id: "pg-ec3-bundle-contract".into(),
+        candidate_id: format!("pg-ec3-bundle-candidate-{suffix}"),
+        evaluation_id: Some(format!("pg-ec3-evaluation-{suffix}")),
+        product_task_id: Some(format!("pg-ec3-task-{suffix}")),
+        run_id: Some(format!("pg-ec3-bundle-run-{suffix}")),
+        attempt_id: format!("pg-ec3-bundle-attempt-{suffix}"),
+        phase: LifecycleCostPhase::Evaluation,
+        dimension: LifecycleCostDimension::ModelTokens,
+        amount: Some(12),
+        trust_source: CostTrustSource::MeasuredDirect,
+        terminal_class: "completed".into(),
+        source_schema_version: "execution_usage.v1".into(),
+        source_digest: source_digest.clone(),
+        redacted_body: json!({"source":"pg-bundle-test"}),
+        record_sha256: String::new(),
+    })
+    .unwrap();
+    let missing = [
+        LifecycleCostDimension::ProviderCalls,
+        LifecycleCostDimension::ProviderCostMicrounits,
+        LifecycleCostDimension::WallClockMilliseconds,
+        LifecycleCostDimension::ComputeMilliseconds,
+        LifecycleCostDimension::HumanEffortMilliseconds,
+    ]
+    .into_iter()
+    .map(|dimension| LifecycleCostMissingnessV1 {
+        phase: LifecycleCostPhase::Evaluation,
+        dimension,
+        reason: LifecycleCostMissingReason::Unavailable,
+    })
+    .collect();
+    let bundle = seal_ec3_lifecycle_cost_bundle(LifecycleCostObservationBundleV1 {
+        schema_version: String::new(),
+        bundle_id: String::new(),
+        contract_id: observed.contract_id.clone(),
+        candidate_id: observed.candidate_id.clone(),
+        evaluation_id: observed.evaluation_id.clone(),
+        product_task_id: observed.product_task_id.clone(),
+        run_id: observed.run_id.clone(),
+        attempt_id: observed.attempt_id.clone(),
+        source_digests: vec![source_digest],
+        observations: vec![observed],
+        missing,
+        record_sha256: String::new(),
+    })
+    .unwrap();
+    let stored = store
+        .persist_ec3_lifecycle_cost_bundle(bundle.clone(), "pg-ec3-bundle-test")
+        .unwrap();
+    assert_eq!(stored.observations.len(), 1);
+    assert_eq!(
+        store
+            .list_ec3_lifecycle_cost_observations_for_run(
+                stored.run_id.as_deref().expect("run identity")
+            )
+            .unwrap()
+            .len(),
+        6
+    );
+
+    let mut conflict = bundle;
+    conflict.observations[0].amount = Some(13);
+    conflict.observations[0].record_id.clear();
+    conflict.observations[0].record_sha256.clear();
+    let conflict = seal_ec3_lifecycle_cost_bundle(conflict).unwrap();
+    assert!(store
+        .persist_ec3_lifecycle_cost_bundle(conflict, "pg-ec3-bundle-test")
+        .unwrap_err()
+        .contains("conflict"));
+    assert_eq!(
+        store
+            .list_ec3_lifecycle_cost_observations_for_run(
+                stored.run_id.as_deref().expect("run identity")
+            )
+            .unwrap()
+            .len(),
+        6,
+        "bundle conflict must roll back all prior rows in the transaction"
+    );
 }
 
 #[cfg(feature = "pg-tests")]
@@ -2795,8 +2958,9 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_preserves_spend_rollback_gua
     let mut fixture_client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
     fixture_client
         .batch_execute(
-            "DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
-             DELETE FROM schema_migrations WHERE version = 37;",
+            "DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_cost_records;
+             DROP TABLE IF EXISTS harness_evolution_ec2_prediction_outcomes;
+             DELETE FROM schema_migrations WHERE version IN (38, 37);",
         )
         .unwrap();
 

@@ -4,6 +4,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::{count_table, DatabaseConnection, LocalProductStore};
+use crate::harness_evolution::{
+    validate_ec3_lifecycle_cost_observation, CostTrustSource, LifecycleCostDimension,
+    LifecycleCostObservationV1, LifecycleCostPhase,
+};
 use crate::provider::embedding::{
     is_supported_durable_embedding_contract, EmbeddingContractEvidence, ProviderEmbeddingMetadata,
 };
@@ -85,6 +89,7 @@ const INTEGRITY_TABLES: &[&str] = &[
     "harness_evolution_ec1_candidate_bindings",
     "harness_evolution_ec2_holdout_seals",
     "harness_evolution_ec2_prediction_outcomes",
+    "harness_evolution_ec3_lifecycle_cost_records",
     "harness_evolution_sealed_holdouts",
     "harness_evolution_evaluations",
     "harness_evolution_pareto_archive",
@@ -194,6 +199,7 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?;
                 validate_sqlite_durable_memory_rows(conn)?;
                 validate_sqlite_provider_embedding_operations(conn)?;
+                validate_sqlite_ec3_lifecycle_cost_rows(conn)?;
 
                 let mut table_reports = Vec::new();
                 for table in INTEGRITY_TABLES {
@@ -224,6 +230,7 @@ impl LocalProductStore {
                     .map_err(|e| format!("PG basic check failed: {e}"))?;
                 validate_pg_durable_memory_rows(client)?;
                 validate_pg_provider_embedding_operations(client)?;
+                validate_pg_ec3_lifecycle_cost_rows(client)?;
 
                 let mut table_reports = Vec::new();
                 for table in INTEGRITY_TABLES {
@@ -254,6 +261,188 @@ impl LocalProductStore {
             }),
         }
     }
+}
+
+fn parse_validate_ec3_lifecycle_cost_json(
+    body: &str,
+) -> Result<LifecycleCostObservationV1, String> {
+    let observation: LifecycleCostObservationV1 =
+        serde_json::from_str(body).map_err(|error| error.to_string())?;
+    validate_ec3_lifecycle_cost_observation(&observation)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    Ok(observation)
+}
+
+fn validate_ec3_lifecycle_cost_storage_fields(
+    observation: &LifecycleCostObservationV1,
+    record_id: &str,
+    observation_key: &str,
+    contract_id: &str,
+    candidate_id: &str,
+    evaluation_id: Option<&str>,
+    product_task_id: Option<&str>,
+    run_id: Option<&str>,
+    attempt_id: &str,
+    phase: &str,
+    dimension: &str,
+    amount: Option<i64>,
+    trust_source: &str,
+    terminal_class: &str,
+    source_schema_version: &str,
+    source_digest: &str,
+    record_sha256: &str,
+) -> Result<(), String> {
+    let stored_phase: LifecycleCostPhase = serde_json::from_value(Value::String(phase.into()))
+        .map_err(|error| format!("invalid EC3 phase column: {error}"))?;
+    let stored_dimension: LifecycleCostDimension =
+        serde_json::from_value(Value::String(dimension.into()))
+            .map_err(|error| format!("invalid EC3 dimension column: {error}"))?;
+    let stored_trust_source: CostTrustSource =
+        serde_json::from_value(Value::String(trust_source.into()))
+            .map_err(|error| format!("invalid EC3 trust-source column: {error}"))?;
+    let stored_amount = amount
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| "negative EC3 amount column".to_string())?;
+    if observation.record_id != record_id
+        || observation.observation_key != observation_key
+        || observation.contract_id != contract_id
+        || observation.candidate_id != candidate_id
+        || observation.evaluation_id.as_deref() != evaluation_id
+        || observation.product_task_id.as_deref() != product_task_id
+        || observation.run_id.as_deref() != run_id
+        || observation.attempt_id != attempt_id
+        || observation.phase != stored_phase
+        || observation.dimension != stored_dimension
+        || observation.amount != stored_amount
+        || observation.trust_source != stored_trust_source
+        || observation.terminal_class != terminal_class
+        || observation.source_schema_version != source_schema_version
+        || observation.source_digest != source_digest
+        || observation.record_sha256 != record_sha256
+    {
+        return Err("EC3 scalar columns disagree with hash-bound observation body".into());
+    }
+    Ok(())
+}
+
+fn validate_sqlite_ec3_lifecycle_cost_rows(conn: &rusqlite::Connection) -> Result<(), String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT record_id, observation_key, contract_id, candidate_id, evaluation_id,
+                    product_task_id, run_id, attempt_id, phase, dimension, amount, trust_source,
+                    terminal_class, source_schema_version, source_digest, redacted_body_json,
+                    record_sha256
+             FROM harness_evolution_ec3_lifecycle_cost_records",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, Option<i64>>(10)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, String>(13)?,
+                row.get::<_, String>(14)?,
+                row.get::<_, String>(15)?,
+                row.get::<_, String>(16)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        let (
+            record_id,
+            observation_key,
+            contract_id,
+            candidate_id,
+            evaluation_id,
+            product_task_id,
+            run_id,
+            attempt_id,
+            phase,
+            dimension,
+            amount,
+            trust_source,
+            terminal_class,
+            source_schema_version,
+            source_digest,
+            body,
+            record_sha256,
+        ) = row.map_err(|error| error.to_string())?;
+        let observation = parse_validate_ec3_lifecycle_cost_json(&body)?;
+        validate_ec3_lifecycle_cost_storage_fields(
+            &observation,
+            &record_id,
+            &observation_key,
+            &contract_id,
+            &candidate_id,
+            evaluation_id.as_deref(),
+            product_task_id.as_deref(),
+            run_id.as_deref(),
+            &attempt_id,
+            &phase,
+            &dimension,
+            amount,
+            &trust_source,
+            &terminal_class,
+            &source_schema_version,
+            &source_digest,
+            &record_sha256,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn validate_pg_ec3_lifecycle_cost_rows(
+    client: &mut impl postgres::GenericClient,
+) -> Result<(), String> {
+    for row in client
+        .query(
+            "SELECT record_id, observation_key, contract_id, candidate_id, evaluation_id,
+                    product_task_id, run_id, attempt_id, phase, dimension, amount, trust_source,
+                    terminal_class, source_schema_version, source_digest, redacted_body_json,
+                    record_sha256
+             FROM harness_evolution_ec3_lifecycle_cost_records",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+    {
+        let evaluation_id: Option<String> = row.get(4);
+        let product_task_id: Option<String> = row.get(5);
+        let run_id: Option<String> = row.get(6);
+        let observation = parse_validate_ec3_lifecycle_cost_json(row.get(15))?;
+        validate_ec3_lifecycle_cost_storage_fields(
+            &observation,
+            row.get(0),
+            row.get(1),
+            row.get(2),
+            row.get(3),
+            evaluation_id.as_deref(),
+            product_task_id.as_deref(),
+            run_id.as_deref(),
+            row.get(7),
+            row.get(8),
+            row.get(9),
+            row.get(10),
+            row.get(11),
+            row.get(12),
+            row.get(13),
+            row.get(14),
+            row.get(16),
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_sqlite_durable_memory_rows(conn: &rusqlite::Connection) -> Result<(), String> {

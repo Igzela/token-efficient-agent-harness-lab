@@ -114,7 +114,7 @@ fn sample_intake(target: &std::path::Path, rev: &str, key: &str) -> ProductTaskI
 #[test]
 fn schema_includes_product_tasks_at_v30() {
     let (_dir, store) = temp_store();
-    assert_eq!(store.schema_version().unwrap(), 37);
+    assert_eq!(store.schema_version().unwrap(), 38);
 }
 
 #[test]
@@ -288,7 +288,7 @@ fn rejects_absolute_verification_binary() {
 #[test]
 fn empty_v30_rollback_works() {
     let (_dir, store) = temp_store();
-    assert_eq!(store.schema_version().unwrap(), 37);
+    assert_eq!(store.schema_version().unwrap(), 38);
     establish_v36_fixture(&store);
     store.rollback_v36_to_v35("tester", true).unwrap();
     store.rollback_v35_to_v34("tester", true).unwrap();

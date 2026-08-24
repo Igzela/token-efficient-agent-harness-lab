@@ -2,11 +2,11 @@
 
 Last updated: 2026-08-23.
 
-Current version: v37.
+Current version: v38 (candidate; accepted main remains v37 until this packet merges).
 
 This is the durable architecture and safety baseline for the Token-Efficient Agent Harness Lab. Accepted facts live in `docs/CURRENT_STATUS.md`; the current executable window lives in `docs/NEXT_DECISION.md`; routing-only successors live in `docs/FUTURE_ROUTE.md`; concrete owners live in `docs/MODULE_MAP.md`. Historical packet details remain available in git history.
 
-The schema carries **v32** hash-linked decision-transition receipts, **v33** managed-acceptance spend/lease logical authorization, **v34** RWE authority rows, **v35** ProductTask workspace-preparation receipts, **v36** immutable proposal/final-manifest delegation state plus the durable managed-provider request journal, and **v37** evaluator-owned immutable EC2 prediction outcomes. The repository-agent two-loop control-plane seam described below adds no runtime schema or persisted product state. v37 reuses `LocalProductStore`, ProductTask budget, attempt, approval, output, audit, and rollback owners; it does not create another scheduler, runtime, store, budget, workspace, evaluator, or target-output owner.
+The schema carries **v32** hash-linked decision-transition receipts, **v33** managed-acceptance spend/lease logical authorization, **v34** RWE authority rows, **v35** ProductTask workspace-preparation receipts, **v36** immutable proposal/final-manifest delegation state plus the durable managed-provider request journal, **v37** evaluator-owned immutable EC2 prediction outcomes, and **v38** immutable EC3 lifecycle-cost observations. The repository-agent two-loop control-plane seam described below adds no runtime schema or persisted product state. v38 reuses `LocalProductStore`, ProductTask budget, attempt, approval, output, audit, and rollback owners; it does not create another scheduler, runtime, store, budget, workspace, evaluator, or target-output owner.
 
 ## Mission
 
@@ -398,7 +398,7 @@ This evidence informs RWE replay and Level-2 decisions. It does not create a sec
 - SQLite is default and uses existing transactional, integrity, backup, and restore owners.
 - PostgreSQL must preserve equivalent validation, locking, idempotency, audit, restart, concurrency, and rollback behavior.
 - Schema migrations are additive unless separately reviewed destructive rollback is explicitly authorized.
-- The accepted-main schema marker changes only after independent review and merge; branch-local migration candidates are never accepted truth.
+- The accepted-main schema marker changes only after independent review and merge; this branch-local v38 candidate is documentation for the pending packet and is not accepted truth until that merge.
 
 ## Real Workload Evidence
 
