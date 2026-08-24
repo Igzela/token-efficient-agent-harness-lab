@@ -339,6 +339,16 @@ pub const REQUIRED_LIFECYCLE_COST_DIMENSIONS: &[LifecycleCostDimension] = &[
     LifecycleCostDimension::HumanEffortMilliseconds,
 ];
 
+/// Every lifecycle phase represented by a bundle must account for all six
+/// dimensions. A phase-level bundle may mark a dimension unavailable, but it
+/// may not silently omit the dimension or claim completeness from a partial
+/// set.
+fn required_ec3_dimensions_for_phase(
+    _phase: LifecycleCostPhase,
+) -> &'static [LifecycleCostDimension] {
+    REQUIRED_LIFECYCLE_COST_DIMENSIONS
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CostTrustSource {
@@ -1435,6 +1445,34 @@ pub fn ec3_lifecycle_cost_observations_from_usage_event(
     terminal_class: &str,
     event: &crate::execution_usage::ExecutionUsageEventV1,
 ) -> Result<Vec<LifecycleCostObservationV1>, EvolutionAdmissionError> {
+    ec3_lifecycle_cost_observations_from_usage_event_with_identity(
+        contract_id,
+        candidate_id,
+        None,
+        event.product_task_id.as_deref(),
+        None,
+        attempt_id,
+        phase,
+        terminal_class,
+        event,
+    )
+}
+
+/// Usage adapter variant for the production terminal-evidence join. The
+/// canonical usage event remains read-only; callers provide the already-owned
+/// evaluation/task/run identities and any additional source digests (for
+/// example scorecard/VDE digests) at the bundle boundary.
+pub fn ec3_lifecycle_cost_observations_from_usage_event_with_identity(
+    contract_id: &str,
+    candidate_id: &str,
+    evaluation_id: Option<&str>,
+    product_task_id: Option<&str>,
+    run_id: Option<&str>,
+    attempt_id: &str,
+    phase: LifecycleCostPhase,
+    terminal_class: &str,
+    event: &crate::execution_usage::ExecutionUsageEventV1,
+) -> Result<Vec<LifecycleCostObservationV1>, EvolutionAdmissionError> {
     require_nonempty_id(contract_id, "ec3_cost_required_missing")?;
     require_nonempty_id(candidate_id, "ec3_cost_required_missing")?;
     require_nonempty_id(attempt_id, "ec3_cost_required_missing")?;
@@ -1482,9 +1520,11 @@ pub fn ec3_lifecycle_cost_observations_from_usage_event(
                 record_id: String::new(),
                 contract_id: contract_id.to_string(),
                 candidate_id: candidate_id.to_string(),
-                evaluation_id: None,
-                product_task_id: event.product_task_id.clone(),
-                run_id: None,
+                evaluation_id: evaluation_id.map(str::to_string),
+                product_task_id: product_task_id
+                    .map(str::to_string)
+                    .or_else(|| event.product_task_id.clone()),
+                run_id: run_id.map(str::to_string),
                 attempt_id: attempt_id.to_string(),
                 phase,
                 dimension,
@@ -1619,6 +1659,7 @@ pub fn validate_ec3_lifecycle_cost_bundle(
         }
     }
     let mut dimensions = BTreeSet::new();
+    let mut phases = BTreeSet::new();
     for observation in &bundle.observations {
         validate_ec3_lifecycle_cost_observation(observation)?;
         if observation.contract_id != bundle.contract_id
@@ -1645,6 +1686,7 @@ pub fn validate_ec3_lifecycle_cost_bundle(
                 "lifecycle cost bundle repeats a phase and dimension",
             ));
         }
+        phases.insert(observation.phase);
     }
     for missing in &bundle.missing {
         if !dimensions.insert((missing.phase, missing.dimension)) {
@@ -1652,6 +1694,17 @@ pub fn validate_ec3_lifecycle_cost_bundle(
                 "ec3_cost_observation_conflict",
                 "lifecycle cost bundle repeats a phase and dimension",
             ));
+        }
+        phases.insert(missing.phase);
+    }
+    for phase in phases {
+        for dimension in required_ec3_dimensions_for_phase(phase) {
+            if !dimensions.contains(&(phase, *dimension)) {
+                return Err(EvolutionAdmissionError::new(
+                    "ec3_cost_required_missing",
+                    "lifecycle cost bundle omits a required phase/dimension; record explicit missingness",
+                ));
+            }
         }
     }
     let expected_id = derive_ec3_lifecycle_cost_bundle_id(bundle)?;
@@ -3346,6 +3399,22 @@ mod tests {
         .unwrap()
     }
 
+    fn missing_for_phase_except(
+        phase: LifecycleCostPhase,
+        present: &[LifecycleCostDimension],
+    ) -> Vec<LifecycleCostMissingnessV1> {
+        REQUIRED_LIFECYCLE_COST_DIMENSIONS
+            .iter()
+            .copied()
+            .filter(|dimension| !present.contains(dimension))
+            .map(|dimension| LifecycleCostMissingnessV1 {
+                phase,
+                dimension,
+                reason: LifecycleCostMissingReason::Unavailable,
+            })
+            .collect()
+    }
+
     #[test]
     fn ec3_lifecycle_cost_observation_seals_and_validates() {
         let observation = sample_ec3_lifecycle_cost_observation();
@@ -3468,6 +3537,23 @@ mod tests {
         assert!(observations
             .iter()
             .all(|observation| observation.product_task_id.as_deref() == Some("task-1")));
+        let joined = ec3_lifecycle_cost_observations_from_usage_event_with_identity(
+            "contract-1",
+            "candidate-1",
+            Some("evaluation-1"),
+            Some("task-joined"),
+            Some("run-joined"),
+            "attempt-1",
+            LifecycleCostPhase::Evaluation,
+            "completed",
+            &event,
+        )
+        .unwrap();
+        assert!(joined.iter().all(|observation| {
+            observation.evaluation_id.as_deref() == Some("evaluation-1")
+                && observation.product_task_id.as_deref() == Some("task-joined")
+                && observation.run_id.as_deref() == Some("run-joined")
+        }));
         let mut invalid = event;
         invalid.schema_version = "execution_usage_event.v0".into();
         assert_eq!(
@@ -3500,11 +3586,16 @@ mod tests {
             attempt_id: observation.attempt_id.clone(),
             source_digests: vec![source_digest],
             observations: vec![observation],
-            missing: vec![LifecycleCostMissingnessV1 {
-                phase: LifecycleCostPhase::Review,
-                dimension: LifecycleCostDimension::HumanEffortMilliseconds,
-                reason: LifecycleCostMissingReason::Unavailable,
-            }],
+            missing: [
+                missing_for_phase_except(
+                    LifecycleCostPhase::Evaluation,
+                    &[LifecycleCostDimension::ModelTokens],
+                ),
+                missing_for_phase_except(LifecycleCostPhase::Review, &[]),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
             record_sha256: String::new(),
         })
         .unwrap();
@@ -3534,7 +3625,10 @@ mod tests {
             attempt_id: sealed.attempt_id.clone(),
             source_digests: vec![sealed.source_digest.clone()],
             observations: vec![child],
-            missing: vec![],
+            missing: missing_for_phase_except(
+                LifecycleCostPhase::Evaluation,
+                &[LifecycleCostDimension::ModelTokens],
+            ),
             record_sha256: String::new(),
         })
         .unwrap();

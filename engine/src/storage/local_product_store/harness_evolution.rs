@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::harness_evolution::{
     build_admission_receipt, configured_workspace_root,
-    ec3_lifecycle_cost_observations_from_usage_event, generate_ec1_candidate_binding,
+    ec3_lifecycle_cost_observations_from_usage_event_with_identity, generate_ec1_candidate_binding,
     revalidate_workspace_content, seal_ec1_identity_lineage, seal_ec3_lifecycle_cost_bundle,
     seal_ec3_lifecycle_cost_observation, seal_failure_pattern_evidence,
     seal_mutation_hypothesis_manifest, validate_candidate_for_admission,
@@ -288,21 +288,58 @@ impl LocalProductStore {
         event: &crate::execution_usage::ExecutionUsageEventV1,
         actor_id: &str,
     ) -> Result<Vec<LifecycleCostObservationV1>, String> {
-        let observations = ec3_lifecycle_cost_observations_from_usage_event(
+        self.persist_ec3_lifecycle_cost_usage_event_with_identity(
             contract_id,
             candidate_id,
+            None,
+            event.product_task_id.as_deref(),
+            None,
+            &[],
+            attempt_id,
+            phase,
+            terminal_class,
+            event,
+            actor_id,
+        )
+    }
+
+    /// Persist a usage event with the existing terminal-evidence join
+    /// identities. Additional source digests are metadata-only joins (for
+    /// example scorecard/VDE artifacts); they are never parsed or persisted as
+    /// raw evidence.
+    pub fn persist_ec3_lifecycle_cost_usage_event_with_identity(
+        &self,
+        contract_id: &str,
+        candidate_id: &str,
+        evaluation_id: Option<&str>,
+        product_task_id: Option<&str>,
+        run_id: Option<&str>,
+        additional_source_digests: &[String],
+        attempt_id: &str,
+        phase: crate::harness_evolution::LifecycleCostPhase,
+        terminal_class: &str,
+        event: &crate::execution_usage::ExecutionUsageEventV1,
+        actor_id: &str,
+    ) -> Result<Vec<LifecycleCostObservationV1>, String> {
+        let observations = ec3_lifecycle_cost_observations_from_usage_event_with_identity(
+            contract_id,
+            candidate_id,
+            evaluation_id,
+            product_task_id,
+            run_id,
             attempt_id,
             phase,
             terminal_class,
             event,
         )
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
-        let source_digests = observations
+        let mut source_digests: Vec<String> = observations
             .iter()
             .map(|observation| observation.source_digest.clone())
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
+        source_digests.extend(additional_source_digests.iter().cloned());
         let missing = [
             crate::harness_evolution::LifecycleCostDimension::WallClockMilliseconds,
             crate::harness_evolution::LifecycleCostDimension::ComputeMilliseconds,
@@ -2981,7 +3018,8 @@ mod tests {
     use super::*;
     use crate::harness_evolution::{
         candidate_from_proposal, derive_workspace_id, materialize_candidate_workspace,
-        proposal_from_body, sample_active_identity, sha256_hex, ENABLE_ENV, KILL_SWITCH_ENV,
+        proposal_from_body, sample_active_identity, sha256_hex, CostTrustSource,
+        LifecycleCostDimension, LifecycleCostPhase, ENABLE_ENV, KILL_SWITCH_ENV,
         WORKSPACE_ROOT_ENV,
     };
     use serde_json::json;
@@ -4189,6 +4227,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("ec3-cost-missing.db");
         let store = LocalProductStore::new(&db).unwrap();
+        let missing = [
+            LifecycleCostDimension::ModelTokens,
+            LifecycleCostDimension::ProviderCalls,
+            LifecycleCostDimension::ProviderCostMicrounits,
+            LifecycleCostDimension::WallClockMilliseconds,
+            LifecycleCostDimension::ComputeMilliseconds,
+            LifecycleCostDimension::HumanEffortMilliseconds,
+        ]
+        .into_iter()
+        .map(|dimension| LifecycleCostMissingnessV1 {
+            phase: LifecycleCostPhase::Recovery,
+            dimension,
+            reason: LifecycleCostMissingReason::JoinAmbiguous,
+        })
+        .collect();
         let bundle = seal_ec3_lifecycle_cost_bundle(LifecycleCostObservationBundleV1 {
             schema_version: String::new(),
             bundle_id: String::new(),
@@ -4200,11 +4253,7 @@ mod tests {
             attempt_id: "attempt-missing".into(),
             source_digests: vec![],
             observations: vec![],
-            missing: vec![LifecycleCostMissingnessV1 {
-                phase: LifecycleCostPhase::Recovery,
-                dimension: LifecycleCostDimension::ProviderCalls,
-                reason: LifecycleCostMissingReason::JoinAmbiguous,
-            }],
+            missing,
             record_sha256: String::new(),
         })
         .unwrap();
@@ -4214,9 +4263,53 @@ mod tests {
         let observations = store
             .list_ec3_lifecycle_cost_observations_for_run("run-missing")
             .unwrap();
-        assert_eq!(observations.len(), 1);
+        assert_eq!(observations.len(), 6);
         assert_eq!(observations[0].trust_source, CostTrustSource::Unavailable);
         assert_eq!(observations[0].amount, None);
         assert_eq!(observations[0].terminal_class, "missing:join_ambiguous");
+    }
+
+    #[test]
+    fn ec3_integrity_rejects_scalar_column_tampering() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec3-integrity.db");
+        let store = LocalProductStore::new(&db).unwrap();
+        let observation = seal_ec3_lifecycle_cost_observation(LifecycleCostObservationV1 {
+            schema_version: String::new(),
+            observation_key: "ec3-integrity-observation".into(),
+            record_id: String::new(),
+            contract_id: "ec3-integrity-contract".into(),
+            candidate_id: "ec3-integrity-candidate".into(),
+            evaluation_id: None,
+            product_task_id: None,
+            run_id: Some("ec3-integrity-run".into()),
+            attempt_id: "ec3-integrity-attempt".into(),
+            phase: LifecycleCostPhase::Evaluation,
+            dimension: LifecycleCostDimension::ModelTokens,
+            amount: Some(7),
+            trust_source: CostTrustSource::MeasuredDirect,
+            terminal_class: "completed".into(),
+            source_schema_version: "execution_usage.v1".into(),
+            source_digest: crate::harness_evolution::sha256_hex("ec3-integrity-source"),
+            redacted_body: serde_json::json!({"source":"test"}),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        store
+            .persist_ec3_lifecycle_cost_observation(observation, "integrity-test")
+            .unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE harness_evolution_ec3_lifecycle_cost_records
+                     SET candidate_id='tampered-candidate'",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let error = store.check_integrity().unwrap_err();
+        assert!(error.contains("scalar columns disagree"), "{error}");
     }
 }
