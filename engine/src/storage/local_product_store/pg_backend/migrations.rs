@@ -1933,7 +1933,7 @@ impl LocalProductStore {
                     .get(0);
                 if occupied > 0 {
                     return Err(format!(
-                        "v38 rollback blocked: lifecycle-cost rows exist in {table}"
+                        "v38 rollback blocked: lifecycle-cost observations exist in {table}"
                     ));
                 }
             }

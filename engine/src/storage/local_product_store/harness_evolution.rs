@@ -2886,9 +2886,12 @@ impl LocalProductStore {
                 }
                 let sums = tx
                     .query_one(
-                        "SELECT COALESCE(SUM(reserved_token_cost), 0), COALESCE(SUM(reserved_call_count), 0),
-                                COALESCE(SUM(reserved_provider_cost_microunits), 0), COALESCE(SUM(reserved_wall_clock_milliseconds), 0),
-                                COALESCE(SUM(reserved_compute_milliseconds), 0), COALESCE(SUM(reserved_human_effort_milliseconds), 0)
+                        "SELECT COALESCE(SUM(reserved_token_cost), 0)::BIGINT,
+                                COALESCE(SUM(reserved_call_count), 0)::BIGINT,
+                                COALESCE(SUM(reserved_provider_cost_microunits), 0)::BIGINT,
+                                COALESCE(SUM(reserved_wall_clock_milliseconds), 0)::BIGINT,
+                                COALESCE(SUM(reserved_compute_milliseconds), 0)::BIGINT,
+                                COALESCE(SUM(reserved_human_effort_milliseconds), 0)::BIGINT
                          FROM harness_evolution_ec3_lifecycle_budgets WHERE contract_id=$1 AND status <> 'cancelled'",
                         &[&contract.contract_id],
                     )
