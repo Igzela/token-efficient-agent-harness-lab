@@ -20,6 +20,7 @@ pub(crate) fn build_operator_evidence(
     let pending_mailbox_count = store.count_mailbox(None, Some(run_id), Some("pending"))?;
     let raw_proposals = store.list_proposals_by_run(run_id, 500, 0)?;
     let scorecard_artifacts = store.native_scorecard_artifacts_by_run(run_id, 20)?;
+    let lifecycle_cost_observations = store.list_ec3_lifecycle_cost_observations_for_run(run_id)?;
     let recursive_execution = store
         .load_recursive_tree(run_id)?
         .map(|tree| tree.redacted_read_model());
@@ -159,6 +160,33 @@ pub(crate) fn build_operator_evidence(
         })
         .collect();
 
+    // Lifecycle-cost projection is deliberately metadata-only. The stored
+    // redacted_body remains owned by the evidence store and is never exposed
+    // through this operator read model.
+    let lifecycle_cost_views: Vec<serde_json::Value> = lifecycle_cost_observations
+        .iter()
+        .map(|observation| {
+            json!({
+                "record_id": observation.record_id,
+                "observation_key": observation.observation_key,
+                "contract_id": observation.contract_id,
+                "candidate_id": observation.candidate_id,
+                "evaluation_id": observation.evaluation_id,
+                "product_task_id": observation.product_task_id,
+                "run_id": observation.run_id,
+                "attempt_id": observation.attempt_id,
+                "phase": observation.phase,
+                "dimension": observation.dimension,
+                "amount": observation.amount,
+                "trust_source": observation.trust_source,
+                "terminal_class": observation.terminal_class,
+                "source_schema_version": observation.source_schema_version,
+                "source_digest": observation.source_digest,
+                "record_sha256": observation.record_sha256,
+            })
+        })
+        .collect();
+
     let needs_human_decision = pending_proposals > 0 && (review_count > 0 || debate_count > 0);
 
     // Bounded operator summary — metadata-only, no raw text
@@ -202,6 +230,8 @@ pub(crate) fn build_operator_evidence(
         "debate_count": debate_count,
         "scorecard_artifact_count": scorecard_views.len(),
         "scorecards": scorecard_views,
+        "lifecycle_cost_observation_count": lifecycle_cost_views.len(),
+        "lifecycle_cost_observations": lifecycle_cost_views,
         "recursive_execution": recursive_execution,
         "blocked_signals_count": blocked_signals,
         "needs_human_decision": needs_human_decision,
@@ -253,6 +283,55 @@ mod tests {
         assert_eq!(evidence["review_count"], 0);
         assert_eq!(evidence["debate_count"], 0);
         assert_eq!(evidence["needs_human_decision"], false);
+        assert_eq!(evidence["lifecycle_cost_observation_count"], 0);
+        assert_eq!(
+            evidence["lifecycle_cost_observations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn test_operator_evidence_projects_lifecycle_cost_metadata_only() {
+        use crate::harness_evolution::{
+            seal_ec3_lifecycle_cost_observation, CostTrustSource, LifecycleCostDimension,
+            LifecycleCostObservationV1, LifecycleCostPhase,
+        };
+        let store = make_store();
+        let observation = seal_ec3_lifecycle_cost_observation(LifecycleCostObservationV1 {
+            schema_version: String::new(),
+            observation_key: "operator-cost-1".into(),
+            record_id: String::new(),
+            contract_id: "contract-1".into(),
+            candidate_id: "candidate-1".into(),
+            evaluation_id: None,
+            product_task_id: Some("task-1".into()),
+            run_id: Some("run-cost".into()),
+            attempt_id: "attempt-1".into(),
+            phase: LifecycleCostPhase::Evaluation,
+            dimension: LifecycleCostDimension::ModelTokens,
+            amount: Some(42),
+            trust_source: CostTrustSource::MeasuredDirect,
+            terminal_class: "completed".into(),
+            source_schema_version: "usage.v1".into(),
+            source_digest: crate::harness_evolution::sha256_hex("usage"),
+            redacted_body: json!({"kind":"usage","note":"must-not-project"}),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        store
+            .persist_ec3_lifecycle_cost_observation(observation, "operator-test")
+            .unwrap();
+
+        let evidence = build_operator_evidence(&store, "run-cost").unwrap();
+        assert_eq!(evidence["lifecycle_cost_observation_count"], 1);
+        let projection = &evidence["lifecycle_cost_observations"][0];
+        assert_eq!(projection["candidate_id"], "candidate-1");
+        assert_eq!(projection["amount"], 42);
+        assert!(projection.get("redacted_body").is_none());
+        assert!(!evidence.to_string().contains("must-not-project"));
     }
 
     #[test]

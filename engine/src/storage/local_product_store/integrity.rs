@@ -4,6 +4,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::{count_table, DatabaseConnection, LocalProductStore};
+use crate::harness_evolution::{
+    validate_ec3_lifecycle_cost_observation, LifecycleCostObservationV1,
+};
 use crate::provider::embedding::{
     is_supported_durable_embedding_contract, EmbeddingContractEvidence, ProviderEmbeddingMetadata,
 };
@@ -85,6 +88,7 @@ const INTEGRITY_TABLES: &[&str] = &[
     "harness_evolution_ec1_candidate_bindings",
     "harness_evolution_ec2_holdout_seals",
     "harness_evolution_ec2_prediction_outcomes",
+    "harness_evolution_ec3_lifecycle_cost_records",
     "harness_evolution_sealed_holdouts",
     "harness_evolution_evaluations",
     "harness_evolution_pareto_archive",
@@ -194,6 +198,7 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?;
                 validate_sqlite_durable_memory_rows(conn)?;
                 validate_sqlite_provider_embedding_operations(conn)?;
+                validate_sqlite_ec3_lifecycle_cost_rows(conn)?;
 
                 let mut table_reports = Vec::new();
                 for table in INTEGRITY_TABLES {
@@ -224,6 +229,7 @@ impl LocalProductStore {
                     .map_err(|e| format!("PG basic check failed: {e}"))?;
                 validate_pg_durable_memory_rows(client)?;
                 validate_pg_provider_embedding_operations(client)?;
+                validate_pg_ec3_lifecycle_cost_rows(client)?;
 
                 let mut table_reports = Vec::new();
                 for table in INTEGRITY_TABLES {
@@ -254,6 +260,42 @@ impl LocalProductStore {
             }),
         }
     }
+}
+
+fn validate_ec3_lifecycle_cost_json(body: &str) -> Result<(), String> {
+    let observation: LifecycleCostObservationV1 =
+        serde_json::from_str(body).map_err(|error| error.to_string())?;
+    validate_ec3_lifecycle_cost_observation(&observation)
+        .map_err(|error| format!("{}: {}", error.code, error.message))
+}
+
+fn validate_sqlite_ec3_lifecycle_cost_rows(conn: &rusqlite::Connection) -> Result<(), String> {
+    let mut statement = conn
+        .prepare("SELECT redacted_body_json FROM harness_evolution_ec3_lifecycle_cost_records")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        validate_ec3_lifecycle_cost_json(&row.map_err(|error| error.to_string())?)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn validate_pg_ec3_lifecycle_cost_rows(
+    client: &mut impl postgres::GenericClient,
+) -> Result<(), String> {
+    for row in client
+        .query(
+            "SELECT redacted_body_json FROM harness_evolution_ec3_lifecycle_cost_records",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+    {
+        validate_ec3_lifecycle_cost_json(row.get(0))?;
+    }
+    Ok(())
 }
 
 fn validate_sqlite_durable_memory_rows(conn: &rusqlite::Connection) -> Result<(), String> {

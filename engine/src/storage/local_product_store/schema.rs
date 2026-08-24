@@ -6,9 +6,9 @@ pub(super) enum Dialect {
 }
 
 #[allow(dead_code)] // version marker asserted by catalog tests and pg-parity paths
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 37;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 38;
 #[allow(dead_code)] // pg-parity version; asserted under --features pg-tests
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 37;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 38;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -167,6 +167,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 37,
         description: "add immutable evaluator-owned prediction outcomes",
+    },
+    SchemaMigration {
+        version: 38,
+        description: "add immutable EC3 lifecycle-cost observations",
     },
 ];
 
@@ -888,6 +892,33 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec2_prediction_outcomes (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec2_prediction_outcomes_eval
     ON harness_evolution_ec2_prediction_outcomes(evaluation_digest, created_at);
+";
+
+pub(super) const EC3_LIFECYCLE_COST_OBSERVATION_DDL: &str = "
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_cost_records (
+    record_id TEXT PRIMARY KEY,
+    observation_key TEXT NOT NULL UNIQUE,
+    contract_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    evaluation_id TEXT,
+    product_task_id TEXT,
+    run_id TEXT,
+    attempt_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    dimension TEXT NOT NULL,
+    amount BIGINT,
+    trust_source TEXT NOT NULL,
+    terminal_class TEXT NOT NULL,
+    source_schema_version TEXT NOT NULL,
+    source_digest TEXT NOT NULL CHECK (length(source_digest) = 64),
+    redacted_body_json TEXT NOT NULL,
+    record_sha256 TEXT NOT NULL CHECK (length(record_sha256) = 64),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_cost_candidate
+    ON harness_evolution_ec3_lifecycle_cost_records(candidate_id, phase, dimension, created_at);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_cost_task_run
+    ON harness_evolution_ec3_lifecycle_cost_records(product_task_id, run_id, created_at);
 ";
 
 pub(super) const V28_DDL: &str = "
@@ -2183,6 +2214,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_attempt
 CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_lease
     ON managed_acceptance_delegations(attempt_lease_id)
     WHERE attempt_lease_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_cost_records (
+    record_id TEXT PRIMARY KEY,
+    observation_key TEXT NOT NULL UNIQUE,
+    contract_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    evaluation_id TEXT,
+    product_task_id TEXT,
+    run_id TEXT,
+    attempt_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    dimension TEXT NOT NULL,
+    amount BIGINT,
+    trust_source TEXT NOT NULL,
+    terminal_class TEXT NOT NULL,
+    source_schema_version TEXT NOT NULL,
+    source_digest TEXT NOT NULL CHECK (length(source_digest) = 64),
+    redacted_body_json TEXT NOT NULL,
+    record_sha256 TEXT NOT NULL CHECK (length(record_sha256) = 64),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_cost_candidate
+    ON harness_evolution_ec3_lifecycle_cost_records(candidate_id, phase, dimension, created_at);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_cost_task_run
+    ON harness_evolution_ec3_lifecycle_cost_records(product_task_id, run_id, created_at);
 ";
 pub(crate) const POSTGRES_DDL: &str = "
 CREATE TABLE IF NOT EXISTS dispatch_history (
@@ -3450,6 +3506,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_attempt
 CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_lease
     ON managed_acceptance_delegations(attempt_lease_id)
     WHERE attempt_lease_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_cost_records (
+    record_id TEXT PRIMARY KEY,
+    observation_key TEXT NOT NULL UNIQUE,
+    contract_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    evaluation_id TEXT,
+    product_task_id TEXT,
+    run_id TEXT,
+    attempt_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    dimension TEXT NOT NULL,
+    amount BIGINT,
+    trust_source TEXT NOT NULL,
+    terminal_class TEXT NOT NULL,
+    source_schema_version TEXT NOT NULL,
+    source_digest TEXT NOT NULL CHECK (length(source_digest) = 64),
+    redacted_body_json TEXT NOT NULL,
+    record_sha256 TEXT NOT NULL CHECK (length(record_sha256) = 64),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_cost_candidate
+    ON harness_evolution_ec3_lifecycle_cost_records(candidate_id, phase, dimension, created_at);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_cost_task_run
+    ON harness_evolution_ec3_lifecycle_cost_records(product_task_id, run_id, created_at);
 ";
 
 #[cfg(test)]
@@ -3480,6 +3561,8 @@ mod tests {
         assert!(POSTGRES_DDL.contains(EC2_HOLDOUT_SEAL_DDL.trim()));
         assert!(SQLITE_DDL.contains(EC2_PREDICTION_OUTCOME_DDL.trim()));
         assert!(POSTGRES_DDL.contains(EC2_PREDICTION_OUTCOME_DDL.trim()));
+        assert!(SQLITE_DDL.contains(EC3_LIFECYCLE_COST_OBSERVATION_DDL.trim()));
+        assert!(POSTGRES_DDL.contains(EC3_LIFECYCLE_COST_OBSERVATION_DDL.trim()));
         for expected in [
             "controlled_loop_policy_snapshots",
             "idx_policy_snapshots_status",

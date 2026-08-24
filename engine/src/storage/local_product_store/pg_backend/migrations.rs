@@ -657,6 +657,24 @@ fn apply_pg_v37_migration(client: &mut postgres::Client) -> Result<(), String> {
     tx.commit().map_err(|e| e.to_string())
 }
 
+fn apply_pg_v38_migration(client: &mut postgres::Client) -> Result<(), String> {
+    let version = super::super::migrations::V38_SCHEMA_VERSION;
+    let mut tx = client.transaction().map_err(|e| format!("v38 tx: {e}"))?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(hashtext(current_database()), hashtext(current_schema()))",
+        &[],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.batch_execute(schema::EC3_LIFECYCLE_COST_OBSERVATION_DDL)
+        .map_err(|e| format!("v38 lifecycle cost observations: {e}"))?;
+    tx.execute(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&version],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
 fn validate_pg_v37_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     let version = client
         .query_one(
@@ -668,6 +686,10 @@ fn validate_pg_v37_schema(client: &mut impl postgres::GenericClient) -> Result<(
     if version != super::super::migrations::V37_SCHEMA_VERSION {
         return Err(format!("PostgreSQL v37 schema version mismatch: {version}"));
     }
+    validate_pg_v37_structure(client)
+}
+
+fn validate_pg_v37_structure(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     for table in super::super::migrations::V37_TABLES {
         if !pg_table_present(client, table)? {
             return Err(format!("PostgreSQL v37 schema missing table {table}"));
@@ -689,6 +711,38 @@ fn validate_pg_v37_schema(client: &mut impl postgres::GenericClient) -> Result<(
         }
     }
     validate_pg_v36_structure(client)
+}
+
+fn validate_pg_v38_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    let version = client
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+        .get::<_, i64>(0);
+    if version != super::super::migrations::V38_SCHEMA_VERSION {
+        return Err(format!("PostgreSQL v38 schema version mismatch: {version}"));
+    }
+    validate_pg_v37_structure(client)?;
+    for table in super::super::migrations::V38_TABLES {
+        if !pg_table_present(client, table)? {
+            return Err(format!("PostgreSQL v38 schema missing table {table}"));
+        }
+    }
+    for index in super::super::migrations::V38_INDEXES {
+        let present = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND indexname=$1)",
+                &[&index],
+            )
+            .map_err(|e| e.to_string())?
+            .get::<_, bool>(0);
+        if !present {
+            return Err(format!("PostgreSQL v38 schema missing index {index}"));
+        }
+    }
+    Ok(())
 }
 
 fn repair_pg_v36_delegated_plan_owner(
@@ -1830,6 +1884,69 @@ fn pg_v25_operation_schema_valid(
 }
 
 impl LocalProductStore {
+    pub(crate) fn rollback_pg_v38_to_v37(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_pg_conn(|client| {
+            let mut tx = client.transaction().map_err(|e| e.to_string())?;
+            tx.query_one(
+                "SELECT pg_advisory_xact_lock(hashtext(current_database()), hashtext(current_schema()))",
+                &[],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.batch_execute(
+                "LOCK TABLE schema_migrations, harness_evolution_ec3_lifecycle_cost_records IN ACCESS EXCLUSIVE MODE",
+            )
+            .map_err(|e| e.to_string())?;
+            let version: i64 = tx
+                .query_one("SELECT COALESCE(MAX(version),0) FROM schema_migrations", &[])
+                .map_err(|e| e.to_string())?
+                .get(0);
+            if version != super::super::migrations::V38_SCHEMA_VERSION {
+                return Err(format!(
+                    "v38 rollback requires current schema version 38; found {version}"
+                ));
+            }
+            let occupied: i64 = tx
+                .query_one(
+                    "SELECT COUNT(*) FROM harness_evolution_ec3_lifecycle_cost_records",
+                    &[],
+                )
+                .map_err(|e| e.to_string())?
+                .get(0);
+            if occupied > 0 {
+                return Err(
+                    "v38 rollback blocked: lifecycle-cost observations exist in harness_evolution_ec3_lifecycle_cost_records"
+                        .into(),
+                );
+            }
+            tx.batch_execute(
+                "DROP INDEX IF EXISTS idx_harness_evolution_ec3_cost_task_run;
+                 DROP INDEX IF EXISTS idx_harness_evolution_ec3_cost_candidate;
+                 DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_cost_records;",
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM schema_migrations WHERE version=$1",
+                &[&super::super::migrations::V38_SCHEMA_VERSION],
+            )
+            .map_err(|e| e.to_string())?;
+            let details = serde_json::json!({
+                "from_version": super::super::migrations::V38_SCHEMA_VERSION,
+                "to_version": super::super::migrations::V37_SCHEMA_VERSION,
+                "tables": super::super::migrations::V38_TABLES,
+                "indexes": super::super::migrations::V38_INDEXES,
+            })
+            .to_string();
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES ($1,$2,'schema.rollback.v38_to_v37','local_product_store',$3)",
+                &[&now, &actor, &details],
+            )
+            .map_err(|e| e.to_string())?;
+            validate_pg_v37_schema(&mut tx)?;
+            tx.commit().map_err(|e| e.to_string())
+        })
+    }
+
     pub(crate) fn rollback_pg_v36_to_v35(&self, actor: &str, now: &str) -> Result<(), String> {
         self.with_pg_conn(|client| {
             let mut tx = client.transaction().map_err(|e| e.to_string())?;
@@ -2636,6 +2753,10 @@ impl LocalProductStore {
                     apply_pg_v37_migration(client)?;
                     continue;
                 }
+                if migration.version == 38 {
+                    apply_pg_v38_migration(client)?;
+                    continue;
+                }
                 if migration.version <= current {
                     continue;
                 }
@@ -2744,7 +2865,11 @@ impl LocalProductStore {
                 }
             }
 
-            validate_pg_v37_schema(client)?;
+            if super::super::schema::CURRENT_POSTGRES_SCHEMA_VERSION == 38 {
+                validate_pg_v38_schema(client)?;
+            } else {
+                validate_pg_v37_schema(client)?;
+            }
 
             // Seed the scheduler_heartbeat singleton row.
             client
@@ -3080,6 +3205,62 @@ mod tests {
             CURRENT_PG_VERSION,
             schema::POSTGRES_MIGRATIONS.last().unwrap().version
         );
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn pg_v38_migration_empty_rollback_reapply_and_occupied_refusal() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        assert_eq!(fixture.store.schema_version().unwrap(), 38);
+        fixture
+            .store
+            .rollback_pg_v38_to_v37("migration-test", "2026-08-24T00:00:00Z")
+            .expect("empty v38 table can roll back");
+        assert_eq!(fixture.store.schema_version().unwrap(), 37);
+        fixture
+            .store
+            .run_pg_migrations_internal()
+            .expect("v38 migration reapplies after empty rollback");
+        assert_eq!(fixture.store.schema_version().unwrap(), 38);
+        fixture
+            .store
+            .with_pg_conn(|client| {
+                client
+                    .execute(
+                        "INSERT INTO harness_evolution_ec3_lifecycle_cost_records
+                         (record_id, observation_key, contract_id, candidate_id, attempt_id,
+                          phase, dimension, trust_source, terminal_class, source_schema_version,
+                          source_digest, redacted_body_json, record_sha256, created_at)
+                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+                        &[
+                            &"pg-rollback-record",
+                            &"pg-rollback-observation",
+                            &"pg-contract",
+                            &"pg-candidate",
+                            &"pg-attempt",
+                            &"evaluation",
+                            &"model_tokens",
+                            &"measured_direct",
+                            &"completed",
+                            &"execution_usage.v1",
+                            &"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            &"{}",
+                            &"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            &"2026-08-24T00:00:00Z",
+                        ],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let error = fixture
+            .store
+            .rollback_pg_v38_to_v37("migration-test", "2026-08-24T00:00:00Z")
+            .unwrap_err();
+        assert!(error.contains("observations"), "{error}");
+        assert_eq!(fixture.store.schema_version().unwrap(), 38);
     }
 
     #[cfg(feature = "pg-tests")]

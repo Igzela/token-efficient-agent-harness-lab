@@ -2,19 +2,22 @@
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
-use super::{append_audit_locked, LocalProductStore};
+use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::harness_evolution::{
-    build_admission_receipt, configured_workspace_root, generate_ec1_candidate_binding,
-    revalidate_workspace_content, seal_ec1_identity_lineage, seal_failure_pattern_evidence,
+    build_admission_receipt, configured_workspace_root,
+    ec3_lifecycle_cost_observations_from_usage_event, generate_ec1_candidate_binding,
+    revalidate_workspace_content, seal_ec1_identity_lineage, seal_ec3_lifecycle_cost_bundle,
+    seal_ec3_lifecycle_cost_observation, seal_failure_pattern_evidence,
     seal_mutation_hypothesis_manifest, validate_candidate_for_admission,
     validate_ec1_candidate_binding, validate_ec1_identity_lineage,
+    validate_ec3_lifecycle_cost_bundle, validate_ec3_lifecycle_cost_observation,
     validate_failure_pattern_evidence, validate_mutation_hypothesis_manifest,
     validate_prediction_outcome_contract, validate_proposal, ActiveHarnessIdentity,
     CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding, Ec1IdentityLineageRecord,
     EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal, EvolutionReceipt,
-    FailurePatternEvidenceV1, MutationHypothesisManifestV1, PredictionOutcomeV1,
-    ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION,
-    RECEIPT_SCHEMA_VERSION,
+    FailurePatternEvidenceV1, LifecycleCostObservationBundleV1, LifecycleCostObservationV1,
+    MutationHypothesisManifestV1, PredictionOutcomeV1, ACTIVE_VERSION_SCHEMA,
+    CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
     build_pareto_archive, build_sealed_vault, derive_ec2_prediction_outcome_with_invalidation,
@@ -31,7 +34,626 @@ use crate::harness_evolution_pr_ready::{
     PR_READY_RECEIPT_SCHEMA, PR_READY_SCHEMA_VERSION,
 };
 
+fn parse_stored_ec3_observation(body: &str) -> Result<LifecycleCostObservationV1, String> {
+    let observation: LifecycleCostObservationV1 =
+        serde_json::from_str(body).map_err(|error| error.to_string())?;
+    validate_ec3_lifecycle_cost_observation(&observation)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    Ok(observation)
+}
+
+fn ec3_missingness_observation(
+    bundle: &LifecycleCostObservationBundleV1,
+    missing: &crate::harness_evolution::LifecycleCostMissingnessV1,
+) -> Result<LifecycleCostObservationV1, String> {
+    let phase = serde_json::to_value(missing.phase)
+        .map_err(|error| error.to_string())?
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let dimension = serde_json::to_value(missing.dimension)
+        .map_err(|error| error.to_string())?
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let reason = serde_json::to_value(missing.reason)
+        .map_err(|error| error.to_string())?
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let source_digest = bundle.source_digests.first().cloned().unwrap_or_else(|| {
+        crate::harness_evolution::sha256_hex(&format!(
+            "ec3-missing-source.v1|{}|{}|{}|{}",
+            bundle.bundle_id, phase, dimension, reason
+        ))
+    });
+    Ok(LifecycleCostObservationV1 {
+        schema_version: String::new(),
+        observation_key: format!("{}:missing:{}:{}", bundle.bundle_id, phase, dimension),
+        record_id: String::new(),
+        contract_id: bundle.contract_id.clone(),
+        candidate_id: bundle.candidate_id.clone(),
+        evaluation_id: bundle.evaluation_id.clone(),
+        product_task_id: bundle.product_task_id.clone(),
+        run_id: bundle.run_id.clone(),
+        attempt_id: bundle.attempt_id.clone(),
+        phase: missing.phase,
+        dimension: missing.dimension,
+        amount: None,
+        trust_source: crate::harness_evolution::CostTrustSource::Unavailable,
+        terminal_class: format!("missing:{reason}"),
+        source_schema_version: "ec3_missingness.v1".to_string(),
+        source_digest,
+        redacted_body: serde_json::json!({"missing_reason": reason}),
+        record_sha256: String::new(),
+    })
+}
+
+fn persist_ec3_sqlite_tx(
+    tx: &Transaction<'_>,
+    observation: &LifecycleCostObservationV1,
+    actor_id: &str,
+    now: &str,
+) -> Result<(), String> {
+    let body_json = serde_json::to_string(observation).map_err(|error| error.to_string())?;
+    let phase = serde_json::to_value(observation.phase)
+        .map_err(|error| error.to_string())?
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let dimension = serde_json::to_value(observation.dimension)
+        .map_err(|error| error.to_string())?
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let trust_source = serde_json::to_value(observation.trust_source)
+        .map_err(|error| error.to_string())?
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let amount = observation
+        .amount
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| "ec3_cost_amount_invalid: amount exceeds storage range")?;
+    let existing: Option<(String, String)> = tx
+        .query_row(
+            "SELECT record_id, redacted_body_json
+             FROM harness_evolution_ec3_lifecycle_cost_records
+             WHERE observation_key=?1",
+            params![observation.observation_key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some((record_id, existing_body)) = existing {
+        if existing_body == body_json && record_id == observation.record_id {
+            return Ok(());
+        }
+        return Err("ec3_cost_observation_conflict: observation already exists".into());
+    }
+    tx.execute(
+        "INSERT INTO harness_evolution_ec3_lifecycle_cost_records
+         (record_id, observation_key, contract_id, candidate_id, evaluation_id,
+          product_task_id, run_id, attempt_id, phase, dimension, amount, trust_source,
+          terminal_class, source_schema_version, source_digest, redacted_body_json,
+          record_sha256, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        params![
+            observation.record_id,
+            observation.observation_key,
+            observation.contract_id,
+            observation.candidate_id,
+            observation.evaluation_id,
+            observation.product_task_id,
+            observation.run_id,
+            observation.attempt_id,
+            phase,
+            dimension,
+            amount,
+            trust_source,
+            observation.terminal_class,
+            observation.source_schema_version,
+            observation.source_digest,
+            body_json,
+            observation.record_sha256,
+            now,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    append_audit_locked(
+        tx,
+        now,
+        actor_id,
+        "harness_evolution.ec3_lifecycle_cost_observation",
+        &observation.record_id,
+        &serde_json::json!({
+            "candidate_id": observation.candidate_id,
+            "phase": phase,
+            "dimension": dimension,
+            "amount_present": observation.amount.is_some(),
+            "trust_source": trust_source,
+        }),
+    )
+    .map(|_| ())
+}
+
+#[cfg(feature = "pg")]
+fn persist_ec3_pg_tx(
+    tx: &mut postgres::Transaction<'_>,
+    observation: &LifecycleCostObservationV1,
+    actor_id: &str,
+    now: &str,
+) -> Result<(), String> {
+    let body_json = serde_json::to_string(observation).map_err(|error| error.to_string())?;
+    let phase = serde_json::to_value(observation.phase)
+        .map_err(|error| error.to_string())?
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let dimension = serde_json::to_value(observation.dimension)
+        .map_err(|error| error.to_string())?
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let trust_source = serde_json::to_value(observation.trust_source)
+        .map_err(|error| error.to_string())?
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let amount = observation
+        .amount
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| "ec3_cost_amount_invalid: amount exceeds storage range")?;
+    let existing = tx
+        .query_opt(
+            "SELECT record_id, redacted_body_json
+             FROM harness_evolution_ec3_lifecycle_cost_records
+             WHERE observation_key=$1 FOR UPDATE",
+            &[&observation.observation_key],
+        )
+        .map_err(|error| error.to_string())?;
+    if let Some(row) = existing {
+        let record_id: String = row.get(0);
+        let existing_body: String = row.get(1);
+        if existing_body == body_json && record_id == observation.record_id {
+            return Ok(());
+        }
+        return Err("ec3_cost_observation_conflict: observation already exists".into());
+    }
+    tx.execute(
+        "INSERT INTO harness_evolution_ec3_lifecycle_cost_records
+         (record_id, observation_key, contract_id, candidate_id, evaluation_id,
+          product_task_id, run_id, attempt_id, phase, dimension, amount, trust_source,
+          terminal_class, source_schema_version, source_digest, redacted_body_json,
+          record_sha256, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
+        &[
+            &observation.record_id,
+            &observation.observation_key,
+            &observation.contract_id,
+            &observation.candidate_id,
+            &observation.evaluation_id,
+            &observation.product_task_id,
+            &observation.run_id,
+            &observation.attempt_id,
+            &phase,
+            &dimension,
+            &amount,
+            &trust_source,
+            &observation.terminal_class,
+            &observation.source_schema_version,
+            &observation.source_digest,
+            &body_json,
+            &observation.record_sha256,
+            &now,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    let details = serde_json::json!({
+        "candidate_id": observation.candidate_id,
+        "phase": phase,
+        "dimension": dimension,
+        "amount_present": observation.amount.is_some(),
+        "trust_source": trust_source,
+    })
+    .to_string();
+    tx.execute(
+        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+         VALUES ($1, $2, $3, $4, $5)",
+        &[
+            &now,
+            &actor_id,
+            &"harness_evolution.ec3_lifecycle_cost_observation",
+            &observation.record_id,
+            &details,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 impl LocalProductStore {
+    /// Persist usage observations through the canonical execution-usage
+    /// source adapter. The usage module remains read-only evidence input; the
+    /// Store remains the sole immutable persistence owner.
+    pub fn persist_ec3_lifecycle_cost_usage_event(
+        &self,
+        contract_id: &str,
+        candidate_id: &str,
+        attempt_id: &str,
+        phase: crate::harness_evolution::LifecycleCostPhase,
+        terminal_class: &str,
+        event: &crate::execution_usage::ExecutionUsageEventV1,
+        actor_id: &str,
+    ) -> Result<Vec<LifecycleCostObservationV1>, String> {
+        let observations = ec3_lifecycle_cost_observations_from_usage_event(
+            contract_id,
+            candidate_id,
+            attempt_id,
+            phase,
+            terminal_class,
+            event,
+        )
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        let source_digests = observations
+            .iter()
+            .map(|observation| observation.source_digest.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let missing = [
+            crate::harness_evolution::LifecycleCostDimension::WallClockMilliseconds,
+            crate::harness_evolution::LifecycleCostDimension::ComputeMilliseconds,
+            crate::harness_evolution::LifecycleCostDimension::HumanEffortMilliseconds,
+        ]
+        .into_iter()
+        .map(
+            |dimension| crate::harness_evolution::LifecycleCostMissingnessV1 {
+                phase,
+                dimension,
+                reason: crate::harness_evolution::LifecycleCostMissingReason::Unavailable,
+            },
+        )
+        .collect();
+        let bundle = self.persist_ec3_lifecycle_cost_bundle(
+            LifecycleCostObservationBundleV1 {
+                schema_version: String::new(),
+                bundle_id: String::new(),
+                contract_id: contract_id.to_string(),
+                candidate_id: candidate_id.to_string(),
+                evaluation_id: None,
+                product_task_id: event.product_task_id.clone(),
+                run_id: None,
+                attempt_id: attempt_id.to_string(),
+                source_digests,
+                observations,
+                missing,
+                record_sha256: String::new(),
+            },
+            actor_id,
+        )?;
+        Ok(bundle.observations)
+    }
+
+    pub fn persist_ec3_lifecycle_cost_bundle(
+        &self,
+        bundle: LifecycleCostObservationBundleV1,
+        actor_id: &str,
+    ) -> Result<LifecycleCostObservationBundleV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec3_cost_actor: authenticated actor_id is required".into());
+        }
+        let sealed = seal_ec3_lifecycle_cost_bundle(bundle)
+            .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        validate_ec3_lifecycle_cost_bundle(&sealed)
+            .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        // Each observation uses the same immutable Store owner and exact
+        // replay/conflict path. Explicit missingness is materialized as an
+        // unavailable observation so later queries can reconstruct the
+        // required phase/dimension disposition without a second table owner.
+        let mut observations = sealed.observations.clone();
+        for missing in &sealed.missing {
+            observations.push(
+                seal_ec3_lifecycle_cost_observation(ec3_missingness_observation(&sealed, missing)?)
+                    .map_err(|error| format!("{}: {}", error.code, error.message))?,
+            );
+        }
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                for observation in &observations {
+                    persist_ec3_sqlite_tx(&tx, observation, actor_id, &now)?;
+                }
+                tx.commit().map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                for observation in &observations {
+                    persist_ec3_pg_tx(&mut tx, observation, actor_id, &now)?;
+                }
+                tx.commit().map_err(|error| error.to_string())
+            })?,
+        }
+        Ok(sealed)
+    }
+
+    pub fn persist_ec3_lifecycle_cost_observation(
+        &self,
+        observation: LifecycleCostObservationV1,
+        actor_id: &str,
+    ) -> Result<LifecycleCostObservationV1, String> {
+        if actor_id.trim().is_empty() {
+            return Err("ec3_cost_actor: authenticated actor_id is required".into());
+        }
+        let sealed = seal_ec3_lifecycle_cost_observation(observation)
+            .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        validate_ec3_lifecycle_cost_observation(&sealed)
+            .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        let body_json = serde_json::to_string(&sealed).map_err(|error| error.to_string())?;
+        let phase = serde_json::to_value(sealed.phase)
+            .map_err(|error| error.to_string())?
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+        let dimension = serde_json::to_value(sealed.dimension)
+            .map_err(|error| error.to_string())?
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+        let trust_source = serde_json::to_value(sealed.trust_source)
+            .map_err(|error| error.to_string())?
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+        let amount = sealed
+            .amount
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| "ec3_cost_amount_invalid: amount exceeds storage range")?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                let existing: Option<(String, String)> = tx
+                    .query_row(
+                        "SELECT record_id, redacted_body_json
+                         FROM harness_evolution_ec3_lifecycle_cost_records
+                         WHERE observation_key=?1",
+                        params![sealed.observation_key],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                if let Some((record_id, existing_body)) = existing {
+                    if existing_body == body_json && record_id == sealed.record_id {
+                        tx.commit().map_err(|error| error.to_string())?;
+                        return Ok(sealed);
+                    }
+                    return Err("ec3_cost_observation_conflict: observation already exists".into());
+                }
+                tx.execute(
+                    "INSERT INTO harness_evolution_ec3_lifecycle_cost_records
+                     (record_id, observation_key, contract_id, candidate_id, evaluation_id,
+                      product_task_id, run_id, attempt_id, phase, dimension, amount, trust_source,
+                      terminal_class, source_schema_version, source_digest, redacted_body_json,
+                      record_sha256, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                    params![
+                        sealed.record_id,
+                        sealed.observation_key,
+                        sealed.contract_id,
+                        sealed.candidate_id,
+                        sealed.evaluation_id,
+                        sealed.product_task_id,
+                        sealed.run_id,
+                        sealed.attempt_id,
+                        phase,
+                        dimension,
+                        amount,
+                        trust_source,
+                        sealed.terminal_class,
+                        sealed.source_schema_version,
+                        sealed.source_digest,
+                        body_json,
+                        sealed.record_sha256,
+                        now,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    actor_id,
+                    "harness_evolution.ec3_lifecycle_cost_observation",
+                    &sealed.record_id,
+                    &serde_json::json!({
+                        "candidate_id": sealed.candidate_id,
+                        "phase": phase,
+                        "dimension": dimension,
+                        "amount_present": sealed.amount.is_some(),
+                        "trust_source": trust_source,
+                    }),
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(sealed)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let existing = tx
+                    .query_opt(
+                        "SELECT record_id, redacted_body_json
+                         FROM harness_evolution_ec3_lifecycle_cost_records
+                         WHERE observation_key=$1
+                         FOR UPDATE",
+                        &[&sealed.observation_key],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if let Some(row) = existing {
+                    let record_id: String = row.get(0);
+                    let existing_body: String = row.get(1);
+                    if existing_body == body_json && record_id == sealed.record_id {
+                        tx.commit().map_err(|error| error.to_string())?;
+                        return Ok(sealed);
+                    }
+                    return Err("ec3_cost_observation_conflict: observation already exists".into());
+                }
+                tx.execute(
+                    "INSERT INTO harness_evolution_ec3_lifecycle_cost_records
+                     (record_id, observation_key, contract_id, candidate_id, evaluation_id,
+                      product_task_id, run_id, attempt_id, phase, dimension, amount, trust_source,
+                      terminal_class, source_schema_version, source_digest, redacted_body_json,
+                      record_sha256, created_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
+                    &[
+                        &sealed.record_id,
+                        &sealed.observation_key,
+                        &sealed.contract_id,
+                        &sealed.candidate_id,
+                        &sealed.evaluation_id,
+                        &sealed.product_task_id,
+                        &sealed.run_id,
+                        &sealed.attempt_id,
+                        &phase,
+                        &dimension,
+                        &amount,
+                        &trust_source,
+                        &sealed.terminal_class,
+                        &sealed.source_schema_version,
+                        &sealed.source_digest,
+                        &body_json,
+                        &sealed.record_sha256,
+                        &now,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                let details = serde_json::json!({
+                    "candidate_id": sealed.candidate_id,
+                    "phase": phase,
+                    "dimension": dimension,
+                    "amount_present": sealed.amount.is_some(),
+                    "trust_source": trust_source,
+                })
+                .to_string();
+                tx.execute(
+                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                     VALUES ($1, $2, $3, $4, $5)",
+                    &[
+                        &now,
+                        &actor_id,
+                        &"harness_evolution.ec3_lifecycle_cost_observation",
+                        &sealed.record_id,
+                        &details,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(sealed)
+            }),
+        }
+    }
+
+    pub fn get_ec3_lifecycle_cost_observation(
+        &self,
+        record_id: &str,
+    ) -> Result<Option<LifecycleCostObservationV1>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let body: Option<String> = conn
+                    .query_row(
+                        "SELECT redacted_body_json FROM harness_evolution_ec3_lifecycle_cost_records WHERE record_id=?1",
+                        params![record_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                body.map(|value| parse_stored_ec3_observation(&value))
+                    .transpose()
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let body = client
+                    .query_opt(
+                        "SELECT redacted_body_json FROM harness_evolution_ec3_lifecycle_cost_records WHERE record_id=$1",
+                        &[&record_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .map(|row| row.get::<_, String>(0));
+                body.map(|value| parse_stored_ec3_observation(&value))
+                    .transpose()
+            }),
+        }
+    }
+
+    pub fn list_ec3_lifecycle_cost_observations_for_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Vec<LifecycleCostObservationV1>, String> {
+        self.list_ec3_lifecycle_cost_observations_by_column("candidate_id", candidate_id)
+    }
+
+    pub fn list_ec3_lifecycle_cost_observations_for_product_task(
+        &self,
+        product_task_id: &str,
+    ) -> Result<Vec<LifecycleCostObservationV1>, String> {
+        self.list_ec3_lifecycle_cost_observations_by_column("product_task_id", product_task_id)
+    }
+
+    pub fn list_ec3_lifecycle_cost_observations_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<LifecycleCostObservationV1>, String> {
+        self.list_ec3_lifecycle_cost_observations_by_column("run_id", run_id)
+    }
+
+    fn list_ec3_lifecycle_cost_observations_by_column(
+        &self,
+        column: &str,
+        value: &str,
+    ) -> Result<Vec<LifecycleCostObservationV1>, String> {
+        let column = match column {
+            "candidate_id" | "product_task_id" | "run_id" => column,
+            _ => return Err("ec3_cost_query: unsupported lookup column".into()),
+        };
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let query = format!(
+                    "SELECT redacted_body_json FROM harness_evolution_ec3_lifecycle_cost_records WHERE {column}=?1 ORDER BY created_at ASC, record_id ASC"
+                );
+                let mut statement = conn.prepare(&query).map_err(|error| error.to_string())?;
+                let rows = statement
+                    .query_map(params![value], |row| row.get::<_, String>(0))
+                    .map_err(|error| error.to_string())?;
+                rows.map(|row| {
+                    let body = row.map_err(|error| error.to_string())?;
+                    parse_stored_ec3_observation(&body)
+                })
+                .collect()
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let query = format!(
+                    "SELECT redacted_body_json FROM harness_evolution_ec3_lifecycle_cost_records WHERE {column}=$1 ORDER BY created_at ASC, record_id ASC"
+                );
+                client
+                    .query(&query, &[&value])
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .map(|row| {
+                        let body: String = row.get(0);
+                        parse_stored_ec3_observation(&body)
+                    })
+                    .collect()
+            }),
+        }
+    }
+
     /// Register an immutable active-Harness + evaluator epoch (insert-only).
     ///
     /// Changing the active Harness or evaluator requires a **new** `active_version_id`.
@@ -3495,5 +4117,106 @@ mod tests {
             .unwrap_err()
             .contains("unauthorized"));
         drop(env);
+    }
+
+    #[test]
+    fn persists_ec3_lifecycle_cost_observation_with_replay_restart_and_conflict() {
+        use crate::harness_evolution::{
+            seal_ec3_lifecycle_cost_observation, CostTrustSource, LifecycleCostDimension,
+            LifecycleCostObservationV1, LifecycleCostPhase,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec3-cost-observation.db");
+        let store = LocalProductStore::new(&db).unwrap();
+        let observation = seal_ec3_lifecycle_cost_observation(LifecycleCostObservationV1 {
+            schema_version: String::new(),
+            observation_key: "observation-replay-1".into(),
+            record_id: String::new(),
+            contract_id: "contract-1".into(),
+            candidate_id: "candidate-1".into(),
+            evaluation_id: Some("evaluation-1".into()),
+            product_task_id: Some("task-1".into()),
+            run_id: Some("run-1".into()),
+            attempt_id: "attempt-1".into(),
+            phase: LifecycleCostPhase::Evaluation,
+            dimension: LifecycleCostDimension::ModelTokens,
+            amount: Some(12),
+            trust_source: CostTrustSource::MeasuredDirect,
+            terminal_class: "completed".into(),
+            source_schema_version: "execution_usage.v1".into(),
+            source_digest: crate::harness_evolution::sha256_hex("source-1"),
+            redacted_body: serde_json::json!({"kind":"usage"}),
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        let stored = store
+            .persist_ec3_lifecycle_cost_observation(observation.clone(), "operator-test")
+            .unwrap();
+        let replay = store
+            .persist_ec3_lifecycle_cost_observation(observation.clone(), "operator-test")
+            .unwrap();
+        assert_eq!(stored.record_sha256, replay.record_sha256);
+        assert_eq!(
+            store
+                .list_ec3_lifecycle_cost_observations_for_candidate("candidate-1")
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let mut conflict = observation;
+        conflict.amount = Some(13);
+        assert!(store
+            .persist_ec3_lifecycle_cost_observation(conflict, "operator-test")
+            .unwrap_err()
+            .contains("conflict"));
+        drop(store);
+        let reopened = LocalProductStore::new(&db).unwrap();
+        let loaded = reopened
+            .get_ec3_lifecycle_cost_observation(&stored.record_id)
+            .unwrap()
+            .expect("observation survives restart");
+        assert_eq!(loaded.record_sha256, stored.record_sha256);
+    }
+
+    #[test]
+    fn persists_ec3_bundle_missingness_as_unavailable_observation() {
+        use crate::harness_evolution::{
+            seal_ec3_lifecycle_cost_bundle, CostTrustSource, LifecycleCostDimension,
+            LifecycleCostMissingReason, LifecycleCostMissingnessV1,
+            LifecycleCostObservationBundleV1, LifecycleCostPhase,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ec3-cost-missing.db");
+        let store = LocalProductStore::new(&db).unwrap();
+        let bundle = seal_ec3_lifecycle_cost_bundle(LifecycleCostObservationBundleV1 {
+            schema_version: String::new(),
+            bundle_id: String::new(),
+            contract_id: "contract-missing".into(),
+            candidate_id: "candidate-missing".into(),
+            evaluation_id: None,
+            product_task_id: None,
+            run_id: Some("run-missing".into()),
+            attempt_id: "attempt-missing".into(),
+            source_digests: vec![],
+            observations: vec![],
+            missing: vec![LifecycleCostMissingnessV1 {
+                phase: LifecycleCostPhase::Recovery,
+                dimension: LifecycleCostDimension::ProviderCalls,
+                reason: LifecycleCostMissingReason::JoinAmbiguous,
+            }],
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        store
+            .persist_ec3_lifecycle_cost_bundle(bundle, "operator-test")
+            .unwrap();
+        let observations = store
+            .list_ec3_lifecycle_cost_observations_for_run("run-missing")
+            .unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].trust_source, CostTrustSource::Unavailable);
+        assert_eq!(observations[0].amount, None);
+        assert_eq!(observations[0].terminal_class, "missing:join_ambiguous");
     }
 }

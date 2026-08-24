@@ -203,5 +203,5 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     assert_eq!(empty.schema_version().expect("version"), 25);
     drop(empty);
     let reapplied = LocalProductStore::new(empty_path.path()).expect("reopen");
-    assert_eq!(reapplied.schema_version().expect("version"), 37);
+    assert_eq!(reapplied.schema_version().expect("version"), 38);
 }

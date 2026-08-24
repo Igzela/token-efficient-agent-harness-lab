@@ -19,6 +19,7 @@ pub(super) const V34_SCHEMA_VERSION: i64 = 34;
 pub(super) const V35_SCHEMA_VERSION: i64 = 35;
 pub(super) const V36_SCHEMA_VERSION: i64 = 36;
 pub(super) const V37_SCHEMA_VERSION: i64 = 37;
+pub(super) const V38_SCHEMA_VERSION: i64 = 38;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -69,6 +70,11 @@ pub(super) const V35_TABLES: [&str; 1] = ["product_task_workspace_preparations"]
 pub(super) const V36_TABLES: [&str; 1] = ["managed_acceptance_delegations"];
 pub(super) const V37_TABLES: [&str; 1] = ["harness_evolution_ec2_prediction_outcomes"];
 pub(super) const V37_INDEXES: [&str; 1] = ["idx_harness_evolution_ec2_prediction_outcomes_eval"];
+pub(super) const V38_TABLES: [&str; 1] = ["harness_evolution_ec3_lifecycle_cost_records"];
+pub(super) const V38_INDEXES: [&str; 2] = [
+    "idx_harness_evolution_ec3_cost_candidate",
+    "idx_harness_evolution_ec3_cost_task_run",
+];
 pub(super) const V36_DELEGATED_PLAN_OWNER_COLUMN: &str = "delegated_plan_owner_id";
 pub(super) const V36_DELEGATED_PLAN_OWNER_INDEX: &str = "idx_workflow_plans_delegated_owner";
 pub(super) const V36_API_KEY_TENANT_COLUMN: &str = "tenant_id";
@@ -508,6 +514,12 @@ impl LocalProductStore {
                     validate_sqlite_v37_schema(conn)?;
                     continue;
                 }
+                if migration.version == V38_SCHEMA_VERSION && current_version >= V38_SCHEMA_VERSION
+                {
+                    Self::migrate_v38_add_lifecycle_cost_observations(conn)?;
+                    validate_sqlite_v38_schema(conn)?;
+                    continue;
+                }
                 if migration.version <= current_version {
                     continue;
                 }
@@ -556,6 +568,7 @@ impl LocalProductStore {
                     }
                     V36_SCHEMA_VERSION => Self::migrate_v36_add_delegations(conn)?,
                     V37_SCHEMA_VERSION => Self::migrate_v37_add_prediction_outcomes(conn)?,
+                    V38_SCHEMA_VERSION => Self::migrate_v38_add_lifecycle_cost_observations(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -564,7 +577,9 @@ impl LocalProductStore {
             let final_version: i64 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
-            if final_version == V37_SCHEMA_VERSION {
+            if final_version == V38_SCHEMA_VERSION {
+                validate_sqlite_v38_schema(conn)?;
+            } else if final_version == V37_SCHEMA_VERSION {
                 validate_sqlite_v37_schema(conn)?;
             } else if final_version == V36_SCHEMA_VERSION {
                 validate_sqlite_v36_schema(conn)?;
@@ -1240,6 +1255,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
         }
     }
 
+    /// Roll back the additive v38 lifecycle-cost evidence schema only when
+    /// no observations exist. Stored observations are immutable evidence and
+    /// must never be silently discarded by a downgrade.
+    pub fn rollback_v38_to_v37(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v38 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v38 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v38_to_v37(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v38_to_v37(actor, &now),
+        }
+    }
+
     fn rollback_sqlite_v35_to_v34(&self, actor: &str, now: &str) -> Result<(), String> {
         self.with_conn(|conn| {
             let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
@@ -1283,6 +1323,53 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                 .map_err(|error| error.to_string())?;
             tx.commit().map_err(|error| error.to_string())?;
             Ok(())
+        })
+    }
+
+    fn rollback_sqlite_v38_to_v37(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            if version != V38_SCHEMA_VERSION {
+                return Err(format!(
+                    "v38 rollback requires current schema version 38; found {version}"
+                ));
+            }
+            let occupied = occupied_sqlite_tables(&tx, &V38_TABLES)?;
+            if !occupied.is_empty() {
+                return Err(format!(
+                    "v38 rollback blocked: lifecycle-cost observations exist in {}",
+                    occupied.join(", ")
+                ));
+            }
+            tx.execute_batch(
+                "DROP INDEX IF EXISTS idx_harness_evolution_ec3_cost_task_run;
+                 DROP INDEX IF EXISTS idx_harness_evolution_ec3_cost_candidate;
+                 DROP TABLE IF EXISTS harness_evolution_ec3_lifecycle_cost_records;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v38_to_v37', 'local_product_store', ?3)",
+                rusqlite::params![
+                    now,
+                    actor,
+                    serde_json::json!({
+                        "from_version": V38_SCHEMA_VERSION,
+                        "to_version": V37_SCHEMA_VERSION,
+                        "tables": V38_TABLES,
+                        "indexes": V38_INDEXES,
+                    })
+                    .to_string()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V37_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
         })
     }
 
@@ -2579,6 +2666,14 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         tx.commit().map_err(|error| error.to_string())
     }
 
+    fn migrate_v38_add_lifecycle_cost_observations(conn: &Connection) -> Result<(), String> {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        tx.execute_batch(schema::EC3_LIFECYCLE_COST_OBSERVATION_DDL)
+            .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())
+    }
+
     fn migrate_v33_add_managed_acceptance_spend(conn: &Connection) -> Result<(), String> {
         repair_sqlite_v32_transition_schema(conn)?;
         let spend_table_exists =
@@ -2928,6 +3023,35 @@ fn validate_sqlite_v37_schema(conn: &Connection) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         if exists != 1 {
             return Err(format!("SQLite v37 schema missing index {index}"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_sqlite_v38_schema(conn: &Connection) -> Result<(), String> {
+    validate_sqlite_v37_schema(conn)?;
+    for table in V38_TABLES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v38 schema missing table {table}"));
+        }
+    }
+    for index in V38_INDEXES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                [index],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v38 schema missing index {index}"));
         }
     }
     Ok(())
@@ -3960,6 +4084,82 @@ mod tests {
             .unwrap();
         store.with_conn(validate_sqlite_v36_schema).unwrap();
         store
+    }
+
+    #[test]
+    fn sqlite_v38_rollback_requires_empty_observation_table_and_re_migrates() {
+        let directory = tempdir().unwrap();
+        let database_path = directory.path().join("empty-v38.db");
+        let store = LocalProductStore::new(&database_path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), V38_SCHEMA_VERSION);
+        assert!(store
+            .rollback_v38_to_v37("migration-test", false)
+            .unwrap_err()
+            .contains("confirmation"));
+
+        store
+            .rollback_v38_to_v37("migration-test", true)
+            .expect("empty additive evidence table can roll back");
+        assert_eq!(store.schema_version().unwrap(), V37_SCHEMA_VERSION);
+        assert!(!table_exists(
+            &store,
+            "harness_evolution_ec3_lifecycle_cost_records"
+        ));
+        drop(store);
+
+        let upgraded = LocalProductStore::new(&database_path).unwrap();
+        assert_eq!(upgraded.schema_version().unwrap(), V38_SCHEMA_VERSION);
+        assert!(table_exists(
+            &upgraded,
+            "harness_evolution_ec3_lifecycle_cost_records"
+        ));
+    }
+
+    #[test]
+    fn sqlite_v38_rollback_refuses_to_discard_observations() {
+        let directory = tempdir().unwrap();
+        let database_path = directory.path().join("occupied-v38.db");
+        let store = LocalProductStore::new(&database_path).unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO harness_evolution_ec3_lifecycle_cost_records
+                     (record_id, observation_key, contract_id, candidate_id, evaluation_id,
+                      product_task_id, run_id, attempt_id, phase, dimension, amount, trust_source,
+                      terminal_class, source_schema_version, source_digest, redacted_body_json,
+                      record_sha256, created_at)
+                     VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    params![
+                        "record-1",
+                        "observation-1",
+                        "contract-1",
+                        "candidate-1",
+                        "attempt-1",
+                        "evaluation",
+                        "model_tokens",
+                        10_i64,
+                        "measured_direct",
+                        "completed",
+                        "source.v1",
+                        "a".repeat(64),
+                        "{}",
+                        "b".repeat(64),
+                        "now",
+                    ],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let error = store
+            .rollback_v38_to_v37("migration-test", true)
+            .unwrap_err();
+        assert!(error.contains("observations"), "{error}");
+        assert_eq!(store.schema_version().unwrap(), V38_SCHEMA_VERSION);
+        assert!(table_exists(
+            &store,
+            "harness_evolution_ec3_lifecycle_cost_records"
+        ));
     }
 
     #[test]

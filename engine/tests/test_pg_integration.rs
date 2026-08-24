@@ -26,6 +26,11 @@ use engine::feedback::{
     CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
 };
 #[cfg(feature = "pg-tests")]
+use engine::harness_evolution::{
+    seal_ec3_lifecycle_cost_observation, CostTrustSource, LifecycleCostDimension,
+    LifecycleCostObservationV1, LifecycleCostPhase,
+};
+#[cfg(feature = "pg-tests")]
 use engine::http_server::{build_axum_router, AxumApiState};
 #[cfg(feature = "pg-tests")]
 use engine::infrastructure::auth::{
@@ -227,6 +232,68 @@ fn test_store() -> Option<LocalProductStore> {
         .expect("PostgreSQL store bootstrap thread must not panic")
         .expect("new_postgres should succeed");
     Some(store)
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_ec3_lifecycle_cost_persistence_query_replay_and_conflict() {
+    let Some(store) = test_store() else { return };
+    let suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let observation = seal_ec3_lifecycle_cost_observation(LifecycleCostObservationV1 {
+        schema_version: String::new(),
+        observation_key: format!("pg-ec3-observation-{suffix}"),
+        record_id: String::new(),
+        contract_id: "pg-ec3-contract".into(),
+        candidate_id: format!("pg-ec3-candidate-{suffix}"),
+        evaluation_id: None,
+        product_task_id: None,
+        run_id: Some(format!("pg-ec3-run-{suffix}")),
+        attempt_id: format!("pg-ec3-attempt-{suffix}"),
+        phase: LifecycleCostPhase::Evaluation,
+        dimension: LifecycleCostDimension::ModelTokens,
+        amount: Some(12),
+        trust_source: CostTrustSource::MeasuredDirect,
+        terminal_class: "completed".into(),
+        source_schema_version: "execution_usage.v1".into(),
+        source_digest: engine::harness_evolution::sha256_hex(&format!("pg-source-{suffix}")),
+        redacted_body: serde_json::json!({"source":"pg-test"}),
+        record_sha256: String::new(),
+    })
+    .unwrap();
+    let stored = store
+        .persist_ec3_lifecycle_cost_observation(observation.clone(), "pg-ec3-test")
+        .unwrap();
+    let replay = store
+        .persist_ec3_lifecycle_cost_observation(observation.clone(), "pg-ec3-test")
+        .unwrap();
+    assert_eq!(stored.record_sha256, replay.record_sha256);
+    assert_eq!(
+        store
+            .list_ec3_lifecycle_cost_observations_for_run(
+                stored.run_id.as_deref().expect("run identity")
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .get_ec3_lifecycle_cost_observation(&stored.record_id)
+            .unwrap()
+            .expect("stored EC3 observation")
+            .record_sha256,
+        stored.record_sha256
+    );
+    let mut conflict = observation;
+    conflict.amount = Some(13);
+    assert!(store
+        .persist_ec3_lifecycle_cost_observation(conflict, "pg-ec3-test")
+        .unwrap_err()
+        .contains("conflict"));
 }
 
 #[cfg(feature = "pg-tests")]

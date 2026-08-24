@@ -29,6 +29,11 @@ pub const MUTATION_FAMILY_REGISTRY_SCHEMA: &str = "mutation_family_registry.v1";
 pub const EC1_IDENTITY_LINEAGE_SCHEMA: &str = "harness_evolution_ec1_identity_lineage.v1";
 pub const EC1_CANDIDATE_BINDING_SCHEMA: &str = "harness_evolution_ec1_candidate_binding.v1";
 pub const EC3_LIFECYCLE_BUDGET_SCHEMA: &str = "harness_evolution_ec3_lifecycle_budget.v1";
+pub const EC3_LIFECYCLE_COST_OBSERVATION_SCHEMA: &str =
+    "harness_evolution_ec3_lifecycle_cost_observation.v1";
+pub const EC3_LIFECYCLE_COST_BUNDLE_SCHEMA: &str = "harness_evolution_ec3_lifecycle_cost_bundle.v1";
+pub const EC3_LIFECYCLE_COST_READ_MODEL_SCHEMA: &str =
+    "harness_evolution_ec3_lifecycle_cost_read_model.v1";
 
 /// CWS analysis bound this SHA as the default-off active Harness. EC1 freezes it;
 /// it is not a live ENABLE and does not authorize candidate generation.
@@ -450,6 +455,103 @@ pub struct Ec3LifecycleBudgetContractV1 {
     pub failure_accounting_rule: FailureAccountingRule,
     pub envelope_exhaustion_rule: EnvelopeExhaustionRule,
     pub grants_spend_authority: bool,
+    pub record_sha256: String,
+}
+
+/// One append-only, source-bound EC3 lifecycle-cost input.  This is evidence
+/// for later reconciliation only; it cannot reserve or spend an envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleCostObservationV1 {
+    pub schema_version: String,
+    pub observation_key: String,
+    pub record_id: String,
+    pub contract_id: String,
+    pub candidate_id: String,
+    pub evaluation_id: Option<String>,
+    pub product_task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub attempt_id: String,
+    pub phase: LifecycleCostPhase,
+    pub dimension: LifecycleCostDimension,
+    /// Canonical integer unit; absent only for explicit unavailable evidence.
+    pub amount: Option<u64>,
+    pub trust_source: CostTrustSource,
+    pub terminal_class: String,
+    pub source_schema_version: String,
+    pub source_digest: String,
+    /// Redacted structured evidence only; never prompts, outputs, credentials, or paths.
+    pub redacted_body: Value,
+    pub record_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleCostMissingReason {
+    Unavailable,
+    RequiredMissing,
+    JoinAmbiguous,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleCostMissingnessV1 {
+    pub phase: LifecycleCostPhase,
+    pub dimension: LifecycleCostDimension,
+    pub reason: LifecycleCostMissingReason,
+}
+
+/// A source-bound immutable batch assembled by an existing production owner.
+/// Bundles are transport/reconciliation inputs; they do not reserve or spend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleCostObservationBundleV1 {
+    pub schema_version: String,
+    pub bundle_id: String,
+    pub contract_id: String,
+    pub candidate_id: String,
+    pub evaluation_id: Option<String>,
+    pub product_task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub attempt_id: String,
+    pub source_digests: Vec<String>,
+    pub observations: Vec<LifecycleCostObservationV1>,
+    pub missing: Vec<LifecycleCostMissingnessV1>,
+    pub record_sha256: String,
+}
+
+/// Redacted read model used by operator evidence and later reconciliation.
+/// It intentionally excludes each observation's structured evidence body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleCostReadModelObservationV1 {
+    pub record_id: String,
+    pub observation_key: String,
+    pub contract_id: String,
+    pub candidate_id: String,
+    pub evaluation_id: Option<String>,
+    pub product_task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub attempt_id: String,
+    pub phase: LifecycleCostPhase,
+    pub dimension: LifecycleCostDimension,
+    pub amount: Option<u64>,
+    pub trust_source: CostTrustSource,
+    pub terminal_class: String,
+    pub source_schema_version: String,
+    pub source_digest: String,
+    pub record_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleCostReadModelV1 {
+    pub schema_version: String,
+    pub bundle_id: String,
+    pub contract_id: String,
+    pub candidate_id: String,
+    pub evaluation_id: Option<String>,
+    pub product_task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub attempt_id: String,
+    pub observations: Vec<LifecycleCostReadModelObservationV1>,
+    pub missing: Vec<LifecycleCostMissingnessV1>,
+    pub complete: bool,
     pub record_sha256: String,
 }
 
@@ -1153,6 +1255,490 @@ pub fn seal_ec3_lifecycle_budget_contract(
     contract.record_sha256 = record_digest_excluding_sha256(&value)?;
     validate_ec3_lifecycle_budget_contract(&contract)?;
     Ok(contract)
+}
+
+fn ec3_cost_observation_value(
+    observation: &LifecycleCostObservationV1,
+) -> Result<Value, EvolutionAdmissionError> {
+    let mut value = serde_json::to_value(observation).map_err(|error| {
+        EvolutionAdmissionError::new("ec3_cost_record_tamper", error.to_string())
+    })?;
+    if let Value::Object(map) = &mut value {
+        map.insert("record_id".into(), Value::String(String::new()));
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    Ok(value)
+}
+
+pub fn derive_ec3_lifecycle_cost_record_id(
+    observation: &LifecycleCostObservationV1,
+) -> Result<String, EvolutionAdmissionError> {
+    let digest = canonical_json_sha256(&ec3_cost_observation_value(observation)?)
+        .map_err(|error| EvolutionAdmissionError::new("ec3_cost_record_tamper", error))?;
+    Ok(format!("helc-{}", &digest[..32]))
+}
+
+pub fn validate_ec3_lifecycle_cost_observation(
+    observation: &LifecycleCostObservationV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if observation.schema_version != EC3_LIFECYCLE_COST_OBSERVATION_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_schema_drift",
+            "observation schema mismatch",
+        ));
+    }
+    for value in [
+        &observation.observation_key,
+        &observation.record_id,
+        &observation.contract_id,
+        &observation.candidate_id,
+        &observation.attempt_id,
+        &observation.terminal_class,
+        &observation.source_schema_version,
+    ] {
+        if value.trim().is_empty() {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_cost_required_missing",
+                "required observation identity is empty",
+            ));
+        }
+    }
+    validate_sha256_hex(&observation.source_digest)?;
+    if !observation.redacted_body.is_object() {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_private_evidence",
+            "redacted lifecycle-cost evidence must be a structured object",
+        ));
+    }
+    refuse_sensitive_payload_fields(&observation.redacted_body).map_err(|error| {
+        EvolutionAdmissionError::new("ec3_cost_private_evidence", error.message)
+    })?;
+    if observation.trust_source == CostTrustSource::CallerEstimate {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_source_untrusted",
+            "caller estimate is not lifecycle-cost evidence",
+        ));
+    }
+    match (observation.trust_source, observation.amount) {
+        (CostTrustSource::Unavailable, Some(_)) => {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_cost_unavailable_has_amount",
+                "unavailable evidence cannot carry an amount",
+            ))
+        }
+        (CostTrustSource::Unavailable, None) => {}
+        (_, None) => {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_cost_amount_invalid",
+                "measured or derived evidence requires a canonical integer amount",
+            ))
+        }
+        _ => {}
+    }
+    if observation.amount == Some(0)
+        && observation.trust_source != CostTrustSource::Unavailable
+        && observation
+            .redacted_body
+            .as_object()
+            .is_some_and(|body| body.is_empty())
+    {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_zero_unproved",
+            "explicit zero lifecycle cost requires measured or deterministic evidence",
+        ));
+    }
+    let expected_id = derive_ec3_lifecycle_cost_record_id(observation)?;
+    if observation.record_id != expected_id {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_observation_conflict",
+            "record_id is not bound to the complete observation",
+        ));
+    }
+    let value = ec3_cost_observation_value(observation)?;
+    require_record_sha256(&value, &observation.record_sha256)
+        .map_err(|error| EvolutionAdmissionError::new("ec3_cost_record_tamper", error.message))
+}
+
+pub fn seal_ec3_lifecycle_cost_observation(
+    mut observation: LifecycleCostObservationV1,
+) -> Result<LifecycleCostObservationV1, EvolutionAdmissionError> {
+    observation.schema_version = EC3_LIFECYCLE_COST_OBSERVATION_SCHEMA.to_string();
+    observation.record_id = derive_ec3_lifecycle_cost_record_id(&observation)?;
+    let value = ec3_cost_observation_value(&observation)?;
+    observation.record_sha256 = record_digest_excluding_sha256(&value).map_err(|error| {
+        if error.code == "evolution_sensitive_payload" {
+            EvolutionAdmissionError::new("ec3_cost_private_evidence", error.message)
+        } else {
+            error
+        }
+    })?;
+    validate_ec3_lifecycle_cost_observation(&observation)?;
+    Ok(observation)
+}
+
+pub fn ec3_lifecycle_cost_unit_for_dimension(dimension: LifecycleCostDimension) -> &'static str {
+    match dimension {
+        LifecycleCostDimension::ModelTokens | LifecycleCostDimension::ProviderCalls => "count",
+        LifecycleCostDimension::ProviderCostMicrounits => "microunits",
+        LifecycleCostDimension::WallClockMilliseconds
+        | LifecycleCostDimension::ComputeMilliseconds
+        | LifecycleCostDimension::HumanEffortMilliseconds => "milliseconds",
+    }
+}
+
+/// Convert a source measurement into the one canonical integer unit for its
+/// EC3 dimension. A missing value is valid only with the explicit unavailable
+/// marker; floating point, negative, and mismatched units fail closed.
+pub fn normalize_ec3_lifecycle_cost_amount(
+    dimension: LifecycleCostDimension,
+    amount: Option<i128>,
+    unit: &str,
+) -> Result<Option<u64>, EvolutionAdmissionError> {
+    if amount.is_none() {
+        if unit != "unavailable" {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_cost_unit_invalid",
+                "missing lifecycle cost must use the unavailable unit marker",
+            ));
+        }
+        return Ok(None);
+    }
+    if unit != ec3_lifecycle_cost_unit_for_dimension(dimension) {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_unit_invalid",
+            "lifecycle cost unit does not match its EC3 dimension",
+        ));
+    }
+    let amount = amount.expect("checked above");
+    if amount < 0 {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_amount_invalid",
+            "lifecycle cost amount cannot be negative",
+        ));
+    }
+    u64::try_from(amount).map(Some).map_err(|_| {
+        EvolutionAdmissionError::new(
+            "ec3_cost_amount_invalid",
+            "lifecycle cost amount exceeds canonical integer range",
+        )
+    })
+}
+
+/// Build EC3 observations from the canonical execution-usage owner. This is
+/// an evidence adapter only: it never reserves, spends, or mutates the usage
+/// owner, and ambiguous/partial events become explicit unavailable records.
+pub fn ec3_lifecycle_cost_observations_from_usage_event(
+    contract_id: &str,
+    candidate_id: &str,
+    attempt_id: &str,
+    phase: LifecycleCostPhase,
+    terminal_class: &str,
+    event: &crate::execution_usage::ExecutionUsageEventV1,
+) -> Result<Vec<LifecycleCostObservationV1>, EvolutionAdmissionError> {
+    require_nonempty_id(contract_id, "ec3_cost_required_missing")?;
+    require_nonempty_id(candidate_id, "ec3_cost_required_missing")?;
+    require_nonempty_id(attempt_id, "ec3_cost_required_missing")?;
+    require_nonempty_id(terminal_class, "ec3_cost_required_missing")?;
+    require_nonempty_id(&event.event_id, "ec3_cost_source_missing")?;
+    require_nonempty_id(&event.source_schema_version, "ec3_cost_source_missing")?;
+    if event.schema_version != crate::execution_usage::EXECUTION_USAGE_EVENT_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_source_schema_drift",
+            "execution usage event schema is not the accepted canonical version",
+        ));
+    }
+    let event_value = serde_json::to_value(event).map_err(|error| {
+        EvolutionAdmissionError::new("ec3_cost_source_invalid", error.to_string())
+    })?;
+    let source_digest = canonical_json_sha256(&event_value)
+        .map_err(|error| EvolutionAdmissionError::new("ec3_cost_source_invalid", error))?;
+    let complete = matches!(
+        event.event_completeness,
+        crate::execution_usage::EventCompleteness::Complete
+    );
+    let safe_body = serde_json::json!({
+        "event_id": event.event_id,
+        "executor_kind": event.executor_kind,
+        "evidence_source_kind": event.evidence_source_kind,
+        "event_completeness": event.event_completeness,
+        "stable_dedupe_identity": event.stable_dedupe_identity,
+    });
+    let mut observations = Vec::new();
+    let mut add = |dimension: LifecycleCostDimension,
+                   amount: Option<u64>,
+                   trust_source: CostTrustSource|
+     -> Result<(), EvolutionAdmissionError> {
+        let dimension_name = serde_json::to_value(dimension)
+            .map_err(|error| {
+                EvolutionAdmissionError::new("ec3_cost_source_invalid", error.to_string())
+            })?
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+        observations.push(seal_ec3_lifecycle_cost_observation(
+            LifecycleCostObservationV1 {
+                schema_version: String::new(),
+                observation_key: format!("usage:{}:{}", event.event_id, dimension_name),
+                record_id: String::new(),
+                contract_id: contract_id.to_string(),
+                candidate_id: candidate_id.to_string(),
+                evaluation_id: None,
+                product_task_id: event.product_task_id.clone(),
+                run_id: None,
+                attempt_id: attempt_id.to_string(),
+                phase,
+                dimension,
+                amount,
+                trust_source,
+                terminal_class: terminal_class.to_string(),
+                source_schema_version: event.source_schema_version.clone(),
+                source_digest: source_digest.clone(),
+                redacted_body: safe_body.clone(),
+                record_sha256: String::new(),
+            },
+        )?);
+        Ok(())
+    };
+    let token_source = if complete {
+        CostTrustSource::MeasuredDirect
+    } else {
+        CostTrustSource::Unavailable
+    };
+    add(
+        LifecycleCostDimension::ModelTokens,
+        complete.then_some(event.billable_token_total()),
+        token_source,
+    )?;
+    add(
+        LifecycleCostDimension::ProviderCalls,
+        if complete && event.provider_id.is_some() {
+            Some(1)
+        } else {
+            None
+        },
+        if complete && event.provider_id.is_some() {
+            CostTrustSource::MeasuredDirect
+        } else {
+            CostTrustSource::Unavailable
+        },
+    )?;
+    let provider_cost = if complete
+        && matches!(
+            event.cost_source,
+            crate::execution_usage::CostSource::ProviderOrExecutorReported
+        ) {
+        event.provider_reported_cost.and_then(|cost| {
+            if cost.is_finite() && cost >= 0.0 {
+                let micros = cost * 1_000_000.0;
+                if micros <= u64::MAX as f64 {
+                    let rounded = micros.round();
+                    if (micros - rounded).abs() <= 1e-9 {
+                        Some(rounded as u64)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+    add(
+        LifecycleCostDimension::ProviderCostMicrounits,
+        provider_cost,
+        if provider_cost.is_some() {
+            CostTrustSource::MeasuredDirect
+        } else {
+            CostTrustSource::Unavailable
+        },
+    )?;
+    Ok(observations)
+}
+
+fn ec3_cost_bundle_value(
+    bundle: &LifecycleCostObservationBundleV1,
+) -> Result<Value, EvolutionAdmissionError> {
+    let mut value = serde_json::to_value(bundle).map_err(|error| {
+        EvolutionAdmissionError::new("ec3_cost_record_tamper", error.to_string())
+    })?;
+    if let Value::Object(map) = &mut value {
+        map.insert("bundle_id".into(), Value::String(String::new()));
+        map.insert("record_sha256".into(), Value::String(String::new()));
+    }
+    Ok(value)
+}
+
+pub fn derive_ec3_lifecycle_cost_bundle_id(
+    bundle: &LifecycleCostObservationBundleV1,
+) -> Result<String, EvolutionAdmissionError> {
+    let digest = canonical_json_sha256(&ec3_cost_bundle_value(bundle)?)
+        .map_err(|error| EvolutionAdmissionError::new("ec3_cost_record_tamper", error))?;
+    Ok(format!("helb-{}", &digest[..32]))
+}
+
+pub fn validate_ec3_lifecycle_cost_bundle(
+    bundle: &LifecycleCostObservationBundleV1,
+) -> Result<(), EvolutionAdmissionError> {
+    if bundle.schema_version != EC3_LIFECYCLE_COST_BUNDLE_SCHEMA {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_schema_drift",
+            "lifecycle cost bundle schema mismatch",
+        ));
+    }
+    for value in [
+        &bundle.bundle_id,
+        &bundle.contract_id,
+        &bundle.candidate_id,
+        &bundle.attempt_id,
+    ] {
+        if value.trim().is_empty() {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_cost_required_missing",
+                "required lifecycle cost bundle identity is empty",
+            ));
+        }
+    }
+    if bundle.observations.is_empty() && bundle.missing.is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_required_missing",
+            "lifecycle cost bundle must contain observations or explicit missingness",
+        ));
+    }
+    let mut source_digests = BTreeSet::new();
+    for digest in &bundle.source_digests {
+        validate_sha256_hex(digest)?;
+        if !source_digests.insert(digest) {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_cost_join_ambiguous",
+                "lifecycle cost source digest is duplicated",
+            ));
+        }
+    }
+    let mut dimensions = BTreeSet::new();
+    for observation in &bundle.observations {
+        validate_ec3_lifecycle_cost_observation(observation)?;
+        if observation.contract_id != bundle.contract_id
+            || observation.candidate_id != bundle.candidate_id
+            || observation.evaluation_id != bundle.evaluation_id
+            || observation.product_task_id != bundle.product_task_id
+            || observation.run_id != bundle.run_id
+            || observation.attempt_id != bundle.attempt_id
+        {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_cost_join_ambiguous",
+                "observation identity does not match its lifecycle-cost bundle",
+            ));
+        }
+        if !source_digests.contains(&observation.source_digest) {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_cost_join_ambiguous",
+                "observation source digest is absent from the bundle join set",
+            ));
+        }
+        if !dimensions.insert((observation.phase, observation.dimension)) {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_cost_observation_conflict",
+                "lifecycle cost bundle repeats a phase and dimension",
+            ));
+        }
+    }
+    for missing in &bundle.missing {
+        if !dimensions.insert((missing.phase, missing.dimension)) {
+            return Err(EvolutionAdmissionError::new(
+                "ec3_cost_observation_conflict",
+                "lifecycle cost bundle repeats a phase and dimension",
+            ));
+        }
+    }
+    let expected_id = derive_ec3_lifecycle_cost_bundle_id(bundle)?;
+    if bundle.bundle_id != expected_id {
+        return Err(EvolutionAdmissionError::new(
+            "ec3_cost_observation_conflict",
+            "bundle_id is not bound to the complete lifecycle-cost bundle",
+        ));
+    }
+    let value = ec3_cost_bundle_value(bundle)?;
+    require_record_sha256(&value, &bundle.record_sha256)
+        .map_err(|error| EvolutionAdmissionError::new("ec3_cost_record_tamper", error.message))
+}
+
+pub fn seal_ec3_lifecycle_cost_bundle(
+    mut bundle: LifecycleCostObservationBundleV1,
+) -> Result<LifecycleCostObservationBundleV1, EvolutionAdmissionError> {
+    bundle.schema_version = EC3_LIFECYCLE_COST_BUNDLE_SCHEMA.to_string();
+    bundle.observations = bundle
+        .observations
+        .into_iter()
+        .map(seal_ec3_lifecycle_cost_observation)
+        .collect::<Result<Vec<_>, _>>()?;
+    bundle
+        .observations
+        .sort_by_key(|observation| (observation.phase, observation.dimension));
+    bundle
+        .missing
+        .sort_by_key(|missing| (missing.phase, missing.dimension));
+    bundle.bundle_id = derive_ec3_lifecycle_cost_bundle_id(&bundle)?;
+    let value = ec3_cost_bundle_value(&bundle)?;
+    bundle.record_sha256 = record_digest_excluding_sha256(&value).map_err(|error| {
+        if error.code == "evolution_sensitive_payload" {
+            EvolutionAdmissionError::new("ec3_cost_private_evidence", error.message)
+        } else {
+            error
+        }
+    })?;
+    validate_ec3_lifecycle_cost_bundle(&bundle)?;
+    Ok(bundle)
+}
+
+pub fn build_ec3_lifecycle_cost_read_model(
+    bundle: &LifecycleCostObservationBundleV1,
+) -> Result<LifecycleCostReadModelV1, EvolutionAdmissionError> {
+    validate_ec3_lifecycle_cost_bundle(bundle)?;
+    let observations = bundle
+        .observations
+        .iter()
+        .map(|observation| LifecycleCostReadModelObservationV1 {
+            record_id: observation.record_id.clone(),
+            observation_key: observation.observation_key.clone(),
+            contract_id: observation.contract_id.clone(),
+            candidate_id: observation.candidate_id.clone(),
+            evaluation_id: observation.evaluation_id.clone(),
+            product_task_id: observation.product_task_id.clone(),
+            run_id: observation.run_id.clone(),
+            attempt_id: observation.attempt_id.clone(),
+            phase: observation.phase,
+            dimension: observation.dimension,
+            amount: observation.amount,
+            trust_source: observation.trust_source,
+            terminal_class: observation.terminal_class.clone(),
+            source_schema_version: observation.source_schema_version.clone(),
+            source_digest: observation.source_digest.clone(),
+            record_sha256: observation.record_sha256.clone(),
+        })
+        .collect();
+    let mut model = LifecycleCostReadModelV1 {
+        schema_version: EC3_LIFECYCLE_COST_READ_MODEL_SCHEMA.to_string(),
+        bundle_id: bundle.bundle_id.clone(),
+        contract_id: bundle.contract_id.clone(),
+        candidate_id: bundle.candidate_id.clone(),
+        evaluation_id: bundle.evaluation_id.clone(),
+        product_task_id: bundle.product_task_id.clone(),
+        run_id: bundle.run_id.clone(),
+        attempt_id: bundle.attempt_id.clone(),
+        observations,
+        missing: bundle.missing.clone(),
+        complete: bundle.missing.is_empty(),
+        record_sha256: String::new(),
+    };
+    let value = serde_json::to_value(&model).map_err(|error| {
+        EvolutionAdmissionError::new("ec3_cost_record_tamper", error.to_string())
+    })?;
+    model.record_sha256 = record_digest_excluding_sha256(&value)?;
+    Ok(model)
 }
 
 pub fn frozen_ec1_active_harness_sha() -> &'static str {
@@ -2734,5 +3320,239 @@ mod tests {
         let candidate = candidate_from_proposal(&proposal, &ws, "2026-07-21T00:00:00Z").unwrap();
         let err = validate_candidate_for_admission(&candidate, &active, true).unwrap_err();
         assert_eq!(err.code, "evolution_kill_switch");
+    }
+
+    fn sample_ec3_lifecycle_cost_observation() -> LifecycleCostObservationV1 {
+        seal_ec3_lifecycle_cost_observation(LifecycleCostObservationV1 {
+            schema_version: String::new(),
+            observation_key: "ec3-observation-1".to_string(),
+            record_id: String::new(),
+            contract_id: "hebc-example".to_string(),
+            candidate_id: "hec-example".to_string(),
+            evaluation_id: Some("hee-example".to_string()),
+            product_task_id: None,
+            run_id: Some("run-example".to_string()),
+            attempt_id: "attempt-1".to_string(),
+            phase: LifecycleCostPhase::Evaluation,
+            dimension: LifecycleCostDimension::ModelTokens,
+            amount: Some(42),
+            trust_source: CostTrustSource::MeasuredDirect,
+            terminal_class: "completed".to_string(),
+            source_schema_version: "execution_usage.v1".to_string(),
+            source_digest: sha256_hex("source"),
+            redacted_body: json!({"source":"execution_usage","redacted":true}),
+            record_sha256: String::new(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn ec3_lifecycle_cost_observation_seals_and_validates() {
+        let observation = sample_ec3_lifecycle_cost_observation();
+        assert!(validate_ec3_lifecycle_cost_observation(&observation).is_ok());
+        assert!(observation.record_id.starts_with("helc-"));
+    }
+
+    #[test]
+    fn ec3_lifecycle_cost_observation_rejects_unavailable_amount() {
+        let mut observation = sample_ec3_lifecycle_cost_observation();
+        observation.trust_source = CostTrustSource::Unavailable;
+        observation.amount = Some(0);
+        let error = seal_ec3_lifecycle_cost_observation(observation).unwrap_err();
+        assert_eq!(error.code, "ec3_cost_unavailable_has_amount");
+    }
+
+    #[test]
+    fn ec3_lifecycle_cost_observation_rejects_untrusted_or_tampered_evidence() {
+        let mut observation = sample_ec3_lifecycle_cost_observation();
+        observation.trust_source = CostTrustSource::CallerEstimate;
+        let error = seal_ec3_lifecycle_cost_observation(observation).unwrap_err();
+        assert_eq!(error.code, "ec3_cost_source_untrusted");
+
+        let mut tampered = sample_ec3_lifecycle_cost_observation();
+        tampered.amount = Some(43);
+        let error = validate_ec3_lifecycle_cost_observation(&tampered).unwrap_err();
+        assert_eq!(error.code, "ec3_cost_observation_conflict");
+    }
+
+    #[test]
+    fn ec3_lifecycle_cost_normalization_enforces_canonical_units_and_missingness() {
+        assert_eq!(
+            normalize_ec3_lifecycle_cost_amount(
+                LifecycleCostDimension::ProviderCostMicrounits,
+                Some(12),
+                "microunits",
+            )
+            .unwrap(),
+            Some(12)
+        );
+        assert_eq!(
+            normalize_ec3_lifecycle_cost_amount(
+                LifecycleCostDimension::WallClockMilliseconds,
+                None,
+                "unavailable",
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_ec3_lifecycle_cost_amount(
+                LifecycleCostDimension::ModelTokens,
+                Some(1),
+                "milliseconds",
+            )
+            .unwrap_err()
+            .code,
+            "ec3_cost_unit_invalid"
+        );
+        assert_eq!(
+            normalize_ec3_lifecycle_cost_amount(
+                LifecycleCostDimension::ModelTokens,
+                Some(-1),
+                "count",
+            )
+            .unwrap_err()
+            .code,
+            "ec3_cost_amount_invalid"
+        );
+    }
+
+    #[test]
+    fn ec3_usage_adapter_binds_canonical_source_identity_and_usage() {
+        let event = crate::execution_usage::ExecutionUsageEventV1 {
+            schema_version: crate::execution_usage::EXECUTION_USAGE_EVENT_SCHEMA.to_string(),
+            event_id: "usage-event-1".into(),
+            product_task_id: Some("task-1".into()),
+            workflow_node_id: None,
+            managed_execution_id: Some("execution-1".into()),
+            executor_kind: crate::execution_usage::ExecutorKind::ProviderProxy,
+            evidence_source_kind: crate::execution_usage::EvidenceSourceKind::ProviderResponse,
+            provider_id: Some("deepseek".into()),
+            requested_model: Some("deepseek-chat".into()),
+            resolved_model: Some("deepseek-chat".into()),
+            executable_path_fingerprint: None,
+            executable_version: None,
+            executable_sha256: None,
+            root_session_id: Some("session-1".into()),
+            parent_session_id: None,
+            request_or_message_id: Some("request-1".into()),
+            input_tokens: 10,
+            cached_input_tokens: 2,
+            cache_creation_tokens: 0,
+            output_tokens: 5,
+            reasoning_output_tokens: 1,
+            cumulative_task_tokens: Some(18),
+            provider_reported_cost: Some(0.000123),
+            locally_estimated_cost: None,
+            cost_source: crate::execution_usage::CostSource::ProviderOrExecutorReported,
+            pricing_table_version: None,
+            timestamp: "2026-08-24T00:00:00Z".into(),
+            event_completeness: crate::execution_usage::EventCompleteness::Complete,
+            source_schema_version: "provider_response.v1".into(),
+            stable_dedupe_identity: "dedupe-1".into(),
+            provenance_refs: vec!["provider:deepseek".into()],
+        };
+        let observations = ec3_lifecycle_cost_observations_from_usage_event(
+            "contract-1",
+            "candidate-1",
+            "attempt-1",
+            LifecycleCostPhase::Evaluation,
+            "completed",
+            &event,
+        )
+        .unwrap();
+        assert_eq!(observations.len(), 3);
+        assert_eq!(observations[0].amount, Some(18));
+        assert_eq!(observations[1].amount, Some(1));
+        assert_eq!(observations[2].amount, Some(123));
+        assert!(observations
+            .iter()
+            .all(|observation| observation.product_task_id.as_deref() == Some("task-1")));
+        let mut invalid = event;
+        invalid.schema_version = "execution_usage_event.v0".into();
+        assert_eq!(
+            ec3_lifecycle_cost_observations_from_usage_event(
+                "contract-1",
+                "candidate-1",
+                "attempt-1",
+                LifecycleCostPhase::Evaluation,
+                "completed",
+                &invalid,
+            )
+            .unwrap_err()
+            .code,
+            "ec3_cost_source_schema_drift"
+        );
+    }
+
+    #[test]
+    fn ec3_lifecycle_cost_bundle_and_read_model_are_source_bound_and_redacted() {
+        let observation = sample_ec3_lifecycle_cost_observation();
+        let source_digest = observation.source_digest.clone();
+        let bundle = seal_ec3_lifecycle_cost_bundle(LifecycleCostObservationBundleV1 {
+            schema_version: String::new(),
+            bundle_id: String::new(),
+            contract_id: observation.contract_id.clone(),
+            candidate_id: observation.candidate_id.clone(),
+            evaluation_id: observation.evaluation_id.clone(),
+            product_task_id: observation.product_task_id.clone(),
+            run_id: observation.run_id.clone(),
+            attempt_id: observation.attempt_id.clone(),
+            source_digests: vec![source_digest],
+            observations: vec![observation],
+            missing: vec![LifecycleCostMissingnessV1 {
+                phase: LifecycleCostPhase::Review,
+                dimension: LifecycleCostDimension::HumanEffortMilliseconds,
+                reason: LifecycleCostMissingReason::Unavailable,
+            }],
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        let model = build_ec3_lifecycle_cost_read_model(&bundle).unwrap();
+        assert!(!model.complete);
+        assert_eq!(model.observations.len(), 1);
+        let encoded = serde_json::to_string(&model).unwrap();
+        assert!(!encoded.contains("redacted"));
+        assert!(!encoded.contains("\"source\":\"execution_usage\""));
+    }
+
+    #[test]
+    fn ec3_lifecycle_cost_bundle_seals_unsealed_child_observations() {
+        let sealed = sample_ec3_lifecycle_cost_observation();
+        let mut child = sealed.clone();
+        child.schema_version.clear();
+        child.record_id.clear();
+        child.record_sha256.clear();
+        let bundle = seal_ec3_lifecycle_cost_bundle(LifecycleCostObservationBundleV1 {
+            schema_version: String::new(),
+            bundle_id: String::new(),
+            contract_id: sealed.contract_id.clone(),
+            candidate_id: sealed.candidate_id.clone(),
+            evaluation_id: sealed.evaluation_id.clone(),
+            product_task_id: sealed.product_task_id.clone(),
+            run_id: sealed.run_id.clone(),
+            attempt_id: sealed.attempt_id.clone(),
+            source_digests: vec![sealed.source_digest.clone()],
+            observations: vec![child],
+            missing: vec![],
+            record_sha256: String::new(),
+        })
+        .unwrap();
+        assert_eq!(bundle.observations[0].record_id, sealed.record_id);
+        assert_eq!(bundle.observations[0].record_sha256, sealed.record_sha256);
+    }
+
+    #[test]
+    fn ec3_lifecycle_cost_rejects_private_evidence_and_unproved_zero() {
+        let mut private = sample_ec3_lifecycle_cost_observation();
+        private.redacted_body = json!({"raw_prompt":"do not store"});
+        let error = seal_ec3_lifecycle_cost_observation(private).unwrap_err();
+        assert_eq!(error.code, "ec3_cost_private_evidence");
+
+        let mut zero = sample_ec3_lifecycle_cost_observation();
+        zero.amount = Some(0);
+        zero.redacted_body = json!({});
+        let error = seal_ec3_lifecycle_cost_observation(zero).unwrap_err();
+        assert_eq!(error.code, "ec3_cost_zero_unproved");
     }
 }
