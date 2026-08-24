@@ -1,8 +1,8 @@
 # Architecture Book
 
-Last updated: 2026-08-23.
+Last updated: 2026-08-24.
 
-Current version: v38 (candidate; accepted main remains v37 until this packet merges).
+Current version: v38.
 
 This is the durable architecture and safety baseline for the Token-Efficient Agent Harness Lab. Accepted facts live in `docs/CURRENT_STATUS.md`; the current executable window lives in `docs/NEXT_DECISION.md`; routing-only successors live in `docs/FUTURE_ROUTE.md`; concrete owners live in `docs/MODULE_MAP.md`. Historical packet details remain available in git history.
 
@@ -398,7 +398,7 @@ This evidence informs RWE replay and Level-2 decisions. It does not create a sec
 - SQLite is default and uses existing transactional, integrity, backup, and restore owners.
 - PostgreSQL must preserve equivalent validation, locking, idempotency, audit, restart, concurrency, and rollback behavior.
 - Schema migrations are additive unless separately reviewed destructive rollback is explicitly authorized.
-- The accepted-main schema marker changes only after independent review and merge; this branch-local v38 candidate is documentation for the pending packet and is not accepted truth until that merge.
+- The accepted-main schema marker is v38 after the EC3 instrumentation merge; later enforcement remains a separate provider-free packet and does not change the schema marker by itself.
 
 ## Real Workload Evidence
 
