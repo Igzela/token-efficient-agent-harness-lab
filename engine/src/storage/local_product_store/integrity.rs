@@ -457,7 +457,7 @@ fn ec3_u64_column(value: i64, field: &str) -> Result<u64, String> {
     u64::try_from(value).map_err(|_| format!("negative EC3 {field} column"))
 }
 
-fn validate_ec3_cost_record_storage_fields(
+pub(crate) fn validate_ec3_cost_record_storage_fields(
     record: &LifecycleCostRecordV1,
     record_id: &str,
     candidate_id: &str,
@@ -504,7 +504,7 @@ fn validate_ec3_cost_record_storage_fields(
     Ok(())
 }
 
-fn validate_ec3_budget_reservation_storage_fields(
+pub(crate) fn validate_ec3_budget_reservation_storage_fields(
     reservation: &LifecycleBudgetReservationV1,
     reservation_id: &str,
     candidate_id: &str,
@@ -536,7 +536,7 @@ fn validate_ec3_budget_reservation_storage_fields(
     Ok(())
 }
 
-fn validate_ec3_reconciliation_storage_fields(
+pub(crate) fn validate_ec3_reconciliation_storage_fields(
     reconciliation: &LifecycleBudgetReconciliationV1,
     reconciliation_id: &str,
     reservation_id: &str,

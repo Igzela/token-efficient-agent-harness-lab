@@ -2,6 +2,10 @@
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
+use super::integrity::{
+    validate_ec3_budget_reservation_storage_fields, validate_ec3_cost_record_storage_fields,
+    validate_ec3_reconciliation_storage_fields,
+};
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::harness_evolution::{
     build_admission_receipt, configured_workspace_root,
@@ -13,17 +17,18 @@ use crate::harness_evolution::{
     validate_ec1_candidate_binding, validate_ec1_identity_lineage,
     validate_ec3_lifecycle_budget_contract, validate_ec3_lifecycle_cost_bundle,
     validate_ec3_lifecycle_cost_observation, validate_failure_pattern_evidence,
-    validate_mutation_hypothesis_manifest, validate_prediction_outcome_contract, validate_proposal,
-    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, CostTrustSource,
-    Ec1CandidateCausalBinding, Ec1IdentityLineageRecord, Ec3LifecycleBudgetContractV1,
-    EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal, EvolutionReceipt,
-    FailurePatternEvidenceV1, LifecycleBudgetReconciliationOutcome,
-    LifecycleBudgetReconciliationV1, LifecycleBudgetReservationStatus,
-    LifecycleBudgetReservationV1, LifecycleCostDimension, LifecycleCostObservationBundleV1,
-    LifecycleCostObservationV1, LifecycleCostRecordV1, MutationHypothesisManifestV1,
-    PredictionOutcomeV1, ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION,
-    EVOLUTION_LAB_SCHEMA_VERSION, LIFECYCLE_BUDGET_RESERVATION_SCHEMA, RECEIPT_SCHEMA_VERSION,
-    REQUIRED_LIFECYCLE_COST_DIMENSIONS,
+    validate_lifecycle_budget_reconciliation, validate_lifecycle_budget_reservation,
+    validate_lifecycle_cost_record, validate_mutation_hypothesis_manifest,
+    validate_prediction_outcome_contract, validate_proposal, ActiveHarnessIdentity,
+    CandidateStatus, CandidateTerminalReason, CostTrustSource, Ec1CandidateCausalBinding,
+    Ec1IdentityLineageRecord, Ec3LifecycleBudgetContractV1, EvolutionAdmissionError,
+    EvolutionCandidate, EvolutionProposal, EvolutionReceipt, FailurePatternEvidenceV1,
+    LifecycleBudgetReconciliationOutcome, LifecycleBudgetReconciliationV1,
+    LifecycleBudgetReservationStatus, LifecycleBudgetReservationV1, LifecycleCostDimension,
+    LifecycleCostObservationBundleV1, LifecycleCostObservationV1, LifecycleCostRecordV1,
+    MutationHypothesisManifestV1, PredictionOutcomeV1, ACTIVE_VERSION_SCHEMA,
+    CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION, LIFECYCLE_BUDGET_RESERVATION_SCHEMA,
+    RECEIPT_SCHEMA_VERSION, REQUIRED_LIFECYCLE_COST_DIMENSIONS,
 };
 use crate::harness_evolution_eval::{
     build_pareto_archive, build_sealed_vault, derive_ec2_prediction_outcome_with_invalidation,
@@ -47,6 +52,9 @@ fn parse_stored_ec3_observation(body: &str) -> Result<LifecycleCostObservationV1
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
     Ok(observation)
 }
+
+type Ec3ReservationStorageRow = (String, String, String, [i64; 6]);
+type Ec3ReconciliationStorageRow = (String, String, String, String, [i64; 7], String, String);
 
 fn ec3_limit(
     resources: &[crate::harness_evolution::LifecycleResourceLimit],
@@ -217,17 +225,61 @@ fn list_ec3_lifecycle_cost_records_sqlite_tx(
 ) -> Result<Vec<LifecycleCostRecordV1>, String> {
     let mut records = tx
         .prepare(
-            "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs
+            "SELECT record_id, candidate_id, phase, token_cost, call_count,
+                    provider_cost_microunits, wall_clock_milliseconds,
+                    compute_milliseconds, human_effort_milliseconds, trust_source,
+                    unmeasured, failure_attempt, evidence_payload_digest, body_json
+             FROM harness_evolution_ec3_lifecycle_costs
              WHERE candidate_id=?1 ORDER BY created_at ASC, record_id ASC",
         )
         .map_err(|e| e.to_string())?
-        .query_map(params![candidate_id], |row| row.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .map(|row| {
-            let body = row.map_err(|e| e.to_string())?;
-            serde_json::from_str(&body).map_err(|e| e.to_string())
+        .query_map(params![candidate_id], |row| {
+            let record: LifecycleCostRecordV1 = serde_json::from_str(&row.get::<_, String>(13)?)
+                .map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        13,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?;
+            validate_lifecycle_cost_record(&record).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    13,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::other(format!(
+                        "{}: {}",
+                        error.code, error.message
+                    ))),
+                )
+            })?;
+            validate_ec3_cost_record_storage_fields(
+                &record,
+                &row.get::<_, String>(0)?,
+                &row.get::<_, String>(1)?,
+                &row.get::<_, String>(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+                &row.get::<_, String>(9)?,
+                row.get(10)?,
+                row.get(11)?,
+                &row.get::<_, String>(12)?,
+            )
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    13,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::other(error)),
+                )
+            })?;
+            Ok(record)
         })
-        .collect::<Result<Vec<LifecycleCostRecordV1>, _>>()?;
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<LifecycleCostRecordV1>, _>>()
+        .map_err(|error| error.to_string())?;
     let observations = tx
         .prepare(
             "SELECT redacted_body_json FROM harness_evolution_ec3_lifecycle_cost_records
@@ -236,7 +288,7 @@ fn list_ec3_lifecycle_cost_records_sqlite_tx(
         .map_err(|e| e.to_string())?
         .query_map(params![candidate_id], |row| row.get::<_, String>(0))
         .map_err(|e| e.to_string())?
-        .map(|row| {
+        .map(|row| -> Result<LifecycleCostObservationV1, String> {
             let body = row.map_err(|e| e.to_string())?;
             parse_stored_ec3_observation(&body)
         })
@@ -252,15 +304,39 @@ fn list_ec3_lifecycle_cost_records_pg_tx(
 ) -> Result<Vec<LifecycleCostRecordV1>, String> {
     let mut records = tx
         .query(
-            "SELECT body_json FROM harness_evolution_ec3_lifecycle_costs
+            "SELECT record_id, candidate_id, phase, token_cost, call_count,
+                    provider_cost_microunits, wall_clock_milliseconds,
+                    compute_milliseconds, human_effort_milliseconds, trust_source,
+                    unmeasured, failure_attempt, evidence_payload_digest, body_json
+             FROM harness_evolution_ec3_lifecycle_costs
              WHERE candidate_id=$1 ORDER BY created_at ASC, record_id ASC",
             &[&candidate_id],
         )
         .map_err(|e| e.to_string())?
         .into_iter()
-        .map(|row| {
-            let body: String = row.get(0);
-            serde_json::from_str(&body).map_err(|e| e.to_string())
+        .map(|row| -> Result<LifecycleCostRecordV1, String> {
+            let body: String = row.get(13);
+            let record: LifecycleCostRecordV1 =
+                serde_json::from_str(&body).map_err(|e| e.to_string())?;
+            validate_lifecycle_cost_record(&record)
+                .map_err(|error| format!("{}: {}", error.code, error.message))?;
+            validate_ec3_cost_record_storage_fields(
+                &record,
+                row.get(0),
+                row.get(1),
+                row.get(2),
+                row.get(3),
+                row.get(4),
+                row.get(5),
+                row.get(6),
+                row.get(7),
+                row.get(8),
+                row.get(9),
+                row.get(10),
+                row.get(11),
+                row.get(12),
+            )?;
+            Ok(record)
         })
         .collect::<Result<Vec<LifecycleCostRecordV1>, _>>()?;
     let observations = tx
@@ -2965,35 +3041,84 @@ impl LocalProductStore {
             let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                 .map_err(|e| e.to_string())?;
 
-            let reservation_row: Option<(String, String, String)> = tx
+            let reservation_row: Option<Ec3ReservationStorageRow> = tx
                 .query_row(
-                    "SELECT reservation_id, status, body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=?1",
+                    "SELECT reservation_id, status, body_json, reserved_token_cost,
+                            reserved_call_count, reserved_provider_cost_microunits,
+                            reserved_wall_clock_milliseconds, reserved_compute_milliseconds,
+                            reserved_human_effort_milliseconds
+                     FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=?1",
                     params![candidate_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            [
+                                row.get(3)?, row.get(4)?, row.get(5)?,
+                                row.get(6)?, row.get(7)?, row.get(8)?,
+                            ],
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(|e| e.to_string())?;
 
-            let (reservation_id, _status_str, reservation_body) = match reservation_row {
+            let (reservation_id, status_str, reservation_body, reservation_values) = match reservation_row {
                 Some(r) => r,
                 None => return Err(format!("ec3_reservation_missing: candidate {candidate_id} has no budget reservation")),
             };
 
             let reservation: LifecycleBudgetReservationV1 =
                 serde_json::from_str(&reservation_body).map_err(|e| e.to_string())?;
+            validate_lifecycle_budget_reservation(&reservation)
+                .map_err(|error| format!("{}: {}", error.code, error.message))?;
+            validate_ec3_budget_reservation_storage_fields(
+                &reservation,
+                &reservation_id,
+                candidate_id,
+                &reservation.contract_id,
+                reservation_values,
+                &status_str,
+            )?;
 
-            let existing_reconciliation: Option<String> = tx
+            let existing_reconciliation: Option<Ec3ReconciliationStorageRow> = tx
                 .query_row(
-                    "SELECT body_json FROM harness_evolution_ec3_lifecycle_reconciliations WHERE reservation_id=?1",
+                    "SELECT reconciliation_id, reservation_id, candidate_id, contract_id,
+                            total_token_cost, total_call_count, total_provider_cost_microunits,
+                            total_wall_clock_milliseconds, total_compute_milliseconds,
+                            total_human_effort_milliseconds, total_failure_attempts, outcome, body_json
+                     FROM harness_evolution_ec3_lifecycle_reconciliations WHERE reservation_id=?1",
                     params![reservation_id],
-                    |row| row.get(0),
+                    |row| {
+                        Ok((
+                            row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
+                            [row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?,
+                                row.get(8)?, row.get(9)?, row.get(10)?],
+                            row.get(11)?, row.get(12)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(|e| e.to_string())?;
 
-            if let Some(recon_body) = existing_reconciliation {
+            if let Some((reconciliation_id, stored_reservation_id, stored_candidate_id,
+                stored_contract_id, reconciliation_values, outcome, recon_body)) = existing_reconciliation {
+                let reconciliation: LifecycleBudgetReconciliationV1 =
+                    serde_json::from_str(&recon_body).map_err(|e| e.to_string())?;
+                validate_lifecycle_budget_reconciliation(&reconciliation)
+                    .map_err(|error| format!("{}: {}", error.code, error.message))?;
+                validate_ec3_reconciliation_storage_fields(
+                    &reconciliation,
+                    &reconciliation_id,
+                    &stored_reservation_id,
+                    &stored_candidate_id,
+                    &stored_contract_id,
+                    reconciliation_values,
+                    &outcome,
+                )?;
                 tx.commit().map_err(|e| e.to_string())?;
-                return serde_json::from_str(&recon_body).map_err(|e| e.to_string());
+                return Ok(reconciliation);
             }
 
             // The reservation transaction is the serialization point for
@@ -3135,12 +3260,24 @@ impl LocalProductStore {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
                 let reservation_row = tx
                     .query_opt(
-                        "SELECT reservation_id, body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=$1 FOR UPDATE",
+                        "SELECT reservation_id, status, body_json, reserved_token_cost,
+                                reserved_call_count, reserved_provider_cost_microunits,
+                                reserved_wall_clock_milliseconds, reserved_compute_milliseconds,
+                                reserved_human_effort_milliseconds
+                         FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=$1 FOR UPDATE",
                         &[&candidate_id],
                     )
                     .map_err(|e| e.to_string())?;
-                let (reservation_id, reservation_body) = match reservation_row {
-                    Some(row) => (row.get::<_, String>(0), row.get::<_, String>(1)),
+                let (reservation_id, status_str, reservation_body, reservation_values) = match reservation_row {
+                    Some(row) => (
+                        row.get::<_, String>(0),
+                        row.get::<_, String>(1),
+                        row.get::<_, String>(2),
+                        [
+                            row.get::<_, i64>(3), row.get::<_, i64>(4), row.get::<_, i64>(5),
+                            row.get::<_, i64>(6), row.get::<_, i64>(7), row.get::<_, i64>(8),
+                        ],
+                    ),
                     None => {
                         return Err(format!(
                             "ec3_reservation_missing: candidate {candidate_id} has no budget reservation"
@@ -3149,16 +3286,39 @@ impl LocalProductStore {
                 };
                 let reservation: LifecycleBudgetReservationV1 =
                     serde_json::from_str(&reservation_body).map_err(|e| e.to_string())?;
+                validate_lifecycle_budget_reservation(&reservation)
+                    .map_err(|error| format!("{}: {}", error.code, error.message))?;
+                validate_ec3_budget_reservation_storage_fields(
+                    &reservation,
+                    &reservation_id,
+                    candidate_id,
+                    &reservation.contract_id,
+                    reservation_values,
+                    &status_str,
+                )?;
                 if let Some(row) = tx
                     .query_opt(
-                        "SELECT body_json FROM harness_evolution_ec3_lifecycle_reconciliations WHERE reservation_id=$1",
+                        "SELECT reconciliation_id, reservation_id, candidate_id, contract_id,
+                                total_token_cost, total_call_count, total_provider_cost_microunits,
+                                total_wall_clock_milliseconds, total_compute_milliseconds,
+                                total_human_effort_milliseconds, total_failure_attempts, outcome, body_json
+                         FROM harness_evolution_ec3_lifecycle_reconciliations WHERE reservation_id=$1",
                         &[&reservation_id],
                     )
                     .map_err(|e| e.to_string())?
                 {
-                    let body: String = row.get(0);
+                    let reconciliation: LifecycleBudgetReconciliationV1 =
+                        serde_json::from_str(&row.get::<_, String>(12)).map_err(|e| e.to_string())?;
+                    validate_lifecycle_budget_reconciliation(&reconciliation)
+                        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+                    validate_ec3_reconciliation_storage_fields(
+                        &reconciliation,
+                        row.get(0), row.get(1), row.get(2), row.get(3),
+                        [row.get(4), row.get(5), row.get(6), row.get(7), row.get(8), row.get(9), row.get(10)],
+                        row.get(11),
+                    )?;
                     tx.commit().map_err(|e| e.to_string())?;
-                    return serde_json::from_str(&body).map_err(|e| e.to_string());
+                    return Ok(reconciliation);
                 }
                 // Locking the reservation first is the serialization point;
                 // usage must be read after it to close the late-write race.

@@ -89,6 +89,7 @@ const PRODUCT_TASK_WORKSPACE_PREPARATION_RECEIPT_SCHEMA_VERSION: &str =
     "product_task_workspace_preparation.v1";
 const DELEGATED_PRODUCT_PLAN_OWNER_SCHEMA_VERSION: &str = "delegated_product_plan_owner.v1";
 const EC3_BUDGET_REQUIRED_INTAKE_MARKER: &str = "ec3_budget_required";
+const EC3_BUDGET_CONTRACT_INTAKE_MARKER: &str = "ec3_budget_contract";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DelegatedProposalTargetIdentity {
@@ -1589,6 +1590,10 @@ impl LocalProductStore {
                 return Err(error);
             }
         };
+        self.mark_product_task_ec3_required(task_id, actor, Some(contract))?;
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "EC3 ProductTask disappeared after contract binding".to_string())?;
         Ok(json!({
             "task": task,
             "ec3_budget_reservation": reservation,
@@ -1735,7 +1740,7 @@ impl LocalProductStore {
                     .get("task_id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| "existing product task missing task_id".to_string())?;
-                self.mark_product_task_ec3_required(task_id, actor)?;
+                self.mark_product_task_ec3_required(task_id, actor, None)?;
                 return self
                     .get_product_task_by_idempotency(
                         &intake.tenant_id,
@@ -1896,7 +1901,12 @@ impl LocalProductStore {
         .ok_or_else(|| "product task reservation failed".to_string())
     }
 
-    fn mark_product_task_ec3_required(&self, task_id: &str, actor: &str) -> Result<(), String> {
+    fn mark_product_task_ec3_required(
+        &self,
+        task_id: &str,
+        actor: &str,
+        contract: Option<&Ec3LifecycleBudgetContractV1>,
+    ) -> Result<(), String> {
         let now = self.now();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -1912,18 +1922,25 @@ impl LocalProductStore {
                 let object = intake
                     .as_object_mut()
                     .ok_or_else(|| "ProductTask intake_json is not an object".to_string())?;
-                if object
+                let has_marker = object
                     .get(EC3_BUDGET_REQUIRED_INTAKE_MARKER)
                     .and_then(Value::as_bool)
-                    == Some(true)
-                {
+                    == Some(true);
+                if let Some(contract) = contract {
+                    let value = serde_json::to_value(contract).map_err(|e| e.to_string())?;
+                    if let Some(existing) = object.get(EC3_BUDGET_CONTRACT_INTAKE_MARKER) {
+                        if existing != &value {
+                            return Err("EC3 budget contract changed for an existing ProductTask".into());
+                        }
+                    } else {
+                        object.insert(EC3_BUDGET_CONTRACT_INTAKE_MARKER.to_string(), value);
+                    }
+                }
+                if has_marker && contract.is_none() {
                     tx.commit().map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-                object.insert(
-                    EC3_BUDGET_REQUIRED_INTAKE_MARKER.to_string(),
-                    Value::Bool(true),
-                );
+                object.insert(EC3_BUDGET_REQUIRED_INTAKE_MARKER.to_string(), Value::Bool(true));
                 tx.execute(
                     "UPDATE product_tasks SET intake_json=?1, version=version+1, updated_at=?2 WHERE task_id=?3",
                     params![serde_json::to_string(&intake).map_err(|e| e.to_string())?, now, task_id],
@@ -1935,7 +1952,7 @@ impl LocalProductStore {
                     actor,
                     "product_task.ec3_budget_required",
                     task_id,
-                    &json!({"ec3_budget_required": true}),
+                    &json!({"ec3_budget_required": true, "contract_bound": contract.is_some()}),
                 )?;
                 tx.commit().map_err(|e| e.to_string())
             }),
@@ -1953,25 +1970,32 @@ impl LocalProductStore {
                 let object = intake
                     .as_object_mut()
                     .ok_or_else(|| "ProductTask intake_json is not an object".to_string())?;
-                if object
+                let has_marker = object
                     .get(EC3_BUDGET_REQUIRED_INTAKE_MARKER)
                     .and_then(Value::as_bool)
-                    == Some(true)
-                {
+                    == Some(true);
+                if let Some(contract) = contract {
+                    let value = serde_json::to_value(contract).map_err(|e| e.to_string())?;
+                    if let Some(existing) = object.get(EC3_BUDGET_CONTRACT_INTAKE_MARKER) {
+                        if existing != &value {
+                            return Err("EC3 budget contract changed for an existing ProductTask".into());
+                        }
+                    } else {
+                        object.insert(EC3_BUDGET_CONTRACT_INTAKE_MARKER.to_string(), value);
+                    }
+                }
+                if has_marker && contract.is_none() {
                     tx.commit().map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-                object.insert(
-                    EC3_BUDGET_REQUIRED_INTAKE_MARKER.to_string(),
-                    Value::Bool(true),
-                );
+                object.insert(EC3_BUDGET_REQUIRED_INTAKE_MARKER.to_string(), Value::Bool(true));
                 let encoded = serde_json::to_string(&intake).map_err(|e| e.to_string())?;
                 tx.execute(
                     "UPDATE product_tasks SET intake_json=$1, version=version+1, updated_at=$2 WHERE task_id=$3",
                     &[&encoded, &now, &task_id],
                 )
                 .map_err(|e| e.to_string())?;
-                let details = json!({"ec3_budget_required": true});
+                let details = json!({"ec3_budget_required": true, "contract_bound": contract.is_some()});
                 super::workflow_runs::pg_append_audit(
                     &mut tx,
                     &now,
@@ -2126,8 +2150,43 @@ impl LocalProductStore {
                 tx.commit().map_err(|error| error.to_string())
             })?,
         }
-        self.get_product_task(task_id)?
-            .ok_or_else(|| "product task missing after transition".to_string())
+        let updated_task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "product task missing after transition".to_string())?;
+        if to.is_terminal() {
+            self.reconcile_ec3_product_task_terminal_if_required(task_id, actor, &updated_task)?;
+        }
+        Ok(updated_task)
+    }
+
+    fn reconcile_ec3_product_task_terminal_if_required(
+        &self,
+        task_id: &str,
+        actor: &str,
+        task: &Value,
+    ) -> Result<(), String> {
+        if task
+            .pointer("/intake/ec3_budget_required")
+            .and_then(Value::as_bool)
+            != Some(true)
+        {
+            return Ok(());
+        }
+        if self
+            .get_candidate_lifecycle_budget_reservation(task_id)?
+            .is_none()
+        {
+            // Reservation failure terminalizes the task before a reservation
+            // exists; there is nothing to reconcile in that case.
+            return Ok(());
+        }
+        let contract_value = task
+            .pointer("/intake/ec3_budget_contract")
+            .ok_or_else(|| "EC3 ProductTask is missing its bound budget contract".to_string())?;
+        let contract: Ec3LifecycleBudgetContractV1 = serde_json::from_value(contract_value.clone())
+            .map_err(|error| format!("EC3 ProductTask budget contract is invalid: {error}"))?;
+        self.reconcile_candidate_lifecycle_budget(&contract, task_id, actor)
+            .map(|_| ())
     }
 
     fn product_task_workspace_preparation_receipt(
@@ -9744,25 +9803,28 @@ mod local_folder_product_task_tests {
             .unwrap()
             .is_some());
 
-        // Simulate the existing ProductTask terminal owner publishing a
-        // failure before usage arrives. EC3 must retain an explicit overrun,
+        // The ordinary ProductTask terminal owner publishes a failure before
+        // usage arrives. The transition hook must reconcile EC3 immediately,
         // never infer zero, and replay the same row after restart.
         store
-            .with_conn(|conn| {
-                conn.execute(
-                    "UPDATE product_tasks SET status='failed' WHERE task_id=?1",
-                    rusqlite::params![task_id],
-                )
-                .map_err(|error| error.to_string())?;
-                Ok(())
-            })
+            .transition_product_task(
+                &task_id,
+                ProductTaskStatus::Failed,
+                None,
+                "scheduler",
+                None,
+                None,
+                Some("simulated_failure"),
+                Some("usage not available"),
+                None,
+            )
             .unwrap();
         let first = store
             .reconcile_product_task_ec3_budget(&task_id, "scheduler", &contract)
             .unwrap();
         assert_eq!(first["reconciliation"]["outcome"], "overrun_stopped");
-        assert_eq!(first["reconciliation"]["terminal_state"], "missing_usage");
-        assert_eq!(first["reused"], false);
+        assert_eq!(first["reconciliation"]["terminal_state"], "failed");
+        assert_eq!(first["reused"], true);
         drop(store);
         let restarted = LocalProductStore::new(root.path().join("store.db")).unwrap();
         let second = restarted
