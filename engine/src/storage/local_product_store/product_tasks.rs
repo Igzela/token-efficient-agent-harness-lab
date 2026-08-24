@@ -5930,7 +5930,6 @@ impl LocalProductStore {
         }
 
         if status == ProductTaskStatus::Completed {
-            self.reconcile_ec3_product_task_terminal_if_required(task_id, actor, &task)?;
             let terminal_evidence = self.get_product_task_terminal_evidence(task_id)?;
             let terminal_output = validate_completed_product_output_binding(
                 &task,
@@ -5938,6 +5937,7 @@ impl LocalProductStore {
                 &approval,
                 &terminal_evidence,
             )?;
+            self.reconcile_ec3_product_task_terminal_if_required(task_id, actor, &task)?;
             return Ok(json!({
                 "task": task,
                 "approval": approval,
@@ -6252,11 +6252,6 @@ impl LocalProductStore {
         {
             return Err(race_error.to_string());
         }
-        self.reconcile_ec3_product_task_terminal_if_required(
-            task_id,
-            "product-task-output-replay",
-            &completed,
-        )?;
         let completed_artifact = self
             .get_supervised_patch_artifact(artifact_id)?
             .ok_or_else(|| "completed output artifact disappeared after race".to_string())?;
@@ -6266,6 +6261,11 @@ impl LocalProductStore {
             &completed_artifact,
             approval,
             &terminal_evidence,
+        )?;
+        self.reconcile_ec3_product_task_terminal_if_required(
+            task_id,
+            "product-task-output-replay",
+            &completed,
         )?;
         Ok(json!({
             "task": completed,
@@ -6340,7 +6340,6 @@ impl LocalProductStore {
             .ok_or_else(|| "Draft PR completion artifact missing".to_string())?;
         if task.get("status").and_then(Value::as_str) == Some(ProductTaskStatus::Completed.as_str())
         {
-            self.reconcile_ec3_product_task_terminal_if_required(task_id, actor, &task)?;
             let task_version = task
                 .get("version")
                 .and_then(Value::as_u64)
@@ -6357,6 +6356,7 @@ impl LocalProductStore {
                 &approval,
                 &terminal_evidence,
             )?;
+            self.reconcile_ec3_product_task_terminal_if_required(task_id, actor, &task)?;
             return Ok(json!({
                 "task": task,
                 "operation": operation,
@@ -6486,16 +6486,16 @@ impl LocalProductStore {
                         "completed Draft PR artifact disappeared after race".to_string()
                     })?;
                 let evidence = self.get_product_task_terminal_evidence(task_id)?;
-                self.reconcile_ec3_product_task_terminal_if_required(
-                    task_id,
-                    "product-task-output-replay",
-                    &current,
-                )?;
                 validate_completed_product_output_binding(
                     &current,
                     &completed_artifact,
                     &approval,
                     &evidence,
+                )?;
+                self.reconcile_ec3_product_task_terminal_if_required(
+                    task_id,
+                    "product-task-output-replay",
+                    &current,
                 )?;
                 return Ok(json!({
                     "task": current,
