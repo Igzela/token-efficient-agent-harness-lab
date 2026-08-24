@@ -6,18 +6,19 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 ## Current Direction
 
-`PE7-HE-EC3-INSTRUMENTATION-1` is complete. The current window is `PE7-HE-EC3-ENFORCEMENT-1`: bind the accepted lifecycle-cost contract to existing admission and spend owners, enforce reservation-before-execution and exact terminal reconciliation, and prove one default-off verified-delivery loop without a live effect.
+`PE7-HE-EC3-INSTRUMENTATION-1` and `PE7-HE-EC3-ENFORCEMENT-1` are complete on accepted `main`. The current window is `PE7-HE-CL0-PILOT-1`, which remains blocked until a separately authorized finite repository-maintenance effect is available; no effect is executed from this document.
 
 ## Authoritative Forward Order
 
 ```text
 [completed: PE7-HE-EC3-INSTRUMENTATION-1 — COMPLETE, provider-free; capture, persist, and project immutable lifecycle-cost evidence]
-[window: PE7-HE-EC3-ENFORCEMENT-1 — READY_FOR_EXECUTION, provider-free; reserve and reconcile equal lifecycle envelopes through existing authorities]
+[completed: PE7-HE-EC3-ENFORCEMENT-1 — COMPLETE, provider-free; reserve and reconcile equal lifecycle envelopes through existing authorities]
+[window: PE7-HE-CL0-PILOT-1 — BLOCKED_PREREQUISITE, separately authorized EFFECT required; one finite repository-maintenance task only]
 ```
 
 ## Active Routing
 
-1. `PE7-HE-EC3-ENFORCEMENT-1` — `READY_FOR_EXECUTION`
+1. `PE7-HE-CL0-PILOT-1` — `BLOCKED_PREREQUISITE` (separate effect authorization required)
 
 ## Retained live-ready blocker (historical: PE7-RWE-CR-RUN-1)
 
@@ -103,40 +104,37 @@ This document owns one current execution window. Accepted receipts belong in `do
 
 **Accepted evidence:** PR #608 exact head `36474545563bd1b91015d4e3f2005f12dd43bde9`; squash merge `789b7dba9afdd5e1e6e41d191ebcbbfa933b2c12`; exact-head review receipt comment `5390448906`; canonical workflow `32687392603`; exact-head check `32687392611`.
 
-## Packet PE7-HE-EC3-ENFORCEMENT-1
+## Completed (PE7-HE-EC3-ENFORCEMENT-1)
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
 
-**Prerequisite:** `PE7-HE-EC3-INSTRUMENTATION-1` — COMPLETE on accepted main `789b7dba9afdd5e1e6e41d191ebcbbfa933b2c12`.
+**Accepted evidence:** PR #610 exact head `076885e88cc7d2dfe1f7a64da1ee5c88b8d97c3b`; squash merge `720c9c90ce95c5831693916bd4feea81af513f4c`; exact-head review receipt comment `5393050386`; canonical workflow `32710034017`; exact-head check `32710034005`.
 
-**Class:** `IMPLEMENT`
+The implementation binds v38 lifecycle-cost reservations and exact-once terminal reconciliation to the existing ProductTask admission, spend, runtime, verification, recovery, LocalProductStore, and operator-evidence owners. It remains provider-free and default-off, with SQLite/PostgreSQL parity and redacted evidence.
 
-**Outcome:** Enforce equal per-arm and global lifecycle envelopes through existing admission/spend owners and complete one default-off verified-delivery closed loop for a single admitted Harness.
+## Packet PE7-HE-CL0-PILOT-1
 
-**Allowed delta:** `docs/*.md`, `engine/src/harness_evolution.rs`, `engine/src/storage/local_product_store/*.rs`, `engine/src/storage/local_product_store/pg_backend/migrations.rs`, `engine/src/http_server/handlers/operator_evidence.rs`, `engine/tests/*.rs`, and `tests/test_session_context.py`; provider-free reservation/reconciliation, admission/pause/terminal integration, deterministic fixtures, and redacted operator queries through existing ProductTask, budget, runtime, verification, recovery, and Store owners; no second Harness or live effect.
+**State:** `BLOCKED_PREREQUISITE`
 
-**Exit:** Happy, insufficient-budget, overrun, missing-usage, failure, cancellation, late-write, outcome-unknown, restart, cleanup, reconciliation, rollback, and parity fixtures prove one source-bound task reaches one truthful terminal outcome with joined delivery and full cost.
+**Prerequisite:** EC3 enforcement is complete on accepted `main` through PR #610 / merge `720c9c90ce95c5831693916bd4feea81af513f4c`.
 
-**Stop:** Token equality replaces lifecycle budget, repair/rescue cost is lost, an effect starts without reservation, outcome unknown becomes retryable/success, enforcement bypasses an owner, or a second scheduler/store/budget owner appears.
+**Class:** `EFFECT`
 
-### Twelve-field contract
+**Outcome and non-goals:** Execute one finite real repository-maintenance task through the frozen `1 Harness x 1 Model x 1 Strategy` loop in a disposable app-owned worktree, then verify, terminalize, reconcile, and expose the result. No second owner, general-purpose runner, or later-stage experiment is implied.
 
-1. **Outcome and non-goals.** Provider-free lifecycle-envelope enforcement and exact-once reconciliation for one default-off verified-delivery path; no Provider call, target write, live effect, or later packet.
-2. **Prerequisites and evidence.** EC3 instrumentation COMPLETE on accepted main: PR #608 exact head `36474545563bd1b91015d4e3f2005f12dd43bde9`; squash merge `789b7dba9afdd5e1e6e41d191ebcbbfa933b2c12`; workflow `32687392603`; review `5390448906`; exact-head `32687392611`.
-3. **Owners and paths.** Existing ProductTask, budget/spend, runtime, verification, recovery, terminal-evidence, LocalProductStore, and operator-evidence owners remain authoritative; paths are capsule-bound.
-4. **Frozen invariants.** Reserve the complete per-arm/global envelope before execution; reconcile actual lifecycle cost exactly once; preserve failure, cancellation, repair, rescue, recovery, missing-usage, late-write, and outcome-unknown attribution.
-5. **Only semantic delta.** Bind EC3 contract to existing admission/spend/terminal paths and add minimum provider-free default-off integration/parity evidence.
-6. **Forbidden changes.** No token-only budget, caller/model self-report, implicit zero, outcome-unknown retry, Provider, target, live effect, second owner, or successor implementation.
-7. **Ordered work cards.** Reservation; terminal usage/reconciliation; failure/recovery/rollback; default-off fixtures; SQLite/PostgreSQL/restart/concurrency parity; redacted projection; full checks; stop before CL0.
-8. **Failure taxonomy.** Insufficient/overrun envelope, missing usage, reservation race, duplicate terminalization, late write, cancellation, cleanup failure, unknown outcome, conflict, rollback refusal, owner violation.
-9. **Verification.** Focused lifecycle-budget, ProductTask/recovery, SQLite/PostgreSQL, full-stack, security, handoff, diff, exact-head review, and canonical CI checks.
-10. **Compatibility and rollback.** Reuse v38 and existing Store owners; any additive state needs backend parity and recovery tests. Revert before live use; retain unknown durable state for explicit recovery.
-11. **Exit artifact.** Existing-owner reservation/reconciliation, default-off one-task evidence, failure/recovery/rollback/parity tests, and redacted operator model.
-12. **Next action.** Governed PR, exact-head review/CI, manual merge, closeout, then promote the next packet; do not start CL0 here.
+**Owners:** Existing ProductTask, budget/spend, runtime, verification, terminal-evidence, recovery, LocalProductStore, and operator-evidence owners remain authoritative; no new scheduler, store, evaluator, or output owner.
 
-### 11. Bounded Autonomous Worker Dispatch Capsule
+**Forbidden changes:** No target `main` write, merge, release, deployment, active-Harness replacement, second arm, unbounded task, or Provider/effect without a separately authorized finite request and valid credentials. Do not weaken fail-closed unknown-outcome, cleanup, or rollback handling.
 
-<!-- weak-agent-dispatch:v1
+**Exit evidence:** Source and disposable workspace binding; request/usage/cost; bounded patch; verification result; artifact/output candidate; failure/repair/review record; terminal state; cleanup and recovery evidence, all joined to the exact task and arm identities.
+
+**Stop conditions:** Authority or identity drift, unbounded spend, hidden rescue, verification ambiguity, outcome unknown, target write, cleanup failure, or lifecycle-cost evidence that cannot be joined and reconciled.
+
+**Next action:** Obtain and verify the separate effect authorization and one finite task definition. Until then, do not execute this packet and do not create a dispatch capsule.
+
+### Historical EC3 dispatch capsule (non-executable)
+
+<!-- historical dispatch capsule retained for audit; no active dispatch marker
 {"schema_version":"weak_agent_dispatch.v1","packet_id":"PE7-HE-EC3-ENFORCEMENT-1","packet_state":"READY_FOR_EXECUTION","dispatch_lane":"provider_free_repository_maintenance","external_effect_limit":0,"authority_consumption_allowed":false,"secret_values_allowed":false,"private_paths_allowed":false,"plan_lane_state":"plan_lane_active","goal":"Enforce equal per-arm and global lifecycle envelopes through existing admission and spend owners with exact reservation and terminal reconciliation for one default-off verified-delivery loop.","allowed_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/costs.rs","engine/src/storage/local_product_store/product_tasks.rs","engine/src/storage/local_product_store/workflow_runs.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/http_server/handlers/operator_evidence.rs","engine/tests/test_product_golden_path_g1.rs","engine/tests/test_product_golden_path_recovery.rs","engine/tests/test_pg_integration.rs","engine/tests/test_data_operations.rs","engine/tests/test_recursive_execution.rs","tests/test_session_context.py"],"read_paths":["docs/ARCHITECTURE_BOOK.md","docs/CURRENT_STATUS.md","docs/FUTURE_ROUTE.md","docs/MODULE_MAP.md","docs/NEXT_DECISION.md","engine/src/harness_evolution.rs","engine/src/execution_usage/mod.rs","engine/src/storage/local_product_store/harness_evolution.rs","engine/src/storage/local_product_store/costs.rs","engine/src/storage/local_product_store/budget_pause_decisions.rs","engine/src/storage/local_product_store/budget_evidence_artifacts.rs","engine/src/storage/local_product_store/product_tasks.rs","engine/src/storage/local_product_store/workflow_runs.rs","engine/src/storage/local_product_store/schema.rs","engine/src/storage/local_product_store/migrations.rs","engine/src/storage/local_product_store/integrity.rs","engine/src/storage/local_product_store/pg_backend/migrations.rs","engine/src/http_server/handlers/operator_evidence.rs","engine/tests/test_product_golden_path_g1.rs","engine/tests/test_product_golden_path_recovery.rs","engine/tests/test_pg_integration.rs","engine/tests/test_data_operations.rs","engine/tests/test_recursive_execution.rs","tests/test_session_context.py"],"allowed_outputs":["Existing-owner reservation and exact-once lifecycle reconciliation.","Default-off one-task verified-delivery path with fail-closed budget, usage, failure, cancellation, recovery, and outcome-unknown behavior.","SQLite/PostgreSQL parity and redacted operator evidence."],"prerequisites":["PE7-HE-EC3-INSTRUMENTATION-1"],"prerequisite_receipts":["PE7-HE-EC3-INSTRUMENTATION-1 COMPLETE: PR #608 exact head `36474545563bd1b91015d4e3f2005f12dd43bde9`; squash merge `789b7dba9afdd5e1e6e41d191ebcbbfa933b2c12`; exact-head review receipt comment `5390448906`; canonical workflow `32687392603`; exact-head check `32687392611`"],"forbidden_changes":["No Provider call, target write, enable, or live effect.","No bypass or second admission, spend, scheduler, runtime, evaluator, Store, audit, or rollback owner.","No token-only budget, implicit zero, dropped repair cost, or retry of outcome-unknown work.","Do not start PE7-HE-CL0-PILOT-1 or later effects."],"ordered_steps":["Bind the EC3 contract to existing ProductTask admission/spend owners and reserve the complete envelope before execution.","Join terminal usage exactly once across success, failure, cancellation, repair, recovery, late-write, missing-usage, and outcome-unknown states.","Add default-off golden-path and SQLite/PostgreSQL/restart/concurrency parity fixtures through the real owner path.","Expose redacted metadata, run full checks/review, and stop before any effect."],"verification":["cargo fmt --all -- --check","cargo test -p engine --lib ec3_lifecycle_budget -- --test-threads=1","cargo test -p engine --test test_product_golden_path_g1 -- --test-threads=1","cargo test -p engine --test test_product_golden_path_recovery -- --test-threads=1","cargo test -p engine --features pg-tests -- --test-threads=1","scripts/ci/run_rust_tests.py","bash scripts/verify_rust_typescript_stack.sh","bash scripts/check_wire_codegen_drift.sh","uv run --no-project python tools/check_security_baseline.py","uv run --no-project python scripts/check_agent_handoff.py","git diff --check"],"rollback":"Revert before live use. Reservation and reconciliation stay transactional/idempotent through existing Store owners; outcome-unknown or non-empty durable state is retained for explicit recovery, never deleted or retried speculatively.","pause_gates":["Execution requires a committed complete per-arm/global reservation.","Preserve outcome-unknown when terminal evidence, usage, lease, or cleanup cannot be proved.","DECISION_REQUIRED if existing owners cannot enforce the boundary without a second owner.","Stop before CL0 or any Provider/target effect."],"expected_artifacts":["Existing-owner reservation and exact-once reconciliation with fail-closed terminals.","Default-off one-task fixtures covering budget, usage, failure, cancellation, recovery, restart, late-write, and rollback.","SQLite/PostgreSQL parity and redacted operator evidence."],"forbidden_next_actions":["Do not start PE7-HE-CL0-PILOT-1.","Do not start Level-1, recursive, Meta, R4, R5, R6, or dashboard packets."],"worker_tier":"T1","known_store_mutations":["Reuse existing ProductTask, budget, spend, attempt, terminal-evidence, audit, and rollback owners; add no second store or authority family."]}
 -->
 

@@ -1153,11 +1153,12 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_packet_issues_ec3_lifecycle_cost_enforcement(self):
+    def test_current_repository_packet_is_blocked_cl0_effect(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         status_document = (root / "docs/CURRENT_STATUS.md").read_text(encoding="utf-8")
+        future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         self.assertIn(
             "No Provider call, credential-value read/output/persistence, target write, "
             "EFFECT/T3 action, auto-merge, or second runtime/store/authority owner",
@@ -1167,66 +1168,54 @@ class CheckpointTests(unittest.TestCase):
             "| `PE7-HE-EC3-CONTRACT-1` | `COMPLETE` | PR #603 ",
             status_document,
         )
-        self.assertIn("immutable lifecycle-cost evidence", next_document)
-        self.assertIn("reservation-before-execution", next_document)
+        self.assertIn(
+            "| `PE7-HE-EC3-ENFORCEMENT-1` | `COMPLETE` | PR #610 ",
+            status_document,
+        )
+        self.assertNotIn(
+            "no lifecycle-cost instrumentation or enforcement is accepted",
+            status_document,
+        )
+        self.assertIn(
+            "`PE7-HE-CL0-PILOT-1` is the current blocked `NEXT_DECISION` window",
+            future_document,
+        )
+        self.assertNotIn(
+            "enforcement is the current `NEXT_DECISION` window",
+            future_document,
+        )
+        self.assertIn(
+            "62 accounted units: 3 accepted + 1 current + 58 future",
+            future_document,
+        )
+        self.assertIn("8 (`0 + 8`)", future_document)
+        self.assertIn("16 (`1 + 15`)", future_document)
+        self.assertIn("exact-once terminal reconciliation", next_document)
+        self.assertIn("PE7-HE-CL0-PILOT-1", next_document)
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
-        self.assertEqual(packet["packet_id"], "PE7-HE-EC3-ENFORCEMENT-1")
-        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
-        self.assertTrue(packet["checkpoint_allowed"])
+        self.assertEqual(packet["packet_id"], "PE7-HE-CL0-PILOT-1")
+        self.assertEqual(packet["state"], "BLOCKED_PREREQUISITE")
+        self.assertFalse(packet["checkpoint_allowed"])
         self.assertFalse(packet["execution_authorized"])
-        capsule = session_context.current_dispatch_capsule(next_document, packet)
-        self.assertEqual(capsule["packet_id"], packet["packet_id"])
-        self.assertIn("cargo fmt --all -- --check", capsule["verification"])
-        self.assertIn(
-            "cargo test -p engine --lib ec3_lifecycle_budget -- --test-threads=1",
-            capsule["verification"],
-        )
-        snapshot = checkout_snapshot(
-            head_sha=MAIN,
-            branch="main",
-            dirty_paths=[],
-            path_digests={},
-            worktree_sha256="0" * 64,
-        )
-        entry = session_context.build_session_entry(
-            contract=session_context.parse_route_contract(start_document),
-            role="coding",
-            accepted_main_sha=MAIN,
-            document_source="accepted",
-            document_source_binding=MAIN,
-            packet=packet,
-            dispatch_capsule=capsule,
-            snapshot=snapshot,
-            checkpoint=None,
-        )
-        self.assertEqual(entry["context_mode"], "FRESH_PACKET")
-        self.assertEqual(entry["resume_disposition"], "RESUME")
-        self.assertEqual(entry["resume_reason"], "clean_accepted_baseline")
-        self.assertTrue(entry["checkpoint_allowed"])
-        self.assertEqual(entry["dispatch_capsule"]["packet_id"], packet["packet_id"])
-        self.assertFalse(entry["execution_authorized"])
-        self.assertIsNotNone(entry["checkpoint_write_commands"])
-        self.assertIsNotNone(entry["verification_contract_sha256"])
-        self.assertTrue(entry["verification_commands"])
-        self.assertLessEqual(len(json.dumps(entry).encode("utf-8")), 16 * 1024)
-        self.assertEqual(session_context.SessionEntry.from_wire(entry).to_wire(), entry)
+        with self.assertRaises(session_context.SessionContextError):
+            session_context.current_dispatch_capsule(next_document, packet)
 
     def test_future_route_profile_extraction_is_routing_projection_only(self):
         root = Path(__file__).resolve().parents[1]
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-CL0-PILOT-1",
+            packet_id="PE7-HE-CL0-CLOSEOUT-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertFalse(extract["execution_authorized"])
         self.assertEqual(
-            extract["profile_id"], "PE7-HE-CL0-PILOT-1.v1"
+            extract["profile_id"], "PE7-HE-CL0-CLOSEOUT-1.v1"
         )
-        self.assertEqual(extract["worker_tier"], "T3")
+        self.assertEqual(extract["worker_tier"], "T2")
 
 
 
@@ -1667,12 +1656,12 @@ class AdversarialCheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-HE-CL0-PILOT-1",
+            packet_id="PE7-HE-CL0-CLOSEOUT-1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertEqual(extract["packet_state"], "BLOCKED_PREREQUISITE")
-        self.assertEqual(extract["worker_tier"], "T3")
+        self.assertEqual(extract["worker_tier"], "T2")
         self.assertFalse(extract["execution_authorized"])
 
 
