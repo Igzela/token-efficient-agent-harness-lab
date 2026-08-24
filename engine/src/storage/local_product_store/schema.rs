@@ -1897,8 +1897,8 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_costs (
     compute_milliseconds BIGINT NOT NULL,
     human_effort_milliseconds BIGINT NOT NULL,
     trust_source TEXT NOT NULL,
-    unmeasured BOOLEAN NOT NULL DEFAULT 0,
-    failure_attempt BOOLEAN NOT NULL DEFAULT 0,
+    unmeasured BOOLEAN NOT NULL DEFAULT FALSE,
+    failure_attempt BOOLEAN NOT NULL DEFAULT FALSE,
     evidence_payload_digest TEXT NOT NULL CHECK (length(evidence_payload_digest) = 64),
     body_json TEXT NOT NULL,
     created_at TEXT NOT NULL
@@ -3248,8 +3248,8 @@ CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_costs (
     compute_milliseconds BIGINT NOT NULL,
     human_effort_milliseconds BIGINT NOT NULL,
     trust_source TEXT NOT NULL,
-    unmeasured BOOLEAN NOT NULL DEFAULT 0,
-    failure_attempt BOOLEAN NOT NULL DEFAULT 0,
+    unmeasured BOOLEAN NOT NULL DEFAULT FALSE,
+    failure_attempt BOOLEAN NOT NULL DEFAULT FALSE,
     evidence_payload_digest TEXT NOT NULL CHECK (length(evidence_payload_digest) = 64),
     body_json TEXT NOT NULL,
     created_at TEXT NOT NULL
