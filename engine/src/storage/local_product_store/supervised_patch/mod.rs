@@ -3196,6 +3196,7 @@ impl LocalProductStore {
         let task = self
             .get_product_task(product_task_id)?
             .ok_or_else(|| "product task missing after authorized completion".to_string())?;
+        self.reconcile_ec3_product_task_terminal_if_required(product_task_id, actor, &task)?;
         Ok((task, stored_evidence))
     }
 

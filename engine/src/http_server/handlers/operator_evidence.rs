@@ -42,6 +42,11 @@ pub(crate) fn build_operator_evidence(
             if reservation.is_none() && reconciliation.is_none() {
                 return Ok(None);
             }
+            let usage_unmeasured = reconciliation.as_ref().is_some_and(|value| {
+                value.terminal_state
+                    == crate::harness_evolution::LifecycleBudgetTerminalState::MissingUsage
+                    || value.per_phase_costs.iter().any(|phase| phase.unmeasured)
+            });
             Ok(Some(json!({
                 "candidate_id": candidate_id,
                 "reservation": reservation.map(|value| json!({
@@ -69,6 +74,10 @@ pub(crate) fn build_operator_evidence(
                     "total_failure_attempts": value.total_failure_attempts,
                     "terminal_state": value.terminal_state.as_str(),
                     "outcome": value.outcome.as_str(),
+                    "usage_evidence": {
+                        "status": if usage_unmeasured { "unavailable" } else { "measured" },
+                        "unmeasured": usage_unmeasured,
+                    },
                     "record_sha256": value.record_sha256,
                 })),
             })))

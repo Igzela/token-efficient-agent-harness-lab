@@ -1559,6 +1559,13 @@ impl LocalProductStore {
             .get("task_id")
             .and_then(Value::as_str)
             .ok_or_else(|| "admitted product task missing task_id".to_string())?;
+        // Bind the exact contract before creating the reservation. A crash
+        // between these durable steps can only leave execution blocked, never
+        // an active reservation with no contract owner.
+        self.mark_product_task_ec3_required(task_id, actor, Some(contract))?;
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "EC3 ProductTask disappeared after contract binding".to_string())?;
         let status =
             ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
         if status.is_terminal() || status.admits_execution() {
@@ -1590,10 +1597,6 @@ impl LocalProductStore {
                 return Err(error);
             }
         };
-        self.mark_product_task_ec3_required(task_id, actor, Some(contract))?;
-        let task = self
-            .get_product_task(task_id)?
-            .ok_or_else(|| "EC3 ProductTask disappeared after contract binding".to_string())?;
         Ok(json!({
             "task": task,
             "ec3_budget_reservation": reservation,
@@ -2159,7 +2162,7 @@ impl LocalProductStore {
         Ok(updated_task)
     }
 
-    fn reconcile_ec3_product_task_terminal_if_required(
+    pub(crate) fn reconcile_ec3_product_task_terminal_if_required(
         &self,
         task_id: &str,
         actor: &str,
@@ -3350,6 +3353,9 @@ impl LocalProductStore {
             .pointer("/intake/ec3_budget_required")
             .and_then(Value::as_bool)
             == Some(true);
+        if ec3_required && task.pointer("/intake/ec3_budget_contract").is_none() {
+            return Err("EC3 budget contract binding is missing; execution remains blocked".into());
+        }
         if ec3_required && ec3_reservation.is_none() {
             return Err("EC3 lifecycle reservation is missing; execution remains blocked".into());
         }
