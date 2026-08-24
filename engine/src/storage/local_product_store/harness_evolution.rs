@@ -14,15 +14,16 @@ use crate::harness_evolution::{
     validate_ec3_lifecycle_budget_contract, validate_ec3_lifecycle_cost_bundle,
     validate_ec3_lifecycle_cost_observation, validate_failure_pattern_evidence,
     validate_mutation_hypothesis_manifest, validate_prediction_outcome_contract, validate_proposal,
-    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, Ec1CandidateCausalBinding,
-    Ec1IdentityLineageRecord, Ec3LifecycleBudgetContractV1, EvolutionAdmissionError,
-    EvolutionCandidate, EvolutionProposal, EvolutionReceipt, FailurePatternEvidenceV1,
-    LifecycleBudgetReconciliationOutcome, LifecycleBudgetReconciliationV1,
-    LifecycleBudgetReservationStatus, LifecycleBudgetReservationV1, LifecycleCostDimension,
-    LifecycleCostObservationBundleV1, LifecycleCostObservationV1, LifecycleCostRecordV1,
-    MutationHypothesisManifestV1, PredictionOutcomeV1, ACTIVE_VERSION_SCHEMA,
-    CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION, LIFECYCLE_BUDGET_RESERVATION_SCHEMA,
-    RECEIPT_SCHEMA_VERSION,
+    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, CostTrustSource,
+    Ec1CandidateCausalBinding, Ec1IdentityLineageRecord, Ec3LifecycleBudgetContractV1,
+    EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal, EvolutionReceipt,
+    FailurePatternEvidenceV1, LifecycleBudgetReconciliationOutcome,
+    LifecycleBudgetReconciliationV1, LifecycleBudgetReservationStatus,
+    LifecycleBudgetReservationV1, LifecycleCostDimension, LifecycleCostObservationBundleV1,
+    LifecycleCostObservationV1, LifecycleCostRecordV1, MutationHypothesisManifestV1,
+    PredictionOutcomeV1, ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION,
+    EVOLUTION_LAB_SCHEMA_VERSION, LIFECYCLE_BUDGET_RESERVATION_SCHEMA, RECEIPT_SCHEMA_VERSION,
+    REQUIRED_LIFECYCLE_COST_DIMENSIONS,
 };
 use crate::harness_evolution_eval::{
     build_pareto_archive, build_sealed_vault, derive_ec2_prediction_outcome_with_invalidation,
@@ -171,6 +172,43 @@ fn ec3_records_from_observations(
             .map_err(|error| format!("{}: {}", error.code, error.message))
         })
         .collect()
+}
+
+fn product_task_terminal_cost_record(
+    candidate_id: &str,
+    status: &str,
+) -> Result<Option<LifecycleCostRecordV1>, String> {
+    let terminal_class = match status {
+        "failed" | "budget_exhausted" => "failed",
+        "cancelled" | "killed" => "cancelled",
+        "outcome_unknown" => "outcome_unknown",
+        "blocked" => "recovery_required",
+        "completed" => return Ok(None),
+        _ => return Ok(None),
+    };
+    seal_lifecycle_cost_record(LifecycleCostRecordV1 {
+        schema_version: String::new(),
+        record_id: String::new(),
+        candidate_id: candidate_id.to_string(),
+        phase: crate::harness_evolution::LifecycleCostPhase::OutcomeReconciliation,
+        token_cost: 0,
+        call_count: 0,
+        provider_cost_microunits: 0,
+        wall_clock_milliseconds: 0,
+        compute_milliseconds: 0,
+        human_effort_milliseconds: 0,
+        observed_dimensions: REQUIRED_LIFECYCLE_COST_DIMENSIONS.to_vec(),
+        trust_source: CostTrustSource::Unavailable,
+        terminal_class: terminal_class.to_string(),
+        unmeasured: true,
+        failure_attempt: true,
+        evidence_payload_digest: crate::harness_evolution::sha256_hex(&format!(
+            "ec3-product-task-terminal.v1|{candidate_id}|{status}"
+        )),
+        record_sha256: String::new(),
+    })
+    .map(Some)
+    .map_err(|error| format!("{}: {}", error.code, error.message))
 }
 
 fn list_ec3_lifecycle_cost_records_sqlite_tx(
@@ -633,6 +671,20 @@ impl LocalProductStore {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                     .map_err(|error| error.to_string())?;
+                let budget_status: Option<String> = tx
+                    .query_row(
+                        "SELECT status FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=?1",
+                        params![sealed.candidate_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                if budget_status.is_some_and(|status| status != "active") {
+                    return Err(
+                        "ec3_cost_late_write: terminal budget reconciliation already committed"
+                            .into(),
+                    );
+                }
                 let existing: Option<(String, String)> = tx
                     .query_row(
                         "SELECT record_id, redacted_body_json
@@ -699,6 +751,19 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let budget_status = tx
+                    .query_opt(
+                        "SELECT status FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=$1 FOR UPDATE",
+                        &[&sealed.candidate_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .map(|row| row.get::<_, String>(0));
+                if budget_status.is_some_and(|status| status != "active") {
+                    return Err(
+                        "ec3_cost_late_write: terminal budget reconciliation already committed"
+                            .into(),
+                    );
+                }
                 let existing = tx
                     .query_opt(
                         "SELECT record_id, redacted_body_json
@@ -2899,7 +2964,6 @@ impl LocalProductStore {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
             let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                 .map_err(|e| e.to_string())?;
-            let cost_records = list_ec3_lifecycle_cost_records_sqlite_tx(&tx, candidate_id)?;
 
             let reservation_row: Option<(String, String, String)> = tx
                 .query_row(
@@ -2930,6 +2994,25 @@ impl LocalProductStore {
             if let Some(recon_body) = existing_reconciliation {
                 tx.commit().map_err(|e| e.to_string())?;
                 return serde_json::from_str(&recon_body).map_err(|e| e.to_string());
+            }
+
+            // The reservation transaction is the serialization point for
+            // reconciliation. Read usage only after that point so a writer
+            // cannot commit a late observation between the usage read and the
+            // terminal budget update.
+            let mut cost_records = list_ec3_lifecycle_cost_records_sqlite_tx(&tx, candidate_id)?;
+            let task_status: Option<String> = tx
+                .query_row(
+                    "SELECT status FROM product_tasks WHERE task_id=?1",
+                    params![candidate_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(status) = task_status {
+                if let Some(record) = product_task_terminal_cost_record(candidate_id, &status)? {
+                    cost_records.push(record);
+                }
             }
 
             let reconciliation = reconcile_candidate_lifecycle_costs(
@@ -3050,7 +3133,6 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
-                let cost_records = list_ec3_lifecycle_cost_records_pg_tx(&mut tx, candidate_id)?;
                 let reservation_row = tx
                     .query_opt(
                         "SELECT reservation_id, body_json FROM harness_evolution_ec3_lifecycle_budgets WHERE candidate_id=$1 FOR UPDATE",
@@ -3077,6 +3159,21 @@ impl LocalProductStore {
                     let body: String = row.get(0);
                     tx.commit().map_err(|e| e.to_string())?;
                     return serde_json::from_str(&body).map_err(|e| e.to_string());
+                }
+                // Locking the reservation first is the serialization point;
+                // usage must be read after it to close the late-write race.
+                let mut cost_records = list_ec3_lifecycle_cost_records_pg_tx(&mut tx, candidate_id)?;
+                let task_status = tx
+                    .query_opt(
+                        "SELECT status FROM product_tasks WHERE task_id=$1 FOR UPDATE",
+                        &[&candidate_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .map(|row| row.get::<_, String>(0));
+                if let Some(status) = task_status {
+                    if let Some(record) = product_task_terminal_cost_record(candidate_id, &status)? {
+                        cost_records.push(record);
+                    }
                 }
                 let reconciliation = reconcile_candidate_lifecycle_costs(
                     contract,

@@ -21,16 +21,28 @@ pub(crate) fn build_operator_evidence(
     let raw_proposals = store.list_proposals_by_run(run_id, 500, 0)?;
     let scorecard_artifacts = store.native_scorecard_artifacts_by_run(run_id, 20)?;
     let lifecycle_cost_observations = store.list_ec3_lifecycle_cost_observations_for_run(run_id)?;
-    let lifecycle_budget_views: Vec<serde_json::Value> = lifecycle_cost_observations
-        .iter()
-        .map(|observation| observation.candidate_id.clone())
-        .collect::<std::collections::BTreeSet<_>>()
+    let mut lifecycle_budget_candidate_ids = std::collections::BTreeSet::new();
+    lifecycle_budget_candidate_ids.extend(
+        lifecycle_cost_observations
+            .iter()
+            .map(|observation| observation.candidate_id.clone()),
+    );
+    // A ProductTask can reserve a budget and reach a terminal state without
+    // producing a usage observation. Include that owner so missing-usage and
+    // recovery evidence remains visible to the operator.
+    if let Some(task_id) = store.product_task_id_for_run(run_id)? {
+        lifecycle_budget_candidate_ids.insert(task_id);
+    }
+    let lifecycle_budget_views: Vec<serde_json::Value> = lifecycle_budget_candidate_ids
         .into_iter()
-        .map(|candidate_id| {
+        .map(|candidate_id| -> Result<Option<serde_json::Value>, String> {
             let reservation = store.get_candidate_lifecycle_budget_reservation(&candidate_id)?;
             let reconciliation =
                 store.get_candidate_lifecycle_budget_reconciliation(&candidate_id)?;
-            Ok(json!({
+            if reservation.is_none() && reconciliation.is_none() {
+                return Ok(None);
+            }
+            Ok(Some(json!({
                 "candidate_id": candidate_id,
                 "reservation": reservation.map(|value| json!({
                     "reservation_id": value.reservation_id,
@@ -59,9 +71,12 @@ pub(crate) fn build_operator_evidence(
                     "outcome": value.outcome.as_str(),
                     "record_sha256": value.record_sha256,
                 })),
-            }))
+            })))
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, String>>()?
+        .into_iter()
+        .flatten()
+        .collect();
     let recursive_execution = store
         .load_recursive_tree(run_id)?
         .map(|tree| tree.redacted_read_model());

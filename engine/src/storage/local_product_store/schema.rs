@@ -925,7 +925,6 @@ CREATE INDEX IF NOT EXISTS idx_harness_evolution_ec3_cost_task_run
 // are repaired on PostgreSQL v36 alongside the reservation/reconciliation
 // tables. New production evidence is written to the v38 observation owner
 // above.
-#[cfg(feature = "pg")]
 pub(super) const EC3_LIFECYCLE_COST_DDL: &str = "
 CREATE TABLE IF NOT EXISTS harness_evolution_ec3_lifecycle_costs (
     record_id TEXT PRIMARY KEY,
