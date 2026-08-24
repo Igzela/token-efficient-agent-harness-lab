@@ -1167,6 +1167,14 @@ class CheckpointTests(unittest.TestCase):
             "| `PE7-HE-EC3-CONTRACT-1` | `COMPLETE` | PR #603 ",
             status_document,
         )
+        self.assertIn(
+            "| `PE7-HE-EC3-ENFORCEMENT-1` | `COMPLETE` | PR #610 ",
+            status_document,
+        )
+        self.assertNotIn(
+            "no lifecycle-cost instrumentation or enforcement is accepted",
+            status_document,
+        )
         self.assertIn("exact-once terminal reconciliation", next_document)
         self.assertIn("PE7-HE-CL0-PILOT-1", next_document)
         packet = session_context.current_packet_binding(
