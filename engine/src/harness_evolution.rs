@@ -12,6 +12,11 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
+use crate::product_golden_path::{
+    ProductHarnessEvidenceState, ProductHarnessRunEvidence, ProductTaskStatus,
+    PRODUCT_HARNESS_RUN_SEAM_SCHEMA_VERSION,
+};
+
 pub const EVOLUTION_LAB_SCHEMA_VERSION: &str = "harness_evolution_lab.v1";
 pub const CANDIDATE_SCHEMA_VERSION: &str = "harness_evolution_candidate.v1";
 pub const PROPOSAL_SCHEMA_VERSION: &str = "harness_evolution_proposal.v1";
@@ -34,6 +39,23 @@ pub const EC3_LIFECYCLE_COST_OBSERVATION_SCHEMA: &str =
 pub const EC3_LIFECYCLE_COST_BUNDLE_SCHEMA: &str = "harness_evolution_ec3_lifecycle_cost_bundle.v1";
 pub const EC3_LIFECYCLE_COST_READ_MODEL_SCHEMA: &str =
     "harness_evolution_ec3_lifecycle_cost_read_model.v1";
+pub const MX1_DESCRIPTOR_SCHEMA_VERSION: &str = "harness_evolution_mx1_descriptor.v1";
+pub const MX1_DESCRIPTOR_MANIFEST_SCHEMA_VERSION: &str =
+    "harness_evolution_mx1_descriptor_manifest.v1";
+pub const MX1_MATRIX_PLAN_SCHEMA_VERSION: &str = "harness_evolution_mx1_matrix_plan.v1";
+pub const MX1_MATRIX_PROJECTION_SCHEMA_VERSION: &str = "harness_evolution_mx1_matrix_projection.v1";
+pub const MX1_NORMALIZED_RUN_SCHEMA_VERSION: &str = "harness_evolution_mx1_run.v1";
+pub const MX1_CONTRACT_ID: &str = "PE7-HE-MX1-CONTRACT-1";
+pub const MX1_ARM_ZERO_HARNESS_ID: &str = "engine-managed@075f995b574fb8a28f08986291751152bf158dd5";
+pub const MX1_ARM_ZERO_MODEL_ID: &str = "deepseek-v4-pro:single-model-three-role:v1";
+pub const MX1_SECOND_HARNESS_ID: &str = "confined-subprocess-adapter:provider-free:v1";
+pub const MX1_SECOND_MODEL_ID: &str = "deepseek-v4-flash:single-model-three-role:v1";
+pub const MX1_NO_PROJECTION_STRATEGY_ID: &str =
+    "single-pass-plan-implement-review:no-projection:v1";
+pub const MX1_MEMORY_ONLY_STRATEGY_ID: &str = "single-pass-plan-implement-review:memory-only:v1";
+pub const MX1_SKILL_ONLY_STRATEGY_ID: &str = "single-pass-plan-implement-review:skill-only:v1";
+const MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT: &str = "https://api.deepseek.com/chat/completions";
+const MX1_DEEPSEEK_CREDENTIAL_REFERENCE: &str = "DEEPSEEK_API_KEY";
 
 /// CWS analysis bound this SHA as the default-off active Harness. EC1 freezes it;
 /// it is not a live ENABLE and does not authorize candidate generation.
@@ -88,6 +110,2111 @@ pub const FORBIDDEN_MUTABLE_SURFACES: &[&str] = &[
     "scheduler",
     "auth",
 ];
+
+/// A C1 Harness candidate is visible to the matrix only through this bounded
+/// admission disposition. Neither variant transfers execution, scheduler,
+/// persistence, evaluator, budget, approval, output, audit, recovery, or
+/// rollback authority away from the Rust engine and `LocalProductStore`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mx1HarnessAdmissionDisposition {
+    EmbedBehindSeam,
+    ConfinedSubprocess,
+    PolicyBlocked,
+    CapabilityBlocked,
+    Incomparable,
+    Reject,
+}
+
+impl Mx1HarnessAdmissionDisposition {
+    pub fn is_admitted(self) -> bool {
+        matches!(self, Self::EmbedBehindSeam | Self::ConfinedSubprocess)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mx1ProjectionKind {
+    Memory,
+    Skill,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mx1ProjectionSourceKind {
+    GitBlob,
+    ArtifactRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1ProjectionDescriptor {
+    pub kind: Mx1ProjectionKind,
+    pub source_kind: Mx1ProjectionSourceKind,
+    pub source_handle: String,
+    pub content_sha256: String,
+    pub expires_at_unix_ms: u64,
+    pub deletion_recipe_sha256: String,
+    pub rebuild_recipe_sha256: String,
+}
+
+/// Complete immutable identity for one Harness factor. `source_identity` is
+/// either a frozen Git commit or an immutable adapter-package digest; no display
+/// name can stand in for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1HarnessImplementationDescriptor {
+    pub schema_version: String,
+    pub descriptor_id: String,
+    pub source_owner: String,
+    pub source_identity: String,
+    pub version: String,
+    pub build_identity_sha256: String,
+    pub executable_identity_sha256: String,
+    pub capability_probe_sha256: String,
+    pub shared_run_seam_version: String,
+    pub supported_task_capabilities: Vec<String>,
+    pub supported_tool_capabilities: Vec<String>,
+    pub process_confinement: String,
+    pub workspace_confinement: String,
+    pub terminal_outcome_mapping: String,
+    pub verified_deliverable_mapping: String,
+    pub usage_cost_mapping: String,
+    pub cancellation_mapping: String,
+    pub cleanup_mapping: String,
+    pub restart_mapping: String,
+    pub retry_mapping: String,
+    pub failure_mapping: String,
+    pub outcome_unknown_mapping: String,
+    pub license_id: String,
+    pub sbom_sha256: String,
+    pub provenance_sha256: String,
+    pub supported_model_ids: Vec<String>,
+    pub supported_strategy_ids: Vec<String>,
+    pub default_off: bool,
+    pub rollback_binding_sha256: String,
+    pub admission_disposition: Mx1HarnessAdmissionDisposition,
+}
+
+/// Complete immutable identity for one Model factor. Values here are admission
+/// metadata only; this type contains no callable client, secret, or spend
+/// authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1ModelPlanDescriptor {
+    pub schema_version: String,
+    pub descriptor_id: String,
+    pub requested_model_id: String,
+    pub resolved_model_id: String,
+    pub provider: String,
+    pub protocol: String,
+    pub endpoint: String,
+    pub endpoint_allowlist: Vec<String>,
+    pub admitted_profile_sha256: String,
+    pub credential_reference_name: String,
+    pub role_order: Vec<String>,
+    pub role_assignments: BTreeMap<String, String>,
+    pub max_provider_requests: u32,
+    pub max_input_tokens: u32,
+    pub max_output_tokens: u32,
+    pub max_total_tokens: u32,
+    pub max_retries: u32,
+    pub max_wall_time_ms: u64,
+    pub tokenizer_identity: String,
+    pub usage_mapping: String,
+    pub pricing_currency: String,
+    pub pricing_unit: String,
+    pub pricing_source_sha256: String,
+    pub pricing_effective_date: String,
+    pub lifecycle_cost_mapping: String,
+    pub supported_harness_ids: Vec<String>,
+    pub supported_strategy_ids: Vec<String>,
+    pub missing_identity_disposition: String,
+    pub missing_usage_disposition: String,
+}
+
+/// Complete immutable identity for one Strategy factor. Projection contents are
+/// represented by a source handle plus digest only; the descriptor cannot carry
+/// prompts, transcripts, credentials, private paths, or durable authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1StrategyPlanDescriptor {
+    pub schema_version: String,
+    pub descriptor_id: String,
+    pub strategy_kind: String,
+    pub composition_order: Vec<String>,
+    pub source_identity: String,
+    pub source_identity_sha256: String,
+    pub projection: Option<Mx1ProjectionDescriptor>,
+    pub admitted_input_class: String,
+    pub redaction_class: String,
+    pub cross_task_isolation: bool,
+    pub cross_arm_isolation: bool,
+    pub leakage_scan_sha256: String,
+    pub prompt_policy_sha256: String,
+    pub tool_policy_sha256: String,
+    pub retry_policy_sha256: String,
+    pub compression_policy_sha256: String,
+    pub no_authority: bool,
+    pub supported_harness_ids: Vec<String>,
+    pub supported_model_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1DescriptorManifest {
+    pub schema_version: String,
+    pub contract_id: String,
+    pub harnesses: Vec<Mx1HarnessImplementationDescriptor>,
+    pub models: Vec<Mx1ModelPlanDescriptor>,
+    pub strategies: Vec<Mx1StrategyPlanDescriptor>,
+    pub manifest_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1CellIdentity {
+    pub harness_id: String,
+    pub model_id: String,
+    pub strategy_id: String,
+    pub task_id: String,
+}
+
+/// A transient lease is the only projection material handled by CORE. It is
+/// per-cell, contains no content, and can only be rebuilt from the immutable
+/// descriptor source identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1ProjectionLease {
+    pub schema_version: String,
+    pub strategy_id: String,
+    pub cell_binding_sha256: String,
+    pub source_handle: String,
+    pub content_sha256: String,
+    pub expires_at_unix_ms: u64,
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Mx1StrategyAdapter {
+    descriptor: Mx1StrategyPlanDescriptor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1NormalizedHarnessRun {
+    pub schema_version: String,
+    pub matrix_plan_id: String,
+    pub matrix_manifest_sha256: String,
+    pub matrix_rung: Mx1MatrixRung,
+    pub matrix_repetition: u32,
+    pub common_basis_sha256: String,
+    pub cell_id: String,
+    pub cell_identity: Mx1CellIdentity,
+    pub cell_descriptor_sha256: String,
+    pub harness_id: String,
+    pub harness_descriptor_sha256: String,
+    pub product_task_id: String,
+    pub workspace_id: String,
+    pub workspace_binding_sha256: String,
+    pub source_revision_sha256: String,
+    pub terminal_outcome: ProductTaskStatus,
+    pub verified_deliverable: ProductHarnessEvidenceState,
+    pub usage: ProductHarnessEvidenceState,
+    pub usage_evidence_sha256: Option<String>,
+    pub cost: ProductHarnessEvidenceState,
+    pub cost_evidence_sha256: Option<String>,
+    pub cancellation: ProductHarnessEvidenceState,
+    pub cleanup: ProductHarnessEvidenceState,
+    pub restart: ProductHarnessEvidenceState,
+    pub recovery: ProductHarnessEvidenceState,
+    pub failure: ProductHarnessEvidenceState,
+    pub failure_code: Option<String>,
+    pub failure_detail_sha256: Option<String>,
+    pub terminal_evidence_sha256: Option<String>,
+}
+
+/// A common, provider-free adapter boundary. The adapters normalize already
+/// owned Golden Path evidence; they do not execute CLI commands or subprocesses.
+pub trait Mx1HarnessRunAdapter {
+    fn descriptor(&self) -> &Mx1HarnessImplementationDescriptor;
+    fn normalize_run(
+        &self,
+        plan: &Mx1MatrixPlan,
+        cell: &Mx1MatrixCell,
+        evidence: &ProductHarnessRunEvidence,
+    ) -> Result<Mx1NormalizedHarnessRun, EvolutionAdmissionError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct Mx1EngineManagedHarnessAdapter {
+    descriptor: Mx1HarnessImplementationDescriptor,
+}
+
+#[derive(Debug, Clone)]
+pub struct Mx1ConfinedSubprocessHarnessAdapter {
+    descriptor: Mx1HarnessImplementationDescriptor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mx1MatrixRung {
+    OneByTwoByOne,
+    OneByTwoByThree,
+    TwoByTwoByThree,
+}
+
+impl Mx1MatrixRung {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OneByTwoByOne => "1x2x1",
+            Self::OneByTwoByThree => "1x2x3",
+            Self::TwoByTwoByThree => "2x2x3",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "reason")]
+pub enum Mx1MatrixCellDisposition {
+    Admitted,
+    Incomparable(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1MatrixCell {
+    pub cell_id: String,
+    pub identity: Mx1CellIdentity,
+    pub descriptor_digest: String,
+    pub disposition: Mx1MatrixCellDisposition,
+    pub order_key_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1MatrixPlan {
+    pub schema_version: String,
+    pub plan_id: String,
+    pub manifest_sha256: String,
+    pub common_basis_sha256: String,
+    pub rung: Mx1MatrixRung,
+    pub task_id: String,
+    pub repetition: u32,
+    pub cells: Vec<Mx1MatrixCell>,
+}
+
+/// An observation is bound to the full three-axis cell and task, rather than
+/// merely to a Harness label. This prevents one arm's result from being reused
+/// across a different Model or Strategy cell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1MatrixObservation {
+    pub cell_id: String,
+    pub normalized_run: Mx1NormalizedHarnessRun,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "reason")]
+pub enum Mx1ReadOnlyCellDisposition {
+    Observed,
+    Incomparable(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1ReadOnlyCellProjection {
+    pub cell_id: String,
+    pub disposition: Mx1ReadOnlyCellDisposition,
+    pub normalized_run: Option<Mx1NormalizedHarnessRun>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mx1MatrixReadOnlyProjection {
+    pub schema_version: String,
+    pub plan_id: String,
+    pub manifest_sha256: String,
+    pub cells: Vec<Mx1ReadOnlyCellProjection>,
+}
+
+fn mx1_error(code: &str, message: impl Into<String>) -> EvolutionAdmissionError {
+    EvolutionAdmissionError::new(code, message.into())
+}
+
+fn mx1_require_id(field: &str, value: &str) -> Result<(), EvolutionAdmissionError> {
+    if value.is_empty()
+        || value.len() > 256
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '@'))
+    {
+        return Err(mx1_error(
+            "mx1_descriptor_identity",
+            format!("{field} is missing or malformed"),
+        ));
+    }
+    Ok(())
+}
+
+fn mx1_require_text(field: &str, value: &str) -> Result<(), EvolutionAdmissionError> {
+    if value.trim().is_empty() || value.len() > 512 || value.contains('\0') {
+        return Err(mx1_error(
+            "mx1_descriptor_field",
+            format!("{field} is missing or malformed"),
+        ));
+    }
+    Ok(())
+}
+
+fn mx1_require_sha(field: &str, value: &str) -> Result<(), EvolutionAdmissionError> {
+    validate_sha256_hex(value).map_err(|_| {
+        mx1_error(
+            "mx1_descriptor_digest",
+            format!("{field} must be a 64-hex digest"),
+        )
+    })
+}
+
+fn mx1_require_commit_or_digest(field: &str, value: &str) -> Result<(), EvolutionAdmissionError> {
+    let is_commit = value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit());
+    if is_commit {
+        Ok(())
+    } else {
+        mx1_require_sha(field, value)
+    }
+}
+
+fn mx1_validate_sorted_ids(field: &str, values: &[String]) -> Result<(), EvolutionAdmissionError> {
+    if values.is_empty() || values.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(mx1_error(
+            "mx1_descriptor_support",
+            format!("{field} must be nonempty, sorted, and unique"),
+        ));
+    }
+    for value in values {
+        mx1_require_id(field, value)?;
+    }
+    Ok(())
+}
+
+fn mx1_descriptor_digest<T: Serialize>(value: &T) -> Result<String, EvolutionAdmissionError> {
+    let value = serde_json::to_value(value)
+        .map_err(|error| mx1_error("mx1_descriptor_encode", error.to_string()))?;
+    canonical_json_sha256(&value).map_err(|error| mx1_error("mx1_descriptor_encode", error))
+}
+
+fn mx1_expected_harness_evidence_digest(
+    evidence_kind: &str,
+    descriptor_id: &str,
+    source_identity: &str,
+) -> String {
+    sha256_hex(&format!(
+        "{MX1_CONTRACT_ID}/harness-evidence:v1|{evidence_kind}|{descriptor_id}|{source_identity}"
+    ))
+}
+
+/// H1 is an in-tree, provider-free adapter package. Its immutable package
+/// identity is the compiled source unit itself, rather than a display label or
+/// a caller-supplied digest. CORE never spawns it; the package identity still
+/// gives a later confined execution preflight an exact source boundary to bind.
+fn mx1_confined_adapter_package_sha256() -> String {
+    hex::encode(Sha256::digest(include_bytes!("harness_evolution.rs")))
+}
+
+fn mx1_validate_frozen_harness_identity(
+    descriptor: &Mx1HarnessImplementationDescriptor,
+) -> Result<(), EvolutionAdmissionError> {
+    let (expected_owner, expected_source, expected_version, expected_disposition, expected_process) =
+        match descriptor.descriptor_id.as_str() {
+            MX1_ARM_ZERO_HARNESS_ID => (
+                "rust-engine-product-golden-path",
+                "075f995b574fb8a28f08986291751152bf158dd5".to_string(),
+                "v1",
+                Mx1HarnessAdmissionDisposition::EmbedBehindSeam,
+                "engine-owned-no-exec-in-core",
+            ),
+            MX1_SECOND_HARNESS_ID => (
+                "rust-engine-harness-evolution",
+                mx1_confined_adapter_package_sha256(),
+                "provider-free-adapter-v1",
+                Mx1HarnessAdmissionDisposition::ConfinedSubprocess,
+                "product-owned-confined-subprocess;core-no-spawn",
+            ),
+            _ => {
+                return Err(mx1_error(
+                    "mx1_harness_identity",
+                    "Harness descriptor is not one of the two frozen MX1 implementations",
+                ));
+            }
+        };
+    if descriptor.source_owner != expected_owner
+        || descriptor.source_identity != expected_source
+        || descriptor.version != expected_version
+        || descriptor.admission_disposition != expected_disposition
+        || descriptor.process_confinement != expected_process
+        || descriptor.workspace_confinement != "product-workspace-binding-digest"
+        || descriptor.terminal_outcome_mapping != "product-task-status"
+        || descriptor.verified_deliverable_mapping != "product-terminal-evidence"
+        || descriptor.usage_cost_mapping != "existing-product-usage-and-cost-owners"
+        || descriptor.cancellation_mapping != "product-task-killed-state"
+        || descriptor.cleanup_mapping != "product-terminal-cleanup-evidence"
+        || descriptor.restart_mapping != "product-terminal-restart-evidence"
+        || descriptor.retry_mapping != "model-plan-max-retries"
+        || descriptor.failure_mapping != "product-task-failure-code-digest"
+        || descriptor.outcome_unknown_mapping != "product-task-outcome-unknown"
+        || descriptor.license_id != "Apache-2.0"
+    {
+        return Err(mx1_error(
+            "mx1_harness_identity",
+            "Harness descriptor drifted from the frozen source, confinement, or mapping contract",
+        ));
+    }
+    for (field, observed) in [
+        ("build", &descriptor.build_identity_sha256),
+        ("executable", &descriptor.executable_identity_sha256),
+        ("capability-probe", &descriptor.capability_probe_sha256),
+        ("sbom", &descriptor.sbom_sha256),
+        ("provenance", &descriptor.provenance_sha256),
+        ("rollback", &descriptor.rollback_binding_sha256),
+    ] {
+        if observed
+            != &mx1_expected_harness_evidence_digest(
+                field,
+                &descriptor.descriptor_id,
+                &descriptor.source_identity,
+            )
+        {
+            return Err(mx1_error(
+                "mx1_harness_evidence_drift",
+                "Harness build, executable, probe, SBOM, provenance, or rollback evidence drifted",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn mx1_confined_adapter_capability_probe(
+    descriptor: &Mx1HarnessImplementationDescriptor,
+) -> Result<(), EvolutionAdmissionError> {
+    mx1_validate_frozen_harness_identity(descriptor)?;
+    if descriptor.descriptor_id != MX1_SECOND_HARNESS_ID {
+        return Err(mx1_error(
+            "mx1_second_harness_probe",
+            "confined adapter probe can only attest the frozen H1 package",
+        ));
+    }
+    Ok(())
+}
+
+fn mx1_expected_model_evidence_digest(evidence_kind: &str, descriptor_id: &str) -> String {
+    sha256_hex(&format!(
+        "{MX1_CONTRACT_ID}/model-evidence:v1|{evidence_kind}|{descriptor_id}"
+    ))
+}
+
+fn mx1_validate_frozen_model_identity(
+    descriptor: &Mx1ModelPlanDescriptor,
+) -> Result<(), EvolutionAdmissionError> {
+    let expected_model = match descriptor.descriptor_id.as_str() {
+        MX1_ARM_ZERO_MODEL_ID => "deepseek-v4-pro",
+        MX1_SECOND_MODEL_ID => "deepseek-v4-flash",
+        _ => {
+            return Err(mx1_error(
+                "mx1_model_identity",
+                "Model descriptor is not one of the two frozen MX1 plans",
+            ));
+        }
+    };
+    if descriptor.requested_model_id != expected_model
+        || descriptor.resolved_model_id != expected_model
+        || descriptor.provider != "deepseek"
+        || descriptor.protocol != "openai_compatible"
+        || descriptor.endpoint != MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT
+        || descriptor.endpoint_allowlist != vec![MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT.to_string()]
+        || descriptor.credential_reference_name != MX1_DEEPSEEK_CREDENTIAL_REFERENCE
+        || descriptor.tokenizer_identity != "deepseek-tokenizer-current"
+        || descriptor.usage_mapping != "existing-execution-usage-owner"
+        || descriptor.pricing_currency != "USD"
+        || descriptor.pricing_unit != "per-token"
+        || descriptor.pricing_effective_date != "2026-08-24"
+        || descriptor.lifecycle_cost_mapping != "existing-product-usage-and-cost-owners"
+        || descriptor.missing_identity_disposition != "incomparable"
+        || descriptor.missing_usage_disposition != "incomparable"
+        || descriptor.admitted_profile_sha256
+            != mx1_expected_model_evidence_digest("admitted-profile", &descriptor.descriptor_id)
+        || descriptor.pricing_source_sha256
+            != mx1_expected_model_evidence_digest("pricing-source", &descriptor.descriptor_id)
+    {
+        return Err(mx1_error(
+            "mx1_model_identity",
+            "Model descriptor drifted from the frozen endpoint, credential, or evidence identity",
+        ));
+    }
+    Ok(())
+}
+
+fn mx1_expected_strategy_evidence_digest(evidence_kind: &str, descriptor_id: &str) -> String {
+    sha256_hex(&format!(
+        "{MX1_CONTRACT_ID}/strategy-evidence:v1|{evidence_kind}|{descriptor_id}"
+    ))
+}
+
+fn mx1_validate_frozen_strategy_identity(
+    descriptor: &Mx1StrategyPlanDescriptor,
+) -> Result<(), EvolutionAdmissionError> {
+    if !matches!(
+        descriptor.descriptor_id.as_str(),
+        MX1_NO_PROJECTION_STRATEGY_ID | MX1_MEMORY_ONLY_STRATEGY_ID | MX1_SKILL_ONLY_STRATEGY_ID
+    ) || descriptor.strategy_kind != "single-pass-plan-implement-review"
+        || descriptor.composition_order
+            != vec![
+                "plan".to_string(),
+                "implement".to_string(),
+                "review".to_string(),
+            ]
+        || descriptor.source_identity != mx1_confined_adapter_package_sha256()
+        || descriptor.source_identity_sha256 != sha256_hex(&descriptor.source_identity)
+        || descriptor.admitted_input_class != "redacted-digest-reference"
+        || descriptor.redaction_class != "digest-only"
+    {
+        return Err(mx1_error(
+            "mx1_strategy_identity",
+            "Strategy descriptor drifted from the frozen MX1 strategy contract",
+        ));
+    }
+    for (kind, observed) in [
+        ("leakage", &descriptor.leakage_scan_sha256),
+        ("prompt-policy", &descriptor.prompt_policy_sha256),
+        ("tool-policy", &descriptor.tool_policy_sha256),
+        ("retry-policy", &descriptor.retry_policy_sha256),
+        ("compression-policy", &descriptor.compression_policy_sha256),
+    ] {
+        if observed != &mx1_expected_strategy_evidence_digest(kind, &descriptor.descriptor_id) {
+            return Err(mx1_error(
+                "mx1_strategy_evidence_drift",
+                "Strategy leakage or policy evidence drifted",
+            ));
+        }
+    }
+    let expected_projection = match descriptor.descriptor_id.as_str() {
+        MX1_NO_PROJECTION_STRATEGY_ID => None,
+        MX1_MEMORY_ONLY_STRATEGY_ID => Some((
+            Mx1ProjectionKind::Memory,
+            Mx1ProjectionSourceKind::ArtifactRef,
+            "artifact:mx1-memory-projection-v1",
+        )),
+        MX1_SKILL_ONLY_STRATEGY_ID => Some((
+            Mx1ProjectionKind::Skill,
+            Mx1ProjectionSourceKind::GitBlob,
+            "git:mx1-skill-projection-v1",
+        )),
+        _ => unreachable!("the frozen strategy identity check above is exhaustive"),
+    };
+    match (expected_projection, &descriptor.projection) {
+        (None, None) => {}
+        (Some((kind, source_kind, source_handle)), Some(projection))
+            if projection.kind == kind
+                && projection.source_kind == source_kind
+                && projection.source_handle == source_handle
+                && projection.expires_at_unix_ms == 4_102_444_800_000
+                && projection.content_sha256
+                    == mx1_expected_strategy_evidence_digest(
+                        "projection-content",
+                        &descriptor.descriptor_id,
+                    )
+                && projection.deletion_recipe_sha256
+                    == mx1_expected_strategy_evidence_digest(
+                        "projection-delete",
+                        &descriptor.descriptor_id,
+                    )
+                && projection.rebuild_recipe_sha256
+                    == mx1_expected_strategy_evidence_digest(
+                        "projection-rebuild",
+                        &descriptor.descriptor_id,
+                    ) => {}
+        _ => {
+            return Err(mx1_error(
+                "mx1_strategy_projection_drift",
+                "Strategy projection identity, expiry, or lifecycle recipe drifted",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn mx1_validate_harness_descriptor(
+    descriptor: &Mx1HarnessImplementationDescriptor,
+) -> Result<(), EvolutionAdmissionError> {
+    if descriptor.schema_version != MX1_DESCRIPTOR_SCHEMA_VERSION {
+        return Err(mx1_error(
+            "mx1_harness_schema",
+            "unsupported Harness descriptor schema",
+        ));
+    }
+    mx1_require_id("harness descriptor_id", &descriptor.descriptor_id)?;
+    mx1_require_text("harness source_owner", &descriptor.source_owner)?;
+    mx1_require_commit_or_digest("harness source_identity", &descriptor.source_identity)?;
+    mx1_require_id("harness version", &descriptor.version)?;
+    mx1_require_sha(
+        "harness build_identity_sha256",
+        &descriptor.build_identity_sha256,
+    )?;
+    mx1_require_sha(
+        "harness executable_identity_sha256",
+        &descriptor.executable_identity_sha256,
+    )?;
+    mx1_require_sha(
+        "harness capability_probe_sha256",
+        &descriptor.capability_probe_sha256,
+    )?;
+    if descriptor.shared_run_seam_version != PRODUCT_HARNESS_RUN_SEAM_SCHEMA_VERSION {
+        return Err(mx1_error(
+            "mx1_harness_seam",
+            "Harness descriptor does not bind the Product Golden Path run seam",
+        ));
+    }
+    mx1_validate_sorted_ids(
+        "harness supported_task_capabilities",
+        &descriptor.supported_task_capabilities,
+    )?;
+    mx1_validate_sorted_ids(
+        "harness supported_tool_capabilities",
+        &descriptor.supported_tool_capabilities,
+    )?;
+    for (field, value) in [
+        (
+            "process_confinement",
+            descriptor.process_confinement.as_str(),
+        ),
+        (
+            "workspace_confinement",
+            descriptor.workspace_confinement.as_str(),
+        ),
+        (
+            "terminal_outcome_mapping",
+            descriptor.terminal_outcome_mapping.as_str(),
+        ),
+        (
+            "verified_deliverable_mapping",
+            descriptor.verified_deliverable_mapping.as_str(),
+        ),
+        ("usage_cost_mapping", descriptor.usage_cost_mapping.as_str()),
+        (
+            "cancellation_mapping",
+            descriptor.cancellation_mapping.as_str(),
+        ),
+        ("cleanup_mapping", descriptor.cleanup_mapping.as_str()),
+        ("restart_mapping", descriptor.restart_mapping.as_str()),
+        ("retry_mapping", descriptor.retry_mapping.as_str()),
+        ("failure_mapping", descriptor.failure_mapping.as_str()),
+        (
+            "outcome_unknown_mapping",
+            descriptor.outcome_unknown_mapping.as_str(),
+        ),
+        ("license_id", descriptor.license_id.as_str()),
+    ] {
+        mx1_require_text(field, value)?;
+    }
+    mx1_require_sha("harness sbom_sha256", &descriptor.sbom_sha256)?;
+    mx1_require_sha("harness provenance_sha256", &descriptor.provenance_sha256)?;
+    mx1_validate_sorted_ids(
+        "harness supported_model_ids",
+        &descriptor.supported_model_ids,
+    )?;
+    mx1_validate_sorted_ids(
+        "harness supported_strategy_ids",
+        &descriptor.supported_strategy_ids,
+    )?;
+    mx1_require_sha(
+        "harness rollback_binding_sha256",
+        &descriptor.rollback_binding_sha256,
+    )?;
+    if !descriptor.default_off || !descriptor.admission_disposition.is_admitted() {
+        return Err(mx1_error(
+            "mx1_harness_admission",
+            "Harness must be default-off and admitted behind the common seam",
+        ));
+    }
+    mx1_validate_frozen_harness_identity(descriptor)?;
+    Ok(())
+}
+
+fn mx1_validate_model_descriptor(
+    descriptor: &Mx1ModelPlanDescriptor,
+) -> Result<(), EvolutionAdmissionError> {
+    if descriptor.schema_version != MX1_DESCRIPTOR_SCHEMA_VERSION {
+        return Err(mx1_error(
+            "mx1_model_schema",
+            "unsupported Model descriptor schema",
+        ));
+    }
+    for (field, value) in [
+        ("model descriptor_id", descriptor.descriptor_id.as_str()),
+        ("requested_model_id", descriptor.requested_model_id.as_str()),
+        ("resolved_model_id", descriptor.resolved_model_id.as_str()),
+        ("provider", descriptor.provider.as_str()),
+        ("protocol", descriptor.protocol.as_str()),
+        (
+            "credential_reference_name",
+            descriptor.credential_reference_name.as_str(),
+        ),
+        ("pricing_currency", descriptor.pricing_currency.as_str()),
+        ("pricing_unit", descriptor.pricing_unit.as_str()),
+        (
+            "lifecycle_cost_mapping",
+            descriptor.lifecycle_cost_mapping.as_str(),
+        ),
+        (
+            "missing_identity_disposition",
+            descriptor.missing_identity_disposition.as_str(),
+        ),
+        (
+            "missing_usage_disposition",
+            descriptor.missing_usage_disposition.as_str(),
+        ),
+    ] {
+        mx1_require_id(field, value)?;
+    }
+    if descriptor.provider != "deepseek"
+        || descriptor.protocol != "openai_compatible"
+        || !descriptor.endpoint.starts_with("https://")
+        || descriptor.endpoint_allowlist != vec![descriptor.endpoint.clone()]
+    {
+        return Err(mx1_error(
+            "mx1_model_endpoint",
+            "Model endpoint/protocol is incomplete or not allowlisted",
+        ));
+    }
+    if !descriptor
+        .credential_reference_name
+        .chars()
+        .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+    {
+        return Err(mx1_error(
+            "mx1_model_credential_reference",
+            "Model descriptor may carry only a symbolic credential reference",
+        ));
+    }
+    mx1_require_sha(
+        "model admitted_profile_sha256",
+        &descriptor.admitted_profile_sha256,
+    )?;
+    mx1_require_sha(
+        "model pricing_source_sha256",
+        &descriptor.pricing_source_sha256,
+    )?;
+    if descriptor.max_provider_requests != 3
+        || descriptor.max_input_tokens != 12_000
+        || descriptor.max_output_tokens != 8_192
+        || descriptor.max_total_tokens != 20_192
+        || descriptor.max_retries != 0
+        || descriptor.max_wall_time_ms != 900_000
+    {
+        return Err(mx1_error(
+            "mx1_model_budget_drift",
+            "Model descriptor must retain the frozen per-cell request/token limits",
+        ));
+    }
+    let expected_role_order = ["planner", "implementer", "reviewer"];
+    if descriptor
+        .role_order
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        != expected_role_order
+    {
+        return Err(mx1_error(
+            "mx1_model_roles",
+            "Model role order must retain the frozen plan/implement/review topology",
+        ));
+    }
+    for role in expected_role_order {
+        if descriptor.role_assignments.get(role) != Some(&descriptor.resolved_model_id) {
+            return Err(mx1_error(
+                "mx1_model_roles",
+                "Model role assignments must bind every role to the resolved identity",
+            ));
+        }
+    }
+    if descriptor.role_assignments.len() != 3 {
+        return Err(mx1_error(
+            "mx1_model_roles",
+            "Model descriptor may not add hidden role routing",
+        ));
+    }
+    for (field, value) in [
+        ("tokenizer_identity", descriptor.tokenizer_identity.as_str()),
+        ("usage_mapping", descriptor.usage_mapping.as_str()),
+        (
+            "pricing_effective_date",
+            descriptor.pricing_effective_date.as_str(),
+        ),
+    ] {
+        mx1_require_id(field, value)?;
+    }
+    mx1_validate_sorted_ids(
+        "model supported_harness_ids",
+        &descriptor.supported_harness_ids,
+    )?;
+    mx1_validate_sorted_ids(
+        "model supported_strategy_ids",
+        &descriptor.supported_strategy_ids,
+    )?;
+    mx1_validate_frozen_model_identity(descriptor)?;
+    Ok(())
+}
+
+fn mx1_validate_strategy_descriptor(
+    descriptor: &Mx1StrategyPlanDescriptor,
+) -> Result<(), EvolutionAdmissionError> {
+    if descriptor.schema_version != MX1_DESCRIPTOR_SCHEMA_VERSION {
+        return Err(mx1_error(
+            "mx1_strategy_schema",
+            "unsupported Strategy descriptor schema",
+        ));
+    }
+    mx1_require_id("strategy descriptor_id", &descriptor.descriptor_id)?;
+    mx1_require_id("strategy_kind", &descriptor.strategy_kind)?;
+    if descriptor.composition_order.is_empty()
+        || descriptor
+            .composition_order
+            .iter()
+            .any(|value| value.trim().is_empty())
+    {
+        return Err(mx1_error(
+            "mx1_strategy_composition",
+            "Strategy composition must be explicit",
+        ));
+    }
+    mx1_require_id("strategy source_identity", &descriptor.source_identity)?;
+    mx1_require_sha(
+        "strategy source_identity_sha256",
+        &descriptor.source_identity_sha256,
+    )?;
+    if descriptor.source_identity_sha256 != sha256_hex(&descriptor.source_identity) {
+        return Err(mx1_error(
+            "mx1_strategy_source_drift",
+            "Strategy source identity does not match its frozen digest",
+        ));
+    }
+    for (field, value) in [
+        (
+            "admitted_input_class",
+            descriptor.admitted_input_class.as_str(),
+        ),
+        ("redaction_class", descriptor.redaction_class.as_str()),
+    ] {
+        mx1_require_id(field, value)?;
+    }
+    if descriptor.redaction_class != "digest-only"
+        || !descriptor.cross_task_isolation
+        || !descriptor.cross_arm_isolation
+        || !descriptor.no_authority
+    {
+        return Err(mx1_error(
+            "mx1_strategy_isolation",
+            "Strategy must be digest-only, isolated, and authority-free",
+        ));
+    }
+    mx1_require_sha(
+        "strategy leakage_scan_sha256",
+        &descriptor.leakage_scan_sha256,
+    )?;
+    for (field, value) in [
+        (
+            "strategy prompt_policy_sha256",
+            &descriptor.prompt_policy_sha256,
+        ),
+        (
+            "strategy tool_policy_sha256",
+            &descriptor.tool_policy_sha256,
+        ),
+        (
+            "strategy retry_policy_sha256",
+            &descriptor.retry_policy_sha256,
+        ),
+        (
+            "strategy compression_policy_sha256",
+            &descriptor.compression_policy_sha256,
+        ),
+    ] {
+        mx1_require_sha(field, value)?;
+    }
+    mx1_validate_sorted_ids(
+        "strategy supported_harness_ids",
+        &descriptor.supported_harness_ids,
+    )?;
+    mx1_validate_sorted_ids(
+        "strategy supported_model_ids",
+        &descriptor.supported_model_ids,
+    )?;
+    match (&descriptor.projection, descriptor.descriptor_id.as_str()) {
+        (None, MX1_NO_PROJECTION_STRATEGY_ID) => {}
+        (Some(projection), strategy_id) if strategy_id.contains(":memory-only:") => {
+            if projection.kind != Mx1ProjectionKind::Memory {
+                return Err(mx1_error(
+                    "mx1_strategy_projection",
+                    "memory-only Strategy requires a MEMORY projection",
+                ));
+            }
+        }
+        (Some(projection), strategy_id) if strategy_id.contains(":skill-only:") => {
+            if projection.kind != Mx1ProjectionKind::Skill {
+                return Err(mx1_error(
+                    "mx1_strategy_projection",
+                    "skill-only Strategy requires a SKILL projection",
+                ));
+            }
+        }
+        _ => {
+            return Err(mx1_error(
+                "mx1_strategy_projection",
+                "Strategy projection and descriptor identity are inconsistent",
+            ));
+        }
+    }
+    if let Some(projection) = &descriptor.projection {
+        if projection.expires_at_unix_ms == 0
+            || projection.source_handle.len() > 512
+            || projection.source_handle.starts_with('/')
+            || projection.source_handle.contains("..")
+            || projection.source_handle.trim().is_empty()
+        {
+            return Err(mx1_error(
+                "mx1_strategy_projection",
+                "Strategy projection source/expiry is malformed",
+            ));
+        }
+        match projection.source_kind {
+            Mx1ProjectionSourceKind::GitBlob if !projection.source_handle.starts_with("git:") => {
+                return Err(mx1_error(
+                    "mx1_strategy_projection",
+                    "GIT_BLOB projection source must use a git: handle",
+                ));
+            }
+            Mx1ProjectionSourceKind::ArtifactRef
+                if !projection.source_handle.starts_with("artifact:") =>
+            {
+                return Err(mx1_error(
+                    "mx1_strategy_projection",
+                    "ARTIFACT_REF projection source must use an artifact: handle",
+                ));
+            }
+            _ => {}
+        }
+        mx1_require_sha(
+            "strategy projection content_sha256",
+            &projection.content_sha256,
+        )?;
+        mx1_require_sha(
+            "strategy projection deletion_recipe_sha256",
+            &projection.deletion_recipe_sha256,
+        )?;
+        mx1_require_sha(
+            "strategy projection rebuild_recipe_sha256",
+            &projection.rebuild_recipe_sha256,
+        )?;
+    }
+    mx1_validate_frozen_strategy_identity(descriptor)?;
+    Ok(())
+}
+
+fn mx1_manifest_without_digest(
+    manifest: &Mx1DescriptorManifest,
+) -> Result<Value, EvolutionAdmissionError> {
+    let mut value = serde_json::to_value(manifest)
+        .map_err(|error| mx1_error("mx1_manifest_encode", error.to_string()))?;
+    value["manifest_sha256"] = Value::Null;
+    Ok(value)
+}
+
+pub fn derive_mx1_manifest_sha256(
+    manifest: &Mx1DescriptorManifest,
+) -> Result<String, EvolutionAdmissionError> {
+    canonical_json_sha256(&mx1_manifest_without_digest(manifest)?)
+        .map_err(|error| mx1_error("mx1_manifest_encode", error))
+}
+
+fn mx1_validate_manifest_contents(
+    manifest: &Mx1DescriptorManifest,
+) -> Result<(), EvolutionAdmissionError> {
+    if manifest.schema_version != MX1_DESCRIPTOR_MANIFEST_SCHEMA_VERSION
+        || manifest.contract_id != MX1_CONTRACT_ID
+    {
+        return Err(mx1_error(
+            "mx1_manifest_schema",
+            "manifest must bind the frozen MX1 contract",
+        ));
+    }
+    if manifest.harnesses.len() != 2 || manifest.models.len() != 2 || manifest.strategies.len() != 3
+    {
+        return Err(mx1_error(
+            "mx1_manifest_cardinality",
+            "MX1 manifest must contain exactly 2 Harnesses, 2 Models, and 3 Strategies",
+        ));
+    }
+    for (field, ids) in [
+        (
+            "Harness",
+            manifest
+                .harnesses
+                .iter()
+                .map(|item| item.descriptor_id.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "Model",
+            manifest
+                .models
+                .iter()
+                .map(|item| item.descriptor_id.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "Strategy",
+            manifest
+                .strategies
+                .iter()
+                .map(|item| item.descriptor_id.as_str())
+                .collect::<Vec<_>>(),
+        ),
+    ] {
+        if ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(mx1_error(
+                "mx1_manifest_order",
+                format!("{field} descriptors must have canonical unique ordering"),
+            ));
+        }
+    }
+    for descriptor in &manifest.harnesses {
+        mx1_validate_harness_descriptor(descriptor)?;
+    }
+    for descriptor in &manifest.models {
+        mx1_validate_model_descriptor(descriptor)?;
+    }
+    for descriptor in &manifest.strategies {
+        mx1_validate_strategy_descriptor(descriptor)?;
+    }
+    let unique = |values: Vec<&str>, field: &str| -> Result<(), EvolutionAdmissionError> {
+        let set = values.iter().copied().collect::<BTreeSet<_>>();
+        if set.len() != values.len() {
+            return Err(mx1_error(
+                "mx1_manifest_identity",
+                format!("duplicate {field} descriptor id"),
+            ));
+        }
+        Ok(())
+    };
+    unique(
+        manifest
+            .harnesses
+            .iter()
+            .map(|item| item.descriptor_id.as_str())
+            .collect(),
+        "Harness",
+    )?;
+    unique(
+        manifest
+            .models
+            .iter()
+            .map(|item| item.descriptor_id.as_str())
+            .collect(),
+        "Model",
+    )?;
+    unique(
+        manifest
+            .strategies
+            .iter()
+            .map(|item| item.descriptor_id.as_str())
+            .collect(),
+        "Strategy",
+    )?;
+    if manifest
+        .harnesses
+        .iter()
+        .filter(|item| item.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+        .count()
+        != 1
+        || manifest
+            .models
+            .iter()
+            .filter(|item| item.descriptor_id == MX1_ARM_ZERO_MODEL_ID)
+            .count()
+            != 1
+        || manifest
+            .strategies
+            .iter()
+            .filter(|item| item.descriptor_id == MX1_NO_PROJECTION_STRATEGY_ID)
+            .count()
+            != 1
+    {
+        return Err(mx1_error(
+            "mx1_manifest_arm_zero",
+            "manifest is missing a frozen arm-zero descriptor",
+        ));
+    }
+    let arm_zero_harness = manifest
+        .harnesses
+        .iter()
+        .find(|item| item.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+        .expect("arm zero presence was checked above");
+    if arm_zero_harness.admission_disposition != Mx1HarnessAdmissionDisposition::EmbedBehindSeam
+        || arm_zero_harness.source_identity != "075f995b574fb8a28f08986291751152bf158dd5"
+    {
+        return Err(mx1_error(
+            "mx1_manifest_arm_zero",
+            "arm-zero Harness disposition or exact frozen source identity drifted",
+        ));
+    }
+    if manifest
+        .harnesses
+        .iter()
+        .filter(|item| {
+            item.admission_disposition == Mx1HarnessAdmissionDisposition::ConfinedSubprocess
+        })
+        .count()
+        != 1
+    {
+        return Err(mx1_error(
+            "mx1_manifest_second_harness",
+            "manifest must admit exactly one confined second Harness",
+        ));
+    }
+    if manifest.harnesses.iter().any(|item| {
+        item.descriptor_id != MX1_ARM_ZERO_HARNESS_ID
+            && item.admission_disposition != Mx1HarnessAdmissionDisposition::ConfinedSubprocess
+    }) {
+        return Err(mx1_error(
+            "mx1_manifest_second_harness",
+            "the nonzero Harness must be the admitted confined implementation",
+        ));
+    }
+    Ok(())
+}
+
+pub fn seal_mx1_descriptor_manifest(
+    mut manifest: Mx1DescriptorManifest,
+) -> Result<Mx1DescriptorManifest, EvolutionAdmissionError> {
+    manifest
+        .harnesses
+        .sort_by(|left, right| left.descriptor_id.cmp(&right.descriptor_id));
+    manifest
+        .models
+        .sort_by(|left, right| left.descriptor_id.cmp(&right.descriptor_id));
+    manifest
+        .strategies
+        .sort_by(|left, right| left.descriptor_id.cmp(&right.descriptor_id));
+    mx1_validate_manifest_contents(&manifest)?;
+    manifest.manifest_sha256 = derive_mx1_manifest_sha256(&manifest)?;
+    Ok(manifest)
+}
+
+pub fn validate_mx1_descriptor_manifest(
+    manifest: &Mx1DescriptorManifest,
+) -> Result<(), EvolutionAdmissionError> {
+    mx1_validate_manifest_contents(manifest)?;
+    let expected = derive_mx1_manifest_sha256(manifest)?;
+    if manifest.manifest_sha256 != expected {
+        return Err(mx1_error(
+            "mx1_manifest_drift",
+            "descriptor manifest digest does not match immutable descriptors",
+        ));
+    }
+    Ok(())
+}
+
+fn mx1_projection_cell_binding(identity: &Mx1CellIdentity, strategy_id: &str) -> String {
+    sha256_hex(&format!(
+        "{MX1_CONTRACT_ID}/projection-binding:v1|{}|{}|{}|{}|{strategy_id}",
+        identity.harness_id, identity.model_id, identity.strategy_id, identity.task_id
+    ))
+}
+
+impl Mx1StrategyAdapter {
+    pub fn new(descriptor: Mx1StrategyPlanDescriptor) -> Result<Self, EvolutionAdmissionError> {
+        mx1_validate_strategy_descriptor(&descriptor)?;
+        Ok(Self { descriptor })
+    }
+
+    pub fn descriptor(&self) -> &Mx1StrategyPlanDescriptor {
+        &self.descriptor
+    }
+
+    pub fn prepare_projection(
+        &self,
+        identity: &Mx1CellIdentity,
+        now_unix_ms: u64,
+    ) -> Result<Option<Mx1ProjectionLease>, EvolutionAdmissionError> {
+        let Some(projection) = &self.descriptor.projection else {
+            return Ok(None);
+        };
+        if now_unix_ms >= projection.expires_at_unix_ms {
+            return Err(mx1_error(
+                "mx1_projection_expired",
+                "projection source expired before cell preparation",
+            ));
+        }
+        if identity.strategy_id != self.descriptor.descriptor_id {
+            return Err(mx1_error(
+                "mx1_projection_strategy_binding",
+                "projection adapter cannot cross a Strategy arm",
+            ));
+        }
+        Ok(Some(Mx1ProjectionLease {
+            schema_version: MX1_DESCRIPTOR_SCHEMA_VERSION.to_string(),
+            strategy_id: self.descriptor.descriptor_id.clone(),
+            cell_binding_sha256: mx1_projection_cell_binding(
+                identity,
+                &self.descriptor.descriptor_id,
+            ),
+            source_handle: projection.source_handle.clone(),
+            content_sha256: projection.content_sha256.clone(),
+            expires_at_unix_ms: projection.expires_at_unix_ms,
+            deleted: false,
+        }))
+    }
+
+    pub fn rebuild_projection(
+        &self,
+        identity: &Mx1CellIdentity,
+        source_content_sha256: &str,
+        now_unix_ms: u64,
+    ) -> Result<Mx1ProjectionLease, EvolutionAdmissionError> {
+        let projection = self
+            .prepare_projection(identity, now_unix_ms)?
+            .ok_or_else(|| {
+                mx1_error(
+                    "mx1_projection_absent",
+                    "baseline Strategy has no projection",
+                )
+            })?;
+        if projection.content_sha256 != source_content_sha256 {
+            return Err(mx1_error(
+                "mx1_projection_source_drift",
+                "projection rebuild source digest drifted",
+            ));
+        }
+        Ok(projection)
+    }
+
+    pub fn validate_projection(
+        &self,
+        lease: &Mx1ProjectionLease,
+        identity: &Mx1CellIdentity,
+        now_unix_ms: u64,
+    ) -> Result<(), EvolutionAdmissionError> {
+        let projection = self.descriptor.projection.as_ref().ok_or_else(|| {
+            mx1_error(
+                "mx1_projection_absent",
+                "baseline Strategy has no projection",
+            )
+        })?;
+        if lease.schema_version != MX1_DESCRIPTOR_SCHEMA_VERSION
+            || lease.strategy_id != self.descriptor.descriptor_id
+            || lease.cell_binding_sha256
+                != mx1_projection_cell_binding(identity, &self.descriptor.descriptor_id)
+            || lease.source_handle != projection.source_handle
+            || lease.content_sha256 != projection.content_sha256
+        {
+            return Err(mx1_error(
+                "mx1_projection_cross_arm_or_source_drift",
+                "projection lease binding does not match this exact cell",
+            ));
+        }
+        if lease.deleted {
+            return Err(mx1_error(
+                "mx1_projection_deleted",
+                "deleted projection cannot be reused",
+            ));
+        }
+        if now_unix_ms >= lease.expires_at_unix_ms {
+            return Err(mx1_error(
+                "mx1_projection_expired",
+                "projection lease expired",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn delete_projection(
+        &self,
+        lease: &mut Mx1ProjectionLease,
+    ) -> Result<(), EvolutionAdmissionError> {
+        if lease.strategy_id != self.descriptor.descriptor_id {
+            return Err(mx1_error(
+                "mx1_projection_strategy_binding",
+                "projection deletion cannot cross a Strategy arm",
+            ));
+        }
+        lease.deleted = true;
+        Ok(())
+    }
+}
+
+fn mx1_normalize_run(
+    descriptor: &Mx1HarnessImplementationDescriptor,
+    plan: &Mx1MatrixPlan,
+    cell: &Mx1MatrixCell,
+    evidence: &ProductHarnessRunEvidence,
+) -> Result<Mx1NormalizedHarnessRun, EvolutionAdmissionError> {
+    mx1_validate_harness_descriptor(descriptor)?;
+    if plan.schema_version != MX1_MATRIX_PLAN_SCHEMA_VERSION
+        || plan.plan_id.len() != 64
+        || !plan
+            .plan_id
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+        || plan.repetition == 0
+        || !plan.cells.iter().any(|candidate| candidate == cell)
+    {
+        return Err(mx1_error(
+            "mx1_run_plan_binding",
+            "Harness adapter requires an exact, nonempty planned matrix cell",
+        ));
+    }
+    mx1_require_sha("matrix manifest digest", &plan.manifest_sha256)?;
+    mx1_require_sha("matrix common basis digest", &plan.common_basis_sha256)?;
+    if cell.identity.harness_id != descriptor.descriptor_id {
+        return Err(mx1_error(
+            "mx1_run_cell_binding",
+            "Harness adapter cannot normalize evidence for another Harness cell",
+        ));
+    }
+    mx1_require_sha("matrix cell descriptor digest", &cell.descriptor_digest)?;
+    if evidence.schema_version != PRODUCT_HARNESS_RUN_SEAM_SCHEMA_VERSION
+        || evidence.product_task_id.trim().is_empty()
+        || evidence.workspace_id.trim().is_empty()
+    {
+        return Err(mx1_error(
+            "mx1_run_seam",
+            "Harness run evidence is not a complete Product Golden Path projection",
+        ));
+    }
+    mx1_require_sha(
+        "product workspace_binding_sha256",
+        &evidence.workspace_binding_sha256,
+    )?;
+    mx1_require_sha(
+        "product source_revision_sha256",
+        &evidence.source_revision_sha256,
+    )?;
+    for value in [
+        evidence.usage.evidence_sha256.as_deref(),
+        evidence.cost.evidence_sha256.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        mx1_require_sha("product usage-or-cost evidence", value)?;
+    }
+    for value in [
+        evidence.failure_detail_sha256.as_deref(),
+        evidence.terminal_evidence_sha256.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        mx1_require_sha("product terminal evidence", value)?;
+    }
+    Ok(Mx1NormalizedHarnessRun {
+        schema_version: MX1_NORMALIZED_RUN_SCHEMA_VERSION.to_string(),
+        matrix_plan_id: plan.plan_id.clone(),
+        matrix_manifest_sha256: plan.manifest_sha256.clone(),
+        matrix_rung: plan.rung,
+        matrix_repetition: plan.repetition,
+        common_basis_sha256: plan.common_basis_sha256.clone(),
+        cell_id: cell.cell_id.clone(),
+        cell_identity: cell.identity.clone(),
+        cell_descriptor_sha256: cell.descriptor_digest.clone(),
+        harness_id: descriptor.descriptor_id.clone(),
+        harness_descriptor_sha256: mx1_descriptor_digest(descriptor)?,
+        product_task_id: evidence.product_task_id.clone(),
+        workspace_id: evidence.workspace_id.clone(),
+        workspace_binding_sha256: evidence.workspace_binding_sha256.clone(),
+        source_revision_sha256: evidence.source_revision_sha256.clone(),
+        terminal_outcome: evidence.terminal_outcome,
+        verified_deliverable: evidence.verified_deliverable,
+        usage: evidence.usage.state,
+        usage_evidence_sha256: evidence.usage.evidence_sha256.clone(),
+        cost: evidence.cost.state,
+        cost_evidence_sha256: evidence.cost.evidence_sha256.clone(),
+        cancellation: evidence.cancellation,
+        cleanup: evidence.cleanup,
+        restart: evidence.restart,
+        recovery: evidence.recovery,
+        failure: evidence.failure,
+        failure_code: evidence.failure_code.clone(),
+        failure_detail_sha256: evidence.failure_detail_sha256.clone(),
+        terminal_evidence_sha256: evidence.terminal_evidence_sha256.clone(),
+    })
+}
+
+impl Mx1EngineManagedHarnessAdapter {
+    pub fn new(
+        descriptor: Mx1HarnessImplementationDescriptor,
+    ) -> Result<Self, EvolutionAdmissionError> {
+        mx1_validate_harness_descriptor(&descriptor)?;
+        if descriptor.descriptor_id != MX1_ARM_ZERO_HARNESS_ID
+            || descriptor.admission_disposition != Mx1HarnessAdmissionDisposition::EmbedBehindSeam
+        {
+            return Err(mx1_error(
+                "mx1_arm_zero_harness",
+                "engine-managed adapter must bind the frozen arm-zero descriptor",
+            ));
+        }
+        Ok(Self { descriptor })
+    }
+}
+
+impl Mx1HarnessRunAdapter for Mx1EngineManagedHarnessAdapter {
+    fn descriptor(&self) -> &Mx1HarnessImplementationDescriptor {
+        &self.descriptor
+    }
+
+    fn normalize_run(
+        &self,
+        plan: &Mx1MatrixPlan,
+        cell: &Mx1MatrixCell,
+        evidence: &ProductHarnessRunEvidence,
+    ) -> Result<Mx1NormalizedHarnessRun, EvolutionAdmissionError> {
+        mx1_normalize_run(&self.descriptor, plan, cell, evidence)
+    }
+}
+
+impl Mx1ConfinedSubprocessHarnessAdapter {
+    pub fn new(
+        descriptor: Mx1HarnessImplementationDescriptor,
+    ) -> Result<Self, EvolutionAdmissionError> {
+        mx1_validate_harness_descriptor(&descriptor)?;
+        if descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID
+            || descriptor.admission_disposition
+                != Mx1HarnessAdmissionDisposition::ConfinedSubprocess
+        {
+            return Err(mx1_error(
+                "mx1_second_harness",
+                "second adapter must be the one confined Harness behind the seam",
+            ));
+        }
+        mx1_confined_adapter_capability_probe(&descriptor)?;
+        Ok(Self { descriptor })
+    }
+}
+
+impl Mx1HarnessRunAdapter for Mx1ConfinedSubprocessHarnessAdapter {
+    fn descriptor(&self) -> &Mx1HarnessImplementationDescriptor {
+        &self.descriptor
+    }
+
+    fn normalize_run(
+        &self,
+        plan: &Mx1MatrixPlan,
+        cell: &Mx1MatrixCell,
+        evidence: &ProductHarnessRunEvidence,
+    ) -> Result<Mx1NormalizedHarnessRun, EvolutionAdmissionError> {
+        // CORE deliberately performs no subprocess execution. A later effect
+        // packet may use this admitted identity only through existing owners.
+        mx1_normalize_run(&self.descriptor, plan, cell, evidence)
+    }
+}
+
+fn mx1_length_prefixed_key(fields: &[String]) -> String {
+    let mut encoded = String::new();
+    for field in fields {
+        encoded.push_str(&format!("{}:{field}", field.len()));
+    }
+    sha256_hex(&encoded)
+}
+
+fn mx1_cell_descriptor_digest(
+    harness: &Mx1HarnessImplementationDescriptor,
+    model: &Mx1ModelPlanDescriptor,
+    strategy: &Mx1StrategyPlanDescriptor,
+) -> Result<String, EvolutionAdmissionError> {
+    mx1_descriptor_digest(&serde_json::json!({
+        "harness_sha256": mx1_descriptor_digest(harness)?,
+        "model_sha256": mx1_descriptor_digest(model)?,
+        "strategy_sha256": mx1_descriptor_digest(strategy)?,
+    }))
+}
+
+fn mx1_cell_supported(
+    harness: &Mx1HarnessImplementationDescriptor,
+    model: &Mx1ModelPlanDescriptor,
+    strategy: &Mx1StrategyPlanDescriptor,
+) -> bool {
+    harness
+        .supported_model_ids
+        .iter()
+        .any(|value| value == &model.descriptor_id)
+        && harness
+            .supported_strategy_ids
+            .iter()
+            .any(|value| value == &strategy.descriptor_id)
+        && model
+            .supported_harness_ids
+            .iter()
+            .any(|value| value == &harness.descriptor_id)
+        && model
+            .supported_strategy_ids
+            .iter()
+            .any(|value| value == &strategy.descriptor_id)
+        && strategy
+            .supported_harness_ids
+            .iter()
+            .any(|value| value == &harness.descriptor_id)
+        && strategy
+            .supported_model_ids
+            .iter()
+            .any(|value| value == &model.descriptor_id)
+}
+
+pub fn build_mx1_matrix_plan(
+    manifest: &Mx1DescriptorManifest,
+    rung: Mx1MatrixRung,
+    task_id: &str,
+    repetition: u32,
+    common_basis_sha256: &str,
+) -> Result<Mx1MatrixPlan, EvolutionAdmissionError> {
+    validate_mx1_descriptor_manifest(manifest)?;
+    mx1_require_id("matrix task_id", task_id)?;
+    mx1_require_sha("matrix common_basis_sha256", common_basis_sha256)?;
+    if repetition == 0 {
+        return Err(mx1_error(
+            "mx1_matrix_repetition",
+            "matrix repetition must be one-based",
+        ));
+    }
+    let h0 = manifest
+        .harnesses
+        .iter()
+        .find(|item| item.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+        .expect("manifest validation requires arm zero");
+    let h1 = manifest
+        .harnesses
+        .iter()
+        .find(|item| item.descriptor_id != MX1_ARM_ZERO_HARNESS_ID)
+        .expect("manifest validation requires exactly two Harnesses");
+    let s0 = manifest
+        .strategies
+        .iter()
+        .find(|item| item.descriptor_id == MX1_NO_PROJECTION_STRATEGY_ID)
+        .expect("manifest validation requires arm zero");
+    let selected_harnesses: Vec<&Mx1HarnessImplementationDescriptor> = match rung {
+        Mx1MatrixRung::OneByTwoByOne | Mx1MatrixRung::OneByTwoByThree => vec![h0],
+        Mx1MatrixRung::TwoByTwoByThree => vec![h0, h1],
+    };
+    let selected_strategies: Vec<&Mx1StrategyPlanDescriptor> = match rung {
+        Mx1MatrixRung::OneByTwoByOne => vec![s0],
+        Mx1MatrixRung::OneByTwoByThree | Mx1MatrixRung::TwoByTwoByThree => {
+            manifest.strategies.iter().collect()
+        }
+    };
+    let mut cells = Vec::new();
+    for harness in selected_harnesses {
+        for model in &manifest.models {
+            for strategy in &selected_strategies {
+                let identity = Mx1CellIdentity {
+                    harness_id: harness.descriptor_id.clone(),
+                    model_id: model.descriptor_id.clone(),
+                    strategy_id: strategy.descriptor_id.clone(),
+                    task_id: task_id.to_string(),
+                };
+                let descriptor_digest = mx1_cell_descriptor_digest(harness, model, strategy)?;
+                let order_key_sha256 = mx1_length_prefixed_key(&[
+                    format!("{MX1_CONTRACT_ID}/randomization:v1"),
+                    rung.as_str().to_string(),
+                    task_id.to_string(),
+                    repetition.to_string(),
+                    descriptor_digest.clone(),
+                ]);
+                let cell_id = format!(
+                    "{}:{}:{}:{}:r{}",
+                    harness.descriptor_id,
+                    model.descriptor_id,
+                    strategy.descriptor_id,
+                    task_id,
+                    repetition
+                );
+                let disposition = if mx1_cell_supported(harness, model, strategy) {
+                    Mx1MatrixCellDisposition::Admitted
+                } else {
+                    Mx1MatrixCellDisposition::Incomparable(
+                        "unsupported_cross_product_cell".to_string(),
+                    )
+                };
+                cells.push(Mx1MatrixCell {
+                    cell_id,
+                    identity,
+                    descriptor_digest,
+                    disposition,
+                    order_key_sha256,
+                });
+            }
+        }
+    }
+    cells.sort_by(|left, right| {
+        left.order_key_sha256
+            .cmp(&right.order_key_sha256)
+            .then_with(|| left.cell_id.cmp(&right.cell_id))
+    });
+    let plan_seed = format!(
+        "{}|{}|{}|{}|{}",
+        manifest.manifest_sha256,
+        common_basis_sha256,
+        rung.as_str(),
+        task_id,
+        repetition
+    );
+    Ok(Mx1MatrixPlan {
+        schema_version: MX1_MATRIX_PLAN_SCHEMA_VERSION.to_string(),
+        plan_id: sha256_hex(&plan_seed),
+        manifest_sha256: manifest.manifest_sha256.clone(),
+        common_basis_sha256: common_basis_sha256.to_string(),
+        rung,
+        task_id: task_id.to_string(),
+        repetition,
+        cells,
+    })
+}
+
+/// Refuse a caller-supplied matrix plan unless it is the exact deterministic
+/// plan derived from the sealed manifest and fixed experiment inputs. This
+/// preserves the contract's randomization/order evidence at the read boundary
+/// too: a projection cannot silently accept a reordered, expanded, or
+/// cross-manifest cell list.
+pub fn validate_mx1_matrix_plan(
+    manifest: &Mx1DescriptorManifest,
+    plan: &Mx1MatrixPlan,
+) -> Result<(), EvolutionAdmissionError> {
+    validate_mx1_descriptor_manifest(manifest)?;
+    if plan.schema_version != MX1_MATRIX_PLAN_SCHEMA_VERSION {
+        return Err(mx1_error(
+            "mx1_matrix_schema",
+            "unsupported matrix plan schema",
+        ));
+    }
+    if plan.manifest_sha256 != manifest.manifest_sha256 {
+        return Err(mx1_error(
+            "mx1_matrix_manifest",
+            "matrix plan is bound to another descriptor manifest",
+        ));
+    }
+    let expected = build_mx1_matrix_plan(
+        manifest,
+        plan.rung,
+        &plan.task_id,
+        plan.repetition,
+        &plan.common_basis_sha256,
+    )?;
+    if &expected != plan {
+        return Err(mx1_error(
+            "mx1_matrix_plan_drift",
+            "matrix plan is not the deterministic sealed plan",
+        ));
+    }
+    Ok(())
+}
+
+/// Build the provider-free read model for a planned block. Missing evidence,
+/// `OutcomeUnknown`, descriptor mismatch, and unsupported cells stay explicit
+/// `INCOMPARABLE`; this function never infers an outcome or retries an effect.
+pub fn project_mx1_matrix_read_only(
+    manifest: &Mx1DescriptorManifest,
+    plan: &Mx1MatrixPlan,
+    observations: &[Mx1MatrixObservation],
+) -> Result<Mx1MatrixReadOnlyProjection, EvolutionAdmissionError> {
+    validate_mx1_matrix_plan(manifest, plan)?;
+    let harness_descriptor_digests = manifest
+        .harnesses
+        .iter()
+        .map(|descriptor| {
+            Ok((
+                descriptor.descriptor_id.as_str(),
+                mx1_descriptor_digest(descriptor)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, EvolutionAdmissionError>>()?;
+    let mut observations_by_cell = BTreeMap::new();
+    for observation in observations {
+        if observation.normalized_run.schema_version != MX1_NORMALIZED_RUN_SCHEMA_VERSION {
+            return Err(mx1_error(
+                "mx1_matrix_observation",
+                "normalized run schema is unsupported",
+            ));
+        }
+        if observations_by_cell
+            .insert(observation.cell_id.clone(), observation)
+            .is_some()
+        {
+            return Err(mx1_error(
+                "mx1_matrix_observation",
+                "duplicate normalized evidence for one matrix cell",
+            ));
+        }
+    }
+    let mut cells = Vec::with_capacity(plan.cells.len());
+    for cell in &plan.cells {
+        let (disposition, normalized_run) = match &cell.disposition {
+            Mx1MatrixCellDisposition::Incomparable(reason) => (
+                Mx1ReadOnlyCellDisposition::Incomparable(reason.clone()),
+                None,
+            ),
+            Mx1MatrixCellDisposition::Admitted => match observations_by_cell.get(&cell.cell_id) {
+                None => (
+                    Mx1ReadOnlyCellDisposition::Incomparable("evidence_missing".to_string()),
+                    None,
+                ),
+                Some(observation)
+                    if observation.normalized_run.matrix_plan_id != plan.plan_id
+                        || observation.normalized_run.matrix_manifest_sha256
+                            != plan.manifest_sha256
+                        || observation.normalized_run.matrix_rung != plan.rung
+                        || observation.normalized_run.matrix_repetition != plan.repetition
+                        || observation.normalized_run.common_basis_sha256
+                            != plan.common_basis_sha256 =>
+                {
+                    (
+                        Mx1ReadOnlyCellDisposition::Incomparable(
+                            "matrix_plan_identity_mismatch".to_string(),
+                        ),
+                        Some(observation.normalized_run.clone()),
+                    )
+                }
+                Some(observation) if observation.normalized_run.cell_id != cell.cell_id => (
+                    Mx1ReadOnlyCellDisposition::Incomparable("matrix_cell_id_mismatch".to_string()),
+                    Some(observation.normalized_run.clone()),
+                ),
+                Some(observation) if observation.normalized_run.cell_identity != cell.identity => (
+                    Mx1ReadOnlyCellDisposition::Incomparable("cell_identity_mismatch".to_string()),
+                    Some(observation.normalized_run.clone()),
+                ),
+                Some(observation)
+                    if observation.normalized_run.cell_descriptor_sha256
+                        != cell.descriptor_digest =>
+                {
+                    (
+                        Mx1ReadOnlyCellDisposition::Incomparable(
+                            "descriptor_digest_mismatch".to_string(),
+                        ),
+                        Some(observation.normalized_run.clone()),
+                    )
+                }
+                Some(observation)
+                    if harness_descriptor_digests.get(cell.identity.harness_id.as_str())
+                        != Some(&observation.normalized_run.harness_descriptor_sha256) =>
+                {
+                    (
+                        Mx1ReadOnlyCellDisposition::Incomparable(
+                            "harness_descriptor_digest_mismatch".to_string(),
+                        ),
+                        Some(observation.normalized_run.clone()),
+                    )
+                }
+                Some(observation)
+                    if observation.normalized_run.product_task_id != cell.identity.task_id =>
+                {
+                    (
+                        Mx1ReadOnlyCellDisposition::Incomparable(
+                            "product_task_identity_mismatch".to_string(),
+                        ),
+                        Some(observation.normalized_run.clone()),
+                    )
+                }
+                Some(observation)
+                    if observation.normalized_run.harness_id != cell.identity.harness_id =>
+                {
+                    (
+                        Mx1ReadOnlyCellDisposition::Incomparable(
+                            "harness_identity_mismatch".to_string(),
+                        ),
+                        Some(observation.normalized_run.clone()),
+                    )
+                }
+                Some(observation)
+                    if observation.normalized_run.terminal_outcome
+                        == ProductTaskStatus::OutcomeUnknown =>
+                {
+                    (
+                        Mx1ReadOnlyCellDisposition::Incomparable("outcome_unknown".to_string()),
+                        Some(observation.normalized_run.clone()),
+                    )
+                }
+                Some(observation)
+                    if observation.normalized_run.terminal_outcome
+                        == ProductTaskStatus::Completed
+                        && (observation
+                            .normalized_run
+                            .terminal_evidence_sha256
+                            .is_none()
+                            || observation.normalized_run.verified_deliverable
+                                != ProductHarnessEvidenceState::Observed) =>
+                {
+                    (
+                        Mx1ReadOnlyCellDisposition::Incomparable(
+                            "verified_delivery_evidence_missing".to_string(),
+                        ),
+                        Some(observation.normalized_run.clone()),
+                    )
+                }
+                Some(observation) => (
+                    Mx1ReadOnlyCellDisposition::Observed,
+                    Some(observation.normalized_run.clone()),
+                ),
+            },
+        };
+        cells.push(Mx1ReadOnlyCellProjection {
+            cell_id: cell.cell_id.clone(),
+            disposition,
+            normalized_run,
+        });
+    }
+    Ok(Mx1MatrixReadOnlyProjection {
+        schema_version: MX1_MATRIX_PROJECTION_SCHEMA_VERSION.to_string(),
+        plan_id: plan.plan_id.clone(),
+        manifest_sha256: plan.manifest_sha256.clone(),
+        cells,
+    })
+}
+
+/// The provider-free CORE manifest. All nonzero factors are fully identified
+/// here, but the manifest is default-off and contains no authority to execute a
+/// Provider call, create a workspace, allocate budget, or promote a Harness.
+pub fn sample_mx1_descriptor_manifest() -> Mx1DescriptorManifest {
+    let harness_ids = vec![
+        MX1_ARM_ZERO_HARNESS_ID.to_string(),
+        MX1_SECOND_HARNESS_ID.to_string(),
+    ];
+    let model_ids = vec![
+        MX1_SECOND_MODEL_ID.to_string(),
+        MX1_ARM_ZERO_MODEL_ID.to_string(),
+    ];
+    let strategy_ids = vec![
+        MX1_NO_PROJECTION_STRATEGY_ID.to_string(),
+        MX1_MEMORY_ONLY_STRATEGY_ID.to_string(),
+        MX1_SKILL_ONLY_STRATEGY_ID.to_string(),
+    ];
+    let mut sorted_harness_ids = harness_ids.clone();
+    let mut sorted_model_ids = model_ids.clone();
+    let mut sorted_strategy_ids = strategy_ids.clone();
+    sorted_harness_ids.sort();
+    sorted_model_ids.sort();
+    sorted_strategy_ids.sort();
+    let roles = |model: &str| {
+        BTreeMap::from([
+            ("planner".to_string(), model.to_string()),
+            ("implementer".to_string(), model.to_string()),
+            ("reviewer".to_string(), model.to_string()),
+        ])
+    };
+    let harness = |descriptor_id: &str,
+                   source_owner: &str,
+                   source_identity: String,
+                   admission_disposition: Mx1HarnessAdmissionDisposition| {
+        Mx1HarnessImplementationDescriptor {
+            schema_version: MX1_DESCRIPTOR_SCHEMA_VERSION.to_string(),
+            descriptor_id: descriptor_id.to_string(),
+            source_owner: source_owner.to_string(),
+            source_identity: source_identity.clone(),
+            version: if descriptor_id == MX1_ARM_ZERO_HARNESS_ID {
+                "v1".to_string()
+            } else {
+                "provider-free-adapter-v1".to_string()
+            },
+            build_identity_sha256: mx1_expected_harness_evidence_digest(
+                "build",
+                descriptor_id,
+                &source_identity,
+            ),
+            executable_identity_sha256: mx1_expected_harness_evidence_digest(
+                "executable",
+                descriptor_id,
+                &source_identity,
+            ),
+            capability_probe_sha256: mx1_expected_harness_evidence_digest(
+                "capability-probe",
+                descriptor_id,
+                &source_identity,
+            ),
+            shared_run_seam_version: PRODUCT_HARNESS_RUN_SEAM_SCHEMA_VERSION.to_string(),
+            supported_task_capabilities: vec![
+                "failure".to_string(),
+                "restart".to_string(),
+                "terminal-evidence".to_string(),
+                "workspace-confinement".to_string(),
+            ],
+            supported_tool_capabilities: vec![
+                "bounded-tools".to_string(),
+                "no-provider-execution-in-core".to_string(),
+            ],
+            process_confinement: if descriptor_id == MX1_ARM_ZERO_HARNESS_ID {
+                "engine-owned-no-exec-in-core".to_string()
+            } else {
+                "product-owned-confined-subprocess;core-no-spawn".to_string()
+            },
+            workspace_confinement: "product-workspace-binding-digest".to_string(),
+            terminal_outcome_mapping: "product-task-status".to_string(),
+            verified_deliverable_mapping: "product-terminal-evidence".to_string(),
+            usage_cost_mapping: "existing-product-usage-and-cost-owners".to_string(),
+            cancellation_mapping: "product-task-killed-state".to_string(),
+            cleanup_mapping: "product-terminal-cleanup-evidence".to_string(),
+            restart_mapping: "product-terminal-restart-evidence".to_string(),
+            retry_mapping: "model-plan-max-retries".to_string(),
+            failure_mapping: "product-task-failure-code-digest".to_string(),
+            outcome_unknown_mapping: "product-task-outcome-unknown".to_string(),
+            license_id: "Apache-2.0".to_string(),
+            sbom_sha256: mx1_expected_harness_evidence_digest(
+                "sbom",
+                descriptor_id,
+                &source_identity,
+            ),
+            provenance_sha256: mx1_expected_harness_evidence_digest(
+                "provenance",
+                descriptor_id,
+                &source_identity,
+            ),
+            supported_model_ids: sorted_model_ids.clone(),
+            supported_strategy_ids: sorted_strategy_ids.clone(),
+            default_off: true,
+            rollback_binding_sha256: mx1_expected_harness_evidence_digest(
+                "rollback",
+                descriptor_id,
+                &source_identity,
+            ),
+            admission_disposition,
+        }
+    };
+    let model = |descriptor_id: &str, resolved_model_id: &str| Mx1ModelPlanDescriptor {
+        schema_version: MX1_DESCRIPTOR_SCHEMA_VERSION.to_string(),
+        descriptor_id: descriptor_id.to_string(),
+        requested_model_id: resolved_model_id.to_string(),
+        resolved_model_id: resolved_model_id.to_string(),
+        provider: "deepseek".to_string(),
+        protocol: "openai_compatible".to_string(),
+        endpoint: MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT.to_string(),
+        endpoint_allowlist: vec![MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT.to_string()],
+        admitted_profile_sha256: mx1_expected_model_evidence_digest(
+            "admitted-profile",
+            descriptor_id,
+        ),
+        credential_reference_name: MX1_DEEPSEEK_CREDENTIAL_REFERENCE.to_string(),
+        role_order: vec![
+            "planner".to_string(),
+            "implementer".to_string(),
+            "reviewer".to_string(),
+        ],
+        role_assignments: roles(resolved_model_id),
+        max_provider_requests: 3,
+        max_input_tokens: 12_000,
+        max_output_tokens: 8_192,
+        max_total_tokens: 20_192,
+        max_retries: 0,
+        max_wall_time_ms: 900_000,
+        tokenizer_identity: "deepseek-tokenizer-current".to_string(),
+        usage_mapping: "existing-execution-usage-owner".to_string(),
+        pricing_currency: "USD".to_string(),
+        pricing_unit: "per-token".to_string(),
+        pricing_source_sha256: mx1_expected_model_evidence_digest("pricing-source", descriptor_id),
+        pricing_effective_date: "2026-08-24".to_string(),
+        lifecycle_cost_mapping: "existing-product-usage-and-cost-owners".to_string(),
+        supported_harness_ids: sorted_harness_ids.clone(),
+        supported_strategy_ids: sorted_strategy_ids.clone(),
+        missing_identity_disposition: "incomparable".to_string(),
+        missing_usage_disposition: "incomparable".to_string(),
+    };
+    let strategy = |descriptor_id: &str, projection: Option<Mx1ProjectionDescriptor>| {
+        Mx1StrategyPlanDescriptor {
+            schema_version: MX1_DESCRIPTOR_SCHEMA_VERSION.to_string(),
+            descriptor_id: descriptor_id.to_string(),
+            strategy_kind: "single-pass-plan-implement-review".to_string(),
+            composition_order: vec![
+                "plan".to_string(),
+                "implement".to_string(),
+                "review".to_string(),
+            ],
+            source_identity: mx1_confined_adapter_package_sha256(),
+            source_identity_sha256: sha256_hex(&mx1_confined_adapter_package_sha256()),
+            projection,
+            admitted_input_class: "redacted-digest-reference".to_string(),
+            redaction_class: "digest-only".to_string(),
+            cross_task_isolation: true,
+            cross_arm_isolation: true,
+            leakage_scan_sha256: mx1_expected_strategy_evidence_digest("leakage", descriptor_id),
+            prompt_policy_sha256: mx1_expected_strategy_evidence_digest(
+                "prompt-policy",
+                descriptor_id,
+            ),
+            tool_policy_sha256: mx1_expected_strategy_evidence_digest("tool-policy", descriptor_id),
+            retry_policy_sha256: mx1_expected_strategy_evidence_digest(
+                "retry-policy",
+                descriptor_id,
+            ),
+            compression_policy_sha256: mx1_expected_strategy_evidence_digest(
+                "compression-policy",
+                descriptor_id,
+            ),
+            no_authority: true,
+            supported_harness_ids: sorted_harness_ids.clone(),
+            supported_model_ids: sorted_model_ids.clone(),
+        }
+    };
+    seal_mx1_descriptor_manifest(Mx1DescriptorManifest {
+        schema_version: MX1_DESCRIPTOR_MANIFEST_SCHEMA_VERSION.to_string(),
+        contract_id: MX1_CONTRACT_ID.to_string(),
+        harnesses: vec![
+            harness(
+                MX1_ARM_ZERO_HARNESS_ID,
+                "rust-engine-product-golden-path",
+                "075f995b574fb8a28f08986291751152bf158dd5".to_string(),
+                Mx1HarnessAdmissionDisposition::EmbedBehindSeam,
+            ),
+            harness(
+                MX1_SECOND_HARNESS_ID,
+                "rust-engine-harness-evolution",
+                mx1_confined_adapter_package_sha256(),
+                Mx1HarnessAdmissionDisposition::ConfinedSubprocess,
+            ),
+        ],
+        models: vec![
+            model(MX1_ARM_ZERO_MODEL_ID, "deepseek-v4-pro"),
+            model(MX1_SECOND_MODEL_ID, "deepseek-v4-flash"),
+        ],
+        strategies: vec![
+            strategy(MX1_NO_PROJECTION_STRATEGY_ID, None),
+            strategy(
+                MX1_MEMORY_ONLY_STRATEGY_ID,
+                Some(Mx1ProjectionDescriptor {
+                    kind: Mx1ProjectionKind::Memory,
+                    source_kind: Mx1ProjectionSourceKind::ArtifactRef,
+                    source_handle: "artifact:mx1-memory-projection-v1".to_string(),
+                    content_sha256: mx1_expected_strategy_evidence_digest(
+                        "projection-content",
+                        MX1_MEMORY_ONLY_STRATEGY_ID,
+                    ),
+                    expires_at_unix_ms: 4_102_444_800_000,
+                    deletion_recipe_sha256: mx1_expected_strategy_evidence_digest(
+                        "projection-delete",
+                        MX1_MEMORY_ONLY_STRATEGY_ID,
+                    ),
+                    rebuild_recipe_sha256: mx1_expected_strategy_evidence_digest(
+                        "projection-rebuild",
+                        MX1_MEMORY_ONLY_STRATEGY_ID,
+                    ),
+                }),
+            ),
+            strategy(
+                MX1_SKILL_ONLY_STRATEGY_ID,
+                Some(Mx1ProjectionDescriptor {
+                    kind: Mx1ProjectionKind::Skill,
+                    source_kind: Mx1ProjectionSourceKind::GitBlob,
+                    source_handle: "git:mx1-skill-projection-v1".to_string(),
+                    content_sha256: mx1_expected_strategy_evidence_digest(
+                        "projection-content",
+                        MX1_SKILL_ONLY_STRATEGY_ID,
+                    ),
+                    expires_at_unix_ms: 4_102_444_800_000,
+                    deletion_recipe_sha256: mx1_expected_strategy_evidence_digest(
+                        "projection-delete",
+                        MX1_SKILL_ONLY_STRATEGY_ID,
+                    ),
+                    rebuild_recipe_sha256: mx1_expected_strategy_evidence_digest(
+                        "projection-rebuild",
+                        MX1_SKILL_ONLY_STRATEGY_ID,
+                    ),
+                }),
+            ),
+        ],
+        manifest_sha256: String::new(),
+    })
+    .expect("the built-in MX1 provider-free descriptor manifest is valid")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -4399,5 +6526,523 @@ mod tests {
             reconciliation.terminal_reason,
             Some(CandidateTerminalReason::RejectedLifecycleBudgetOverrun)
         );
+    }
+
+    fn mx1_product_run(status: ProductTaskStatus) -> ProductHarnessRunEvidence {
+        let terminal = if status == ProductTaskStatus::Completed {
+            let mut evidence = json!({
+                "schema_version": "product_task_terminal_evidence.v2",
+                "product_task_id": "mx1-task",
+                "task_status": "completed",
+                "workspace_scope_id": "mx1-workspace-scope",
+                "source_revision": "0123456789abcdef0123456789abcdef01234567",
+                "verification": {"trustworthy": true, "status": "evidence_recorded"},
+                "usage": {"tokens": 17},
+                "cost": {"microunits": 19},
+                "cleanup": {"status": "complete"},
+                "restart": {"status": "not_observed"},
+                "recovery": {"status": "reconciled"},
+                "raw_output": "never-projected",
+                "content_sha256": null,
+            });
+            let digest = hex::encode(Sha256::digest(serde_json::to_vec(&evidence).unwrap()));
+            evidence["content_sha256"] = Value::String(digest);
+            Some(evidence)
+        } else {
+            None
+        };
+        crate::product_golden_path::project_product_harness_run(
+            &json!({
+                "task_id": "mx1-task",
+                "status": status.as_str(),
+                "workspace_id": "mx1-workspace-scope",
+                "workspace_binding": {
+                    "workspace_id": "mx1-workspace",
+                    "workspace_path": "/private/mx1-workspace",
+                    "source_revision": "0123456789abcdef0123456789abcdef01234567",
+                    "allowed_paths": ["engine/src/harness_evolution.rs"]
+                },
+                "failure_code": if status == ProductTaskStatus::Failed {
+                    Value::String("execution_failed".to_string())
+                } else {
+                    Value::Null
+                },
+                "failure_detail": if status == ProductTaskStatus::Failed {
+                    Value::String("private process detail".to_string())
+                } else {
+                    Value::Null
+                }
+            }),
+            terminal.as_ref(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn mx1_manifest_is_exact_and_rejects_descriptor_drift() {
+        let manifest = sample_mx1_descriptor_manifest();
+        validate_mx1_descriptor_manifest(&manifest).unwrap();
+        let duplicate = sample_mx1_descriptor_manifest();
+        assert_eq!(manifest.manifest_sha256, duplicate.manifest_sha256);
+
+        let mut drifted = manifest.clone();
+        drifted.models[0].max_input_tokens = 1;
+        assert_eq!(
+            validate_mx1_descriptor_manifest(&drifted).unwrap_err().code,
+            "mx1_model_budget_drift"
+        );
+
+        let mut arm_zero_drifted = manifest.clone();
+        arm_zero_drifted
+            .harnesses
+            .iter_mut()
+            .find(|descriptor| descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+            .unwrap()
+            .source_identity = "f".repeat(40);
+        assert_eq!(
+            validate_mx1_descriptor_manifest(&arm_zero_drifted)
+                .unwrap_err()
+                .code,
+            "mx1_harness_identity"
+        );
+
+        let mut endpoint_drifted = manifest.clone();
+        endpoint_drifted.models[0].endpoint = "https://other.example/v1".to_string();
+        endpoint_drifted.models[0].endpoint_allowlist =
+            vec!["https://other.example/v1".to_string()];
+        assert_eq!(
+            seal_mx1_descriptor_manifest(endpoint_drifted)
+                .unwrap_err()
+                .code,
+            "mx1_model_identity"
+        );
+
+        let mut confined_harness_drifted = manifest.clone();
+        confined_harness_drifted
+            .harnesses
+            .iter_mut()
+            .find(|descriptor| descriptor.descriptor_id == MX1_SECOND_HARNESS_ID)
+            .unwrap()
+            .process_confinement = "none".to_string();
+        assert_eq!(
+            seal_mx1_descriptor_manifest(confined_harness_drifted)
+                .unwrap_err()
+                .code,
+            "mx1_harness_identity"
+        );
+
+        let mut strategy_source_drifted = manifest.clone();
+        strategy_source_drifted.strategies[0].source_identity = "0".repeat(64);
+        strategy_source_drifted.strategies[0].source_identity_sha256 =
+            sha256_hex(&strategy_source_drifted.strategies[0].source_identity);
+        assert_eq!(
+            validate_mx1_descriptor_manifest(&strategy_source_drifted)
+                .unwrap_err()
+                .code,
+            "mx1_strategy_identity"
+        );
+    }
+
+    #[test]
+    fn mx1_harness_adapters_share_the_product_golden_path_run_contract() {
+        let manifest = sample_mx1_descriptor_manifest();
+        let basis = sha256_hex("mx1-common-basis");
+        let plan = build_mx1_matrix_plan(
+            &manifest,
+            Mx1MatrixRung::TwoByTwoByThree,
+            "mx1-task",
+            1,
+            &basis,
+        )
+        .unwrap();
+        let arm_zero = manifest
+            .harnesses
+            .iter()
+            .find(|descriptor| descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+            .unwrap()
+            .clone();
+        let second = manifest
+            .harnesses
+            .iter()
+            .find(|descriptor| descriptor.descriptor_id != MX1_ARM_ZERO_HARNESS_ID)
+            .unwrap()
+            .clone();
+        let evidence = mx1_product_run(ProductTaskStatus::Completed);
+        let left_cell = plan
+            .cells
+            .iter()
+            .find(|cell| cell.identity.harness_id == MX1_ARM_ZERO_HARNESS_ID)
+            .unwrap();
+        let right_cell = plan
+            .cells
+            .iter()
+            .find(|cell| cell.identity.harness_id == MX1_SECOND_HARNESS_ID)
+            .unwrap();
+        let left = Mx1EngineManagedHarnessAdapter::new(arm_zero)
+            .unwrap()
+            .normalize_run(&plan, left_cell, &evidence)
+            .unwrap();
+        let right = Mx1ConfinedSubprocessHarnessAdapter::new(second)
+            .unwrap()
+            .normalize_run(&plan, right_cell, &evidence)
+            .unwrap();
+        assert_ne!(left.harness_id, right.harness_id);
+        assert_eq!(left.product_task_id, right.product_task_id);
+        assert_eq!(
+            left.workspace_binding_sha256,
+            right.workspace_binding_sha256
+        );
+        assert_eq!(left.terminal_outcome, right.terminal_outcome);
+        assert_eq!(left.verified_deliverable, right.verified_deliverable);
+        assert_eq!(left.usage, right.usage);
+        assert_eq!(left.cost, right.cost);
+        assert_eq!(left.cancellation, right.cancellation);
+        assert_eq!(left.cleanup, right.cleanup);
+        assert_eq!(left.restart, right.restart);
+        assert_eq!(left.recovery, right.recovery);
+        assert_eq!(left.failure, right.failure);
+        assert!(!serde_json::to_string(&left).unwrap().contains("/private/"));
+    }
+
+    #[test]
+    fn mx1_projection_leases_enforce_expiry_rebuild_deletion_and_arm_isolation() {
+        let manifest = sample_mx1_descriptor_manifest();
+        let strategy = manifest
+            .strategies
+            .iter()
+            .find(|descriptor| descriptor.descriptor_id == MX1_MEMORY_ONLY_STRATEGY_ID)
+            .unwrap()
+            .clone();
+        let adapter = Mx1StrategyAdapter::new(strategy.clone()).unwrap();
+        let identity = Mx1CellIdentity {
+            harness_id: MX1_ARM_ZERO_HARNESS_ID.to_string(),
+            model_id: MX1_ARM_ZERO_MODEL_ID.to_string(),
+            strategy_id: strategy.descriptor_id.clone(),
+            task_id: "mx1-task-a".to_string(),
+        };
+        let mut lease = adapter.prepare_projection(&identity, 1).unwrap().unwrap();
+        adapter.validate_projection(&lease, &identity, 1).unwrap();
+        let rebuilt = adapter
+            .rebuild_projection(
+                &identity,
+                &strategy.projection.as_ref().unwrap().content_sha256,
+                1,
+            )
+            .unwrap();
+        assert_eq!(rebuilt, lease);
+        let cross_task = Mx1CellIdentity {
+            task_id: "mx1-task-b".to_string(),
+            ..identity.clone()
+        };
+        assert_eq!(
+            adapter
+                .validate_projection(&lease, &cross_task, 1)
+                .unwrap_err()
+                .code,
+            "mx1_projection_cross_arm_or_source_drift"
+        );
+        adapter.delete_projection(&mut lease).unwrap();
+        assert_eq!(
+            adapter
+                .validate_projection(&lease, &identity, 1)
+                .unwrap_err()
+                .code,
+            "mx1_projection_deleted"
+        );
+        assert_eq!(
+            adapter
+                .prepare_projection(&identity, strategy.projection.unwrap().expires_at_unix_ms)
+                .unwrap_err()
+                .code,
+            "mx1_projection_expired"
+        );
+    }
+
+    #[test]
+    fn mx1_matrix_is_deterministic_and_never_coerces_unsupported_or_unknown_cells() {
+        let manifest = sample_mx1_descriptor_manifest();
+        let basis = sha256_hex("mx1-common-basis");
+        let plan = build_mx1_matrix_plan(
+            &manifest,
+            Mx1MatrixRung::TwoByTwoByThree,
+            "mx1-task",
+            1,
+            &basis,
+        )
+        .unwrap();
+        let same_plan = build_mx1_matrix_plan(
+            &manifest,
+            Mx1MatrixRung::TwoByTwoByThree,
+            "mx1-task",
+            1,
+            &basis,
+        )
+        .unwrap();
+        assert_eq!(plan, same_plan);
+        assert_eq!(plan.cells.len(), 12);
+        assert_eq!(
+            build_mx1_matrix_plan(
+                &manifest,
+                Mx1MatrixRung::OneByTwoByOne,
+                "mx1-task",
+                1,
+                &basis,
+            )
+            .unwrap()
+            .cells
+            .len(),
+            2
+        );
+        assert_eq!(
+            build_mx1_matrix_plan(
+                &manifest,
+                Mx1MatrixRung::OneByTwoByThree,
+                "mx1-task",
+                1,
+                &basis,
+            )
+            .unwrap()
+            .cells
+            .len(),
+            6
+        );
+        let mut reordered = plan.clone();
+        reordered.cells.reverse();
+        assert_eq!(
+            validate_mx1_matrix_plan(&manifest, &reordered)
+                .unwrap_err()
+                .code,
+            "mx1_matrix_plan_drift"
+        );
+
+        let arm_zero = manifest
+            .harnesses
+            .iter()
+            .find(|descriptor| descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+            .unwrap()
+            .clone();
+        let target = plan
+            .cells
+            .iter()
+            .find(|cell| {
+                cell.identity.harness_id == MX1_ARM_ZERO_HARNESS_ID
+                    && cell.disposition == Mx1MatrixCellDisposition::Admitted
+            })
+            .unwrap();
+        let unknown = Mx1EngineManagedHarnessAdapter::new(arm_zero)
+            .unwrap()
+            .normalize_run(
+                &plan,
+                target,
+                &mx1_product_run(ProductTaskStatus::OutcomeUnknown),
+            )
+            .unwrap();
+        let projection = project_mx1_matrix_read_only(
+            &manifest,
+            &plan,
+            &[Mx1MatrixObservation {
+                cell_id: target.cell_id.clone(),
+                normalized_run: unknown,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            projection
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id == target.cell_id)
+                .unwrap()
+                .disposition,
+            Mx1ReadOnlyCellDisposition::Incomparable("outcome_unknown".to_string())
+        );
+
+        let mut descriptor_drift = Mx1EngineManagedHarnessAdapter::new(
+            manifest
+                .harnesses
+                .iter()
+                .find(|descriptor| descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+                .unwrap()
+                .clone(),
+        )
+        .unwrap()
+        .normalize_run(
+            &plan,
+            target,
+            &mx1_product_run(ProductTaskStatus::Completed),
+        )
+        .unwrap();
+        descriptor_drift.cell_descriptor_sha256 = sha256_hex("wrong-mx1-cell-descriptor");
+        let projection = project_mx1_matrix_read_only(
+            &manifest,
+            &plan,
+            &[Mx1MatrixObservation {
+                cell_id: target.cell_id.clone(),
+                normalized_run: descriptor_drift,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            projection
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id == target.cell_id)
+                .unwrap()
+                .disposition,
+            Mx1ReadOnlyCellDisposition::Incomparable("descriptor_digest_mismatch".to_string())
+        );
+
+        let repetition_two = build_mx1_matrix_plan(
+            &manifest,
+            Mx1MatrixRung::TwoByTwoByThree,
+            "mx1-task",
+            2,
+            &basis,
+        )
+        .unwrap();
+        let repetition_two_target = repetition_two
+            .cells
+            .iter()
+            .find(|cell| cell.identity == target.identity)
+            .unwrap();
+        let replayed_repetition = Mx1EngineManagedHarnessAdapter::new(
+            manifest
+                .harnesses
+                .iter()
+                .find(|descriptor| descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+                .unwrap()
+                .clone(),
+        )
+        .unwrap()
+        .normalize_run(
+            &plan,
+            target,
+            &mx1_product_run(ProductTaskStatus::Completed),
+        )
+        .unwrap();
+        let projection = project_mx1_matrix_read_only(
+            &manifest,
+            &repetition_two,
+            &[Mx1MatrixObservation {
+                cell_id: repetition_two_target.cell_id.clone(),
+                normalized_run: replayed_repetition,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            projection
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id == repetition_two_target.cell_id)
+                .unwrap()
+                .disposition,
+            Mx1ReadOnlyCellDisposition::Incomparable("matrix_plan_identity_mismatch".to_string())
+        );
+
+        let different_basis = build_mx1_matrix_plan(
+            &manifest,
+            Mx1MatrixRung::TwoByTwoByThree,
+            "mx1-task",
+            1,
+            &sha256_hex("other-mx1-common-basis"),
+        )
+        .unwrap();
+        let different_basis_target = different_basis
+            .cells
+            .iter()
+            .find(|cell| cell.identity == target.identity)
+            .unwrap();
+        let replayed_basis = Mx1EngineManagedHarnessAdapter::new(
+            manifest
+                .harnesses
+                .iter()
+                .find(|descriptor| descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+                .unwrap()
+                .clone(),
+        )
+        .unwrap()
+        .normalize_run(
+            &plan,
+            target,
+            &mx1_product_run(ProductTaskStatus::Completed),
+        )
+        .unwrap();
+        let projection = project_mx1_matrix_read_only(
+            &manifest,
+            &different_basis,
+            &[Mx1MatrixObservation {
+                cell_id: different_basis_target.cell_id.clone(),
+                normalized_run: replayed_basis,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            projection
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id == different_basis_target.cell_id)
+                .unwrap()
+                .disposition,
+            Mx1ReadOnlyCellDisposition::Incomparable("matrix_plan_identity_mismatch".to_string())
+        );
+
+        let mut missing_terminal = mx1_product_run(ProductTaskStatus::Completed);
+        missing_terminal.terminal_evidence_sha256 = None;
+        missing_terminal.verified_deliverable = ProductHarnessEvidenceState::Unavailable;
+        let missing_delivery = Mx1EngineManagedHarnessAdapter::new(
+            manifest
+                .harnesses
+                .iter()
+                .find(|descriptor| descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+                .unwrap()
+                .clone(),
+        )
+        .unwrap()
+        .normalize_run(&plan, target, &missing_terminal)
+        .unwrap();
+        let projection = project_mx1_matrix_read_only(
+            &manifest,
+            &plan,
+            &[Mx1MatrixObservation {
+                cell_id: target.cell_id.clone(),
+                normalized_run: missing_delivery,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            projection
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id == target.cell_id)
+                .unwrap()
+                .disposition,
+            Mx1ReadOnlyCellDisposition::Incomparable(
+                "verified_delivery_evidence_missing".to_string()
+            )
+        );
+
+        let mut unsupported = manifest.clone();
+        unsupported
+            .models
+            .iter_mut()
+            .find(|descriptor| descriptor.descriptor_id.contains("flash"))
+            .unwrap()
+            .supported_strategy_ids
+            .retain(|strategy_id| !strategy_id.contains("skill-only"));
+        let unsupported = seal_mx1_descriptor_manifest(unsupported).unwrap();
+        let unsupported_plan = build_mx1_matrix_plan(
+            &unsupported,
+            Mx1MatrixRung::TwoByTwoByThree,
+            "mx1-task",
+            1,
+            &basis,
+        )
+        .unwrap();
+        assert!(unsupported_plan.cells.iter().any(|cell| {
+            matches!(
+                cell.disposition,
+                Mx1MatrixCellDisposition::Incomparable(ref reason)
+                    if reason == "unsupported_cross_product_cell"
+            )
+        }));
     }
 }
