@@ -2830,10 +2830,64 @@ impl LocalProductStore {
             .get("artifact_confirmation_sha256")
             .and_then(Value::as_str)
             .ok_or("delegated artifact confirmation hash is missing")?;
-        let draft_pr = terminal_evidence
-            .pointer("/output/draft_pr")
-            .filter(|value| value.is_object())
-            .ok_or("delegated terminal evidence requires a Draft PR")?;
+        let output_intent = terminal_evidence
+            .pointer("/output/intent")
+            .and_then(Value::as_str)
+            .ok_or("delegated terminal output intent is missing")?;
+        // Output modes are terminal-specific and mutually exclusive: a
+        // completed Draft PR for draft_pr output, or the durable artifact-only
+        // receipt re-read from the persisted artifact owner with no network
+        // effect. Mixed or unknown modes fail closed.
+        let (draft_pr, artifact_receipt) = match output_intent {
+            "draft_pr" => {
+                if terminal_evidence.pointer("/output/receipt_id").is_some() {
+                    return Err("delegated terminal output evidence mixes output modes".into());
+                }
+                let draft_pr = terminal_evidence
+                    .pointer("/output/draft_pr")
+                    .filter(|value| value.is_object())
+                    .ok_or("delegated terminal evidence requires a completed Draft PR")?;
+                (Some(draft_pr), None)
+            }
+            "artifact_only" => {
+                // Null placeholders are part of the committed evidence shape;
+                // only materialized network-effect values are forbidden.
+                let carries_network_effect = |pointer: &str| -> bool {
+                    terminal_evidence
+                        .pointer(pointer)
+                        .is_some_and(|value| !value.is_null())
+                };
+                if carries_network_effect("/output/draft_pr")
+                    || carries_network_effect("/output/branch")
+                    || carries_network_effect("/output/pushed_commit")
+                {
+                    return Err(
+                        "artifact-only delegated terminal must not carry network output effects"
+                            .into(),
+                    );
+                }
+                let receipt_id = terminal_evidence
+                    .pointer("/output/receipt_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or(
+                        "delegated terminal requires the durable artifact-only receipt identity",
+                    )?;
+                let result_sha256 = terminal_evidence
+                    .pointer("/output/result_sha256")
+                    .and_then(Value::as_str)
+                    .filter(|value| {
+                        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+                    .ok_or("delegated terminal artifact-only receipt hash is missing")?;
+                (None, Some((receipt_id, result_sha256)))
+            }
+            other => {
+                return Err(format!(
+                    "delegated terminal output intent is unsupported: {other}"
+                ))
+            }
+        };
         if approval
             .get("artifact_confirmation_sha256")
             .and_then(Value::as_str)
@@ -2846,14 +2900,62 @@ impl LocalProductStore {
                 .pointer("/output/draft_pr_only")
                 .and_then(Value::as_bool)
                 != Some(true)
-            || draft_pr.get("draft").and_then(Value::as_bool) != Some(true)
-            || draft_pr
-                .get("head_branch")
-                .and_then(Value::as_str)
-                .is_none_or(|branch| !branch.starts_with("acp/"))
+            || draft_pr.is_some_and(|draft_pr| {
+                draft_pr.get("draft").and_then(Value::as_bool) != Some(true)
+                    || draft_pr
+                        .get("head_branch")
+                        .and_then(Value::as_str)
+                        .is_none_or(|branch| !branch.starts_with("acp/"))
+            })
         {
             return Err("delegated terminal output evidence is stale or outside policy".into());
         }
+        let persisted_artifact_receipt = if let Some((receipt_id, result_sha256)) = artifact_receipt
+        {
+            let source_revision = task
+                .pointer("/workspace_binding/source_revision")
+                .and_then(Value::as_str)
+                .ok_or("delegated terminal source revision is missing")?;
+            let workspace_record_id = task
+                .get("workspace_record_id")
+                .and_then(Value::as_str)
+                .ok_or("delegated terminal workspace identity is missing")?;
+            let artifact = self.current_product_task_artifact(
+                product_task_id,
+                run_id,
+                workspace_record_id,
+                source_revision,
+            )?;
+            let receipt = artifact
+                .get("product_output_receipt")
+                .filter(|value| value.is_object())
+                .ok_or("durable artifact-only output receipt is missing")?;
+            if receipt.get("schema_version").and_then(Value::as_str)
+                != Some("product_output_receipt.v1")
+                || receipt.get("receipt_id").and_then(Value::as_str) != Some(receipt_id)
+                || receipt.get("state").and_then(Value::as_str) != Some("completed")
+                || receipt.get("output_intent").and_then(Value::as_str) != Some("artifact_only")
+                || receipt.get("output_sha256").and_then(Value::as_str) != Some(result_sha256)
+                || receipt.get("approval_id").and_then(Value::as_str) != Some(approval_id)
+                || receipt.pointer("/output/mode").and_then(Value::as_str) != Some("artifact_only")
+                || receipt
+                    .pointer("/output/target_mutation")
+                    .and_then(Value::as_bool)
+                    != Some(false)
+            {
+                return Err(
+                    "durable artifact-only output receipt does not match the terminal evidence"
+                        .into(),
+                );
+            }
+            Some(json!({
+                "receipt_id": receipt_id,
+                "output_result_sha256": result_sha256,
+                "target_mutation": false,
+            }))
+        } else {
+            None
+        };
         let workspace_id = task
             .get("workspace_record_id")
             .and_then(Value::as_str)
@@ -2866,7 +2968,7 @@ impl LocalProductStore {
             .get("realized_cost_usd")
             .and_then(Value::as_f64)
             .ok_or("delegated artifact confirmation realized cost is missing")?;
-        let receipt = json!({
+        let mut receipt = json!({
             "schema_version": "managed_delegated_terminal_evidence.v1",
             "product_task_id": product_task_id,
             "workflow_run_id": run_id,
@@ -2874,10 +2976,21 @@ impl LocalProductStore {
             "artifact_confirmation_sha256": confirmation_sha256,
             "product_terminal_evidence_id": evidence_id,
             "provider_requests": 3,
-            "draft_pr": draft_pr,
+            "output_intent": output_intent,
             "cleanup_status": cleanup.get("status"),
             "target_main_sha": confirmation.get("target_main_sha"),
         });
+        match (draft_pr, artifact_receipt, persisted_artifact_receipt) {
+            (Some(draft_pr), None, None) => {
+                receipt["draft_pr"] = draft_pr.clone();
+            }
+            (None, Some((receipt_id, result_sha256)), Some(persisted)) => {
+                receipt["artifact_output_receipt"] = persisted;
+                receipt["artifact_output_receipt_id"] = json!(receipt_id);
+                receipt["output_result_sha256"] = json!(result_sha256);
+            }
+            _ => return Err("delegated terminal output mode is ambiguous".into()),
+        }
         let terminal = self.complete_delegated_attempt(
             delegation_id,
             attempt_id,
