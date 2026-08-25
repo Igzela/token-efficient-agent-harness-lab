@@ -64,7 +64,7 @@ class TestExactHeadAction(unittest.TestCase):
         self.assertIn('allow-fork-head: "true"', text)
         self.assertIn("issues: read", text)
         self.assertIn("require-review-receipt:", text)
-        self.assertIn("github.event.pull_request.draft == false", text)
+        self.assertIn("github.event.action == 'ready_for_review'", text)
         self.assertNotIn("uses: ./actions/exact-head-check", text)
 
     def test_example_workflow_present(self):
@@ -154,12 +154,21 @@ class TestExactHeadAction(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("review_receipt_not_for_current_head", result.stderr)
 
-    def test_mocked_multiple_current_and_stale_receipts_fail_closed(self):
+    def test_mocked_multiple_current_receipts_fail_closed(self):
         result = self._run_verify(
-            issue_comments=[self._receipt(), self._receipt(reviewed_sha="c" * 40)]
+            issue_comments=[self._receipt(), self._receipt()]
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("exactly one receipt marker", result.stderr)
+        self.assertIn("multiple_current_head_review_receipts", result.stderr)
+
+    def test_mocked_malformed_current_receipt_fails_closed(self):
+        malformed = self._receipt()
+        malformed["body"] = malformed["body"].replace(
+            "Outcome: PASS", "Outcome: MAYBE"
+        )
+        result = self._run_verify(issue_comments=[malformed])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("review_outcome_is_not_exact_pass", result.stderr)
 
     def test_mocked_authenticated_identity_mismatch_fails_closed(self):
         result = self._run_verify(issue_comments=[self._receipt(author="OtherUser")])

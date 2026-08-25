@@ -135,16 +135,6 @@ def flatten(path: Path):
 issue_comments = flatten(tmp / "issue-comments.json")
 review_comments = flatten(tmp / "review-comments.json")
 reviews = flatten(tmp / "reviews.json")
-marker = module.REVIEW_RECEIPT_MARKER
-receipt_marker_count = sum(
-    str(item.get("body") or "").count(marker)
-    for item in issue_comments + review_comments
-)
-if receipt_marker_count != 1:
-    raise SystemExit(
-        "exact-head review receipt invalid: expected exactly one receipt marker, "
-        f"observed {receipt_marker_count}"
-    )
 states = {str(item.get("state") or "").upper() for item in reviews}
 aggregate = "CHANGES_REQUESTED" if "CHANGES_REQUESTED" in states else "APPROVED" if "APPROVED" in states else "REVIEW_REQUIRED"
 observation = module._build_review_observation(
