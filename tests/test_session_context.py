@@ -527,6 +527,41 @@ class PacketExtractionTests(unittest.TestCase):
                 document, accepted_status_document(), MAIN
             )
 
+    def test_delta_named_file_missing_from_capsule_fails_closed(self):
+        document = next_document_with_dispatch(
+            allowed_paths=["docs/"],
+        )
+        document = document.replace(
+            "**Allowed delta:** docs/, scripts/, tests/.",
+            "**Allowed delta:** `docs/NEXT_DECISION.md` and `tests/test_session_context.py`.",
+        )
+        with self.assertRaisesRegex(
+            session_context.SessionContextError,
+            "packet_allowed_paths_binding_invalid",
+        ):
+            session_context.current_packet_binding(
+                document, accepted_status_document(), MAIN
+            )
+
+    def test_delta_named_files_bound_by_capsule_are_accepted(self):
+        document = next_document_with_dispatch(
+            allowed_paths=[
+                "docs/NEXT_DECISION.md",
+                "tests/test_session_context.py",
+                "docs/",
+                "scripts/",
+                "tests/",
+            ],
+        )
+        document = document.replace(
+            "**Allowed delta:** docs/, scripts/, tests/.",
+            "**Allowed delta:** `docs/NEXT_DECISION.md`, `tests/test_session_context.py`, `docs/`, `scripts/`, `tests/`.",
+        )
+        packet = session_context.current_packet_binding(
+            document, accepted_status_document(), MAIN
+        )
+        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
+
     def test_forbidden_path_mentioned_after_allowed_delta_is_not_authority(self):
         document = next_document_with_dispatch(allowed_paths=["tests.yml"])
         document = document.replace(

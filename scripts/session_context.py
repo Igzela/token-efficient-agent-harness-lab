@@ -1564,6 +1564,26 @@ def _packet_contract_binding(
         for path in capsule_allowed
     ):
         raise SessionContextError("packet_allowed_paths_binding_invalid")
+    # Reverse binding: every concrete repository file named by the prose
+    # Allowed delta must also be admitted by the machine capsule. Without
+    # this direction a packet could mandate edits to paths (for example the
+    # route tests) that the dispatch capsule would then treat as
+    # preserve-only. Glob and directory patterns stay one-directional.
+    uncovered = [
+        pattern
+        for pattern in patterns
+        if "*" not in pattern
+        and "?" not in pattern
+        and "[" not in pattern
+        and (ROOT / pattern).is_file()
+        and not any(
+            (allowed.endswith("/") and pattern.startswith(allowed))
+            or fnmatch.fnmatchcase(pattern, allowed)
+            for allowed in capsule_allowed
+        )
+    ]
+    if uncovered:
+        raise SessionContextError("packet_allowed_paths_binding_invalid")
 
     prerequisite_line = re.search(
         r"^\*\*Prerequisites?:\*\*\s*(?P<value>.+)$", block, re.MULTILINE

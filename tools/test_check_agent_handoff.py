@@ -82,6 +82,102 @@ class CheckAgentHandoffTests(unittest.TestCase):
                     failures,
                 )
 
+    def test_next_decision_rejects_second_bridge_and_history_headings(self) -> None:
+        checker = load_handoff_checker()
+        base = (
+            "# Next Decision\n\n"
+            "## Completed (TOOL-PRIOR-1)\n\n"
+            "**Historical state:** `COMPLETE`\n\n"
+            "**Historical evidence:** PR #1 exact head `"
+            + "a" * 40
+            + "`; merge `" + "b" * 40 + "`; canonical workflow `1`.\n\n"
+        )
+        self.assertEqual(checker.next_decision_hygiene_failures(base), [])
+
+        two_bridges = base.replace(
+            "## Completed (TOOL-PRIOR-1)", "## Completed (TOOL-OLDER-2)"
+        ) + base
+        failures = checker.next_decision_hygiene_failures(two_bridges)
+        self.assertTrue(
+            any("at most one immediate-predecessor" in failure for failure in failures),
+            failures,
+        )
+
+        renamed_history = base + (
+            "## TOOL-ARCHIVE-9 completion record\n\nold narrative\n"
+        )
+        failures = checker.next_decision_hygiene_failures(renamed_history)
+        self.assertTrue(
+            any(
+                "packet identity outside the executable window" in failure
+                for failure in failures
+            ),
+            failures,
+        )
+
+    def test_next_decision_bridge_must_be_compact(self) -> None:
+        checker = load_handoff_checker()
+        verbose = (
+            "# Next Decision\n\n"
+            "## Completed (TOOL-PRIOR-1)\n\n"
+            "**State:** `COMPLETE`\n\n"
+            "**Accepted evidence:** PR #1 exact head `" + "a" * 40 + "`; merge `"
+            + "b" * 40 + "`; canonical workflow `1`; long narrative diary.\n\n"
+            "**Class:** `CLOSEOUT`\n\n"
+            "**Outcome and non-goals.** Freeze things.\n\n"
+        )
+        failures = checker.next_decision_hygiene_failures(verbose)
+        self.assertTrue(
+            any("compact Historical state/evidence form" in f for f in failures),
+            failures,
+        )
+        self.assertTrue(
+            any("must not carry packet-contract fields" in f for f in failures),
+            failures,
+        )
+
+    def test_next_decision_bridge_rejects_embedded_dispatch_capsule(self) -> None:
+        checker = load_handoff_checker()
+        payload = (
+            '{"schema_version":"weak_agent_dispatch.v1","packet_id":"TOOL-X-1"}'
+        )
+        text = (
+            "# Next Decision\n\n"
+            "## Completed (TOOL-PRIOR-1)\n\n"
+            "**Historical state:** `COMPLETE`\n\n"
+            "**Historical evidence:** archived.\n\n"
+            "<!-- weak-agent-dispatch:v1\n" + payload + "\n-->\n"
+        )
+        if hasattr(checker, "WEAK_AGENT_DISPATCH_RE"):
+            failures = checker.next_decision_hygiene_failures(text)
+            self.assertTrue(
+                any("dispatch capsule" in failure for failure in failures),
+                failures,
+            )
+
+    def test_status_receipt_evidence_stays_within_compact_identity_budget(self):
+        checker = load_handoff_checker()
+        good = (
+            "# Current Status\n\n"
+            "## Accepted Packet Receipts\n\n"
+            "| Packet | State | Accepted evidence |\n"
+            "|---|---|---|\n"
+            "| `TOOL-OK-1` | `COMPLETE` | PR #1 exact head `" + "a" * 40
+            + "`; merge `" + "b" * 40 + "`; canonical workflow `7` |\n"
+        )
+        self.assertEqual(checker.accepted_packet_receipts(good, []), {"TOOL-OK-1"})
+        bloated = good.replace(
+            "canonical workflow `7` |",
+            "canonical workflow `7`; " + ("historical narrative. " * 80) + "|",
+        ).replace("|\n", " |\n")
+        failures: list[str] = []
+        receipts = checker.accepted_packet_receipts(bloated, failures)
+        self.assertNotIn("TOOL-OK-1", receipts)
+        self.assertTrue(
+            any("compact identity budget" in failure for failure in failures),
+            failures,
+        )
+
     def test_next_decision_hygiene_accepts_bounded_replace_only_content(self) -> None:
         checker = load_handoff_checker()
         text = """# Next Decision
