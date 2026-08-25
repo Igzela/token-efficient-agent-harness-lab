@@ -297,6 +297,12 @@ pub struct Mx1StrategyAdapter {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mx1NormalizedHarnessRun {
     pub schema_version: String,
+    pub matrix_plan_id: String,
+    pub matrix_manifest_sha256: String,
+    pub matrix_rung: Mx1MatrixRung,
+    pub matrix_repetition: u32,
+    pub common_basis_sha256: String,
+    pub cell_id: String,
     pub cell_identity: Mx1CellIdentity,
     pub cell_descriptor_sha256: String,
     pub harness_id: String,
@@ -327,6 +333,7 @@ pub trait Mx1HarnessRunAdapter {
     fn descriptor(&self) -> &Mx1HarnessImplementationDescriptor;
     fn normalize_run(
         &self,
+        plan: &Mx1MatrixPlan,
         cell: &Mx1MatrixCell,
         evidence: &ProductHarnessRunEvidence,
     ) -> Result<Mx1NormalizedHarnessRun, EvolutionAdmissionError>;
@@ -1435,10 +1442,27 @@ impl Mx1StrategyAdapter {
 
 fn mx1_normalize_run(
     descriptor: &Mx1HarnessImplementationDescriptor,
+    plan: &Mx1MatrixPlan,
     cell: &Mx1MatrixCell,
     evidence: &ProductHarnessRunEvidence,
 ) -> Result<Mx1NormalizedHarnessRun, EvolutionAdmissionError> {
     mx1_validate_harness_descriptor(descriptor)?;
+    if plan.schema_version != MX1_MATRIX_PLAN_SCHEMA_VERSION
+        || plan.plan_id.len() != 64
+        || !plan
+            .plan_id
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+        || plan.repetition == 0
+        || !plan.cells.iter().any(|candidate| candidate == cell)
+    {
+        return Err(mx1_error(
+            "mx1_run_plan_binding",
+            "Harness adapter requires an exact, nonempty planned matrix cell",
+        ));
+    }
+    mx1_require_sha("matrix manifest digest", &plan.manifest_sha256)?;
+    mx1_require_sha("matrix common basis digest", &plan.common_basis_sha256)?;
     if cell.identity.harness_id != descriptor.descriptor_id {
         return Err(mx1_error(
             "mx1_run_cell_binding",
@@ -1483,6 +1507,12 @@ fn mx1_normalize_run(
     }
     Ok(Mx1NormalizedHarnessRun {
         schema_version: MX1_NORMALIZED_RUN_SCHEMA_VERSION.to_string(),
+        matrix_plan_id: plan.plan_id.clone(),
+        matrix_manifest_sha256: plan.manifest_sha256.clone(),
+        matrix_rung: plan.rung,
+        matrix_repetition: plan.repetition,
+        common_basis_sha256: plan.common_basis_sha256.clone(),
+        cell_id: cell.cell_id.clone(),
         cell_identity: cell.identity.clone(),
         cell_descriptor_sha256: cell.descriptor_digest.clone(),
         harness_id: descriptor.descriptor_id.clone(),
@@ -1532,10 +1562,11 @@ impl Mx1HarnessRunAdapter for Mx1EngineManagedHarnessAdapter {
 
     fn normalize_run(
         &self,
+        plan: &Mx1MatrixPlan,
         cell: &Mx1MatrixCell,
         evidence: &ProductHarnessRunEvidence,
     ) -> Result<Mx1NormalizedHarnessRun, EvolutionAdmissionError> {
-        mx1_normalize_run(&self.descriptor, cell, evidence)
+        mx1_normalize_run(&self.descriptor, plan, cell, evidence)
     }
 }
 
@@ -1565,12 +1596,13 @@ impl Mx1HarnessRunAdapter for Mx1ConfinedSubprocessHarnessAdapter {
 
     fn normalize_run(
         &self,
+        plan: &Mx1MatrixPlan,
         cell: &Mx1MatrixCell,
         evidence: &ProductHarnessRunEvidence,
     ) -> Result<Mx1NormalizedHarnessRun, EvolutionAdmissionError> {
         // CORE deliberately performs no subprocess execution. A later effect
         // packet may use this admitted identity only through existing owners.
-        mx1_normalize_run(&self.descriptor, cell, evidence)
+        mx1_normalize_run(&self.descriptor, plan, cell, evidence)
     }
 }
 
@@ -1821,6 +1853,26 @@ pub fn project_mx1_matrix_read_only(
                     Mx1ReadOnlyCellDisposition::Incomparable("evidence_missing".to_string()),
                     None,
                 ),
+                Some(observation)
+                    if observation.normalized_run.matrix_plan_id != plan.plan_id
+                        || observation.normalized_run.matrix_manifest_sha256
+                            != plan.manifest_sha256
+                        || observation.normalized_run.matrix_rung != plan.rung
+                        || observation.normalized_run.matrix_repetition != plan.repetition
+                        || observation.normalized_run.common_basis_sha256
+                            != plan.common_basis_sha256 =>
+                {
+                    (
+                        Mx1ReadOnlyCellDisposition::Incomparable(
+                            "matrix_plan_identity_mismatch".to_string(),
+                        ),
+                        Some(observation.normalized_run.clone()),
+                    )
+                }
+                Some(observation) if observation.normalized_run.cell_id != cell.cell_id => (
+                    Mx1ReadOnlyCellDisposition::Incomparable("matrix_cell_id_mismatch".to_string()),
+                    Some(observation.normalized_run.clone()),
+                ),
                 Some(observation) if observation.normalized_run.cell_identity != cell.identity => (
                     Mx1ReadOnlyCellDisposition::Incomparable("cell_identity_mismatch".to_string()),
                     Some(observation.normalized_run.clone()),
@@ -1873,6 +1925,23 @@ pub fn project_mx1_matrix_read_only(
                 {
                     (
                         Mx1ReadOnlyCellDisposition::Incomparable("outcome_unknown".to_string()),
+                        Some(observation.normalized_run.clone()),
+                    )
+                }
+                Some(observation)
+                    if observation.normalized_run.terminal_outcome
+                        == ProductTaskStatus::Completed
+                        && (observation
+                            .normalized_run
+                            .terminal_evidence_sha256
+                            .is_none()
+                            || observation.normalized_run.verified_deliverable
+                                != ProductHarnessEvidenceState::Observed) =>
+                {
+                    (
+                        Mx1ReadOnlyCellDisposition::Incomparable(
+                            "verified_delivery_evidence_missing".to_string(),
+                        ),
                         Some(observation.normalized_run.clone()),
                     )
                 }
@@ -6610,11 +6679,11 @@ mod tests {
             .unwrap();
         let left = Mx1EngineManagedHarnessAdapter::new(arm_zero)
             .unwrap()
-            .normalize_run(left_cell, &evidence)
+            .normalize_run(&plan, left_cell, &evidence)
             .unwrap();
         let right = Mx1ConfinedSubprocessHarnessAdapter::new(second)
             .unwrap()
-            .normalize_run(right_cell, &evidence)
+            .normalize_run(&plan, right_cell, &evidence)
             .unwrap();
         assert_ne!(left.harness_id, right.harness_id);
         assert_eq!(left.product_task_id, right.product_task_id);
@@ -6761,7 +6830,11 @@ mod tests {
             .unwrap();
         let unknown = Mx1EngineManagedHarnessAdapter::new(arm_zero)
             .unwrap()
-            .normalize_run(target, &mx1_product_run(ProductTaskStatus::OutcomeUnknown))
+            .normalize_run(
+                &plan,
+                target,
+                &mx1_product_run(ProductTaskStatus::OutcomeUnknown),
+            )
             .unwrap();
         let projection = project_mx1_matrix_read_only(
             &manifest,
@@ -6791,7 +6864,11 @@ mod tests {
                 .clone(),
         )
         .unwrap()
-        .normalize_run(target, &mx1_product_run(ProductTaskStatus::Completed))
+        .normalize_run(
+            &plan,
+            target,
+            &mx1_product_run(ProductTaskStatus::Completed),
+        )
         .unwrap();
         descriptor_drift.cell_descriptor_sha256 = sha256_hex("wrong-mx1-cell-descriptor");
         let projection = project_mx1_matrix_read_only(
@@ -6811,6 +6888,135 @@ mod tests {
                 .unwrap()
                 .disposition,
             Mx1ReadOnlyCellDisposition::Incomparable("descriptor_digest_mismatch".to_string())
+        );
+
+        let repetition_two = build_mx1_matrix_plan(
+            &manifest,
+            Mx1MatrixRung::TwoByTwoByThree,
+            "mx1-task",
+            2,
+            &basis,
+        )
+        .unwrap();
+        let repetition_two_target = repetition_two
+            .cells
+            .iter()
+            .find(|cell| cell.identity == target.identity)
+            .unwrap();
+        let replayed_repetition = Mx1EngineManagedHarnessAdapter::new(
+            manifest
+                .harnesses
+                .iter()
+                .find(|descriptor| descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+                .unwrap()
+                .clone(),
+        )
+        .unwrap()
+        .normalize_run(
+            &plan,
+            target,
+            &mx1_product_run(ProductTaskStatus::Completed),
+        )
+        .unwrap();
+        let projection = project_mx1_matrix_read_only(
+            &manifest,
+            &repetition_two,
+            &[Mx1MatrixObservation {
+                cell_id: repetition_two_target.cell_id.clone(),
+                normalized_run: replayed_repetition,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            projection
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id == repetition_two_target.cell_id)
+                .unwrap()
+                .disposition,
+            Mx1ReadOnlyCellDisposition::Incomparable("matrix_plan_identity_mismatch".to_string())
+        );
+
+        let different_basis = build_mx1_matrix_plan(
+            &manifest,
+            Mx1MatrixRung::TwoByTwoByThree,
+            "mx1-task",
+            1,
+            &sha256_hex("other-mx1-common-basis"),
+        )
+        .unwrap();
+        let different_basis_target = different_basis
+            .cells
+            .iter()
+            .find(|cell| cell.identity == target.identity)
+            .unwrap();
+        let replayed_basis = Mx1EngineManagedHarnessAdapter::new(
+            manifest
+                .harnesses
+                .iter()
+                .find(|descriptor| descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+                .unwrap()
+                .clone(),
+        )
+        .unwrap()
+        .normalize_run(
+            &plan,
+            target,
+            &mx1_product_run(ProductTaskStatus::Completed),
+        )
+        .unwrap();
+        let projection = project_mx1_matrix_read_only(
+            &manifest,
+            &different_basis,
+            &[Mx1MatrixObservation {
+                cell_id: different_basis_target.cell_id.clone(),
+                normalized_run: replayed_basis,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            projection
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id == different_basis_target.cell_id)
+                .unwrap()
+                .disposition,
+            Mx1ReadOnlyCellDisposition::Incomparable("matrix_plan_identity_mismatch".to_string())
+        );
+
+        let mut missing_terminal = mx1_product_run(ProductTaskStatus::Completed);
+        missing_terminal.terminal_evidence_sha256 = None;
+        missing_terminal.verified_deliverable = ProductHarnessEvidenceState::Unavailable;
+        let missing_delivery = Mx1EngineManagedHarnessAdapter::new(
+            manifest
+                .harnesses
+                .iter()
+                .find(|descriptor| descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+                .unwrap()
+                .clone(),
+        )
+        .unwrap()
+        .normalize_run(&plan, target, &missing_terminal)
+        .unwrap();
+        let projection = project_mx1_matrix_read_only(
+            &manifest,
+            &plan,
+            &[Mx1MatrixObservation {
+                cell_id: target.cell_id.clone(),
+                normalized_run: missing_delivery,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            projection
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id == target.cell_id)
+                .unwrap()
+                .disposition,
+            Mx1ReadOnlyCellDisposition::Incomparable(
+                "verified_delivery_evidence_missing".to_string()
+            )
         );
 
         let mut unsupported = manifest.clone();
