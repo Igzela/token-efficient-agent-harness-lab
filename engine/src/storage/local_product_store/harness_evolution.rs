@@ -44,6 +44,7 @@ use crate::harness_evolution_pr_ready::{
     finalize_pr_ready_bundle, redacted_pr_ready_evidence, PrReadyCandidateBundle, PrReadyReceipt,
     PR_READY_RECEIPT_SCHEMA, PR_READY_SCHEMA_VERSION,
 };
+use crate::product_golden_path::{project_product_harness_run, ProductHarnessRunEvidence};
 
 fn parse_stored_ec3_observation(body: &str) -> Result<LifecycleCostObservationV1, String> {
     let observation: LifecycleCostObservationV1 =
@@ -563,6 +564,24 @@ fn persist_ec3_pg_tx(
 }
 
 impl LocalProductStore {
+    /// Read the Store-owned Product Golden Path records through the MX1 run
+    /// seam. This is intentionally a pure projection: it adds no table,
+    /// scheduler, evaluator, budget, Provider, or target-output authority.
+    pub fn project_product_task_harness_run(
+        &self,
+        task_id: &str,
+    ) -> Result<ProductHarnessRunEvidence, String> {
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "product task not found".to_string())?;
+        let terminal_evidence = match self.get_product_task_terminal_evidence(task_id) {
+            Ok(evidence) => Some(evidence),
+            Err(error) if error == "product task terminal evidence is not committed" => None,
+            Err(error) => return Err(error),
+        };
+        project_product_harness_run(&task, terminal_evidence.as_ref())
+    }
+
     /// Persist usage observations through the canonical execution-usage
     /// source adapter. The usage module remains read-only evidence input; the
     /// Store remains the sole immutable persistence owner.

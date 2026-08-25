@@ -4,8 +4,9 @@ use engine::node_executor::{
     NodeExecutionInput, NodeExecutionOutput, NodeExecutor, ProcessOutcome,
 };
 use engine::product_golden_path::{
-    validate_intake, ProductExecutorPolicy, ProductTaskIntakeRequest, ProductTaskStatus,
-    ProductVerificationCommand, PRODUCT_TASK_GATE,
+    validate_intake, ProductExecutorPolicy, ProductHarnessEvidenceState, ProductTaskIntakeRequest,
+    ProductTaskStatus, ProductVerificationCommand, PRODUCT_HARNESS_RUN_SEAM_SCHEMA_VERSION,
+    PRODUCT_TASK_GATE,
 };
 use engine::storage::local_product_store::LocalProductStore;
 use sha2::{Digest, Sha256};
@@ -466,6 +467,44 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
             std::fs::read_to_string(repo.join("README.md")).unwrap(),
             "hello\n"
         );
+    });
+}
+
+#[test]
+fn harness_run_seam_is_a_pure_store_projection_with_explicit_unavailable_cost() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let revision = init_git_repo(&repo);
+        let awaiting = drive_to_awaiting_approval(
+            &store,
+            &repo,
+            &revision,
+            "mx1-harness-run-seam",
+            "artifact_only",
+        );
+        let task_id = awaiting["task_id"].as_str().unwrap();
+        complete_output(&store, task_id, "independent-operator");
+
+        let audit_before = store.audit_events(10_000).unwrap();
+        let projected = store.project_product_task_harness_run(task_id).unwrap();
+        assert_eq!(
+            projected.schema_version,
+            PRODUCT_HARNESS_RUN_SEAM_SCHEMA_VERSION
+        );
+        assert_eq!(projected.product_task_id, task_id);
+        assert_eq!(
+            projected.verified_deliverable,
+            ProductHarnessEvidenceState::Observed
+        );
+        assert_eq!(
+            projected.usage_cost.state,
+            ProductHarnessEvidenceState::Unavailable
+        );
+        assert!(projected.terminal_evidence_sha256.is_some());
+        let encoded = serde_json::to_string(&projected).unwrap();
+        assert!(!encoded.contains(repo.to_string_lossy().as_ref()));
+        assert_eq!(store.audit_events(10_000).unwrap(), audit_before);
     });
 }
 
