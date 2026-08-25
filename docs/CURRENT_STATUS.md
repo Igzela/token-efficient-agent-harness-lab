@@ -12,7 +12,7 @@ Open PR heads, Draft/Ready state, CI, reviews, mergeability, and the next permit
 ## Verified Repository State
 
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
-- Latest accepted baseline: PR #617 exact head `23675dbff59d030eeae2e7e6cbfebca81f50e66b`, squash-merged as `7caed005a9914e8669a64f6174eab286e160e6d7`; it freezes the provider-free C1 three-axis experiment contract on top of the accepted C0 closeout and v38 lifecycle-cost enforcement baseline. No Provider call, credential-value read, target write, authority consumption, enforcement escape, or live effect was authorized by this contract freeze.
+- Latest accepted baseline: PR #621 exact head `199c12756e58ffaa6041a22cd01f23ce7a1eda15`, squash-merged as `628577c5e8cb404c4dcc2e689925414bbfda70ab`; it implements the provider-free C1 shared Harness run seam, exact three-axis descriptor manifest, arm-zero and one admitted second Harness adapters, baseline/memory-only/skill-only Strategy adapters, two frozen ModelPlans, deterministic matrix planning, and `INCOMPARABLE` projections on top of the accepted C1 contract freeze, with the exact-head review-receipt gate hardened by PR #622 (merge `bd4d5d3279664906bfa6215f11f6a42b3a1654fc`). No Provider call, credential-value read, target write, authority consumption, enforcement escape, or live effect was authorized by these provider-free merges.
 - A new `main`, PR head, CI result, review receipt, or canonical-document change invalidates older context capsules and branch-local status prose.
 
 ## Accepted Packet Receipts
@@ -92,6 +92,7 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-HE-CL0-PILOT-1` | `COMPLETE` | Authorized finite artifact-only effect 2026-08-24: task `ptask-20260824115348-18cebba70936f600`, delegated terminal receipt `0b85bac66a61a8565bd7be238471c0551cd607f3c801dd1c785af2c232e51f25`; realized cost 0.0023360868 USD, workspace cleaned |
 | `PE7-HE-CL0-CLOSEOUT-1` | `COMPLETE` | PR #614 exact head `c464235313255b224c481214be16f7a24831e379`; merge `075f995b574fb8a28f08986291751152bf158dd5`; exact-head `PASS`; canonical workflow `32812721310` |
 | `PE7-HE-MX1-CONTRACT-1` | `COMPLETE` | PR #617 exact head `23675dbff59d030eeae2e7e6cbfebca81f50e66b`; merge `7caed005a9914e8669a64f6174eab286e160e6d7`; exact-head `PASS`; canonical workflow `32828369869` |
+| `PE7-HE-MX1-CORE-1` | `COMPLETE` | PR #621 exact head `199c12756e58ffaa6041a22cd01f23ce7a1eda15`; merge `628577c5e8cb404c4dcc2e689925414bbfda70ab`; exact-head `PASS`; canonical workflow `32848799358` |
 
 Durable closeout consequences (receipts above own identity): AC7 cleanup/closeout proved a merged-tree fixed-string zero-match inventory with separate approve/output authority paths intact; its rollback anchor is revert-PR #562 to pre-cleanup tree `eb692703ab3b3d030478b539fff4496014e45c7a`. Lifecycle-cost receipt fields remain defined by the Architecture Book evidence contract; normalized CI-compute aggregates were never instrumented and stay explicitly unavailable rather than estimated.
 
@@ -396,7 +397,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Contemporary old/new replay reconstruction | `COMPLETE` | PR #566 accepted; reconstruction verifier, frozen bindings, provider-free traces, and exact old/new identities are accepted |
 | Contemporary old/new replay | `DECISION_REQUIRED` | Protocol/preflight freeze is complete; captured CLI is not `ready=true`; `PE7-RWE-CR-RUN-1` is parked on a pre-tenant empty Store |
 | Contemporary old/new replay analysis | `BLOCKED_PREREQUISITE` | One independent RWE closeout remains behind the parked run; it neither blocks nor substitutes for the Harness-Evolution spiral |
-| Harness-Evolution C0–C4 capability spiral | `READY_FOR_EXECUTION` (C1 CORE window) | EC3, the executed-and-closed C0 pilot/closeout, and the C1 three-axis contract are accepted on `main`; the current provider-free window `PE7-HE-MX1-CORE-1` implements the shared run seam, exact arm manifest, Strategy adapters, deterministic matrix planning, and `INCOMPARABLE` projections before any C1 variant effect; the 28 formal C0–C4 packets span accepted evidence and routing-only successors through one generation, bounded recursion, final sealed transfer, readiness, and human adoption decision |
+| Harness-Evolution C0–C4 capability spiral | `BLOCKED_PREREQUISITE` (C1 PILOT window) | EC3, the executed-and-closed C0 pilot/closeout, the C1 three-axis contract, and the provider-free C1 CORE implementation are accepted on `main`; the current window `PE7-HE-MX1-PILOT-1` executes the preregistered matrix ladder only under a separately authorized finite effect, and the 28 formal C0–C4 packets span accepted evidence and routing-only successors through one generation, bounded recursion, final sealed transfer, readiness, and human adoption decision |
 | Experimental C5–C8 research spiral | `BLOCKED_PREREQUISITE` | 28 formal default-off packets retain fixed-Meta, advanced gate/R4, Harness-plus-weight R5, and bounded outer-policy R6 contracts, effects, independent closeouts, and replications; negative or insufficient dispositions remain valid terminals |
 | Dashboard #225 / successor | `DEFERRED` | 3 formal packets: disposition, presentation-only refresh, exact-head closeout; it projects accepted core and optional-research dispositions without owning backend behavior |
 
@@ -407,7 +408,9 @@ admission, comparability, allocation, and analysis boundary for the Harness x
 Model x Strategy experiment matrix. It creates no runtime, scheduler, Store,
 evaluator, budget, admission, audit, rollback, or adoption owner; performs no
 candidate generation, Provider call, holdout access, target write, or live
-effect; and does not start `PE7-HE-MX1-CORE-1`.
+effect. Its provider-free CORE implementation is accepted on `main`; only the
+later `PE7-HE-MX1-PILOT-1` window may request a separately authorized finite
+matrix effect.
 
 ### Arm-zero identity and provenance
 

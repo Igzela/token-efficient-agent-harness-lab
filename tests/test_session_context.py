@@ -1188,7 +1188,7 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_packet_is_provider_free_mx1_core(self):
+    def test_current_repository_packet_is_blocked_mx1_pilot_effect(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
@@ -1212,7 +1212,7 @@ class CheckpointTests(unittest.TestCase):
             status_document,
         )
         self.assertIn(
-            "`PE7-HE-MX1-CORE-1` is the current provider-free `READY_FOR_EXECUTION` `NEXT_DECISION` window",
+            "`PE7-HE-MX1-CORE-1` is accepted through PR #621",
             future_document,
         )
         self.assertNotIn(
@@ -1220,23 +1220,22 @@ class CheckpointTests(unittest.TestCase):
             future_document,
         )
         self.assertIn(
-            "62 accounted units: 6 accepted + 1 current + 55 future",
+            "62 accounted units: 7 accepted + 1 current + 54 future",
             future_document,
         )
-        self.assertIn("8 (`0 + 8`)", future_document)
-        self.assertIn("16 (`1 + 15`)", future_document)
-        self.assertIn("three-axis experiment contract is accepted", next_document)
-        self.assertIn("PE7-HE-MX1-CORE-1", next_document)
+        self.assertIn("7 (`0 + 7`)", future_document)
+        self.assertIn("15 (`0 + 15`)", future_document)
+        self.assertIn("provider-free `PE7-HE-MX1-CORE-1` implementation is complete", next_document)
+        self.assertIn("PE7-HE-MX1-PILOT-1", next_document)
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
-        self.assertEqual(packet["packet_id"], "PE7-HE-MX1-CORE-1")
-        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
-        self.assertTrue(packet["checkpoint_allowed"])
+        self.assertEqual(packet["packet_id"], "PE7-HE-MX1-PILOT-1")
+        self.assertEqual(packet["state"], "BLOCKED_PREREQUISITE")
+        self.assertFalse(packet["checkpoint_allowed"])
         self.assertFalse(packet["execution_authorized"])
-        capsule = session_context.current_dispatch_capsule(next_document, packet)
-        self.assertEqual(capsule["packet_id"], packet["packet_id"])
-        self.assertEqual(capsule["external_effect_limit"], 0)
+        with self.assertRaises(session_context.SessionContextError):
+            session_context.current_dispatch_capsule(next_document, packet)
 
     def test_future_route_profile_extraction_is_routing_projection_only(self):
         root = Path(__file__).resolve().parents[1]
