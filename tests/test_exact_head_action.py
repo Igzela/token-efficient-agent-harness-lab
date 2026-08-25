@@ -19,6 +19,8 @@ class TestExactHeadAction(unittest.TestCase):
         self.assertIn("expected-head", text)
         self.assertIn("pull-request", text)
         self.assertIn("github-token", text)
+        self.assertIn("require-review-receipt", text)
+        self.assertIn("INPUT_REQUIRE_REVIEW_RECEIPT", text)
         self.assertIn("verify.sh", text)
 
     def test_verify_script_is_executable_contract(self):
@@ -26,6 +28,11 @@ class TestExactHeadAction(unittest.TestCase):
         self.assertIn("exact-head-check-proof.v1", text)
         self.assertIn("head_moved", text)
         self.assertIn("INPUT_ALLOW_FORK_HEAD", text)
+        self.assertIn("INPUT_REQUIRE_REVIEW_RECEIPT", text)
+        self.assertIn("trusted exact-head review receipt confirmed", text)
+        self.assertIn("_build_review_observation", text)
+        self.assertIn("reviewer_authenticated_identity", text)
+        self.assertIn("reviewer_author_identity", text)
         self.assertIn("GITHUB_STEP_SUMMARY", text)
         self.assertIn("merges: false", text)
         self.assertIn("model_calls: false", text)
@@ -48,6 +55,8 @@ class TestExactHeadAction(unittest.TestCase):
         self.assertIn("path: trusted-base", text)
         self.assertIn("uses: ./trusted-base/actions/exact-head-check", text)
         self.assertIn('allow-fork-head: "true"', text)
+        self.assertIn("require-review-receipt:", text)
+        self.assertIn("github.event.action == 'ready_for_review'", text)
         self.assertNotIn("uses: ./actions/exact-head-check", text)
 
     def test_example_workflow_present(self):
