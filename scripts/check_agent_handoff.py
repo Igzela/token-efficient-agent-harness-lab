@@ -17,11 +17,37 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 
 NEXT_DECISION_MAX_BYTES = 64 * 1024
+RECEIPT_EVIDENCE_MAX_CHARS = 600
 NEXT_DECISION_MAX_LINES = 600
 NEXT_DECISION_APPEND_ONLY_HEADING_RE = re.compile(
     r"^#{2,6}\s+(?:change(?:log| history)|progress log|session notes|"
     r"handoff history|work log|status history)\s*$",
     re.IGNORECASE | re.MULTILINE,
+)
+NEXT_DECISION_BRIDGE_HEADING_RE = re.compile(
+    r"^#{2,3} (?:Completed|Retained) \((?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\)\s*$",
+    re.MULTILINE,
+)
+NEXT_DECISION_PACKET_TOKEN = r"(?:PE\d+|PR\d+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+"
+NEXT_DECISION_PACKET_HEADING_RE = re.compile(
+    rf"^#{{2,6}}\s+.*\b{NEXT_DECISION_PACKET_TOKEN}\b.*$",
+    re.MULTILINE,
+)
+NEXT_DECISION_ALLOWED_PACKET_HEADINGS = (
+    re.compile(rf"^#{{2,3}} Packet {NEXT_DECISION_PACKET_TOKEN}\s*$"),
+    NEXT_DECISION_BRIDGE_HEADING_RE,
+    re.compile(
+        rf"^## Retained live-ready blocker \(historical: {NEXT_DECISION_PACKET_TOKEN}\)\s*$"
+    ),
+)
+NEXT_DECISION_BRIDGE_FORBIDDEN_FIELDS = (
+    "**Accepted evidence:**",
+    "**Class:**",
+    "**Prerequisite:**",
+    "**Outcome",
+    "**Allowed delta:**",
+    "**Exit:**",
+    "**Stop:**",
 )
 
 REQUIRED_TEXT = {
@@ -597,6 +623,15 @@ def accepted_packet_receipts(
             if failures is not None:
                 failures.append(
                     f"accepted packet receipt {packet_id} lacks a durable evidence identity"
+                )
+            continue
+        if len(evidence) > RECEIPT_EVIDENCE_MAX_CHARS:
+            if failures is not None:
+                failures.append(
+                    f"accepted packet receipt {packet_id} evidence exceeds the "
+                    f"compact identity budget ({len(evidence)} > "
+                    f"{RECEIPT_EVIDENCE_MAX_CHARS} characters); chronology belongs "
+                    "in Git history"
                 )
             continue
         if packet_id in accepted and failures is not None:
@@ -1388,6 +1423,52 @@ def next_decision_hygiene_failures(next_text: str) -> list[str]:
         failures.append(
             "NEXT_DECISION contains append-only history; replace stale state in place "
             "and rely on Git history"
+        )
+    bridges = list(NEXT_DECISION_BRIDGE_HEADING_RE.finditer(next_text))
+    if len(bridges) > 1:
+        failures.append(
+            "NEXT_DECISION must retain at most one immediate-predecessor "
+            "Completed/Retained bridge; older receipts belong in CURRENT_STATUS "
+            "and Git history"
+        )
+    for bridge in bridges:
+        start = bridge.end()
+        next_heading = re.search(r"^#{2,3} ", next_text[start:], re.MULTILINE)
+        block_end = (
+            start + next_heading.start() if next_heading else len(next_text)
+        )
+        block = next_text[start:block_end]
+        if (
+            "**Historical state:**" not in block
+            or "**Historical evidence:**" not in block
+        ):
+            failures.append(
+                "NEXT_DECISION bridge sections must use the compact "
+                "Historical state/evidence form"
+            )
+        carried = [
+            field
+            for field in NEXT_DECISION_BRIDGE_FORBIDDEN_FIELDS
+            if field in block
+        ]
+        if carried:
+            failures.append(
+                "NEXT_DECISION bridge must not carry packet-contract fields: "
+                + ", ".join(carried)
+            )
+        if WEAK_AGENT_DISPATCH_RE.search(block):
+            failures.append(
+                "NEXT_DECISION bridge must not embed a dispatch capsule"
+            )
+    for heading_match in NEXT_DECISION_PACKET_HEADING_RE.finditer(next_text):
+        line = heading_match.group(0)
+        if any(
+            allowed.match(line) for allowed in NEXT_DECISION_ALLOWED_PACKET_HEADINGS
+        ):
+            continue
+        failures.append(
+            "NEXT_DECISION heading carries packet identity outside the executable "
+            f"window or a single compact bridge: {line.strip()[:120]}"
         )
     return failures
 

@@ -80,7 +80,7 @@ Runtime usage evidence stays under existing execution-usage/scorecard/store owne
 - External runtimes and repositories may provide bounded adapters, parsers, or comparison evidence; they may not replace the core owners.
 - Provider/session logs are post-call evidence, not pre-call authority.
 - Local price tables produce estimates only and must remain versioned and source-labeled.
-- Deferred/stopped surfaces (OpenCode binary admission, Vader/#208, Dashboard #225): dispositions are owned by `docs/CURRENT_STATUS.md`.
+- Deferred/stopped surfaces: OpenCode real-binary admission (Architecture Book), Vader/#208 (Playbook), Dashboard #225 (CURRENT_STATUS).
 - Release, package, provenance, signing, installer, deployment, and rollback pipelines remain outside product/evolution authority.
 
 ## PE-5 Release Provenance Ownership
