@@ -482,9 +482,12 @@ not transfer Rust/Store/evaluator/budget/output authority to the candidate.
   observed. Labels and sealed evaluator inputs remain inaccessible to arms.
 
 The common C1 task/evaluator/budget/value basis reuses the accepted
-`measurement_estimands.v1` source at frozen artifact main
-`3b4afb3e5ab4254904aa5a63473ab6ae0eac1e82` (PR #370, the first accepted tree
-containing the v2 protocol, schedule, and tasks), corpus hash
+`measurement_estimands.v1` lineage with two distinct immutable source
+identities: pre-AC Harness artifact-freeze SHA
+`ee43eac853644266614da09de764a3bf19f2d281`, and PR #370 merge
+`3b4afb3e5ab4254904aa5a63473ab6ae0eac1e82`, the first accepted repository tree
+containing the v2 protocol, schedule, and tasks. The latter is a carrier/source
+receipt and does not replace the former artifact identity. The bound corpus hash is
 `044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20`,
 and source tree `137e912f416a3a8d5be307e91bb2580154fc8fc34c6de52c2441ef3e3f93a064`:
 
@@ -492,15 +495,33 @@ and source tree `137e912f416a3a8d5be307e91bb2580154fc8fc34c6de52c2441ef3e3f93a06
 |---|---|
 | Tasks | `rwe-minimum-t1-fix_flow_linkage` (`task_definition_sha256=fcd13b6f7a970c048fd09e1f723a315b8e03d221cad1555bf694ca95115438f8`) and `rwe-minimum-t2-draft_contract_tests` (`task_definition_sha256=f49e374d8b818d9e2cf4566d6fb3323c472a3dd449ebc71413eab96891124e7d`), both at source commit `6240768506320a324d68787b9eaa86971c8c930c`; no selective replacement. |
 | Evaluator/verification | Existing task acceptance rubrics and machine commands from that corpus; reviewer rubric sha256 `0e3c4275aacae5ae1eec563ea348135fa05b6719391c526490a7503b497c4e7b`; disagreement is recorded and fails closed. |
-| Budget | `bp-standard`: at most 3 Provider requests, 20,192 total tokens, and 900,000 ms wall time per cell, plus the accepted complete lifecycle-cost envelope; unavailable cost stays unavailable. |
+| Budget | C1 `bp-standard`: per cell `max_cost_usd=0.2` (operator ceiling, not provider quote), `max_provider_requests=3`, `max_input_tokens=12000`, `max_output_tokens=8192`, `max_total_tokens=20192`, `max_retries=0`, and `max_wall_time_ms=900000`, plus the accepted complete lifecycle-cost envelope; unavailable cost stays unavailable. |
 | Value | `verified_delivery_points` on the two frozen task value profiles; no new conversion, normalization, or scalar aggregation. |
-| Repetitions | Exactly the preflight-registered count, never fewer than two per task/cell. The count and the complete derived C1 schedule digest are committed before the first outcome and cannot change afterward. |
+| Repetitions | Exactly two per task/cell. The complete derived C1 schedule digest is committed before the first outcome and cannot change afterward. |
 
-The old v2 schedule hash is not reused because its cells freeze a different
-Model layout. C1 instead freezes the cell set and deterministic schedule/seed
-derivation in this contract; CORE/PILOT preflight must publish the resulting
-exact descriptor, repetition, and schedule digests before execution. A missing
-digest is `INCOMPARABLE`, not authority to infer a schedule.
+The source v2 schedule hash
+`6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38`
+is provenance only and is not reused because its cells freeze a different Model
+layout. C1 instead freezes the cell set and deterministic schedule/seed
+derivation in this contract. With two tasks and two repetitions, the per-rung
+global ceilings are: `1x2x1` = 8 cells, USD 1.6, 24 Provider requests, 161,536
+tokens, and 7,200,000 ms sequential cell time; `1x2x3` = 24 cells, USD 4.8, 72
+requests, 484,608 tokens, and 21,600,000 ms; `2x2x3` = 48 cells, USD 9.6, 144
+requests, 969,216 tokens, and 43,200,000 ms. These are finite ceilings, not spend
+authority; every effect still requires its separate exact T3 request and one-use
+Store-owned budget. CORE/PILOT preflight must publish the resulting exact
+descriptor and schedule digests before execution. A missing or mismatched digest
+is `INCOMPARABLE`, not authority to infer a schedule or spend.
+
+Nonzero labels `H1`, `M1`, `SM`, and `SK` below are registered estimand slots,
+not admitted arm identities. `PE7-HE-MX1-CORE-1` must, as a provider-free exit
+artifact, bind each slot to one complete exact descriptor (including H1
+commit/version/license/SBOM/provenance and every Model/Strategy identity field),
+pass the common interface/isolation tests, and freeze a descriptor-manifest
+digest. Only a later PILOT preflight may combine that accepted manifest with the
+schedule digest and request finite T3 authority. No Provider outcome, pilot
+authorization, allocation, or cell execution may exist while any slot is
+unresolved, unsupported, changed, or merely a CLI/display name.
 
 ### Comparability and `INCOMPARABLE`
 
