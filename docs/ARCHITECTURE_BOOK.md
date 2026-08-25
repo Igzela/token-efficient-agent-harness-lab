@@ -555,12 +555,7 @@ state.with_scheduler(scheduler_arc) ───────> runtime.block_on(serv
 
 #### 6. Successor Migration Sequencing
 
-`PE7-AC5-ROOT-CORE-1` implements additive typed configuration structs and composition builder helpers. Following its acceptance, `PE7-AC5-MODULE-MIGRATION-1` executes across 4 sequential batches:
-
-- **Batch 1: Core Storage, Backup & Infrastructure Config** (`LocalProductStore`, `BackupManager`, `auth.rs`, `circuit_breaker.rs`, `rate_limiter.rs`).
-- **Batch 2: Execution Gates, Scheduler & CLI Runtime Config** (`EffectiveExecutionGates`, `WorkflowScheduler`, `CliConfig`, `external_runtime.rs`, `opencode_runtime.rs`).
-- **Batch 3: Provider, Adaptive Fusion & Cost Gate Config** (`ProviderConfig`, `adaptive_execution.rs`, `cost_gate.rs`, `credential.rs`).
-- **Batch 4: HTTP Server & Composition Root Assembly** (`AxumApiState`, route handlers, `main.rs`, negative environment-read search).
+Completed via owner-scoped additive batches (receipts: PR #548 family); Git history owns the batch plan. The composition-root invariants in §1–§5 remain authoritative and unchanged.
 
 ### AC6: Rust-Authoritative API/SDK/Dashboard Schema Convergence Contract
 
@@ -602,22 +597,7 @@ state.with_scheduler(scheduler_arc) ───────> runtime.block_on(serv
 
 #### 2. Authoritative Wire Type Manifest
 
-The AC6 contract governs the following 12 canonical wire entities:
-
-| Schema Identifier | Target File / Entity | Wire Version | Description & Authority Boundary |
-|---|---|---|---|
-| `dispatch_request.v1` | `dispatch_request.schema.json` | v1 | Intake dispatch request with `raw_request` and `request_source` enum (`cli`, `rest_api`, `workflow_engine`, `scheduled_job`, `sdk_client`). |
-| `task_analysis.v1` | `task_analysis.schema.json` | v1 | Deterministic rule-based task classification, intent, domain, complexity sub-scores, risk flags, and structured evidence. |
-| `dispatch_decision.v1` | `dispatch_decision.schema.json` | v1 | Routing decision containing selected model tier, execution mode, fallback route, shadow route, budget reservation, and execution gates. |
-| `execution_result.v1` | `execution_result.schema.json` | v1 | Execution result record capturing execution status, model/provider identity, token usage metrics, latency, estimated cost, and error domain. |
-| `evaluation_result.v1` | `evaluation_result.schema.json` | v1 | Output validation and quality evaluation with score breakdown, check statuses, error classifications, and retry recommendations. |
-| `dispatch_record.v1` | `dispatch_bundle.schema.json` | v1 | Persisted dispatch record linking request, analysis, decision, and timing timestamps. |
-| `dispatch_bundle.v1` | `dispatch_bundle.schema.json` | v1 | Aggregate envelope bundling dispatch record, execution result, evaluation result, and verification receipts. |
-| `budget_reservation.v1` | `dispatch_decision.schema.json` | v1 | Pre-dispatch finite cost reservation with max tokens, estimated cost USD, and budget authorization reference. |
-| `local_cost_summary.v2` | `wire_types.py` / `api-types.ts` | v2 | Read-only ledger cost summary by tier and day; computed directly from `LocalProductStore`. |
-| `local_dispatch_cost_detail.v1` | `wire_types.py` / `api-types.ts` | v1 | Individual dispatch cost breakdown with token counts, execution timing, and provider reference. |
-| `axum_api.v1` | `wire_types.rs` / `api-types.ts` | v1 | Standard HTTP API envelopes for health (`ApiStatus`), error responses, key metadata, and product task operations. |
-| `local_dashboard.v1` | `dashboard/src/lib/types.ts` | v1 | Read-only presentation state for active workflows, budget gauges, task metrics, and provider status. |
+The AC6 contract governs these canonical wire entities: `dispatch_request.v1`, `task_analysis.v1`, `dispatch_decision.v1`, `execution_result.v1`, `evaluation_result.v1`, `dispatch_record.v1`, `dispatch_bundle.v1`, `budget_reservation.v1`, `local_cost_summary.v2`, `local_dispatch_cost_detail.v1`, `axum_api.v1`, and `local_dashboard.v1`. The authoritative machine surface is the schemas under `wire_contract/v1/*.schema.json` plus the generated wire types they emit (`engine/src/wire_types.rs`, `sdk/python/src/agent_control_plane_sdk/wire_types.py`, `sdk/typescript/src/generated-wire-types.ts`); per-entity field and authority descriptions live with the schemas, not in this document.
 
 #### 3. Projection Boundaries & Non-Authority Rules
 
@@ -634,109 +614,17 @@ The AC6 contract governs the following 12 canonical wire entities:
 
 #### 5. Successor Migration Sequencing
 
-Following the acceptance of this contract (`PE7-AC6-CONTRACT-1`), implementation proceeds across 4 dedicated packets:
-
-- **`PE7-AC6-RUST-CODEGEN-1`** (`IMPLEMENT`, T1): Implement strongly-typed Rust representations in `engine/src/wire_types.rs` and extend `codegen/generate_wire_types.py` for deterministic multi-target generation with full entity coverage.
-- **`PE7-AC6-SDK-MIGRATION-1`** (`IMPLEMENT`, T1): Migrate Python and TypeScript SDK consumers to generated/versioned wire contracts, ensuring backward-compatible client methods and zero drift.
-- **`PE7-AC6-DASHBOARD-MIGRATION-1`** (`IMPLEMENT`, T1): Migrate Dashboard data projections to consume generated wire contracts while preserving existing presentation layouts and zero-backend-authority invariants.
-- **`PE7-AC6-COMPATIBILITY-CLOSEOUT-1`** (`CLOSEOUT`, T2): Verify the entire producer/consumer compatibility matrix, validate zero wire drift, and freeze the AC7 legacy removal candidates.
+Completed via the four dedicated successor packets (Rust codegen, SDK migration, Dashboard migration, compatibility closeout); Git history owns their plans and receipts. That ordering was execution sequencing only and grants no authority; the invariants in §1–§4 remain binding.
 
 #### 6. AC6 Compatibility Closeout & AC7 Legacy Removal Manifest
 
-All 4 implementation and migration packets of AC6 have converged:
+All four AC6 implementation/migration packets converged with zero producer/consumer wire drift across every canonical entity and enum, verified continuously via `scripts/check_wire_codegen_drift.sh`. Git history owns the executed batch plans, caller inventories, call-path proofs, and pre-cleanup tree states behind that convergence. The durable invariants that survive convergence:
 
-1. **Producer/Consumer Compatibility Matrix (0 Drift)**:
-   - **Rust Engine** (`engine/src/wire_types.rs`), **Python SDK** (`sdk/python/src/agent_control_plane_sdk/wire_types.py`), **TypeScript SDK** (`sdk/typescript/src/generated-wire-types.ts`), and **Dashboard Projections** (`dashboard/src/lib/types.ts`) are in complete 1-to-1 lockstep across all 12 wire entities (`dispatch_request.v1`, `task_analysis.v1`, `dispatch_decision.v1`, `execution_result.v1`, `evaluation_result.v1`, `dispatch_record.v1`, `dispatch_bundle.v1`, `budget_reservation.v1`, `local_cost_summary.v2`, `local_dispatch_cost_detail.v1`, `axum_api.v1`, `local_dashboard.v1`) and all 18 enums (`RequestSource`, `ModelTier`, `TaskDomain`, `TaskIntent`, `RiskFlag`, `QualityRequirement`, `RiskLevel`, `ConfidenceLabel`, `EvidencePolarity`, `EvidenceSource`, `ExpectedQualityBand`, `DecisionStatus`, `GateSeverity`, `ExecutorType`, `ExecutionStatus`, `EvaluationStatus`, `CheckStatus`, `FinalStatus`).
-   - Verified continuously via `scripts/check_wire_codegen_drift.sh`.
+1. **Separate authority endpoints are the sole canonical path**: `POST /api/v1/product/tasks/:task_id/approve` and `POST /api/v1/product/tasks/:task_id/output`. Any composite approve-and-output surface was deprecated compatibility only; it is not a canonical path and cleanup code must not call it.
+2. **Remove-after-zero-caller-proof**: a compatibility surface is deleted only after rerunning the fixed-string negative search across all tracked source, SDK, Dashboard, fixture, script, replay, and authority-test paths plus candidate-specific behavior, recovery, and consumer checks. Any newly discovered caller, owner, replacement mismatch, or recovery gap stops cleanup and requires a new manifest decision.
+3. **Rollback-group principle**: deletion executes as separately revertable, owner-scoped groups (HTTP routing/handler surface, `LocalProductStore` methods, typed SDK/Dashboard wrappers); a scoped check failure stops and reverts that group, and cleanup never crosses a group boundary after a failure.
 
-2. **Active Deprecation Window**:
-   - `POST /api/v1/product/tasks/:task_id/approve-and-output` and associated client wrappers (`approve_and_output_product_task` in Python, `approveAndOutputProductTask` in TypeScript and Dashboard) are marked `@deprecated` and will remain operational for backwards compatibility until AC7.
-   - Separate authority step endpoints (`POST /api/v1/product/tasks/:task_id/approve` and `POST /api/v1/product/tasks/:task_id/output`) are the sole canonical paths.
-
-3. **AC7 Removal Manifest (frozen by `PE7-AC7-REMOVAL-MANIFEST-1`)**:
-   The sole owner of this packet is the AC7 removal-manifest contract in this
-   section. `docs/MODULE_MAP.md` and `docs/NEXT_DECISION.md` are synchronized
-   projections of that contract; the runtime owner names below are evidence
-   labels only, not packet owners or ownership transfers. The deletion
-   successor must execute the groups as separate owner-scoped batches.
-   The exact candidate set was re-proved on accepted main `73fed5fedf2361ee546b831b3e87acb6f0a096ec`.
-   CodeGraph binds the only production call path as
-   `routes.rs` route → `product_tasks.rs::api_approve_and_output_product_task`
-   → `approve_and_output_product_task_for_tenant`
-   → `approve_and_output_product_task`. The fixed-string inventory finds one
-   route assertion plus twelve direct Rust test-method references across the
-   four test files below; no other production, SDK, Dashboard, fixture, script,
-   replay, or authority caller is admitted by this manifest.
-   Each rollback group below is independently revertable to the accepted
-   pre-cleanup tree at `73fed5fedf2361ee546b831b3e87acb6f0a096ec`; cleanup must
-   not cross a group boundary after a scoped check fails.
-
-   - **Rollback group `ac7-http-compatibility-surface` — runtime owner
-     evidence: HTTP routing/handler.** Delete the route registration (including its
-     preflight branch) in `engine/src/http_server/routes.rs` for
-     `POST /api/v1/product/tasks/:task_id/approve-and-output`, and delete
-     `api_approve_and_output_product_task` in
-     `engine/src/http_server/handlers/product_tasks.rs`. The replacement is
-     the existing separate `approve` and `output` endpoints, which retain the
-     independent approval, execution, confirmation, and output authorities.
-     `engine/tests/test_product_golden_path_authority.rs`, function
-     `product_approval_and_output_have_separate_authority_and_confirmation`,
-     currently contains the legacy-route negative assertion; cleanup must
-     remove that obsolete assertion while retaining coverage for the separate
-     canonical authority paths.
-
-   - **Rollback group `ac7-local-store-compatibility` — runtime owner evidence:
-     `LocalProductStore`.** Delete
-     `approve_and_output_product_task_for_tenant` and
-     `approve_and_output_product_task` from
-     `engine/src/storage/local_product_store/product_tasks.rs`. Cleanup must
-     migrate or remove only the following direct compatibility callers while
-     preserving the existing separate store operations and their transaction,
-     CAS, idempotency, audit, approval, output, and recovery semantics:
-     `engine/tests/test_product_golden_path_evidence.rs` functions
-     `terminal_evidence_links_task_owners_without_fabricated_cost`,
-     `terminal_evidence_uses_managed_executor_class_and_owner_reported_usage`,
-     `export_patch_writes_approved_patch_without_touching_main`,
-     `draft_pr_without_network_gate_persists_an_exact_provider_free_plan`, and
-     `draft_pr_missing_github_credential_keeps_version_and_reuses_operation_after_restart`;
-     `engine/tests/test_product_golden_path_g3.rs` functions
-     `end_to_end_artifact_only_path_with_real_verification`,
-     `verification_failure_blocks_capture_approval_and_output`,
-     `capture_without_verification_is_rejected_for_approval`, and
-     `test_port_migration_idempotency_and_audit_traces`; and
-     `engine/tests/test_product_golden_path_recovery.rs` functions
-     `stale_approval_blocked_without_trustworthy_verification` and
-     `finalize_idempotent_after_completion`.
-
-   - **Rollback group `ac7-consumer-compatibility-surface` — runtime owner
-     evidence: typed SDK and Dashboard projections.** Delete the deprecated wrapper
-     `approve_and_output_product_task` from
-     `sdk/python/src/agent_control_plane_sdk/client.py`,
-     `approveAndOutputProductTask` from `sdk/typescript/src/index.ts`, and
-     `approveAndOutputProductTask` from `dashboard/src/lib/api-client.ts`.
-     The replacement is each existing consumer's separate approve/output
-     method pair; no SDK or Dashboard authority is added.
-
-   Compatibility disposition for every group is **remove after zero-caller
-   proof**: the deprecated composite surface remains operational on the
-   accepted AC6 baseline, but it is not a canonical path and must not be
-   called by cleanup code. `PE7-AC7-CLEANUP-1` may delete only this exact
-   manifest, after rerunning the fixed-string negative search across all
-   tracked source, SDK, Dashboard, fixture, script, replay, and authority-test
-   paths and after passing the candidate-specific behavior, recovery, and
-   consumer checks. The manifest is contract evidence, not deletion itself;
-   any newly discovered caller, owner, replacement mismatch, or recovery gap
-   stops cleanup and requires a new manifest decision.
-
-   Cleanup batch order is fixed for the successor: (1) remove the three
-   consumer wrappers and prove the separate SDK/Dashboard methods; (2) remove
-   the HTTP route/handler and its obsolete authority assertion while proving
-   the separate authority endpoints; (3) remove the two LocalProductStore
-   compatibility methods and migrate or remove the enumerated Rust test
-   callers while proving behavior, recovery, CAS/idempotency, audit, and
-   SQLite/PostgreSQL parity where applicable. After each batch, rerun the
-   scoped negative search and applicable checks; a failure stops and reverts
-   that batch to the pre-cleanup rollback point.
+Merged receipts: PRs #560, #562, and #563 (Git history owns the detailed removal manifests they executed).
 
 ## Harness Evolution
 
@@ -804,33 +692,15 @@ The per-epoch task-family, vault, evaluator, and reviewer-policy values are
 required materialized fields; an empty value is invalid, not a deferred
 placeholder.
 
-The canonical manifest shape is fixed; every listed value is required and
-must be non-null in a materialized epoch. The `task` object is the sole
+The canonical manifest shape is fixed; every listed value is required and must be non-null in a materialized epoch. The `task` object is the sole
 manifest owner of the label-policy and rubric digests; there is no second
-`labels` object that repeats those facts:
-
-```json
-{
-  "manifest_id": "harness_evolution_ec2_contract.v1",
-  "contract_id": "PE7-HE-EC2-CONTRACT-1",
-  "manifest_sha256": "",
-  "evaluator": {"schema_version": "harness_evolution_eval.v1", "identity_hash": ""},
-  "task": {"family_id": "<family_id>", "family_sha256": "<sha256>", "label_policy_sha256": "<sha256>", "rubric_sha256": "<sha256>"},
-  "holdout": {"schema_version": "harness_evolution_sealed_holdout.v1", "vault_sha256": "<sha256>", "selection_policy_sha256": "<sha256>"},
-  "access": {"policy_version": "ec2-access-policy.v1", "classes": ["candidate_worker", "evaluator", "reviewer", "operator_controller"], "policy_sha256": "<sha256>"},
-  "sentinels": [{"id": "contamination", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "workspace-access-audit+LocalProductStore", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": "<sha256>"}, {"id": "gaming", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "harness_evolution_eval+verification", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": "<sha256>"}, {"id": "safety", "policy_version": "ec2-sentinel-policy.v1", "input_owner": "product_golden_path+tool_policy+output_boundary", "receipt_schema": "harness_evolution_sentinel_receipt.v1", "policy_sha256": "<sha256>"}],
-  "invalidation": {"states": ["VALID", "INVALIDATED", "UNKNOWN"], "policy_sha256": "<sha256>"},
-  "outcome": {"schema_version": "PredictionOutcomeV1", "rule_version": "prediction-outcome-rule.v1", "rule_sha256": "<sha256>"},
-  "review": {"policy_version": "ec2-review-policy.v1", "identity_class": "independent_reviewer", "rubric": "immutable_evidence_hard_gate.v1", "blinding": "sealed_label_and_rubric_blind", "permitted_repair": "none_after_evaluation", "disagreement": "preserve_and_escalate", "time_measurement": "record_duration_and_rework", "policy_sha256": "<sha256>"},
-  "owners": {"verification": "engine/src/product_golden_path.rs", "replay": "engine/src/storage/local_product_store/harness_evolution.rs", "scorecard": "engine/src/harness_evolution_eval.rs", "review": "scripts/agent-control/review_convergence.py+docs/REAL_WORLD_TESTING_PLAYBOOK.md", "output": "engine/src/harness_evolution_pr_ready.rs", "audit": "engine/src/storage/local_product_store/harness_evolution.rs", "persistence": "engine/src/storage/local_product_store/harness_evolution.rs"}
-}
-```
-
-The `<sha256>` values above are required epoch-bound digests, not caller
-claims; each is computed by the component rule and then included in the
-manifest digest. The contract freezes the exact names and sources; the
-holdout/sentinel/outcome implementation packets materialize and validate the
-values before any archive or effect.
+`labels` object that repeats those facts. The byte-level JSON template is
+owned by code, not prose: `engine/src/harness_evolution_eval.rs` defines the
+schema and shape, and `engine/src/storage/local_product_store/harness_evolution.rs`
+materializes and validates every field before any archive or effect. Each
+`<sha256>` is a required epoch-bound digest computed by its component rule and
+then included in the manifest digest; an empty or caller-claimed value is
+invalid, never a deferred placeholder.
 
 The evaluator constellation and holdout are immutable for one evaluation
 epoch. A task family has development, validation, and sealed-holdout splits;
@@ -845,94 +715,38 @@ complete validation evidence with a passing hard gate, all three sentinel
 receipts equal to `PASS`, and no invalidation can enter the existing
 Pareto/archive path.
 
-The archive predicate is one conjunctive rule:
-
-The existing `harness_evolution_sealed_selection.v1` receipt is preserved
-byte-for-byte with its current fields: `schema_version`, `receipt_id`,
-`family_id`, ordered `candidate_ids`, and `used`. The EC2 contract does not
-add manifest, policy, evaluator, or digest fields to that v1 receipt. A
-separate evaluator-owned EC2 selection binding associates its stable
-`receipt_id` with the manifest, selection policy, and evaluator identity; that
-binding is future implementation evidence and is not a replacement or an
-extension of the existing v1 persistence record.
-
-```text
-archive_eligible(candidate, evaluation) :=
-  evaluation.manifest_sha256 == manifest.manifest_sha256
-  ∧ consumed_one_use_selection_receipt.schema_version == harness_evolution_sealed_selection.v1
-  ∧ consumed_one_use_selection_receipt.receipt_id == evaluation.selection_receipt_id
-  ∧ consumed_one_use_selection_receipt.family_id == evaluation.family_id
-  ∧ consumed_one_use_selection_receipt.candidate_ids contains candidate.id
-  ∧ consumed_one_use_selection_receipt.used == true
-  ∧ selection_binding.receipt_id == consumed_one_use_selection_receipt.receipt_id
-  ∧ selection_binding.manifest_sha256 == manifest.manifest_sha256
-  ∧ selection_binding.selection_policy_sha256 == manifest.holdout.selection_policy_sha256
-  ∧ selection_binding.evaluator_identity_hash == manifest.evaluator.identity_hash
-  ∧ selection_binding.digest == sha256(canonical_json(selection_binding with digest=""))
-  ∧ evaluation.terminal == COMPLETE
-  ∧ evaluation.candidate_id == candidate.id
-  ∧ evaluation.evaluator_identity_hash == active.evaluator_identity_hash
-  ∧ evaluation.active_version_hash == candidate.active_version_hash
-  ∧ evaluation.content_hash == candidate.content_hash
-  ∧ evaluation.task_family_sha256 == manifest.task.family_sha256
-  ∧ evaluation.vault_sha256 == manifest.holdout.vault_sha256
-  ∧ evaluation.label_policy_sha256 == manifest.task.label_policy_sha256
-  ∧ evaluation.rubric_sha256 == manifest.task.rubric_sha256
-  ∧ evaluation.hypothesis_manifest_sha256 is bound to evaluation
-  ∧ evaluation.bundle_sha256 is bound to evaluation
-  ∧ evaluation.evidence_sha256 is bound to evaluation
-  ∧ every validation record is complete
-  ∧ every validation hard_gate == PASSED
-  ∧ sentinel_receipts have exactly the ids [contamination, gaming, safety]
-  ∧ for each id, sentinel_receipt[id].manifest_sha256 == manifest.manifest_sha256
-  ∧ for each id, sentinel_receipt[id].policy_version == manifest.sentinels[id].policy_version
-  ∧ for each id, sentinel_receipt[id].policy_sha256 == manifest.sentinels[id].policy_sha256
-  ∧ for each id, sentinel_receipt[id].input_owner == manifest.sentinels[id].input_owner
-  ∧ for each id, sentinel_receipt[id].receipt_schema == manifest.sentinels[id].receipt_schema
-  ∧ for each id, sentinel_receipt[id].candidate_id == candidate.id
-  ∧ for each id, sentinel_receipt[id].evaluation_id == evaluation.evaluation_id
-  ∧ for each id, sentinel_receipt[id].evaluator_identity_hash == manifest.evaluator.identity_hash
-  ∧ for each id, sentinel_receipt[id].source_evidence_digest is bound to evaluation
-  ∧ for each id, sentinel_receipt[id].receipt_sha256 == sha256(canonical_json(sentinel_receipt[id] with receipt_sha256=""))
-  ∧ sentinel_receipt[contamination].status == PASS
-  ∧ sentinel_receipt[gaming].status == PASS
-  ∧ sentinel_receipt[safety].status == PASS
-  ∧ evaluation.reviewer_policy_sha256 == manifest.review.policy_sha256
-  ∧ review_receipt.schema_version == harness_evolution_review_receipt.v1
-  ∧ review_receipt.manifest_sha256 == manifest.manifest_sha256
-  ∧ review_receipt.policy_sha256 == manifest.review.policy_sha256
-  ∧ review_receipt.candidate_id == evaluation.candidate_id
-  ∧ review_receipt.evaluation_id == evaluation.evaluation_id
-  ∧ review_receipt.evidence_sha256 == evaluation.evidence_sha256
-  ∧ review_receipt.reviewer_session_id is authenticated and non-empty
-  ∧ review_receipt.reviewer_session_id resolves through the existing review owner to identity_class == manifest.review.identity_class
-  ∧ review_receipt.reviewer_session_id is distinct from the evaluator and implementation sessions
-  ∧ review_receipt.receipt_sha256 == sha256(canonical_json(review_receipt with receipt_sha256=""))
-  ∧ review_receipt.disposition == PASS
-  ∧ invalidation.state == VALID
-```
-
+Archive admission remains one conjunctive, evaluator-owned rule: exact manifest,
+selection-policy, and evaluator-identity digest binding; a consumed one-use
+`harness_evolution_sealed_selection.v1` selection receipt associated through a
+separate evaluator-owned binding keyed by its stable `receipt_id`; complete
+validation records with passing hard gates; exactly the
+contamination/gaming/safety sentinel receipts, each digest-bound and `PASS`;
+an independent authenticated reviewer session, distinct from the evaluator and
+implementation sessions, whose receipt has `disposition == PASS`; and
+invalidation state `VALID`. The authoritative implementation lives in
+`engine/src/harness_evolution_eval.rs`, with receipt persistence and
+consumption in `engine/src/storage/local_product_store/harness_evolution.rs`.
 Any missing, mismatched, stale, or outcome-unknown term makes the predicate
 false and retains the rejected evidence under existing owners.
 
-Receipt bindings are also fixed. The existing selection receipt contains only
-`schema_version`, `receipt_id`, `family_id`, ordered `candidate_ids`, and
-`used`; its v1 shape and persistence semantics remain unchanged. The separate
-EC2 selection binding contains `receipt_id`, `manifest_sha256`,
-`selection_policy_sha256`, `evaluator_identity_hash`, and `digest`; its digest
-is the canonical JSON digest with only `digest` blanked. It is evaluator-owned
-evidence keyed to the unchanged v1 `receipt_id`, not a new field in that
-receipt. A future implementation packet must version that binding separately
-if it makes it durable. A sentinel receipt contains
-`schema_version`, `sentinel_id`, `policy_version`, `receipt_schema`,
-`manifest_sha256`, `policy_sha256`, `input_owner`, `candidate_id`,
-`evaluation_id`, `evaluator_identity_hash`, `source_evidence_digest`, `status`,
-and `receipt_sha256`, using the same blanked-self digest rule. A reviewer receipt uses
-`harness_evolution_review_receipt.v1` and contains `manifest_sha256`,
+The existing `harness_evolution_sealed_selection.v1` receipt is preserved
+byte-for-byte with its current fields (`schema_version`, `receipt_id`,
+`family_id`, ordered `candidate_ids`, and `used`); the EC2 contract does not
+add manifest, policy, evaluator, or digest fields to that v1 persistence
+record.
+
+Receipt bindings are fixed and versioned separately from that v1 record. A
+sentinel receipt contains `schema_version`, `sentinel_id`, `policy_version`,
+`receipt_schema`, `manifest_sha256`, `policy_sha256`, `input_owner`,
+`candidate_id`, `evaluation_id`, `evaluator_identity_hash`,
+`source_evidence_digest`, `status`, and `receipt_sha256`. A reviewer receipt
+uses `harness_evolution_review_receipt.v1` and contains `manifest_sha256`,
 `policy_sha256`, `candidate_id`, `evaluation_id`, `evidence_sha256`,
 `reviewer_session_id`, `disposition`, `disagreement_digest`, and
-`receipt_sha256`. Missing authentication/session identity, digest, or owner
-binding is `UNKNOWN`, never an implicit pass.
+`receipt_sha256`. Every such digest uses the blanked-self rule
+(`sha256(canonical_json(receipt with receipt_sha256=""))`). Missing
+authentication/session identity, digest, or owner binding is `UNKNOWN`, never
+an implicit pass.
 
 After the separate entrant-admission receipt and evaluation, three independent
 sentinel classes are required before eligible archive or parent selection:

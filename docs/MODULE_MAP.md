@@ -1,12 +1,12 @@
 # Module Map
 
-Last updated: 2026-08-16.
+Last updated: 2026-08-25.
 
 This is the concise ownership map for accepted `main`. Accepted facts are in `docs/CURRENT_STATUS.md`; the current executable window is in `docs/NEXT_DECISION.md`; the routing-only horizon is in `docs/FUTURE_ROUTE.md`; architecture invariants are in `docs/ARCHITECTURE_BOOK.md`.
 
 Open PR branches are not canonical owners until merged and are intentionally not listed here. Observe them through a fresh context capsule. Accepted owner identities come from remote `main`, not from a branch-local status claim.
 
-Full Agent Autonomy Mode permits repository-scoped work that is testable, observable, reviewable, verification-gated, compatible, and rollbackable. Provider calls, target output, release, deployment, spend, and authority-critical actions retain separate gates.
+Autonomy semantics and separate external-effect gates are owned by `AGENTS.md`; this map records only implementation owners.
 
 ## Core Ownership
 
@@ -19,12 +19,12 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Dispatch analysis | `engine/src/dispatch_engine.rs`, analyzers, selectors, planners, decomposers | Advisory/default-noop unless an accepted contract admits execution |
 | Workflow runtime | `engine/src/workflow/`, `engine/src/scheduler.rs`, `engine/src/scheduler/`, `engine/src/executor_pool.rs`, `engine/src/node_executor.rs` | Sole persisted run, node, lease, retry, pause/kill, and concurrency path |
 | Recursive/agent nodes | Existing AgentStep and recursive-execution modules plus scheduler/store | Typed bounded nodes; no autonomous root-goal generation, production self-update, or authority expansion |
-| Managed CLI/process | `engine/src/cli/mod.rs`, `config.rs`, `cli_node_executor.rs`, `codex_managed_acceptance_preflight.rs`, process/probe owners | Bounded subprocess lifecycle, output limits, process-tree cleanup, exact executable identity, default-off admission, and lease-bound owner-derived pre-child preflight. Packet 1 generalizes this current Codex-shaped adapter into the Rust-owned managed-coding runtime-profile boundary without adding a process/scheduler/store owner. |
+| Managed CLI/process | `engine/src/cli/mod.rs`, `config.rs`, `cli_node_executor.rs`, `codex_managed_acceptance_preflight.rs`, process/probe owners | Bounded subprocess lifecycle, output limits, process-tree cleanup, exact executable identity, default-off admission, and lease-bound owner-derived pre-child preflight; managed-coding runtime profiles generalize beneath these same owners without a new process/scheduler/store owner. |
 | Codex mediation and budget | `engine/src/cli/codex_budget_authority.rs`, `codex_mediation_admission.rs`, `codex_usage_journal.rs`, `codex_session_usage.rs` | Parent-held credential, loopback gateway, ProductTask budget enforcement, parent-owned fail-closed journal, session corroboration; class remains partial |
 | Managed-acceptance authority | `engine/src/storage/local_product_store/managed_acceptance.rs` and existing store/migration owners through v36 | Store-owned immutable proposal/final manifest, authenticated delegation, separated manifest/spend and artifact/output receipts, one-use spend, attempt lease, provider-request journal, terminal cleanup, restart, replay, audit, and rollback authority; read-only current-lease validation supplies runtime preflight without creating another owner |
 | Multi-executor usage evidence | `engine/src/execution_usage/` — accepted adapters and reconcile owners (PR #301) | `execution_usage_event.v1`; evidence only; never a second budget or spend authority |
 | Managed provider-call protocol adapters | `engine/src/provider/managed_deepseek.rs`, `managed_deepseek_executor.rs`, existing protocol/usage adapters, and ProductTask managed-acceptance/store owners | Exact Pro-planner/Flash-implementer/Pro-reviewer routing beneath one ProductTask budget and durable pre-send request claim; parent-only credential resolution, exact usage reconciliation, and permanent no-retry after outcome unknown. Adapters never own budget, lease, approval, output, audit, or rollback state. |
-| Workspace and patch | Existing supervised-patch/workspace owners, `engine/src/storage/local_product_store/product_tasks.rs`, and target-repository output owners | App-owned detached worktree, exact source binding, bounded patch and cleanup lifecycle. Packet 1 adds `local_folder` staging/manifest/preimage/rollback behavior under these same owners; it must not create a second workspace, lease, budget, output, or rollback owner. Accepted PR #308 adds a v35 ProductTask preparation receipt that pins one local recovery path before mutation; local/try-only PostgreSQL guards coordinate active work only and never become a second workspace, lease, budget, or rollback owner. |
+| Workspace and patch | Existing supervised-patch/workspace owners, `engine/src/storage/local_product_store/product_tasks.rs`, and target-repository output owners | App-owned detached worktree, exact source binding, bounded patch and cleanup lifecycle including `local_folder` staging/manifest/preimage/rollback under these same owners; the v35 preparation receipt pins one local recovery path before mutation; local/try-only PostgreSQL guards never become a second workspace, lease, budget, or rollback owner. |
 | Verification | `engine/src/product_golden_path.rs`, `engine/src/storage/local_product_store/product_tasks.rs`, `engine/src/storage/local_product_store/managed_acceptance.rs`, and existing process-outcome/tool-policy owners | Fixed admitted commands, exact workspace/source/patch bindings, pause/kill/late-write refusal; Product Golden Path orchestration remains distinct from the sole LocalProductStore mutation authority |
 | Artifact | Existing supervised artifact capture, integrity, redaction, and store owners | Atomic content/hash-bound artifact; no approval or output authority |
 | Approval | Existing workflow/product approval owner | Separate current-state human approval; no execution or output mutation authority |
@@ -42,8 +42,8 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Product durable memory | `engine/src/storage/local_product_store/durable_memory.rs` plus existing store/migration/audit owners | Product-scoped persisted memory records under the sole store owner; not a Harness-Evolution projection, routing authority, evaluator, spend owner, or adoption source |
 | SDK and Dashboard | `sdk/`, `dashboard/` | Typed interaction and read-only projection only; no backend, workflow, budget, or evaluator authority |
 | Wire contracts and codegen | `wire_contract/`, `codegen/`, `engine/src/wire_types.rs` | Canonical JSON schema definitions and deterministic cross-language codegen; drift checked by `scripts/check_wire_codegen_drift.sh`; AC6 type governance contract and compatibility closeout |
-| Event schema contract | `engine/src/event_schema.rs` | Canonical event schema validation, idempotency hashing, and JSONL evidence guard (`docs/stage0/events.jsonl`); production module with no dependency on the deleted reference surface. The reference-only `engine/src/event_source/` module (append-only event store, projections, task queue) and the reference-only error types in `engine/src/errors.rs` are deleted: they had no production caller, the active runtime and `LocalProductStore` are the sole store/runtime/audit owners, and event-sourcing reference value is owned by `docs/ARCHITECTURE_BOOK.md` plus `event_schema` |
-| CI and repository automation | `.github/`, `scripts/`, `tools/`, `scripts/agent-control/`; outbound local poll/run-once seam in `scripts/agent-control/local_loop.py`, `scripts/agent-control/local_run_once.py`, `scripts/agent-control/local_supervisor.py`, `scripts/agent-control/local_verification.py`, and `scripts/agent-control/loopctl.py`; plan packet parsing/admission in `scripts/agent-control/plan_lane.py`; evidence-backed successor promotion, typed EFFECT/T3 pauses, and current-window compaction in `scripts/agent-control/route_driver.py` | Verification and repository-maintenance automation only; no implicit product/release authority. `route_driver.py` is the deep promotion boundary: its deterministic layer binds route identity/prerequisites/profile/manifest/predecessor receipt, while its promotion planner validates current-main MODULE_MAP/owner/caller/test evidence and emits `DECISION_REQUIRED` when any refreshed field is unproved. It cannot use FUTURE_ROUTE paths as authority, execute an EFFECT, mint T3 authority, or create a controller/ledger/store/workflow owner. The T3 decision and independent existing-owner outcome are separate authenticated ledger transports in the existing controller workflow; neither executes an effect, and the owner outcome binds the exact request, outcome digest, authenticated repository owner, and redacted evidence digest. Both are absent from the local worker's GitHub dispatch adapter. `local_run_once.py` then re-proves both receipts and automatically opens the bounded provider-free closeout/successor promotion; it never invokes the product effect. The local loop remains the sole controller and must reuse GitHub labels/comments plus the existing dispatcher, worktree, artifact, PR, CI, review, merge, closeout, and context owners; it is not a daemon state store or second controller. Focused pre-artifact checks are owned by `local_verification.py` (allowlisted commands only). The Control Issue owns only global controls. The canonical active-capacity ceiling (`MAX_ACTIVE=2`) is owned solely by `scripts/agent-control/state_manager.py`; `loopctl poll --max-active` throttles within 1..K only. `tools/check_security_baseline.py` is the sole fail-closed guard owner for unattended-automation patterns (`dangerously-skip-permissions`, unbound `gh run list --limit 1` CI judgment, `gh run watch` chained to an unbound list or without a run id) in repository-controlled automation (PR #326, semantics refined in PR #336), for the composite legacy fingerprint of the deleted plugin surface (PR #331, composite in PR #336), and for the dormant-surface heuristic gate (module-level dead-code blankets, module islands, self-described placeholder modules, no-op executors, conflicting sole-owner claims; PR #336). Guard exceptions require classification entries with owner, reason, review condition, and expiry/recheck condition; no second CI policy owner exists |
+| Event schema contract | `engine/src/event_schema.rs` | Canonical event schema validation, idempotency hashing, and JSONL evidence guard (`docs/stage0/events.jsonl`); production module with no reference-surface dependency |
+| CI and repository automation | `.github/`, `scripts/`, `tools/`, `scripts/agent-control/`; outbound poll/run-once seam and plan parsing in `scripts/agent-control/local_loop.py`, `local_run_once.py`, `local_supervisor.py`, `local_verification.py`, `loopctl.py`, `plan_lane.py`; successor promotion, typed EFFECT/T3 pauses, and window compaction in `scripts/agent-control/route_driver.py` | Verification and repository-maintenance automation only; no implicit product/release authority. `route_driver.py` is the deep promotion boundary: its deterministic layer binds route identity/prerequisites/profile/manifest/predecessor receipt, its planner validates current-main MODULE_MAP/owner/caller/test evidence, and it cannot use FUTURE_ROUTE paths as authority, execute an EFFECT, mint T3 authority, or create any controller/ledger/store/workflow owner. The T3 decision and independent existing-owner outcome travel separate authenticated ledger transports owned by the controller workflow; the local loop re-proves both receipts before opening a provider-free closeout/promotion and remains the sole controller, never a daemon state store. Focused pre-artifact checks are allowlisted by `local_verification.py`. Durable design: Architecture Book repository-maintenance route transition; procedures: RUNBOOK. |
 | Review Convergence Protocol | `scripts/agent-control/review_convergence.py` (canonical owner of `MAX_SUBSTANTIVE_REVIEW_ROUNDS`, `MAX_AUTONOMOUS_REPAIR_BATCHES`, finding/decision normalization, R1/repair/R2 transitions), `scripts/agent-control/state_manager.py` (durable ReviewState wire v3 persistence), `scripts/agent-control/validate_review.py` + `review_schema.json` (artifact validation), `scripts/agent-control/review_loop/` (transport), `scripts/agent-control/prompts/review.md` + `prompt_builder.py` (review prompt), `docs/REAL_WORLD_TESTING_PLAYBOOK.md` (protocol owner), `scripts/project_context.py` (bounded capsule projection) | Exact PASS is the only merge-authorizing review verdict and may carry deferred notes; R1/R2 budget with a single autonomous repair batch, no autonomous R3; trusted CI stays with the merge owner; capsule projects review state only and never decides severity, disposition, repair, Ready, or merge; no second review owner exists |
 | Shared investigation escalation (`ask_sol`) | `scripts/ask_sol.py`, `scripts/ask_sol`, `scripts/agent-control/ask_sol_schema.json`, `scripts/agent-control/ask_sol_model_schema.json`, `tests/test_ask_sol.py` | Shared, harness-neutral read-only GPT-5.6 Sol investigation escalation tool; ordinary workers remain sole task owners and executors; pre/post worktree dirty-state non-mutation verification; per-state consultation budget and recursion rejection |
 
@@ -51,37 +51,11 @@ T3/Sol policy has one current-contract owner: [NEXT_DECISION.md](NEXT_DECISION.m
 
 ## Product Data Flow
 
-```text
-intake
-→ ProductTask/worktree/source binding
-→ executable graph
-→ scheduler lease
-→ bounded executor
-→ verification
-→ artifact
-→ current approval
-→ separate output confirmation
-→ acp/* Draft PR or bounded export
-→ canonical terminal evidence
-```
-
-Every effect binds to the exact task version, plan/run/node attempt, lease/owner token, workspace, source revision/tree, budget, artifact, approval, output operation/receipt, and audit identity. Missing, stale, conflicting, duplicate, late, over-budget, killed, paused, revoked, expired, or outcome-unknown state fails closed.
+Owned by the Architecture Book Product Golden Path contract; every effect binds exact task/run/lease/workspace/source/budget/artifact/approval/output/audit identities and fails closed on missing, stale, conflicting, late, over-budget, killed, revoked, expired, or outcome-unknown state.
 
 ## Authority Split
 
-The following are deliberately separate:
-
-```text
-execution admission
-risk acknowledgement
-one-use spend authorization
-attempt admission and lease
-artifact approval
-output confirmation
-merge/release/deployment
-```
-
-No earlier authority implies a later one. In particular, risk acknowledgement is not spend authority; execution is not artifact approval; approval is not output confirmation; Draft PR creation is not merge authority.
+Admission, risk acknowledgement, one-use spend authorization, attempt admission/lease, artifact approval, output confirmation, and merge/release/deployment remain deliberately separate authorities; no earlier authority implies a later one. Owner: Architecture Book Authority Invariants.
 
 ## Ownership Maintenance
 
@@ -91,24 +65,11 @@ Do not copy explanatory labels into file names. Always inspect the actual final 
 
 ## Architecture Convergence Map
 
-Architecture Convergence reuses these owners and changes boundaries incrementally. Routing-only order is owned by `docs/FUTURE_ROUTE.md`; an exact execution-ready expansion is owned only by `docs/NEXT_DECISION.md` after promotion:
-
-1. AC0 — runtime inventory, data/contract inventory, then trace/order freeze; no ownership move.
-2. AC1 — ProcessSupervisor contract, additive core, then enumerated caller migration.
-3. AC2 — typed-execution contract, additive boundary/adapters, then enumerated caller migration.
-4. AC3 — responsibility contract (frozen provider-free in `docs/CURRENT_STATUS.md` as `PE7-AC3-CONTRACT-1`), pure orchestrator extraction, then store/effect-port migration without state-semantic change.
-5. AC4 — transaction-view contract (frozen provider-free in `docs/CURRENT_STATUS.md` and `docs/ARCHITECTURE_BOOK.md` as `PE7-AC4-CONTRACT-1`), borrowed view core on both backends (`WorkflowTx`, `ProductTaskTx`, `ManagedAcceptanceTx`, `RweTx`), then enumerated caller migration without independent connection or commit authority.
-6. AC5 — configuration/composition contract (frozen in `docs/ARCHITECTURE_BOOK.md` as `PE7-AC5-CONTRACT-1`), additive root, then 4-batch module migration and approved legacy-read cleanup.
-7. AC6 — schema contract (frozen in `docs/ARCHITECTURE_BOOK.md` as `PE7-AC6-CONTRACT-1`), Rust/codegen source, SDK migration, Dashboard data migration, and compatibility closeout COMPLETE (zero drift verified across 12 wire entities and 18 enums; `PE7-AC7-REMOVAL-MANIFEST-1` freezes the exact deprecated route, handler, LocalProductStore compatibility methods, consumer wrappers, and their enumerated test callers).
-8. AC7 — zero-caller removal manifest, deletion-only implementation, then independent reference/behavior closeout.
-
-Every implementation/migration slice is blocked on its accepted current-main contract and cannot enlarge that contract. The frozen RWE corpus is the before/after compatibility oracle. Architecture work cannot create a second scheduler, database, budget, approval, output, evidence, or rollback owner.
+Architecture Convergence reused the owners above incrementally and is COMPLETE through AC7 (receipts: `docs/CURRENT_STATUS.md`). Frozen contracts live in their designated owners: AC3 responsibility matrix in `docs/CURRENT_STATUS.md`; AC4 transaction views and AC5 composition root and AC6 schema governance in `docs/ARCHITECTURE_BOOK.md`. The frozen RWE corpus remains the before/after compatibility oracle; architecture work cannot create a second scheduler, database, budget, approval, output, evidence, or rollback owner.
 
 ## Cost and Efficiency Evidence
 
-Runtime usage evidence stays under existing execution-usage, scorecard, and store owners. Engineering/lifecycle-cost evidence begins as a bounded board report and includes Agent sessions, review cycles, CI effort, repair iterations, migrations, authority boundaries touched, rollback complexity, maintenance surface, and expected reuse.
-
-This evidence informs RWE replay and Level-2 GO/NO-GO. It does not become a caller-supplied production authorization or a second budget system.
+Runtime usage evidence stays under existing execution-usage/scorecard/store owners; lifecycle-cost evidence vocabulary is owned by the Architecture Book evidence contract. It informs RWE replay and Level-2 GO/NO-GO and never becomes caller-supplied production authorization or a second budget system.
 
 ## Capability Boundaries
 
@@ -119,7 +80,7 @@ This evidence informs RWE replay and Level-2 GO/NO-GO. It does not become a call
 - External runtimes and repositories may provide bounded adapters, parsers, or comparison evidence; they may not replace the core owners.
 - Provider/session logs are post-call evidence, not pre-call authority.
 - Local price tables produce estimates only and must remain versioned and source-labeled.
-- OpenCode binary admission remains deferred; Vader/#208 remains stopped; Dashboard #225 remains last.
+- Deferred/stopped surfaces (OpenCode binary admission, Vader/#208, Dashboard #225): dispositions are owned by `docs/CURRENT_STATUS.md`.
 - Release, package, provenance, signing, installer, deployment, and rollback pipelines remain outside product/evolution authority.
 
 ## PE-5 Release Provenance Ownership

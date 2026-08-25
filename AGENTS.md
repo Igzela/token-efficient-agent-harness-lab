@@ -77,3 +77,5 @@ After `START_HERE.md`, follow only the returned role route and packet-targeted r
 ## Documentation Maintenance Rule
 
 One fact has one full owner. `START_HERE.md` owns navigation/context routing; `docs/CURRENT_STATUS.md` accepted truth and confirmed gaps; `docs/NEXT_DECISION.md` one executable window; `docs/FUTURE_ROUTE.md` blocked routing only; `docs/MODULE_MAP.md` ownership; `docs/ARCHITECTURE_BOOK.md` durable architecture/authority/security/recovery; `docs/REAL_WORLD_TESTING_PLAYBOOK.md` PR/CI/review/merge; `docs/RUNBOOK.md` proven operations. Other entrypoints link instead of copying. Replace stale status rather than appending history; add no document when an existing owner fits.
+
+One standing execution obligation: packet closeout/promotion must leave `docs/NEXT_DECISION.md` with exactly one active window plus at most one compact immediate-predecessor bridge, collapse accepted history into compact `docs/CURRENT_STATUS.md` receipts, and never re-accumulate chronology owned by Git/PR history. Recurrence fails CI through `scripts/check_agent_handoff.py`; no byte-size cap substitutes for this semantic rule.

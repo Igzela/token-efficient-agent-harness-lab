@@ -341,8 +341,6 @@ Standing authority covers branch creation, commits, PRs, CI repair, independent 
 
 Agents may autonomously create and merge scoped PRs when the classifier passes. Do not combine unrelated packets or risk surfaces merely to reduce PR count. When `docs/NEXT_DECISION.md` declares a grouped boundary, its ordered internal packets are one coherent risk surface and may share one branch and PR.
 
-The historical PE-5/PE-6 implementation and closeout boundaries remain in repository history. `PE56-POST-SEAL-REPAIR-1` is one coherent post-seal implementation, independent standards/spec review, documentation, and acceptance PR; it must not be split into PE-5, PE-6, prerequisite, or closeout PRs. Its independent reviews are separate review passes over the same final diff, not separate branches or PRs. Full repository validation and exact-head GitHub CI run only on the complete reviewed head. If a CI repair changes that head, the complete diff is reviewed again and the exact new head receives the applicable canonical mode. The final acceptance state is recorded only after those results and post-merge `main` verification exist.
-
 A bounded objective may span multiple PRs in one session. After each merge, refresh `main`, reconcile active docs and open work, and continue only from the new repository state.
 
 ### Selective rebase
@@ -363,17 +361,7 @@ For any PR that is not strictly documentation-only, the complete canonical matri
 
 ## Documentation Maintenance
 
-Docs maintenance is mandatory but not additive-by-default.
-
-- Update the smallest authoritative surface.
-- Put accepted truth and confirmed gaps in `docs/CURRENT_STATUS.md`; never live PR/CI/review state.
-- Put one current executable window in `docs/NEXT_DECISION.md`.
-- Put blocked long-horizon routing sketches in `docs/FUTURE_ROUTE.md`; promote by removing one and fully refreshing it into `NEXT_DECISION.md`.
-- Put ownership in `docs/MODULE_MAP.md`.
-- Put durable architecture in `docs/ARCHITECTURE_BOOK.md`.
-- Put only proven operator procedures in `docs/RUNBOOK.md`.
-- Keep stale/historical material under `docs/archive/` when retention is useful.
-- Do not create a second roadmap, status, policy, packet, closeout, or generated-latest document.
+Documentation discipline — one full canonical owner per fact, replace-only windows, and the per-document ownership split — is owned by `START_HERE.md` (Documentation Discipline) and enforced by `scripts/check_agent_handoff.py`. Operationally: update the smallest authoritative surface; keep stale material under `docs/archive/` when retention is useful; never create a second roadmap, status, policy, packet, closeout, or generated-latest document.
 
 ## Completion Report
 
