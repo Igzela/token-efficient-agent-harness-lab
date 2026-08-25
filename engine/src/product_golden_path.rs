@@ -744,11 +744,11 @@ pub enum ProductHarnessEvidenceState {
     Unavailable,
 }
 
-/// Digest-only usage/cost observation. The Golden Path has several accepted
-/// cost owners; this seam preserves their identity without inventing a new
-/// accounting source or turning unavailable cost into zero.
+/// Digest-only observation from an existing Golden Path evidence owner. The
+/// seam preserves each evidence dimension separately: unavailable evidence is
+/// never converted into a zero, and usage is never conflated with cost.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProductHarnessUsageCostEvidence {
+pub struct ProductHarnessObservedEvidence {
     pub state: ProductHarnessEvidenceState,
     pub evidence_sha256: Option<String>,
 }
@@ -766,10 +766,12 @@ pub struct ProductHarnessRunEvidence {
     pub source_revision_sha256: String,
     pub terminal_outcome: ProductTaskStatus,
     pub verified_deliverable: ProductHarnessEvidenceState,
-    pub usage_cost: ProductHarnessUsageCostEvidence,
+    pub usage: ProductHarnessObservedEvidence,
+    pub cost: ProductHarnessObservedEvidence,
     pub cancellation: ProductHarnessEvidenceState,
     pub cleanup: ProductHarnessEvidenceState,
     pub restart: ProductHarnessEvidenceState,
+    pub recovery: ProductHarnessEvidenceState,
     pub failure: ProductHarnessEvidenceState,
     pub failure_code: Option<String>,
     pub failure_detail_sha256: Option<String>,
@@ -826,6 +828,46 @@ fn product_harness_verified_deliverable_state(
     }
 }
 
+/// The Store's canonical reader verifies the same content hash before exposing
+/// a terminal record. Keep the pure seam equally strict, so an in-process
+/// caller cannot turn arbitrary JSON into a verified delivery projection.
+fn product_harness_validate_terminal_evidence(
+    task_id: &str,
+    status: ProductTaskStatus,
+    workspace_scope_id: &str,
+    source_revision: &str,
+    evidence: &Value,
+) -> Result<(), String> {
+    if evidence.get("schema_version").and_then(Value::as_str)
+        != Some("product_task_terminal_evidence.v2")
+    {
+        return Err("product harness terminal evidence schema is invalid".to_string());
+    }
+    if evidence.get("product_task_id").and_then(Value::as_str) != Some(task_id)
+        || evidence.get("task_status").and_then(Value::as_str) != Some(status.as_str())
+        || evidence.get("workspace_scope_id").and_then(Value::as_str) != Some(workspace_scope_id)
+        || evidence.get("source_revision").and_then(Value::as_str) != Some(source_revision)
+    {
+        return Err("product harness terminal evidence binding changed".to_string());
+    }
+    let expected = evidence
+        .get("content_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| {
+            value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit())
+        })
+        .ok_or_else(|| "product harness terminal evidence content hash is invalid".to_string())?;
+    let mut hash_input = evidence.clone();
+    hash_input
+        .as_object_mut()
+        .ok_or_else(|| "product harness terminal evidence must be an object".to_string())?
+        .insert("content_sha256".to_string(), Value::Null);
+    if product_harness_sha256(&hash_input)? != expected {
+        return Err("product harness terminal evidence content hash changed".to_string());
+    }
+    Ok(())
+}
+
 /// Project an already-owned ProductTask and optional terminal evidence into the
 /// common Harness run seam. This is a pure read-only mapping: it cannot admit
 /// work, allocate a budget, run an executor, touch a workspace, or change a
@@ -853,6 +895,11 @@ pub fn project_product_harness_run(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "product harness run requires workspace id".to_string())?;
+    let workspace_scope_id = task
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "product harness run requires workspace scope id".to_string())?;
     let source_revision = binding
         .get("source_revision")
         .and_then(Value::as_str)
@@ -860,30 +907,30 @@ pub fn project_product_harness_run(
         .ok_or_else(|| "product harness run requires source revision".to_string())?;
 
     if let Some(evidence) = terminal_evidence {
-        if evidence
-            .get("product_task_id")
-            .and_then(Value::as_str)
-            .is_some_and(|observed| observed != task_id)
-        {
-            return Err("product harness terminal evidence task binding changed".to_string());
-        }
+        product_harness_validate_terminal_evidence(
+            task_id,
+            status,
+            workspace_scope_id,
+            source_revision,
+            evidence,
+        )?;
     }
 
     let terminal_evidence_sha256 = terminal_evidence.map(product_harness_sha256).transpose()?;
-    let usage_value = terminal_evidence.and_then(|evidence| {
+    let usage_value = terminal_evidence.and_then(|evidence| evidence.get("usage"));
+    let cost_value = terminal_evidence.and_then(|evidence| {
         evidence
-            .get("lifecycle_cost")
+            .get("cost")
+            .or_else(|| evidence.get("lifecycle_cost"))
             .or_else(|| evidence.get("usage_cost"))
-            .or_else(|| evidence.get("usage"))
-            .or_else(|| evidence.get("cost"))
     });
     let cleanup_value = terminal_evidence.and_then(|evidence| {
         evidence
             .get("cleanup")
             .or_else(|| evidence.pointer("/workspace/cleanup"))
     });
-    let restart_value = terminal_evidence
-        .and_then(|evidence| evidence.get("restart").or_else(|| evidence.get("recovery")));
+    let restart_value = terminal_evidence.and_then(|evidence| evidence.get("restart"));
+    let recovery_value = terminal_evidence.and_then(|evidence| evidence.get("recovery"));
     let failure_code = task
         .get("failure_code")
         .and_then(Value::as_str)
@@ -918,9 +965,13 @@ pub fn project_product_harness_run(
         source_revision_sha256: hex::encode(Sha256::digest(source_revision.as_bytes())),
         terminal_outcome: status,
         verified_deliverable,
-        usage_cost: ProductHarnessUsageCostEvidence {
+        usage: ProductHarnessObservedEvidence {
             state: product_harness_optional_evidence_state(usage_value),
             evidence_sha256: usage_value.map(product_harness_sha256).transpose()?,
+        },
+        cost: ProductHarnessObservedEvidence {
+            state: product_harness_optional_evidence_state(cost_value),
+            evidence_sha256: cost_value.map(product_harness_sha256).transpose()?,
         },
         cancellation: match status {
             ProductTaskStatus::Killed => ProductHarnessEvidenceState::Observed,
@@ -929,6 +980,7 @@ pub fn project_product_harness_run(
         },
         cleanup: product_harness_optional_evidence_state(cleanup_value),
         restart: product_harness_optional_evidence_state(restart_value),
+        recovery: product_harness_optional_evidence_state(recovery_value),
         failure,
         failure_code,
         failure_detail_sha256,
@@ -2578,6 +2630,7 @@ mod tests {
         let task = json!({
             "task_id": "product-task-1",
             "status": "completed",
+            "workspace_id": "workspace-scope-1",
             "workspace_binding": {
                 "workspace_id": "workspace-1",
                 "workspace_path": "/private/workspace-1",
@@ -2587,14 +2640,28 @@ mod tests {
             "failure_code": null,
             "failure_detail": null
         });
-        let terminal = json!({
+        let seal_terminal = |mut terminal: Value| {
+            terminal["schema_version"] =
+                Value::String("product_task_terminal_evidence.v2".to_string());
+            terminal["product_task_id"] = Value::String("product-task-1".to_string());
+            terminal["task_status"] = Value::String("completed".to_string());
+            terminal["workspace_scope_id"] = Value::String("workspace-scope-1".to_string());
+            terminal["source_revision"] =
+                Value::String("0123456789abcdef0123456789abcdef01234567".to_string());
+            terminal["content_sha256"] = Value::Null;
+            terminal["content_sha256"] = Value::String(product_harness_sha256(&terminal).unwrap());
+            terminal
+        };
+        let terminal = seal_terminal(json!({
             "product_task_id": "product-task-1",
             "verification": {"trustworthy": true, "status": "evidence_recorded"},
-            "lifecycle_cost": {"provider_cost_microunits": 17},
+            "usage": {"input_tokens": 17},
+            "cost": {"provider_cost_microunits": 19},
             "cleanup": {"state": "completed"},
+            "restart": {"status": "not_observed"},
             "recovery": {"attempt": 1},
             "raw_output": "must-not-cross-the-seam"
-        });
+        }));
 
         let projected = project_product_harness_run(&task, Some(&terminal)).unwrap();
         assert_eq!(projected.terminal_outcome, ProductTaskStatus::Completed);
@@ -2602,28 +2669,38 @@ mod tests {
             projected.verified_deliverable,
             ProductHarnessEvidenceState::Observed
         );
-        assert_eq!(
-            projected.usage_cost.state,
-            ProductHarnessEvidenceState::Observed
-        );
+        assert_eq!(projected.usage.state, ProductHarnessEvidenceState::Observed);
+        assert_eq!(projected.cost.state, ProductHarnessEvidenceState::Observed);
         assert_eq!(projected.cleanup, ProductHarnessEvidenceState::Observed);
-        assert_eq!(projected.restart, ProductHarnessEvidenceState::Observed);
+        assert_eq!(projected.restart, ProductHarnessEvidenceState::NotObserved);
+        assert_eq!(projected.recovery, ProductHarnessEvidenceState::Observed);
         let encoded = serde_json::to_string(&projected).unwrap();
         assert!(!encoded.contains("/private/workspace-1"));
         assert!(!encoded.contains("must-not-cross-the-seam"));
 
-        let unavailable_cost = json!({
+        let unavailable_usage = seal_terminal(json!({
             "product_task_id": "product-task-1",
             "verification": {"trustworthy": true, "status": "evidence_recorded"},
             "usage": {"status": "unavailable"}
-        });
+        }));
         assert_eq!(
-            project_product_harness_run(&task, Some(&unavailable_cost))
+            project_product_harness_run(&task, Some(&unavailable_usage))
                 .unwrap()
-                .usage_cost
+                .usage
                 .state,
             ProductHarnessEvidenceState::Unavailable
         );
+
+        let mut hash_tampered = terminal.clone();
+        hash_tampered["raw_output"] = Value::String("tampered-private-output".to_string());
+        assert!(project_product_harness_run(&task, Some(&hash_tampered)).is_err());
+
+        let mut foreign_task = terminal.clone();
+        foreign_task["product_task_id"] = Value::String("other-task".to_string());
+        foreign_task["content_sha256"] = Value::Null;
+        foreign_task["content_sha256"] =
+            Value::String(product_harness_sha256(&foreign_task).unwrap());
+        assert!(project_product_harness_run(&task, Some(&foreign_task)).is_err());
 
         let mismatched = json!({"product_task_id": "other-task"});
         assert!(project_product_harness_run(&task, Some(&mismatched)).is_err());

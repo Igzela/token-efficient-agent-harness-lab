@@ -498,7 +498,11 @@ fn harness_run_seam_is_a_pure_store_projection_with_explicit_unavailable_cost() 
             ProductHarnessEvidenceState::Observed
         );
         assert_eq!(
-            projected.usage_cost.state,
+            projected.usage.state,
+            ProductHarnessEvidenceState::Unavailable
+        );
+        assert_eq!(
+            projected.cost.state,
             ProductHarnessEvidenceState::Unavailable
         );
         assert!(projected.terminal_evidence_sha256.is_some());
