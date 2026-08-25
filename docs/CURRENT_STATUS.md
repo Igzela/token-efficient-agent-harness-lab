@@ -399,6 +399,256 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Experimental C5–C8 research spiral | `BLOCKED_PREREQUISITE` | 28 formal default-off packets retain fixed-Meta, advanced gate/R4, Harness-plus-weight R5, and bounded outer-policy R6 contracts, effects, independent closeouts, and replications; negative or insufficient dispositions remain valid terminals |
 | Dashboard #225 / successor | `DEFERRED` | 3 formal packets: disposition, presentation-only refresh, exact-head closeout; it projects accepted core and optional-research dispositions without owning backend behavior |
 
+## C1 three-axis experiment contract (provider-free contract freeze)
+
+Frozen by `PE7-HE-MX1-CONTRACT-1`. This contract defines the identity,
+admission, comparability, allocation, and analysis boundary for the Harness x
+Model x Strategy experiment matrix. It creates no runtime, scheduler, Store,
+evaluator, budget, admission, audit, rollback, or adoption owner; performs no
+candidate generation, Provider call, holdout access, target write, or live
+effect; and does not start `PE7-HE-MX1-CORE-1`.
+
+### Arm-zero identity and provenance
+
+The C0 closeout disposition `READY_FOR_BOUNDED_LOCAL_USE` freezes the semantic
+arm-zero family as the engine-managed Harness x resolved model
+`deepseek-v4-pro` x single-pass plan/implement/review Strategy. The observed C0
+chain is version-composite: the finite effect authority binds accepted main
+`9325d5e996d82a157c36c9220bec28c0c0bad5a6`, the terminal-owner repair is merge
+`ed691c6d7666b01da1b020190233457ac320491b`, and the independent closeout is
+merge `075f995b574fb8a28f08986291751152bf158dd5`. No claim is made that
+`run-0002` executed the later `075f995b...` tree. Observed provenance is task
+`ptask-20260824115348-18cebba70936f600`, run `run-0002`, delegation
+`cl0-delegation-overlay-20260824`, patch artifact `patch-artifact-0001` against
+source `6240768506320a324d68787b9eaa86971c8c930c`, and terminal receipt
+`0b85bac66a61a8565bd7be238471c0551cd607f3c801dd1c785af2c232e51f25`.
+That single task is usability evidence, not an estimated treatment effect.
+
+| Axis | Arm-zero descriptor | Frozen meaning |
+|---|---|---|
+| `HarnessImplementation` | `engine-managed@075f995b574fb8a28f08986291751152bf158dd5` | Exact C1 comparison implementation chosen by this contract: this repository's Rust engine and existing Product Golden Path/managed-acceptance owners at the accepted closeout tree, with CWS default-off. This is a preregistered implementation identity, not a claim that C0 ran that tree; CORE must prove the shared interface provider-free and PILOT preflight must bind it before any effect. |
+| `ModelPlan` | `deepseek-v4-pro:single-model-three-role:v1` | Exact requested/resolved id `deepseek-v4-pro` for ordered planning, implementation, and review through OpenAI-compatible Chat Completions at `https://api.deepseek.com/chat/completions`; symbolic parent-held credential reference `DEEPSEEK_API_KEY`; no credential value enters the descriptor. No alias fallback, endpoint/protocol drift, panel, fusion, or role-specific substitution. |
+| `StrategyPlan` | `single-pass-plan-implement-review:no-projection:v1` | One ordered plan/implement/review pass with no memory or skill projection, no hidden rescue, and no post-observation prompt or retry-policy change. Its implementation source is bound to the Harness commit above. |
+
+The accepted closeout owns the semantic family; this contract owns the exact C1
+comparison descriptor. A later accepted security or correctness repair does not
+silently mutate arm zero: the preflight must bind the exact frozen implementation
+in confinement or register the repaired implementation as a distinct descriptor
+and mark cross-version contrasts `INCOMPARABLE` unless the compatibility
+contract proves equivalence. Failure of the `075f995b...` implementation to pass
+the provider-free shared-interface suite stops C1; C0 evidence is not used to
+waive that gate.
+
+### Descriptor schema
+
+Every scheduled, rejected, skipped, failed, or incomparable cell binds exactly
+one descriptor from each axis. A CLI display name is transport metadata, never
+Harness identity.
+
+| Descriptor | Required fields before admission |
+|---|---|
+| `HarnessImplementation` | Stable descriptor id and schema version; repository/source owner; exact 40-hex commit or immutable package digest and version; build/executable identity and probe; shared run-seam version; supported task/tool/workspace capabilities; process and workspace confinement; terminal-outcome and verified-deliverable mapping; usage/cost and missingness mapping; cancellation, cleanup, restart, retry, failure, and outcome-unknown behavior; license identity; SBOM digest; provenance/audit digest; supported ModelPlan/StrategyPlan cells; default-off and rollback binding. |
+| `ModelPlan` | Stable descriptor id and schema version; exact requested and resolved model ids/version; provider, protocol, exact endpoint and endpoint-allowlist identity; immutable admitted-profile digest; parent-held credential class and exact symbolic credential reference (name only, never the secret value); ordered role assignment and routing topology; generation/retry parameters; context/output limits; tokenizer and usage fields; pricing currency, unit basis, source, and effective date; lifecycle-cost mapping; supported Harness/Strategy cells; missing-identity and missing-usage disposition. |
+| `StrategyPlan` | Stable descriptor id and schema version; strategy type and composition order; exact source identity; for every projection, `GIT_BLOB` or `ARTIFACT_REF` owner handle plus `content_sha256`; admitted input classes and redaction; expiry; deterministic deletion/rebuild recipe; cross-task and cross-arm isolation; leakage scan; prompt/tool/retry/compression policy; no-authority declaration; supported Harness/Model cells. Raw prompts, outputs, transcripts, credentials, and private paths are not descriptor fields. |
+
+Before admission, a candidate Harness receives exactly one recorded disposition:
+`EMBED_BEHIND_SEAM`, `CONFINED_SUBPROCESS`, `POLICY_BLOCKED`,
+`CAPABILITY_BLOCKED`, `INCOMPARABLE`, or `REJECT`. Only the first two can admit
+a cell, and only after exact commit/version, license, SBOM, provenance, binary,
+confinement, cleanup, and shared-interface evidence pass. The disposition does
+not transfer Rust/Store/evaluator/budget/output authority to the candidate.
+
+### Admission and common comparison basis
+
+- A cell is admitted only when all three descriptors are complete, immutable,
+  mutually supported, default-off, and joined to the exact task, corpus,
+  evaluator, verification, total-lifecycle budget, value basis, environment,
+  seed, source, capsule, and head identities.
+- Arms may differ only in the registered factor for the contrast. Provider,
+  evaluator, task bytes, verification, budget, value weights, environment,
+  rescue policy, and evidence completeness stay common. Any other difference is
+  contamination and stops the affected rung.
+- Existing binary, credential, workspace/process confinement, ProductTask,
+  spend, verification, approval/output, audit, recovery, redaction, and
+  exact-once terminal guards remain mandatory. Admission cannot waive them or
+  create a second owner.
+- The value basis is verified delivered work first: authority/safety,
+  trustworthy verification, terminal completeness, and the frozen
+  non-inferiority gate below precede the Pareto vector of lifecycle tokens, money,
+  elapsed time, review/repair/CI/recovery/human burden, retries, and unavailable
+  values. No scalar efficiency score can override a failed hard gate.
+- Candidate generation, task selection, evaluator thresholds, budget limits,
+  and allocation are frozen before any outcome in the corresponding rung is
+  observed. Labels and sealed evaluator inputs remain inaccessible to arms.
+
+The common C1 task/evaluator/budget/value basis reuses the accepted
+`measurement_estimands.v1` lineage with two distinct immutable source
+identities: pre-AC Harness artifact-freeze SHA
+`ee43eac853644266614da09de764a3bf19f2d281`, and PR #370 merge
+`3b4afb3e5ab4254904aa5a63473ab6ae0eac1e82`, the first accepted repository tree
+containing the v2 protocol, schedule, and tasks. The latter is a carrier/source
+receipt and does not replace the former artifact identity. The bound corpus hash is
+`044fcd7bf4c35c6a4798f60b5b87d79d8549b45351f4e350b397a63a0fe2ce20`,
+and source tree `137e912f416a3a8d5be307e91bb2580154fc8fc34c6de52c2441ef3e3f93a064`:
+
+| Basis field | Frozen C1 value |
+|---|---|
+| Tasks | `rwe-minimum-t1-fix_flow_linkage` (`task_definition_sha256=fcd13b6f7a970c048fd09e1f723a315b8e03d221cad1555bf694ca95115438f8`) and `rwe-minimum-t2-draft_contract_tests` (`task_definition_sha256=f49e374d8b818d9e2cf4566d6fb3323c472a3dd449ebc71413eab96891124e7d`), both at source commit `6240768506320a324d68787b9eaa86971c8c930c`; no selective replacement. |
+| Evaluator/verification | Existing task acceptance rubrics and machine commands from that corpus; reviewer rubric sha256 `0e3c4275aacae5ae1eec563ea348135fa05b6719391c526490a7503b497c4e7b`; disagreement is recorded and fails closed. |
+| Budget | C1 `bp-standard`: per cell `max_cost_usd=0.2` (operator ceiling, not provider quote), `max_provider_requests=3`, `max_input_tokens=12000`, `max_output_tokens=8192`, `max_total_tokens=20192`, `max_retries=0`, and `max_wall_time_ms=900000`, plus the accepted complete lifecycle-cost envelope; unavailable cost stays unavailable. |
+| Value | `verified_delivery_points` on the two frozen task value profiles; no new conversion, normalization, or scalar aggregation. |
+| Repetitions | Exactly two per task/cell. The complete derived C1 schedule digest is committed before the first outcome and cannot change afterward. |
+
+The source v2 schedule hash
+`6a729f1213384d2306091ce5f258c9ddd08fe569374167c04e7f10c930cb1b38`
+is provenance only and is not reused because its cells freeze a different Model
+layout. C1 instead freezes the cell set and deterministic schedule/seed
+derivation in this contract. With two tasks and two repetitions, the per-rung
+global ceilings are: `1x2x1` = 8 cells, USD 1.6, 24 Provider requests, 161,536
+tokens, and 7,200,000 ms sequential cell time; `1x2x3` = 24 cells, USD 4.8, 72
+requests, 484,608 tokens, and 21,600,000 ms; `2x2x3` = 48 cells, USD 9.6, 144
+requests, 969,216 tokens, and 43,200,000 ms. These are finite ceilings, not spend
+authority; every effect still requires its separate exact T3 request and one-use
+Store-owned budget. CORE/PILOT preflight must publish the resulting exact
+descriptor and schedule digests before execution. A missing or mismatched digest
+is `INCOMPARABLE`, not authority to infer a schedule or spend.
+
+Nonzero labels `H1`, `M1`, `SM`, and `SK` below are registered estimand slots,
+not admitted arm identities. `PE7-HE-MX1-CORE-1` must, as a provider-free exit
+artifact, bind each slot to one complete exact descriptor (including H1
+commit/version/license/SBOM/provenance and every Model/Strategy identity field),
+pass the common interface/isolation tests, and freeze a descriptor-manifest
+digest. Only a later PILOT preflight may combine that accepted manifest with the
+schedule digest and request finite T3 authority. No Provider outcome, pilot
+authorization, allocation, or cell execution may exist while any slot is
+unresolved, unsupported, changed, or merely a CLI/display name.
+
+### Comparability and `INCOMPARABLE`
+
+`INCOMPARABLE` is a first-class terminal disposition, not missing success and
+not a reason to coerce a rank. It is emitted for unsupported cross-product
+cells; absent, stale, ambiguous, or drifting identity; unregistered-factor
+variance; unequal task/evaluator/verification/budget/value basis; hidden rescue;
+unresolvable contamination; outcome unknown; or evidence missingness that
+prevents the registered contrast. Rejected and skipped cells remain in the cell
+ledger with their exact reason.
+
+No imputation turns `INCOMPARABLE`, unavailable usage/cost, a failed hard gate,
+or an unknown effect into a numeric outcome. A contrast is reported only over
+the explicitly supported common cells. Marginal and interaction estimates must
+name that support; they never extrapolate to unsupported Harness, Model,
+Strategy, task, or environment regions. If one cell needed by a registered
+contrast is incomparable, that contrast is `INCOMPARABLE`; other independently
+supported contrasts may still be reported without advancing the rung.
+
+Engine-owned `OutcomeUnknown` remains the durable effect/lifecycle state until
+its existing reconciliation owner resolves it. The analysis ledger may project
+the affected cell/contrast as `INCOMPARABLE`, but never replaces, clears,
+retries, or downgrades the underlying `OutcomeUnknown` record.
+
+### Staged ladder, allocation, and stop rules
+
+The minimum matrix advances in this fixed order:
+
+1. `1x2x1`: arm-zero Harness, arm-zero Strategy, and exactly two registered
+   ModelPlans. This tests Model comparability first.
+2. `1x2x3`: the same Harness and ModelPlans, with baseline/no-projection,
+   memory-only, and skill-only StrategyPlans. This tests projection identity,
+   deletion/rebuild, leakage, and isolation before another Harness is added.
+3. `2x2x3`: the same two ModelPlans and three StrategyPlans, with arm zero and
+   exactly one admitted second Harness. The second Harness is introduced last.
+
+Within each task-and-repetition block, all admitted cells for the rung are
+scheduled as a complete block; this is fixed complete-block allocation, not
+random allocation. Execution order inside that block is the ascending SHA-256
+hex key over the five fields `PE7-HE-MX1-CONTRACT-1/randomization:v1`, rung,
+task id, base-10 repetition index, and cell-descriptor digest. Each field is
+UTF-8 encoded and prefixed, in that order, by its decimal byte length and `:`;
+there is no separator or trailing byte. Ties break by the full cell identity.
+The task list and repetition count are frozen by the later preflight before the
+first outcome, and no outcome-adaptive allocation, cell replacement, selective
+rerun, or seed substitution is permitted. This deterministic serialization and
+hash are the seed contract; preflight records every derived key and complete
+ordered block before execution.
+
+Hard gates are analyzed before any efficiency value. A rung stops and later
+rungs remain unauthorized on authority/identity drift, budget exhaustion or
+reservation mismatch, hidden or unequal rescue, target/output boundary breach,
+unknown effect, cleanup/recovery uncertainty, evaluator/verification drift,
+cross-arm leakage, incomplete complete-block evidence, any required cell or
+registered contrast becoming `INCOMPARABLE`, or a delivery/safety/non-inferiority
+gate failure. Early stopping is for safety, authority, feasibility, and frozen
+hard gates only; it never uses a favorable interim efficiency estimate. All
+observed and missing terminals remain recorded through existing evidence owners.
+If a stop truncates any frozen task/cell/repetition block, completed observations
+may be shown only as `POINT_ESTIMATE_ONLY` diagnostics. They cannot produce a
+paired-bootstrap interval, non-inferiority PASS, rung advancement, Pareto
+selection, or inferential main/interaction result.
+
+### Frozen estimands and analysis
+
+- The task x repetition block is the execution-order and pairing unit, not an
+  independent inferential observation. For each cell, all frozen repetitions
+  within one task are first aggregated by arithmetic mean into one task-level
+  value. Fewer than the frozen repetition count makes that task value
+  unavailable. Main and interaction contrasts pair these task-level values and
+  marginalize them with equal task weight. Bootstrap resamples tasks only while
+  retaining every nested repetition and every paired cell for the selected
+  task; it never resamples task x repetition rows. Cell outcomes are joined only
+  by their exact three-axis and common-basis identities.
+- Let `H0`/`H1` be arm-zero/second Harness, `M0`/`M1` be arm-zero/second
+  ModelPlan, and `S0`/`SM`/`SK` be no-projection/memory-only/skill-only.
+  Harness main effect is `H1-H0`; Model main effect is `M1-M0`; Strategy has
+  exactly two primary contrasts, `SM-S0` and `SK-S0`, plus secondary descriptive
+  `SK-SM`. Each is a paired task-level contrast marginalized with equal weight
+  only across the balanced, mutually supported cells of the other axes in that
+  rung. No observed-frequency or cost-weighted marginalization is allowed.
+- `Harness x Model` is the paired difference-in-differences
+  `(H1-H0 at M1) - (H1-H0 at M0)`. `Harness x Strategy` and `Model x Strategy`
+  each have two registered interactions, one substituting `SM-S0` and one
+  substituting `SK-S0` as the Strategy contrast. The three-axis interaction has
+  those same two forms: the difference in the `Harness x Model` interaction at
+  `SM` versus `S0`, and at `SK` versus `S0`. They receive intervals but are not
+  hard-gate or adoption estimands. `SK-SM` interactions are descriptive only.
+  No unsupported interaction is estimated.
+- Cell viability reuses accepted `measurement_estimands.v1`: protocol
+  `rwe-minimum-first-protocol-v2`, protocol hash
+  `bc68bfb320f891ee5490019385c17d71ee7bfc725bb43cd0c006d33c5d5d35db`,
+  and paired-bootstrap method `paired-bootstrap-95` with method hash
+  `0942b62fb4b864332bef8fa95d149cc59718d13428a120f3559672f8f00b6c63`.
+  Against the matched arm-zero task/repetition baseline, the lower 95% paired
+  bound for verified delivery, machine-verification acceptance, and reviewer
+  acceptance must each be at least `-0.10`; the upper 95% bound for recovery
+  failure must be at most `+0.05`. Minimum registered repetitions per task is
+  two. All four are an intersection-union gate: every gate passes at level
+  `0.05`, so no multiplicity adjustment or favorable-gate substitution is
+  permitted. Axis/interaction intervals are evidence only and make no separate
+  significance or global-superiority claim.
+- A partial cell block, fewer than the frozen repetitions, or unavailable
+  required evidence makes the affected registered task block unavailable; it
+  is not removed from the denominator or replaced. Every estimand requiring
+  that block becomes `INCOMPARABLE`, the rung cannot advance, and independently
+  supported contrasts may be shown only as explicitly incomplete diagnostics.
+- Conditional on every hard gate passing, the registered lifecycle-cost vector
+  and hard-gate-first Pareto frontier are reported with ties, dominance,
+  uncertainty, and explicit unavailable dimensions. There is no scalar winner
+  or global-best claim.
+- Uncertainty uses the accepted paired task-level bootstrap owner with frozen
+  task blocks as resampling units. Its seed key hashes the length-prefixed UTF-8
+  fields `PE7-HE-MX1-CONTRACT-1/bootstrap:v1`, rung, contrast id, and base-10
+  replicate index using the same canonical encoding defined for randomization.
+  Intervals are not a substitute for hard gates; no post-hoc threshold,
+  multiplicity rule, support change, or estimand change is allowed.
+- The closeout publishes from the same cell rows: the cell ledger, supported
+  per-axis marginal contrasts, supported interactions, hard-gate-first Pareto
+  frontier, and missing/`INCOMPARABLE` coverage map. Negative, insufficient,
+  and incomparable results are valid completion evidence and may terminate or
+  rewrite later routing; they are never rewritten as improvement.
+
+Rollback is a revert of this documentation contract. It creates no runtime or
+durable state, and no later packet may weaken it without a separately accepted
+contract change.
+
 ## AC0 bounded data and trace inventory
 
 Existing owners and representative paths for intake, runtime orchestration, persistence, provider/credential, wire/codegen/SDK/Dashboard, configuration, and legacy callers are owned by `docs/MODULE_MAP.md` and the Architecture Book Product Golden Path contract; this inventory creates no new owner. Compatibility obligations (reject-before-admission, CAS/idempotency/restart semantics, parent-held credentials, `scripts/check_wire_codegen_drift.sh` drift gate) are restatements of those owners' invariants.
