@@ -89,13 +89,10 @@ RWE supplies task/corpus/evidence inputs to this loop rather than a competing ru
 
 Package compression does not create a second routing, session, checkpoint, review, or CI mechanism. Every transition uses the existing repository mechanisms:
 
-1. A planning session enters with `scripts/session_context.py route --role planning --include successor`, refreshes accepted `main`, and extracts exactly one eligible packet. This file alone never grants execution.
-2. Promotion removes exactly that packet from this index and expands it into the complete twelve-field contract and existing `weak-agent-dispatch:v1` capsule in `docs/NEXT_DECISION.md`. The capsule binds packet digest, exact allowed/read paths, ordered steps, verification, rollback, pause gates, forbidden next actions, and zero external-effect authority for T0/T1 work.
-3. A coding session starts only through `scripts/session_context.py enter --role coding`. `FRESH_PACKET` supplies the bounded reads; `RESUME_CHECKPOINT` supplies only checkpoint-owned paths and the exact `next_permitted_action`. No work-card prose bypasses this entry.
-4. Internal work cards are represented by the promoted packet's ordered steps, pause gates, expected artifacts, and verification commands. They are not new route packets or authority records. Existing Git-private checkpoints bind the exact packet, branch/head, dirty-path set, path digests, verification contract, and next action.
-5. A changed accepted `main`, packet/capsule digest, branch, exact head, dirty-path set, path digest, verification contract, or effect status invalidates the prior capsule/checkpoint and requires fresh classification. A local digest proves consistency only, never authenticity or acceptance.
-6. A changing PR stays Draft. The stable exact head receives complete-diff Standards and Spec review, an exact `PASS` receipt, then Ready-triggered canonical exact-head CI. Any replacement head invalidates prior review, CI, capsule, and stable-checkpoint claims for that head.
-7. Merge remains manual squash merge under the existing playbook. A capsule, fast check, stale head, aggregate approval, or successful local test cannot authorize merge or packet completion.
+- Session bootstrap and entry (`scripts/session_context.py route --role planning --include successor`, `enter --role coding`, accepted-`main` refresh, exactly one eligible packet, `FRESH_PACKET`/`RESUME_CHECKPOINT` bounded reads): owned by `START_HERE.md`; this index alone never grants execution.
+- Packet promotion into the twelve-field contract and existing `weak-agent-dispatch:v1` capsule in `docs/NEXT_DECISION.md` (packet digest, exact allowed/read paths, ordered steps, verification, rollback, pause gates, forbidden next actions, zero external-effect authority for T0/T1 work): owned by that document.
+- Checkpoint binding and invalidation (a changed accepted `main`, packet/capsule digest, branch/exact head, dirty-path set, path digest, verification contract, or effect status invalidates the prior capsule/checkpoint and requires fresh classification): owned by `START_HERE.md`; a local digest proves consistency only, never authenticity or acceptance.
+- Draft -> complete-diff Standards/Spec review with an exact `PASS` receipt -> Ready-triggered canonical exact-head CI -> manual squash merge: owned by `docs/REAL_WORLD_TESTING_PLAYBOOK.md`; a replacement head invalidates prior review and CI, and a capsule, fast check, stale head, aggregate approval, or successful local test cannot authorize merge or packet completion.
 
 `scripts/project_context.py` remains a non-authoritative frontier projection. No package may persist a dynamic latest capsule, invent a second session ledger, or treat work-card completion as packet acceptance.
 
@@ -112,20 +109,7 @@ A packet's manifest profile identifies its primary repository worker. A human or
 
 ## Weak-Model Work-Card Contract
 
-Fewer formal packets must not create broader prompts. Every promoted IMPLEMENT packet is decomposed inside its dispatch capsule into ordered, resumable work cards with all of the following:
-
-- one observable semantic delta and one accepted owner cluster;
-- exact repository-relative allowed paths, with no broad glob;
-- a focused read set, normally no more than six files, including one current implementation pattern and one relevant test; a larger set requires a T2 reason in the contract;
-- exact CodeGraph symbol/query anchors before fallback text search;
-- a machine-readable before/after behavior table and fixed test vectors;
-- explicit terminal, error, missingness, `INCOMPARABLE`, and `OUTCOME_UNKNOWN` mapping;
-- provider-free deterministic happy, negative, cancellation, and restart evidence before any EFFECT;
-- exact verification commands, rollback, checkpoint point, pause gates, and forbidden next actions;
-- a stop at `DECISION_REQUIRED` for any unbound schema, authority, evaluator, safety, recovery, or durable-contract choice;
-- lifecycle accounting that charges review, repair, CI, recovery, and stronger-model escalation to the originating arm.
-
-The packet remains the only lifecycle unit: cards may create bounded checkpoints or commits while Draft, but cannot be promoted, reviewed, marked complete, or merged independently. The packet's final exact head must satisfy the same external acceptance tests regardless of which model produced the implementation.
+Work cards are not packets; the packet remains the sole lifecycle unit. Card decomposition into ordered, resumable single-owner steps with exact allowed paths, focused reads, before/after vectors, negative/restart evidence, verification commands, checkpoints, pause gates, and forbidden next actions is defined by the promoted dispatch capsule and enforced by its validators (`scripts/check_agent_handoff.py`, `scripts/session_context.py`). Cards may create bounded checkpoints or commits while Draft but cannot be promoted, reviewed, marked complete, or merged independently, and the packet's final exact head must satisfy the same external acceptance tests regardless of which model produced the implementation.
 
 ## Known Planned-Seam Gaps
 
@@ -1158,27 +1142,7 @@ Compression rules:
 | `EFFECT` | 15 | 16 | 15 (`0 + 15`) | Every former effect remains formal and C0 adds one real closed-loop pilot |
 | `CLOSEOUT` | 18 | 19 | 18 (`0 + 18`) | Every former analysis/closeout remains formal and C0 adds one independent usability closeout |
 
-### Exact concentration and rename map
-
-The net reduction of nine headings is not nine deleted legacy packets. Exactly 14 former `CONTRACT`/`IMPLEMENT` packets converge on five deep packets (`14 - 5 = 9`); these are the only many-to-one mappings. Each legacy outcome, Exit, and Stop below becomes a separately checkpointed work card or separately digested subcontract, and the named independent closeout must reconstruct it before an effect.
-
-| Former packet IDs | Exact successor checkpoint | Mandatory retained Exit | Mandatory retained Stop / pause gate |
-|---|---|---|---|
-| `PE7-HE-EC4-CONTRACT-1`; `PE7-HE-EC5-CONTRACT-1`; `PE7-HE-LEVEL1-PREFLIGHT-1` | `PE7-HE-EV1-CONTRACT-1` diversity, selection/recovery, and generation-preflight subcontracts; three separate digests and reviews | Exact/near definitions, distance features, deterministic thresholds/calibration source/false-positive handling/coverage/collapse/reporting; hard-gate/Pareto/stop/recovery transitions; exact parents/seeds/identities/envelopes and zero-mismatch preflight | No sealed-outcome or candidate-gameable diversity metric, post-result threshold, scalar override, incomparable value basis, ambiguous restart, mutable experiment field, stale seal, missing capacity/rollback/evidence destination, or cross-subcontract digest drift |
-| `PE7-HE-EC4-ADMISSION-1`; `PE7-HE-EC5-SELECTION-ARCHIVE-1`; `PE7-HE-EC5-STOP-RECOVERY-1` | `PE7-HE-EV1-CORE-1` cards 1, 3, and 4, then `PE7-HE-EV1-CONTROLS-CLOSEOUT-1` | Immutable distance evidence plus exact/near/collision/order/restart/lineage/reject tests; hard-gate/Pareto/tie/disagreement/archive/full-cost tests; bounded stop/lease/cancel/restart/exactly-once/recovery/parity tests | Diversity is never a quality score; distance is deterministic; rejects remain; no scalar/candidate metric/prediction override; no hidden rejection; no repeated effect, reset budget, evaluator drift, or unauthorized resume |
-| `PE7-MEMORY-ADAPTER-1`; `PE7-SKILL-ADAPTER-1` | `PE7-HE-MX1-CORE-1` cards 2 and 3 with separate checkpoints | Memory provenance/expiry/invalidation/delete/rebuild/leakage/no-authority; skill source/version/scope/expiry/delete/rebuild/leakage/no-authority | No authoritative or forbidden raw memory, incomplete invalidation, immutable-policy/evaluator mutation, out-of-scope skill execution, production installation, or unreconstructable projection |
-| `PE7-HE-LEVEL2-STATE-PERSISTENCE-1`; `PE7-HE-LEVEL2-GENERATION-ORCHESTRATION-1`; `PE7-HE-LEVEL2-EVALUATION-SELECTION-1`; `PE7-HE-LEVEL2-STOP-RECOVERY-1` | `PE7-HE-RC1-CORE-1` cards 1 through 4 with a checkpoint after each, then `PE7-HE-RC1-SIMULATION-CLOSEOUT-1` | Migration/rollback/parity/lease/idempotency/tamper/restart; deterministic bounded scheduling/lineage/cancel/late-write; immutable evaluator/full-cost/diversity/Pareto selection; every global/local stop, fault, unknown, cleanup, and terminal | No second store/scheduler, destructive unrecoverable migration, ambiguous lease, self-extended generation, active-Harness change, evaluator/label/budget reset, hidden/failed parent, unauthorized resume, repeated effect, or lost state |
-| `PE7-HE-META-O0-BASELINE-1`; `PE7-HE-META-O1-CANDIDATE-1` | `PE7-HE-META-CORE-1` cards 1 and 2 with separate checkpoints, plus card 3 shared mediation | Deterministic O0 replay; O1 differs only by the preregistered operator policy; identical lineage, evaluator, budget, access, failure, and acceptance mechanics | No silent adaptive O0, O1 evaluator/authority/budget change, shared nondeterminism that hides treatment, or post-result operator drift |
-
-Every legacy packet whose name changes but remains a formal packet is mapped one-to-one below. Arrows preserve packet class, independent acceptance, full Exit, and full Stop; they are renames/repositioning, not concentration.
-
-| Legacy sequence | Formal successor sequence |
-|---|---|
-| `PE7-HE-EC3-INSTRUMENTATION-1` | same ID promoted to the current window in `docs/NEXT_DECISION.md`; removed from the future inventory, not deleted from the successor portfolio or capability route |
-| `PE7-HE-EC4-COVERAGE-CLOSEOUT-1`; `PE7-HE-LEVEL1-RUN-1`; `PE7-HE-LEVEL1-CLOSEOUT-1`; `PE7-HE-LEVEL1-TRANSFER-PROTOCOL-1`; `PE7-HE-LEVEL1-TRANSFER-RUN-1`; `PE7-HE-LEVEL1-TRANSFER-ANALYSIS-1` | `PE7-HE-EV1-CONTROLS-CLOSEOUT-1`; `PE7-HE-EV1-GENERATION-RUN-1`; `PE7-HE-EV1-GENERATION-CLOSEOUT-1`; `PE7-HE-EV1-TRANSFER-PROTOCOL-1`; `PE7-HE-EV1-TRANSFER-RUN-1`; `PE7-HE-EV1-TRANSFER-CLOSEOUT-1` |
-| `PE7-MEMORY-SKILL-CONTRACT-1`; `PE7-MEMORY-SKILL-RUN-1`; `PE7-MEMORY-SKILL-ANALYSIS-1` | `PE7-HE-MX1-CONTRACT-1`; `PE7-HE-MX1-PILOT-1`; `PE7-HE-MX1-CLOSEOUT-1` |
-| `PE7-HE-LEVEL2-RULE-AUDIT-1`; `PE7-HE-LEVEL2-EVIDENCE-ANALYSIS-1`; `PE7-HE-LEVEL2-DECISION-1`; `PE7-HE-LEVEL2-CONTROLLER-CONTRACT-1`; `PE7-HE-LEVEL2-SIMULATION-1`; `PE7-HE-LEVEL2-PILOT-1`; `PE7-HE-LEVEL2-CLOSEOUT-1` | `PE7-HE-RC1-RULE-AUDIT-1`; `PE7-HE-RC1-EVIDENCE-ANALYSIS-1`; `PE7-HE-RC1-GO-DECISION-1`; `PE7-HE-RC1-CONTROLLER-CONTRACT-1`; `PE7-HE-RC1-SIMULATION-CLOSEOUT-1`; `PE7-HE-RC1-RUN-1`; `PE7-HE-RC1-CLOSEOUT-1` |
-| `PE7-HE-FINAL-TRANSFER-PROTOCOL-1`; `PE7-HE-FINAL-TRANSFER-RUN-1`; `PE7-HE-FINAL-TRANSFER-ANALYSIS-1`; `PE7-HE-ADOPTION-READINESS-1`; `PE7-HE-ADOPTION-DECISION-1` | `PE7-HE-FT1-PROTOCOL-1`; `PE7-HE-FT1-RUN-1`; `PE7-HE-FT1-ANALYSIS-1`; `PE7-HE-FT1-ADOPTION-READINESS-1`; `PE7-HE-FT1-ADOPTION-DECISION-1` |
+Git history owns the exact concentration arithmetic (`14 - 5 = 9`), the per-stage concentration tables with their retained Exit/Stop mappings, and the legacy-to-successor rename maps behind these summaries.
 
 The accepted EC1/EC2 implementations are reused. Any unaccepted local EC3/EC4/EC5/Level-1 work is migration input only and must be audited symbol by symbol as `TRANSPLANT`, `ADAPT`, `REIMPLEMENT`, or `REJECT` from accepted `main`; it is never merged wholesale or counted as existing capability.
 
@@ -1207,16 +1171,7 @@ This is the route-level old/new comparison required before the compressed plan c
 
 ## Weak-Model Decomposition Audit
 
-Only four concentrated IMPLEMENT packets contain more than one former implementation slice. Their promotion capsule must materialize these minimum work cards in order; a card cannot read or edit the next card's owner paths before its checkpoint passes.
-
-| Concentrated packet | Mandatory single-owner work cards | Packet-level equivalence test |
-|---|---|---|
-| `PE7-HE-MX1-CORE-1` | (1) baseline/no-projection path; (2) memory-only adapter; (3) skill-only adapter; (4) ModelPlan normalization; (5) second-Harness admission and run seam; (6) sparse matrix orchestration/evidence | Memory and skill adapters each retain their own source/provenance/scope/expiry/invalidation/delete/rebuild/leakage/no-authority checkpoint; both Harnesses and every supported Model/Strategy cell then satisfy the same C0 task, verifier, terminal, usage, cleanup, and recovery contract; unsupported cells are exact `INCOMPARABLE` |
-| `PE7-HE-EV1-CORE-1` | (1) exact/near duplicate admission with versioned distance features, frozen calibration/threshold/false-positive rules, coverage/collapse/reporting, and immutable reject evidence; (2) lifecycle-budget request/enforcement reuse; (3) hard-gate/Pareto archive; (4) stop/lease/recovery; (5) one-generation orchestration and sealed handoff | Independent controls closeout replays every former EC4/EC5 Exit and Stop—including golden distance vectors, calibration source, false positives, collision/order/restart, superficial textual variation, coverage/collapse, and deterministic reporting—before any generation effect; the final packet head passes full lineage, archive, fault, and SQLite/PostgreSQL parity suites |
-| `PE7-HE-RC1-CORE-1` | (1) state/migration/lineage; (2) fixed generation scheduling; (3) immutable evaluation/selection integration; (4) global/local stop, cleanup, and exactly-once recovery | Provider-free simulation independently exercises success, every stop, crash point, contamination/gaming, rollback, and no-extra-generation against the exact controller contract |
-| `PE7-HE-META-CORE-1` | (1) deterministic O0 baseline; (2) O1 exact treatment delta; (3) shared lineage/replay/failure mediation | Golden and differential suites prove identical evaluator, budget, access, authority, and external acceptance except for the preregistered operator-policy delta |
-
-Each card inherits the earlier weak-model contract: normally at most six focused reads, CodeGraph anchors, exact allowed paths, before/after vectors, negative and restart tests, one checkpoint, rollback, pause gates, and `DECISION_REQUIRED` on any unbound durable choice. Review, repair, stronger-model rescue, CI, and recovery cost remain charged to the originating arm, so a cheap model is measured on the work it truly completes rather than on a hidden handoff.
+Only the four concentrated IMPLEMENT packets (`PE7-HE-MX1-CORE-1`, `PE7-HE-EV1-CORE-1`, `PE7-HE-RC1-CORE-1`, and `PE7-HE-META-CORE-1`) contain more than one former implementation slice. Their mandatory ordered single-owner work cards materialize at promotion inside the dispatch capsule under the Weak-Model Work-Card Contract; Git history owns the original per-card audit enumeration.
 
 ## Adoption and Claim Boundary
 

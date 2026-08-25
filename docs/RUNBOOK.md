@@ -2,7 +2,11 @@
 
 Operator procedures for the local Agent Control Plane.
 
-Last updated: 2026-07-23.
+Last updated: 2026-08-25.
+
+## Session Entry
+
+Operator sessions enter through the accepted router: run `uv run --no-project python scripts/session_context.py route --role operator` (or the full entry command from `START_HERE.md`) to obtain the bounded accepted-document route before using any procedure below. This file owns only procedures that have actually been proved.
 
 ## Agent Runtime and Tool Policy Operations
 
