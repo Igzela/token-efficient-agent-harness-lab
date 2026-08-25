@@ -56,7 +56,6 @@ pub const MX1_MEMORY_ONLY_STRATEGY_ID: &str = "single-pass-plan-implement-review
 pub const MX1_SKILL_ONLY_STRATEGY_ID: &str = "single-pass-plan-implement-review:skill-only:v1";
 const MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT: &str = "https://api.deepseek.com/chat/completions";
 const MX1_DEEPSEEK_CREDENTIAL_REFERENCE: &str = "DEEPSEEK_API_KEY";
-const MX1_STRATEGY_SOURCE_IDENTITY: &str = "mx1-core-strategy-adapter-v1";
 
 /// CWS analysis bound this SHA as the default-off active Harness. EC1 freezes it;
 /// it is not a live ENABLE and does not authorize candidate generation.
@@ -661,8 +660,8 @@ fn mx1_validate_frozen_strategy_identity(
                 "implement".to_string(),
                 "review".to_string(),
             ]
-        || descriptor.source_identity != MX1_STRATEGY_SOURCE_IDENTITY
-        || descriptor.source_identity_sha256 != sha256_hex(MX1_STRATEGY_SOURCE_IDENTITY)
+        || descriptor.source_identity != mx1_confined_adapter_package_sha256()
+        || descriptor.source_identity_sha256 != sha256_hex(&descriptor.source_identity)
         || descriptor.admitted_input_class != "redacted-digest-reference"
         || descriptor.redaction_class != "digest-only"
     {
@@ -2120,8 +2119,8 @@ pub fn sample_mx1_descriptor_manifest() -> Mx1DescriptorManifest {
                 "implement".to_string(),
                 "review".to_string(),
             ],
-            source_identity: MX1_STRATEGY_SOURCE_IDENTITY.to_string(),
-            source_identity_sha256: sha256_hex(MX1_STRATEGY_SOURCE_IDENTITY),
+            source_identity: mx1_confined_adapter_package_sha256(),
+            source_identity_sha256: sha256_hex(&mx1_confined_adapter_package_sha256()),
             projection,
             admitted_input_class: "redacted-digest-reference".to_string(),
             redaction_class: "digest-only".to_string(),
@@ -6633,12 +6632,14 @@ mod tests {
         );
 
         let mut strategy_source_drifted = manifest.clone();
-        strategy_source_drifted.strategies[0].source_identity = "other-strategy-source".to_string();
+        strategy_source_drifted.strategies[0].source_identity = "0".repeat(64);
+        strategy_source_drifted.strategies[0].source_identity_sha256 =
+            sha256_hex(&strategy_source_drifted.strategies[0].source_identity);
         assert_eq!(
             validate_mx1_descriptor_manifest(&strategy_source_drifted)
                 .unwrap_err()
                 .code,
-            "mx1_strategy_source_drift"
+            "mx1_strategy_identity"
         );
     }
 
