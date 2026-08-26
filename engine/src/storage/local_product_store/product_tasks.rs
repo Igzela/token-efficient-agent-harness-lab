@@ -9331,6 +9331,10 @@ fn reconstruct_intake_from_task(
             .filter(|mode| matches!(*mode, "git_worktree" | "local_folder"))
             .unwrap_or("git_worktree")
             .to_string(),
+        managed_model_plan: intake
+            .get("managed_model_plan")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         intake_contract_sha256: task
             .get("intake_contract_sha256")
             .and_then(Value::as_str)
@@ -9857,6 +9861,7 @@ mod local_folder_product_task_tests {
             tenant_id: Some("tenant-local".to_string()),
             workspace_id: Some("workspace-local".to_string()),
             workspace_mode: Some("local_folder".to_string()),
+            managed_model_plan: None,
         };
         let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
         let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
@@ -9959,6 +9964,7 @@ mod local_folder_product_task_tests {
             tenant_id: Some("tenant-local".to_string()),
             workspace_id: Some("workspace-local".to_string()),
             workspace_mode: Some("local_folder".to_string()),
+            managed_model_plan: None,
         };
         let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
         let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
@@ -10079,6 +10085,7 @@ mod local_folder_product_task_tests {
             tenant_id: Some("tenant-local".to_string()),
             workspace_id: Some("workspace-local".to_string()),
             workspace_mode: Some("local_folder".to_string()),
+            managed_model_plan: None,
         };
         let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
         let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
@@ -10173,6 +10180,7 @@ mod local_folder_product_task_tests {
             tenant_id: Some("tenant-local".to_string()),
             workspace_id: Some("workspace-local".to_string()),
             workspace_mode: Some("local_folder".to_string()),
+            managed_model_plan: None,
         };
         let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
         let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
@@ -10246,6 +10254,7 @@ mod local_folder_product_task_tests {
             tenant_id: Some("tenant-local".to_string()),
             workspace_id: Some("workspace-local".to_string()),
             workspace_mode: Some("local_folder".to_string()),
+            managed_model_plan: None,
         };
         let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
         let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
@@ -10386,6 +10395,7 @@ mod local_folder_product_task_tests {
             tenant_id: Some("tenant-local".to_string()),
             workspace_id: Some("workspace-local".to_string()),
             workspace_mode: Some("local_folder".to_string()),
+            managed_model_plan: None,
         };
         let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
         let store = LocalProductStore::new(root.path().join("store.db")).unwrap();

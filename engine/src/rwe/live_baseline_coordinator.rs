@@ -619,6 +619,7 @@ pub fn build_rwe_cell_product_intake(
         tenant_id: Some(principal.tenant_id().into()),
         workspace_id: Some(ids.worktree_id.clone()),
         workspace_mode: Some("git_worktree".into()),
+        managed_model_plan: None,
     };
     validate_intake(&request, principal.tenant_id(), &ids.worktree_id)
 }

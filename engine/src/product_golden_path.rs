@@ -676,6 +676,8 @@ pub struct ProductTaskIntakeRequest {
     pub workspace_id: Option<String>,
     /// Operator-supplied workspace mode; golden path requires controlled git worktree.
     pub workspace_mode: Option<String>,
+    /// Registered MX1 single-model-three-role plan id (M0/M1); None = legacy route.
+    pub managed_model_plan: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -702,6 +704,8 @@ pub struct ValidatedProductTaskIntake {
     pub tenant_id: String,
     pub workspace_id: String,
     pub workspace_mode: String,
+    /// Registered MX1 single-model-three-role plan id (M0/M1); None = legacy route.
+    pub managed_model_plan: Option<String>,
     pub intake_contract_sha256: String,
 }
 
@@ -1232,6 +1236,17 @@ pub fn validate_intake(
     };
 
     let objective_fingerprint = fingerprint_objective(objective);
+    let managed_model_plan = match request.managed_model_plan.as_deref() {
+        None => None,
+        Some(plan) => {
+            if plan != crate::harness_evolution::MX1_ARM_ZERO_MODEL_ID
+                && plan != crate::harness_evolution::MX1_SECOND_MODEL_ID
+            {
+                return Err(format!("unsupported managed model plan: {plan}"));
+            }
+            Some(plan.to_string())
+        }
+    };
     let validated = ValidatedProductTaskIntake {
         schema_version: PRODUCT_TASK_INTAKE_SCHEMA_VERSION.to_string(),
         objective: objective.to_string(),
@@ -1278,6 +1293,7 @@ pub fn validate_intake(
         tenant_id,
         workspace_id,
         workspace_mode,
+        managed_model_plan,
         intake_contract_sha256: String::new(),
     };
     let mut with_hash = validated;
@@ -2208,6 +2224,7 @@ mod tests {
             tenant_id: None,
             workspace_id: None,
             workspace_mode: Some("git_worktree".to_string()),
+            managed_model_plan: None,
         }
     }
 

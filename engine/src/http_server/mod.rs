@@ -192,6 +192,10 @@ pub struct ProductTaskIntakeApiRequest {
     pub tenant_id: Option<String>,
     pub workspace_id: Option<String>,
     pub workspace_mode: Option<String>,
+    /// Registered MX1 single-model-three-role plan id (M0/M1). None keeps the
+    /// legacy mixed-role route. Fails closed at validation when not registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_model_plan: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

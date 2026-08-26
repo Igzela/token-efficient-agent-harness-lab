@@ -13721,6 +13721,7 @@ mod tests {
             source_kind: None,
             source_revision: revision.clone(),
             source_tree_hash: None,
+            managed_model_plan: None,
             allowed_paths: vec!["docs/USER_GUIDE.md".into()],
             verification_commands: vec![ProductVerificationCommand {
                 command: "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md"
@@ -14706,6 +14707,7 @@ mod tests {
             source_kind: Some("local_folder".into()),
             source_revision: "unused-local-folder-revision".into(),
             source_tree_hash: None,
+            managed_model_plan: None,
             allowed_paths: vec!["docs/USER_GUIDE.md".into()],
             verification_commands: vec![ProductVerificationCommand {
                 command: "test -f docs/USER_GUIDE.md".into(),

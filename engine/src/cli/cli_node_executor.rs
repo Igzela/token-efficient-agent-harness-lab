@@ -2441,6 +2441,7 @@ mod tests {
             tenant_id: Some("managed-codex-tenant".to_string()),
             workspace_id: Some("managed-codex-workspace".to_string()),
             workspace_mode: Some("git_worktree".to_string()),
+            managed_model_plan: None,
         };
         let validated =
             validate_intake(&intake, "managed-codex-tenant", "managed-codex-workspace").unwrap();
@@ -2960,6 +2961,7 @@ mod tests {
                 tenant_id: Some("managed-codex-tenant".to_string()),
                 workspace_id: Some("managed-codex-workspace".to_string()),
                 workspace_mode: Some("git_worktree".to_string()),
+            managed_model_plan: None,
             };
             let validated =
                 validate_intake(&intake, "managed-codex-tenant", "managed-codex-workspace")
