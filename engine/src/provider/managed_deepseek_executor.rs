@@ -99,6 +99,7 @@ impl Default for ManagedDeepSeekExecutorConfig {
 /// checked by the store-backed source on every provider request.
 pub struct ManagedDeepSeekNodeExecutor {
     providers: ManagedDeepSeekProviders,
+    single_model_sets: HashMap<String, ManagedDeepSeekProviders>,
     source: Arc<dyn ManagedAuthoritySource>,
     config: ManagedDeepSeekExecutorConfig,
     authorities: Mutex<HashMap<String, Arc<ManagedProviderCallAuthority>>>,
@@ -119,6 +120,7 @@ impl ManagedDeepSeekNodeExecutor {
                 implementer,
                 reviewer,
             },
+            single_model_sets: HashMap::new(),
             source,
             config,
             authorities: Mutex::new(HashMap::new()),
@@ -157,7 +159,7 @@ impl ManagedDeepSeekNodeExecutor {
             "provider:deepseek",
             "2026-07-31T00:00:00Z",
         );
-        let make = |role: ManagedModelRole| {
+        let make_with_model = |role: ManagedModelRole, model: &str| {
             let mut provider_config = ProviderConfig::new(
                 "deepseek-managed",
                 match protocol {
@@ -165,7 +167,7 @@ impl ManagedDeepSeekNodeExecutor {
                     DeepSeekProtocol::AnthropicCompatible => "anthropic",
                 },
                 protocol.base_url(),
-                role.default_model(),
+                model,
                 super::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE,
                 "2026-07-31T00:00:00Z",
             );
@@ -187,13 +189,27 @@ impl ManagedDeepSeekNodeExecutor {
             };
             (role, Arc::new(provider))
         };
+        let make = |role: ManagedModelRole| make_with_model(role, role.default_model());
         let (planner_role, planner) = make(ManagedModelRole::Planner);
         let (implementer_role, implementer) = make(ManagedModelRole::Implementer);
         let (reviewer_role, reviewer) = make(ManagedModelRole::Reviewer);
         debug_assert_eq!(planner_role, ManagedModelRole::Planner);
         debug_assert_eq!(implementer_role, ManagedModelRole::Implementer);
         debug_assert_eq!(reviewer_role, ManagedModelRole::Reviewer);
-        Self::new(planner, implementer, reviewer, source, config)
+        let mut single_model_sets: HashMap<String, ManagedDeepSeekProviders> = HashMap::new();
+        for admitted in super::managed_deepseek::DEEPSEEK_MODELS {
+            single_model_sets.insert(
+                (*admitted).to_string(),
+                ManagedDeepSeekProviders {
+                    planner: make_with_model(ManagedModelRole::Planner, admitted).1,
+                    implementer: make_with_model(ManagedModelRole::Implementer, admitted).1,
+                    reviewer: make_with_model(ManagedModelRole::Reviewer, admitted).1,
+                },
+            );
+        }
+        let mut executor = Self::new(planner, implementer, reviewer, source, config)?;
+        executor.single_model_sets = single_model_sets;
+        Ok(executor)
     }
 
     fn authority(
@@ -218,7 +234,7 @@ impl ManagedDeepSeekNodeExecutor {
     fn request(
         &self,
         input: &NodeExecutionInput,
-    ) -> Result<(ManagedProviderCallRequest, ManagedModelRole), String> {
+    ) -> Result<(ManagedProviderCallRequest, ManagedModelRole, Option<String>), String> {
         let declaration = input
             .node_metadata
             .get(MANAGED_DEEPSEEK_NODE_METADATA)
@@ -236,6 +252,18 @@ impl ManagedDeepSeekNodeExecutor {
                 return Err("deterministic verification is not a provider stage".to_string())
             }
             other => return Err(format!("unsupported managed DeepSeek stage: {other}")),
+        };
+        let single_model = match declaration.get("model") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(model)) => {
+                if !super::managed_deepseek::DEEPSEEK_MODELS.contains(&model.as_str()) {
+                    return Err(format!(
+                        "managed DeepSeek node model is not an admitted identity: {model}"
+                    ));
+                }
+                Some(model.clone())
+            }
+            Some(_) => return Err("managed DeepSeek node model is malformed".to_string()),
         };
         if declaration.get("stage").and_then(Value::as_str) != Some(expected_stage) {
             return Err("managed DeepSeek route stage is not canonical".to_string());
@@ -281,6 +309,10 @@ impl ManagedDeepSeekNodeExecutor {
             }
         }
         let mut request = ManagedProviderCallRequest::for_role(role, self.config.protocol, binding);
+        if let Some(model) = &single_model {
+            request.requested_model = model.clone();
+            request.single_model_plan = true;
+        }
         request.limits = self.config.limits.clone();
         request.price_profile = self.config.price_profile.clone();
         // Execution-path provenance: derived from the transport object that
@@ -341,7 +373,7 @@ impl ManagedDeepSeekNodeExecutor {
             }));
         }
         request.validate()?;
-        Ok((request, role))
+        Ok((request, role, single_model))
     }
 
     fn execute_blocking(
@@ -506,7 +538,7 @@ impl NodeExecutor for ManagedDeepSeekNodeExecutor {
             }
             .execute_node(input);
         }
-        let (request, role) = match self.request(input) {
+        let (request, role, single_model) = match self.request(input) {
             Ok(request) => request,
             Err(error) => return failed(error, started.elapsed().as_millis() as i64),
         };
@@ -514,7 +546,18 @@ impl NodeExecutor for ManagedDeepSeekNodeExecutor {
             Ok(authority) => authority,
             Err(error) => return failed(error, started.elapsed().as_millis() as i64),
         };
-        let provider = self.providers.for_role(role);
+        let provider = match &single_model {
+            Some(model) => match self.single_model_sets.get(model) {
+                Some(set) => set.for_role(role),
+                None => {
+                    return failed(
+                        format!("managed DeepSeek single-model plan is not admitted: {model}"),
+                        started.elapsed().as_millis() as i64,
+                    )
+                }
+            },
+            None => self.providers.for_role(role),
+        };
         match Self::execute_blocking(provider, authority, request.clone()) {
             Ok(response) => {
                 let action_receipt = if role == ManagedModelRole::Implementer {
@@ -789,7 +832,7 @@ mod tests {
             ManagedDeepSeekExecutorConfig::default(),
         )
         .unwrap();
-        let (request, role) = executor.request(&input("implementation")).unwrap();
+        let (request, role, _) = executor.request(&input("implementation")).unwrap();
         assert_eq!(role, ManagedModelRole::Implementer);
         assert_eq!(request.thinking.mode, "disabled");
         assert_eq!(request.thinking.reasoning_effort, None);
