@@ -372,6 +372,16 @@ impl ManagedDeepSeekNodeExecutor {
                 "function": {"name": MANAGED_WORKSPACE_ACTION_TOOL}
             }));
         }
+        let current = self
+            .source
+            .current_authority(&request.binding)
+            .map_err(|error| format!("managed DeepSeek authority unavailable: {error}"))?;
+        let contract = current.execution_contract.as_ref().ok_or_else(|| {
+            "persisted managed authority lacks an immutable execution contract".to_string()
+        })?;
+        if contract.limits.max_input_tokens > request.limits.max_input_tokens {
+            request.limits = contract.limits.clone();
+        }
         request.validate()?;
         Ok((request, role, single_model))
     }
@@ -696,6 +706,11 @@ mod tests {
         snapshot: PersistedAuthoritySnapshot,
     }
 
+    struct ContextAuthority {
+        snapshot: PersistedAuthoritySnapshot,
+        context: String,
+    }
+
     impl ManagedAuthoritySource for StaticAuthority {
         fn current_authority(
             &self,
@@ -718,6 +733,39 @@ mod tests {
             _effect: super::super::managed_deepseek::ManagedFailureEffect,
         ) -> Result<(), String> {
             Ok(())
+        }
+    }
+
+    impl ManagedAuthoritySource for ContextAuthority {
+        fn current_authority(
+            &self,
+            _binding: &ManagedCallBinding,
+        ) -> Result<PersistedAuthoritySnapshot, String> {
+            Ok(self.snapshot.clone())
+        }
+
+        fn claim_provider_request(
+            &self,
+            _request: &ManagedProviderCallRequest,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn reconcile_provider_request(
+            &self,
+            _request: &ManagedProviderCallRequest,
+            _response: Option<&ManagedProviderResponse>,
+            _effect: super::super::managed_deepseek::ManagedFailureEffect,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn stage_context(
+            &self,
+            _binding: &ManagedCallBinding,
+            _node_metadata: &Value,
+        ) -> Result<Option<Value>, String> {
+            Ok(Some(Value::String(self.context.clone())))
         }
     }
 
@@ -849,6 +897,45 @@ mod tests {
                 "function": {"name": MANAGED_WORKSPACE_ACTION_TOOL}
             }))
         );
+    }
+
+    #[test]
+    fn request_adopts_persisted_rwe_input_ceiling_before_local_validation() {
+        let mut persisted_contract = test_execution_contract();
+        persisted_contract.limits.max_input_tokens = 12_000;
+        persisted_contract.limits.max_cumulative_tokens = 16_000;
+        persisted_contract.limits.timeout_ms = 900_000;
+        let source = Arc::new(ContextAuthority {
+            snapshot: PersistedAuthoritySnapshot {
+                product_task_id: binding().product_task_id,
+                workflow_id: binding().workflow_id,
+                node_id: binding().node_id,
+                attempt_id: binding().attempt_id,
+                spend_authorization_id: binding().spend_authorization_id,
+                attempt_lease_id: binding().attempt_lease_id,
+                spend_status: "consumed".to_string(),
+                consumed_by_attempt_id: Some("attempt-1".to_string()),
+                lease_status: "current".to_string(),
+                execution_contract: Some(persisted_contract),
+            },
+            context: "x".repeat(9_000),
+        });
+        let transport = Arc::new(CountingTransport {
+            sends: Arc::new(AtomicUsize::new(0)),
+        });
+        let p = providers(transport);
+        let executor = ManagedDeepSeekNodeExecutor::new(
+            p.planner,
+            p.implementer,
+            p.reviewer,
+            source,
+            ManagedDeepSeekExecutorConfig::default(),
+        )
+        .unwrap();
+
+        let (request, _, _) = executor.request(&input("planning")).unwrap();
+        assert_eq!(request.limits.max_input_tokens, 12_000);
+        assert!(request.estimated_input_tokens() > 8_000);
     }
 
     #[test]

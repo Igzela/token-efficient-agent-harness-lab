@@ -305,7 +305,7 @@ impl ManagedCallLimits {
     /// The persisted execution contract supplies the task-specific ceiling;
     /// the request-side envelope remains a caller/frozen-config ceiling. The
     /// authority therefore never expands a request beyond either bound.
-    fn min_with(&self, other: &Self) -> Self {
+    pub(crate) fn min_with(&self, other: &Self) -> Self {
         Self {
             max_requests: self.max_requests.min(other.max_requests),
             max_retries: self.max_retries.min(other.max_retries),
