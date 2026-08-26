@@ -1355,6 +1355,7 @@ pub fn redacted_intake_json(intake: &ValidatedProductTaskIntake) -> Value {
         "tenant_id": intake.tenant_id,
         "workspace_id": intake.workspace_id,
         "workspace_mode": intake.workspace_mode,
+        "managed_model_plan": intake.managed_model_plan,
         "intake_contract_sha256": intake.intake_contract_sha256,
     })
 }
