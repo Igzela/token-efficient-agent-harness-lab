@@ -299,6 +299,29 @@ impl Default for ManagedCallLimits {
     }
 }
 
+impl ManagedCallLimits {
+    /// Return the tighter of two independently frozen envelopes.
+    ///
+    /// The persisted execution contract supplies the task-specific ceiling;
+    /// the request-side envelope remains a caller/frozen-config ceiling. The
+    /// authority therefore never expands a request beyond either bound.
+    fn min_with(&self, other: &Self) -> Self {
+        Self {
+            max_requests: self.max_requests.min(other.max_requests),
+            max_retries: self.max_retries.min(other.max_retries),
+            max_input_tokens: self.max_input_tokens.min(other.max_input_tokens),
+            max_output_tokens: self.max_output_tokens.min(other.max_output_tokens),
+            max_cumulative_tokens: self.max_cumulative_tokens.min(other.max_cumulative_tokens),
+            timeout_ms: self.timeout_ms.min(other.timeout_ms),
+            max_cost_usd: match (self.max_cost_usd, other.max_cost_usd) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (Some(value), None) | (None, Some(value)) => Some(value),
+                (None, None) => None,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManagedCallBinding {
     pub product_task_id: String,
@@ -880,6 +903,21 @@ pub struct ManagedBudgetLedger {
 
 impl ManagedBudgetLedger {
     pub fn new(limits: ManagedCallLimits) -> Result<Self, String> {
+        Self::validate_limits(&limits)?;
+        Ok(Self {
+            limits,
+            state: Arc::new(Mutex::new(ManagedReservationState {
+                reserved_requests: 0,
+                reserved_input_tokens: 0,
+                observed_requests: 0,
+                reserved_output_tokens: 0,
+                cumulative_tokens: 0,
+                cumulative_cost_usd: 0.0,
+            })),
+        })
+    }
+
+    fn validate_limits(limits: &ManagedCallLimits) -> Result<(), String> {
         if limits.max_requests == 0
             || limits.max_output_tokens == 0
             || limits.max_cumulative_tokens == 0
@@ -896,17 +934,7 @@ impl ManagedBudgetLedger {
                 return Err("managed dollar ceiling must be finite and non-negative".to_string());
             }
         }
-        Ok(Self {
-            limits,
-            state: Arc::new(Mutex::new(ManagedReservationState {
-                reserved_requests: 0,
-                reserved_input_tokens: 0,
-                observed_requests: 0,
-                reserved_output_tokens: 0,
-                cumulative_tokens: 0,
-                cumulative_cost_usd: 0.0,
-            })),
-        })
+        Ok(())
     }
 
     pub fn reserve_before_send(
@@ -914,20 +942,31 @@ impl ManagedBudgetLedger {
         input_tokens: u64,
         output_tokens: u64,
     ) -> Result<(), ManagedProviderCallError> {
+        self.reserve_before_send_with_limits(input_tokens, output_tokens, &self.limits)
+    }
+
+    fn reserve_before_send_with_limits(
+        &self,
+        input_tokens: u64,
+        output_tokens: u64,
+        limits: &ManagedCallLimits,
+    ) -> Result<(), ManagedProviderCallError> {
+        Self::validate_limits(limits)
+            .map_err(|error| ManagedProviderCallError::invalid_request(error))?;
         let mut state = self.state.lock().map_err(|_| {
             ManagedProviderCallError::invalid_request("managed budget lock poisoned")
         })?;
-        if state.reserved_requests >= self.limits.max_requests {
+        if state.reserved_requests >= limits.max_requests {
             return Err(ManagedProviderCallError::invalid_request(
                 "managed request ceiling exhausted",
             ));
         }
-        if output_tokens == 0 || output_tokens > self.limits.max_output_tokens {
+        if output_tokens == 0 || output_tokens > limits.max_output_tokens {
             return Err(ManagedProviderCallError::invalid_request(
                 "managed output ceiling exceeded before send",
             ));
         }
-        if input_tokens == 0 || input_tokens > self.limits.max_input_tokens {
+        if input_tokens == 0 || input_tokens > limits.max_input_tokens {
             return Err(ManagedProviderCallError::invalid_request(
                 "managed input ceiling exceeded before send",
             ));
@@ -938,7 +977,7 @@ impl ManagedBudgetLedger {
             .saturating_add(state.reserved_output_tokens)
             .saturating_add(input_tokens)
             .saturating_add(output_tokens)
-            > self.limits.max_cumulative_tokens
+            > limits.max_cumulative_tokens
         {
             return Err(ManagedProviderCallError::invalid_request(
                 "managed cumulative token ceiling exceeded before send",
@@ -954,6 +993,16 @@ impl ManagedBudgetLedger {
         &self,
         response: Option<&ManagedProviderResponse>,
     ) -> Result<ManagedReservationState, ManagedProviderCallError> {
+        self.reconcile_with_limits(response, &self.limits)
+    }
+
+    fn reconcile_with_limits(
+        &self,
+        response: Option<&ManagedProviderResponse>,
+        limits: &ManagedCallLimits,
+    ) -> Result<ManagedReservationState, ManagedProviderCallError> {
+        Self::validate_limits(limits)
+            .map_err(|error| ManagedProviderCallError::invalid_request(error))?;
         let mut state = self.state.lock().map_err(|_| {
             ManagedProviderCallError::invalid_request("managed budget lock poisoned")
         })?;
@@ -969,8 +1018,7 @@ impl ManagedBudgetLedger {
                 .saturating_add(response.usage.cumulative_tokens);
             if let Some(cost) = response.estimated_cost_usd {
                 state.cumulative_cost_usd += cost;
-                if self
-                    .limits
+                if limits
                     .max_cost_usd
                     .is_some_and(|max| state.cumulative_cost_usd > max)
                 {
@@ -979,7 +1027,7 @@ impl ManagedBudgetLedger {
                     ));
                 }
             }
-            if state.cumulative_tokens > self.limits.max_cumulative_tokens {
+            if state.cumulative_tokens > limits.max_cumulative_tokens {
                 return Err(ManagedProviderCallError::invalid_response(
                     "managed cumulative token ceiling exceeded",
                 ));
@@ -1107,6 +1155,34 @@ impl ManagedProviderCallAuthority {
             .source
             .current_authority(&request.binding)
             .map_err(ManagedProviderCallError::invalid_request)?;
+        self.validate_authority_snapshot(request, &current)
+    }
+
+    fn validated_effective_limits(
+        &self,
+        request: &ManagedProviderCallRequest,
+    ) -> Result<ManagedCallLimits, ManagedProviderCallError> {
+        request
+            .validate()
+            .map_err(ManagedProviderCallError::invalid_request)?;
+        let current = self
+            .source
+            .current_authority(&request.binding)
+            .map_err(ManagedProviderCallError::invalid_request)?;
+        self.validate_authority_snapshot(request, &current)?;
+        let contract = current.execution_contract.as_ref().ok_or_else(|| {
+            ManagedProviderCallError::invalid_request(
+                "persisted managed authority lacks an immutable execution contract",
+            )
+        })?;
+        Ok(contract.limits.min_with(&request.limits))
+    }
+
+    fn validate_authority_snapshot(
+        &self,
+        request: &ManagedProviderCallRequest,
+        current: &PersistedAuthoritySnapshot,
+    ) -> Result<(), ManagedProviderCallError> {
         let contract = current.execution_contract.as_ref().ok_or_else(|| {
             ManagedProviderCallError::invalid_request(
                 "persisted managed authority lacks an immutable execution contract",
@@ -1158,9 +1234,12 @@ impl ManagedProviderCallAuthority {
             .map_err(ManagedProviderCallError::invalid_request)?;
         let mut attempts = 0;
         loop {
-            self.validate_current_authority(request)?;
-            self.budget
-                .reserve_before_send(request.estimated_input_tokens(), request.max_output_tokens)?;
+            let effective_limits = self.validated_effective_limits(request)?;
+            self.budget.reserve_before_send_with_limits(
+                request.estimated_input_tokens(),
+                request.max_output_tokens,
+                &effective_limits,
+            )?;
             self.source
                 .claim_provider_request(request)
                 .map_err(ManagedProviderCallError::invalid_request)?;
@@ -1179,7 +1258,8 @@ impl ManagedProviderCallAuthority {
                             retryable: false,
                             effect: ManagedFailureEffect::OutcomeUnknown,
                         })?;
-                    self.budget.reconcile(Some(&response))?;
+                    self.budget
+                        .reconcile_with_limits(Some(&response), &effective_limits)?;
                     return Ok(response);
                 }
                 Err(error) => {
@@ -1188,7 +1268,7 @@ impl ManagedProviderCallAuthority {
                     // connection, or malformed-response results are outcome-
                     // unknown and are never retried because the provider effect
                     // may already have landed.
-                    let _ = self.budget.reconcile(None);
+                    let _ = self.budget.reconcile_with_limits(None, &effective_limits);
                     self.source
                         .reconcile_provider_request(request, None, error.effect)
                         .map_err(|reconcile_error| ManagedProviderCallError {
@@ -2995,6 +3075,53 @@ followed by a one-sentence summary of the change.";
         assert_eq!(failed_snap.reserved_input_tokens, 0);
         assert_eq!(failed_snap.reserved_output_tokens, 0);
         assert_eq!(failed_snap.cumulative_tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn persisted_execution_contract_limits_are_used_before_reservation() {
+        let frozen_limits = ManagedCallLimits {
+            max_requests: 3,
+            max_retries: 0,
+            max_input_tokens: 8_000,
+            max_output_tokens: 4_000,
+            max_cumulative_tokens: 24_000,
+            timeout_ms: 30_000,
+            max_cost_usd: None,
+        };
+        let persisted_limits = ManagedCallLimits {
+            max_requests: 3,
+            max_retries: 0,
+            max_input_tokens: 12_000,
+            max_output_tokens: 4_000,
+            max_cumulative_tokens: 16_000,
+            timeout_ms: 900_000,
+            max_cost_usd: None,
+        };
+        let authority = ManagedProviderCallAuthority::new(
+            Arc::new(StaticAuthority {
+                limits: persisted_limits.clone(),
+            }),
+            frozen_limits,
+        )
+        .unwrap();
+        let mut req = request(DeepSeekProtocol::OpenAiCompatible);
+        req.limits = persisted_limits;
+        req.max_output_tokens = req.limits.max_output_tokens;
+        req.system = Some("x".repeat(9_000));
+
+        let sent = Arc::new(AtomicUsize::new(0));
+        let sent_for_call = Arc::clone(&sent);
+        let result = authority
+            .invoke_with_retry(&req, || {
+                sent_for_call.fetch_add(1, Ordering::SeqCst);
+                async { Ok(manual_response()) }
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.request_id, "r-1");
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
+        assert_eq!(authority.budget().snapshot().unwrap().observed_requests, 1);
     }
 
     // Holding the canonical env test lock across mock awaits is deliberate:

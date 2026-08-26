@@ -159,6 +159,7 @@ fn sample_intake(target: &std::path::Path, rev: &str, key: &str) -> ProductTaskI
         tenant_id: Some("local".to_string()),
         workspace_id: Some("default".to_string()),
         workspace_mode: Some("git_worktree".to_string()),
+        managed_model_plan: None,
     }
 }
 

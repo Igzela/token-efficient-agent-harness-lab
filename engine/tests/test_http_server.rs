@@ -12992,6 +12992,7 @@ async fn axum_bootstrap_reconciliation_uses_canonical_identity_and_is_idempotent
         tenant_id: Some(LOCAL_BOOTSTRAP_TENANT_ID.into()),
         workspace_id: Some("default".into()),
         workspace_mode: Some("local_folder".into()),
+        managed_model_plan: None,
     };
     let validated = validate_intake(&intake, LOCAL_BOOTSTRAP_TENANT_ID, "default").unwrap();
     let task = store
