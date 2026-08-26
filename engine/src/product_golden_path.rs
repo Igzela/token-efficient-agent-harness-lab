@@ -1776,6 +1776,20 @@ pub fn compile_product_executable_graph(
         .get("source_revision")
         .and_then(Value::as_str)
         .ok_or_else(|| "workspace_binding missing source_revision".to_string())?;
+    let managed_model_plan: Option<(String, String)> = task
+        .get("intake")
+        .and_then(|intake| intake.get("managed_model_plan"))
+        .and_then(Value::as_str)
+        .map(|plan| {
+            if plan != crate::harness_evolution::MX1_ARM_ZERO_MODEL_ID
+                && plan != crate::harness_evolution::MX1_SECOND_MODEL_ID
+            {
+                return Err(format!("unsupported managed model plan: {plan}"));
+            }
+            let model = plan.split(':').next().unwrap_or_default().to_string();
+            Ok((plan.to_string(), model))
+        })
+        .transpose()?;
     let allowed_paths = binding.get("allowed_paths").cloned().unwrap_or(json!([]));
     let intake = task.get("intake").cloned().unwrap_or(json!({}));
     let objective_preview = intake
@@ -1901,6 +1915,14 @@ pub fn compile_product_executable_graph(
             "admission_classification": profile.admission_classification,
         })
     } else if resolved_executor == "managed_deepseek" {
+        let (planner_model, implementer_model, reviewer_model) = match &managed_model_plan {
+            Some((_, model)) => (model.clone(), model.clone(), model.clone()),
+            None => (
+                "deepseek-v4-pro".to_string(),
+                "deepseek-v4-flash".to_string(),
+                "deepseek-v4-pro".to_string(),
+            ),
+        };
         json!({
             "schema_version": "managed_executor_identity.v1",
             "executor_type": "managed_deepseek",
@@ -1908,9 +1930,13 @@ pub fn compile_product_executable_graph(
             "provider_kind": "deepseek",
             "protocol": "openai_compatible",
             "credential_reference": "DEEPSEEK_API_KEY",
-            "planner_model": "deepseek-v4-pro",
-            "implementer_model": "deepseek-v4-flash",
-            "reviewer_model": "deepseek-v4-pro",
+            "planner_model": planner_model,
+            "implementer_model": implementer_model,
+            "reviewer_model": reviewer_model,
+            "model_plan": managed_model_plan
+                .as_ref()
+                .map(|(plan, _)| Value::String(plan.clone()))
+                .unwrap_or(Value::Null),
             "route_schema_version": "managed_deepseek_route.v1",
             "usage_parser_version": "protocol_usage.v1",
             "authority_source": "LocalProductStore.managed_acceptance",
@@ -1967,6 +1993,10 @@ pub fn compile_product_executable_graph(
                 "stage": "planning",
                 "role": "planner",
                 "protocol": "openai_compatible",
+                "model": managed_model_plan
+                    .as_ref()
+                    .map(|(_, model)| Value::String(model.clone()))
+                    .unwrap_or(Value::Null),
                 "binding": Value::Null,
                 "prompt": objective_preview,
                 "authority_binding_source": "LocalProductStore.managed_acceptance"
@@ -2088,6 +2118,10 @@ pub fn compile_product_executable_graph(
                     "stage": stage,
                     "role": role,
                     "protocol": "openai_compatible",
+                    "model": managed_model_plan
+                        .as_ref()
+                        .map(|(_, model)| Value::String(model.clone()))
+                        .unwrap_or(Value::Null),
                     "binding": stage_binding,
                     "binding_status": if deferred_binding { "deferred" } else { "bound" },
                     "prompt_path": prompt_path,
@@ -2225,6 +2259,52 @@ mod tests {
             err.contains("created_at must be canonical RFC3339/UTC"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn managed_deepseek_single_model_plan_binds_all_roles_fail_closed() {
+        let mut task = managed_deepseek_graph_task(json!([{
+            "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+            "timeout_ms": 5_000
+        }]));
+        task["intake"]["managed_model_plan"] =
+            json!(crate::harness_evolution::MX1_SECOND_MODEL_ID);
+        let graph = compile_product_executable_graph(
+            &task,
+            "2026-07-30T00:00:00Z",
+            &crate::read_only_planner::WorkflowPlanIds::for_sequence(1),
+            "managed_deepseek",
+        )
+        .unwrap();
+        let identity = &graph["nodes"][0]["managed_executor_identity"];
+        assert_eq!(identity["planner_model"], "deepseek-v4-flash");
+        assert_eq!(identity["implementer_model"], "deepseek-v4-flash");
+        assert_eq!(identity["reviewer_model"], "deepseek-v4-flash");
+        assert_eq!(
+            identity["model_plan"],
+            crate::harness_evolution::MX1_SECOND_MODEL_ID
+        );
+        let node = &graph["nodes"][0]["managed_deepseek"];
+        assert_eq!(node["model"], "deepseek-v4-flash");
+        // Arm zero keeps the exact registered identity as well.
+        task["intake"]["managed_model_plan"] = json!(crate::harness_evolution::MX1_ARM_ZERO_MODEL_ID);
+        let graph = compile_product_executable_graph(
+            &task,
+            "2026-07-30T00:00:00Z",
+            &crate::read_only_planner::WorkflowPlanIds::for_sequence(1),
+            "managed_deepseek",
+        )
+        .unwrap();
+        assert_eq!(graph["nodes"][0]["managed_deepseek"]["model"], "deepseek-v4-pro");
+        // Unregistered plans fail closed.
+        task["intake"]["managed_model_plan"] = json!("gpt-9:turbo-mix:v1");
+        assert!(compile_product_executable_graph(
+            &task,
+            "2026-07-30T00:00:00Z",
+            &crate::read_only_planner::WorkflowPlanIds::for_sequence(1),
+            "managed_deepseek",
+        )
+        .is_err());
     }
 
     #[test]

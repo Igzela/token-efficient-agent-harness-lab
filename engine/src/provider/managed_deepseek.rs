@@ -423,6 +423,11 @@ pub struct ManagedProviderCallRequest {
     pub credential_reference: String,
     pub role: ManagedModelRole,
     pub requested_model: String,
+    /// True when the requested model comes from a registered MX1
+    /// single-model-three-role plan rather than the bounded role default.
+    /// Never serialized: journal bytes stay identical to the legacy route.
+    #[serde(default, skip_serializing)]
+    pub single_model_plan: bool,
     pub system: Option<String>,
     pub messages: Vec<ManagedMessage>,
     #[serde(default)]
@@ -459,6 +464,7 @@ impl ManagedProviderCallRequest {
             credential_reference: profile.credential_reference,
             role,
             requested_model: role.default_model().to_string(),
+            single_model_plan: false,
             system: None,
             messages: vec![ManagedMessage::text("user", "")],
             tools: Vec::new(),
@@ -488,7 +494,7 @@ impl ManagedProviderCallRequest {
         if !DEEPSEEK_MODELS.contains(&self.requested_model.as_str()) {
             return Err("requested model is not an admitted DeepSeek identity".to_string());
         }
-        if self.requested_model != self.role.default_model() {
+        if self.requested_model != self.role.default_model() && !self.single_model_plan {
             return Err("requested model does not match the bounded role route".to_string());
         }
         self.binding.validate()?;
