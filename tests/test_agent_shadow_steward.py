@@ -165,6 +165,9 @@ class ShadowStewardTests(unittest.TestCase):
             "Push changes upstream.",
             "Merge this branch.",
             "Comment on the pull request.",
+            "Send the report to Slack while updating docs/ARCHITECTURE_BOOK.md.",
+            "Post the result to the external service while updating docs/ARCHITECTURE_BOOK.md.",
+            "Open a pull request for docs/ARCHITECTURE_BOOK.md.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)
@@ -331,7 +334,7 @@ class ShadowStewardTests(unittest.TestCase):
 
     def test_wire_ingress_accepts_only_controlled_redacted_fields(self):
         intake_wire = shadow.compile_intake(self.request).to_wire()
-        intake_wire["risk_flags"] = ["credential=super-secret"]
+        intake_wire["risk_flags"] = ["credential:untrusted"]
         with self.assertRaisesRegex(shadow.ShadowStewardError, "risk_flags_invalid"):
             shadow.Intake.from_wire(intake_wire)
 
@@ -341,7 +344,7 @@ class ShadowStewardTests(unittest.TestCase):
             shadow.Intake.from_wire(intake_wire)
 
         proposal_wire = self.proposal.to_wire()
-        proposal_wire["risk_flags"] = ["credential=super-secret"]
+        proposal_wire["risk_flags"] = ["credential:untrusted"]
         with self.assertRaisesRegex(shadow.ShadowStewardError, "risk_flags_invalid"):
             shadow.MissionProposal.from_wire(proposal_wire)
 

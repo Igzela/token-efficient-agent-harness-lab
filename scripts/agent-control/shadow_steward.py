@@ -196,6 +196,14 @@ _HIGH_RISK_PATTERNS = (
         r".{0,48}\b(?:write|push|modify|change|update|create|close|merge|comment)\b"
     ),
     re.compile(
+        r"\b(?:send|post|submit|upload|notify|open)\b"
+        r".{0,64}\b(?:slack|external service|third[- ]party|webhook|email|e-mail|pull request|pull-request)\b"
+    ),
+    re.compile(
+        r"\b(?:slack|external service|third[- ]party|webhook|email|e-mail|pull request|pull-request)\b"
+        r".{0,64}\b(?:send|post|submit|upload|notify|open)\b"
+    ),
+    re.compile(
         r"\b(?:cannot|can't|unable to|do not know|don't know|not sure|unclear|uncertain)\b"
         r".{0,48}\b(?:whether|if|outcome|completed|sent|succeeded|succeed)\b"
     ),
