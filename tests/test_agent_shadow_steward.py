@@ -48,7 +48,12 @@ class ShadowStewardTests(unittest.TestCase):
             self.approval,
             owner_authenticator=self.authenticator,
         )
-        return shadow.plan_stage(self.proposal, self.mission, decision)
+        return shadow.plan_stage(
+            self.proposal,
+            self.mission,
+            self.approval,
+            owner_authenticator=self.authenticator,
+        )
 
     def test_intake_is_bounded_digested_and_does_not_retain_raw_request(self):
         intake = shadow.compile_intake(self.request)
@@ -149,6 +154,16 @@ class ShadowStewardTests(unittest.TestCase):
                 self.assertEqual(plan.disposition, "PAUSED_FOR_OWNER")
                 self.assertTrue(plan.stop.pause_owner)
 
+        for request in (
+            "Ship this to prod from docs/ARCHITECTURE_BOOK.md.",
+            "Expand the scope to docs/ARCHITECTURE_BOOK.md.",
+            "I do not know whether it was sent.",
+        ):
+            with self.subTest(request=request):
+                proposal = shadow.compile_proposal(request)
+                self.assertTrue(proposal.stop_codes)
+                self.assertTrue(shadow.plan_stage(proposal, self.mission).stop.pause_owner)
+
     def test_change_type_cannot_widen_the_registered_mission(self):
         proposal = shadow.compile_proposal(
             "Update the workflow in docs/ARCHITECTURE_BOOK.md."
@@ -167,6 +182,10 @@ class ShadowStewardTests(unittest.TestCase):
         self.assertTrue(plan.projection_only)
         contract.validate_stage(plan.stage, self.mission, plan.workcards)
         self.assertTrue(shadow.shadow_only(plan))
+
+        forged_plan = replace(plan, _provenance=None)
+        with self.assertRaisesRegex(shadow.ShadowStewardError, "plan_projection_invalid"):
+            shadow.replan(forged_plan, "CI_FAILED")
 
         stale = replace(self.mission, state="RUNNING")
         with self.assertRaisesRegex(shadow.ShadowStewardError, "mission_registration_invalid"):
@@ -225,7 +244,7 @@ class ShadowStewardTests(unittest.TestCase):
 
     def test_replay_evidence_digest_cannot_be_forged(self):
         case = shadow.historical_failure_fixtures()[0].to_wire()
-        case["legacy_action"] = "PAUSE"
+        case["evidence_ref"] = "github:issue:77:tampered"
         with self.assertRaisesRegex(
             shadow.ShadowStewardError, "replay_evidence_digest_mismatch"
         ):

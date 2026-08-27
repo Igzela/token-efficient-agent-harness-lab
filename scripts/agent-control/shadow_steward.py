@@ -11,7 +11,7 @@ writer.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import re
 from typing import Any, Protocol
 
@@ -23,6 +23,7 @@ MAX_INTAKE_CHARS = 8 * 1024
 MAX_ITEMS = 32
 MAX_FAILURES = 100
 MAX_ID_CHARS = 128
+_PROJECTION_TOKEN = object()
 
 SAFE_CHANGE_TYPES = (
     "documentation",
@@ -51,7 +52,6 @@ OWNER_FAILURES = frozenset(
 ) | {"BUDGET_EXCEEDED"}
 KNOWN_STOP_CODES = ROUTINE_FAILURES | OWNER_FAILURES
 KNOWN_SOURCES = frozenset({"issue", "pr", "ci", "review"})
-LEGACY_ACTIONS = frozenset({"RECOVER", "PAUSE"})
 
 _PATH_MARKERS = (
     "/home/",
@@ -74,6 +74,9 @@ _SECRET_MARKERS = (
 _AUTHORITY_MARKERS = (
     "broaden scope",
     "broader scope",
+    "broaden the scope",
+    "expand scope",
+    "expand the scope",
     "increase budget",
     "new permission",
     "new grant",
@@ -93,6 +96,9 @@ _PRODUCTION_MARKERS = (
     "github write",
     "install service",
     "merge to main",
+    "ship to prod",
+    " to prod",
+    "go live",
 )
 _DESTRUCTIVE_MARKERS = (
     "destructive",
@@ -100,6 +106,9 @@ _DESTRUCTIVE_MARKERS = (
     "drop database",
     "destroy",
     "overwrite data",
+    "wipe",
+    "purge",
+    "truncate",
 )
 _UNKNOWN_MARKERS = (
     "unknown outcome",
@@ -108,6 +117,11 @@ _UNKNOWN_MARKERS = (
     "possibly sent",
     "ambiguous response",
     "uncertain whether",
+    "uncertain if",
+    "i do not know whether",
+    "i do not know if",
+    "don't know whether",
+    "not sure whether",
 )
 _SCOPE_MARKERS = (
     "entire repository",
@@ -571,7 +585,10 @@ def evaluate_proposal(
         not contract.path_in_scope(current.allowed_paths, path.rstrip("/"))
         for path in model.requested_paths
         )
-        or any(change_type not in current.allowed_change_types for change_type in model.change_types)
+        or any(
+            change_type not in current.allowed_change_types
+            for change_type in model.change_types
+        )
     ):
         return ProposalDecision(
             SCHEMA_VERSION,
@@ -672,6 +689,7 @@ class PlanProjection:
     stop: StopRecommendation | None
     replan_count: int
     projection_only: bool = True
+    _provenance: object | None = field(default=None, repr=False, compare=False)
 
     def to_wire(self) -> dict[str, Any]:
         return {
@@ -703,7 +721,9 @@ def _waiting_projection(proposal_sha256: str, mission_id: str) -> PlanProjection
 def plan_stage(
     proposal: MissionProposal,
     mission: contract.MaintenanceMission,
-    decision: ProposalDecision | None = None,
+    owner_approval: contract.OwnerApproval | dict[str, Any] | None = None,
+    *,
+    owner_authenticator: OwnerApprovalAuthenticator | None = None,
 ) -> PlanProjection:
     """Build and validate a deterministic Stage/WorkCard recommendation."""
 
@@ -720,24 +740,21 @@ def plan_stage(
         not contract.path_in_scope(current.allowed_paths, path.rstrip("/"))
         for path in model.requested_paths
         )
-        or any(change_type not in current.allowed_change_types for change_type in model.change_types)
+        or any(
+            change_type not in current.allowed_change_types
+            for change_type in model.change_types
+        )
     ):
         stop = classify_stop("SCOPE_EXCEEDED")
         return _paused_projection(model.proposal_sha256, current.mission_id, stop)
-    if decision is None:
+    decision = evaluate_proposal(
+        model,
+        current,
+        owner_approval,
+        owner_authenticator=owner_authenticator,
+    )
+    if decision.status != "SHADOW_RECOMMENDATION":
         return _waiting_projection(model.proposal_sha256, current.mission_id)
-    if not isinstance(decision, ProposalDecision):
-        raise ShadowStewardError("approval_projection_invalid")
-    if (
-        decision.proposal_sha256 != model.proposal_sha256
-        or decision.mission_id != current.mission_id
-        or decision.status != "SHADOW_RECOMMENDATION"
-        or not decision.owner_authenticated
-        or not decision.recommendation_active
-        or decision.authority_consumed
-        or decision.mutation_allowed
-    ):
-        raise ShadowStewardError("approval_projection_invalid")
     stage_id = f"shadow-stage-{model.proposal_sha256[:16]}"
     card_id = f"{stage_id}:card"
     stage = contract.Stage(
@@ -781,13 +798,19 @@ def plan_stage(
         (card,),
         None,
         0,
+        True,
+        _PROJECTION_TOKEN,
     )
 
 
 def replan(plan: PlanProjection, failure_code: str, *, attempt_number: int = 1) -> PlanProjection:
     """Return a recovery or owner-pause projection without changing state."""
 
-    if not isinstance(plan, PlanProjection) or not plan.projection_only:
+    if (
+        not isinstance(plan, PlanProjection)
+        or not plan.projection_only
+        or plan._provenance is not _PROJECTION_TOKEN
+    ):
         raise ShadowStewardError("plan_projection_invalid")
     if not isinstance(attempt_number, int) or attempt_number < 1:
         raise ShadowStewardError("attempt_number_invalid")
@@ -829,7 +852,6 @@ class ReplayCase:
     failure_code: str
     evidence_ref: str
     evidence_sha256: str
-    legacy_action: str
 
     def to_wire(self) -> dict[str, str]:
         return {
@@ -838,7 +860,6 @@ class ReplayCase:
             "failure_code": self.failure_code,
             "evidence_ref": self.evidence_ref,
             "evidence_sha256": self.evidence_sha256,
-            "legacy_action": self.legacy_action,
         }
 
     @staticmethod
@@ -847,7 +868,6 @@ class ReplayCase:
         source: str,
         failure_code: str,
         evidence_ref: str,
-        legacy_action: str,
     ) -> str:
         return contract.json_sha256(
             {
@@ -855,7 +875,6 @@ class ReplayCase:
                 "source": source,
                 "failure_code": failure_code,
                 "evidence_ref": evidence_ref,
-                "legacy_action": legacy_action,
             }
         )
 
@@ -866,17 +885,14 @@ class ReplayCase:
         source: str,
         failure_code: str,
         evidence_ref: str,
-        legacy_action: str,
     ) -> ReplayCase:
-        action = legacy_action.strip().upper()
         failure = failure_code.strip().upper()
         return cls(
             case_id,
             source,
             failure,
             evidence_ref,
-            cls._evidence_digest(case_id, source, failure, evidence_ref, action),
-            action,
+            cls._evidence_digest(case_id, source, failure, evidence_ref),
         )
 
     @classmethod
@@ -887,7 +903,6 @@ class ReplayCase:
             "failure_code",
             "evidence_ref",
             "evidence_sha256",
-            "legacy_action",
         }
         wire = _mapping(value, fields, fields, "replay_case_fields_invalid")
         case_id = _identifier(wire["case_id"], "case_id")
@@ -895,6 +910,8 @@ class ReplayCase:
         if source not in KNOWN_SOURCES:
             raise ShadowStewardError("replay_source_invalid")
         failure = _text(wire["failure_code"], "failure_code", max_chars=64).upper()
+        if failure not in KNOWN_STOP_CODES:
+            raise ShadowStewardError("replay_failure_invalid")
         evidence_ref = _text(wire["evidence_ref"], "evidence_ref", max_chars=128)
         if re.fullmatch(
             r"github:(?:issue|pr|ci|review):[1-9][0-9]{0,11}:[a-z0-9-]+",
@@ -902,14 +919,11 @@ class ReplayCase:
         ) is None:
             raise ShadowStewardError("evidence_ref_invalid")
         evidence_sha = _sha(wire["evidence_sha256"], "evidence_sha256")
-        action = _text(wire["legacy_action"], "legacy_action", max_chars=16).upper()
-        if action not in LEGACY_ACTIONS:
-            raise ShadowStewardError("legacy_action_invalid")
         if evidence_sha != cls._evidence_digest(
-            case_id, source, failure, evidence_ref, action
+            case_id, source, failure, evidence_ref
         ):
             raise ShadowStewardError("replay_evidence_digest_mismatch")
-        return cls(case_id, source, failure, evidence_ref, evidence_sha, action)
+        return cls(case_id, source, failure, evidence_ref, evidence_sha)
 
 
 @dataclass(frozen=True)
@@ -967,9 +981,13 @@ class ReplayResult:
 
 
 def _legacy_controller_action(case: ReplayCase) -> str:
-    """Read the observed legacy disposition from hash-bound fixture evidence."""
+    """Reconstruct the legacy disposition from its typed stop taxonomy."""
 
-    return case.legacy_action
+    return (
+        "RECOVER"
+        if case.failure_code in ROUTINE_FAILURES
+        else "PAUSE"
+    )
 
 
 def historical_failure_fixtures() -> tuple[ReplayCase, ...]:
@@ -981,35 +999,30 @@ def historical_failure_fixtures() -> tuple[ReplayCase, ...]:
             "issue",
             "WORKER_FAILED",
             "github:issue:77:worker-failed",
-            "RECOVER",
         ),
         ReplayCase.fixture(
             "pr-630-review",
             "pr",
             "REVIEW_CHANGES_REQUESTED",
             "github:pr:630:review-changes-requested",
-            "RECOVER",
         ),
         ReplayCase.fixture(
             "ci-33108617013-macos",
             "ci",
             "CI_FAILED",
             "github:ci:33108617013:macos-startup-race",
-            "RECOVER",
         ),
         ReplayCase.fixture(
             "review-630-unknown",
             "review",
             "EXTERNAL_OUTCOME_UNKNOWN",
             "github:review:630:unknown-outcome",
-            "PAUSE",
         ),
         ReplayCase.fixture(
             "issue-77-safety",
             "issue",
             "SAFETY_CONFLICT",
             "github:issue:77:safety-conflict",
-            "PAUSE",
         ),
     )
 
@@ -1138,5 +1151,6 @@ def shadow_only(plan: PlanProjection) -> bool:
     return (
         isinstance(plan, PlanProjection)
         and plan.projection_only
+        and plan._provenance is _PROJECTION_TOKEN
         and not plan.to_wire().get("mutation_allowed", False)
     )
