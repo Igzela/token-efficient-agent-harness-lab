@@ -33,6 +33,18 @@ SAFE_CHANGE_TYPES = (
     "configuration",
     "workflow",
 )
+KNOWN_RISK_FLAGS = frozenset(
+    {
+        "authority_expansion",
+        "production_or_external_effect",
+        "destructive_operation",
+        "unknown_outcome",
+        "secret_handling",
+        "private_content",
+        "unbounded_or_missing_scope",
+    }
+)
+KNOWN_INTENTS = frozenset({"repository_maintenance", "owner_review_required"})
 SAFE_PATH = re.compile(
     r"(?<![A-Za-z0-9_.-])"
     r"(?:docs|scripts|tests|engine|sdk|dashboard|tools|wire_contract|codegen)"
@@ -176,6 +188,14 @@ _HIGH_RISK_PATTERNS = (
         r"\bgithub\b.{0,48}\b(?:write|push|modify|change|update|create|close|merge|comment)\b"
     ),
     re.compile(
+        r"\b(?:write|push|modify|change|update|create|close|merge|comment)\b"
+        r".{0,48}\b(?:upstream|remote|branch|pull request|pull-request|pr|repository|repo)\b"
+    ),
+    re.compile(
+        r"\b(?:upstream|remote|branch|pull request|pull-request|pr|repository|repo)\b"
+        r".{0,48}\b(?:write|push|modify|change|update|create|close|merge|comment)\b"
+    ),
+    re.compile(
         r"\b(?:cannot|can't|unable to|do not know|don't know|not sure|unclear|uncertain)\b"
         r".{0,48}\b(?:whether|if|outcome|completed|sent|succeeded|succeed)\b"
     ),
@@ -237,12 +257,19 @@ def _items(value: object, field: str, *, allowed: frozenset[str] | None = None) 
     return tuple(result)
 
 
-def _optional_items(value: object, field: str) -> tuple[str, ...]:
+def _optional_items(
+    value: object,
+    field: str,
+    *,
+    allowed: frozenset[str] | None = None,
+) -> tuple[str, ...]:
     if value == [] or value == ():
         return ()
     if not isinstance(value, (list, tuple)) or len(value) > MAX_ITEMS:
         raise ShadowStewardError(f"{field}_invalid")
     result = tuple(_text(item, field, max_chars=256) for item in value)
+    if allowed is not None and any(item not in allowed for item in result):
+        raise ShadowStewardError(f"{field}_invalid")
     if len(set(result)) != len(result):
         raise ShadowStewardError(f"{field}_duplicated")
     return result
@@ -402,11 +429,15 @@ class Intake:
         change_types = _items(
             wire["change_types"], "change_types", allowed=frozenset(SAFE_CHANGE_TYPES)
         )
-        risk_flags = _optional_items(wire["risk_flags"], "risk_flags")
+        risk_flags = _optional_items(
+            wire["risk_flags"], "risk_flags", allowed=KNOWN_RISK_FLAGS
+        )
         stop_codes = _optional_items(wire["stop_codes"], "stop_codes")
         if any(code not in KNOWN_STOP_CODES for code in stop_codes):
             raise ShadowStewardError("stop_codes_invalid")
         intent = _text(wire["intent"], "intent", max_chars=64)
+        if intent not in KNOWN_INTENTS:
+            raise ShadowStewardError("intent_invalid")
         return cls(SCHEMA_VERSION, request_sha, paths, change_types, risk_flags, stop_codes, intent)
 
 
@@ -535,12 +566,16 @@ class MissionProposal:
             _text(wire["objective_kind"], "objective_kind", max_chars=64),
             _validated_non_private_paths(wire["requested_paths"], "requested_paths"),
             _items(wire["change_types"], "change_types", allowed=frozenset(SAFE_CHANGE_TYPES)),
-            _optional_items(wire["risk_flags"], "risk_flags"),
+            _optional_items(
+                wire["risk_flags"], "risk_flags", allowed=KNOWN_RISK_FLAGS
+            ),
             _optional_items(wire["stop_codes"], "stop_codes"),
             _sha(wire["proposal_sha256"], "proposal_sha256"),
         )
         if any(code not in KNOWN_STOP_CODES for code in proposal.stop_codes):
             raise ShadowStewardError("stop_codes_invalid")
+        if proposal.objective_kind not in KNOWN_INTENTS:
+            raise ShadowStewardError("objective_kind_invalid")
         if proposal.proposal_sha256 != contract.json_sha256(proposal.proposal_wire()):
             raise ShadowStewardError("proposal_digest_mismatch")
         return proposal

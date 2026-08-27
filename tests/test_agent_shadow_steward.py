@@ -162,6 +162,9 @@ class ShadowStewardTests(unittest.TestCase):
             "Write to GitHub while updating docs/ARCHITECTURE_BOOK.md.",
             "Erase records while updating docs/ARCHITECTURE_BOOK.md.",
             "I cannot determine whether it completed while updating docs/ARCHITECTURE_BOOK.md.",
+            "Push changes upstream.",
+            "Merge this branch.",
+            "Comment on the pull request.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)
@@ -325,6 +328,29 @@ class ShadowStewardTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(shadow.ShadowStewardError, reason):
                     shadow.MissionProposal.from_wire(proposal_wire)
+
+    def test_wire_ingress_accepts_only_controlled_redacted_fields(self):
+        intake_wire = shadow.compile_intake(self.request).to_wire()
+        intake_wire["risk_flags"] = ["credential=super-secret"]
+        with self.assertRaisesRegex(shadow.ShadowStewardError, "risk_flags_invalid"):
+            shadow.Intake.from_wire(intake_wire)
+
+        intake_wire = shadow.compile_intake(self.request).to_wire()
+        intake_wire["intent"] = "Implement the original prompt contents."
+        with self.assertRaisesRegex(shadow.ShadowStewardError, "intent_invalid"):
+            shadow.Intake.from_wire(intake_wire)
+
+        proposal_wire = self.proposal.to_wire()
+        proposal_wire["risk_flags"] = ["credential=super-secret"]
+        with self.assertRaisesRegex(shadow.ShadowStewardError, "risk_flags_invalid"):
+            shadow.MissionProposal.from_wire(proposal_wire)
+
+        proposal_wire = self.proposal.to_wire()
+        proposal_wire["objective_kind"] = "Implement the original prompt contents."
+        with self.assertRaisesRegex(
+            shadow.ShadowStewardError, "objective_kind_invalid"
+        ):
+            shadow.MissionProposal.from_wire(proposal_wire)
 
     def test_shadow_module_has_no_effect_transport_or_persistence_imports(self):
         source = (CONTROL / "shadow_steward.py").read_text(encoding="utf-8")
