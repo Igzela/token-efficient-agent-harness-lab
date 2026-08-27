@@ -45,29 +45,6 @@ registered campaign is checked against its fixed repository, branch, source
 reference, source digest, and PR0 base. Provider-free PR1 WorkCards use T0-T2;
 T3 or any external effect requires a later authority envelope and is rejected
 here.
-
-### Autonomous Steward Shadow Steward (PR2)
-
-The provider-free Shadow Steward projection is owned by
-`scripts/agent-control/shadow_steward.py`. Its interface reduces bounded,
-untrusted natural-language intake to digested policy facts; compiles a
-digest-bound proposal; evaluates only the existing `OwnerApproval` contract;
-and returns immutable Stage/WorkCard, stop, replay, and compact-status
-projections. It does not retain raw requests, comments, outputs, transcripts,
-private paths, or credentials. `mission_contract.py` remains the sole Mission,
-Stage, WorkCard, grant, budget, stop, and rollback validator.
-
-The shadow projection has no persistence, GitHub/Provider transport, worker,
-service, scheduler, evaluator, budget, output, audit, rollback, or lifecycle
-authority. An exact trusted owner approval may mark a proposal as a
-`SHADOW_RECOMMENDATION`, but `authority_consumed` and `mutation_allowed` stay
-false; missing, non-owner, digest-mismatched, out-of-scope, sensitive,
-production/destructive, and unknown-outcome inputs remain rejected or
-owner-pause recommendations. Ordinary worker, test, review, CI, and main-drift
-failures remain bounded recovery recommendations. Historical replay is fixture
-comparison evidence only and cannot change the legacy controller, whose
-`scripts/agent-control/local_loop.py` path remains the sole lifecycle writer.
-
 The contract is a read-only compatibility reader during migration. The legacy
 packet controller at `scripts/agent-control/local_loop.py` remains the sole
 lifecycle writer; GitHub remains the durable queue/lease owner and

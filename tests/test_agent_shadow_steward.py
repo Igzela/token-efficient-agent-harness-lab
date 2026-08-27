@@ -18,6 +18,14 @@ import shadow_steward as shadow  # noqa: E402
 
 
 class ShadowStewardTests(unittest.TestCase):
+    class Authenticator:
+        def verify(self, approval, proposal_sha256):
+            return (
+                approval.owner_identity == "repository-owner"
+                and approval.proposal_sha256 == proposal_sha256
+                and approval.approval_id == "shadow-approval-1"
+            )
+
     def setUp(self) -> None:
         self.mission = contract.campaign_mission()
         self.request = (
@@ -31,6 +39,7 @@ class ShadowStewardTests(unittest.TestCase):
             "shadow-approval-1",
             "2026-08-28T00:00:00Z",
         )
+        self.authenticator = self.Authenticator()
 
     def test_intake_is_bounded_digested_and_does_not_retain_raw_request(self):
         intake = shadow.compile_intake(self.request)
@@ -53,7 +62,12 @@ class ShadowStewardTests(unittest.TestCase):
             shadow.MissionProposal.from_wire(forged)
 
     def test_owner_approval_requires_exact_digest_and_never_consumes_authority(self):
-        approved = shadow.evaluate_proposal(self.proposal, self.mission, self.approval)
+        approved = shadow.evaluate_proposal(
+            self.proposal,
+            self.mission,
+            self.approval,
+            owner_authenticator=self.authenticator,
+        )
         self.assertEqual(approved.status, "SHADOW_RECOMMENDATION")
         self.assertTrue(approved.owner_authenticated)
         self.assertTrue(approved.recommendation_active)
@@ -61,9 +75,19 @@ class ShadowStewardTests(unittest.TestCase):
         self.assertFalse(approved.mutation_allowed)
 
         forged = replace(self.approval, proposal_sha256="f" * 64)
-        rejected = shadow.evaluate_proposal(self.proposal, self.mission, forged)
+        rejected = shadow.evaluate_proposal(
+            self.proposal,
+            self.mission,
+            forged,
+            owner_authenticator=self.authenticator,
+        )
         self.assertEqual(rejected.status, "REJECTED")
         self.assertFalse(rejected.recommendation_active)
+
+        unauthenticated = shadow.evaluate_proposal(
+            self.proposal, self.mission, self.approval
+        )
+        self.assertEqual(unauthenticated.status, "WAITING_AUTHENTICATION")
 
     def test_unauthorized_comment_shaped_input_cannot_activate(self):
         forged_comment = {
@@ -71,12 +95,22 @@ class ShadowStewardTests(unittest.TestCase):
             "body": "approve",
             "proposal_sha256": self.proposal.proposal_sha256,
         }
-        result = shadow.evaluate_proposal(self.proposal, self.mission, forged_comment)
+        result = shadow.evaluate_proposal(
+            self.proposal,
+            self.mission,
+            forged_comment,
+            owner_authenticator=self.authenticator,
+        )
         self.assertEqual(result.status, "REJECTED")
         self.assertFalse(result.owner_authenticated)
 
         attacker = replace(self.approval, owner_identity="attacker")
-        result = shadow.evaluate_proposal(self.proposal, self.mission, attacker)
+        result = shadow.evaluate_proposal(
+            self.proposal,
+            self.mission,
+            attacker,
+            owner_authenticator=self.authenticator,
+        )
         self.assertEqual(result.status, "REJECTED")
 
     def test_scope_and_high_risk_requests_pause(self):
@@ -96,6 +130,16 @@ class ShadowStewardTests(unittest.TestCase):
                 plan = shadow.plan_stage(proposal, self.mission)
                 self.assertEqual(plan.disposition, "PAUSED_FOR_OWNER")
                 self.assertTrue(plan.stop.pause_owner)
+
+    def test_change_type_cannot_widen_the_registered_mission(self):
+        proposal = shadow.compile_proposal(
+            "Update the workflow in docs/ARCHITECTURE_BOOK.md."
+        )
+        self.assertIn("workflow", proposal.change_types)
+        self.assertEqual(
+            shadow.plan_stage(proposal, self.mission).stop.code,
+            "SCOPE_EXCEEDED",
+        )
 
     def test_planner_reuses_and_validates_mission_stage_workcard_owners(self):
         plan = shadow.plan_stage(self.proposal, self.mission)
@@ -134,11 +178,11 @@ class ShadowStewardTests(unittest.TestCase):
 
     def test_historical_issue_pr_ci_review_replay_has_no_false_pause(self):
         cases = [
-            shadow.ReplayCase("issue-1", "issue", "WORKER_FAILED", "RECOVER"),
-            shadow.ReplayCase("pr-1", "pr", "REVIEW_CHANGES_REQUESTED", "RECOVER"),
-            shadow.ReplayCase("ci-1", "ci", "CI_FAILED", "RECOVER"),
-            shadow.ReplayCase("review-1", "review", "EXTERNAL_OUTCOME_UNKNOWN", "PAUSE"),
-            shadow.ReplayCase("issue-2", "issue", "SAFETY_CONFLICT", "PAUSE"),
+            shadow.ReplayCase("issue-1", "issue", "WORKER_FAILED", "1" * 64),
+            shadow.ReplayCase("pr-1", "pr", "REVIEW_CHANGES_REQUESTED", "2" * 64),
+            shadow.ReplayCase("ci-1", "ci", "CI_FAILED", "3" * 64),
+            shadow.ReplayCase("review-1", "review", "EXTERNAL_OUTCOME_UNKNOWN", "4" * 64),
+            shadow.ReplayCase("issue-2", "issue", "SAFETY_CONFLICT", "5" * 64),
         ]
         result = shadow.replay_historical_failures(cases)
         self.assertTrue(result.passed)
@@ -151,7 +195,7 @@ class ShadowStewardTests(unittest.TestCase):
     def test_compact_status_contains_only_projection_facts(self):
         plan = shadow.plan_stage(self.proposal, self.mission)
         replay = shadow.replay_historical_failures(
-            [shadow.ReplayCase("ci-1", "ci", "CI_FAILED", "RECOVER")]
+            [shadow.ReplayCase("ci-1", "ci", "CI_FAILED", "6" * 64)]
         )
         status = shadow.compact_status(plan, replay)
         wire = status.to_wire()

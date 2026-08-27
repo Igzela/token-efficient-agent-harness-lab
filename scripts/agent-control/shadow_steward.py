@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import re
-from typing import Any
+from typing import Any, Protocol
 
 import mission_contract as contract
 
@@ -40,26 +40,15 @@ IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 ROUTINE_FAILURES = frozenset(
-    {
-        "WORKER_FAILED",
-        "WORKER_TIMEOUT",
-        "TEST_FAILED",
-        "CI_FAILED",
-        "REVIEW_CHANGES_REQUESTED",
-        "MAIN_DRIFT",
-        "NO_CHANGE",
-    }
+    code
+    for code, category in contract.STOP_CATEGORIES.items()
+    if category == "ROUTINE_RECOVERY"
 )
 OWNER_FAILURES = frozenset(
-    {
-        "SCOPE_EXCEEDED",
-        "AUTHORITY_REQUIRED",
-        "REQUIREMENT_CONFLICT",
-        "EXTERNAL_OUTCOME_UNKNOWN",
-        "SAFETY_CONFLICT",
-        "BUDGET_EXCEEDED",
-    }
-)
+    code
+    for code, category in contract.STOP_CATEGORIES.items()
+    if category == "PAUSED_FOR_OWNER"
+) | {"BUDGET_EXCEEDED"}
 KNOWN_STOP_CODES = ROUTINE_FAILURES | OWNER_FAILURES
 KNOWN_SOURCES = frozenset({"issue", "pr", "ci", "review"})
 LEGACY_ACTIONS = frozenset({"RECOVER", "PAUSE"})
@@ -137,6 +126,17 @@ class ShadowStewardError(ValueError):
         self.reason = reason
 
 
+class OwnerApprovalAuthenticator(Protocol):
+    """Read-only seam for an existing authenticated owner transport.
+
+    PR2 consumes this evidence but does not implement authentication.  A
+    caller that only has a comment, a self-asserted identity, or a wire-shaped
+    approval cannot satisfy this interface's verified result.
+    """
+
+    def verify(self, approval: contract.OwnerApproval, proposal_sha256: str) -> bool: ...
+
+
 def _text(value: object, field: str, *, max_chars: int = MAX_INTAKE_CHARS) -> str:
     if not isinstance(value, str) or not value or len(value) > max_chars:
         raise ShadowStewardError(f"{field}_invalid")
@@ -210,6 +210,23 @@ def _validate_mission(mission: contract.MaintenanceMission) -> contract.Maintena
     if mission.to_wire() != current.to_wire():
         raise ShadowStewardError("mission_registration_invalid")
     return current
+
+
+def _paused_projection(
+    proposal_sha256: str,
+    mission_id: str,
+    stop: StopRecommendation,
+) -> PlanProjection:
+    return PlanProjection(
+        SCHEMA_VERSION,
+        proposal_sha256,
+        mission_id,
+        "PAUSED_FOR_OWNER",
+        None,
+        (),
+        stop,
+        0,
+    )
 
 
 @dataclass(frozen=True)
@@ -441,6 +458,8 @@ def evaluate_proposal(
     proposal: MissionProposal,
     mission: contract.MaintenanceMission,
     owner_approval: contract.OwnerApproval | dict[str, Any] | None,
+    *,
+    owner_authenticator: OwnerApprovalAuthenticator | None = None,
 ) -> ProposalDecision:
     """Evaluate exact owner approval without activating or consuming authority."""
 
@@ -507,6 +526,34 @@ def evaluate_proposal(
             False,
             ("SAFETY_CONFLICT",),
         )
+    if owner_authenticator is None:
+        return ProposalDecision(
+            SCHEMA_VERSION,
+            model.proposal_sha256,
+            "WAITING_AUTHENTICATION",
+            current.mission_id,
+            False,
+            False,
+            False,
+            False,
+            ("AUTHORITY_REQUIRED",),
+        )
+    try:
+        authenticated = owner_authenticator.verify(approval, model.proposal_sha256)
+    except Exception:  # an untrusted adapter cannot turn an exception into approval
+        authenticated = False
+    if authenticated is not True:
+        return ProposalDecision(
+            SCHEMA_VERSION,
+            model.proposal_sha256,
+            "REJECTED",
+            None,
+            False,
+            False,
+            False,
+            False,
+            ("AUTHORITY_REQUIRED",),
+        )
     if model.stop_codes:
         return ProposalDecision(
             SCHEMA_VERSION,
@@ -519,9 +566,13 @@ def evaluate_proposal(
             False,
             model.stop_codes,
         )
-    if not model.requested_paths or any(
+    if (
+        not model.requested_paths
+        or any(
         not contract.path_in_scope(current.allowed_paths, path.rstrip("/"))
         for path in model.requested_paths
+        )
+        or any(change_type not in current.allowed_change_types for change_type in model.change_types)
     ):
         return ProposalDecision(
             SCHEMA_VERSION,
@@ -649,31 +700,17 @@ def plan_stage(
     model = MissionProposal.from_wire(proposal.to_wire())
     if model.stop_codes:
         stop = classify_stop(model.stop_codes[0])
-        return PlanProjection(
-            SCHEMA_VERSION,
-            model.proposal_sha256,
-            current.mission_id,
-            "PAUSED_FOR_OWNER",
-            None,
-            (),
-            stop,
-            0,
-        )
-    if not model.requested_paths or any(
+        return _paused_projection(model.proposal_sha256, current.mission_id, stop)
+    if (
+        not model.requested_paths
+        or any(
         not contract.path_in_scope(current.allowed_paths, path.rstrip("/"))
         for path in model.requested_paths
+        )
+        or any(change_type not in current.allowed_change_types for change_type in model.change_types)
     ):
         stop = classify_stop("SCOPE_EXCEEDED")
-        return PlanProjection(
-            SCHEMA_VERSION,
-            model.proposal_sha256,
-            current.mission_id,
-            "PAUSED_FOR_OWNER",
-            None,
-            (),
-            stop,
-            0,
-        )
+        return _paused_projection(model.proposal_sha256, current.mission_id, stop)
     stage_id = f"shadow-stage-{model.proposal_sha256[:16]}"
     card_id = f"{stage_id}:card"
     stage = contract.Stage(
@@ -763,29 +800,27 @@ class ReplayCase:
     case_id: str
     source: str
     failure_code: str
-    legacy_action: str
+    evidence_sha256: str
 
     def to_wire(self) -> dict[str, str]:
         return {
             "case_id": self.case_id,
             "source": self.source,
             "failure_code": self.failure_code,
-            "legacy_action": self.legacy_action,
+            "evidence_sha256": self.evidence_sha256,
         }
 
     @classmethod
     def from_wire(cls, value: object) -> ReplayCase:
-        fields = {"case_id", "source", "failure_code", "legacy_action"}
+        fields = {"case_id", "source", "failure_code", "evidence_sha256"}
         wire = _mapping(value, fields, fields, "replay_case_fields_invalid")
         case_id = _identifier(wire["case_id"], "case_id")
         source = _text(wire["source"], "source", max_chars=16)
         if source not in KNOWN_SOURCES:
             raise ShadowStewardError("replay_source_invalid")
         failure = _text(wire["failure_code"], "failure_code", max_chars=64).upper()
-        action = _text(wire["legacy_action"], "legacy_action", max_chars=16).upper()
-        if action not in LEGACY_ACTIONS:
-            raise ShadowStewardError("legacy_action_invalid")
-        return cls(case_id, source, failure, action)
+        evidence_sha = _sha(wire["evidence_sha256"], "evidence_sha256")
+        return cls(case_id, source, failure, evidence_sha)
 
 
 @dataclass(frozen=True)
@@ -793,6 +828,7 @@ class ReplayCaseResult:
     case_id: str
     source: str
     failure_code: str
+    evidence_sha256: str
     legacy_action: str
     shadow_action: str
     category: str
@@ -803,6 +839,7 @@ class ReplayCaseResult:
             "case_id": self.case_id,
             "source": self.source,
             "failure_code": self.failure_code,
+            "evidence_sha256": self.evidence_sha256,
             "legacy_action": self.legacy_action,
             "shadow_action": self.shadow_action,
             "category": self.category,
@@ -838,6 +875,16 @@ class ReplayResult:
         }
 
 
+def _legacy_controller_action(case: ReplayCase) -> str:
+    """Reconstruct the old controller's bounded disposition from typed evidence."""
+
+    # The legacy controller treats these failure classes as bounded loop
+    # outcomes.  Owner and unknown-outcome classes never become retry input.
+    # The evidence digest binds this projection to an external fixture without
+    # retaining the historical Issue, PR, CI, or review content.
+    return "PAUSE" if case.failure_code in OWNER_FAILURES else "RECOVER"
+
+
 def replay_historical_failures(cases: tuple[ReplayCase, ...] | list[ReplayCase]) -> ReplayResult:
     """Compare bounded fixture decisions from the legacy and shadow paths."""
 
@@ -857,7 +904,8 @@ def replay_historical_failures(cases: tuple[ReplayCase, ...] | list[ReplayCase])
             ordinary += 1
             if shadow_action == "PAUSE":
                 false_pause += 1
-        match = case.legacy_action == shadow_action
+        legacy_action = _legacy_controller_action(case)
+        match = legacy_action == shadow_action
         if not match:
             mismatches += 1
         results.append(
@@ -865,7 +913,8 @@ def replay_historical_failures(cases: tuple[ReplayCase, ...] | list[ReplayCase])
                 case.case_id,
                 case.source,
                 case.failure_code,
-                case.legacy_action,
+                case.evidence_sha256,
+                legacy_action,
                 shadow_action,
                 stop.category,
                 match,
