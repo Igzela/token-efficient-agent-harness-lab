@@ -175,6 +175,9 @@ class ShadowStewardTests(unittest.TestCase):
             "Push the image to the container registry.",
             "Trigger the webhook.",
             "Email the report.",
+            "Invoke the API while updating docs/ARCHITECTURE_BOOK.md.",
+            "Post the result to Notion while updating docs/ARCHITECTURE_BOOK.md.",
+            "Push the changes to origin while updating docs/ARCHITECTURE_BOOK.md.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)

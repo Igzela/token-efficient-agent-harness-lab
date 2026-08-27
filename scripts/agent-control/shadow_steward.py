@@ -179,6 +179,17 @@ _SCOPE_MARKERS = (
     "everything",
     "unbounded",
 )
+_EXTERNAL_ACTIONS = (
+    r"write|push|modify|change|update|create|close|merge|comment|send|post|submit|"
+    r"upload|notify|open|call|invoke|request|trigger|email|publish|release|deploy|"
+    r"sync|forward|transfer|share|export"
+)
+_EXTERNAL_TARGETS = (
+    r"github|slack|discord|microsoft teams|notion|external service|external api|"
+    r"third[- ]party|webhook|email|e-mail|api|s3|container registry|registry|origin|"
+    r"upstream|remote|pull request|pull-request|pr|branch|repository|repo|database|"
+    r"db|provider|target"
+)
 _HIGH_RISK_PATTERNS = (
     re.compile(
         r"\b(?:write|push|modify|change|update|create|close|merge|comment)\b"
@@ -215,7 +226,8 @@ _HIGH_RISK_PATTERNS = (
         r".{0,64}\b(?:write|push|modify|change|update|create|close|merge|comment|send|post|"
         r"submit|upload|notify|open|call|trigger|email)\b"
     ),
-    re.compile(r"\bcall\b.{0,64}\b(?:api|service|registry)\b"),
+    re.compile(rf"\b(?:{_EXTERNAL_ACTIONS})\b.{{0,64}}\b(?:{_EXTERNAL_TARGETS})\b"),
+    re.compile(rf"\b(?:{_EXTERNAL_TARGETS})\b.{{0,64}}\b(?:{_EXTERNAL_ACTIONS})\b"),
     re.compile(r"\bemail\b\s+(?:the|a|an|this|that)\b"),
     re.compile(
         r"\b(?:cannot|can't|unable to|do not know|don't know|not sure|unclear|uncertain)\b"
