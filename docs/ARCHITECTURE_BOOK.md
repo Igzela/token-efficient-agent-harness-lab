@@ -26,24 +26,29 @@ canonical proposal payload to an owner approval digest, exact repository/source
 identity, explicit scope and change categories, finite attempts/time/calls/cost
 budgets, quality checks, stop taxonomy, and a tested rollback boundary. `Stage`
 binds one verifiable integration result to the same repository identity and its
-WorkCard graph. `WorkCard` narrows paths, steps, focused and negative checks,
+complete WorkCard graph; an integrated Stage must also match observed PR/head
+identity. `WorkCard` narrows paths, steps, focused and negative checks,
 evidence, dependencies, path locks, model tier, attempts, result state, and
-rollback; it cannot widen Mission scope or budget.
+rollback; it cannot widen Mission scope or budget. The registered PR1 Mission
+is limited to its seven contract/docs/test files and a read-only grant; the
+broader legacy directory surface is only a non-authorizing compatibility read.
 
 The v1 boundary is fail-closed and provider-free: malformed, stale,
 unauthorized, out-of-scope, unbounded, sensitive, destructive, or
 `OUTCOME_UNKNOWN` inputs are rejected. Routine worker/test/CI/review failure
 and main drift remain bounded recovery categories; scope, authority,
 requirement, safety, and unknown external outcomes are owner-pause categories.
-The wire `owner_identity` is only an approval claim: current-Mission
-validation requires an existing authority owner to supply the trusted owner
-identity allowlist, and the registered campaign is checked against its fixed
-repository, branch, source reference, source digest, and PR0 base. Provider-free
-PR1 WorkCards use T0-T2; T3 or any external effect requires a later authority
-envelope and is rejected here.
+The wire `owner_identity` is only an approval claim: PR1 accepts only the
+fixed registered owner identity, while the future intake/authentication owner
+must derive that identity from authenticated repository-owner evidence. The
+registered campaign is checked against its fixed repository, branch, source
+reference, source digest, and PR0 base. Provider-free PR1 WorkCards use T0-T2;
+T3 or any external effect requires a later authority envelope and is rejected
+here.
 The contract is a read-only compatibility reader during migration. The legacy
 packet controller at `scripts/agent-control/local_loop.py` remains the sole
-lifecycle writer and sole durable queue/lease path; the projection cannot
+lifecycle writer; GitHub remains the durable queue/lease owner and
+`state_manager.py` remains its state owner. The projection cannot
 consume authority, write state, call a Provider, or create a second store,
 scheduler, evaluator, budget, output, audit, rollback, or workspace owner.
 

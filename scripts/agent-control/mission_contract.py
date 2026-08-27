@@ -100,11 +100,22 @@ STOP_CATEGORIES = {
 }
 
 LEGACY_LIFECYCLE_WRITER = "scripts/agent-control/local_loop.py"
+TRUSTED_OWNER_IDENTITIES = ("repository-owner",)
 CAMPAIGN_MISSION_ID = "AUTONOMOUS-STEWARD-MIGRATION-2026-08-27"
 CAMPAIGN_REPOSITORY = "Igzela/token-efficient-agent-harness-lab"
 CAMPAIGN_SOURCE_REF = "autonomous-steward-migration-plan-2026-08-27"
 CAMPAIGN_SOURCE_SHA256 = "4b6eacaa4ff58337a02a6a73f458ffb0e4d3cb4e71f256c1024b3dd6205e1d39"
 CAMPAIGN_BASE_SHA = "4dba4a9ccb4948775fd4ed7452ee6e419327aa46"
+CAMPAIGN_ALLOWED_PATHS = (
+    "docs/ARCHITECTURE_BOOK.md",
+    "scripts/agent-control/mission_contract.py",
+    "scripts/check_agent_handoff.py",
+    "scripts/session_context.py",
+    "tests/test_check_agent_handoff.py",
+    "tests/test_mission_contract.py",
+    "tests/test_session_context.py",
+)
+LEGACY_COMPATIBILITY_PATHS = ("docs/", "engine/", "scripts/", "tests/")
 
 
 class MissionContractError(ValueError):
@@ -794,9 +805,7 @@ class LegacyMissionProjection:
         }
 
 
-def validate_stage(stage: Stage, mission: MaintenanceMission, cards: tuple[WorkCard, ...] = ()) -> Stage:
-    """Validate Stage identity, scope, card graph, and integration binding."""
-
+def _validate_stage_identity(stage: Stage, mission: MaintenanceMission) -> Stage:
     model = Stage.from_wire(stage.to_wire())
     if model.mission_id != mission.mission_id:
         raise MissionContractError("stage_mission_binding_invalid")
@@ -804,45 +813,68 @@ def validate_stage(stage: Stage, mission: MaintenanceMission, cards: tuple[WorkC
         raise MissionContractError("stage_repository_identity_invalid")
     if model.rollback != mission.rollback:
         raise MissionContractError("stage_rollback_widens_mission")
+    return model
+
+
+def validate_stage(
+    stage: Stage,
+    mission: MaintenanceMission,
+    cards: tuple[WorkCard, ...] = (),
+    *,
+    observed_integration_pr: int | None = None,
+    observed_exact_head: str | None = None,
+) -> Stage:
+    """Validate Stage identity, observed PR/head, and its complete card graph."""
+
+    model = _validate_stage_identity(stage, mission)
+    if model.integration_pr is not None:
+        if (
+            model.integration_pr != observed_integration_pr
+            or model.exact_head != observed_exact_head
+        ):
+            raise MissionContractError("stage_exact_head_mismatch")
+    elif observed_integration_pr is not None or observed_exact_head is not None:
+        raise MissionContractError("stage_integration_binding_invalid")
+    if not isinstance(cards, tuple) or not cards:
+        raise MissionContractError("stage_workcard_graph_incomplete")
     if len(set(model.workcard_ids)) != len(model.workcard_ids):
         raise MissionContractError("stage_workcard_ids_duplicated")
-    if cards:
-        if {card.card_id for card in cards} != set(model.workcard_ids):
-            raise MissionContractError("stage_workcard_graph_invalid")
-        card_ids = set(model.workcard_ids)
-        for card in cards:
-            if any(dependency not in card_ids for dependency in card.dependencies):
-                raise MissionContractError("workcard_dependency_unknown")
-        graph = {card.card_id: set(card.dependencies) for card in cards}
-        visiting: set[str] = set()
-        visited: set[str] = set()
+    if {card.card_id for card in cards} != set(model.workcard_ids):
+        raise MissionContractError("stage_workcard_graph_invalid")
+    card_ids = set(model.workcard_ids)
+    for card in cards:
+        if any(dependency not in card_ids for dependency in card.dependencies):
+            raise MissionContractError("workcard_dependency_unknown")
+    graph = {card.card_id: set(card.dependencies) for card in cards}
+    visiting: set[str] = set()
+    visited: set[str] = set()
 
-        def visit(card_id: str) -> None:
-            if card_id in visiting:
-                raise MissionContractError("workcard_dependency_cycle")
-            if card_id in visited:
-                return
-            visiting.add(card_id)
-            for dependency in graph[card_id]:
-                visit(dependency)
-            visiting.remove(card_id)
-            visited.add(card_id)
+    def visit(card_id: str) -> None:
+        if card_id in visiting:
+            raise MissionContractError("workcard_dependency_cycle")
+        if card_id in visited:
+            return
+        visiting.add(card_id)
+        for dependency in graph[card_id]:
+            visit(dependency)
+        visiting.remove(card_id)
+        visited.add(card_id)
 
-        for card_id in graph:
-            visit(card_id)
-        for card in cards:
-            validate_workcard(card, model, mission)
+    for card_id in graph:
+        visit(card_id)
+    for card in cards:
+        validate_workcard(card, model, mission)
     return model
 
 
 def validate_workcard(card: WorkCard, stage: Stage, mission: MaintenanceMission) -> WorkCard:
     model = WorkCard.from_wire(card.to_wire())
-    validate_stage(stage, mission)
-    if model.stage_id != stage.stage_id:
+    stage_model = _validate_stage_identity(stage, mission)
+    if model.stage_id != stage_model.stage_id:
         raise MissionContractError("workcard_stage_binding_invalid")
-    if model.card_id not in stage.workcard_ids:
+    if model.card_id not in stage_model.workcard_ids:
         raise MissionContractError("workcard_not_in_stage")
-    if model.rollback != stage.rollback:
+    if model.rollback != stage_model.rollback:
         raise MissionContractError("workcard_rollback_widens_stage")
     if model.max_attempts > mission.budget.max_attempts:
         raise MissionContractError("workcard_budget_exceeded")
@@ -853,23 +885,16 @@ def validate_workcard(card: WorkCard, stage: Stage, mission: MaintenanceMission)
 
 def validate_owner_approval(
     mission: MaintenanceMission,
-    *,
-    authorized_owner_identities: tuple[str, ...],
 ) -> MaintenanceMission:
-    """Require a trusted caller to bind the wire approval to an owner identity.
+    """Require the registered owner identity for this provider-free campaign.
 
-    The wire value identifies the claimed approver; the allowlist is supplied
-    by the existing authority owner and is intentionally not part of the
-    untrusted Mission payload.
+    The wire value identifies the claimed approver. Authenticated comment
+    evidence belongs to the future intake owner; this PR1 contract never
+    treats an arbitrary caller-supplied identity as authentication.
     """
 
     model = MaintenanceMission.from_wire(mission.to_wire())
-    if (
-        not isinstance(authorized_owner_identities, tuple)
-        or not authorized_owner_identities
-        or any(not isinstance(identity, str) or not identity for identity in authorized_owner_identities)
-        or model.owner_approval.owner_identity not in authorized_owner_identities
-    ):
+    if model.owner_approval.owner_identity not in TRUSTED_OWNER_IDENTITIES:
         raise MissionContractError("owner_approval_identity_untrusted")
     return model
 
@@ -882,13 +907,11 @@ def validate_current_mission(
     branch: str,
     source_ref: str,
     source_sha256: str,
-    authorized_owner_identities: tuple[str, ...],
 ) -> MaintenanceMission:
     """Reject a valid-looking Mission bound to stale or unauthenticated identity."""
 
     model = validate_owner_approval(
         mission,
-        authorized_owner_identities=authorized_owner_identities,
     )
     if model.repository_identity.repository != repository:
         raise MissionContractError("mission_repository_stale")
@@ -914,7 +937,6 @@ def validate_registered_campaign() -> MaintenanceMission:
         branch="main",
         source_ref=CAMPAIGN_SOURCE_REF,
         source_sha256=CAMPAIGN_SOURCE_SHA256,
-        authorized_owner_identities=("repository-owner",),
     )
 
 
@@ -946,10 +968,10 @@ def campaign_mission() -> MaintenanceMission:
     )
     grants = (
         Grant(
-            "migration-contract-read-write",
-            "repository_maintenance",
-            ("docs/", "engine/", "scripts/", "tests/"),
-            ("read", "write", "test", "branch", "draft_pr", "review", "ci_repair"),
+            "migration-contract-read-only",
+            "read_only",
+            CAMPAIGN_ALLOWED_PATHS,
+            ("read",),
             32,
         ),
     )
@@ -979,8 +1001,8 @@ def campaign_mission() -> MaintenanceMission:
             "No second lifecycle writer or external-effect owner is activated.",
         ),
         identity,
-        ("docs/", "engine/", "scripts/", "tests/"),
-        ("documentation", "source", "tests", "configuration"),
+        CAMPAIGN_ALLOWED_PATHS,
+        ("documentation", "source", "tests"),
         (
             "provider calls and credentials",
             "product, target, release, or deployment effects",
@@ -996,7 +1018,7 @@ def campaign_mission() -> MaintenanceMission:
         stops,
         RollbackBoundary(
             "restore_accepted_main",
-            "accepted PR0-only main and retained PR0 receipts",
+            f"accepted-main:{CAMPAIGN_BASE_SHA}",
             ("Revert the bounded contract change.", "Re-run the accepted PR0 verification baseline."),
         ),
         "0" * 64,
@@ -1022,7 +1044,7 @@ def validate_legacy_compatibility(packet: object, capsule: object) -> LegacyMiss
 
     if not isinstance(packet, dict) or not isinstance(capsule, dict):
         raise MissionContractError("legacy_projection_input_invalid")
-    registered = validate_registered_campaign()
+    validate_registered_campaign()
     packet_fields = {
         "packet_id",
         "state",
@@ -1104,10 +1126,10 @@ def validate_legacy_compatibility(packet: object, capsule: object) -> LegacyMiss
     if capsule_paths != packet_paths or capsule_forbidden != forbidden:
         raise MissionContractError("legacy_dispatch_scope_mismatch")
     if any(
-        not path_in_scope(registered.allowed_paths, path.rstrip("/"))
+        not path_in_scope(LEGACY_COMPATIBILITY_PATHS, path.rstrip("/"))
         for path in packet_paths
     ):
-        raise MissionContractError("legacy_scope_widens_registered_mission")
+        raise MissionContractError("legacy_scope_widens_safe_surface")
     mutations = capsule.get("known_store_mutations")
     if mutations is not None:
         if not isinstance(mutations, list) or mutations:

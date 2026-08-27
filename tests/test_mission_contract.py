@@ -27,7 +27,6 @@ class MissionContractTests(unittest.TestCase):
             "branch": identity.branch,
             "source_ref": identity.source_ref,
             "source_sha256": identity.source_sha256,
-            "authorized_owner_identities": ("repository-owner",),
         }
 
     def test_campaign_is_one_immutable_round_trippable_mission(self):
@@ -142,6 +141,7 @@ class MissionContractTests(unittest.TestCase):
 
         read_only = grant.to_wire()
         read_only["grant_type"] = "read_only"
+        read_only["allowed_operations"] = ["read", "write"]
         with self.assertRaisesRegex(
             contract.MissionContractError, "read_only_grant_writes"
         ):
@@ -193,7 +193,7 @@ class MissionContractTests(unittest.TestCase):
         card = contract.WorkCard(
             "CARD-PR1-CONTRACT",
             stage.stage_id,
-            ("scripts/", "tests/"),
+            ("scripts/agent-control/mission_contract.py", "tests/test_mission_contract.py"),
             ("engine/",),
             ("Implement the immutable wire models.",),
             ("Run the focused contract test suite.",),
@@ -208,6 +208,27 @@ class MissionContractTests(unittest.TestCase):
         )
         self.assertEqual(contract.validate_stage(stage, self.mission, (card,)), stage)
         self.assertEqual(contract.validate_workcard(card, stage, self.mission), card)
+
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "stage_workcard_graph_incomplete"
+        ):
+            contract.validate_stage(stage, self.mission)
+
+        integrated = replace(stage, integration_pr=628, exact_head="a" * 40)
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "stage_exact_head_mismatch"
+        ):
+            contract.validate_stage(integrated, self.mission, (card,))
+        self.assertEqual(
+            contract.validate_stage(
+                integrated,
+                self.mission,
+                (card,),
+                observed_integration_pr=628,
+                observed_exact_head="a" * 40,
+            ),
+            integrated,
+        )
 
         stale = replace(stage, repository_identity=replace(stage.repository_identity, base_sha="b" * 40))
         with self.assertRaisesRegex(contract.MissionContractError, "stage_repository_identity_invalid"):
@@ -271,7 +292,7 @@ class MissionContractTests(unittest.TestCase):
             return contract.WorkCard(
                 card_id,
                 stage.stage_id,
-                ("scripts/",),
+                ("scripts/agent-control/mission_contract.py",),
                 (),
                 ("Run one graph step.",),
                 ("Run one focused test.",),
@@ -363,7 +384,7 @@ class LegacyCompatibilityTests(unittest.TestCase):
 
     def test_projection_rejects_registered_scope_and_output_or_store_widening(self):
         with self.assertRaisesRegex(
-            contract.MissionContractError, "legacy_scope_widens_registered_mission"
+            contract.MissionContractError, "legacy_scope_widens_safe_surface"
         ):
             contract.validate_legacy_compatibility(
                 self.packet(allowed_paths=["src/"]),
