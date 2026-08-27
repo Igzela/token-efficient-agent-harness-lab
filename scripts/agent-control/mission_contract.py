@@ -110,7 +110,7 @@ CAMPAIGN_MISSION_ID = "AUTONOMOUS-STEWARD-MIGRATION-2026-08-27"
 CAMPAIGN_REPOSITORY = "Igzela/token-efficient-agent-harness-lab"
 CAMPAIGN_SOURCE_REF = "autonomous-steward-migration-plan-2026-08-27"
 CAMPAIGN_SOURCE_SHA256 = "4b6eacaa4ff58337a02a6a73f458ffb0e4d3cb4e71f256c1024b3dd6205e1d39"
-CAMPAIGN_BASE_SHA = "4dba4a9ccb4948775fd4ed7452ee6e419327aa46"
+CAMPAIGN_BASE_SHA = "7f0e5afd22a9441073e1ac71d981dfc74060a948"
 CAMPAIGN_ALLOWED_PATHS = (
     "docs/ARCHITECTURE_BOOK.md",
     "scripts/agent-control/mission_contract.py",
