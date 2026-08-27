@@ -493,13 +493,12 @@ def evaluate_proposal(
             model.stop_codes,
         )
     try:
-        approval = (
-            contract.OwnerApproval.from_wire(owner_approval)
-            if isinstance(owner_approval, dict)
+        approval_wire = (
+            owner_approval.to_wire()
+            if isinstance(owner_approval, contract.OwnerApproval)
             else owner_approval
         )
-        if not isinstance(approval, contract.OwnerApproval):
-            raise contract.MissionContractError("owner_approval_invalid")
+        approval = contract.OwnerApproval.from_wire(approval_wire)
         if approval.owner_identity not in contract.TRUSTED_OWNER_IDENTITIES:
             raise contract.MissionContractError("owner_approval_identity_untrusted")
     except contract.MissionContractError:
@@ -688,9 +687,23 @@ class PlanProjection:
         }
 
 
+def _waiting_projection(proposal_sha256: str, mission_id: str) -> PlanProjection:
+    return PlanProjection(
+        SCHEMA_VERSION,
+        proposal_sha256,
+        mission_id,
+        "WAITING_APPROVAL",
+        None,
+        (),
+        None,
+        0,
+    )
+
+
 def plan_stage(
     proposal: MissionProposal,
     mission: contract.MaintenanceMission,
+    decision: ProposalDecision | None = None,
 ) -> PlanProjection:
     """Build and validate a deterministic Stage/WorkCard recommendation."""
 
@@ -711,6 +724,20 @@ def plan_stage(
     ):
         stop = classify_stop("SCOPE_EXCEEDED")
         return _paused_projection(model.proposal_sha256, current.mission_id, stop)
+    if decision is None:
+        return _waiting_projection(model.proposal_sha256, current.mission_id)
+    if not isinstance(decision, ProposalDecision):
+        raise ShadowStewardError("approval_projection_invalid")
+    if (
+        decision.proposal_sha256 != model.proposal_sha256
+        or decision.mission_id != current.mission_id
+        or decision.status != "SHADOW_RECOMMENDATION"
+        or not decision.owner_authenticated
+        or not decision.recommendation_active
+        or decision.authority_consumed
+        or decision.mutation_allowed
+    ):
+        raise ShadowStewardError("approval_projection_invalid")
     stage_id = f"shadow-stage-{model.proposal_sha256[:16]}"
     card_id = f"{stage_id}:card"
     stage = contract.Stage(
@@ -800,27 +827,89 @@ class ReplayCase:
     case_id: str
     source: str
     failure_code: str
+    evidence_ref: str
     evidence_sha256: str
+    legacy_action: str
 
     def to_wire(self) -> dict[str, str]:
         return {
             "case_id": self.case_id,
             "source": self.source,
             "failure_code": self.failure_code,
+            "evidence_ref": self.evidence_ref,
             "evidence_sha256": self.evidence_sha256,
+            "legacy_action": self.legacy_action,
         }
+
+    @staticmethod
+    def _evidence_digest(
+        case_id: str,
+        source: str,
+        failure_code: str,
+        evidence_ref: str,
+        legacy_action: str,
+    ) -> str:
+        return contract.json_sha256(
+            {
+                "case_id": case_id,
+                "source": source,
+                "failure_code": failure_code,
+                "evidence_ref": evidence_ref,
+                "legacy_action": legacy_action,
+            }
+        )
+
+    @classmethod
+    def fixture(
+        cls,
+        case_id: str,
+        source: str,
+        failure_code: str,
+        evidence_ref: str,
+        legacy_action: str,
+    ) -> ReplayCase:
+        action = legacy_action.strip().upper()
+        failure = failure_code.strip().upper()
+        return cls(
+            case_id,
+            source,
+            failure,
+            evidence_ref,
+            cls._evidence_digest(case_id, source, failure, evidence_ref, action),
+            action,
+        )
 
     @classmethod
     def from_wire(cls, value: object) -> ReplayCase:
-        fields = {"case_id", "source", "failure_code", "evidence_sha256"}
+        fields = {
+            "case_id",
+            "source",
+            "failure_code",
+            "evidence_ref",
+            "evidence_sha256",
+            "legacy_action",
+        }
         wire = _mapping(value, fields, fields, "replay_case_fields_invalid")
         case_id = _identifier(wire["case_id"], "case_id")
         source = _text(wire["source"], "source", max_chars=16)
         if source not in KNOWN_SOURCES:
             raise ShadowStewardError("replay_source_invalid")
         failure = _text(wire["failure_code"], "failure_code", max_chars=64).upper()
+        evidence_ref = _text(wire["evidence_ref"], "evidence_ref", max_chars=128)
+        if re.fullmatch(
+            r"github:(?:issue|pr|ci|review):[1-9][0-9]{0,11}:[a-z0-9-]+",
+            evidence_ref,
+        ) is None:
+            raise ShadowStewardError("evidence_ref_invalid")
         evidence_sha = _sha(wire["evidence_sha256"], "evidence_sha256")
-        return cls(case_id, source, failure, evidence_sha)
+        action = _text(wire["legacy_action"], "legacy_action", max_chars=16).upper()
+        if action not in LEGACY_ACTIONS:
+            raise ShadowStewardError("legacy_action_invalid")
+        if evidence_sha != cls._evidence_digest(
+            case_id, source, failure, evidence_ref, action
+        ):
+            raise ShadowStewardError("replay_evidence_digest_mismatch")
+        return cls(case_id, source, failure, evidence_ref, evidence_sha, action)
 
 
 @dataclass(frozen=True)
@@ -828,6 +917,7 @@ class ReplayCaseResult:
     case_id: str
     source: str
     failure_code: str
+    evidence_ref: str
     evidence_sha256: str
     legacy_action: str
     shadow_action: str
@@ -839,6 +929,7 @@ class ReplayCaseResult:
             "case_id": self.case_id,
             "source": self.source,
             "failure_code": self.failure_code,
+            "evidence_ref": self.evidence_ref,
             "evidence_sha256": self.evidence_sha256,
             "legacy_action": self.legacy_action,
             "shadow_action": self.shadow_action,
@@ -876,18 +967,60 @@ class ReplayResult:
 
 
 def _legacy_controller_action(case: ReplayCase) -> str:
-    """Reconstruct the old controller's bounded disposition from typed evidence."""
+    """Read the observed legacy disposition from hash-bound fixture evidence."""
 
-    # The legacy controller treats these failure classes as bounded loop
-    # outcomes.  Owner and unknown-outcome classes never become retry input.
-    # The evidence digest binds this projection to an external fixture without
-    # retaining the historical Issue, PR, CI, or review content.
-    return "PAUSE" if case.failure_code in OWNER_FAILURES else "RECOVER"
+    return case.legacy_action
 
 
-def replay_historical_failures(cases: tuple[ReplayCase, ...] | list[ReplayCase]) -> ReplayResult:
+def historical_failure_fixtures() -> tuple[ReplayCase, ...]:
+    """Return sanitized, hash-bound historical Issue/PR/CI/review fixtures."""
+
+    return (
+        ReplayCase.fixture(
+            "issue-77-worker",
+            "issue",
+            "WORKER_FAILED",
+            "github:issue:77:worker-failed",
+            "RECOVER",
+        ),
+        ReplayCase.fixture(
+            "pr-630-review",
+            "pr",
+            "REVIEW_CHANGES_REQUESTED",
+            "github:pr:630:review-changes-requested",
+            "RECOVER",
+        ),
+        ReplayCase.fixture(
+            "ci-33108617013-macos",
+            "ci",
+            "CI_FAILED",
+            "github:ci:33108617013:macos-startup-race",
+            "RECOVER",
+        ),
+        ReplayCase.fixture(
+            "review-630-unknown",
+            "review",
+            "EXTERNAL_OUTCOME_UNKNOWN",
+            "github:review:630:unknown-outcome",
+            "PAUSE",
+        ),
+        ReplayCase.fixture(
+            "issue-77-safety",
+            "issue",
+            "SAFETY_CONFLICT",
+            "github:issue:77:safety-conflict",
+            "PAUSE",
+        ),
+    )
+
+
+def replay_historical_failures(
+    cases: tuple[ReplayCase, ...] | list[ReplayCase] | None = None,
+) -> ReplayResult:
     """Compare bounded fixture decisions from the legacy and shadow paths."""
 
+    if cases is None:
+        cases = historical_failure_fixtures()
     if not isinstance(cases, (list, tuple)) or not cases or len(cases) > MAX_FAILURES:
         raise ShadowStewardError("replay_cases_invalid")
     normalized = tuple(ReplayCase.from_wire(case.to_wire()) for case in cases)
@@ -913,6 +1046,7 @@ def replay_historical_failures(cases: tuple[ReplayCase, ...] | list[ReplayCase])
                 case.case_id,
                 case.source,
                 case.failure_code,
+                case.evidence_ref,
                 case.evidence_sha256,
                 legacy_action,
                 shadow_action,

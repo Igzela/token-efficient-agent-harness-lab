@@ -41,6 +41,15 @@ class ShadowStewardTests(unittest.TestCase):
         )
         self.authenticator = self.Authenticator()
 
+    def approved_plan(self):
+        decision = shadow.evaluate_proposal(
+            self.proposal,
+            self.mission,
+            self.approval,
+            owner_authenticator=self.authenticator,
+        )
+        return shadow.plan_stage(self.proposal, self.mission, decision)
+
     def test_intake_is_bounded_digested_and_does_not_retain_raw_request(self):
         intake = shadow.compile_intake(self.request)
         self.assertEqual(intake.requested_paths, (
@@ -88,6 +97,15 @@ class ShadowStewardTests(unittest.TestCase):
             self.proposal, self.mission, self.approval
         )
         self.assertEqual(unauthenticated.status, "WAITING_AUTHENTICATION")
+
+        malformed = replace(self.approval, approved_at="not-a-timestamp")
+        rejected = shadow.evaluate_proposal(
+            self.proposal,
+            self.mission,
+            malformed,
+            owner_authenticator=self.authenticator,
+        )
+        self.assertEqual(rejected.status, "REJECTED")
 
     def test_unauthorized_comment_shaped_input_cannot_activate(self):
         forged_comment = {
@@ -142,7 +160,7 @@ class ShadowStewardTests(unittest.TestCase):
         )
 
     def test_planner_reuses_and_validates_mission_stage_workcard_owners(self):
-        plan = shadow.plan_stage(self.proposal, self.mission)
+        plan = self.approved_plan()
         self.assertEqual(plan.disposition, "PLANNED")
         self.assertIsNotNone(plan.stage)
         self.assertEqual(len(plan.workcards), 1)
@@ -155,7 +173,7 @@ class ShadowStewardTests(unittest.TestCase):
             shadow.plan_stage(self.proposal, stale)
 
     def test_routine_replan_does_not_pause_but_unknown_outcome_does(self):
-        plan = shadow.plan_stage(self.proposal, self.mission)
+        plan = self.approved_plan()
         recovered = shadow.replan(plan, "CI_FAILED")
         self.assertEqual(recovered.disposition, "RECOVERY_RECOMMENDED")
         self.assertFalse(recovered.stop.pause_owner)
@@ -177,13 +195,7 @@ class ShadowStewardTests(unittest.TestCase):
         self.assertFalse(budget.stop.retry_allowed)
 
     def test_historical_issue_pr_ci_review_replay_has_no_false_pause(self):
-        cases = [
-            shadow.ReplayCase("issue-1", "issue", "WORKER_FAILED", "1" * 64),
-            shadow.ReplayCase("pr-1", "pr", "REVIEW_CHANGES_REQUESTED", "2" * 64),
-            shadow.ReplayCase("ci-1", "ci", "CI_FAILED", "3" * 64),
-            shadow.ReplayCase("review-1", "review", "EXTERNAL_OUTCOME_UNKNOWN", "4" * 64),
-            shadow.ReplayCase("issue-2", "issue", "SAFETY_CONFLICT", "5" * 64),
-        ]
+        cases = shadow.historical_failure_fixtures()
         result = shadow.replay_historical_failures(cases)
         self.assertTrue(result.passed)
         self.assertEqual(result.case_count, 5)
@@ -193,9 +205,9 @@ class ShadowStewardTests(unittest.TestCase):
         self.assertEqual(len(result.comparison_sha256), 64)
 
     def test_compact_status_contains_only_projection_facts(self):
-        plan = shadow.plan_stage(self.proposal, self.mission)
+        plan = self.approved_plan()
         replay = shadow.replay_historical_failures(
-            [shadow.ReplayCase("ci-1", "ci", "CI_FAILED", "6" * 64)]
+            [shadow.historical_failure_fixtures()[2]]
         )
         status = shadow.compact_status(plan, replay)
         wire = status.to_wire()
@@ -205,6 +217,19 @@ class ShadowStewardTests(unittest.TestCase):
         self.assertEqual(wire["replay_case_count"], 1)
         self.assertNotIn("requested_paths", wire)
         self.assertNotIn("Implement", str(wire))
+
+    def test_planner_waits_for_approval_instead_of_bypassing_it(self):
+        waiting = shadow.plan_stage(self.proposal, self.mission)
+        self.assertEqual(waiting.disposition, "WAITING_APPROVAL")
+        self.assertIsNone(waiting.stage)
+
+    def test_replay_evidence_digest_cannot_be_forged(self):
+        case = shadow.historical_failure_fixtures()[0].to_wire()
+        case["legacy_action"] = "PAUSE"
+        with self.assertRaisesRegex(
+            shadow.ShadowStewardError, "replay_evidence_digest_mismatch"
+        ):
+            shadow.ReplayCase.from_wire(case)
 
     def test_untrusted_bounds_and_unknown_failure_fail_closed(self):
         with self.assertRaisesRegex(shadow.ShadowStewardError, "raw_request_invalid"):
