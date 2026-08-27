@@ -2,7 +2,7 @@
 
 Last updated: 2026-08-28.
 
-This document owns only the blocked successor order for the owner-approved Autonomous Steward migration campaign. The current execution window is `PE7-AUTONOMOUS-STEWARD-PR1` in `docs/NEXT_DECISION.md`. All packets below are routing-only and `BLOCKED_PREREQUISITE`; none authorizes implementation, GitHub mutation, Provider spend, target writes, release, deployment, destructive effects, or automatic merge.
+This document owns only the blocked successor order for the owner-approved Autonomous Steward migration campaign. The current execution window is `PE7-AUTONOMOUS-STEWARD-PR2` in `docs/NEXT_DECISION.md`. All packets below are routing-only and `BLOCKED_PREREQUISITE`; none authorizes implementation, GitHub mutation, Provider spend, target writes, release, deployment, destructive effects, or automatic merge.
 
 The former Harness-Evolution route is parked, not erased. Its accepted receipts remain in `docs/CURRENT_STATUS.md`, and its exact historical planning remains recoverable from Git. Unaccepted MX1 work is preserved only through the recovery references recorded in `docs/CURRENT_STATUS.md`. It may enter a later Mission only through an explicit symbol-level audit and never by wholesale merge.
 
@@ -15,7 +15,7 @@ The former Harness-Evolution route is parked, not erased. Its accepted receipts 
 
 ## Known Planned-Seam Gaps
 
-- `MaintenanceMission`, `Stage`, and `WorkCard` have no accepted schema or sole persistence owner yet.
+- The Shadow Steward has no accepted planner, policy, replay, or status projection owner yet.
 - No continuously running, crash-recoverable Steward service exists.
 - Every successor must preserve the accepted PR0 exact-head/check contract and its guarded merge path; the acceptance receipt belongs to `docs/CURRENT_STATUS.md`.
 - The legacy controller, workflows, packet route, and documentation remain authoritative until their individually verified cutover or removal.
@@ -28,22 +28,6 @@ Before promotion, the planning owner must refresh accepted `main`, live GitHub s
 ## Stop and Resume Protocol
 
 Ordinary implementation, test, review, CI, main-drift, worker, or retry failures stay inside the accepted Mission budget and must be repaired or replanned without escalating to the owner. Enter `DECISION_REQUIRED` only for a material Mission-goal change, authority or budget expansion, unapproved production/destructive action, incompatible product direction, unresolved safety contradiction, or `OUTCOME_UNKNOWN` external mutation. On restart, reconcile GitHub and durable journal facts before replaying any mutation.
-
-### Packet PE7-AUTONOMOUS-STEWARD-PR2
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE7-AUTONOMOUS-STEWARD-PR1
-
-**Class:** `IMPLEMENT`
-
-**Outcome:** Implement a read-only Shadow Steward that compiles natural-language proposals, plans/replans Stages and WorkCards, classifies stops, and emits compact status without mutating GitHub or repository state.
-
-**Allowed delta:** Shadow-only planner, policy, state projection, replay fixtures, and focused tests; no GitHub mutation, worker dispatch, merge, Provider call, or service installation.
-
-**Exit:** Historical failure replay proves ordinary failures do not pause the owner, all authority expansion and unknown-outcome cases do pause, and non-owner or digest-mismatched input cannot activate a Mission.
-
-**Stop:** Shadow output is treated as authority, raw prompts/private content are retained, or replay comparison cannot distinguish recommendation from mutation.
 
 ### Packet PE7-AUTONOMOUS-STEWARD-PR3
 
@@ -127,8 +111,8 @@ Ordinary implementation, test, review, CI, main-drift, worker, or retry failures
 
 ## Portfolio Inventory Manifest
 
-The six successor packets above replace the 54-packet routing horizon as repository-maintenance migration work. Accepted runtime capability and historical evidence remain owned by `docs/CURRENT_STATUS.md` and Git; this compression grants no product, research, Provider, release, deployment, or adoption authority.
+The five successor packets above replace the 54-packet routing horizon as repository-maintenance migration work. Accepted runtime capability and historical evidence remain owned by `docs/CURRENT_STATUS.md` and Git; this compression grants no product, research, Provider, release, deployment, or adoption authority.
 
 <!-- future-route-inventory:v1
-{"schema_version":"future_route_inventory.v1","packet_count":6,"ordered_packet_ids":["PE7-AUTONOMOUS-STEWARD-PR2","PE7-AUTONOMOUS-STEWARD-PR3","PE7-AUTONOMOUS-STEWARD-PR4","PE7-AUTONOMOUS-STEWARD-PR5","PE7-AUTONOMOUS-STEWARD-PR6","PE7-AUTONOMOUS-STEWARD-PR7"],"ordered_packet_ids_sha256":"3972843d6fa7d6267971c95d406c4551f94340c482b00535e252e38c3b145c8c","dependency_graph_sha256":"230ef3099c2f3e86fa18ca501848cb7e924c7356cd0d728ddd763a168ce0514d","profiles_sha256":"0fb181975cd8403f20afd6fa1f3ce98fa65ff2759a5c9c8baed023d03c548957","profiles":[["PE7-AUTONOMOUS-STEWARD-PR2","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR3","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR4","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR5","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR6","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR7","CLOSEOUT","T2","none","evidence_review"]]}
+{"schema_version":"future_route_inventory.v1","packet_count":5,"ordered_packet_ids":["PE7-AUTONOMOUS-STEWARD-PR3","PE7-AUTONOMOUS-STEWARD-PR4","PE7-AUTONOMOUS-STEWARD-PR5","PE7-AUTONOMOUS-STEWARD-PR6","PE7-AUTONOMOUS-STEWARD-PR7"],"ordered_packet_ids_sha256":"69290a6b8c9abec656cbb7b4756fe95fb4d18b80f5bd2a8ececf51b9d1a5611a","dependency_graph_sha256":"ef9b249a589a568f4c9d04b8d8004a55f9ec119f56032bbba7f8934c0d9c94ff","profiles_sha256":"822a42762346ba753e529b373cca0f8c8ffdbab1f007bf256200c563a4ef7780","profiles":[["PE7-AUTONOMOUS-STEWARD-PR3","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR4","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR5","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR6","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR7","CLOSEOUT","T2","none","evidence_review"]]}
 -->
