@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-27.
+Last updated: 2026-08-28.
 
 This document owns accepted repository truth and confirmed capability gaps only. It separates two states that must not be conflated:
 
@@ -12,12 +12,12 @@ Open PR heads, Draft/Ready state, CI, reviews, mergeability, and the next permit
 ## Verified Repository State
 
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
-- Latest accepted baseline: PR #621 exact head `199c12756e58ffaa6041a22cd01f23ce7a1eda15`, squash-merged as `628577c5e8cb404c4dcc2e689925414bbfda70ab`; it implements the provider-free C1 shared Harness run seam, exact three-axis descriptor manifest, arm-zero and one admitted second Harness adapters, baseline/memory-only/skill-only Strategy adapters, two frozen ModelPlans, deterministic matrix planning, and `INCOMPARABLE` projections on top of the accepted C1 contract freeze, with the exact-head review-receipt gate hardened by PR #622 (merge `bd4d5d3279664906bfa6215f11f6a42b3a1654fc`). No Provider call, credential-value read, target write, authority consumption, enforcement escape, or live effect was authorized by these provider-free merges.
+- Latest accepted baseline: PR #626 exact head `6fd4c05479f3a1512eafb35d374245539df950f9`, squash-merged as `3f5a3c305d317e5fa160369ac3965adae4634721`; it restores the provider-free autonomous-steward baseline, canonical verification, guarded repository-control contract, and reconciled PR/Issue state. The preceding C1 implementation remains accepted through PR #621 merge `628577c5e8cb404c4dcc2e689925414bbfda70ab`, with the exact-head review-receipt gate hardened by PR #622 (merge `bd4d5d3279664906bfa6215f11f6a42b3a1654fc`). No Provider call, credential-value read, target write, authority consumption, enforcement escape, or live effect was authorized by these provider-free merges.
 - A new `main`, PR head, CI result, review receipt, or canonical-document change invalidates older context capsules and branch-local status prose.
 
 ## Approved Autonomous Steward Migration Campaign
 
-The repository owner approved the Autonomous Steward migration direction on 2026-08-27 from proposal digest `4b6eacaa4ff58337a02a6a73f458ffb0e4d3cb4e71f256c1024b3dd6205e1d39`. The campaign changes repository-maintenance governance from user-managed packets to one owner-approved Mission, Steward-managed Stages, and bounded WorkCards, while retaining exact-head CI, independent review, rollback, least privilege, and fail-closed external-effect handling. The durable Mission/Stage/WorkCard contract is not accepted capability yet; it is scheduled behind the baseline-recovery window in `docs/NEXT_DECISION.md` and the compact successor order in `docs/FUTURE_ROUTE.md`.
+The repository owner approved the Autonomous Steward migration direction on 2026-08-27 from proposal digest `4b6eacaa4ff58337a02a6a73f458ffb0e4d3cb4e71f256c1024b3dd6205e1d39`. The campaign changes repository-maintenance governance from user-managed packets to one owner-approved Mission, Steward-managed Stages, and bounded WorkCards, while retaining exact-head CI, independent review, rollback, least privilege, and fail-closed external-effect handling. PR0 baseline recovery is accepted on `main`; the durable Mission/Stage/WorkCard contract is not accepted capability yet and is the current window in `docs/NEXT_DECISION.md`.
 
 The existing controller remains the only lifecycle writer until an explicit canary cutover proves a single replacement writer. No Provider call, production action, deployment, release, target write, destructive effect, or automatic merge is authorized by this campaign decision.
 
@@ -108,8 +108,11 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-HE-CL0-CLOSEOUT-1` | `COMPLETE` | PR #614 exact head `c464235313255b224c481214be16f7a24831e379`; merge `075f995b574fb8a28f08986291751152bf158dd5`; exact-head `PASS`; canonical workflow `32812721310` |
 | `PE7-HE-MX1-CONTRACT-1` | `COMPLETE` | PR #617 exact head `23675dbff59d030eeae2e7e6cbfebca81f50e66b`; merge `7caed005a9914e8669a64f6174eab286e160e6d7`; exact-head `PASS`; canonical workflow `32828369869` |
 | `PE7-HE-MX1-CORE-1` | `COMPLETE` | PR #621 exact head `199c12756e58ffaa6041a22cd01f23ce7a1eda15`; merge `628577c5e8cb404c4dcc2e689925414bbfda70ab`; exact-head `PASS`; canonical workflow `32848799358` |
+| `PE7-AUTONOMOUS-STEWARD-PR0` | `COMPLETE` | PR #626 exact head `6fd4c05479f3a1512eafb35d374245539df950f9`; merge `3f5a3c305d317e5fa160369ac3965adae4634721`; exact-head `PASS`; canonical workflow `33090558938`; refreshed-main workflow `33091453322` |
 
 Durable closeout consequences (receipts above own identity): AC7 cleanup/closeout proved a merged-tree fixed-string zero-match inventory with separate approve/output authority paths intact; its rollback anchor is revert-PR #562 to pre-cleanup tree `eb692703ab3b3d030478b539fff4496014e45c7a`. Lifecycle-cost receipt fields remain defined by the Architecture Book evidence contract; normalized CI-compute aggregates were never instrumented and stay explicitly unavailable rather than estimated.
+
+PR0 repository-control closeout: ruleset `21661714` is active on the default branch with required contexts `python-tests`, `rust-tests`, `pg-integration-tests`, `typescript-tests`, `native-runtime`, `docker-build`, `rust-typescript-cutover`, `exact-head`, and `context-capsule`; it has no bypass actors. PR #574 and Issue #623 are closed after reconciliation. Issue #383 is closed after its compact terminal snapshot (comment `5441706762`, 2026-08-27) and is no longer an internal event log. The MX1-PILOT remains explicitly parked and unaccepted; its two archive refs remain the recovery boundary recorded above. The PR0 exact-head review receipt, canonical PR workflow, post-merge `main` workflow, and monitor readback were observed before this receipt was recorded. No Provider call, product effect, target write, release, deployment, or automatic merge was authorized.
 
 ## Context working-set ingress inventory (`PE7-CWS-INGRESS-INVENTORY-1`)
 
@@ -415,6 +418,7 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Harness-Evolution C0–C4 capability spiral | `PARKED_MIGRATION_INPUT` | EC3, the executed-and-closed C0 pilot/closeout, the C1 three-axis contract, and the provider-free C1 CORE implementation remain accepted on `main`; the former `PE7-HE-MX1-PILOT-1` effect is parked and cannot request or execute a matrix effect unless a later accepted Mission imports it with an exact finite authority |
 | Experimental C5–C8 research spiral | `PARKED_MIGRATION_INPUT` | The 28 formal default-off packets are retained only as migration input; their fixed-Meta, advanced gate/R4, Harness-plus-weight R5, and bounded outer-policy R6 contracts do not create a current execution window or effect authority |
 | Dashboard #225 / successor | `DEFERRED` | 3 formal packets: disposition, presentation-only refresh, exact-head closeout; it projects accepted core and optional-research dispositions without owning backend behavior |
+| Autonomous Steward Mission/Stage/WorkCard contract | `NOT_ACCEPTED` | PR1 is the current provider-free contract window; no Steward writer, service, or Mission persistence owner is accepted yet |
 
 ## C1 three-axis experiment contract (provider-free contract freeze)
 
