@@ -87,6 +87,11 @@ _SENSITIVE_PATH_NAMES = frozenset(
         ".git",
         ".codex",
         ".ssh",
+        "ssh",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
         "secrets",
         "credentials",
         "private",
@@ -263,17 +268,23 @@ def _safe_paths(text: str) -> tuple[str, ...]:
 def _is_sensitive_path(path: str) -> bool:
     parts = set(path.casefold().split("/"))
     return bool(parts & _SENSITIVE_PATH_NAMES) or any(
-        part.endswith((".pem", ".key")) or "secret" in part or "credential" in part
+        part.startswith(".env")
+        or part.endswith((".pem", ".key"))
+        or "secret" in part
+        or "credential" in part
         for part in parts
     )
 
 
 def _validated_non_private_paths(value: object, field: str) -> tuple[str, ...]:
     paths = _optional_items(value, field)
-    if any(SAFE_PATH.fullmatch(path) is None for path in paths):
-        raise ShadowStewardError(f"{field}_invalid")
-    if any(_is_sensitive_path(path) for path in paths):
-        raise ShadowStewardError("private_path_forbidden")
+    for path in paths:
+        if SAFE_PATH.fullmatch(path) is None or any(
+            part in {".", ".."} for part in path.split("/")
+        ):
+            raise ShadowStewardError("path_syntax_forbidden")
+        if _is_sensitive_path(path):
+            raise ShadowStewardError("private_path_forbidden")
     return paths
 
 
@@ -298,15 +309,17 @@ def _paused_projection(
     mission_id: str,
     stop: StopRecommendation,
 ) -> PlanProjection:
-    return PlanProjection(
-        SCHEMA_VERSION,
-        proposal_sha256,
-        mission_id,
-        "PAUSED_FOR_OWNER",
-        None,
-        (),
-        stop,
-        0,
+    return _seal_projection(
+        PlanProjection(
+            SCHEMA_VERSION,
+            proposal_sha256,
+            mission_id,
+            "PAUSED_FOR_OWNER",
+            None,
+            (),
+            stop,
+            0,
+        )
     )
 
 
@@ -365,9 +378,20 @@ def compile_intake(raw_request: str) -> Intake:
 
     raw = _text(raw_request, "raw_request")
     lowered = raw.casefold()
-    paths = _safe_paths(raw)
-    sensitive_paths = any(_is_sensitive_path(path) for path in paths)
-    paths = tuple(path for path in paths if not _is_sensitive_path(path))
+    candidate_paths = _safe_paths(raw)
+    forbidden_paths = any(
+        SAFE_PATH.fullmatch(path) is None
+        or any(part in {".", ".."} for part in path.split("/"))
+        or _is_sensitive_path(path)
+        for path in candidate_paths
+    )
+    paths = tuple(
+        path
+        for path in candidate_paths
+        if SAFE_PATH.fullmatch(path) is not None
+        and not any(part in {".", ".."} for part in path.split("/"))
+        and not _is_sensitive_path(path)
+    )
     change_types: list[str] = []
     if any(word in lowered for word in ("doc", "documentation", "readme")):
         change_types.append("documentation")
@@ -404,7 +428,7 @@ def compile_intake(raw_request: str) -> Intake:
     if any(marker in lowered for marker in _PATH_MARKERS):
         risk_flags.append("private_content")
         stop_codes.append("SAFETY_CONFLICT")
-    if sensitive_paths:
+    if forbidden_paths:
         risk_flags.append("private_content")
         stop_codes.append("SAFETY_CONFLICT")
     if any(marker in lowered for marker in _SCOPE_MARKERS) or not paths:
@@ -779,16 +803,43 @@ class PlanProjection:
         }
 
 
+def _seal_projection(plan: PlanProjection) -> PlanProjection:
+    return replace(
+        plan,
+        _provenance=(_PROJECTION_TOKEN, contract.json_sha256(plan.to_wire())),
+    )
+
+
+def _is_sealed_projection(plan: object) -> bool:
+    if not isinstance(plan, PlanProjection) or not plan.projection_only:
+        return False
+    provenance = plan._provenance
+    if (
+        not isinstance(provenance, tuple)
+        or len(provenance) != 2
+        or provenance[0] is not _PROJECTION_TOKEN
+        or not isinstance(provenance[1], str)
+        or SHA256.fullmatch(provenance[1]) is None
+    ):
+        return False
+    try:
+        return provenance[1] == contract.json_sha256(plan.to_wire())
+    except Exception:
+        return False
+
+
 def _waiting_projection(proposal_sha256: str, mission_id: str) -> PlanProjection:
-    return PlanProjection(
-        SCHEMA_VERSION,
-        proposal_sha256,
-        mission_id,
-        "WAITING_APPROVAL",
-        None,
-        (),
-        None,
-        0,
+    return _seal_projection(
+        PlanProjection(
+            SCHEMA_VERSION,
+            proposal_sha256,
+            mission_id,
+            "WAITING_APPROVAL",
+            None,
+            (),
+            None,
+            0,
+        )
     )
 
 
@@ -863,59 +914,71 @@ def plan_stage(
         contract.validate_stage(stage, current, (card,))
     except contract.MissionContractError as exc:
         raise ShadowStewardError("stage_projection_invalid") from exc
-    return PlanProjection(
-        SCHEMA_VERSION,
-        model.proposal_sha256,
-        current.mission_id,
-        "PLANNED",
-        stage,
-        (card,),
-        None,
-        0,
-        True,
-        _PROJECTION_TOKEN,
+    return _seal_projection(
+        PlanProjection(
+            SCHEMA_VERSION,
+            model.proposal_sha256,
+            current.mission_id,
+            "PLANNED",
+            stage,
+            (card,),
+            None,
+            0,
+        )
     )
 
 
 def replan(plan: PlanProjection, failure_code: str, *, attempt_number: int = 1) -> PlanProjection:
     """Return a recovery or owner-pause projection without changing state."""
 
-    if (
-        not isinstance(plan, PlanProjection)
-        or not plan.projection_only
-        or plan._provenance is not _PROJECTION_TOKEN
-    ):
+    if not _is_sealed_projection(plan):
         raise ShadowStewardError("plan_projection_invalid")
     if not isinstance(attempt_number, int) or attempt_number < 1:
         raise ShadowStewardError("attempt_number_invalid")
-    stop = classify_stop(failure_code)
     try:
-        max_retries = contract.validate_registered_campaign().budget.max_retries
-    except contract.MissionContractError as exc:
-        raise ShadowStewardError("registered_mission_invalid") from exc
+        current = _validate_mission(contract.campaign_mission())
+        _sha(plan.proposal_sha256, "proposal_sha256")
+        if (
+            plan.mission_id != current.mission_id
+            or plan.disposition not in {"PLANNED", "RECOVERY_RECOMMENDED"}
+            or plan.stage is None
+            or len(plan.workcards) != 1
+        ):
+            raise ShadowStewardError("plan_projection_invalid")
+        contract.validate_stage(plan.stage, current, plan.workcards)
+    except ShadowStewardError:
+        raise
+    except (AttributeError, TypeError, contract.MissionContractError) as exc:
+        raise ShadowStewardError("plan_projection_invalid") from exc
+    stop = classify_stop(failure_code)
+    max_retries = current.budget.max_retries
     if stop.pause_owner or attempt_number > max_retries:
         if attempt_number > max_retries and not stop.pause_owner:
             stop = classify_stop("BUDGET_EXCEEDED")
-        return replace(
-            plan,
-            disposition="PAUSED_FOR_OWNER",
-            stage=None,
-            workcards=(),
-            stop=stop,
-            replan_count=plan.replan_count + 1,
+        return _seal_projection(
+            replace(
+                plan,
+                disposition="PAUSED_FOR_OWNER",
+                stage=None,
+                workcards=(),
+                stop=stop,
+                replan_count=plan.replan_count + 1,
+            )
         )
     cards = tuple(replace(card, result_state="REPLAN_REQUIRED") for card in plan.workcards)
     if plan.stage is not None:
         try:
-            contract.validate_stage(plan.stage, contract.campaign_mission(), cards)
+            contract.validate_stage(plan.stage, current, cards)
         except contract.MissionContractError as exc:
             raise ShadowStewardError("replan_projection_invalid") from exc
-    return replace(
-        plan,
-        disposition="RECOVERY_RECOMMENDED",
-        workcards=cards,
-        stop=stop,
-        replan_count=plan.replan_count + 1,
+    return _seal_projection(
+        replace(
+            plan,
+            disposition="RECOVERY_RECOMMENDED",
+            workcards=cards,
+            stop=stop,
+            replan_count=plan.replan_count + 1,
+        )
     )
 
 
@@ -1197,7 +1260,7 @@ class CompactStatus:
 def compact_status(plan: PlanProjection, replay: ReplayResult | None = None) -> CompactStatus:
     """Project only counts, identifiers, digests, and typed dispositions."""
 
-    if not isinstance(plan, PlanProjection) or not plan.projection_only:
+    if not _is_sealed_projection(plan):
         raise ShadowStewardError("plan_projection_invalid")
     completed = sum(card.result_state == "COMPLETE" for card in plan.workcards)
     return CompactStatus(
@@ -1223,7 +1286,6 @@ def shadow_only(plan: PlanProjection) -> bool:
 
     return (
         isinstance(plan, PlanProjection)
-        and plan.projection_only
-        and plan._provenance is _PROJECTION_TOKEN
+        and _is_sealed_projection(plan)
         and not plan.to_wire().get("mutation_allowed", False)
     )

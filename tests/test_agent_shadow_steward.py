@@ -191,6 +191,10 @@ class ShadowStewardTests(unittest.TestCase):
         with self.assertRaisesRegex(shadow.ShadowStewardError, "plan_projection_invalid"):
             shadow.replan(forged_plan, "CI_FAILED")
 
+        forged_mission = replace(plan, mission_id="forged-mission")
+        with self.assertRaisesRegex(shadow.ShadowStewardError, "plan_projection_invalid"):
+            shadow.replan(forged_mission, "CI_FAILED")
+
         stale = replace(self.mission, state="RUNNING")
         with self.assertRaisesRegex(shadow.ShadowStewardError, "mission_registration_invalid"):
             shadow.plan_stage(self.proposal, stale)
@@ -288,18 +292,33 @@ class ShadowStewardTests(unittest.TestCase):
         self.assertIn("SAFETY_CONFLICT", private.stop_codes)
 
     def test_wire_ingress_rejects_private_paths_even_with_a_recomputed_digest(self):
-        intake_wire = shadow.compile_intake(self.request).to_wire()
-        intake_wire["requested_paths"] = ["docs/.env"]
-        with self.assertRaisesRegex(shadow.ShadowStewardError, "private_path_forbidden"):
-            shadow.Intake.from_wire(intake_wire)
+        for path, reason in (
+            ("docs/.env.local", "private_path_forbidden"),
+            ("docs/id_rsa", "private_path_forbidden"),
+            ("docs/../engine/foo.py", "path_syntax_forbidden"),
+            ("docs/../../etc/passwd", "path_syntax_forbidden"),
+        ):
+            with self.subTest(path=path):
+                intake = shadow.compile_intake(f"Update {path}.")
+                self.assertEqual(intake.requested_paths, ())
+                self.assertIn("SAFETY_CONFLICT", intake.stop_codes)
 
-        proposal_wire = self.proposal.to_wire()
-        proposal_wire["requested_paths"] = ["docs/.env"]
-        proposal_wire["proposal_sha256"] = contract.json_sha256(
-            {key: value for key, value in proposal_wire.items() if key != "proposal_sha256"}
-        )
-        with self.assertRaisesRegex(shadow.ShadowStewardError, "private_path_forbidden"):
-            shadow.MissionProposal.from_wire(proposal_wire)
+                intake_wire = shadow.compile_intake(self.request).to_wire()
+                intake_wire["requested_paths"] = [path]
+                with self.assertRaisesRegex(shadow.ShadowStewardError, reason):
+                    shadow.Intake.from_wire(intake_wire)
+
+                proposal_wire = self.proposal.to_wire()
+                proposal_wire["requested_paths"] = [path]
+                proposal_wire["proposal_sha256"] = contract.json_sha256(
+                    {
+                        key: value
+                        for key, value in proposal_wire.items()
+                        if key != "proposal_sha256"
+                    }
+                )
+                with self.assertRaisesRegex(shadow.ShadowStewardError, reason):
+                    shadow.MissionProposal.from_wire(proposal_wire)
 
     def test_shadow_module_has_no_effect_transport_or_persistence_imports(self):
         source = (CONTROL / "shadow_steward.py").read_text(encoding="utf-8")
