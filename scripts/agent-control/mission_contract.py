@@ -582,6 +582,8 @@ class MaintenanceMission:
         rollback = RollbackBoundary.from_wire(wire["rollback"])
         proposal_sha = _sha(wire["proposal_sha256"], "mission_proposal_sha256")
         approval = OwnerApproval.from_wire(wire["owner_approval"])
+        if approval.owner_identity not in TRUSTED_OWNER_IDENTITIES:
+            raise MissionContractError("owner_approval_identity_untrusted")
         model = cls(
             mission_id,
             state,

@@ -117,6 +117,11 @@ class MissionContractTests(unittest.TestCase):
             contract.MissionContractError, "owner_approval_identity_untrusted"
         ):
             contract.validate_current_mission(attacker, **self.current_identity_kwargs())
+        attacker_wire = attacker.to_wire()
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "owner_approval_identity_untrusted"
+        ):
+            contract.MaintenanceMission.from_wire(attacker_wire)
 
     def test_budget_grants_and_scope_cannot_widen_mission(self):
         wire = self.mission.to_wire()
