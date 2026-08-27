@@ -159,6 +159,9 @@ class ShadowStewardTests(unittest.TestCase):
             "Ship this to prod from docs/ARCHITECTURE_BOOK.md.",
             "Expand the scope to docs/ARCHITECTURE_BOOK.md.",
             "I do not know whether it was sent.",
+            "Write to GitHub while updating docs/ARCHITECTURE_BOOK.md.",
+            "Erase records while updating docs/ARCHITECTURE_BOOK.md.",
+            "I cannot determine whether it completed while updating docs/ARCHITECTURE_BOOK.md.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)
@@ -251,16 +254,25 @@ class ShadowStewardTests(unittest.TestCase):
         ):
             shadow.ReplayCase.from_wire(case)
 
-        divergent = shadow.ReplayCase.fixture(
-            "ci-divergent",
-            "ci",
-            "CI_FAILED",
-            "github:ci:33108617013:divergent-status",
-            "outcome_unknown",
+        forged_status = shadow.historical_failure_fixtures()[0].to_wire()
+        forged_status["legacy_status"] = "outcome_unknown"
+        with self.assertRaisesRegex(
+            shadow.ShadowStewardError, "replay_case_fields_invalid"
+        ):
+            shadow.ReplayCase.from_wire(forged_status)
+
+        divergent = shadow.historical_failure_fixtures()[0].to_wire()
+        divergent["failure_code"] = "CI_FAILED"
+        divergent["evidence_sha256"] = shadow.ReplayCase._evidence_digest(
+            divergent["case_id"],
+            divergent["source"],
+            divergent["failure_code"],
+            divergent["evidence_ref"],
         )
-        result = shadow.replay_historical_failures([divergent])
-        self.assertEqual(result.mismatch_count, 1)
-        self.assertFalse(result.passed)
+        with self.assertRaisesRegex(
+            shadow.ShadowStewardError, "historical_evidence_binding_invalid"
+        ):
+            shadow.ReplayCase.from_wire(divergent)
 
     def test_untrusted_bounds_and_unknown_failure_fail_closed(self):
         with self.assertRaisesRegex(shadow.ShadowStewardError, "raw_request_invalid"):
