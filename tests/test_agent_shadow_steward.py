@@ -186,6 +186,13 @@ class ShadowStewardTests(unittest.TestCase):
             "Send an HTTP request.",
             "Write to a socket.",
             "Make a network request.",
+            "Transmit the report to an arbitrary destination.",
+            "Run curl against an unknown endpoint.",
+            "Open a connection to an arbitrary host.",
+            "Make a request to an arbitrary destination.",
+            "Send the report via SMTP.",
+            "Connect to an unknown host.",
+            "Execute a webhook.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)
