@@ -48,6 +48,7 @@ MAX_ENTRY_BYTES = 16 * 1024
 MAX_DIRTY_PATHS = 5_000
 MAX_PATH_CHARS = 512
 MAX_TEXT_CHARS = 2_048
+MISSION_CONTRACT_PATH = ROOT / "scripts" / "agent-control" / "mission_contract.py"
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -289,6 +290,29 @@ def _dispatch_path_list(value: object, field: str) -> list[str]:
     if len(result) != len(value):
         raise SessionContextError(f"{field}_invalid")
     return result
+
+
+def _validate_legacy_mission_compatibility(
+    packet: PacketBinding, capsule: dict[str, object]
+) -> None:
+    """Double-read the new contract without creating a writer or authority."""
+
+    spec = importlib.util.spec_from_file_location(
+        "session_context_mission_contract", MISSION_CONTRACT_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise SessionContextError("legacy_mission_contract_unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+        module.validate_registered_campaign()
+        module.validate_legacy_compatibility(packet.to_wire(), capsule)
+    except SessionContextError:
+        raise
+    except Exception as exc:
+        reason = getattr(exc, "reason", "legacy_mission_compatibility_invalid")
+        raise SessionContextError(str(reason)) from exc
 
 
 def _path_is_allowed(path: str, allowed_paths: list[str]) -> bool:
@@ -2436,6 +2460,7 @@ def _bind_dispatch_capsule(
         or capsule_forbidden != list(packet.forbidden_next_actions)
     ):
         raise SessionContextError("dispatch_binding_invalid")
+    _validate_legacy_mission_compatibility(packet, capsule)
     return capsule
 
 

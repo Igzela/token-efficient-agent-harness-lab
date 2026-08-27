@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-08-24.
+Last updated: 2026-08-28.
 
 Current version: v38.
 
@@ -17,6 +17,40 @@ Its single first-order objective is:
 > Under non-negotiable quality, safety, traceability, compatibility, and rollback constraints, continuously increase verifiable and reusable task delivery per unit of total lifecycle cost.
 
 The system does not optimize token count in isolation. A lower-token result is not better unless it meets the same accepted quality, safety, and integrity gates.
+
+### Autonomous Steward migration contract (PR1)
+
+The provider-free migration contract is owned by
+`scripts/agent-control/mission_contract.py`. `MaintenanceMission` binds one
+canonical proposal payload to an owner approval digest, exact repository/source
+identity, explicit scope and change categories, finite attempts/time/calls/cost
+budgets, quality checks, stop taxonomy, and a tested rollback boundary. `Stage`
+binds one verifiable integration result to the same repository identity and its
+complete WorkCard graph; an integrated Stage must also match observed PR/head
+identity. `WorkCard` narrows paths, steps, focused and negative checks,
+evidence, dependencies, path locks, model tier, attempts, result state, and
+rollback; it cannot widen Mission scope or budget. The registered PR1 Mission
+is limited to its seven contract/docs/test files and a read-only grant; the
+broader legacy directory surface is only a non-authorizing compatibility read.
+
+The v1 boundary is fail-closed and provider-free: malformed, stale,
+unauthorized, out-of-scope, unbounded, sensitive, destructive, or
+`OUTCOME_UNKNOWN` inputs are rejected. Routine worker/test/CI/review failure
+and main drift remain bounded recovery categories; scope, authority,
+requirement, safety, and unknown external outcomes are owner-pause categories.
+The wire `owner_identity` is only an approval claim: PR1 accepts only the
+fixed registered owner identity, while the future intake/authentication owner
+must derive that identity from authenticated repository-owner evidence. The
+registered campaign is checked against its fixed repository, branch, source
+reference, source digest, and PR0 base. Provider-free PR1 WorkCards use T0-T2;
+T3 or any external effect requires a later authority envelope and is rejected
+here.
+The contract is a read-only compatibility reader during migration. The legacy
+packet controller at `scripts/agent-control/local_loop.py` remains the sole
+lifecycle writer; GitHub remains the durable queue/lease owner and
+`state_manager.py` remains its state owner. The projection cannot
+consume authority, write state, call a Provider, or create a second store,
+scheduler, evaluator, budget, output, audit, rollback, or workspace owner.
 
 ## Repository Agent Loop Control Plane
 
