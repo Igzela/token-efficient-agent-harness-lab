@@ -204,6 +204,20 @@ _HIGH_RISK_PATTERNS = (
         r".{0,64}\b(?:send|post|submit|upload|notify|open)\b"
     ),
     re.compile(
+        r"\b(?:write|push|modify|change|update|create|close|merge|comment|send|post|"
+        r"submit|upload|notify|open|call|trigger|email)\b"
+        r".{0,64}\b(?:slack|discord|microsoft teams|external service|external api|"
+        r"third[- ]party|webhook|s3|container registry|pull request|pull-request)\b"
+    ),
+    re.compile(
+        r"\b(?:slack|discord|microsoft teams|external service|external api|third[- ]party|"
+        r"webhook|s3|container registry|pull request|pull-request)\b"
+        r".{0,64}\b(?:write|push|modify|change|update|create|close|merge|comment|send|post|"
+        r"submit|upload|notify|open|call|trigger|email)\b"
+    ),
+    re.compile(r"\bcall\b.{0,64}\b(?:api|service|registry)\b"),
+    re.compile(r"\bemail\b\s+(?:the|a|an|this|that)\b"),
+    re.compile(
         r"\b(?:cannot|can't|unable to|do not know|don't know|not sure|unclear|uncertain)\b"
         r".{0,48}\b(?:whether|if|outcome|completed|sent|succeeded|succeed)\b"
     ),

@@ -168,6 +168,13 @@ class ShadowStewardTests(unittest.TestCase):
             "Send the report to Slack while updating docs/ARCHITECTURE_BOOK.md.",
             "Post the result to the external service while updating docs/ARCHITECTURE_BOOK.md.",
             "Open a pull request for docs/ARCHITECTURE_BOOK.md.",
+            "Send the report to Discord.",
+            "Notify the team in Microsoft Teams.",
+            "Call the external API.",
+            "Upload the artifact to S3.",
+            "Push the image to the container registry.",
+            "Trigger the webhook.",
+            "Email the report.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)
