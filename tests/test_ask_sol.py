@@ -170,13 +170,23 @@ class TestAskSol(unittest.TestCase):
 
     def test_04_git_context_fails_closed_on_errors(self):
         """4. Invalid or non-git directory fails closed without substituting fake zeros."""
+        codex_invocations = []
+        original_run = subprocess.run
+
+        def record_codex_invocation(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and cmd and cmd[0] == "codex":
+                codex_invocations.append(cmd)
+            return original_run(cmd, *args, **kwargs)
+
         with tempfile.TemporaryDirectory() as empty_dir:
-            result_empty = ask_sol.execute_sol_investigation(
-                goal="Investigate completely empty non-git dir",
-                worktree=pathlib.Path(empty_dir),
-            )
+            with mock.patch("subprocess.run", side_effect=record_codex_invocation):
+                result_empty = ask_sol.execute_sol_investigation(
+                    goal="Investigate completely empty non-git dir",
+                    worktree=pathlib.Path(empty_dir),
+                )
             self.assertEqual(result_empty["status"], "FAILED")
             self.assertIn("Git context discovery failed", result_empty["finding"])
+        self.assertEqual(codex_invocations, [])
 
     def test_05_caller_worktree_mutation_detected_and_fails_closed(self):
         """5. If worktree is mutated during consultation, fails closed with MUTATION_DETECTED."""
