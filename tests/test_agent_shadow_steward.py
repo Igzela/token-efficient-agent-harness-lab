@@ -178,6 +178,14 @@ class ShadowStewardTests(unittest.TestCase):
             "Invoke the API while updating docs/ARCHITECTURE_BOOK.md.",
             "Post the result to Notion while updating docs/ARCHITECTURE_BOOK.md.",
             "Push the changes to origin while updating docs/ARCHITECTURE_BOOK.md.",
+            "Send the report to an arbitrary endpoint.",
+            "Post the result to a URL.",
+            "Call an endpoint.",
+            "Invoke an unknown service.",
+            "Connect to an external system.",
+            "Send an HTTP request.",
+            "Write to a socket.",
+            "Make a network request.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)

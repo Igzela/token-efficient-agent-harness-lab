@@ -182,13 +182,14 @@ _SCOPE_MARKERS = (
 _EXTERNAL_ACTIONS = (
     r"write|push|modify|change|update|create|close|merge|comment|send|post|submit|"
     r"upload|notify|open|call|invoke|request|trigger|email|publish|release|deploy|"
-    r"sync|forward|transfer|share|export"
+    r"sync|forward|transfer|share|export|connect|contact|access|make"
 )
 _EXTERNAL_TARGETS = (
     r"github|slack|discord|microsoft teams|notion|external service|external api|"
     r"third[- ]party|webhook|email|e-mail|api|s3|container registry|registry|origin|"
     r"upstream|remote|pull request|pull-request|pr|branch|repository|repo|database|"
-    r"db|provider|target"
+    r"db|provider|target|endpoint|url|unknown service|external system|http request|"
+    r"network request|socket|network|system|http|https"
 )
 _HIGH_RISK_PATTERNS = (
     re.compile(
@@ -216,7 +217,7 @@ _HIGH_RISK_PATTERNS = (
     ),
     re.compile(
         r"\b(?:write|push|modify|change|update|create|close|merge|comment|send|post|"
-        r"submit|upload|notify|open|call|trigger|email)\b"
+        r"submit|upload|notify|open|call|trigger|email|connect|make)\b"
         r".{0,64}\b(?:slack|discord|microsoft teams|external service|external api|"
         r"third[- ]party|webhook|s3|container registry|pull request|pull-request)\b"
     ),
