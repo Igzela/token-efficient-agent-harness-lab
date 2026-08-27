@@ -41,16 +41,6 @@ workflow `33112792625`, merged as
 Mission/Stage/WorkCard contract and read-only compatibility boundary are
 accepted; the legacy controller remains the sole lifecycle writer.
 
-## Completed: PR0 baseline receipt
-
-PR #626 exact head `6fd4c05479f3a1512eafb35d374245539df950f9` was independently
-reviewed with exact-head `PASS`, passed canonical workflow `33090558938`, and
-merged as `3f5a3c305d317e5fa160369ac3965adae4634721`. Refreshed `main` passed
-canonical workflow `33091453322` with follow-up monitor `33092381869`. Ruleset
-`21661714` is active with the required contexts and no bypass actors; PR #574,
-Issue #623, and ledger Issue #383 were reconciled, and both MX1 archive refs
-remain at their recorded exact heads. PR0 made no Provider or product effect.
-
 ## Packet PE7-AUTONOMOUS-STEWARD-PR2
 
 **State:** `READY_FOR_EXECUTION`
