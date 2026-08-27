@@ -35,6 +35,12 @@ unauthorized, out-of-scope, unbounded, sensitive, destructive, or
 `OUTCOME_UNKNOWN` inputs are rejected. Routine worker/test/CI/review failure
 and main drift remain bounded recovery categories; scope, authority,
 requirement, safety, and unknown external outcomes are owner-pause categories.
+The wire `owner_identity` is only an approval claim: current-Mission
+validation requires an existing authority owner to supply the trusted owner
+identity allowlist, and the registered campaign is checked against its fixed
+repository, branch, source reference, source digest, and PR0 base. Provider-free
+PR1 WorkCards use T0-T2; T3 or any external effect requires a later authority
+envelope and is rejected here.
 The contract is a read-only compatibility reader during migration. The legacy
 packet controller at `scripts/agent-control/local_loop.py` remains the sole
 lifecycle writer and sole durable queue/lease path; the projection cannot

@@ -19,6 +19,17 @@ class MissionContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.mission = contract.campaign_mission()
 
+    def current_identity_kwargs(self):
+        identity = self.mission.repository_identity
+        return {
+            "repository": identity.repository,
+            "base_sha": identity.base_sha,
+            "branch": identity.branch,
+            "source_ref": identity.source_ref,
+            "source_sha256": identity.source_sha256,
+            "authorized_owner_identities": ("repository-owner",),
+        }
+
     def test_campaign_is_one_immutable_round_trippable_mission(self):
         self.assertTrue(self.mission.__dataclass_params__.frozen)
         wire = self.mission.to_wire()
@@ -61,13 +72,52 @@ class MissionContractTests(unittest.TestCase):
                 self.mission,
                 repository="other/repository",
                 base_sha=self.mission.repository_identity.base_sha,
+                **{
+                    key: value
+                    for key, value in self.current_identity_kwargs().items()
+                    if key not in {"repository", "base_sha"}
+                },
             )
         with self.assertRaisesRegex(contract.MissionContractError, "mission_base_sha_stale"):
             contract.validate_current_mission(
                 self.mission,
                 repository=self.mission.repository_identity.repository,
                 base_sha="a" * 40,
+                **{
+                    key: value
+                    for key, value in self.current_identity_kwargs().items()
+                    if key not in {"repository", "base_sha"}
+                },
             )
+
+        for field, expected in (
+            ("branch", "mission_branch_stale"),
+            ("source_ref", "mission_source_ref_stale"),
+            ("source_sha256", "mission_source_stale"),
+        ):
+            with self.subTest(field=field):
+                current = self.current_identity_kwargs()
+                current[field] = "other-identity" if field != "source_sha256" else "b" * 64
+                with self.assertRaisesRegex(contract.MissionContractError, expected):
+                    contract.validate_current_mission(self.mission, **current)
+
+        self.assertEqual(
+            contract.validate_current_mission(
+                self.mission, **self.current_identity_kwargs()
+            ),
+            self.mission,
+        )
+
+        attacker = replace(
+            self.mission,
+            owner_approval=replace(
+                self.mission.owner_approval, owner_identity="attacker"
+            ),
+        )
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "owner_approval_identity_untrusted"
+        ):
+            contract.validate_current_mission(attacker, **self.current_identity_kwargs())
 
     def test_budget_grants_and_scope_cannot_widen_mission(self):
         wire = self.mission.to_wire()
@@ -77,7 +127,7 @@ class MissionContractTests(unittest.TestCase):
             contract.MaintenanceMission.from_wire(wire)
 
         grant = self.mission.standing_grants[0]
-        widened = replace(grant, allowed_paths=("engine/",))
+        widened = replace(grant, allowed_paths=("src/",))
         forged_mission = replace(self.mission, standing_grants=(widened,))
         forged = forged_mission.to_wire()
         forged["proposal_sha256"] = forged_mission.computed_proposal_sha256
@@ -89,6 +139,27 @@ class MissionContractTests(unittest.TestCase):
         bad_grant["grant_type"] = "provider"
         with self.assertRaisesRegex(contract.MissionContractError, "grant_type_forbidden"):
             contract.Grant.from_wire(bad_grant)
+
+        read_only = grant.to_wire()
+        read_only["grant_type"] = "read_only"
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "read_only_grant_writes"
+        ):
+            contract.Grant.from_wire(read_only)
+
+        changed_types = self.mission.to_wire()
+        changed_types["allowed_change_types"] = ["provider"]
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "change_type_forbidden"
+        ):
+            contract.MaintenanceMission.from_wire(changed_types)
+
+        sensitive = grant.to_wire()
+        sensitive["allowed_paths"] = ["secrets/"]
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "grant_allowed_paths_sensitive"
+        ):
+            contract.Grant.from_wire(sensitive)
 
     def test_paths_stops_and_rollbacks_are_bounded(self):
         with self.assertRaisesRegex(contract.MissionContractError, "candidate_path_invalid"):
@@ -144,6 +215,84 @@ class MissionContractTests(unittest.TestCase):
         too_many = replace(card, max_attempts=self.mission.budget.max_attempts + 1)
         with self.assertRaisesRegex(contract.MissionContractError, "workcard_budget_exceeded"):
             contract.validate_workcard(too_many, stage, self.mission)
+
+        widened_stage = replace(
+            stage,
+            rollback=replace(stage.rollback, strategy="document_restore"),
+        )
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "stage_rollback_widens_mission"
+        ):
+            contract.validate_stage(widened_stage, self.mission)
+
+        widened_card = replace(
+            card,
+            rollback=replace(card.rollback, strategy="document_restore"),
+        )
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "workcard_rollback_widens_stage"
+        ):
+            contract.validate_workcard(widened_card, stage, self.mission)
+
+        orphan = replace(card, card_id="CARD-ORPHAN")
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "workcard_not_in_stage"
+        ):
+            contract.validate_workcard(orphan, stage, self.mission)
+
+        unknown_dependency = replace(card, dependencies=("CARD-MISSING",))
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "workcard_dependency_unknown"
+        ):
+            contract.validate_stage(stage, self.mission, (unknown_dependency,))
+
+        tier_three = card.to_wire()
+        tier_three["model_tier"] = "T3"
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "model_tier_invalid"
+        ):
+            contract.WorkCard.from_wire(tier_three)
+
+    def test_workcard_dependency_cycles_are_rejected(self):
+        stage = contract.Stage(
+            "STAGE-PR1-GRAPH",
+            self.mission.mission_id,
+            "Validate the work-card graph.",
+            self.mission.repository_identity,
+            ("Run graph checks.",),
+            ("Keep all dependencies in the stage.",),
+            ("CARD-A", "CARD-B"),
+            self.mission.rollback,
+            None,
+            None,
+        )
+
+        def card(card_id, dependencies):
+            return contract.WorkCard(
+                card_id,
+                stage.stage_id,
+                ("scripts/",),
+                (),
+                ("Run one graph step.",),
+                ("Run one focused test.",),
+                ("Reject a cycle.",),
+                ("Graph evidence.",),
+                dependencies,
+                (),
+                1,
+                "T2",
+                self.mission.rollback,
+                "PENDING",
+            )
+
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "workcard_dependency_cycle"
+        ):
+            contract.validate_stage(
+                stage,
+                self.mission,
+                (card("CARD-A", ("CARD-B",)), card("CARD-B", ("CARD-A",))),
+            )
 
     def test_workcard_rejects_forbidden_overlap_and_unknown_result(self):
         base = {
@@ -210,6 +359,28 @@ class LegacyCompatibilityTests(unittest.TestCase):
         self.assertFalse(projection.authority_consumption_allowed)
         self.assertEqual(projection.external_effect_limit, 0)
         self.assertEqual(projection.lifecycle_writer, contract.LEGACY_LIFECYCLE_WRITER)
+        self.assertEqual(projection.mission_id, "legacy-packet:PE7-AUTONOMOUS-STEWARD-PR1")
+
+    def test_projection_rejects_registered_scope_and_output_or_store_widening(self):
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "legacy_scope_widens_registered_mission"
+        ):
+            contract.validate_legacy_compatibility(
+                self.packet(allowed_paths=["src/"]),
+                self.capsule(allowed_paths=["src/"]),
+            )
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "legacy_store_mutation_granted"
+        ):
+            contract.validate_legacy_compatibility(
+                self.packet(), self.capsule(known_store_mutations=["write"])
+            )
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "legacy_output_surface_forbidden"
+        ):
+            contract.validate_legacy_compatibility(
+                self.packet(), self.capsule(allowed_outputs=["Provider secret"])
+            )
 
     def test_projection_rejects_effect_scope_or_sensitive_authority(self):
         for overrides, expected in (

@@ -486,6 +486,10 @@ def parse_packet_contracts(
         packets[packet] = {
             "state": states[0],
             "class": packet_class,
+            "source_path": "docs/NEXT_DECISION.md",
+            "packet_sha256": hashlib.sha256(block.encode("utf-8")).hexdigest(),
+            "execution_authorized": False,
+            "checkpoint_allowed": states[0] in {"READY_FOR_EXECUTION", "IN_PROGRESS"},
             "prerequisites": (
                 re.findall(PACKET_ID_PATTERN, prerequisite.group("value"))
                 if prerequisite
@@ -978,8 +982,7 @@ def weak_agent_dispatch_failures(
         sys.modules[spec.name] = module
         try:
             spec.loader.exec_module(module)
-            registered = module.campaign_mission()
-            module.MaintenanceMission.from_wire(registered.to_wire())
+            module.validate_registered_campaign()
         except Exception as error:
             reason = getattr(error, "reason", str(error))
             failures.append(f"registered Mission contract invalid: {reason}")
@@ -1135,17 +1138,27 @@ def weak_agent_dispatch_failures(
             sys.modules[spec.name] = module
             try:
                 spec.loader.exec_module(module)
+                packet_info = dict(current_packets.get(current_packet_id, {}))
+                if not {
+                    "source_path",
+                    "packet_sha256",
+                    "execution_authorized",
+                    "checkpoint_allowed",
+                } <= packet_info.keys():
+                    parsed_packets = parse_packet_contracts(next_text, [])
+                    packet_info = {
+                        **parsed_packets.get(current_packet_id, {}),
+                        **packet_info,
+                    }
                 packet = {
                     "packet_id": current_packet_id,
-                    "state": str(current_packets[current_packet_id]["state"]),
-                    "source_path": "docs/NEXT_DECISION.md",
-                    "packet_sha256": hashlib.sha256(
-                        next_text.encode("utf-8")
-                    ).hexdigest(),
+                    "state": str(packet_info.get("state", "")),
+                    "source_path": packet_info.get("source_path"),
+                    "packet_sha256": packet_info.get("packet_sha256"),
                     "allowed_paths": allowed_scope,
                     "forbidden_next_actions": payload["forbidden_next_actions"],
-                    "execution_authorized": False,
-                    "checkpoint_allowed": True,
+                    "execution_authorized": packet_info.get("execution_authorized", False),
+                    "checkpoint_allowed": packet_info.get("checkpoint_allowed", False),
                     "dispatch_lane": payload.get("dispatch_lane"),
                 }
                 module.validate_legacy_compatibility(packet, payload)

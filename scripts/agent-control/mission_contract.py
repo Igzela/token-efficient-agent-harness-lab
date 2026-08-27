@@ -35,6 +35,7 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+PACKET_ID = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$")
 BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 TIMESTAMP = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
@@ -61,6 +62,12 @@ WORKCARD_RESULTS = frozenset(
 SAFE_GRANT_TYPES = frozenset({"read_only", "repository_maintenance"})
 SAFE_OPERATIONS = frozenset(
     {"read", "write", "test", "branch", "draft_pr", "review", "ci_repair"}
+)
+SAFE_CHANGE_TYPES = frozenset(
+    {"documentation", "source", "tests", "configuration", "workflow"}
+)
+SENSITIVE_PATH_COMPONENTS = frozenset(
+    {".git", ".codex", "secrets", "credentials", "private", "ssh"}
 )
 FORBIDDEN_GRANT_WORDS = frozenset(
     {
@@ -198,6 +205,15 @@ def _paths(value: object, field: str, *, allow_empty: bool = False) -> tuple[str
         raise MissionContractError(f"{field}_invalid")
     if len(result) != len(value):
         raise MissionContractError(f"{field}_duplicated")
+    for item in result:
+        components = item.rstrip("/").split("/")
+        if any(
+            component in SENSITIVE_PATH_COMPONENTS
+            or component.startswith(".env")
+            or component in {"id_rsa", "id_ed25519"}
+            for component in components
+        ):
+            raise MissionContractError(f"{field}_sensitive")
     return result
 
 
@@ -383,6 +399,8 @@ class Grant:
         operations = _strings(wire["allowed_operations"], "grant_allowed_operations")
         if any(operation not in SAFE_OPERATIONS for operation in operations):
             raise MissionContractError("grant_operation_forbidden")
+        if grant_type == "read_only" and set(operations) != {"read"}:
+            raise MissionContractError("read_only_grant_writes")
         if any(word in grant_type.lower() for word in FORBIDDEN_GRANT_WORDS):
             raise MissionContractError("grant_type_forbidden")
         uses = _bounded_int(wire["max_uses"], "grant_max_uses", minimum=1, maximum=MAX_GRANT_USES)
@@ -518,6 +536,8 @@ class MaintenanceMission:
         identity = RepositoryIdentity.from_wire(wire["repository_identity"])
         allowed_paths = _paths(wire["allowed_paths"], "mission_allowed_paths")
         change_types = _strings(wire["allowed_change_types"], "allowed_change_types")
+        if any(change_type not in SAFE_CHANGE_TYPES for change_type in change_types):
+            raise MissionContractError("change_type_forbidden")
         forbidden = _strings(wire["forbidden_changes"], "forbidden_changes")
         raw_grants = wire["standing_grants"]
         if not isinstance(raw_grants, list) or not raw_grants or len(raw_grants) > MAX_LIST_ITEMS:
@@ -722,7 +742,7 @@ class WorkCard:
             wire["max_attempts"], "workcard_max_attempts", minimum=1, maximum=MAX_BUDGET_ATTEMPTS
         )
         tier = _text(wire["model_tier"], "model_tier", max_chars=8)
-        if tier not in MODEL_TIERS:
+        if tier not in MODEL_TIERS or tier == "T3":
             raise MissionContractError("model_tier_invalid")
         rollback = RollbackBoundary.from_wire(wire["rollback"])
         result = _text(wire["result_state"], "workcard_result_state", max_chars=32)
@@ -782,11 +802,34 @@ def validate_stage(stage: Stage, mission: MaintenanceMission, cards: tuple[WorkC
         raise MissionContractError("stage_mission_binding_invalid")
     if model.repository_identity != mission.repository_identity:
         raise MissionContractError("stage_repository_identity_invalid")
+    if model.rollback != mission.rollback:
+        raise MissionContractError("stage_rollback_widens_mission")
     if len(set(model.workcard_ids)) != len(model.workcard_ids):
         raise MissionContractError("stage_workcard_ids_duplicated")
     if cards:
         if {card.card_id for card in cards} != set(model.workcard_ids):
             raise MissionContractError("stage_workcard_graph_invalid")
+        card_ids = set(model.workcard_ids)
+        for card in cards:
+            if any(dependency not in card_ids for dependency in card.dependencies):
+                raise MissionContractError("workcard_dependency_unknown")
+        graph = {card.card_id: set(card.dependencies) for card in cards}
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(card_id: str) -> None:
+            if card_id in visiting:
+                raise MissionContractError("workcard_dependency_cycle")
+            if card_id in visited:
+                return
+            visiting.add(card_id)
+            for dependency in graph[card_id]:
+                visit(dependency)
+            visiting.remove(card_id)
+            visited.add(card_id)
+
+        for card_id in graph:
+            visit(card_id)
         for card in cards:
             validate_workcard(card, model, mission)
     return model
@@ -797,10 +840,37 @@ def validate_workcard(card: WorkCard, stage: Stage, mission: MaintenanceMission)
     validate_stage(stage, mission)
     if model.stage_id != stage.stage_id:
         raise MissionContractError("workcard_stage_binding_invalid")
+    if model.card_id not in stage.workcard_ids:
+        raise MissionContractError("workcard_not_in_stage")
+    if model.rollback != stage.rollback:
+        raise MissionContractError("workcard_rollback_widens_stage")
     if model.max_attempts > mission.budget.max_attempts:
         raise MissionContractError("workcard_budget_exceeded")
     if any(not path_in_scope(mission.allowed_paths, path.rstrip("/")) for path in model.allowed_paths):
         raise MissionContractError("workcard_scope_widens_mission")
+    return model
+
+
+def validate_owner_approval(
+    mission: MaintenanceMission,
+    *,
+    authorized_owner_identities: tuple[str, ...],
+) -> MaintenanceMission:
+    """Require a trusted caller to bind the wire approval to an owner identity.
+
+    The wire value identifies the claimed approver; the allowlist is supplied
+    by the existing authority owner and is intentionally not part of the
+    untrusted Mission payload.
+    """
+
+    model = MaintenanceMission.from_wire(mission.to_wire())
+    if (
+        not isinstance(authorized_owner_identities, tuple)
+        or not authorized_owner_identities
+        or any(not isinstance(identity, str) or not identity for identity in authorized_owner_identities)
+        or model.owner_approval.owner_identity not in authorized_owner_identities
+    ):
+        raise MissionContractError("owner_approval_identity_untrusted")
     return model
 
 
@@ -809,18 +879,43 @@ def validate_current_mission(
     *,
     repository: str,
     base_sha: str,
-    source_sha256: str | None = None,
+    branch: str,
+    source_ref: str,
+    source_sha256: str,
+    authorized_owner_identities: tuple[str, ...],
 ) -> MaintenanceMission:
-    """Reject a structurally valid Mission bound to a stale identity."""
+    """Reject a valid-looking Mission bound to stale or unauthenticated identity."""
 
-    model = MaintenanceMission.from_wire(mission.to_wire())
+    model = validate_owner_approval(
+        mission,
+        authorized_owner_identities=authorized_owner_identities,
+    )
     if model.repository_identity.repository != repository:
         raise MissionContractError("mission_repository_stale")
     if model.repository_identity.base_sha != base_sha:
         raise MissionContractError("mission_base_sha_stale")
-    if source_sha256 is not None and model.repository_identity.source_sha256 != source_sha256:
+    if model.repository_identity.branch != branch:
+        raise MissionContractError("mission_branch_stale")
+    if model.repository_identity.source_ref != source_ref:
+        raise MissionContractError("mission_source_ref_stale")
+    if model.repository_identity.source_sha256 != source_sha256:
         raise MissionContractError("mission_source_stale")
     return model
+
+
+def validate_registered_campaign() -> MaintenanceMission:
+    """Validate the one statically registered campaign against trusted inputs."""
+
+    mission = campaign_mission()
+    return validate_current_mission(
+        mission,
+        repository=CAMPAIGN_REPOSITORY,
+        base_sha=CAMPAIGN_BASE_SHA,
+        branch="main",
+        source_ref=CAMPAIGN_SOURCE_REF,
+        source_sha256=CAMPAIGN_SOURCE_SHA256,
+        authorized_owner_identities=("repository-owner",),
+    )
 
 
 def stop_category(code: str) -> str:
@@ -853,7 +948,7 @@ def campaign_mission() -> MaintenanceMission:
         Grant(
             "migration-contract-read-write",
             "repository_maintenance",
-            ("docs/", "scripts/", "tests/"),
+            ("docs/", "engine/", "scripts/", "tests/"),
             ("read", "write", "test", "branch", "draft_pr", "review", "ci_repair"),
             32,
         ),
@@ -884,7 +979,7 @@ def campaign_mission() -> MaintenanceMission:
             "No second lifecycle writer or external-effect owner is activated.",
         ),
         identity,
-        ("docs/", "scripts/", "tests/"),
+        ("docs/", "engine/", "scripts/", "tests/"),
         ("documentation", "source", "tests", "configuration"),
         (
             "provider calls and credentials",
@@ -927,6 +1022,7 @@ def validate_legacy_compatibility(packet: object, capsule: object) -> LegacyMiss
 
     if not isinstance(packet, dict) or not isinstance(capsule, dict):
         raise MissionContractError("legacy_projection_input_invalid")
+    registered = validate_registered_campaign()
     packet_fields = {
         "packet_id",
         "state",
@@ -941,6 +1037,8 @@ def validate_legacy_compatibility(packet: object, capsule: object) -> LegacyMiss
     if not set(packet) <= packet_fields:
         raise MissionContractError("legacy_packet_fields_invalid")
     packet_id = _identifier(packet.get("packet_id"), "legacy_packet_id")
+    if PACKET_ID.fullmatch(packet_id) is None:
+        raise MissionContractError("legacy_packet_id_invalid")
     _text(packet.get("state"), "legacy_packet_state", max_chars=64)
     _path(packet.get("source_path"), "legacy_packet_source", allow_directory=False)
     _sha(packet.get("packet_sha256"), "legacy_packet_sha256")
@@ -1005,9 +1103,36 @@ def validate_legacy_compatibility(packet: object, capsule: object) -> LegacyMiss
     )
     if capsule_paths != packet_paths or capsule_forbidden != forbidden:
         raise MissionContractError("legacy_dispatch_scope_mismatch")
+    if any(
+        not path_in_scope(registered.allowed_paths, path.rstrip("/"))
+        for path in packet_paths
+    ):
+        raise MissionContractError("legacy_scope_widens_registered_mission")
+    mutations = capsule.get("known_store_mutations")
+    if mutations is not None:
+        if not isinstance(mutations, list) or mutations:
+            raise MissionContractError("legacy_store_mutation_granted")
+    outputs = capsule.get("allowed_outputs")
+    if outputs is not None:
+        safe_outputs = _strings(outputs, "legacy_allowed_outputs")
+        blocked_phrases = (
+            "provider secret",
+            "credential",
+            "target write",
+            "production",
+            "deployment",
+            "destructive",
+            "external effect",
+        )
+        if any(
+            phrase in item.lower()
+            for item in safe_outputs
+            for phrase in blocked_phrases
+        ):
+            raise MissionContractError("legacy_output_surface_forbidden")
     return LegacyMissionProjection(
         PROJECTION_SCHEMA_VERSION,
-        CAMPAIGN_MISSION_ID,
+        f"legacy-packet:{packet_id}",
         packet_id,
         dispatch_lane,
         packet_paths,
@@ -1037,6 +1162,8 @@ __all__ = [
     "stop_category",
     "validate_current_mission",
     "validate_legacy_compatibility",
+    "validate_owner_approval",
+    "validate_registered_campaign",
     "validate_stage",
     "validate_workcard",
 ]

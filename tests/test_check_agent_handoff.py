@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -23,6 +24,14 @@ class HandoffMissionCompatibilityTests(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(
             handoff.weak_agent_dispatch_failures(next_text, packets), []
+        )
+        packet = packets["PE7-AUTONOMOUS-STEWARD-PR1"]
+        heading = handoff.PACKET_HEADING_RE.search(next_text)
+        self.assertIsNotNone(heading)
+        self.assertEqual(packet["source_path"], "docs/NEXT_DECISION.md")
+        self.assertEqual(
+            packet["packet_sha256"],
+            hashlib.sha256(next_text[heading.start() :].encode("utf-8")).hexdigest(),
         )
 
     def test_changed_capsule_identity_is_rejected_by_the_new_compatibility_read(self):

@@ -306,8 +306,7 @@ def _validate_legacy_mission_compatibility(
     sys.modules[spec.name] = module
     try:
         spec.loader.exec_module(module)
-        registered = module.campaign_mission()
-        module.MaintenanceMission.from_wire(registered.to_wire())
+        module.validate_registered_campaign()
         module.validate_legacy_compatibility(packet.to_wire(), capsule)
     except SessionContextError:
         raise
