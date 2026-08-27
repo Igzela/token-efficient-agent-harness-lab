@@ -54,13 +54,7 @@ accepted; the legacy controller remains the sole lifecycle writer.
 proposals, plans and replans Stages and WorkCards, classifies stops, and emits
 compact status without mutating GitHub or repository state.
 
-**Allowed delta:** `scripts/agent-control/shadow_steward.py`,
-`tests/test_agent_shadow_steward.py`, `docs/ARCHITECTURE_BOOK.md`,
-`docs/MODULE_MAP.md`, `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, and
-`docs/NEXT_DECISION.md`. The implementation must remain a projection and
-recommendation boundary; it cannot write lifecycle state or become a second
-runtime, scheduler, store, evaluator, budget, approval, output, audit, or
-rollback owner.
+**Allowed delta:** `scripts/agent-control/shadow_steward.py`, `tests/test_agent_shadow_steward.py`, `tests/test_check_agent_handoff.py`, `docs/ARCHITECTURE_BOOK.md`, `docs/MODULE_MAP.md`, `docs/CURRENT_STATUS.md`, `docs/FUTURE_ROUTE.md`, and `docs/NEXT_DECISION.md`. The implementation must remain a projection and recommendation boundary; it cannot write lifecycle state or become a second runtime, scheduler, store, evaluator, budget, approval, output, audit, or rollback owner.
 
 **Exit:** Historical failure replay proves ordinary failures do not pause the
 owner; authority expansion, production or destructive requests, and unknown
