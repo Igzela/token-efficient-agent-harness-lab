@@ -97,6 +97,7 @@ class ShadowStewardTests(unittest.TestCase):
         )
         self.assertEqual(rejected.status, "REJECTED")
         self.assertFalse(rejected.recommendation_active)
+        self.assertFalse(rejected.owner_authenticated)
 
         unauthenticated = shadow.evaluate_proposal(
             self.proposal, self.mission, self.approval
@@ -250,6 +251,17 @@ class ShadowStewardTests(unittest.TestCase):
         ):
             shadow.ReplayCase.from_wire(case)
 
+        divergent = shadow.ReplayCase.fixture(
+            "ci-divergent",
+            "ci",
+            "CI_FAILED",
+            "github:ci:33108617013:divergent-status",
+            "outcome_unknown",
+        )
+        result = shadow.replay_historical_failures([divergent])
+        self.assertEqual(result.mismatch_count, 1)
+        self.assertFalse(result.passed)
+
     def test_untrusted_bounds_and_unknown_failure_fail_closed(self):
         with self.assertRaisesRegex(shadow.ShadowStewardError, "raw_request_invalid"):
             shadow.compile_intake("x\ncommand")
@@ -258,6 +270,10 @@ class ShadowStewardTests(unittest.TestCase):
         stop = shadow.classify_stop("some_unrecognized_failure")
         self.assertEqual(stop.category, "PAUSED_FOR_OWNER")
         self.assertFalse(stop.retry_allowed)
+
+        private = shadow.compile_intake("Inspect docs/.env and scripts/.git/config.")
+        self.assertEqual(private.requested_paths, ())
+        self.assertIn("SAFETY_CONFLICT", private.stop_codes)
 
     def test_shadow_module_has_no_effect_transport_or_persistence_imports(self):
         source = (CONTROL / "shadow_steward.py").read_text(encoding="utf-8")

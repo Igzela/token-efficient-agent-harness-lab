@@ -52,6 +52,7 @@ OWNER_FAILURES = frozenset(
 ) | {"BUDGET_EXCEEDED"}
 KNOWN_STOP_CODES = ROUTINE_FAILURES | OWNER_FAILURES
 KNOWN_SOURCES = frozenset({"issue", "pr", "ci", "review"})
+LEGACY_STATUSES = frozenset({"failed", "outcome_unknown", "paused"})
 
 _PATH_MARKERS = (
     "/home/",
@@ -60,6 +61,17 @@ _PATH_MARKERS = (
     "~/",
     ".ssh",
     ".codex",
+)
+_SENSITIVE_PATH_NAMES = frozenset(
+    {
+        ".env",
+        ".git",
+        ".codex",
+        ".ssh",
+        "secrets",
+        "credentials",
+        "private",
+    }
 )
 _SECRET_MARKERS = (
     "api key",
@@ -214,6 +226,14 @@ def _safe_paths(text: str) -> tuple[str, ...]:
     return result
 
 
+def _is_sensitive_path(path: str) -> bool:
+    parts = set(path.casefold().split("/"))
+    return bool(parts & _SENSITIVE_PATH_NAMES) or any(
+        part.endswith((".pem", ".key")) or "secret" in part or "credential" in part
+        for part in parts
+    )
+
+
 def _validate_mission(mission: contract.MaintenanceMission) -> contract.MaintenanceMission:
     if not isinstance(mission, contract.MaintenanceMission):
         raise ShadowStewardError("mission_invalid")
@@ -299,6 +319,8 @@ def compile_intake(raw_request: str) -> Intake:
     raw = _text(raw_request, "raw_request")
     lowered = raw.casefold()
     paths = _safe_paths(raw)
+    sensitive_paths = any(_is_sensitive_path(path) for path in paths)
+    paths = tuple(path for path in paths if not _is_sensitive_path(path))
     change_types: list[str] = []
     if any(word in lowered for word in ("doc", "documentation", "readme")):
         change_types.append("documentation")
@@ -331,6 +353,9 @@ def compile_intake(raw_request: str) -> Intake:
         risk_flags.append("secret_handling")
         stop_codes.append("SAFETY_CONFLICT")
     if any(marker in lowered for marker in _PATH_MARKERS):
+        risk_flags.append("private_content")
+        stop_codes.append("SAFETY_CONFLICT")
+    if sensitive_paths:
         risk_flags.append("private_content")
         stop_codes.append("SAFETY_CONFLICT")
     if any(marker in lowered for marker in _SCOPE_MARKERS) or not paths:
@@ -533,7 +558,7 @@ def evaluate_proposal(
             model.proposal_sha256,
             "REJECTED",
             None,
-            True,
+            False,
             False,
             False,
             False,
@@ -852,6 +877,7 @@ class ReplayCase:
     failure_code: str
     evidence_ref: str
     evidence_sha256: str
+    legacy_status: str
 
     def to_wire(self) -> dict[str, str]:
         return {
@@ -860,6 +886,7 @@ class ReplayCase:
             "failure_code": self.failure_code,
             "evidence_ref": self.evidence_ref,
             "evidence_sha256": self.evidence_sha256,
+            "legacy_status": self.legacy_status,
         }
 
     @staticmethod
@@ -868,6 +895,7 @@ class ReplayCase:
         source: str,
         failure_code: str,
         evidence_ref: str,
+        legacy_status: str,
     ) -> str:
         return contract.json_sha256(
             {
@@ -875,6 +903,7 @@ class ReplayCase:
                 "source": source,
                 "failure_code": failure_code,
                 "evidence_ref": evidence_ref,
+                "legacy_status": legacy_status,
             }
         )
 
@@ -885,14 +914,17 @@ class ReplayCase:
         source: str,
         failure_code: str,
         evidence_ref: str,
+        legacy_status: str,
     ) -> ReplayCase:
         failure = failure_code.strip().upper()
+        status = legacy_status.strip().lower()
         return cls(
             case_id,
             source,
             failure,
             evidence_ref,
-            cls._evidence_digest(case_id, source, failure, evidence_ref),
+            cls._evidence_digest(case_id, source, failure, evidence_ref, status),
+            status,
         )
 
     @classmethod
@@ -903,6 +935,7 @@ class ReplayCase:
             "failure_code",
             "evidence_ref",
             "evidence_sha256",
+            "legacy_status",
         }
         wire = _mapping(value, fields, fields, "replay_case_fields_invalid")
         case_id = _identifier(wire["case_id"], "case_id")
@@ -919,11 +952,14 @@ class ReplayCase:
         ) is None:
             raise ShadowStewardError("evidence_ref_invalid")
         evidence_sha = _sha(wire["evidence_sha256"], "evidence_sha256")
+        legacy_status = _text(wire["legacy_status"], "legacy_status", max_chars=32).lower()
+        if legacy_status not in LEGACY_STATUSES:
+            raise ShadowStewardError("legacy_status_invalid")
         if evidence_sha != cls._evidence_digest(
-            case_id, source, failure, evidence_ref
+            case_id, source, failure, evidence_ref, legacy_status
         ):
             raise ShadowStewardError("replay_evidence_digest_mismatch")
-        return cls(case_id, source, failure, evidence_ref, evidence_sha)
+        return cls(case_id, source, failure, evidence_ref, evidence_sha, legacy_status)
 
 
 @dataclass(frozen=True)
@@ -981,13 +1017,9 @@ class ReplayResult:
 
 
 def _legacy_controller_action(case: ReplayCase) -> str:
-    """Reconstruct the legacy disposition from its typed stop taxonomy."""
+    """Reconstruct the legacy disposition from its recorded terminal status."""
 
-    return (
-        "RECOVER"
-        if case.failure_code in ROUTINE_FAILURES
-        else "PAUSE"
-    )
+    return "RECOVER" if case.legacy_status == "failed" else "PAUSE"
 
 
 def historical_failure_fixtures() -> tuple[ReplayCase, ...]:
@@ -999,30 +1031,35 @@ def historical_failure_fixtures() -> tuple[ReplayCase, ...]:
             "issue",
             "WORKER_FAILED",
             "github:issue:77:worker-failed",
+            "failed",
         ),
         ReplayCase.fixture(
             "pr-630-review",
             "pr",
             "REVIEW_CHANGES_REQUESTED",
             "github:pr:630:review-changes-requested",
+            "failed",
         ),
         ReplayCase.fixture(
             "ci-33108617013-macos",
             "ci",
             "CI_FAILED",
             "github:ci:33108617013:macos-startup-race",
+            "failed",
         ),
         ReplayCase.fixture(
             "review-630-unknown",
             "review",
             "EXTERNAL_OUTCOME_UNKNOWN",
             "github:review:630:unknown-outcome",
+            "outcome_unknown",
         ),
         ReplayCase.fixture(
             "issue-77-safety",
             "issue",
             "SAFETY_CONFLICT",
             "github:issue:77:safety-conflict",
+            "paused",
         ),
     )
 
