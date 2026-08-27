@@ -71,7 +71,7 @@ class ShadowStewardTests(unittest.TestCase):
             self.proposal.to_wire(),
         )
         forged = self.proposal.to_wire()
-        forged["requested_paths"] = ["engine/"]
+        forged["requested_paths"] = ["engine/foo.py"]
         with self.assertRaisesRegex(shadow.ShadowStewardError, "proposal_digest_mismatch"):
             shadow.MissionProposal.from_wire(forged)
 
@@ -286,6 +286,20 @@ class ShadowStewardTests(unittest.TestCase):
         private = shadow.compile_intake("Inspect docs/.env and scripts/.git/config.")
         self.assertEqual(private.requested_paths, ())
         self.assertIn("SAFETY_CONFLICT", private.stop_codes)
+
+    def test_wire_ingress_rejects_private_paths_even_with_a_recomputed_digest(self):
+        intake_wire = shadow.compile_intake(self.request).to_wire()
+        intake_wire["requested_paths"] = ["docs/.env"]
+        with self.assertRaisesRegex(shadow.ShadowStewardError, "private_path_forbidden"):
+            shadow.Intake.from_wire(intake_wire)
+
+        proposal_wire = self.proposal.to_wire()
+        proposal_wire["requested_paths"] = ["docs/.env"]
+        proposal_wire["proposal_sha256"] = contract.json_sha256(
+            {key: value for key, value in proposal_wire.items() if key != "proposal_sha256"}
+        )
+        with self.assertRaisesRegex(shadow.ShadowStewardError, "private_path_forbidden"):
+            shadow.MissionProposal.from_wire(proposal_wire)
 
     def test_shadow_module_has_no_effect_transport_or_persistence_imports(self):
         source = (CONTROL / "shadow_steward.py").read_text(encoding="utf-8")

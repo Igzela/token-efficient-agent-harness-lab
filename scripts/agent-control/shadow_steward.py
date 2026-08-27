@@ -268,6 +268,15 @@ def _is_sensitive_path(path: str) -> bool:
     )
 
 
+def _validated_non_private_paths(value: object, field: str) -> tuple[str, ...]:
+    paths = _optional_items(value, field)
+    if any(SAFE_PATH.fullmatch(path) is None for path in paths):
+        raise ShadowStewardError(f"{field}_invalid")
+    if any(_is_sensitive_path(path) for path in paths):
+        raise ShadowStewardError("private_path_forbidden")
+    return paths
+
+
 def _matches_high_risk_pattern(text: str) -> bool:
     return any(pattern.search(text) is not None for pattern in _HIGH_RISK_PATTERNS)
 
@@ -339,7 +348,7 @@ class Intake:
         if wire["schema_version"] != SCHEMA_VERSION:
             raise ShadowStewardError("intake_schema_unsupported")
         request_sha = _sha(wire["request_sha256"], "request_sha256")
-        paths = _optional_items(wire["requested_paths"], "requested_paths")
+        paths = _validated_non_private_paths(wire["requested_paths"], "requested_paths")
         change_types = _items(
             wire["change_types"], "change_types", allowed=frozenset(SAFE_CHANGE_TYPES)
         )
@@ -463,7 +472,7 @@ class MissionProposal:
             _identifier(wire["proposal_id"], "proposal_id"),
             _sha(wire["source_request_sha256"], "source_request_sha256"),
             _text(wire["objective_kind"], "objective_kind", max_chars=64),
-            _optional_items(wire["requested_paths"], "requested_paths"),
+            _validated_non_private_paths(wire["requested_paths"], "requested_paths"),
             _items(wire["change_types"], "change_types", allowed=frozenset(SAFE_CHANGE_TYPES)),
             _optional_items(wire["risk_flags"], "risk_flags"),
             _optional_items(wire["stop_codes"], "stop_codes"),
