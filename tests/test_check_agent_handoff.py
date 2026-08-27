@@ -25,7 +25,7 @@ class HandoffMissionCompatibilityTests(unittest.TestCase):
         self.assertEqual(
             handoff.weak_agent_dispatch_failures(next_text, packets), []
         )
-        packet = packets["PE7-AUTONOMOUS-STEWARD-PR1"]
+        packet = packets["PE7-AUTONOMOUS-STEWARD-PR2"]
         heading = handoff.PACKET_HEADING_RE.search(next_text)
         self.assertIsNotNone(heading)
         self.assertEqual(packet["source_path"], "docs/NEXT_DECISION.md")
@@ -41,7 +41,7 @@ class HandoffMissionCompatibilityTests(unittest.TestCase):
         marker = handoff.WEAK_AGENT_DISPATCH_RE.search(next_text)
         self.assertIsNotNone(marker)
         payload = json.loads(marker.group("payload"))
-        payload["packet_id"] = "PE7-AUTONOMOUS-STEWARD-PR2"
+        payload["packet_id"] = "PE7-AUTONOMOUS-STEWARD-PR1"
         forged = next_text[: marker.start("payload")] + json.dumps(payload, sort_keys=True) + next_text[marker.end("payload") :]
         compatibility_failures = handoff.weak_agent_dispatch_failures(forged, packets)
         self.assertTrue(
