@@ -15,6 +15,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+MISSION_CONTRACT_PATH = ROOT / "scripts" / "agent-control" / "mission_contract.py"
 
 NEXT_DECISION_MAX_BYTES = 64 * 1024
 RECEIPT_EVIDENCE_MAX_CHARS = 600
@@ -967,6 +968,21 @@ def weak_agent_dispatch_failures(
     """
 
     failures: list[str] = []
+    spec = importlib.util.spec_from_file_location(
+        "agent_handoff_registered_mission", MISSION_CONTRACT_PATH
+    )
+    if spec is None or spec.loader is None:
+        failures.append("registered Mission contract is unavailable")
+    else:
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+            registered = module.campaign_mission()
+            module.MaintenanceMission.from_wire(registered.to_wire())
+        except Exception as error:
+            reason = getattr(error, "reason", str(error))
+            failures.append(f"registered Mission contract invalid: {reason}")
     executable = {
         packet_id: packet
         for packet_id, packet in current_packets.items()
@@ -1108,6 +1124,34 @@ def weak_agent_dispatch_failures(
                         failures.append(
                             f"weak-agent dispatch for route-control IMPLEMENT packet {current_packet_id} must target route control source, found unrelated path: {prod_paths}"
                         )
+    if isinstance(allowed_scope, list) and isinstance(payload.get("forbidden_next_actions"), list):
+        spec = importlib.util.spec_from_file_location(
+            "agent_handoff_mission_contract", MISSION_CONTRACT_PATH
+        )
+        if spec is None or spec.loader is None:
+            failures.append("legacy Mission compatibility contract is unavailable")
+        else:
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            try:
+                spec.loader.exec_module(module)
+                packet = {
+                    "packet_id": current_packet_id,
+                    "state": str(current_packets[current_packet_id]["state"]),
+                    "source_path": "docs/NEXT_DECISION.md",
+                    "packet_sha256": hashlib.sha256(
+                        next_text.encode("utf-8")
+                    ).hexdigest(),
+                    "allowed_paths": allowed_scope,
+                    "forbidden_next_actions": payload["forbidden_next_actions"],
+                    "execution_authorized": False,
+                    "checkpoint_allowed": True,
+                    "dispatch_lane": payload.get("dispatch_lane"),
+                }
+                module.validate_legacy_compatibility(packet, payload)
+            except Exception as error:
+                reason = getattr(error, "reason", str(error))
+                failures.append(f"legacy Mission compatibility invalid: {reason}")
     known_store_mutations = payload.get("known_store_mutations")
     if known_store_mutations is not None and (
         not isinstance(known_store_mutations, list)

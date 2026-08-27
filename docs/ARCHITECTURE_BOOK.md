@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-08-24.
+Last updated: 2026-08-28.
 
 Current version: v38.
 
@@ -17,6 +17,29 @@ Its single first-order objective is:
 > Under non-negotiable quality, safety, traceability, compatibility, and rollback constraints, continuously increase verifiable and reusable task delivery per unit of total lifecycle cost.
 
 The system does not optimize token count in isolation. A lower-token result is not better unless it meets the same accepted quality, safety, and integrity gates.
+
+### Autonomous Steward migration contract (PR1)
+
+The provider-free migration contract is owned by
+`scripts/agent-control/mission_contract.py`. `MaintenanceMission` binds one
+canonical proposal payload to an owner approval digest, exact repository/source
+identity, explicit scope and change categories, finite attempts/time/calls/cost
+budgets, quality checks, stop taxonomy, and a tested rollback boundary. `Stage`
+binds one verifiable integration result to the same repository identity and its
+WorkCard graph. `WorkCard` narrows paths, steps, focused and negative checks,
+evidence, dependencies, path locks, model tier, attempts, result state, and
+rollback; it cannot widen Mission scope or budget.
+
+The v1 boundary is fail-closed and provider-free: malformed, stale,
+unauthorized, out-of-scope, unbounded, sensitive, destructive, or
+`OUTCOME_UNKNOWN` inputs are rejected. Routine worker/test/CI/review failure
+and main drift remain bounded recovery categories; scope, authority,
+requirement, safety, and unknown external outcomes are owner-pause categories.
+The contract is a read-only compatibility reader during migration. The legacy
+packet controller at `scripts/agent-control/local_loop.py` remains the sole
+lifecycle writer and sole durable queue/lease path; the projection cannot
+consume authority, write state, call a Provider, or create a second store,
+scheduler, evaluator, budget, output, audit, rollback, or workspace owner.
 
 ## Repository Agent Loop Control Plane
 
