@@ -15,6 +15,21 @@ Open PR heads, Draft/Ready state, CI, reviews, mergeability, and the next permit
 - Latest accepted baseline: PR #621 exact head `199c12756e58ffaa6041a22cd01f23ce7a1eda15`, squash-merged as `628577c5e8cb404c4dcc2e689925414bbfda70ab`; it implements the provider-free C1 shared Harness run seam, exact three-axis descriptor manifest, arm-zero and one admitted second Harness adapters, baseline/memory-only/skill-only Strategy adapters, two frozen ModelPlans, deterministic matrix planning, and `INCOMPARABLE` projections on top of the accepted C1 contract freeze, with the exact-head review-receipt gate hardened by PR #622 (merge `bd4d5d3279664906bfa6215f11f6a42b3a1654fc`). No Provider call, credential-value read, target write, authority consumption, enforcement escape, or live effect was authorized by these provider-free merges.
 - A new `main`, PR head, CI result, review receipt, or canonical-document change invalidates older context capsules and branch-local status prose.
 
+## Approved Autonomous Steward Migration Campaign
+
+The repository owner approved the Autonomous Steward migration direction on 2026-08-27 from proposal digest `4b6eacaa4ff58337a02a6a73f458ffb0e4d3cb4e71f256c1024b3dd6205e1d39`. The campaign changes repository-maintenance governance from user-managed packets to one owner-approved Mission, Steward-managed Stages, and bounded WorkCards, while retaining exact-head CI, independent review, rollback, least privilege, and fail-closed external-effect handling. The durable Mission/Stage/WorkCard contract is not accepted capability yet; it is scheduled behind the baseline-recovery window in `docs/NEXT_DECISION.md` and the compact successor order in `docs/FUTURE_ROUTE.md`.
+
+The existing controller remains the only lifecycle writer until an explicit canary cutover proves a single replacement writer. No Provider call, production action, deployment, release, target write, destructive effect, or automatic merge is authorized by this campaign decision.
+
+The unfinished MX1 work is parked as migration input, not accepted capability or PILOT authority:
+
+| Input | Recovery reference | Exact head | Disposition |
+|---|---|---|---|
+| managed ModelPlan intake binding | `origin/archive/mx1-pilot-intake-modelplan-20260827` | `096800c8d02d2c713c2620abd9b882c7c098fe77` | Preserve for later symbol-level `TRANSPLANT`, `ADAPT`, `REIMPLEMENT`, or `REJECT` audit |
+| managed input-ceiling repair, including the intake commits | `origin/archive/mx1-input-ceiling-20260827` | `3f43beb19f0d898961f666e76cd7482c70269a2a` | Preserve for later symbol-level `TRANSPLANT`, `ADAPT`, `REIMPLEMENT`, or `REJECT` audit |
+
+Neither recovery reference grants execution authority, resolves the frozen model-contract mismatch, or permits the blocked MX1 Provider effect.
+
 ## Accepted Packet Receipts
 
 This table is the durable cross-document prerequisite index. A packet may appear here only after merge, exact-head review, canonical CI, and canonical-document synchronization have all been established; live PR state still comes from a fresh capsule. Evidence cells bind the minimal verifiable identity (PR, exact head, merge, canonical workflow); chronology and full receipts remain owned by Git history and GitHub.

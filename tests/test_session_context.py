@@ -1188,17 +1188,13 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_packet_is_blocked_mx1_pilot_effect(self):
+    def test_current_repository_packet_is_ready_steward_pr0(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         status_document = (root / "docs/CURRENT_STATUS.md").read_text(encoding="utf-8")
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
-        self.assertIn(
-            "No Provider call, credential-value read/output/persistence, target write, "
-            "EFFECT/T3 action, auto-merge, or second runtime/store/authority owner",
-            next_document,
-        )
+        self.assertIn("No Steward implementation, Provider call, product effect", next_document)
         self.assertIn(
             "| `PE7-HE-EC3-CONTRACT-1` | `COMPLETE` | PR #603 ",
             status_document,
@@ -1211,44 +1207,34 @@ class CheckpointTests(unittest.TestCase):
             "no lifecycle-cost instrumentation or enforcement is accepted",
             status_document,
         )
-        self.assertIn(
-            "`PE7-HE-MX1-CORE-1` is accepted through PR #621",
-            future_document,
-        )
-        self.assertNotIn(
-            "enforcement is the current `NEXT_DECISION` window",
-            future_document,
-        )
-        self.assertIn(
-            "62 accounted units: 7 accepted + 1 current + 54 future",
-            future_document,
-        )
-        self.assertIn("7 (`0 + 7`)", future_document)
-        self.assertIn("15 (`0 + 15`)", future_document)
-        self.assertIn("provider-free `PE7-HE-MX1-CORE-1` implementation is complete", next_document)
-        self.assertIn("PE7-HE-MX1-PILOT-1", next_document)
+        self.assertIn("former Harness-Evolution route is parked, not erased", future_document)
+        self.assertIn("seven successor packets above replace the 54-packet routing horizon", future_document)
+        self.assertIn("PE7-AUTONOMOUS-STEWARD-PR7", future_document)
+        self.assertIn("PE7-HE-MX1-CORE-1 — COMPLETE", next_document)
+        self.assertIn("PE7-AUTONOMOUS-STEWARD-PR0", next_document)
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
-        self.assertEqual(packet["packet_id"], "PE7-HE-MX1-PILOT-1")
-        self.assertEqual(packet["state"], "BLOCKED_PREREQUISITE")
-        self.assertFalse(packet["checkpoint_allowed"])
+        self.assertEqual(packet["packet_id"], "PE7-AUTONOMOUS-STEWARD-PR0")
+        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
+        self.assertTrue(packet["checkpoint_allowed"])
         self.assertFalse(packet["execution_authorized"])
-        with self.assertRaises(session_context.SessionContextError):
-            session_context.current_dispatch_capsule(next_document, packet)
+        capsule = session_context.current_dispatch_capsule(next_document, packet)
+        self.assertEqual(capsule["risk_class"], "authority")
+        self.assertEqual(capsule["external_effect_limit"], 0)
 
     def test_future_route_profile_extraction_is_routing_projection_only(self):
         root = Path(__file__).resolve().parents[1]
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-RWE-CR-ANALYSIS-1",
+            packet_id="PE7-AUTONOMOUS-STEWARD-PR1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
         self.assertFalse(extract["execution_authorized"])
         self.assertEqual(
-            extract["profile_id"], "PE7-RWE-CR-ANALYSIS-1.v1"
+            extract["profile_id"], "PE7-AUTONOMOUS-STEWARD-PR1.v1"
         )
         self.assertEqual(extract["worker_tier"], "T2")
 
@@ -1691,7 +1677,7 @@ class AdversarialCheckpointTests(unittest.TestCase):
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
         extract = session_context.extract_packet(
             future_document,
-            packet_id="PE7-RWE-CR-ANALYSIS-1",
+            packet_id="PE7-AUTONOMOUS-STEWARD-PR1",
             accepted_main_sha=MAIN,
             source_path="docs/FUTURE_ROUTE.md",
         )
