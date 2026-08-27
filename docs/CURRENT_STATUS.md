@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-25.
+Last updated: 2026-08-27.
 
 This document owns accepted repository truth and confirmed capability gaps only. It separates two states that must not be conflated:
 
@@ -14,6 +14,21 @@ Open PR heads, Draft/Ready state, CI, reviews, mergeability, and the next permit
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
 - Latest accepted baseline: PR #621 exact head `199c12756e58ffaa6041a22cd01f23ce7a1eda15`, squash-merged as `628577c5e8cb404c4dcc2e689925414bbfda70ab`; it implements the provider-free C1 shared Harness run seam, exact three-axis descriptor manifest, arm-zero and one admitted second Harness adapters, baseline/memory-only/skill-only Strategy adapters, two frozen ModelPlans, deterministic matrix planning, and `INCOMPARABLE` projections on top of the accepted C1 contract freeze, with the exact-head review-receipt gate hardened by PR #622 (merge `bd4d5d3279664906bfa6215f11f6a42b3a1654fc`). No Provider call, credential-value read, target write, authority consumption, enforcement escape, or live effect was authorized by these provider-free merges.
 - A new `main`, PR head, CI result, review receipt, or canonical-document change invalidates older context capsules and branch-local status prose.
+
+## Approved Autonomous Steward Migration Campaign
+
+The repository owner approved the Autonomous Steward migration direction on 2026-08-27 from proposal digest `4b6eacaa4ff58337a02a6a73f458ffb0e4d3cb4e71f256c1024b3dd6205e1d39`. The campaign changes repository-maintenance governance from user-managed packets to one owner-approved Mission, Steward-managed Stages, and bounded WorkCards, while retaining exact-head CI, independent review, rollback, least privilege, and fail-closed external-effect handling. The durable Mission/Stage/WorkCard contract is not accepted capability yet; it is scheduled behind the baseline-recovery window in `docs/NEXT_DECISION.md` and the compact successor order in `docs/FUTURE_ROUTE.md`.
+
+The existing controller remains the only lifecycle writer until an explicit canary cutover proves a single replacement writer. No Provider call, production action, deployment, release, target write, destructive effect, or automatic merge is authorized by this campaign decision.
+
+The unfinished MX1 work is parked as migration input, not accepted capability or PILOT authority:
+
+| Input | Recovery reference | Exact head | Disposition |
+|---|---|---|---|
+| managed ModelPlan intake binding | `origin/archive/mx1-pilot-intake-modelplan-20260827` | `096800c8d02d2c713c2620abd9b882c7c098fe77` | Preserve for later symbol-level `TRANSPLANT`, `ADAPT`, `REIMPLEMENT`, or `REJECT` audit |
+| managed input-ceiling repair, including the intake commits | `origin/archive/mx1-input-ceiling-20260827` | `3f43beb19f0d898961f666e76cd7482c70269a2a` | Preserve for later symbol-level `TRANSPLANT`, `ADAPT`, `REIMPLEMENT`, or `REJECT` audit |
+
+Neither recovery reference grants execution authority, resolves the frozen model-contract mismatch, or permits the blocked MX1 Provider effect.
 
 ## Accepted Packet Receipts
 
@@ -397,8 +412,8 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Contemporary old/new replay reconstruction | `COMPLETE` | PR #566 accepted; reconstruction verifier, frozen bindings, provider-free traces, and exact old/new identities are accepted |
 | Contemporary old/new replay | `DECISION_REQUIRED` | Protocol/preflight freeze is complete; captured CLI is not `ready=true`; `PE7-RWE-CR-RUN-1` is parked on a pre-tenant empty Store |
 | Contemporary old/new replay analysis | `BLOCKED_PREREQUISITE` | One independent RWE closeout remains behind the parked run; it neither blocks nor substitutes for the Harness-Evolution spiral |
-| Harness-Evolution C0–C4 capability spiral | `BLOCKED_PREREQUISITE` (C1 PILOT window) | EC3, the executed-and-closed C0 pilot/closeout, the C1 three-axis contract, and the provider-free C1 CORE implementation are accepted on `main`; the current window `PE7-HE-MX1-PILOT-1` executes the preregistered matrix ladder only under a separately authorized finite effect, and the 28 formal C0–C4 packets span accepted evidence and routing-only successors through one generation, bounded recursion, final sealed transfer, readiness, and human adoption decision |
-| Experimental C5–C8 research spiral | `BLOCKED_PREREQUISITE` | 28 formal default-off packets retain fixed-Meta, advanced gate/R4, Harness-plus-weight R5, and bounded outer-policy R6 contracts, effects, independent closeouts, and replications; negative or insufficient dispositions remain valid terminals |
+| Harness-Evolution C0–C4 capability spiral | `PARKED_MIGRATION_INPUT` | EC3, the executed-and-closed C0 pilot/closeout, the C1 three-axis contract, and the provider-free C1 CORE implementation remain accepted on `main`; the former `PE7-HE-MX1-PILOT-1` effect is parked and cannot request or execute a matrix effect unless a later accepted Mission imports it with an exact finite authority |
+| Experimental C5–C8 research spiral | `PARKED_MIGRATION_INPUT` | The 28 formal default-off packets are retained only as migration input; their fixed-Meta, advanced gate/R4, Harness-plus-weight R5, and bounded outer-policy R6 contracts do not create a current execution window or effect authority |
 | Dashboard #225 / successor | `DEFERRED` | 3 formal packets: disposition, presentation-only refresh, exact-head closeout; it projects accepted core and optional-research dispositions without owning backend behavior |
 
 ## C1 three-axis experiment contract (provider-free contract freeze)
@@ -408,9 +423,10 @@ admission, comparability, allocation, and analysis boundary for the Harness x
 Model x Strategy experiment matrix. It creates no runtime, scheduler, Store,
 evaluator, budget, admission, audit, rollback, or adoption owner; performs no
 candidate generation, Provider call, holdout access, target write, or live
-effect. Its provider-free CORE implementation is accepted on `main`; only the
-later `PE7-HE-MX1-PILOT-1` window may request a separately authorized finite
-matrix effect.
+effect. Its provider-free CORE implementation is accepted on `main`; the
+former `PE7-HE-MX1-PILOT-1` effect is parked as migration input and may not
+request or execute a finite matrix effect unless a later accepted Mission
+imports it with exact finite authority.
 
 ### Arm-zero identity and provenance
 

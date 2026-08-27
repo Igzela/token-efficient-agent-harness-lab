@@ -2267,8 +2267,7 @@ mod tests {
             "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
             "timeout_ms": 5_000
         }]));
-        task["intake"]["managed_model_plan"] =
-            json!(crate::harness_evolution::MX1_SECOND_MODEL_ID);
+        task["intake"]["managed_model_plan"] = json!(crate::harness_evolution::MX1_SECOND_MODEL_ID);
         let graph = compile_product_executable_graph(
             &task,
             "2026-07-30T00:00:00Z",
@@ -2287,7 +2286,8 @@ mod tests {
         let node = &graph["nodes"][0]["managed_deepseek"];
         assert_eq!(node["model"], "deepseek-v4-flash");
         // Arm zero keeps the exact registered identity as well.
-        task["intake"]["managed_model_plan"] = json!(crate::harness_evolution::MX1_ARM_ZERO_MODEL_ID);
+        task["intake"]["managed_model_plan"] =
+            json!(crate::harness_evolution::MX1_ARM_ZERO_MODEL_ID);
         let graph = compile_product_executable_graph(
             &task,
             "2026-07-30T00:00:00Z",
@@ -2295,7 +2295,10 @@ mod tests {
             "managed_deepseek",
         )
         .unwrap();
-        assert_eq!(graph["nodes"][0]["managed_deepseek"]["model"], "deepseek-v4-pro");
+        assert_eq!(
+            graph["nodes"][0]["managed_deepseek"]["model"],
+            "deepseek-v4-pro"
+        );
         // Unregistered plans fail closed.
         task["intake"]["managed_model_plan"] = json!("gpt-9:turbo-mix:v1");
         assert!(compile_product_executable_graph(
