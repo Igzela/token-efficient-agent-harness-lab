@@ -176,6 +176,41 @@ class MissionContractTests(unittest.TestCase):
         rollback["strategy"] = "shell_anything"
         with self.assertRaisesRegex(contract.MissionContractError, "rollback_strategy_invalid"):
             contract.RollbackBoundary.from_wire(rollback)
+        rollback = self.mission.rollback.to_wire()
+        rollback["reference"] = "arbitrary-not-an-accepted-sha"
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "rollback_reference_invalid"
+        ):
+            contract.RollbackBoundary.from_wire(rollback)
+
+    def test_current_validation_rejects_a_rehashed_unregistered_mission(self):
+        widened_grant = replace(
+            self.mission.standing_grants[0], allowed_paths=("engine/",)
+        )
+        forged = replace(
+            self.mission,
+            allowed_paths=("engine/",),
+            standing_grants=(widened_grant,),
+        )
+        forged = replace(
+            forged,
+            proposal_sha256=forged.computed_proposal_sha256,
+            owner_approval=replace(
+                forged.owner_approval,
+                proposal_sha256=forged.computed_proposal_sha256,
+            ),
+        )
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "mission_registration_invalid"
+        ):
+            contract.validate_current_mission(
+                forged,
+                repository=self.mission.repository_identity.repository,
+                base_sha=self.mission.repository_identity.base_sha,
+                branch=self.mission.repository_identity.branch,
+                source_ref=self.mission.repository_identity.source_ref,
+                source_sha256=self.mission.repository_identity.source_sha256,
+            )
 
     def test_stage_and_workcard_bind_exact_identity_scope_and_attempt_budget(self):
         stage = contract.Stage(
@@ -239,7 +274,11 @@ class MissionContractTests(unittest.TestCase):
 
         widened_stage = replace(
             stage,
-            rollback=replace(stage.rollback, strategy="document_restore"),
+            rollback=replace(
+                stage.rollback,
+                strategy="document_restore",
+                reference="document:docs/ARCHITECTURE_BOOK.md:" + "a" * 64,
+            ),
         )
         with self.assertRaisesRegex(
             contract.MissionContractError, "stage_rollback_widens_mission"
@@ -248,7 +287,11 @@ class MissionContractTests(unittest.TestCase):
 
         widened_card = replace(
             card,
-            rollback=replace(card.rollback, strategy="document_restore"),
+            rollback=replace(
+                card.rollback,
+                strategy="document_restore",
+                reference="document:docs/ARCHITECTURE_BOOK.md:" + "a" * 64,
+            ),
         )
         with self.assertRaisesRegex(
             contract.MissionContractError, "workcard_rollback_widens_stage"

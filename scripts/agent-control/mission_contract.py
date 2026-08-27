@@ -37,6 +37,11 @@ REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 PACKET_ID = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$")
 BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
+ACCEPTED_MAIN_REFERENCE = re.compile(r"^accepted-main:[0-9a-f]{40}$")
+GIT_REVERT_REFERENCE = re.compile(r"^revert:[0-9a-f]{40}$")
+DOCUMENT_RESTORE_REFERENCE = re.compile(
+    r"^document:[A-Za-z0-9_.//-]{1,512}:[0-9a-f]{64}$"
+)
 TIMESTAMP = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
 )
@@ -440,6 +445,13 @@ class RollbackBoundary:
             raise MissionContractError("rollback_strategy_invalid")
         reference = _text(wire["reference"], "rollback_reference", max_chars=512)
         if any(char in reference for char in "\r\n"):
+            raise MissionContractError("rollback_reference_invalid")
+        reference_patterns = {
+            "git_revert": GIT_REVERT_REFERENCE,
+            "restore_accepted_main": ACCEPTED_MAIN_REFERENCE,
+            "document_restore": DOCUMENT_RESTORE_REFERENCE,
+        }
+        if reference_patterns[strategy].fullmatch(reference) is None:
             raise MissionContractError("rollback_reference_invalid")
         verification = _strings(wire["verification"], "rollback_verification")
         return cls(strategy, reference, verification)
@@ -910,9 +922,15 @@ def validate_current_mission(
 ) -> MaintenanceMission:
     """Reject a valid-looking Mission bound to stale or unauthenticated identity."""
 
-    model = validate_owner_approval(
-        mission,
-    )
+    model = validate_owner_approval(mission)
+    registered = campaign_mission()
+    if (
+        model.mission_id != registered.mission_id
+        or model.proposal_wire() != registered.proposal_wire()
+        or model.proposal_sha256 != registered.proposal_sha256
+        or model.owner_approval != registered.owner_approval
+    ):
+        raise MissionContractError("mission_registration_invalid")
     if model.repository_identity.repository != repository:
         raise MissionContractError("mission_repository_stale")
     if model.repository_identity.base_sha != base_sha:
