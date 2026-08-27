@@ -183,10 +183,10 @@ _EXTERNAL_ACTIONS = (
     r"write|push|modify|change|update|create|close|merge|comment|send|post|submit|"
     r"upload|notify|open|call|invoke|request|trigger|email|publish|release|deploy|"
     r"sync|forward|transfer|share|export|connect|contact|access|make|transmit|"
-    r"run|execute|perform|relay|route|fetch|download"
+    r"run|execute|perform|relay|route|fetch|download|hit|use|message|visit|deliver"
 )
 _EXTERNAL_TARGETS = (
-    r"github|slack|discord|microsoft teams|notion|external service|external api|"
+    r"github|slack|discord|microsoft teams|notion|jira|external service|external api|"
     r"third[- ]party|webhook|email|e-mail|api|s3|container registry|registry|origin|"
     r"upstream|remote|pull request|pull-request|pr|branch|repository|repo|database|"
     r"db|provider|target|endpoint|url|unknown service|external system|http request|"

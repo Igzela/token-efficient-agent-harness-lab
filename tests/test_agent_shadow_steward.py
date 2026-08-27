@@ -193,6 +193,10 @@ class ShadowStewardTests(unittest.TestCase):
             "Send the report via SMTP.",
             "Connect to an unknown host.",
             "Execute a webhook.",
+            "Hit an external endpoint while updating docs/ARCHITECTURE_BOOK.md.",
+            "Use curl against a remote host while updating docs/ARCHITECTURE_BOOK.md.",
+            "Message a Slack channel while updating docs/ARCHITECTURE_BOOK.md.",
+            "Create a ticket in Jira while updating docs/ARCHITECTURE_BOOK.md.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)
