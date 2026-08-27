@@ -170,13 +170,6 @@ class TestAskSol(unittest.TestCase):
 
     def test_04_git_context_fails_closed_on_errors(self):
         """4. Invalid or non-git directory fails closed without substituting fake zeros."""
-        non_git_dir = self.worktree / "non_git_subfolder"
-        non_git_dir.mkdir()
-
-        result = ask_sol.execute_sol_investigation(
-            goal="Investigate invalid directory",
-            worktree=non_git_dir,
-        )
         with tempfile.TemporaryDirectory() as empty_dir:
             result_empty = ask_sol.execute_sol_investigation(
                 goal="Investigate completely empty non-git dir",

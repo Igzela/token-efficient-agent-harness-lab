@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-25.
+Last updated: 2026-08-27.
 
 This document owns accepted repository truth and confirmed capability gaps only. It separates two states that must not be conflated:
 
@@ -412,8 +412,8 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Contemporary old/new replay reconstruction | `COMPLETE` | PR #566 accepted; reconstruction verifier, frozen bindings, provider-free traces, and exact old/new identities are accepted |
 | Contemporary old/new replay | `DECISION_REQUIRED` | Protocol/preflight freeze is complete; captured CLI is not `ready=true`; `PE7-RWE-CR-RUN-1` is parked on a pre-tenant empty Store |
 | Contemporary old/new replay analysis | `BLOCKED_PREREQUISITE` | One independent RWE closeout remains behind the parked run; it neither blocks nor substitutes for the Harness-Evolution spiral |
-| Harness-Evolution C0–C4 capability spiral | `BLOCKED_PREREQUISITE` (C1 PILOT window) | EC3, the executed-and-closed C0 pilot/closeout, the C1 three-axis contract, and the provider-free C1 CORE implementation are accepted on `main`; the current window `PE7-HE-MX1-PILOT-1` executes the preregistered matrix ladder only under a separately authorized finite effect, and the 28 formal C0–C4 packets span accepted evidence and routing-only successors through one generation, bounded recursion, final sealed transfer, readiness, and human adoption decision |
-| Experimental C5–C8 research spiral | `BLOCKED_PREREQUISITE` | 28 formal default-off packets retain fixed-Meta, advanced gate/R4, Harness-plus-weight R5, and bounded outer-policy R6 contracts, effects, independent closeouts, and replications; negative or insufficient dispositions remain valid terminals |
+| Harness-Evolution C0–C4 capability spiral | `PARKED_MIGRATION_INPUT` | EC3, the executed-and-closed C0 pilot/closeout, the C1 three-axis contract, and the provider-free C1 CORE implementation remain accepted on `main`; the former `PE7-HE-MX1-PILOT-1` effect is parked and cannot request or execute a matrix effect unless a later accepted Mission imports it with an exact finite authority |
+| Experimental C5–C8 research spiral | `PARKED_MIGRATION_INPUT` | The 28 formal default-off packets are retained only as migration input; their fixed-Meta, advanced gate/R4, Harness-plus-weight R5, and bounded outer-policy R6 contracts do not create a current execution window or effect authority |
 | Dashboard #225 / successor | `DEFERRED` | 3 formal packets: disposition, presentation-only refresh, exact-head closeout; it projects accepted core and optional-research dispositions without owning backend behavior |
 
 ## C1 three-axis experiment contract (provider-free contract freeze)
@@ -423,9 +423,10 @@ admission, comparability, allocation, and analysis boundary for the Harness x
 Model x Strategy experiment matrix. It creates no runtime, scheduler, Store,
 evaluator, budget, admission, audit, rollback, or adoption owner; performs no
 candidate generation, Provider call, holdout access, target write, or live
-effect. Its provider-free CORE implementation is accepted on `main`; only the
-later `PE7-HE-MX1-PILOT-1` window may request a separately authorized finite
-matrix effect.
+effect. Its provider-free CORE implementation is accepted on `main`; the
+former `PE7-HE-MX1-PILOT-1` effect is parked as migration input and may not
+request or execute a finite matrix effect unless a later accepted Mission
+imports it with exact finite authority.
 
 ### Arm-zero identity and provenance
 
