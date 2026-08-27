@@ -295,6 +295,12 @@ class ShadowStewardTests(unittest.TestCase):
         for path, reason in (
             ("docs/.env.local", "private_path_forbidden"),
             ("docs/id_rsa", "private_path_forbidden"),
+            ("docs/private_key", "private_path_forbidden"),
+            ("docs/private-key", "private_path_forbidden"),
+            ("docs/privatekey", "private_path_forbidden"),
+            ("docs/id_rsa_backup", "private_path_forbidden"),
+            ("docs/authorized_keys", "private_path_forbidden"),
+            ("docs/access_token", "private_path_forbidden"),
             ("docs/../engine/foo.py", "path_syntax_forbidden"),
             ("docs/../../etc/passwd", "path_syntax_forbidden"),
         ):

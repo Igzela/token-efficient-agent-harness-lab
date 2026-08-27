@@ -266,14 +266,51 @@ def _safe_paths(text: str) -> tuple[str, ...]:
 
 
 def _is_sensitive_path(path: str) -> bool:
-    parts = set(path.casefold().split("/"))
-    return bool(parts & _SENSITIVE_PATH_NAMES) or any(
-        part.startswith(".env")
-        or part.endswith((".pem", ".key"))
-        or "secret" in part
-        or "credential" in part
-        for part in parts
-    )
+    parts = path.casefold().split("/")
+    for part in parts:
+        if part.startswith(".") or part in _SENSITIVE_PATH_NAMES:
+            return True
+        normalized = re.sub(r"[^a-z0-9]+", "_", part).strip("_")
+        tokens = set(re.findall(r"[a-z0-9]+", part))
+        if (
+            normalized.startswith(
+                (
+                    "private",
+                    "secret",
+                    "credential",
+                    "password",
+                    "passwd",
+                    "token",
+                    "access_token",
+                    "id_rsa",
+                    "id_ed25519",
+                    "id_ecdsa",
+                    "id_dsa",
+                    "authorized",
+                    "ssh",
+                )
+            )
+            or tokens & {
+                "key",
+                "keys",
+                "private",
+                "secret",
+                "secrets",
+                "credential",
+                "credentials",
+                "password",
+                "passwd",
+                "token",
+                "tokens",
+                "ssh",
+            }
+            or "secret" in normalized
+            or "credential" in normalized
+            or "access_token" in normalized
+            or part.endswith((".pem", ".key"))
+        ):
+            return True
+    return False
 
 
 def _validated_non_private_paths(value: object, field: str) -> tuple[str, ...]:
