@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Runtime Sequence: Workflow Run Tick Execution</title>
+  <style>
+    :root {
+      --bg: #090d13;
+      --card-bg: #161b22;
+      --card-header: #21262d;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-bright: #ffffff;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-glow: rgba(88, 166, 255, 0.25);
+      --success: #3fb950;
+      --warning: #d29922;
+      --danger: #f85149;
+      --purple: #bc8cff;
+      --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+    header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 100;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .badge {
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge-success { background: rgba(63, 185, 80, 0.15); color: var(--success); border: 1px solid rgba(63, 185, 80, 0.4); }
+    .badge-info { background: rgba(88, 166, 255, 0.15); color: var(--accent); border: 1px solid rgba(88, 166, 255, 0.4); }
+    
+    .quick-summary-bar {
+      background: #0d1117;
+      border-bottom: 1px solid var(--border);
+      padding: 8px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .quick-summary-bar b { color: var(--text-bright); }
+    .phase-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #161b22;
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+    .phase-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .btn {
+      background: #21262d;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+    .btn:hover { background: #30363d; border-color: var(--text-muted); color: #fff; }
+    .btn-primary { background: #1f6feb; border-color: #388bfd; color: #fff; }
+    .btn-primary:hover { background: #388bfd; }
+    .toggle-group {
+      display: flex;
+      background: #090d13;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px;
+    }
+    .toggle-btn {
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+    .toggle-btn.active { background: #21262d; color: #fff; }
+
+    main {
+      flex: 1;
+      display: flex;
+      position: relative;
+      overflow: hidden;
+    }
+    #viewport {
+      flex: 1;
+      height: 100%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 20px 40px 100px 40px;
+      position: relative;
+    }
+    
+    /* Sequence Diagram Layout */
+    .sequence-container {
+      width: 100%;
+      max-width: 1100px;
+      margin: 0 auto;
+      position: relative;
+    }
+    .participants-header {
+      display: flex;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      padding: 12px 0 20px 0;
+      z-index: 40;
+      border-bottom: 1px solid rgba(48, 54, 61, 0.4);
+    }
+    .participant {
+      width: 130px;
+      text-align: center;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 6px;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.4);
+      transition: all 0.2s;
+    }
+    .participant.active {
+      border-color: var(--accent);
+      background: #1c2128;
+      box-shadow: 0 0 12px var(--accent-glow);
+    }
+    .p-title { font-size: 12px; font-weight: 700; color: var(--text-bright); margin-bottom: 2px; }
+    .p-sub { font-size: 9px; color: var(--text-muted); font-family: var(--font-mono); }
+
+    /* Timeline & Lifelines */
+    .lifelines-bg {
+      position: absolute;
+      top: 70px;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      display: flex;
+      justify-content: space-between;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .lifeline {
+      width: 130px;
+      display: flex;
+      justify-content: center;
+    }
+    .lifeline-line {
+      width: 2px;
+      height: 100%;
+      background-image: linear-gradient(to bottom, var(--border) 50%, transparent 50%);
+      background-size: 2px 8px;
+    }
+
+    /* Steps & Messages */
+    .steps-flow {
+      position: relative;
+      z-index: 10;
+      margin-top: 30px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .step-row {
+      display: flex;
+      align-items: center;
+      position: relative;
+      min-height: 48px;
+      cursor: pointer;
+      padding: 6px 0;
+      transition: all 0.2s;
+      border-radius: 6px;
+    }
+    .step-row:hover {
+      background: rgba(88, 166, 255, 0.05);
+    }
+    .step-row.active {
+      background: rgba(88, 166, 255, 0.12);
+    }
+    .step-row.active .step-box {
+      border-color: var(--accent) !important;
+      box-shadow: 0 0 14px var(--accent-glow);
+    }
+    .step-row.branch-retry {
+      border-left: 3px solid var(--warning);
+      padding-left: 6px;
+    }
+    .step-row.branch-failure {
+      border-left: 3px solid var(--danger);
+      padding-left: 6px;
+    }
+
+    .step-num {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--card-header);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      font-weight: bold;
+      color: var(--text-muted);
+      position: absolute;
+      left: -32px;
+    }
+    .step-row.active .step-num {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    /* Message Arrow Visuals */
+    .arrow-container {
+      position: absolute;
+      height: 2px;
+      display: flex;
+      align-items: center;
+      z-index: 5;
+    }
+    .arrow-line {
+      flex: 1;
+      height: 2px;
+      background: var(--border);
+      transition: all 0.2s;
+    }
+    .arrow-line.sync { background: var(--accent); }
+    .arrow-line.db { background: var(--purple); height: 2px; border-top: 2px dashed var(--purple); }
+    .arrow-line.retry { background: var(--warning); }
+    .arrow-line.fail { background: var(--danger); }
+    
+    .arrow-head {
+      width: 0;
+      height: 0;
+      border-top: 5px solid transparent;
+      border-bottom: 5px solid transparent;
+    }
+    .arrow-head.right { border-left: 8px solid var(--accent); margin-right: -4px; }
+    .arrow-head.left { border-right: 8px solid var(--accent); margin-left: -4px; }
+    .arrow-head.db-right { border-left: 8px solid var(--purple); }
+    .arrow-head.retry-right { border-left: 8px solid var(--warning); }
+    .arrow-head.retry-left { border-right: 8px solid var(--warning); }
+
+    .step-box {
+      margin: 0 auto;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-size: 12px;
+      z-index: 10;
+      max-width: 680px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      transition: all 0.2s;
+    }
+    .step-main { display: flex; flex-direction: column; gap: 2px; }
+    .step-call { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--text-bright); }
+    .step-desc { font-size: 11px; color: var(--text-muted); }
+    .step-meta { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); text-align: right; }
+    .tag {
+      font-size: 9px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .tag-lock { background: rgba(188, 140, 255, 0.15); color: var(--purple); border: 1px solid rgba(188, 140, 255, 0.4); }
+    .tag-exec { background: rgba(88, 166, 255, 0.15); color: var(--accent); border: 1px solid rgba(88, 166, 255, 0.4); }
+    .tag-retry { background: rgba(210, 153, 34, 0.15); color: var(--warning); border: 1px solid rgba(210, 153, 34, 0.4); }
+    .tag-success { background: rgba(63, 185, 80, 0.15); color: var(--success); border: 1px solid rgba(63, 185, 80, 0.4); }
+
+    /* Side Inspector */
+    #inspector {
+      width: 420px;
+      background: var(--card-bg);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      z-index: 50;
+      box-shadow: -4px 0 20px rgba(0,0,0,0.5);
+    }
+    .inspector-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--card-header);
+    }
+    .inspector-content {
+      padding: 18px;
+      overflow-y: auto;
+      flex: 1;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .code-block {
+      background: #090d13;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: #e6edf3;
+      margin: 8px 0 14px 0;
+      overflow-x: auto;
+    }
+    .state-change {
+      background: rgba(88, 166, 255, 0.08);
+      border-left: 3px solid var(--accent);
+      padding: 8px 12px;
+      border-radius: 0 6px 6px 0;
+      margin: 10px 0;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h2 style="font-size: 15px; font-weight: 700; color: #fff;">Runtime Sequence: Workflow Run Execution Flow</h2>
+      <span class="badge badge-success">0 Errors / 0 Warnings</span>
+      <span class="badge badge-info">7 Participants Max</span>
+    </div>
+    <div class="controls">
+      <div class="toggle-group">
+        <button class="toggle-btn active" id="btn-all" onclick="setFilter('all')">Full Sequence</button>
+        <button class="toggle-btn" id="btn-happy" onclick="setFilter('happy')">Happy Path</button>
+        <button class="toggle-btn" id="btn-retry" onclick="setFilter('retry')">Retry & Recovery Branch</button>
+      </div>
+      <button class="btn" onclick="prevStep()">◀ Prev</button>
+      <button class="btn btn-primary" onclick="nextStep()">Next Step ▶</button>
+    </div>
+  </header>
+
+  <div class="quick-summary-bar">
+    <span><b>60-Second Maintainer View:</b></span>
+    <div class="phase-pill"><div class="phase-dot" style="background: var(--purple);"></div>Phase 1: DB Lock Lease Acquire</div>
+    <div class="phase-pill"><div class="phase-dot" style="background: var(--accent);"></div>Phase 2: Policy & Subprocess Exec</div>
+    <div class="phase-pill"><div class="phase-dot" style="background: var(--warning);"></div>Phase 3: State Commit / Retry</div>
+    <div class="phase-pill"><div class="phase-dot" style="background: var(--success);"></div>Phase 4: HTTP Metric Response</div>
+  </div>
+
+  <main>
+    <div id="viewport">
+      <div class="sequence-container">
+        <!-- 7 Aligned Participants -->
+        <div class="participants-header">
+          <div class="participant" id="p-client">
+            <div class="p-title">Client</div>
+            <div class="p-sub">External Caller</div>
+          </div>
+          <div class="participant" id="p-http">
+            <div class="p-title">HTTP Server</div>
+            <div class="p-sub">workflow_runs.rs</div>
+          </div>
+          <div class="participant" id="p-pool">
+            <div class="p-title">Scheduler / Pool</div>
+            <div class="p-sub">executor_pool.rs</div>
+          </div>
+          <div class="participant" id="p-policy">
+            <div class="p-title">ToolPolicyGate</div>
+            <div class="p-sub">tool_policy_executor.rs</div>
+          </div>
+          <div class="participant" id="p-node">
+            <div class="p-title">CommandExecutor</div>
+            <div class="p-sub">node_executor.rs</div>
+          </div>
+          <div class="participant" id="p-store">
+            <div class="p-title">ProductStore</div>
+            <div class="p-sub">local_product_store/</div>
+          </div>
+          <div class="participant" id="p-db">
+            <div class="p-title">Database</div>
+            <div class="p-sub">SQLite / Postgres</div>
+          </div>
+        </div>
+
+        <!-- Lifelines Background -->
+        <div class="lifelines-bg">
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+        </div>
+
+        <!-- Sequential Steps Flow -->
+        <div class="steps-flow" id="steps-container">
+          <!-- Rendered dynamically by JS -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Inspector Panel -->
+    <div id="inspector">
+      <div class="inspector-header">
+        <h3 id="ins-title" style="font-size: 15px; color: #fff; margin-bottom: 4px;">Step Inspector</h3>
+        <span id="ins-phase" style="font-size: 11px; color: var(--accent); font-family: var(--font-mono);">Click any step or use Next/Prev buttons</span>
+      </div>
+      <div class="inspector-content" id="ins-body">
+        <p style="color: var(--text-muted);">Step through the sequence to view exact Rust function calls, transaction boundaries, state transitions, and retry logic.</p>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const STEPS = [
+      {
+        id: 1,
+        phase: "Phase 0: Request Ingestion",
+        from: "client",
+        to: "http",
+        call: "POST /api/v1/workflow-runs/:run_id/tick",
+        desc: "External API request with JSON payload {\"executor\": \"command\"}",
+        file: "engine/src/http_server/routes.rs:L201",
+        tag: "REST API",
+        tagType: "tag-exec",
+        branch: "common",
+        details: {
+          symbol: "routes::build_router -> handlers::workflow_runs::api_tick_workflow_run",
+          code: `POST /api/v1/workflow-runs/:run_id/tick\n{\n  "executor": "command",\n  "timeout_ms": 30000\n}`,
+          state: "Incoming HTTP request dispatched to Axum handler.",
+          explanation: "Request arrives at Axum router, matches path parameters, and delegates to the workflow runs handler."
+        }
+      },
+      {
+        id: 2,
+        phase: "Phase 0: Auth & Policy Wrapper",
+        from: "http",
+        to: "policy",
+        call: "ToolPolicyNodeExecutor::command(inner, store)",
+        desc: "Constructs security gate wrapping CommandNodeExecutor",
+        file: "engine/src/http_server/handlers/workflow_runs.rs:L470",
+        tag: "WRAPPER",
+        tagType: "tag-exec",
+        branch: "common",
+        details: {
+          symbol: "ToolPolicyNodeExecutor::command(Arc::new(CommandNodeExecutor::default().with_timeout(timeout_ms)), store.clone())",
+          code: `let executor = ToolPolicyNodeExecutor::command(\n    Arc::new(CommandNodeExecutor::default().with_timeout(timeout_ms)),\n    store.clone()\n);`,
+          state: "Executor wrapped with security and policy allowlist checks.",
+          explanation: "HTTP handler instantiates CommandNodeExecutor with configured timeout, then wraps it in ToolPolicyNodeExecutor to enforce workspace boundaries and claim auditing."
+        }
+      },
+      {
+        id: 3,
+        phase: "Phase 1: DB Lock Lease Acquire",
+        from: "http",
+        to: "store",
+        call: "store.tick_with_executor_and_command(run_id, actor, 0, executor, None)",
+        desc: "Delegates execution to storage layer",
+        file: "engine/src/storage/local_product_store/workflow_runs.rs:L1133",
+        tag: "STORAGE DISPATCH",
+        tagType: "tag-exec",
+        branch: "common",
+        details: {
+          symbol: "LocalProductStore::tick_with_executor_and_command_inner_for_owner",
+          code: `store.tick_with_executor_and_command(\n    &run_id, actor, 0, executor.as_ref(), None\n)`,
+          state: "Enters storage execution pipeline with lease leasing locks.",
+          explanation: "Product store assumes exclusive control over workflow run state transitions."
+        }
+      },
+      {
+        id: 4,
+        phase: "Phase 1: DB Lock Lease Acquire",
+        from: "store",
+        to: "db",
+        call: "BEGIN IMMEDIATE; find_ready_node_locked(); UPDATE workflow_run_nodes SET status='running'",
+        desc: "Acquires exclusive DB lock, selects pending node, increments attempt_count",
+        file: "engine/src/storage/local_product_store/workflow_runs.rs:L1196-L1548",
+        tag: "ATOMIC DB LOCK",
+        tagType: "tag-lock",
+        branch: "common",
+        details: {
+          symbol: "find_ready_node_locked -> UPDATE workflow_run_nodes -> COMMIT",
+          code: `BEGIN IMMEDIATE TRANSACTION;\n-- Check is_run_terminal(run_id)\nUPDATE workflow_run_nodes \nSET status = 'running', started_at = ?, leased_at = ?, attempt_count = attempt_count + 1 \nWHERE run_id = ? AND node_id = ? AND status = 'pending';\nINSERT INTO workflow_run_events (event_type) VALUES ('node.leased');\nCOMMIT;`,
+          state: "Node state: 'pending' -> 'running' (attempt_count += 1). Transaction committed.",
+          explanation: "Under immediate SQLite/Postgres lock, finds next runnable node whose dependencies are met, leases it, emits node.leased event, and commits before launching process."
+        }
+      },
+      {
+        id: 5,
+        phase: "Phase 2: Tool Policy Gate",
+        from: "store",
+        to: "policy",
+        call: "policy.execute_node(input)",
+        desc: "Evaluates policy before execution and claims authorization lease",
+        file: "engine/src/tool_policy_executor.rs:L521-L794",
+        tag: "POLICY GATE",
+        tagType: "tag-exec",
+        branch: "common",
+        details: {
+          symbol: "ToolPolicyNodeExecutor::execute_node -> claim_tool_execution_without_approval",
+          code: `let snapshot = store.current_tool_execution_policy_snapshot()?;\nif !snapshot.is_tool_allowed(tool_name) { return Err(ToolPolicyDenied); }\nstore.claim_tool_execution_without_approval(tool_name, workspace_id)?;`,
+          state: "Security checks passed, execution claim recorded, audit log generated.",
+          explanation: "Tool policy verifies binary against allowlists, validates workspace directory confinement, and claims execution budget."
+        }
+      },
+      {
+        id: 6,
+        phase: "Phase 2: Subprocess Execution",
+        from: "policy",
+        to: "node",
+        call: "CommandNodeExecutor::execute_node(input)",
+        desc: "Spawns OS child process and monitors stdout/stderr streams",
+        file: "engine/src/node_executor.rs:L1432-L1705",
+        tag: "OS SUBPROCESS",
+        tagType: "tag-exec",
+        branch: "common",
+        details: {
+          symbol: "CommandNodeExecutor::execute_node -> std::process::Command::spawn",
+          code: `let mut child = Command::new(&argv[0])\n    .args(&argv[1..])\n    .current_dir(workspace_cwd)\n    .spawn()?;\nlet output = child.wait_with_timeout(timeout_ms)?;`,
+          state: "Subprocess spawned outside DB lock to prevent lock contention.",
+          explanation: "Executes OS command in background thread pool with strict timeout polling and output capture."
+        }
+      },
+      {
+        id: 7,
+        phase: "Phase 2 [FAILURE BRANCH]: Non-Zero Exit Code",
+        from: "node",
+        to: "policy",
+        call: "Returns NodeExecutionOutput { status: 'failed', error_domain: 'command_exit_nonzero' }",
+        desc: "Process exited with code != 0 (e.g. build failure)",
+        file: "engine/src/node_executor.rs:L1705",
+        tag: "FAILURE SIGNAL",
+        tagType: "tag-retry",
+        branch: "retry",
+        details: {
+          symbol: "NodeExecutionOutput { status: 'failed', error_domain: 'command_exit_nonzero', exit_code: Some(1) }",
+          code: `NodeExecutionOutput {\n    status: "failed",\n    error_domain: "command_exit_nonzero",\n    exit_code: Some(1),\n    stderr: "error: test failed",\n    output_bytes: 412\n}`,
+          state: "Command execution failed with retryable error domain.",
+          explanation: "Child process completes with non-zero exit code. Executor packages error domain and stdout/stderr for state machine evaluation."
+        }
+      },
+      {
+        id: 8,
+        phase: "Phase 3 [RECOVERY BRANCH]: Retry Evaluation & DB Reset",
+        from: "store",
+        to: "db",
+        call: "BEGIN IMMEDIATE; retryable_node_failure(); UPDATE workflow_run_nodes SET status='pending'",
+        desc: "Evaluates attempt <= max_retries, resets node status to 'pending', logs node.retry_scheduled",
+        file: "engine/src/storage/local_product_store/workflow_runs.rs:L2128-L2240",
+        tag: "RETRY RECOVERY",
+        tagType: "tag-retry",
+        branch: "retry",
+        details: {
+          symbol: "retryable_node_failure(&output) -> UPDATE workflow_run_nodes SET status='pending'",
+          code: `BEGIN IMMEDIATE TRANSACTION;\nlet should_retry = retryable_node_failure(&output) && attempt <= max_retries;\nif should_retry {\n    UPDATE workflow_run_nodes \n    SET status = 'pending', leased_at = NULL, blocked_reason = 'retry after attempt 1' \n    WHERE run_id = ? AND node_id = ?;\n    INSERT INTO workflow_run_events (event_type) VALUES ('node.retry_scheduled');\n}\nCOMMIT;`,
+          state: "Node state reset: 'running' -> 'pending' (ready for next tick lease).",
+          explanation: "Because error domain is retryable and retry budget is remaining, store resets node state to 'pending' rather than marking workflow run terminal failed."
+        }
+      },
+      {
+        id: 9,
+        phase: "Phase 3 [HAPPY PATH]: Success State Commit",
+        from: "store",
+        to: "db",
+        call: "BEGIN IMMEDIATE; UPDATE workflow_run_nodes SET status='completed'; check_run_completion_locked()",
+        desc: "Marks node completed, cascades downstream dependencies, marks run completed if all nodes terminal",
+        file: "engine/src/storage/local_product_store/workflow_runs.rs:L2528-L2570",
+        tag: "STATE COMMIT",
+        tagType: "tag-lock",
+        branch: "happy",
+        details: {
+          symbol: "UPDATE workflow_run_nodes SET status='completed' -> check_run_completion_locked -> COMMIT",
+          code: `BEGIN IMMEDIATE TRANSACTION;\nUPDATE workflow_run_nodes \nSET status = 'completed', completed_at = ?, leased_at = NULL \nWHERE run_id = ? AND node_id = ?;\nINSERT INTO workflow_run_events (event_type) VALUES ('node.completed');\nif all_nodes_terminal {\n    UPDATE workflow_runs SET status = 'completed';\n}\nCOMMIT;`,
+          state: "Node state: 'completed'. Workflow state: 'completed'.",
+          explanation: "Persists execution outputs, marks node completed, unblocks dependent child nodes, and completes the workflow run."
+        }
+      },
+      {
+        id: 10,
+        phase: "Phase 4: Response & Decision Metric Logging",
+        from: "http",
+        to: "client",
+        call: "record_tick_decision(); Returns HTTP 200 OK { tick: { action: 'node_retry' | 'node_executed' } }",
+        desc: "Logs tick decision metrics and responds with final execution payload",
+        file: "engine/src/http_server/handlers/workflow_runs.rs:L482",
+        tag: "HTTP RESPONSE",
+        tagType: "tag-success",
+        branch: "common",
+        details: {
+          symbol: "record_tick_decision(&store, &run_id, &result, 'command') -> Json(json_response('tick', result))",
+          code: `HTTP/1.1 200 OK\nContent-Type: application/json\n\n{\n  "schema_version": "1.0",\n  "tick": {\n    "action": "node_retry",\n    "node_id": "node_compile_01",\n    "attempt_count": 1,\n    "status": "pending"\n  }\n}`,
+          state: "HTTP response returned to client with complete execution receipt.",
+          explanation: "Handler logs decision outcome in decision ledger, computes latency metrics, and returns JSON payload to caller."
+        }
+      }
+    ];
+
+    let activeStepIdx = 0;
+    let currentFilter = "all";
+
+    function getFilteredSteps() {
+      if (currentFilter === "happy") return STEPS.filter(s => s.branch === "common" || s.branch === "happy");
+      if (currentFilter === "retry") return STEPS.filter(s => s.branch === "common" || s.branch === "retry");
+      return STEPS;
+    }
+
+    function renderSteps() {
+      const container = document.getElementById("steps-container");
+      container.innerHTML = "";
+      const filtered = getFilteredSteps();
+
+      filtered.forEach((step, idx) => {
+        const row = document.createElement("div");
+        row.className = `step-row ${step.branch === 'retry' ? 'branch-retry' : ''} ${step.branch === 'fail' ? 'branch-failure' : ''} ${idx === activeStepIdx ? 'active' : ''}`;
+        row.id = `step-row-${step.id}`;
+        row.onclick = () => selectStep(idx);
+
+        row.innerHTML = `
+          <div class="step-num">${step.id}</div>
+          <div class="step-box" style="border-left: 4px solid ${getParticipantColor(step.from)};">
+            <div class="step-main">
+              <div class="step-call">${step.call}</div>
+              <div class="step-desc">${step.desc}</div>
+            </div>
+            <div class="step-meta">
+              <span class="tag ${step.tagType}">${step.tag}</span>
+              <div style="margin-top: 4px;">${step.file.split('/').pop()}</div>
+            </div>
+          </div>
+        `;
+        container.appendChild(row);
+      });
+
+      updateInspector(filtered[activeStepIdx]);
+      updateParticipantHighlights(filtered[activeStepIdx]);
+    }
+
+    function getParticipantColor(pId) {
+      const map = {
+        client: "#58a6ff",
+        http: "#7ee787",
+        pool: "#d2a8ff",
+        policy: "#f0883e",
+        node: "#f85149",
+        store: "#bc8cff",
+        db: "#e3b341"
+      };
+      return map[pId] || "#58a6ff";
+    }
+
+    function selectStep(idx) {
+      const filtered = getFilteredSteps();
+      if (idx < 0 || idx >= filtered.length) return;
+      activeStepIdx = idx;
+      renderSteps();
+      const el = document.getElementById(`step-row-${filtered[idx].id}`);
+      el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+
+    function nextStep() {
+      const filtered = getFilteredSteps();
+      selectStep((activeStepIdx + 1) % filtered.length);
+    }
+
+    function prevStep() {
+      const filtered = getFilteredSteps();
+      selectStep((activeStepIdx - 1 + filtered.length) % filtered.length);
+    }
+
+    function setFilter(filter) {
+      currentFilter = filter;
+      document.querySelectorAll(".toggle-btn").forEach(b => b.classList.remove("active"));
+      document.getElementById(`btn-${filter}`).classList.add("active");
+      activeStepIdx = 0;
+      renderSteps();
+    }
+
+    function updateParticipantHighlights(step) {
+      if (!step) return;
+      document.querySelectorAll(".participant").forEach(p => p.classList.remove("active"));
+      document.getElementById(`p-${step.from}`)?.classList.add("active");
+      document.getElementById(`p-${step.to}`)?.classList.add("active");
+    }
+
+    function updateInspector(step) {
+      if (!step) return;
+      document.getElementById("ins-title").textContent = `Step ${step.id}: ${step.call.split('(')[0]}`;
+      document.getElementById("ins-phase").textContent = step.phase;
+
+      const d = step.details;
+      const html = `
+        <div style="margin-bottom: 14px;">
+          <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: bold;">File & Symbol</span>
+          <div style="font-family: var(--font-mono); font-size: 12px; color: var(--accent); margin-top: 2px;">
+            ${step.file}
+          </div>
+          <div style="font-family: var(--font-mono); font-size: 11px; color: #fff; margin-top: 2px;">
+            ${d.symbol}
+          </div>
+        </div>
+
+        <div style="margin-bottom: 14px;">
+          <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: bold;">Code / Payload Context</span>
+          <pre class="code-block"><code>${escapeHtml(d.code)}</code></pre>
+        </div>
+
+        <div class="state-change">
+          <span style="font-size: 10px; text-transform: uppercase; color: var(--accent); font-weight: bold;">Runtime State Transition</span>
+          <div style="color: #fff; font-weight: 500; margin-top: 4px;">${d.state}</div>
+        </div>
+
+        <div style="margin-top: 14px;">
+          <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: bold;">Architectural Mechanism</span>
+          <p style="color: var(--text); font-size: 12px; margin-top: 4px;">${d.explanation}</p>
+        </div>
+      `;
+      document.getElementById("ins-body").innerHTML = html;
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    renderSteps();
+  </script>
+</body>
+</html>

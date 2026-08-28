@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "meta": {
+    "project": "token-efficient-agent-harness-lab",
+    "version": "1.0.0",
+    "generated_at": "2026-08-28T02:30:00Z",
+    "quality_profile": "showcase",
+    "repository_head": "4dba4a9ccb4948775fd4ed7452ee6e419327aa46",
+    "generator": "CodeGraph-Showcase-Visualizer v1.5.0",
+    "validation_status": {
+      "errors": 0,
+      "warnings": 0,
+      "passed": true
+    }
+  },
+  "stats": {
+    "total_files": 667,
+    "total_loc": 502000,
+    "rust_files": 362,
+    "python_files": 161,
+    "typescript_files": 60,
+    "nodes_count": 22764,
+    "edges_count": 100350
+  },
+  "subsystems": [
+    {
+      "id": "rust_engine",
+      "name": "Rust Runtime Engine",
+      "layer": "Core Engine",
+      "path": "engine/",
+      "color": "#e06c75",
+      "description": "Sole runtime, API, scheduler, policy, and persistence authority in Rust.",
+      "components": [
+        {
+          "id": "local_product_store",
+          "name": "LocalProductStore",
+          "file": "engine/src/storage/local_product_store/mod.rs",
+          "loc": 32400,
+          "authority": "Sole persistence owner for workflow runs, nodes, events, audit logs, and decisions",
+          "backends": ["SQLite (WAL mode)", "PostgreSQL"],
+          "key_symbols": [
+            "LocalProductStore",
+            "tick_with_executor_and_command",
+            "tick_with_executor_and_command_inner_for_owner",
+            "find_ready_node_locked",
+            "update_workflow_run_status_locked"
+          ]
+        },
+        {
+          "id": "tool_policy_executor",
+          "name": "ToolPolicyNodeExecutor & Security Gate",
+          "file": "engine/src/tool_policy_executor.rs",
+          "loc": 2089,
+          "authority": "Execution policy wrapper, allowlisting, workspace path confinement, and audit logging",
+          "key_symbols": [
+            "ToolPolicyNodeExecutor",
+            "ToolPolicyNodeExecutor::command",
+            "ToolPolicyNodeExecutor::cli",
+            "ToolPolicyNodeExecutor::command_borrowed",
+            "execute_node",
+            "claim_tool_execution_without_approval"
+          ]
+        },
+        {
+          "id": "http_api_server",
+          "name": "HTTP API Server (Axum)",
+          "file": "engine/src/http_server/mod.rs",
+          "loc": 18500,
+          "authority": "REST control plane, workflow run management, operator decision endpoints",
+          "key_symbols": [
+            "api_tick_workflow_run",
+            "api_create_workflow_run",
+            "api_get_workflow_run",
+            "routes::build_router",
+            "middleware::authorize"
+          ]
+        },
+        {
+          "id": "scheduler_executor_pool",
+          "name": "Scheduler & Executor Pool",
+          "file": "engine/src/scheduler.rs",
+          "loc": 8200,
+          "authority": "Task dispatching, worker lease polling, concurrent worker pool",
+          "key_symbols": [
+            "Scheduler",
+            "ExecutorPool",
+            "create_scheduler_executor",
+            "register_default_executors",
+            "register_cli_executors"
+          ]
+        },
+        {
+          "id": "adaptive_engine",
+          "name": "Adaptive Optimization & Fusion",
+          "file": "engine/src/adaptive/mod.rs",
+          "loc": 14200,
+          "authority": "Contextual adaptive policy, prompt fusion, online experiment bandit routing",
+          "key_symbols": [
+            "AdaptiveFusionEngine",
+            "CandidateGenerator",
+            "OnlineExperimentManager",
+            "NativeScorecardEvaluator"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python_sdk_harness",
+      "name": "Python SDK & Evaluation Harness",
+      "layer": "Harness & Evaluation",
+      "path": "sdk/python/ & scripts/",
+      "color": "#61afef",
+      "description": "Deterministic client SDK, model test runners, and real-world evaluation harness.",
+      "components": [
+        {
+          "id": "python_sdk",
+          "name": "Python Control Plane SDK",
+          "file": "sdk/python/src/agent_harness_sdk/client.py",
+          "loc": 4800,
+          "authority": "Typed client for workflow dispatch, operator decision actions, and telemetry streaming",
+          "key_symbols": [
+            "HarnessClient",
+            "WorkflowRunHandle",
+            "DecisionStream"
+          ]
+        },
+        {
+          "id": "eval_harness",
+          "name": "Evaluation & Benchmark Suite",
+          "file": "scripts/benchmark_runner.py",
+          "loc": 12600,
+          "authority": "Deterministic multi-model benchmarking, token efficiency tracking, and drift assertions",
+          "key_symbols": [
+            "TokenEfficiencyAuditor",
+            "RunContextParser",
+            "DriftChecker"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "frontend_dashboard",
+      "name": "Frontend Operator Dashboard",
+      "layer": "Presentation & UI",
+      "path": "dashboard/",
+      "color": "#98c379",
+      "description": "Next.js 14 / TypeScript real-time operations console and visualizer.",
+      "components": [
+        {
+          "id": "dashboard_app",
+          "name": "Operator Console UI",
+          "file": "dashboard/src/app/page.tsx",
+          "loc": 9800,
+          "authority": "Real-time state visualization, workflow DAG rendering, operator human-in-the-loop approvals",
+          "key_symbols": [
+            "WorkflowDagViewer",
+            "OperatorEvidencePanel",
+            "LiveDecisionFeed",
+            "AdaptiveFusionMetrics"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "validation_governance",
+      "name": "Real-World Validation Framework",
+      "layer": "Governance & Verification",
+      "path": "docs/ & .agents/",
+      "color": "#d19a66",
+      "description": "Zero-trust verification baseline, playbook contracts, and fail-closed CI gates.",
+      "components": [
+        {
+          "id": "testing_playbook",
+          "name": "Real-World Testing Playbook",
+          "file": "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+          "loc": 4200,
+          "authority": "Canonical exact-head CI, manual merge gate, documentation drift verification",
+          "key_symbols": [
+            "VerificationBaseline",
+            "HandoffValidator",
+            "WireCodegenCheck"
+          ]
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {"source": "http_api_server", "target": "tool_policy_executor", "type": "instantiates", "contract": "Wraps CommandNodeExecutor with ToolPolicyNodeExecutor"},
+    {"source": "http_api_server", "target": "local_product_store", "type": "invokes", "contract": "tick_with_executor_and_command"},
+    {"source": "scheduler_executor_pool", "target": "tool_policy_executor", "type": "instantiates", "contract": "Policy-gated executor creation for background workers"},
+    {"source": "scheduler_executor_pool", "target": "local_product_store", "type": "polls_and_leases", "contract": "Lease node execution under atomic DB transaction"},
+    {"source": "tool_policy_executor", "target": "local_product_store", "type": "records_audit", "contract": "Claims authorization lease & writes tool-policy audit events"},
+    {"source": "adaptive_engine", "target": "local_product_store", "type": "stores_scorecards", "contract": "Persists experiment trajectories and multi-objective evaluations"},
+    {"source": "python_sdk", "target": "http_api_server", "type": "api_calls", "contract": "REST /api/v1/ endpoints with HMAC/Bearer authentication"},
+    {"source": "dashboard_app", "target": "http_api_server", "type": "websocket_and_rest", "contract": "Real-time SSE event feeds and operator decision actions"},
+    {"source": "validation_governance", "target": "rust_engine", "type": "enforces_invariants", "contract": "Fail-closed CI verification baseline and storage parity"}
+  ]
+}

@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>运行时调用时序图 — 核心执行流与重试机制</title>
+  <style>
+    :root {
+      --bg: #090d13;
+      --card-bg: #161b22;
+      --card-header: #21262d;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-bright: #ffffff;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-glow: rgba(88, 166, 255, 0.25);
+      --success: #3fb950;
+      --warning: #d29922;
+      --danger: #f85149;
+      --purple: #bc8cff;
+      --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+    header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 100;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .badge {
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+    .badge-success { background: rgba(63, 185, 80, 0.15); color: var(--success); border: 1px solid rgba(63, 185, 80, 0.4); }
+    .badge-info { background: rgba(88, 166, 255, 0.15); color: var(--accent); border: 1px solid rgba(88, 166, 255, 0.4); }
+    
+    .quick-summary-bar {
+      background: #0d1117;
+      border-bottom: 1px solid var(--border);
+      padding: 8px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .quick-summary-bar b { color: var(--text-bright); }
+    .phase-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #161b22;
+      padding: 3px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      font-size: 11px;
+    }
+    .phase-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .btn {
+      background: #21262d;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+    .btn:hover { background: #30363d; border-color: var(--text-muted); color: #fff; }
+    .btn-primary { background: #1f6feb; border-color: #388bfd; color: #fff; }
+    .btn-primary:hover { background: #388bfd; }
+    .toggle-group {
+      display: flex;
+      background: #090d13;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px;
+    }
+    .toggle-btn {
+      padding: 4px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+    .toggle-btn.active { background: #21262d; color: #fff; }
+
+    main {
+      flex: 1;
+      display: flex;
+      position: relative;
+      overflow: hidden;
+    }
+    #viewport {
+      flex: 1;
+      height: 100%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 20px 40px 100px 40px;
+      position: relative;
+    }
+    
+    .sequence-container {
+      width: 100%;
+      max-width: 1100px;
+      margin: 0 auto;
+      position: relative;
+    }
+    .participants-header {
+      display: flex;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      padding: 12px 0 20px 0;
+      z-index: 40;
+      border-bottom: 1px solid rgba(48, 54, 61, 0.4);
+    }
+    .participant {
+      width: 130px;
+      text-align: center;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 6px;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.4);
+      transition: all 0.2s;
+    }
+    .participant.active {
+      border-color: var(--accent);
+      background: #1c2128;
+      box-shadow: 0 0 12px var(--accent-glow);
+    }
+    .p-title { font-size: 13px; font-weight: 700; color: var(--text-bright); margin-bottom: 2px; }
+    .p-sub { font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); }
+
+    .lifelines-bg {
+      position: absolute;
+      top: 70px;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      display: flex;
+      justify-content: space-between;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .lifeline {
+      width: 130px;
+      display: flex;
+      justify-content: center;
+    }
+    .lifeline-line {
+      width: 2px;
+      height: 100%;
+      background-image: linear-gradient(to bottom, var(--border) 50%, transparent 50%);
+      background-size: 2px 8px;
+    }
+
+    .steps-flow {
+      position: relative;
+      z-index: 10;
+      margin-top: 30px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .step-row {
+      display: flex;
+      align-items: center;
+      position: relative;
+      min-height: 48px;
+      cursor: pointer;
+      padding: 6px 0;
+      transition: all 0.2s;
+      border-radius: 6px;
+    }
+    .step-row:hover {
+      background: rgba(88, 166, 255, 0.05);
+    }
+    .step-row.active {
+      background: rgba(88, 166, 255, 0.12);
+    }
+    .step-row.active .step-box {
+      border-color: var(--accent) !important;
+      box-shadow: 0 0 14px var(--accent-glow);
+    }
+    .step-row.branch-retry {
+      border-left: 3px solid var(--warning);
+      padding-left: 6px;
+    }
+
+    .step-num {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--card-header);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      font-weight: bold;
+      color: var(--text-muted);
+      position: absolute;
+      left: -32px;
+    }
+    .step-row.active .step-num {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .step-box {
+      margin: 0 auto;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-size: 12px;
+      z-index: 10;
+      width: 100%;
+      max-width: 760px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      transition: all 0.2s;
+    }
+    .step-main { display: flex; flex-direction: column; gap: 3px; }
+    .step-call { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-bright); }
+    .step-desc { font-size: 12px; color: var(--text-muted); }
+    .step-meta { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); text-align: right; }
+    .tag {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-weight: 600;
+    }
+    .tag-lock { background: rgba(188, 140, 255, 0.15); color: var(--purple); border: 1px solid rgba(188, 140, 255, 0.4); }
+    .tag-exec { background: rgba(88, 166, 255, 0.15); color: var(--accent); border: 1px solid rgba(88, 166, 255, 0.4); }
+    .tag-retry { background: rgba(210, 153, 34, 0.15); color: var(--warning); border: 1px solid rgba(210, 153, 34, 0.4); }
+    .tag-success { background: rgba(63, 185, 80, 0.15); color: var(--success); border: 1px solid rgba(63, 185, 80, 0.4); }
+
+    #inspector {
+      width: 440px;
+      background: var(--card-bg);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      z-index: 50;
+      box-shadow: -4px 0 20px rgba(0,0,0,0.5);
+    }
+    .inspector-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--card-header);
+    }
+    .inspector-content {
+      padding: 18px;
+      overflow-y: auto;
+      flex: 1;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .code-block {
+      background: #090d13;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: #e6edf3;
+      margin: 8px 0 14px 0;
+      overflow-x: auto;
+    }
+    .state-change {
+      background: rgba(88, 166, 255, 0.08);
+      border-left: 3px solid var(--accent);
+      padding: 8px 12px;
+      border-radius: 0 6px 6px 0;
+      margin: 10px 0;
+      font-size: 12px;
+    }
+    .state-change-retry {
+      background: rgba(210, 153, 34, 0.08);
+      border-left: 3px solid var(--warning);
+      padding: 8px 12px;
+      border-radius: 0 6px 6px 0;
+      margin: 10px 0;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h2 style="font-size: 16px; font-weight: 700; color: #fff;">运行时调用时序图：Workflow Run 核心执行流</h2>
+      <span class="badge badge-success">0 错误 / 0 警告</span>
+      <span class="badge badge-info">严格 7 个核心参与者</span>
+    </div>
+    <div class="controls">
+      <div class="toggle-group">
+        <button class="toggle-btn active" id="btn-all" onclick="setFilter('all')">全流程</button>
+        <button class="toggle-btn" id="btn-happy" onclick="setFilter('happy')">正常成功流 (Happy Path)</button>
+        <button class="toggle-btn" id="btn-retry" onclick="setFilter('retry')">失败重试分支 (Recovery)</button>
+      </div>
+      <button class="btn" onclick="prevStep()">◀ 上一步</button>
+      <button class="btn btn-primary" onclick="nextStep()">下一步 ▶</button>
+    </div>
+  </header>
+
+  <div class="quick-summary-bar">
+    <span><b>60 秒维护者全景导读：</b></span>
+    <div class="phase-pill"><div class="phase-dot" style="background: var(--purple);"></div>Phase 1: DB 排他锁租约获取</div>
+    <div class="phase-pill"><div class="phase-dot" style="background: var(--accent);"></div>Phase 2: 无锁安全策略与 OS 进程执行</div>
+    <div class="phase-pill"><div class="phase-dot" style="background: var(--warning);"></div>Phase 3: 状态原子提交与重试恢复</div>
+    <div class="phase-pill"><div class="phase-dot" style="background: var(--success);"></div>Phase 4: HTTP 决策度量与响应返回</div>
+  </div>
+
+  <main>
+    <div id="viewport">
+      <div class="sequence-container">
+        <!-- 7 个对齐的参与者组件 -->
+        <div class="participants-header">
+          <div class="participant" id="p-client">
+            <div class="p-title">外部客户端</div>
+            <div class="p-sub">HTTP Client</div>
+          </div>
+          <div class="participant" id="p-http">
+            <div class="p-title">HTTP 路由与服务</div>
+            <div class="p-sub">workflow_runs.rs</div>
+          </div>
+          <div class="participant" id="p-pool">
+            <div class="p-title">调度池管理</div>
+            <div class="p-sub">executor_pool.rs</div>
+          </div>
+          <div class="participant" id="p-policy">
+            <div class="p-title">策略安全门禁</div>
+            <div class="p-sub">tool_policy_executor.rs</div>
+          </div>
+          <div class="participant" id="p-node">
+            <div class="p-title">命令执行器</div>
+            <div class="p-sub">node_executor.rs</div>
+          </div>
+          <div class="participant" id="p-store">
+            <div class="p-title">存储管理中心</div>
+            <div class="p-sub">local_product_store/</div>
+          </div>
+          <div class="participant" id="p-db">
+            <div class="p-title">底层数据库</div>
+            <div class="p-sub">SQLite / Postgres</div>
+          </div>
+        </div>
+
+        <!-- 背景生命线 -->
+        <div class="lifelines-bg">
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+          <div class="lifeline"><div class="lifeline-line"></div></div>
+        </div>
+
+        <!-- 顺序步骤流 -->
+        <div class="steps-flow" id="steps-container"></div>
+      </div>
+    </div>
+
+    <!-- 右侧检查面板 -->
+    <div id="inspector">
+      <div class="inspector-header">
+        <h3 id="ins-title" style="font-size: 15px; color: #fff; margin-bottom: 4px;">步骤代码与状态检查器</h3>
+        <span id="ins-phase" style="font-size: 11px; color: var(--accent); font-family: var(--font-mono);">点击步骤或使用“下一步”进行单步调试</span>
+      </div>
+      <div class="inspector-content" id="ins-body">
+        <p style="color: var(--text-muted);">点击时序图中的任何一个步骤，可查看对应的 Rust 函数符号、SQL 事务边界、状态迁移与底层重试逻辑。</p>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const STEPS = [
+      {
+        id: 1,
+        phase: "Phase 0: 请求接入与路由",
+        from: "client",
+        to: "http",
+        call: "POST /api/v1/workflow-runs/:run_id/tick",
+        desc: "外部客户端发起单步驱动请求，负载指定 {\"executor\": \"command\"}",
+        file: "engine/src/http_server/routes.rs:L201",
+        tag: "REST API",
+        tagType: "tag-exec",
+        branch: "common",
+        details: {
+          symbol: "routes::build_router -> handlers::workflow_runs::api_tick_workflow_run",
+          code: `POST /api/v1/workflow-runs/:run_id/tick\nContent-Type: application/json\n\n{\n  "executor": "command",\n  "timeout_ms": 30000\n}`,
+          state: "传入 HTTP 请求被 Axum 路由捕获并分发至处理函数。",
+          explanation: "HTTP Server 接收到外部请求，校验 JWT/Bearer 鉴权作用域 dispatch:execute，准备构建执行上下文。"
+        }
+      },
+      {
+        id: 2,
+        phase: "Phase 0: 策略包装与执行器构造",
+        from: "http",
+        to: "policy",
+        call: "ToolPolicyNodeExecutor::command(inner, store)",
+        desc: "构建安全门禁，将 CommandNodeExecutor 包装为受控策略执行器",
+        file: "engine/src/http_server/handlers/workflow_runs.rs:L470",
+        tag: "策略包装",
+        tagType: "tag-exec",
+        branch: "common",
+        details: {
+          symbol: "ToolPolicyNodeExecutor::command(Arc::new(CommandNodeExecutor::default().with_timeout(timeout_ms)), store.clone())",
+          code: `let executor = ToolPolicyNodeExecutor::command(\n    Arc::new(CommandNodeExecutor::default().with_timeout(timeout_ms)),\n    store.clone()\n);`,
+          state: "执行器被注入安全策略、白名单与工作区约束检查能力。",
+          explanation: "根据请求参数，创建带超时的 CommandNodeExecutor，并使用 ToolPolicyNodeExecutor 包装，确保所有执行均记录审计日志且不超出工作区边界。"
+        }
+      },
+      {
+        id: 3,
+        phase: "Phase 1: 存储层调度派发",
+        from: "http",
+        to: "store",
+        call: "store.tick_with_executor_and_command(run_id, actor, 0, executor, None)",
+        desc: "将执行流程委托给存储唯一所有者 LocalProductStore",
+        file: "engine/src/storage/local_product_store/workflow_runs.rs:L1133",
+        tag: "存储调度",
+        tagType: "tag-exec",
+        branch: "common",
+        details: {
+          symbol: "LocalProductStore::tick_with_executor_and_command_inner_for_owner",
+          code: `store.tick_with_executor_and_command(\n    &run_id, actor, 0, executor.as_ref(), None\n)`,
+          state: "进入存储控制流程，准备在排他事务中租用就绪节点。",
+          explanation: "存储层是 workflow runs、nodes、events 的唯一数据权威，负责管理三阶段执行与并发租约排他性。"
+        }
+      },
+      {
+        id: 4,
+        phase: "Phase 1: DB 排他锁与节点租约获取",
+        from: "store",
+        to: "db",
+        call: "BEGIN IMMEDIATE; 挑选就绪节点 -> UPDATE workflow_run_nodes 设置 status='running', attempt+=1",
+        desc: "开启排他事务，挑选就绪节点，更新状态并记录 node.leased 事件，随后立刻 COMMIT 释放数据库锁",
+        file: "engine/src/storage/local_product_store/workflow_runs.rs:L1196-L1548",
+        tag: "原子 DB 排他锁",
+        tagType: "tag-lock",
+        branch: "common",
+        details: {
+          symbol: "find_ready_node_locked -> UPDATE workflow_run_nodes -> INSERT node.leased -> COMMIT",
+          code: `BEGIN IMMEDIATE TRANSACTION;\n-- 检查 is_run_terminal(run_id) 确保未终止\nUPDATE workflow_run_nodes \nSET status = 'running', started_at = ?, leased_at = ?, attempt_count = attempt_count + 1 \nWHERE run_id = ? AND node_id = ? AND status = 'pending';\n\nINSERT INTO workflow_run_events (run_id, event_type) VALUES (?, 'node.leased');\nCOMMIT; -- 释放排他锁`,
+          state: "节点状态：'pending' -> 'running' (attempt_count 递增)。数据库事务已提交。",
+          explanation: "在数据库排他锁保护下找到依赖已满足的 pending 节点，将其租用并记录事件，在子进程实际运行前提交事务释放锁，避免长时间持有数据库连接。"
+        }
+      },
+      {
+        id: 5,
+        phase: "Phase 2: 策略安全校验与执行认领",
+        from: "store",
+        to: "policy",
+        call: "policy.execute_node(input)",
+        desc: "在无锁状态下校验命令白名单、工作区边界，并原子认领授权配额",
+        file: "engine/src/tool_policy_executor.rs:L521-L794",
+        tag: "策略安全门禁",
+        tagType: "tag-exec",
+        branch: "common",
+        details: {
+          symbol: "ToolPolicyNodeExecutor::execute_node -> claim_tool_execution_without_approval",
+          code: `let snapshot = store.current_tool_execution_policy_snapshot()?;\nif !snapshot.is_tool_allowed(tool_name) { \n    return Err(ToolPolicyDenied);\n}\nstore.claim_tool_execution_without_approval(tool_name, workspace_id)?;\n// 记录 tool_execution.pre_policy_passed 审计日志`,
+          state: "安全检查通过，扣减产品调用配额，记录前置审计日志。",
+          explanation: "安全门禁剥离环境变量，校验二进制文件名称，确保工作区路径隔离无越权，认领执行租约。"
+        }
+      },
+      {
+        id: 6,
+        phase: "Phase 2: OS 子进程派生与执行",
+        from: "policy",
+        to: "node",
+        call: "CommandNodeExecutor::execute_node(input)",
+        desc: "创建 OS 子进程 (std::process::Command)，捕获 stdout/stderr 流并监控超时",
+        file: "engine/src/node_executor.rs:L1432-L1705",
+        tag: "OS 子进程派生",
+        tagType: "tag-exec",
+        branch: "common",
+        details: {
+          symbol: "CommandNodeExecutor::execute_node -> std::process::Command::spawn",
+          code: `let mut child = Command::new(&argv[0])\n    .args(&argv[1..])\n    .current_dir(workspace_cwd)\n    .stdout(Stdio::piped())\n    .stderr(Stdio::piped())\n    .spawn()?;\nlet output = child.wait_with_timeout(timeout_ms)?;`,
+          state: "子进程在工作区目录中独立运行，完全脱离数据库事务锁。",
+          explanation: "在独立工作线程中执行真实系统调用，捕获完整进程退出码与输出字节。"
+        }
+      },
+      {
+        id: 7,
+        phase: "Phase 2 [失败分支]: 命令非 0 退出",
+        from: "node",
+        to: "policy",
+        call: "返回 NodeExecutionOutput { status: 'failed', error_domain: 'command_exit_nonzero', exit_code: 1 }",
+        desc: "子进程返回非 0 退出码（如编译报错、测试失败等可重试错误）",
+        file: "engine/src/node_executor.rs:L1705",
+        tag: "错误信号返回",
+        tagType: "tag-retry",
+        branch: "retry",
+        details: {
+          symbol: "NodeExecutionOutput { status: 'failed', error_domain: 'command_exit_nonzero', exit_code: Some(1) }",
+          code: `NodeExecutionOutput {\n    status: "failed",\n    error_domain: "command_exit_nonzero",\n    exit_code: Some(1),\n    stderr: "error[E0432]: unresolved import...",\n    output_bytes: 512\n}`,
+          state: "执行输出被包装为结构化结果，标识为可重试错误域。",
+          explanation: "执行器封装错误退出码与错误日志，交给状态机做进一步决策。"
+        }
+      },
+      {
+        id: 8,
+        phase: "Phase 3 [重试恢复]: 评估重试预算并重置节点状态",
+        from: "store",
+        to: "db",
+        call: "BEGIN IMMEDIATE; retryable_node_failure(); UPDATE workflow_run_nodes 设置 status='pending'",
+        desc: "判定未超最大重试次数，将节点状态重置为 pending，写入 node.retry_scheduled 事件",
+        file: "engine/src/storage/local_product_store/workflow_runs.rs:L2128-L2240",
+        tag: "重试恢复状态机",
+        tagType: "tag-retry",
+        branch: "retry",
+        details: {
+          symbol: "retryable_node_failure(&output) -> UPDATE workflow_run_nodes SET status='pending'",
+          code: `BEGIN IMMEDIATE TRANSACTION;\nlet should_retry = retryable_node_failure(&output) && attempt <= max_retries;\nif should_retry {\n    UPDATE workflow_run_nodes \n    SET status = 'pending', leased_at = NULL, blocked_reason = 'retry after attempt 1' \n    WHERE run_id = ? AND node_id = ?;\n    \n    INSERT INTO workflow_run_events (event_type) VALUES ('node.retry_scheduled');\n}\nCOMMIT;`,
+          state: "节点状态重置：'running' -> 'pending' (解除租约，等待下一次调度 Tick)。",
+          explanation: "系统不会直接将 workflow run 标记为终态失败，而是将其回退到 pending 队列，允许后续重试。"
+        }
+      },
+      {
+        id: 9,
+        phase: "Phase 3 [正常成功]: 成功状态提交与级联解封",
+        from: "store",
+        to: "db",
+        call: "BEGIN IMMEDIATE; UPDATE workflow_run_nodes 设置 status='completed'; check_run_completion_locked()",
+        desc: "标记节点成功完成，解除下游子节点阻塞；若全节点终态则标记 Run 为 completed",
+        file: "engine/src/storage/local_product_store/workflow_runs.rs:L2528-L2570",
+        tag: "状态成功提交",
+        tagType: "tag-lock",
+        branch: "happy",
+        details: {
+          symbol: "UPDATE workflow_run_nodes SET status='completed' -> propagate_failed_dependencies_locked -> COMMIT",
+          code: `BEGIN IMMEDIATE TRANSACTION;\nUPDATE workflow_run_nodes \nSET status = 'completed', completed_at = ?, leased_at = NULL \nWHERE run_id = ? AND node_id = ?;\n\nINSERT INTO workflow_run_events (event_type) VALUES ('node.completed');\nif check_run_completion_locked(&run_id)? {\n    UPDATE workflow_runs SET status = 'completed';\n}\nCOMMIT;`,
+          state: "节点状态：'completed'。Workflow Run 状态：'completed'。",
+          explanation: "将执行输出持久化到 node_json，解封后续有依赖关系的节点，完成该轮任务状态迁移。"
+        }
+      },
+      {
+        id: 10,
+        phase: "Phase 4: 记录决策度量并返回 HTTP 响应",
+        from: "http",
+        to: "client",
+        call: "record_tick_decision(); 返回 HTTP 200 OK { tick: { action: 'node_retry' | 'node_executed' } }",
+        desc: "将决策结果写入度量账本，向外部调用端返回标准 JSON 响应",
+        file: "engine/src/http_server/handlers/workflow_runs.rs:L482",
+        tag: "HTTP 响应返回",
+        tagType: "tag-success",
+        branch: "common",
+        details: {
+          symbol: "record_tick_decision(&store, &run_id, &result, 'command') -> Json(json_response('tick', result))",
+          code: `HTTP/1.1 200 OK\nContent-Type: application/json\n\n{\n  "schema_version": "1.0",\n  "tick": {\n    "action": "node_retry",\n    "node_id": "node_compile_01",\n    "attempt_count": 1,\n    "status": "pending"\n  }\n}`,
+          state: "客户端收到 HTTP 200 OK 结构化执行收据。",
+          explanation: "记录耗时、决策类型至系统账本，向调用端输出完整响应收据。"
+        }
+      }
+    ];
+
+    let activeStepIdx = 0;
+    let currentFilter = "all";
+
+    function getFilteredSteps() {
+      if (currentFilter === "happy") return STEPS.filter(s => s.branch === "common" || s.branch === "happy");
+      if (currentFilter === "retry") return STEPS.filter(s => s.branch === "common" || s.branch === "retry");
+      return STEPS;
+    }
+
+    function renderSteps() {
+      const container = document.getElementById("steps-container");
+      container.innerHTML = "";
+      const filtered = getFilteredSteps();
+
+      filtered.forEach((step, idx) => {
+        const row = document.createElement("div");
+        row.className = `step-row ${step.branch === 'retry' ? 'branch-retry' : ''} ${idx === activeStepIdx ? 'active' : ''}`;
+        row.id = `step-row-${step.id}`;
+        row.onclick = () => selectStep(idx);
+
+        row.innerHTML = `
+          <div class="step-num">${step.id}</div>
+          <div class="step-box" style="border-left: 4px solid ${getParticipantColor(step.from)};">
+            <div class="step-main">
+              <div class="step-call">${step.call}</div>
+              <div class="step-desc">${step.desc}</div>
+            </div>
+            <div class="step-meta">
+              <span class="tag ${step.tagType}">${step.tag}</span>
+              <div style="margin-top: 4px;">${step.file.split('/').pop()}</div>
+            </div>
+          </div>
+        `;
+        container.appendChild(row);
+      });
+
+      updateInspector(filtered[activeStepIdx]);
+      updateParticipantHighlights(filtered[activeStepIdx]);
+    }
+
+    function getParticipantColor(pId) {
+      const map = {
+        client: "#58a6ff",
+        http: "#7ee787",
+        pool: "#d2a8ff",
+        policy: "#f0883e",
+        node: "#f85149",
+        store: "#bc8cff",
+        db: "#e3b341"
+      };
+      return map[pId] || "#58a6ff";
+    }
+
+    function selectStep(idx) {
+      const filtered = getFilteredSteps();
+      if (idx < 0 || idx >= filtered.length) return;
+      activeStepIdx = idx;
+      renderSteps();
+      const el = document.getElementById(`step-row-${filtered[idx].id}`);
+      el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+
+    function nextStep() {
+      const filtered = getFilteredSteps();
+      selectStep((activeStepIdx + 1) % filtered.length);
+    }
+
+    function prevStep() {
+      const filtered = getFilteredSteps();
+      selectStep((activeStepIdx - 1 + filtered.length) % filtered.length);
+    }
+
+    function setFilter(filter) {
+      currentFilter = filter;
+      document.querySelectorAll(".toggle-btn").forEach(b => b.classList.remove("active"));
+      document.getElementById(`btn-${filter}`).classList.add("active");
+      activeStepIdx = 0;
+      renderSteps();
+    }
+
+    function updateParticipantHighlights(step) {
+      if (!step) return;
+      document.querySelectorAll(".participant").forEach(p => p.classList.remove("active"));
+      document.getElementById(`p-${step.from}`)?.classList.add("active");
+      document.getElementById(`p-${step.to}`)?.classList.add("active");
+    }
+
+    function updateInspector(step) {
+      if (!step) return;
+      document.getElementById("ins-title").textContent = `步骤 ${step.id}: ${step.call.split('(')[0]}`;
+      document.getElementById("ins-phase").textContent = step.phase;
+
+      const d = step.details;
+      const html = `
+        <div style="margin-bottom: 14px;">
+          <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: bold;">源码文件与核心符号</span>
+          <div style="font-family: var(--font-mono); font-size: 12px; color: var(--accent); margin-top: 2px;">
+            ${step.file}
+          </div>
+          <div style="font-family: var(--font-mono); font-size: 11px; color: #fff; margin-top: 2px;">
+            ${d.symbol}
+          </div>
+        </div>
+
+        <div style="margin-bottom: 14px;">
+          <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: bold;">代码 / SQL / 负载上下文</span>
+          <pre class="code-block"><code>${escapeHtml(d.code)}</code></pre>
+        </div>
+
+        <div class="${step.branch === 'retry' ? 'state-change-retry' : 'state-change'}">
+          <span style="font-size: 10px; text-transform: uppercase; color: ${step.branch === 'retry' ? 'var(--warning)' : 'var(--accent)'}; font-weight: bold;">运行时状态迁移 (State Transition)</span>
+          <div style="color: #fff; font-weight: 500; margin-top: 4px;">${d.state}</div>
+        </div>
+
+        <div style="margin-top: 14px;">
+          <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: bold;">架构机制解析</span>
+          <p style="color: var(--text); font-size: 12px; margin-top: 4px;">${d.explanation}</p>
+        </div>
+      `;
+      document.getElementById("ins-body").innerHTML = html;
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    renderSteps();
+  </script>
+</body>
+</html>

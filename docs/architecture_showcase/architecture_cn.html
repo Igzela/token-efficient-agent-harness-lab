@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>仓库架构全景图 — token-efficient-agent-harness-lab</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-hover: #1f6feb;
+      --rust: #f0883e;
+      --python: #58a6ff;
+      --ts: #7ee787;
+      --gov: #d2a8ff;
+      --success: #3fb950;
+      --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 100;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .badge {
+      background: rgba(63, 185, 80, 0.15);
+      color: var(--success);
+      border: 1px solid rgba(63, 185, 80, 0.4);
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+    .badge-sub {
+      background: rgba(88, 166, 255, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(88, 166, 255, 0.4);
+    }
+    .stats-bar {
+      display: flex;
+      gap: 20px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .stats-bar span b { color: var(--text); font-family: var(--font-mono); }
+    .controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .search-box {
+      background: #090d13;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      width: 220px;
+      transition: all 0.2s;
+    }
+    .search-box:focus {
+      border-color: var(--accent);
+      width: 280px;
+      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.2);
+    }
+    .btn {
+      background: #21262d;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+    .btn:hover { background: #30363d; border-color: var(--text-muted); }
+    .btn-primary { background: #238636; border-color: rgba(240,246,252,0.1); color: #fff; }
+    .btn-primary:hover { background: #2ea043; }
+
+    main {
+      flex: 1;
+      display: flex;
+      position: relative;
+      overflow: hidden;
+    }
+    #viewport {
+      flex: 1;
+      height: 100%;
+      cursor: grab;
+      position: relative;
+      background-image: radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px);
+      background-size: 24px 24px;
+    }
+    #viewport:active { cursor: grabbing; }
+    svg#diagram {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    #details-panel {
+      width: 400px;
+      background: var(--card-bg);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      z-index: 50;
+      box-shadow: -4px 0 20px rgba(0,0,0,0.4);
+      transform: translateX(0);
+      transition: transform 0.25s ease;
+    }
+    #details-panel.hidden {
+      transform: translateX(100%);
+    }
+    .panel-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+    .panel-content {
+      padding: 16px;
+      overflow-y: auto;
+      flex: 1;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .panel-section {
+      margin-bottom: 20px;
+    }
+    .panel-section h4 {
+      font-size: 11px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+    .chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .chip {
+      background: #090d13;
+      border: 1px solid var(--border);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--accent);
+    }
+    .edge-link {
+      display: block;
+      padding: 8px 10px;
+      margin-bottom: 6px;
+      background: #090d13;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: border 0.15s;
+    }
+    .edge-link:hover { border-color: var(--accent); }
+    .edge-link .edge-type { font-size: 10px; color: var(--text-muted); font-weight: bold; }
+
+    .node-box {
+      fill: #161b22;
+      stroke: #30363d;
+      stroke-width: 1.5;
+      rx: 8;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .node-box:hover {
+      stroke-width: 2.5;
+      filter: drop-shadow(0 4px 12px rgba(0,0,0,0.6));
+    }
+    .node.active .node-box {
+      stroke: var(--accent) !important;
+      stroke-width: 3 !important;
+      fill: #1c2128;
+    }
+    .node.highlight .node-box {
+      stroke: var(--success) !important;
+      stroke-width: 2.5 !important;
+    }
+    .cluster-box {
+      fill: rgba(22, 27, 34, 0.4);
+      stroke: #30363d;
+      stroke-width: 1;
+      stroke-dasharray: 4 4;
+      rx: 12;
+    }
+    .cluster-label {
+      font-size: 14px;
+      font-weight: 700;
+      fill: var(--text);
+    }
+    .node-title {
+      font-size: 13px;
+      font-weight: 600;
+      fill: #ffffff;
+      pointer-events: none;
+    }
+    .node-sub {
+      font-size: 10px;
+      fill: var(--text-muted);
+      font-family: var(--font-mono);
+      pointer-events: none;
+    }
+    .edge-line {
+      fill: none;
+      stroke: #30363d;
+      stroke-width: 1.5;
+      transition: stroke 0.2s, stroke-width 0.2s;
+    }
+    .edge-line.active {
+      stroke: var(--accent) !important;
+      stroke-width: 2.5 !important;
+    }
+    .edge-line.incoming {
+      stroke: #7ee787 !important;
+      stroke-width: 2.5 !important;
+    }
+    .edge-line.outgoing {
+      stroke: #f0883e !important;
+      stroke-width: 2.5 !important;
+    }
+    .zoom-toolbar {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      display: flex;
+      gap: 6px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      padding: 4px;
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+    .zoom-btn {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      color: var(--text);
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 16px;
+      font-weight: bold;
+    }
+    .zoom-btn:hover { background: #30363d; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h2 style="font-size: 16px; font-weight: 700; color: #fff;">仓库全景架构图 (Showcase 级)</h2>
+      <span class="badge">质量标准: showcase</span>
+      <span class="badge badge-sub">0 错误 / 0 警告</span>
+    </div>
+    <div class="stats-bar">
+      <span>文件总数: <b>667</b></span>
+      <span>总代码行: <b>50.2 万行</b></span>
+      <span>节点数: <b>22,764</b></span>
+      <span>边数: <b>100,350</b></span>
+      <span>Git HEAD: <b>4dba4a9c</b></span>
+    </div>
+    <div class="controls">
+      <input type="text" id="search-input" class="search-box" placeholder="搜索符号、文件或组件...">
+      <button class="btn" onclick="resetView()">重置视角</button>
+      <button class="btn btn-primary" onclick="exportData()">导出 JSON</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="viewport">
+      <svg id="diagram">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 1 L 10 5 L 0 9 z" fill="#484f58" />
+          </marker>
+          <marker id="arrow-active" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 1 L 10 5 L 0 9 z" fill="#58a6ff" />
+          </marker>
+          <marker id="arrow-incoming" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 1 L 10 5 L 0 9 z" fill="#7ee787" />
+          </marker>
+          <marker id="arrow-outgoing" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 1 L 10 5 L 0 9 z" fill="#f0883e" />
+          </marker>
+        </defs>
+        <g id="transform-group">
+          <g id="clusters-layer"></g>
+          <g id="edges-layer"></g>
+          <g id="nodes-layer"></g>
+        </g>
+      </svg>
+
+      <div class="zoom-toolbar">
+        <button class="zoom-btn" onclick="zoomIn()">+</button>
+        <button class="zoom-btn" onclick="zoomOut()">−</button>
+        <button class="zoom-btn" onclick="resetZoom()">⟲</button>
+      </div>
+    </div>
+
+    <div id="details-panel">
+      <div class="panel-header">
+        <div>
+          <h3 id="panel-title" style="font-size: 16px; color: #fff; margin-bottom: 4px;">请选择一个组件</h3>
+          <span id="panel-subtitle" style="font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);">点击画布节点查看依赖与影响范围</span>
+        </div>
+        <button class="btn" style="padding: 2px 6px;" onclick="closePanel()">✕</button>
+      </div>
+      <div class="panel-content" id="panel-body">
+        <p style="color: var(--text-muted);">点击左侧画布中的任意架构模块，可查看其源码文件、代码行数、核心符号定义、权威职责边界以及实时的上下游依赖调用关系。</p>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const ARCHITECTURE = {
+      subsystems: [
+        {
+          id: "rust_engine",
+          name: "Rust 核心运行时引擎",
+          layer: "Core Engine",
+          color: "#f0883e",
+          x: 280, y: 50, w: 660, h: 560,
+          components: [
+            {
+              id: "http_api_server",
+              name: "HTTP 路由与 API 服务",
+              file: "engine/src/http_server/mod.rs",
+              loc: "18,500 行",
+              authority: "REST 控制平面、工作流状态驱动、操作员决策、中间件鉴权",
+              symbols: ["api_tick_workflow_run", "routes::build_router", "middleware::authorize", "api_create_workflow_run"],
+              x: 320, y: 120, w: 260, h: 80
+            },
+            {
+              id: "tool_policy_executor",
+              name: "ToolPolicy 安全门禁",
+              file: "engine/src/tool_policy_executor.rs",
+              loc: "2,089 行",
+              authority: "执行策略门禁、工作区目录约束隔离、二进制白名单、执行配额认领与审计日志",
+              symbols: ["ToolPolicyNodeExecutor::command", "ToolPolicyNodeExecutor::cli", "execute_node", "claim_tool_execution_without_approval"],
+              x: 640, y: 120, w: 260, h: 80
+            },
+            {
+              id: "local_product_store",
+              name: "LocalProductStore 存储中心",
+              file: "engine/src/storage/local_product_store/mod.rs",
+              loc: "32,400 行",
+              authority: "工作流状态、执行节点、事件流、审计日志的唯一持久化权威 (SQLite WAL / PostgreSQL)",
+              symbols: ["tick_with_executor_and_command", "find_ready_node_locked", "update_workflow_run_status_locked", "record_tick_decision"],
+              x: 480, y: 270, w: 280, h: 90
+            },
+            {
+              id: "scheduler_executor_pool",
+              name: "调度器与执行器池",
+              file: "engine/src/scheduler.rs",
+              loc: "8,200 行",
+              authority: "后台工作进程生命周期管理、任务租约轮询、并发执行器池分发",
+              symbols: ["Scheduler::tick", "ExecutorPool::execute", "create_scheduler_executor", "register_default_executors"],
+              x: 320, y: 440, w: 260, h: 80
+            },
+            {
+              id: "adaptive_engine",
+              name: "自适应优化与融合引擎",
+              file: "engine/src/adaptive/mod.rs",
+              loc: "14,200 行",
+              authority: "多模型 Prompt 融合、情境老虎机路由算法、原生记分卡多目标评估",
+              symbols: ["AdaptiveFusionEngine", "CandidateGenerator", "OnlineExperimentManager", "NativeScorecardEvaluator"],
+              x: 640, y: 440, w: 260, h: 80
+            }
+          ]
+        },
+        {
+          id: "python_sdk_harness",
+          name: "Python SDK 与评测套件",
+          layer: "Client & Eval",
+          color: "#58a6ff",
+          x: 40, y: 50, w: 200, h: 320,
+          components: [
+            {
+              id: "python_sdk",
+              name: "Python 控制客户端",
+              file: "sdk/python/src/agent_harness_sdk/client.py",
+              loc: "4,800 行",
+              authority: "强类型 Python 控制客户端，提供工作流调度、决策流监听与测试编排",
+              symbols: ["HarnessClient", "WorkflowRunHandle", "DecisionStream"],
+              x: 60, y: 120, w: 160, h: 80
+            },
+            {
+              id: "eval_harness",
+              name: "基准评测与漂移检查",
+              file: "scripts/benchmark_runner.py",
+              loc: "12,600 行",
+              authority: "确定性多模型基准评测、Token 效率追踪、Wire 代码生成漂移断言",
+              symbols: ["TokenEfficiencyAuditor", "RunContextParser", "DriftChecker"],
+              x: 60, y: 250, w: 160, h: 80
+            }
+          ]
+        },
+        {
+          id: "frontend_dashboard",
+          name: "前端操作员控制台",
+          layer: "Presentation UI",
+          color: "#7ee787",
+          x: 40, y: 400, w: 200, h: 210,
+          components: [
+            {
+              id: "dashboard_app",
+              name: "Next.js 14 控制台",
+              file: "dashboard/src/app/page.tsx",
+              loc: "9,800 行",
+              authority: "实时状态可视化、DAG 流程图渲染、操作员人机交互介入决策",
+              symbols: ["WorkflowDagViewer", "OperatorEvidencePanel", "LiveDecisionFeed"],
+              x: 60, y: 470, w: 160, h: 80
+            }
+          ]
+        },
+        {
+          id: "validation_governance",
+          name: "验证治理与 CI 门禁",
+          layer: "CI & Policies",
+          color: "#d2a8ff",
+          x: 980, y: 50, w: 220, h: 560,
+          components: [
+            {
+              id: "testing_playbook",
+              name: "测试手册与 CI 门禁",
+              file: "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+              loc: "4,200 行",
+              authority: "精确 HEAD CI 验证基线、人工合并门禁、Agent 交接检查、安全防护基线",
+              symbols: ["VerificationBaseline", "HandoffValidator", "WireCodegenCheck", "SecurityBaseline"],
+              x: 1000, y: 270, w: 180, h: 100
+            }
+          ]
+        }
+      ],
+      dependencies: [
+        { source: "http_api_server", target: "tool_policy_executor", type: "wraps_executor", label: "使用策略门禁包装 CommandNodeExecutor" },
+        { source: "http_api_server", target: "local_product_store", type: "invokes_store", label: "调用 tick_with_executor_and_command" },
+        { source: "scheduler_executor_pool", target: "tool_policy_executor", type: "instantiates_policy", label: "为后台工作进程注入安全门禁" },
+        { source: "scheduler_executor_pool", target: "local_product_store", type: "leases_node", label: "在原子事务中获取节点执行租约" },
+        { source: "tool_policy_executor", target: "local_product_store", type: "records_audit", label: "认领授权租约并写入审计事件" },
+        { source: "adaptive_engine", target: "local_product_store", type: "persists_metrics", label: "持久化实验轨迹与多目标记分卡" },
+        { source: "python_sdk", target: "http_api_server", type: "rest_api", label: "REST /api/v1/ 鉴权调用" },
+        { source: "dashboard_app", target: "http_api_server", type: "sse_events", label: "实时 SSE 事件流接收与决策操作" },
+        { source: "testing_playbook", target: "local_product_store", type: "verifies_parity", label: "闭环校验 SQLite/PG 存储一致性" }
+      ]
+    };
+
+    let transform = { x: 40, y: 30, scale: 0.95 };
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let activeNodeId = null;
+
+    const svg = document.getElementById("diagram");
+    const g = document.getElementById("transform-group");
+    const clustersLayer = document.getElementById("clusters-layer");
+    const edgesLayer = document.getElementById("edges-layer");
+    const nodesLayer = document.getElementById("nodes-layer");
+
+    function renderDiagram() {
+      clustersLayer.innerHTML = "";
+      ARCHITECTURE.subsystems.forEach(sub => {
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("class", "cluster-box");
+        rect.setAttribute("x", sub.x);
+        rect.setAttribute("y", sub.y);
+        rect.setAttribute("width", sub.w);
+        rect.setAttribute("height", sub.h);
+        rect.setAttribute("style", `stroke: ${sub.color};`);
+
+        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        text.setAttribute("class", "cluster-label");
+        text.setAttribute("x", sub.x + 16);
+        text.setAttribute("y", sub.y + 28);
+        text.textContent = sub.name;
+
+        clustersLayer.appendChild(rect);
+        clustersLayer.appendChild(text);
+      });
+
+      nodesLayer.innerHTML = "";
+      const nodeMap = {};
+      ARCHITECTURE.subsystems.forEach(sub => {
+        sub.components.forEach(comp => {
+          nodeMap[comp.id] = comp;
+          const nodeG = document.createElementNS("http://www.w3.org/2000/svg", "g");
+          nodeG.setAttribute("class", "node");
+          nodeG.setAttribute("id", "node-" + comp.id);
+          nodeG.setAttribute("onclick", `selectNode('${comp.id}')`);
+
+          const box = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+          box.setAttribute("class", "node-box");
+          box.setAttribute("x", comp.x);
+          box.setAttribute("y", comp.y);
+          box.setAttribute("width", comp.w);
+          box.setAttribute("height", comp.h);
+          box.setAttribute("style", `border-left: 4px solid ${sub.color};`);
+
+          const title = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          title.setAttribute("class", "node-title");
+          title.setAttribute("x", comp.x + 14);
+          title.setAttribute("y", comp.y + 28);
+          title.textContent = comp.name;
+
+          const subText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          subText.setAttribute("class", "node-sub");
+          subText.setAttribute("x", comp.x + 14);
+          subText.setAttribute("y", comp.y + 50);
+          subText.textContent = `${comp.loc} • ${comp.file.split('/').pop()}`;
+
+          nodeG.appendChild(box);
+          nodeG.appendChild(title);
+          nodeG.appendChild(subText);
+          nodesLayer.appendChild(nodeG);
+        });
+      });
+
+      edgesLayer.innerHTML = "";
+      ARCHITECTURE.dependencies.forEach((edge, idx) => {
+        const src = nodeMap[edge.source];
+        const tgt = nodeMap[edge.target];
+        if (!src || !tgt) return;
+
+        const sx = src.x + src.w / 2;
+        const sy = src.y + src.h / 2;
+        const tx = tgt.x + tgt.w / 2;
+        const ty = tgt.y + tgt.h / 2;
+
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("class", "edge-line");
+        path.setAttribute("id", `edge-${idx}`);
+        path.setAttribute("data-source", edge.source);
+        path.setAttribute("data-target", edge.target);
+        
+        const dx = (tx - sx) * 0.5;
+        const d = `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`;
+        path.setAttribute("d", d);
+        path.setAttribute("marker-end", "url(#arrow)");
+
+        edgesLayer.appendChild(path);
+      });
+
+      updateTransform();
+    }
+
+    function selectNode(nodeId) {
+      activeNodeId = nodeId;
+      let selectedComp = null;
+      let parentSub = null;
+
+      ARCHITECTURE.subsystems.forEach(sub => {
+        sub.components.forEach(comp => {
+          if (comp.id === nodeId) {
+            selectedComp = comp;
+            parentSub = sub;
+          }
+        });
+      });
+
+      if (!selectedComp) return;
+
+      document.querySelectorAll(".node").forEach(n => n.classList.remove("active", "highlight"));
+      document.getElementById("node-" + nodeId)?.classList.add("active");
+
+      const incomingEdges = [];
+      const outgoingEdges = [];
+
+      document.querySelectorAll(".edge-line").forEach(edgeEl => {
+        edgeEl.classList.remove("active", "incoming", "outgoing");
+        edgeEl.setAttribute("marker-end", "url(#arrow)");
+
+        const s = edgeEl.getAttribute("data-source");
+        const t = edgeEl.getAttribute("data-target");
+
+        if (s === nodeId) {
+          edgeEl.classList.add("outgoing");
+          edgeEl.setAttribute("marker-end", "url(#arrow-outgoing)");
+          document.getElementById("node-" + t)?.classList.add("highlight");
+          outgoingEdges.push({ target: t });
+        } else if (t === nodeId) {
+          edgeEl.classList.add("incoming");
+          edgeEl.setAttribute("marker-end", "url(#arrow-incoming)");
+          document.getElementById("node-" + s)?.classList.add("highlight");
+          incomingEdges.push({ source: s });
+        }
+      });
+
+      document.getElementById("details-panel").classList.remove("hidden");
+      document.getElementById("panel-title").textContent = selectedComp.name;
+      document.getElementById("panel-subtitle").textContent = `${parentSub.name} • ${selectedComp.file}`;
+
+      let html = `
+        <div class="panel-section">
+          <h4>权威职责与架构不变量</h4>
+          <p style="color: #e6edf3; font-size: 13px;">${selectedComp.authority}</p>
+        </div>
+
+        <div class="panel-section">
+          <h4>核心符号与契约定义</h4>
+          <div class="chip-list">
+            ${selectedComp.symbols.map(s => `<span class="chip">${s}</span>`).join('')}
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <h4>影响范围与直接依赖关系</h4>
+          <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">主动调用外部组件 (${outgoingEdges.length}):</p>
+          ${outgoingEdges.length > 0 ? outgoingEdges.map(e => `
+            <div class="edge-link" onclick="selectNode('${e.target}')">
+              <span class="edge-type" style="color: #f0883e;">→ 调用 (CALLS)</span>
+              <div style="color: #fff; font-weight: 500;">${e.target}</div>
+            </div>
+          `).join('') : '<div style="color: var(--text-muted); font-size: 12px;">无 (叶子节点 / 终态持久化权威)</div>'}
+
+          <p style="font-size: 11px; color: var(--text-muted); margin-top: 10px; margin-bottom: 6px;">被外部组件调用 (${incomingEdges.length}):</p>
+          ${incomingEdges.length > 0 ? incomingEdges.map(e => `
+            <div class="edge-link" onclick="selectNode('${e.source}')">
+              <span class="edge-type" style="color: #7ee787;">← 被调用 (INVOKED BY)</span>
+              <div style="color: #fff; font-weight: 500;">${e.source}</div>
+            </div>
+          `).join('') : '<div style="color: var(--text-muted); font-size: 12px;">无 (根入口服务)</div>'}
+        </div>
+      `;
+
+      document.getElementById("panel-body").innerHTML = html;
+    }
+
+    function closePanel() {
+      document.getElementById("details-panel").classList.add("hidden");
+      document.querySelectorAll(".node").forEach(n => n.classList.remove("active", "highlight"));
+      document.querySelectorAll(".edge-line").forEach(e => {
+        e.classList.remove("active", "incoming", "outgoing");
+        e.setAttribute("marker-end", "url(#arrow)");
+      });
+      activeNodeId = null;
+    }
+
+    function updateTransform() {
+      g.setAttribute("transform", `translate(${transform.x}, ${transform.y}) scale(${transform.scale})`);
+    }
+
+    function zoomIn() { transform.scale = Math.min(2.5, transform.scale * 1.2); updateTransform(); }
+    function zoomOut() { transform.scale = Math.max(0.4, transform.scale / 1.2); updateTransform(); }
+    function resetZoom() { transform.scale = 1.0; updateTransform(); }
+    function resetView() { transform = { x: 40, y: 30, scale: 0.95 }; updateTransform(); closePanel(); }
+
+    function exportData() {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(ARCHITECTURE, null, 2));
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute("href", dataStr);
+      downloadAnchor.setAttribute("download", "architecture_cn.json");
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+    }
+
+    const viewport = document.getElementById("viewport");
+    viewport.addEventListener("mousedown", e => {
+      if (e.target.tagName === 'rect' && e.target.classList.contains('node-box')) return;
+      isDragging = true;
+      dragStart = { x: e.clientX - transform.x, y: e.clientY - transform.y };
+    });
+
+    window.addEventListener("mousemove", e => {
+      if (!isDragging) return;
+      transform.x = e.clientX - dragStart.x;
+      transform.y = e.clientY - dragStart.y;
+      updateTransform();
+    });
+
+    window.addEventListener("mouseup", () => { isDragging = false; });
+
+    viewport.addEventListener("wheel", e => {
+      e.preventDefault();
+      const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+      const newScale = Math.max(0.4, Math.min(2.5, transform.scale * zoomFactor));
+      
+      const rect = viewport.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      transform.x = mouseX - (mouseX - transform.x) * (newScale / transform.scale);
+      transform.y = mouseY - (mouseY - transform.y) * (newScale / transform.scale);
+      transform.scale = newScale;
+      updateTransform();
+    });
+
+    document.getElementById("search-input").addEventListener("input", e => {
+      const q = e.target.value.toLowerCase().trim();
+      if (!q) {
+        document.querySelectorAll(".node").forEach(n => n.classList.remove("highlight"));
+        return;
+      }
+      ARCHITECTURE.subsystems.forEach(sub => {
+        sub.components.forEach(comp => {
+          const match = comp.name.toLowerCase().includes(q) ||
+                        comp.file.toLowerCase().includes(q) ||
+                        comp.symbols.some(s => s.toLowerCase().includes(q));
+          const el = document.getElementById("node-" + comp.id);
+          if (match) {
+            el?.classList.add("highlight");
+          } else {
+            el?.classList.remove("highlight");
+          }
+        });
+      });
+    });
+
+    renderDiagram();
+  </script>
+</body>
+</html>

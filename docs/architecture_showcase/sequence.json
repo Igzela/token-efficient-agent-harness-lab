@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "meta": {
+    "title": "Runtime Execution Flow: Workflow Run Tick",
+    "version": "1.0.0",
+    "quality_profile": "showcase",
+    "purpose": "Understand what happens after request enters the system in under 60 seconds",
+    "participants_count": 7,
+    "validation": { "errors": 0, "warnings": 0, "status": "PASSED" }
+  },
+  "participants": [
+    { "id": "client", "name": "External Client", "type": "actor", "file": "HTTP Client" },
+    { "id": "http_server", "name": "HTTP Router & Handler", "type": "service", "file": "engine/src/http_server/handlers/workflow_runs.rs" },
+    { "id": "executor_pool", "name": "Scheduler / Pool", "type": "service", "file": "engine/src/executor_pool.rs" },
+    { "id": "tool_policy", "name": "ToolPolicyNodeExecutor", "type": "security_gate", "file": "engine/src/tool_policy_executor.rs" },
+    { "id": "node_exec", "name": "CommandNodeExecutor", "type": "executor", "file": "engine/src/node_executor.rs" },
+    { "id": "store", "name": "LocalProductStore", "type": "persistence_owner", "file": "engine/src/storage/local_product_store/workflow_runs.rs" },
+    { "id": "db", "name": "Database (SQLite / PG)", "type": "database", "file": "engine/src/storage/local_product_store/schema.rs" }
+  ]
+}
