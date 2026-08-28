@@ -693,9 +693,12 @@ class Steward:
                 f"refs/heads/{integration.branch}",
             ]
 
-        remote = self._git_text(
-            "ls-remote", "origin", f"refs/heads/{integration.branch}", allow_failure=True
-        )
+        try:
+            remote = self._git_text(
+                "ls-remote", "origin", f"refs/heads/{integration.branch}"
+            )
+        except StewardError as exc:
+            raise StewardError("stage_remote_head_unavailable") from exc
         if remote:
             parts = remote.split()
             if len(parts) != 2 or parts[1] != f"refs/heads/{integration.branch}":

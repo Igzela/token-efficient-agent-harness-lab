@@ -408,6 +408,33 @@ class StewardExecutionTests(unittest.TestCase):
             ],
         )
 
+    def test_stage_publish_refuses_remote_read_failure_before_push(self):
+        instance = self.make_steward(None, None)
+        integration = steward.StageIntegration(
+            self.stage.stage_id,
+            steward._stage_branch(self.mission, self.stage, BASE),
+            BASE,
+            HEAD,
+            ((self.card.card_id, HEAD),),
+        )
+
+        def git(*args, **_kwargs):
+            if args[0] == "merge-base":
+                return ""
+            if args[0] == "rev-parse":
+                return HEAD
+            if args[0] == "ls-remote":
+                raise steward.StewardError("stage_git_command_failed")
+            raise AssertionError("publish must not run after remote read failure")
+
+        with mock.patch.object(instance, "_git_text", side_effect=git):
+            with self.assertRaisesRegex(
+                steward.StewardError, "stage_remote_head_unavailable"
+            ):
+                instance.publish_stage_branch(
+                    integration, mission=self.mission, stage=self.stage
+                )
+
     def test_parent_assembly_cherry_picks_two_real_card_heads(self):
         repo = self.root / "Projects" / "repo"
         repo.mkdir(parents=True)
