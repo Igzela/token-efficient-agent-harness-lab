@@ -109,11 +109,22 @@ def _git_repository_identity(repo_path: Path, repository: str) -> bool:
     except OSError:
         return False
     origin = remote.stdout.strip().removesuffix(".git").rstrip("/")
-    if ":" in origin and "/" not in origin.rsplit(":", 1)[0]:
-        origin = origin.rsplit(":", 1)[1]
+    if origin.startswith("git@"):
+        host, separator, path = origin[4:].partition(":")
+        if not separator or host.casefold() != "github.com":
+            return False
     else:
-        origin = origin.rsplit("/", 2)[-2] + "/" + origin.rsplit("/", 1)[-1]
-    return origin.casefold() == repository.casefold()
+        https_prefix = "https://github.com/"
+        ssh_prefix = "ssh://git@github.com/"
+        if origin.casefold().startswith(https_prefix):
+            path = origin[len(https_prefix):]
+        elif origin.casefold().startswith(ssh_prefix):
+            path = origin[len(ssh_prefix):]
+        else:
+            return False
+        if contract.REPOSITORY.fullmatch(path) is None:
+            return False
+    return path.casefold() == repository.casefold()
 
 
 def _git_changed_paths(worktree: Path, base_sha: str, head_sha: str) -> tuple[str, ...]:
