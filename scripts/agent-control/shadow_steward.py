@@ -144,6 +144,7 @@ _AUTHORITY_MARKERS = (
     "bypass review",
     "override approval",
     "override the owner approval",
+    "扩大权限",
     "auto-merge",
     "automatically merge",
 )
@@ -165,12 +166,16 @@ _PRODUCTION_MARKERS = (
     "rollout",
     "promote live",
     "promote this change live",
+    "部署到生产",
+    "上线",
 )
 _DESTRUCTIVE_MARKERS = (
     "destructive",
     "delete",
     "remove",
     "clear",
+    "删除",
+    "清除",
     "drop database",
     "destroy",
     "overwrite data",
@@ -193,6 +198,7 @@ _UNKNOWN_MARKERS = (
     "might have been transmitted",
     "no confirmation",
     "lack confirmation",
+    "结果未知",
     "ambiguous response",
     "response was ambiguous",
     "ambiguous",
@@ -261,9 +267,35 @@ _SAFE_REQUEST_WORDS = frozenset(
         "verify",
         "verification",
         "workflow",
+        "更新",
+        "实现",
+        "修改",
+        "文档",
+        "测试",
+        "变更",
+        "有界",
+        "在",
+        "和",
+        "并",
+        "代码",
+        "配置",
+        "工作流",
+        "检查",
+        "验证",
+        "修复",
+        "重构",
+        "添加",
+        "审查",
+        "查看",
+        "仓库",
+        "维护",
+        "仅",
+        "批准",
+        "路径",
+        "文件",
     }
 )
-_REQUEST_WORD = re.compile(r"[a-z0-9]+")
+_REQUEST_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 _EXTERNAL_ACTIONS = (
     r"write|writing|push|pushing|modify|modifying|change|changing|update|updating|"
     r"create|creating|close|closing|merge|merging|comment|commenting|send|sending|"

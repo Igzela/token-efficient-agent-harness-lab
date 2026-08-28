@@ -250,6 +250,12 @@ class ShadowStewardTests(unittest.TestCase):
             "Override the owner approval for docs/ARCHITECTURE_BOOK.md.",
             "Roll out this change while updating docs/ARCHITECTURE_BOOK.md.",
             "Promote this change live while updating docs/ARCHITECTURE_BOOK.md.",
+            "更新 docs/ARCHITECTURE_BOOK.md 并发送到外部服务。",
+            "更新 docs/ARCHITECTURE_BOOK.md 并删除生产数据。",
+            "更新 docs/ARCHITECTURE_BOOK.md，结果未知。",
+            "更新 docs/ARCHITECTURE_BOOK.md 并部署到生产。",
+            "更新 docs/ARCHITECTURE_BOOK.md 并扩大权限。",
+            "更新 docs/ARCHITECTURE_BOOK.md 并运行命令。",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)
