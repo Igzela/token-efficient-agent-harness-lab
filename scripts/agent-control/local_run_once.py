@@ -458,6 +458,7 @@ class LocalRunOnce:
         self.poll_interval_seconds = poll_interval_seconds
         self.lifecycle_timeout_seconds = lifecycle_timeout_seconds
         self.sleeper = sleeper
+        self._mission_controller: local_loop.LoopController | None = None
         # Tests may supply a bounded read-only worker result.  Production uses
         # the existing read-only wrapper below; neither path grants a
         # child GitHub, merge, Provider-effect, or T3 capability.
@@ -465,6 +466,39 @@ class LocalRunOnce:
 
     def _result(self, status: str, issue: int, attempt: str, **details: Any):
         return local_loop.LocalRunOnceResult(status, issue, attempt, details)
+
+    def run_mission_stage(
+        self,
+        proposal: object,
+        *,
+        approval_issue: int,
+        steward: Any,
+        stage_pr: Any = None,
+        now: Callable[[], Any] | None = None,
+    ) -> dict[str, Any]:
+        """Enter the current Mission Stage through the existing local loop.
+
+        This is an explicit production entry seam for the accepted Mission
+        integration.  It delegates identity, owner approval, activation,
+        fresh Stage-PR reads, and lifecycle boundaries to ``LoopController``;
+        the legacy Issue/plan runner remains unchanged and no lifecycle state
+        is written here.
+        """
+
+        if self._mission_controller is None:
+            self._mission_controller = local_loop.LoopController(
+                self.github,
+                self.git,
+                repository=self.repository,
+                repo_path=self.repo_path,
+            )
+        return self._mission_controller.run_mission_stage(
+            proposal,
+            approval_issue=approval_issue,
+            steward=steward,
+            stage_pr=stage_pr,
+            now=now,
+        )
 
     def _plan_result(self, status: str, packet_id: str, attempt: str, **details: Any):
         return self._result(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import signal
 import shutil
@@ -24,8 +25,15 @@ import local_loop
 import local_run_once
 import local_supervisor
 import loopctl
+import mission_contract
 import plan_lane
+import shadow_steward
 import state_manager
+import steward
+import steward_github
+import steward_workers as workers
+from steward_journal import StewardJournal
+import worktree_manager
 
 
 MAIN_SHA = "a" * 40
@@ -78,6 +86,7 @@ class FakeGitHub:
         self.open_pr_issues = set()
         self.active = set()
         self.active_scopes = {}
+        self.comments = []
 
     @staticmethod
     def issue(number, *, author="Igzela", body=f"{SCOPE}\n{TASK}", labels=None):
@@ -123,10 +132,16 @@ class FakeGitHub:
             for issue_number in self.active
         }
 
+    def issue_comments(self, issue_number):
+        return list(self.comments)
+
 
 class FakeGit:
     def __init__(self, main_sha=MAIN_SHA):
         self.main_sha = main_sha
+
+    def refresh_origin_main(self, repo_path, branch):
+        self.refreshed = (Path(repo_path), branch)
 
     def origin_main_sha(self, repo_path, branch):
         self.repo_path = Path(repo_path)
@@ -293,6 +308,7 @@ class TestLoopControllerPoll(unittest.TestCase):
         self.assertEqual(decision["status"], "unavailable")
         self.assertEqual(decision["action"], "none")
 
+
     def test_missing_active_claim_scope_fails_closed(self):
         github = FakeGitHub()
         github.active = {3}
@@ -428,6 +444,416 @@ class TestLoopControllerPoll(unittest.TestCase):
             [7],
         )
         self.assertEqual(decision["deferred_issue_numbers"], [8, 9])
+
+
+class TestGitHubOwnerApprovalAuthenticator(unittest.TestCase):
+    def test_owner_comment_is_current_one_time_approval(self):
+        github = FakeGitHub()
+        proposal = shadow_steward.compile_proposal(
+            "Update docs/ARCHITECTURE_BOOK.md and tests/test_mission_contract.py."
+        )
+        approved_at = "2026-08-29T00:00:00Z"
+        payload = {
+            "owner_identity": "repository-owner",
+            "proposal_sha256": proposal.proposal_sha256,
+            "approval_id": "approval-1",
+            "approved_at": approved_at,
+            "accepted_main_sha": MAIN_SHA,
+        }
+        github.comments = [{
+            "author": {"login": "Igzela"},
+            "body": "<!-- steward-owner-approval:v1 " + json.dumps(payload, separators=(",", ":")) + " -->",
+            "createdAt": approved_at,
+        }]
+        auth = local_loop.GitHubOwnerApprovalAuthenticator(
+            github,
+            repository="Igzela/example",
+            issue_number=99,
+            accepted_main_sha=MAIN_SHA,
+            now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+        )
+        approval = auth.read_approval(proposal.proposal_sha256)
+        self.assertIsNotNone(approval)
+        self.assertTrue(auth.verify(approval, proposal.proposal_sha256))
+        self.assertFalse(auth.verify(approval, proposal.proposal_sha256))
+
+    def test_forged_author_stale_and_wrong_main_are_rejected(self):
+        github = FakeGitHub()
+        proposal = shadow_steward.compile_proposal("Update docs/ARCHITECTURE_BOOK.md.")
+        payload = {
+            "owner_identity": "repository-owner",
+            "proposal_sha256": proposal.proposal_sha256,
+            "approval_id": "approval-2",
+            "approved_at": "2026-08-01T00:00:00Z",
+            "accepted_main_sha": MAIN_SHA,
+        }
+        github.comments = [{
+            "author": {"login": "attacker"},
+            "body": "<!-- steward-owner-approval:v1 " + json.dumps(payload) + " -->",
+            "createdAt": payload["approved_at"],
+        }]
+        auth = local_loop.GitHubOwnerApprovalAuthenticator(
+            github,
+            repository="Igzela/example",
+            issue_number=99,
+            accepted_main_sha=MAIN_SHA,
+            now=lambda: datetime(2026, 8, 29, tzinfo=timezone.utc),
+        )
+        self.assertIsNone(auth.read_approval(proposal.proposal_sha256))
+        github.comments[0]["author"] = {"login": "Igzela"}
+        stale = auth.read_approval(proposal.proposal_sha256)
+        self.assertIsNone(stale)
+        self.assertFalse(auth.verify(stale, proposal.proposal_sha256))
+        payload["accepted_main_sha"] = "b" * 40
+        payload["approval_id"] = "approval-3"
+        self.assertIsNone(auth.read_approval(proposal.proposal_sha256))
+
+    def test_owner_approval_replay_is_denied_after_authenticator_restart(self):
+        github = FakeGitHub()
+        proposal = shadow_steward.compile_proposal("Update docs/ARCHITECTURE_BOOK.md.")
+        approved_at = "2026-08-29T00:00:00Z"
+        payload = {
+            "owner_identity": "repository-owner",
+            "proposal_sha256": proposal.proposal_sha256,
+            "approval_id": "approval-journal-replay",
+            "approved_at": approved_at,
+            "accepted_main_sha": MAIN_SHA,
+        }
+        github.comments = [{
+            "author": {"login": "Igzela"},
+            "body": "<!-- steward-owner-approval:v1 " + json.dumps(payload, separators=(",", ":")) + " -->",
+            "createdAt": approved_at,
+        }]
+        with tempfile.TemporaryDirectory() as temp:
+            journal_path = Path(temp) / "steward.sqlite3"
+            first = local_loop.GitHubOwnerApprovalAuthenticator(
+                github,
+                repository="Igzela/example",
+                issue_number=99,
+                accepted_main_sha=MAIN_SHA,
+                now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+                replay_store=StewardJournal(journal_path),
+            )
+            approval = first.read_approval(proposal.proposal_sha256)
+            self.assertTrue(first.verify(approval, proposal.proposal_sha256))
+
+            second = local_loop.GitHubOwnerApprovalAuthenticator(
+                github,
+                repository="Igzela/example",
+                issue_number=99,
+                accepted_main_sha=MAIN_SHA,
+                now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+                replay_store=StewardJournal(journal_path),
+            )
+            self.assertFalse(second.verify(approval, proposal.proposal_sha256))
+
+
+class TestMissionExecutionBridge(unittest.TestCase):
+    def test_missing_approval_does_not_activate_mission(self):
+        github = FakeGitHub()
+        github.metadata["name_with_owner"] = mission_contract.CAMPAIGN_REPOSITORY
+        proposal = shadow_steward.compile_proposal("Update docs/ARCHITECTURE_BOOK.md.")
+        controller = local_loop.LoopController(
+            github,
+            FakeGit(),
+            repository=mission_contract.CAMPAIGN_REPOSITORY,
+            repo_path=Path("/workspace/example"),
+        )
+        with mock.patch.object(
+            mission_contract,
+            "activate_current_mission",
+            side_effect=AssertionError("approval is required before activation"),
+        ):
+            result = controller.run_mission_stage(
+                proposal,
+                approval_issue=99,
+                steward=object(),
+            )
+        self.assertEqual(result["status"], "waiting_approval")
+
+    def test_non_test_bridge_activates_and_calls_steward(self):
+        github = FakeGitHub()
+        github.metadata["name_with_owner"] = mission_contract.CAMPAIGN_REPOSITORY
+        proposal = shadow_steward.compile_proposal(
+            "Update docs/ARCHITECTURE_BOOK.md and tests/test_mission_contract.py."
+        )
+        approved_at = "2026-08-29T00:00:00Z"
+        payload = {
+            "owner_identity": "repository-owner",
+            "proposal_sha256": proposal.proposal_sha256,
+            "approval_id": "approval-bridge",
+            "approved_at": approved_at,
+            "accepted_main_sha": MAIN_SHA,
+        }
+        github.comments = [{
+            "author": {"login": "Igzela"},
+            "body": "<!-- steward-owner-approval:v1 " + json.dumps(payload) + " -->",
+            "createdAt": approved_at,
+        }]
+        controller = local_loop.LoopController(
+            github,
+            FakeGit(),
+            repository=mission_contract.CAMPAIGN_REPOSITORY,
+            repo_path=Path("/workspace/example"),
+        )
+        calls = []
+        continuations = []
+
+        class Steward:
+            def __init__(self):
+                self.github = self
+
+            def fetch_stage_pr(self, repository, pr_number):
+                return {
+                    "repository": repository,
+                    "pr_number": pr_number,
+                    "state": "OPEN",
+                    "draft": False,
+                    "merged": False,
+                    "base_sha": MAIN_SHA,
+                    "head_sha": "b" * 40,
+                    "ci_state": "PASS",
+                    "review_state": "PASS",
+                    "base_branch": "main",
+                    "head_branch": "agent/stage-ready",
+                }
+
+            def execute_stage_to_waiting_for_merge(self, mission, stage, cards, **kwargs):
+                calls.append((mission, stage, cards, kwargs))
+                return {"status": "executed", "results": {}}
+
+            def continue_stage_to_waiting_for_merge(self, mission, stage, cards, **kwargs):
+                continuations.append((mission, stage, cards, kwargs))
+                return {"status": "waiting_for_merge", "results": {}}
+
+        steward_instance = Steward()
+        result = controller.run_mission_stage(
+            proposal,
+            approval_issue=99,
+            steward=steward_instance,
+            now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result["status"], "executed")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0].state, "RUNNING")
+        self.assertEqual(len(calls[0][2]), 2)
+        self.assertEqual(calls[0][3]["base_sha"], MAIN_SHA)
+        continued = controller.run_mission_stage(
+            proposal,
+            approval_issue=99,
+            steward=steward_instance,
+            stage_pr=42,
+            now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(continued["status"], "waiting_for_merge")
+        self.assertEqual(len(continuations), 1)
+        self.assertEqual(continuations[0][3]["stage_pr"]["pr_number"], 42)
+
+    def test_production_bridge_uses_real_steward_continuation_and_fresh_facts(self):
+        github = FakeGitHub()
+        github.metadata["name_with_owner"] = mission_contract.CAMPAIGN_REPOSITORY
+        proposal = shadow_steward.compile_proposal(
+            "Update docs/ARCHITECTURE_BOOK.md and tests/test_mission_contract.py."
+        )
+        approved_at = "2026-08-29T00:00:00Z"
+        github.comments = [{
+            "author": {"login": "Igzela"},
+            "body": "<!-- steward-owner-approval:v1 " + json.dumps({
+                "owner_identity": "repository-owner",
+                "proposal_sha256": proposal.proposal_sha256,
+                "approval_id": "approval-real-bridge",
+                "approved_at": approved_at,
+                "accepted_main_sha": MAIN_SHA,
+            }) + " -->",
+            "createdAt": approved_at,
+        }]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "Projects" / "repo"
+            origin = root / "origin.git"
+            repo.mkdir(parents=True)
+            subprocess.run(
+                ["git", "init", "--bare", str(origin)], check=True,
+                capture_output=True, text=True,
+            )
+
+            def git(*args):
+                return subprocess.run(
+                    ["git", *args], cwd=repo, check=True,
+                    capture_output=True, text=True,
+                ).stdout.strip()
+
+            git("init", "-b", "main")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.invalid")
+            (repo / "docs").mkdir()
+            (repo / "tests").mkdir()
+            (repo / "docs" / "ARCHITECTURE_BOOK.md").write_text("base docs\n", encoding="utf-8")
+            (repo / "tests" / "test_mission_contract.py").write_text("base tests\n", encoding="utf-8")
+            git("add", ".")
+            git("commit", "-m", "base")
+            base_sha = git("rev-parse", "HEAD")
+            git("remote", "add", "origin", str(origin))
+            git("push", "origin", "main")
+            github.main_sha = base_sha
+            approval = dict(github.comments[0])
+            approval_payload = json.loads(
+                approval["body"].split(" ", 2)[2].removesuffix(" -->")
+            )
+            approval_payload["accepted_main_sha"] = base_sha
+            github.comments[0]["body"] = (
+                "<!-- steward-owner-approval:v1 "
+                + json.dumps(approval_payload)
+                + " -->"
+            )
+            git_reader = FakeGit(base_sha)
+
+            class StageReader:
+                def __init__(self):
+                    self.reads = []
+                    self.head_sha = None
+                    self.head_branch = None
+
+                def fetch_stage_pr(self, repository, pr_number):
+                    self.reads.append((repository, pr_number))
+                    if self.head_sha is None or self.head_branch is None:
+                        raise steward_github.GitHubReadError("stage_facts_not_bound")
+                    return {
+                        "repository": repository,
+                        "pr_number": pr_number,
+                        "state": "OPEN",
+                        "draft": len(self.reads) == 1,
+                        "merged": False,
+                        "base_sha": base_sha,
+                        "head_sha": self.head_sha,
+                        "ci_state": "PASS",
+                        "review_state": "PASS",
+                        "base_branch": "main",
+                        "head_branch": self.head_branch,
+                    }
+
+            reader = StageReader()
+
+            class RealBridgeWorker(workers.BoundedProcessWorker):
+                def __init__(self):
+                    super().__init__(lambda _context: ["/usr/bin/python3", "-c", "pass"])
+
+                def run(self, context):
+                    relative = context.allowed_paths[0]
+                    (context.worktree / relative).write_text(
+                        f"real bridge worker {context.card_id}\n", encoding="utf-8"
+                    )
+                    subprocess.run(
+                        ["git", "add", "--", relative], cwd=context.worktree,
+                        check=True, capture_output=True, text=True,
+                    )
+                    subprocess.run(
+                        ["git", "commit", "-m", f"worker {context.card_id}"],
+                        cwd=context.worktree, check=True, capture_output=True, text=True,
+                    )
+                    head = subprocess.run(
+                        ["git", "rev-parse", "HEAD"], cwd=context.worktree,
+                        check=True, capture_output=True, text=True,
+                    ).stdout.strip()
+                    return workers.WorkerOutcome(
+                        "PASS", workers.process_session_id(context), head,
+                        (relative,), "real_bridge_worker",
+                    )
+
+            class RealBridgeReviewer(workers.BoundedProcessReviewer):
+                def __init__(self):
+                    super().__init__(lambda _context, _outcome: ["/usr/bin/python3", "-c", "pass"])
+
+                def review(self, context, outcome):
+                    payload = {
+                        "schema_version": "steward_review_outcome.v1",
+                        "status": "PASS",
+                        "reviewer_session_id": workers.reviewer_session_id(context, outcome),
+                        "implementation_session_id": outcome.session_id,
+                        "reviewed_head_sha": outcome.head_sha,
+                        "blockers": [],
+                        "detail": "real_bridge_review",
+                        "reviewed_base_sha": context.base_sha,
+                        "reviewed_range_sha256": workers.review_range_digest(
+                            context.base_sha, outcome.head_sha, worktree=context.worktree
+                        ),
+                        "review_axes": ["standards", "spec"],
+                        "review_round": 1,
+                        "review_mode": "full",
+                        "review_receipt_sha256": "",
+                        "summary": "real bridge review",
+                        "findings": None,
+                        "security_ok": True,
+                        "rollback_ok": True,
+                        "observed_ci_status": "unknown",
+                        "finding_ledger_digest": "",
+                    }
+                    return workers.ReviewOutcome.from_wire(
+                        workers.seal_review_outcome_wire(payload)
+                    )
+
+            steward_instance = steward.Steward(
+                repository=mission_contract.CAMPAIGN_REPOSITORY,
+                repo_path=repo,
+                journal=StewardJournal(root / "journal.sqlite3"),
+                github=reader,
+                worker=RealBridgeWorker(),
+                reviewer=RealBridgeReviewer(),
+                lock_dir=root / "locks",
+            )
+            runner = local_run_once.LocalRunOnce(
+                github,
+                git_reader,
+                repository=mission_contract.CAMPAIGN_REPOSITORY,
+                repo_path=repo,
+            )
+
+            with (
+                mock.patch.object(
+                    worktree_manager, "WORKTREE_BASE", root / "worker-worktrees"
+                ),
+                mock.patch.object(steward, "_git_repository_identity", return_value=True),
+                mock.patch.object(
+                    workers,
+                    "run_allowlisted_checks",
+                    return_value=[{"command": "git diff --check", "exit_code": 0}],
+                ),
+                mock.patch(
+                    "pr_binding.create_or_update_stage_pr",
+                    side_effect=lambda _stage_id, _mission_id, branch, head_sha,
+                    _base_sha, _title, _body, _repository: (
+                        setattr(reader, "head_sha", head_sha),
+                        setattr(reader, "head_branch", branch),
+                        {"number": 42, "head_sha": head_sha},
+                    )[-1],
+                ) as bind_stage_pr,
+            ):
+                steward_instance.verifier = workers.run_allowlisted_checks
+                first = runner.run_mission_stage(
+                    proposal,
+                    approval_issue=99,
+                    steward=steward_instance,
+                    now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+                )
+                second = runner.run_mission_stage(
+                    proposal,
+                    approval_issue=99,
+                    steward=steward_instance,
+                    stage_pr=42,
+                    now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+                )
+
+        self.assertEqual(first["status"], "stage_pr_draft")
+        self.assertEqual(second["status"], "waiting_for_merge")
+        bind_stage_pr.assert_called_once()
+        self.assertEqual(
+            reader.reads,
+            [
+                (mission_contract.CAMPAIGN_REPOSITORY, 42),
+                (mission_contract.CAMPAIGN_REPOSITORY, 42),
+                (mission_contract.CAMPAIGN_REPOSITORY, 42),
+            ],
+        )
 
 
 class TestGitHubAdapterActiveScopes(unittest.TestCase):
@@ -609,6 +1035,54 @@ class TestLoopctl(unittest.TestCase):
                     "route-run", "--repo", "Igzela/example", "--repo-path", "/workspace/example",
                     "--max-transitions", value,
                 ])
+
+    def test_mission_stage_cli_is_a_production_runner_caller(self):
+        captured = {}
+
+        class Runner:
+            def run_mission_stage(self, proposal, **kwargs):
+                captured["proposal"] = proposal
+                captured["runner_kwargs"] = kwargs
+                return {"status": "stage_pr_draft", "mission_id": "mission"}
+
+        def runner_factory(*args, **kwargs):
+            captured["runner_args"] = args
+            captured["runner_init"] = kwargs
+            return Runner()
+
+        def stage_steward_factory(*args, **kwargs):
+            captured["steward_args"] = args
+            captured["steward_init"] = kwargs
+            return object()
+
+        output = StringIO()
+        with redirect_stdout(output):
+            code = loopctl.main(
+                [
+                    "mission-stage",
+                    "--repo", mission_contract.CAMPAIGN_REPOSITORY,
+                    "--repo-path", "/workspace/example",
+                    "--approval-issue", "99",
+                    "--request", "Update docs/ARCHITECTURE_BOOK.md.",
+                    "--journal", "/tmp/steward-test.sqlite3",
+                    "--lock-dir", "/tmp/steward-locks",
+                ],
+                run_once_factory=runner_factory,
+                steward_factory=stage_steward_factory,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            {
+                "kind": "repo-agent-mission-stage.v1",
+                "status": "stage_pr_draft",
+                "mission_id": "mission",
+            },
+        )
+        self.assertEqual(captured["runner_init"]["repository"], mission_contract.CAMPAIGN_REPOSITORY)
+        self.assertEqual(captured["runner_kwargs"]["approval_issue"], 99)
+        self.assertIsNone(captured["runner_kwargs"]["stage_pr"])
+        self.assertEqual(captured["steward_init"]["lock_dir"], "/tmp/steward-locks")
 
 
 class TestPlanDocumentDecode(unittest.TestCase):

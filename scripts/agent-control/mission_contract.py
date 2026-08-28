@@ -11,7 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+import secrets
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -45,6 +46,7 @@ DOCUMENT_RESTORE_REFERENCE = re.compile(
 TIMESTAMP = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
 )
+_ACTIVE_ACTIVATION_NONCES: set[str] = set()
 
 MISSION_STATES = frozenset(
     {
@@ -112,13 +114,55 @@ CAMPAIGN_SOURCE_REF = "autonomous-steward-migration-plan-2026-08-27"
 CAMPAIGN_SOURCE_SHA256 = "4b6eacaa4ff58337a02a6a73f458ffb0e4d3cb4e71f256c1024b3dd6205e1d39"
 CAMPAIGN_BASE_SHA = "7f0e5afd22a9441073e1ac71d981dfc74060a948"
 CAMPAIGN_ALLOWED_PATHS = (
-    "AGENTS.md",
     "docs/ARCHITECTURE_BOOK.md",
+    "docs/CURRENT_STATUS.md",
+    "docs/FUTURE_ROUTE.md",
+    "docs/MODULE_MAP.md",
+    "docs/NEXT_DECISION.md",
+    "docs/RUNBOOK.md",
+    "scripts/agent-control/ci_handler.py",
+    "scripts/agent-control/ci_verifier.py",
+    "scripts/agent-control/control_state.py",
+    "scripts/agent-control/dispatcher.py",
+    "scripts/agent-control/local_loop.py",
+    "scripts/agent-control/local_run_once.py",
     "scripts/agent-control/mission_contract.py",
+    "scripts/agent-control/pr_binding.py",
+    "scripts/agent-control/review_convergence.py",
+    "scripts/agent-control/review_loop/cli.py",
+    "scripts/agent-control/review_loop/comment_poster.py",
+    "scripts/agent-control/review_loop/github_adapter.py",
+    "scripts/agent-control/review_loop/journal.py",
+    "scripts/agent-control/review_loop/live_validation.py",
+    "scripts/agent-control/review_loop/locking.py",
+    "scripts/agent-control/review_loop/models.py",
+    "scripts/agent-control/review_loop/protocol.py",
+    "scripts/agent-control/review_loop/receipt_parser.py",
+    "scripts/agent-control/review_loop/state_machine.py",
+    "scripts/agent-control/review_loop/transport.py",
+    "scripts/agent-control/review_loop_cli.py",
+    "scripts/agent-control/route_driver.py",
+    "scripts/agent-control/shadow_steward.py",
+    "scripts/agent-control/state_manager.py",
+    "scripts/agent-control/steward.py",
+    "scripts/agent-control/steward.service",
+    "scripts/agent-control/steward_github.py",
+    "scripts/agent-control/steward_journal.py",
+    "scripts/agent-control/steward_service.py",
+    "scripts/agent-control/steward_workers.py",
+    "scripts/agent-control/validate_review.py",
     "scripts/check_agent_handoff.py",
     "scripts/session_context.py",
+    "tests/test_agent_local_loop.py",
+    "tests/test_agent_orchestrator_repairs.py",
+    "tests/test_agent_shadow_steward.py",
+    "tests/test_agent_steward.py",
+    "tests/test_agent_steward_faults.py",
+    "tests/test_agent_steward_journal.py",
     "tests/test_check_agent_handoff.py",
     "tests/test_mission_contract.py",
+    "tests/test_review_convergence.py",
+    "tests/test_review_loop.py",
     "tests/test_session_context.py",
 )
 LEGACY_COMPATIBILITY_PATHS = ("AGENTS.md", "docs/", "engine/", "scripts/", "tests/")
@@ -266,6 +310,22 @@ class RepositoryIdentity:
         return {
             "repository": self.repository,
             "base_sha": self.base_sha,
+            "branch": self.branch,
+            "source_ref": self.source_ref,
+            "source_sha256": self.source_sha256,
+        }
+
+    def proposal_wire(self) -> dict[str, str]:
+        """Return the immutable source/repository proposal identity.
+
+        The accepted-main SHA is an activation binding, not an approval
+        semantic.  Keeping it out of the proposal digest lets the registered
+        Mission be re-bound to the freshly verified accepted main without
+        changing the owner-approved objective or scope.
+        """
+
+        return {
+            "repository": self.repository,
             "branch": self.branch,
             "source_ref": self.source_ref,
             "source_sha256": self.source_sha256,
@@ -496,6 +556,10 @@ class MaintenanceMission:
     rollback: RollbackBoundary
     proposal_sha256: str
     owner_approval: OwnerApproval
+    # Runtime-only proof produced by activate_current_mission.  It is
+    # deliberately absent from the wire contract and therefore cannot be
+    # forged by changing a serialized lifecycle state.
+    _activation_nonce: str | None = field(default=None, repr=False, compare=False)
 
     def proposal_wire(self) -> dict[str, Any]:
         """Return the approved semantic payload, excluding approval metadata."""
@@ -503,10 +567,9 @@ class MaintenanceMission:
         return {
             "schema_version": SCHEMA_VERSION,
             "mission_id": self.mission_id,
-            "state": self.state,
             "objective": self.objective,
             "completion_conditions": list(self.completion_conditions),
-            "repository_identity": self.repository_identity.to_wire(),
+            "repository_identity": self.repository_identity.proposal_wire(),
             "allowed_paths": list(self.allowed_paths),
             "allowed_change_types": list(self.allowed_change_types),
             "forbidden_changes": list(self.forbidden_changes),
@@ -524,6 +587,8 @@ class MaintenanceMission:
     def to_wire(self) -> dict[str, Any]:
         return {
             **self.proposal_wire(),
+            "state": self.state,
+            "repository_identity": self.repository_identity.to_wire(),
             "proposal_sha256": self.proposal_sha256,
             "owner_approval": self.owner_approval.to_wire(),
         }
@@ -922,8 +987,14 @@ def validate_current_mission(
     branch: str,
     source_ref: str,
     source_sha256: str,
+    require_running: bool = False,
 ) -> MaintenanceMission:
-    """Reject a valid-looking Mission bound to stale or unauthenticated identity."""
+    """Validate a registered Mission against one verified current checkout.
+
+    State and accepted-main are mutable activation bindings.  All remaining
+    mission semantics and the owner approval remain equal to the statically
+    registered campaign.
+    """
 
     model = validate_owner_approval(mission)
     registered = campaign_mission()
@@ -944,7 +1015,111 @@ def validate_current_mission(
         raise MissionContractError("mission_source_ref_stale")
     if model.repository_identity.source_sha256 != source_sha256:
         raise MissionContractError("mission_source_stale")
+    activation_nonce = getattr(mission, "_activation_nonce", None)
+    if require_running and (
+        not isinstance(activation_nonce, str)
+        or activation_nonce not in _ACTIVE_ACTIVATION_NONCES
+    ):
+        raise MissionContractError("mission_activation_missing")
+    if require_running and model.state != "RUNNING":
+        raise MissionContractError("mission_not_running")
+    if isinstance(activation_nonce, str):
+        return replace(model, _activation_nonce=activation_nonce)
     return model
+
+
+def activate_current_mission(
+    *,
+    repository: str,
+    base_sha: str,
+    branch: str,
+    source_ref: str,
+    source_sha256: str,
+    proposal_sha256: str,
+    owner_approval: OwnerApproval | dict[str, Any],
+    owner_authenticator: object,
+) -> MaintenanceMission:
+    """Activate the registered Mission on the freshly verified accepted main.
+
+    This is the sole current-main activation constructor.  It does not change
+    the approved proposal, owner approval, scope, budget, or forbidden
+    effects; it only binds the immutable Mission to the observed checkout and
+    moves its lifecycle projection to ``RUNNING``.
+    """
+
+    registered = validate_registered_campaign()
+    if SHA256.fullmatch(proposal_sha256) is None:
+        raise MissionContractError("activation_proposal_invalid")
+    try:
+        approval = (
+            owner_approval
+            if isinstance(owner_approval, OwnerApproval)
+            else OwnerApproval.from_wire(owner_approval)
+        )
+    except (TypeError, ValueError, MissionContractError) as exc:
+        raise MissionContractError("activation_approval_invalid") from exc
+    if approval.proposal_sha256 != proposal_sha256:
+        raise MissionContractError("activation_approval_mismatch")
+    verifier = getattr(owner_authenticator, "verify", None)
+    if not callable(verifier):
+        raise MissionContractError("activation_authenticator_missing")
+    try:
+        authenticated = verifier(approval, proposal_sha256)
+    except Exception as exc:
+        raise MissionContractError("activation_authentication_failed") from exc
+    if authenticated is not True:
+        raise MissionContractError("activation_authentication_failed")
+    activation_nonce = secrets.token_hex(16)
+    _ACTIVE_ACTIVATION_NONCES.add(activation_nonce)
+    activated = MaintenanceMission(
+        **{
+            **registered.__dict__,
+            "state": "RUNNING",
+            "repository_identity": RepositoryIdentity(
+                repository,
+                base_sha,
+                branch,
+                source_ref,
+                source_sha256,
+            ),
+            "_activation_nonce": activation_nonce,
+        }
+    )
+    return validate_current_mission(
+        activated,
+        repository=repository,
+        base_sha=base_sha,
+        branch=branch,
+        source_ref=source_ref,
+        source_sha256=source_sha256,
+    )
+
+
+def validate_execution_scope(
+    mission: MaintenanceMission,
+    paths: tuple[str, ...] | list[str],
+    operations: tuple[str, ...] | list[str],
+) -> None:
+    """Require the bounded repository-maintenance grant for one execution."""
+
+    model = MaintenanceMission.from_wire(mission.to_wire())
+    requested_paths = _paths(list(paths), "execution_paths")
+    requested_operations = _strings(list(operations), "execution_operations")
+    grants = [
+        grant
+        for grant in model.standing_grants
+        if grant.grant_type == "repository_maintenance"
+    ]
+    if len(grants) != 1:
+        raise MissionContractError("repository_maintenance_grant_missing")
+    grant = grants[0]
+    if any(operation not in grant.allowed_operations for operation in requested_operations):
+        raise MissionContractError("execution_operation_outside_grant")
+    if any(
+        not any(path_in_scope((scope,), path) for scope in grant.allowed_paths)
+        for path in requested_paths
+    ):
+        raise MissionContractError("execution_path_outside_grant")
 
 
 def validate_registered_campaign() -> MaintenanceMission:
@@ -989,10 +1164,10 @@ def campaign_mission() -> MaintenanceMission:
     )
     grants = (
         Grant(
-            "migration-contract-read-only",
-            "read_only",
+            "migration-repository-maintenance",
+            "repository_maintenance",
             CAMPAIGN_ALLOWED_PATHS,
-            ("read",),
+            tuple(sorted(SAFE_OPERATIONS)),
             32,
         ),
     )
@@ -1023,7 +1198,7 @@ def campaign_mission() -> MaintenanceMission:
         ),
         identity,
         CAMPAIGN_ALLOWED_PATHS,
-        ("documentation", "source", "tests"),
+        tuple(sorted(SAFE_CHANGE_TYPES)),
         (
             "provider calls and credentials",
             "product, target, release, or deployment effects",
@@ -1210,11 +1385,13 @@ __all__ = [
     "Stage",
     "StopRule",
     "WorkCard",
+    "activate_current_mission",
     "campaign_mission",
     "json_sha256",
     "path_in_scope",
     "stop_category",
     "validate_current_mission",
+    "validate_execution_scope",
     "validate_legacy_compatibility",
     "validate_owner_approval",
     "validate_registered_campaign",

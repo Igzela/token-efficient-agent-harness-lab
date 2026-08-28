@@ -2,21 +2,23 @@
 
 The repository and GitHub remain authoritative.  This module performs one
 bounded poll and returns a versioned decision; it owns no daemon, lease, task
-state, approval, budget, output, review, merge, or retry authority.
+state, durable approval, budget, output, review, merge, or retry authority.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 import artifact_contract
 import control_state
+import mission_contract
 import plan_lane
 import state_manager
 
@@ -26,6 +28,10 @@ TASK_MARKER = re.compile(r"<!--\s*repo-agent-task:v1\s*(\{.*?\})\s*-->", re.DOTA
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 BRANCH = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+OWNER_APPROVAL_MARKER = re.compile(
+    r"^<!--\s*steward-owner-approval:v1\s*(\{.*\})\s*-->$", re.DOTALL
+)
+_CONSUMED_APPROVAL_IDS: set[tuple[str, str]] = set()
 
 
 class LoopUnavailable(RuntimeError):
@@ -47,6 +53,7 @@ class GitHubReader(Protocol):
     def plan_ledger_issue(self) -> int: ...
 
     def issue_snapshot(self, issue_number: int) -> dict[str, str]: ...
+    def issue_comments(self, issue_number: int) -> list[dict[str, Any]]: ...
 
     def dispatch_controller(self, command: str, fields: dict[str, object]) -> None: ...
 
@@ -54,6 +61,181 @@ class GitHubReader(Protocol):
 class GitReader(Protocol):
     def refresh_origin_main(self, repo_path: Path, branch: str) -> None: ...
     def origin_main_sha(self, repo_path: Path, branch: str) -> str: ...
+
+
+class GitHubOwnerApprovalAuthenticator:
+    """Authenticate a one-time owner approval carried by a GitHub Issue.
+
+    The wire ``owner_identity`` is only a claim.  Authentication comes from
+    the authoritative comment author, repository owner, exact proposal digest,
+    current accepted-main binding, timestamp freshness, and a process-local
+    replay set.  This adapter is read-only and never posts or edits approval
+    state.
+    """
+
+    def __init__(
+        self,
+        github: GitHubReader,
+        *,
+        repository: str,
+        issue_number: int,
+        accepted_main_sha: str,
+        now: Callable[[], datetime] | None = None,
+        max_age_seconds: int = 7 * 24 * 60 * 60,
+        replay_store: Any | None = None,
+    ) -> None:
+        if not REPOSITORY.fullmatch(repository):
+            raise ValueError("repository must be owner/name")
+        if type(issue_number) is not int or issue_number <= 0:
+            raise ValueError("approval Issue number is invalid")
+        if HEX40.fullmatch(accepted_main_sha) is None:
+            raise ValueError("accepted-main SHA is invalid")
+        if type(max_age_seconds) is not int or not 60 <= max_age_seconds <= 31 * 24 * 60 * 60:
+            raise ValueError("approval freshness bound is invalid")
+        self.github = github
+        self.repository = repository
+        self.issue_number = issue_number
+        self.accepted_main_sha = accepted_main_sha
+        self.now = now or (lambda: datetime.now(timezone.utc))
+        self.max_age_seconds = max_age_seconds
+        self.replay_store = replay_store
+        self._used_approval_ids: set[str] = set()
+
+    @staticmethod
+    def _author_login(comment: Mapping[str, Any]) -> str | None:
+        author = comment.get("author")
+        if isinstance(author, dict):
+            login = author.get("login")
+            return login if isinstance(login, str) else None
+        return author if isinstance(author, str) else None
+
+    def _candidates(
+        self, proposal_sha256: str
+    ) -> list[tuple[mission_contract.OwnerApproval, str, dict[str, Any]]]:
+        if not isinstance(proposal_sha256, str) or not mission_contract.SHA256.fullmatch(proposal_sha256):
+            return []
+        try:
+            metadata = self.github.repository_metadata()
+            owner = metadata.get("owner") if isinstance(metadata, dict) else None
+            name_with_owner = metadata.get("name_with_owner") if isinstance(metadata, dict) else None
+            current_user = self.github.current_user()
+            comments = self.github.issue_comments(self.issue_number)
+        except (AttributeError, LoopUnavailable, TypeError, ValueError):
+            return []
+        if (
+            not isinstance(owner, str)
+            or not isinstance(name_with_owner, str)
+            or name_with_owner.casefold() != self.repository.casefold()
+            or not isinstance(current_user, str)
+        ):
+            return []
+        if owner.casefold() != current_user.casefold():
+            return []
+        candidates: list[tuple[mission_contract.OwnerApproval, str, dict[str, Any]]] = []
+        for comment in comments:
+            if not isinstance(comment, Mapping):
+                continue
+            author = self._author_login(comment)
+            if not isinstance(author, str) or author.casefold() != owner.casefold():
+                continue
+            body = comment.get("body")
+            match = OWNER_APPROVAL_MARKER.fullmatch(body.strip()) if isinstance(body, str) else None
+            if match is None:
+                continue
+            try:
+                payload = json.loads(match.group(1))
+                if not isinstance(payload, dict) or set(payload) != {
+                    "owner_identity", "proposal_sha256", "approval_id", "approved_at", "accepted_main_sha"
+                }:
+                    continue
+                if payload["accepted_main_sha"] != self.accepted_main_sha:
+                    continue
+                approval = mission_contract.OwnerApproval.from_wire(
+                    {
+                        key: payload[key]
+                        for key in ("owner_identity", "proposal_sha256", "approval_id", "approved_at")
+                    }
+                )
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError, mission_contract.MissionContractError):
+                continue
+            if approval.owner_identity != "repository-owner" or approval.proposal_sha256 != proposal_sha256:
+                continue
+            created_at = comment.get("createdAt")
+            if not isinstance(created_at, str) or created_at != approval.approved_at:
+                continue
+            candidates.append((approval, self.accepted_main_sha, comment))
+        return candidates
+
+    def read_approval(self, proposal_sha256: str) -> mission_contract.OwnerApproval | None:
+        """Return exactly one current owner approval, without consuming it."""
+
+        candidates = self._candidates(proposal_sha256)
+        if len(candidates) != 1:
+            return None
+        approval = candidates[0][0]
+        try:
+            approved_at = datetime.fromisoformat(approval.approved_at.replace("Z", "+00:00"))
+            now = self.now()
+            if approved_at.tzinfo is None or now.tzinfo is None:
+                return None
+            age = (now - approved_at).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if age < -300 or age > self.max_age_seconds:
+            return None
+        return approval
+
+    def verify(self, approval: mission_contract.OwnerApproval, proposal_sha256: str) -> bool:
+        if not isinstance(approval, mission_contract.OwnerApproval):
+            return False
+        replay_key = (self.repository.casefold(), approval.approval_id)
+        if (
+            approval.approval_id in self._used_approval_ids
+            or replay_key in _CONSUMED_APPROVAL_IDS
+        ):
+            return False
+        candidates = self._candidates(proposal_sha256)
+        if len(candidates) != 1 or candidates[0][0] != approval:
+            return False
+        try:
+            approved_at = datetime.fromisoformat(approval.approved_at.replace("Z", "+00:00"))
+            now = self.now()
+            if approved_at.tzinfo is None or now.tzinfo is None:
+                return False
+            age = (now - approved_at).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if age < -300 or age > self.max_age_seconds:
+            return False
+        if self.replay_store is not None:
+            consume = getattr(self.replay_store, "consume_owner_approval", None)
+            if not callable(consume):
+                return False
+            try:
+                consumed = consume(
+                    repository=self.repository,
+                    mission_id=mission_contract.CAMPAIGN_MISSION_ID,
+                    approval_id=approval.approval_id,
+                    proposal_sha256=proposal_sha256,
+                    accepted_main_sha=self.accepted_main_sha,
+                )
+            except Exception:
+                return False
+            if consumed is not True:
+                return False
+        self._used_approval_ids.add(approval.approval_id)
+        _CONSUMED_APPROVAL_IDS.add(replay_key)
+        return True
+
+
+class _AuthenticatedApprovalReplay:
+    """Pass one already-authenticated approval through the planning seam."""
+
+    def __init__(self, approval: mission_contract.OwnerApproval) -> None:
+        self.approval = approval
+
+    def verify(self, approval: mission_contract.OwnerApproval, proposal_sha256: str) -> bool:
+        return approval == self.approval and approval.proposal_sha256 == proposal_sha256
 
 
 @dataclass(frozen=True)
@@ -164,6 +346,32 @@ class LoopController:
         self.repository = repository
         self.repo_path = Path(repo_path).expanduser().resolve()
         self.max_active = max_active
+        self._active_mission: mission_contract.MaintenanceMission | None = None
+        self._active_approval: mission_contract.OwnerApproval | None = None
+
+    @staticmethod
+    def _fresh_stage_pr_facts(steward: Any, repository: str, stage_pr: Any) -> dict[str, Any]:
+        """Read fresh facts for the supplied Stage PR number."""
+
+        if type(stage_pr) is int:
+            pr_number = stage_pr
+        elif isinstance(stage_pr, Mapping):
+            pr_number = stage_pr.get("pr_number")
+        else:
+            pr_number = getattr(stage_pr, "pr_number", None)
+        if type(pr_number) is not int or not 1 <= pr_number <= 1_000_000_000:
+            raise LoopUnavailable("stage_pr_number_invalid")
+        reader = getattr(steward, "github", None)
+        fetch = getattr(reader, "fetch_stage_pr", None)
+        if not callable(fetch):
+            raise LoopUnavailable("stage_pr_reader_unavailable")
+        try:
+            facts = fetch(repository, pr_number)
+        except Exception as exc:
+            raise LoopUnavailable("stage_pr_facts_unavailable") from exc
+        if not isinstance(facts, dict):
+            raise LoopUnavailable("stage_pr_facts_invalid")
+        return facts
 
     def poll(self) -> dict[str, Any]:
         try:
@@ -369,6 +577,162 @@ class LoopController:
                 deferred_issue_numbers=deferred,
             )
         except LoopUnavailable as exc:
+            return _decision("unavailable", reason=str(exc)[:300])
+
+    def _current_identity(self) -> tuple[str, str, str, str, str]:
+        """Read and cross-check the current accepted-main Mission identity."""
+
+        control = self.github.read_control_state()
+        if control.get("emergency_stop") or not control.get("orchestrator_enabled"):
+            raise LoopUnavailable("orchestrator_disabled_or_stopped")
+        metadata = self.github.repository_metadata()
+        if str(metadata.get("name_with_owner", "")).casefold() != self.repository.casefold():
+            raise LoopUnavailable("repository_identity_mismatch")
+        owner = metadata.get("owner")
+        if not isinstance(owner, str) or self.github.current_user().casefold() != owner.casefold():
+            raise LoopUnavailable("authenticated_user_is_not_owner")
+        branch = metadata.get("default_branch")
+        if not isinstance(branch, str) or not BRANCH.fullmatch(branch):
+            raise LoopUnavailable("repository default branch is unavailable or invalid")
+        accepted_main = self.github.accepted_main_sha(branch)
+        self.git.refresh_origin_main(self.repo_path, branch)
+        local_main = self.git.origin_main_sha(self.repo_path, branch)
+        if not HEX40.fullmatch(accepted_main) or accepted_main != local_main:
+            raise LoopUnavailable("accepted main and local checkout are not identical")
+        return (
+            self.repository,
+            accepted_main,
+            branch,
+            mission_contract.CAMPAIGN_SOURCE_REF,
+            mission_contract.CAMPAIGN_SOURCE_SHA256,
+        )
+
+    def run_mission_stage(
+        self,
+        proposal: object,
+        *,
+        approval_issue: int,
+        steward: Any,
+        stage_pr: Any = None,
+        now: Callable[[], datetime] | None = None,
+    ) -> dict[str, Any]:
+        """Load, authenticate, plan, and execute one current-main Mission.
+
+        This is the non-test production bridge from the sole legacy loop
+        writer into the provider-free Steward.  It performs no lifecycle
+        write itself; the existing controller remains responsible for that
+        boundary and the Steward owns only its journal/Stage execution facts.
+        """
+
+        try:
+            repository, accepted_main, branch, source_ref, source_sha256 = self._current_identity()
+            proposal_sha256 = getattr(proposal, "proposal_sha256", "")
+            active_mission = self._active_mission
+            active_approval = self._active_approval
+            can_continue = (
+                stage_pr is not None
+                and active_mission is not None
+                and active_approval is not None
+                and active_approval.proposal_sha256 == proposal_sha256
+                and active_mission.repository_identity.repository == repository
+                and active_mission.repository_identity.base_sha == accepted_main
+                and active_mission.repository_identity.branch == branch
+                and active_mission.repository_identity.source_ref == source_ref
+                and active_mission.repository_identity.source_sha256 == source_sha256
+            )
+            if can_continue:
+                mission = active_mission
+                approval = active_approval
+            else:
+                authenticator = GitHubOwnerApprovalAuthenticator(
+                    self.github,
+                    repository=self.repository,
+                    issue_number=approval_issue,
+                    accepted_main_sha=accepted_main,
+                    now=now,
+                    replay_store=getattr(steward, "journal", None),
+                )
+                approval = authenticator.read_approval(proposal_sha256)
+                if approval is None:
+                    return {
+                        "status": "waiting_approval",
+                        "mission_id": mission_contract.CAMPAIGN_MISSION_ID,
+                        "proposal_sha256": proposal_sha256,
+                        "stage": None,
+                    }
+                mission = mission_contract.activate_current_mission(
+                    repository=repository,
+                    base_sha=accepted_main,
+                    branch=branch,
+                    source_ref=source_ref,
+                    source_sha256=source_sha256,
+                    proposal_sha256=proposal_sha256,
+                    owner_approval=approval,
+                    owner_authenticator=authenticator,
+                )
+                self._active_mission = mission
+                self._active_approval = approval
+            import shadow_steward
+
+            plan = shadow_steward.plan_stage(
+                proposal,
+                mission,
+                approval,
+                owner_authenticator=_AuthenticatedApprovalReplay(approval),
+            )
+            if plan.disposition != "PLANNED" or plan.stage is None:
+                return {
+                    "status": plan.disposition.lower(),
+                    "mission_id": mission.mission_id,
+                    "proposal_sha256": proposal_sha256,
+                    "stage": None,
+                }
+            if stage_pr is not None:
+                fresh_stage_pr = self._fresh_stage_pr_facts(
+                    steward, repository, stage_pr
+                )
+                execution = steward.continue_stage_to_waiting_for_merge(
+                    mission,
+                    plan.stage,
+                    plan.workcards,
+                    stage_pr=fresh_stage_pr,
+                )
+            else:
+                execution = steward.execute_stage_to_waiting_for_merge(
+                    mission,
+                    plan.stage,
+                    plan.workcards,
+                    base_sha=accepted_main,
+                    title=f"feat: Autonomous Steward {plan.stage.stage_id}",
+                    body=(
+                        "Provider-free repository-maintenance Stage.\n\n"
+                        f"Mission: {mission.mission_id}\n"
+                        f"Stage: {plan.stage.stage_id}"
+                    ),
+                )
+            return {
+                "status": execution.get("status", "executed"),
+                "mission_id": mission.mission_id,
+                "accepted_main_sha": accepted_main,
+                "stage_id": plan.stage.stage_id,
+                "workcard_count": len(plan.workcards),
+                "stage": (
+                    execution.get("stage").to_wire()
+                    if hasattr(execution.get("stage"), "to_wire")
+                    else execution.get("stage")
+                ),
+                "integration": (
+                    execution.get("integration").to_wire()
+                    if hasattr(execution.get("integration"), "to_wire")
+                    else execution.get("integration")
+                ),
+                "pr": execution.get("pr"),
+                "results": {
+                    card_id: result.to_wire() if hasattr(result, "to_wire") else result
+                    for card_id, result in execution.get("results", {}).items()
+                },
+            }
+        except (AttributeError, TypeError, ValueError, LoopUnavailable) as exc:
             return _decision("unavailable", reason=str(exc)[:300])
 
     def _evaluate_issue(
@@ -655,6 +1019,16 @@ class GitHubAdapter:
         if not isinstance(title, str) or not isinstance(body, str):
             raise LoopUnavailable("Issue snapshot is malformed")
         return {"title": title, "body": body}
+
+    def issue_comments(self, issue_number: int) -> list[dict[str, Any]]:
+        value = self._gh_json(
+            "issue", "view", str(issue_number), "--repo", self.repository,
+            "--json", "comments",
+        )
+        comments = value.get("comments") if isinstance(value, dict) else None
+        if not isinstance(comments, list) or not all(isinstance(item, dict) for item in comments):
+            raise LoopUnavailable("Issue approval comments are unavailable or malformed")
+        return list(reversed(comments))
 
     def dispatch_controller(self, command: str, fields: dict[str, object]) -> None:
         """Submit one allowlisted controller workflow request.

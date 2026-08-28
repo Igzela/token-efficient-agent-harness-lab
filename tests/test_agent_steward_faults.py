@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 import hashlib
 import json
 import subprocess
@@ -806,7 +807,17 @@ class StewardFaultTests(unittest.TestCase):
                 reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
 
     def test_service_execute_stage_runs_recovery_preflight_then_dispatcher(self):
-        mission = contract.campaign_mission()
+        registered = contract.campaign_mission()
+        mission = contract.activate_current_mission(
+            repository=registered.repository_identity.repository,
+            base_sha=registered.repository_identity.base_sha,
+            branch=registered.repository_identity.branch,
+            source_ref=registered.repository_identity.source_ref,
+            source_sha256=registered.repository_identity.source_sha256,
+            proposal_sha256=registered.proposal_sha256,
+            owner_approval=registered.owner_approval,
+            owner_authenticator=type("Authenticator", (), {"verify": lambda *_args: True})(),
+        )
         service = StewardService(
             mission_id=MISSION,
             journal=self.journal,

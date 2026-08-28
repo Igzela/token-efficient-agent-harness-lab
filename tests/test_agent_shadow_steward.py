@@ -267,16 +267,17 @@ class ShadowStewardTests(unittest.TestCase):
             "Update the workflow in docs/ARCHITECTURE_BOOK.md."
         )
         self.assertIn("workflow", proposal.change_types)
-        self.assertEqual(
-            shadow.plan_stage(proposal, self.mission).stop.code,
-            "SCOPE_EXCEEDED",
-        )
+        self.assertEqual(shadow.plan_stage(proposal, self.mission).disposition, "WAITING_APPROVAL")
 
     def test_planner_reuses_and_validates_mission_stage_workcard_owners(self):
         plan = self.approved_plan()
         self.assertEqual(plan.disposition, "PLANNED")
         self.assertIsNotNone(plan.stage)
-        self.assertEqual(len(plan.workcards), 1)
+        self.assertEqual(len(plan.workcards), 2)
+        self.assertEqual(
+            {card.dependencies for card in plan.workcards},
+            {()},
+        )
         self.assertTrue(plan.projection_only)
         contract.validate_stage(plan.stage, self.mission, plan.workcards)
         self.assertTrue(shadow.shadow_only(plan))
@@ -289,7 +290,7 @@ class ShadowStewardTests(unittest.TestCase):
         with self.assertRaisesRegex(shadow.ShadowStewardError, "plan_projection_invalid"):
             shadow.replan(forged_mission, "CI_FAILED")
 
-        stale = replace(self.mission, state="RUNNING")
+        stale = replace(self.mission, objective="forged objective")
         with self.assertRaisesRegex(shadow.ShadowStewardError, "mission_registration_invalid"):
             shadow.plan_stage(self.proposal, stale)
 
