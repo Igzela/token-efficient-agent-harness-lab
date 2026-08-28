@@ -210,6 +210,9 @@ class ShadowStewardTests(unittest.TestCase):
             "Send data over TCP while updating docs/ARCHITECTURE_BOOK.md.",
             "git pushing changes while updating docs/ARCHITECTURE_BOOK.md.",
             "Send data over IP while updating docs/ARCHITECTURE_BOOK.md.",
+            "Run a shell command while updating docs/ARCHITECTURE_BOOK.md.",
+            "Execute a shell command while updating docs/ARCHITECTURE_BOOK.md.",
+            "Use the terminal while updating docs/ARCHITECTURE_BOOK.md.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)

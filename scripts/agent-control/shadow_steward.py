@@ -204,7 +204,7 @@ _EXTERNAL_TARGETS = (
     r"db|provider|target|endpoint|url|unknown service|external system|http request|"
     r"network request|socket|network|system|http|https|arbitrary|unknown|destination|"
     r"host|connection|smtp|curl|internet|outbound|lan|rpc|packet|channel|storage|queue|"
-    r"tcp|udp|ip|port|ssh|scp|ftp|telnet"
+    r"tcp|udp|ip|port|ssh|scp|ftp|telnet|command|shell|terminal|process|subprocess"
 )
 _HIGH_RISK_PATTERNS = (
     re.compile(r"\bgit\s+push(?:ing|es)?\b"),
