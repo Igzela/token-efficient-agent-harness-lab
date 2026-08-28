@@ -430,7 +430,7 @@ class Steward:
         integration = self.assemble_stage(
             mission, stage, cards, results, base_sha=base_sha
         )
-        self.publish_stage_branch(integration)
+        self.publish_stage_branch(integration, mission=mission, stage=stage)
         bound_stage, pr = self.bind_stage_draft_pr(
             mission,
             stage,
@@ -640,16 +640,43 @@ class Steward:
             raise StewardError("stage_git_command_failed")
         return result.stdout.strip()
 
-    def publish_stage_branch(self, integration: StageIntegration) -> None:
+    def publish_stage_branch(
+        self,
+        integration: StageIntegration,
+        *,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+    ) -> None:
         """Push one exact Stage branch and reconcile the remote head."""
 
         if (
             not isinstance(integration, StageIntegration)
-            or not re.fullmatch(r"agent/stage-[0-9a-f]{24}", integration.branch)
+            or not isinstance(mission, contract.MaintenanceMission)
+            or not isinstance(stage, contract.Stage)
             or not SHA40.fullmatch(integration.base_sha)
             or not SHA40.fullmatch(integration.head_sha)
+            or integration.stage_id != stage.stage_id
+            or integration.base_sha != mission.repository_identity.base_sha
+            or integration.branch != _stage_branch(mission, stage, integration.base_sha)
         ):
             raise StewardError("stage_integration_binding_invalid")
+        try:
+            contract.validate_current_mission(
+                mission,
+                repository=self.repository,
+                base_sha=integration.base_sha,
+                branch=mission.repository_identity.branch,
+                source_ref=mission.repository_identity.source_ref,
+                source_sha256=mission.repository_identity.source_sha256,
+                require_running=True,
+            )
+        except contract.MissionContractError as exc:
+            raise StewardError("stage_integration_binding_invalid") from exc
+        if self._git_text(
+            "merge-base", "--is-ancestor", integration.base_sha, integration.head_sha,
+            allow_failure=True,
+        ) is None:
+            raise StewardError("stage_integration_base_mismatch")
         local_head = self._git_text(
             "rev-parse", "--verify", f"refs/heads/{integration.branch}",
             allow_failure=True,

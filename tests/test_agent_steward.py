@@ -348,7 +348,9 @@ class StewardExecutionTests(unittest.TestCase):
         self.assertEqual(result["results"][self.card.card_id].status, "WAITING_FOR_MERGE")
         execute.assert_called_once()
         assemble.assert_called_once()
-        publish.assert_called_once_with(integration)
+        publish.assert_called_once_with(
+            integration, mission=self.mission, stage=self.stage
+        )
         bind.assert_called_once()
         fetch.assert_called_once_with(contract.CAMPAIGN_REPOSITORY, 42)
         reconcile.assert_called_once()
@@ -389,11 +391,21 @@ class StewardExecutionTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 steward.StewardError, "stage_local_branch_head_mismatch"
             ):
-                instance.publish_stage_branch(integration)
-        git.assert_called_once_with(
-            "rev-parse", "--verify",
-            f"refs/heads/{integration.branch}",
-            allow_failure=True,
+                instance.publish_stage_branch(
+                    integration, mission=self.mission, stage=self.stage
+                )
+        self.assertEqual(
+            git.call_args_list,
+            [
+                mock.call(
+                    "merge-base", "--is-ancestor", BASE, HEAD, allow_failure=True
+                ),
+                mock.call(
+                    "rev-parse", "--verify",
+                    f"refs/heads/{integration.branch}",
+                    allow_failure=True,
+                ),
+            ],
         )
 
     def test_parent_assembly_cherry_picks_two_real_card_heads(self):
