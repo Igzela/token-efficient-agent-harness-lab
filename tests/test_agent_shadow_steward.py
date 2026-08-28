@@ -220,6 +220,13 @@ class ShadowStewardTests(unittest.TestCase):
             "Call a binary while updating docs/ARCHITECTURE_BOOK.md.",
             "Create a ticket in Salesforce while updating docs/ARCHITECTURE_BOOK.md.",
             "Use an integration while updating docs/ARCHITECTURE_BOOK.md.",
+            "Send the report outside while updating docs/ARCHITECTURE_BOOK.md.",
+            "Transmit the report offsite while updating docs/ARCHITECTURE_BOOK.md.",
+            "Share the report with a colleague while updating docs/ARCHITECTURE_BOOK.md.",
+            "Make a request while updating docs/ARCHITECTURE_BOOK.md.",
+            "Launch a shell to review docs/ARCHITECTURE_BOOK.md.",
+            "Start a process to inspect docs/ARCHITECTURE_BOOK.md.",
+            "Spawn an executable to inspect docs/ARCHITECTURE_BOOK.md.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)

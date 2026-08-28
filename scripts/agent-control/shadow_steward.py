@@ -195,7 +195,8 @@ _EXTERNAL_ACTIONS = (
     r"transmitting|run|running|execute|executing|perform|performing|relay|relaying|"
     r"route|routing|fetch|fetching|download|downloading|hit|hitting|use|using|"
     r"message|messaging|visit|visiting|deliver|delivering|store|storing|save|saving|"
-    r"insert|inserting|remove|removing|delete|deleting|curl|wget"
+    r"insert|inserting|remove|removing|delete|deleting|curl|wget|launch|launching|"
+    r"start|starting|spawn|spawning"
 )
 _EXTERNAL_TARGETS = (
     r"github|slack|discord|microsoft teams|notion|jira|salesforce|gh|nc|external|service|"
@@ -205,9 +206,13 @@ _EXTERNAL_TARGETS = (
     r"db|provider|target|endpoint|url|unknown service|external system|http request|"
     r"network request|socket|network|system|http|https|arbitrary|unknown|destination|"
     r"host|connection|smtp|curl|internet|outbound|lan|rpc|packet|channel|storage|queue|"
-    r"tcp|udp|ip|port|ssh|scp|ftp|telnet|command|shell|terminal|process|subprocess"
+    r"tcp|udp|ip|port|ssh|scp|ftp|telnet|command|shell|terminal|process|subprocess|"
+    r"outside|offsite|colleague"
 )
-_COMMAND_ACTIONS = r"run|running|execute|executing|invoke|invoking|call|calling|use|using"
+_COMMAND_ACTIONS = (
+    r"run|running|execute|executing|invoke|invoking|call|calling|use|using|"
+    r"launch|launching|start|starting|spawn|spawning"
+)
 _COMMAND_TARGETS = (
     r"bash|sh|zsh|fish|powershell|cmd|python|node|ruby|perl|java|go|"
     r"executable|binary|script|program|tool|integration"
@@ -216,6 +221,7 @@ _HIGH_RISK_PATTERNS = (
     re.compile(r"\bgit\s+push(?:ing|es)?\b"),
     re.compile(r"\b(?:curl|wget)\b.{0,64}\bhttps?://"),
     re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+    re.compile(r"\bmake\s+a\s+request\b"),
     re.compile(rf"\b(?:{_COMMAND_ACTIONS})\b.{{0,64}}\b(?:{_COMMAND_TARGETS})\b"),
     re.compile(
         r"\b(?:write|push|modify|change|update|create|close|merge|comment)\b"
