@@ -69,30 +69,22 @@ class StewardExecutionTests(unittest.TestCase):
             "implementation_session_id": implementation,
             "reviewed_head_sha": head,
             "blockers": [],
+            "detail": "",
             "reviewed_base_sha": BASE,
             "reviewed_range_sha256": workers.review_range_digest(BASE, head),
             "review_axes": ["standards", "spec"],
             "review_round": 1,
             "review_mode": "full",
+            "summary": "bounded independent review",
+            "findings": None,
+            "security_ok": True,
+            "rollback_ok": True,
+            "observed_ci_status": "unknown",
+            "finding_ledger_digest": "",
             "review_receipt_sha256": "",
         }
-        return workers.ReviewOutcome(
-            "PASS",
-            reviewer,
-            implementation,
-            head,
-            (),
-            "",
-            BASE,
-            workers.review_range_digest(BASE, head),
-            ("standards", "spec"),
-            1,
-            "full",
-            hashlib.sha256(
-                json.dumps(
-                    receipt_payload, sort_keys=True, separators=(",", ":")
-                ).encode("utf-8")
-            ).hexdigest(),
+        return workers.ReviewOutcome.from_wire(
+            workers.seal_review_outcome_wire(receipt_payload)
         )
 
     def process_worker(self, callback):
@@ -109,9 +101,8 @@ class StewardExecutionTests(unittest.TestCase):
         def command(context, outcome):
             review = callback(context, outcome)
             payload = review.to_wire()
-            payload["reviewer_session_id"] = (
-                f"steward-review-process:{context.card_id}:{context.attempt}"
-            )
+            payload["reviewer_session_id"] = workers.reviewer_session_id(context, outcome)
+            payload["implementation_session_id"] = outcome.session_id
             payload = workers.seal_review_outcome_wire(payload)
             payload = json.dumps(payload)
             return ["/usr/bin/python3", "-c", f"print({payload!r})"]
@@ -153,17 +144,20 @@ class StewardExecutionTests(unittest.TestCase):
         return stage, card
 
     def make_steward(self, worker, reviewer, verifier=None):
-        return steward.Steward(
-            repository=contract.CAMPAIGN_REPOSITORY,
-            repo_path=self.root,
-            journal=StewardJournal(self.root / "journal.sqlite3"),
-            github=steward_github.FakeGitHubReader(dict(self.facts.__dict__)),
-            worker=worker,
-            reviewer=reviewer,
-            verifier=verifier
-            or (lambda _worktree, _paths: [{"command": "git diff --check", "exit_code": 0}]),
-            lock_dir=self.root / "locks",
-        )
+        with mock.patch.object(
+            workers,
+            "run_allowlisted_checks",
+            return_value=[{"command": "git diff --check", "exit_code": 0}],
+        ):
+            return steward.Steward(
+                repository=contract.CAMPAIGN_REPOSITORY,
+                repo_path=self.root,
+                journal=StewardJournal(self.root / "journal.sqlite3"),
+                github=steward_github.FakeGitHubReader(dict(self.facts.__dict__)),
+                worker=worker,
+                reviewer=reviewer,
+                lock_dir=self.root / "locks",
+            )
 
     def run_with_facts(self, current_worker, current_reviewer, *, git_heads=None):
         service = self.make_steward(current_worker, current_reviewer)
@@ -189,7 +183,7 @@ class StewardExecutionTests(unittest.TestCase):
         metadata_patch = mock.patch.object(
             steward,
             "_git_metadata_snapshot",
-            side_effect=lambda _worktree: (
+                side_effect=lambda _worktree, **_kwargs: (
                 {f"refs/heads/{self.mock_worktree_branch}": metadata_heads.pop(0)},
                 "config",
             ),

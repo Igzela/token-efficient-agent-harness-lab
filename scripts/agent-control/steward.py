@@ -185,12 +185,17 @@ def _git_worktree_clean(worktree: Path) -> None:
         raise workers.WorkerError("worktree_dirty_after_worker")
 
 
-def _git_metadata_snapshot(worktree: Path) -> tuple[dict[str, str], str]:
-    """Capture refs and local config without retaining their raw contents."""
+def _git_metadata_snapshot(
+    worktree: Path, *, branch: str | None = None
+) -> tuple[dict[str, str], str]:
+    """Capture the bound branch and local config without retaining raw contents."""
 
     try:
+        ref_args = ["git", "for-each-ref", "--format=%(refname) %(objectname)"]
+        if branch is not None:
+            ref_args.append(f"refs/heads/{branch}")
         refs = subprocess.run(
-            ["git", "for-each-ref", "--format=%(refname) %(objectname)"],
+            ref_args,
             cwd=worktree,
             capture_output=True,
             text=True,
@@ -288,13 +293,15 @@ class Steward:
             reviewer, workers.BoundedProcessReviewer
         ):
             raise StewardError("reviewer_adapter_must_be_bounded_process")
+        if verifier is not None:
+            raise StewardError("verifier_injection_forbidden")
         self.repository = repository
         self.repo_path = Path(repo_path).resolve()
         self.journal = journal
         self.github = github
         self.worker = worker or workers.ProviderFreeWorker()
         self.reviewer = reviewer
-        self.verifier = verifier or workers.run_allowlisted_checks
+        self.verifier = workers.run_allowlisted_checks
         self.lock_dir = Path(lock_dir).resolve()
         self.max_concurrency = max_concurrency
         self.service: StewardService | None = None
@@ -519,7 +526,9 @@ class Steward:
                         or created[2] != base_sha
                     ):
                         raise StewardError("worktree_binding_mismatch")
-                    metadata_before = _git_metadata_snapshot(worktree_path)
+                    metadata_before = _git_metadata_snapshot(
+                        worktree_path, branch=worktree_branch
+                    )
                     self._record(
                         event="WORKER_STARTED",
                         key=_journal_key("start", mission, stage, card, attempt, base_sha),
@@ -549,6 +558,7 @@ class Steward:
                         negative_checks=card.negative_checks,
                         expected_evidence=card.expected_evidence,
                         environment=workers.child_environment(),
+                        worktree_branch=worktree_branch,
                     )
                     try:
                         outcome = self.worker.run(context)
@@ -583,7 +593,7 @@ class Steward:
                         _git_worktree_clean(worktree_path)
                         expected_refs = dict(metadata_before[0])
                         expected_refs[f"refs/heads/{worktree_branch}"] = observed_head
-                        if _git_metadata_snapshot(worktree_path) != (
+                        if _git_metadata_snapshot(worktree_path, branch=worktree_branch) != (
                             expected_refs,
                             metadata_before[1],
                         ):
@@ -720,6 +730,9 @@ class Steward:
                         review = self.reviewer.review(context, outcome)
                         if not isinstance(review, workers.ReviewOutcome):
                             raise workers.WorkerError("review_adapter_return_invalid")
+                        if review.implementation_session_id != outcome.session_id:
+                            raise workers.WorkerError("review_implementation_session_mismatch")
+                        review_decision = workers.canonical_review_decision(review)
                     except workers.WorkerError as exc:
                         return self._failure(
                             mission=mission,
@@ -760,7 +773,7 @@ class Steward:
                         )
                         workers.validate_changed_paths(card, reviewed_paths)
                         _git_worktree_clean(worktree_path)
-                        if _git_metadata_snapshot(worktree_path) != (
+                        if _git_metadata_snapshot(worktree_path, branch=worktree_branch) != (
                             expected_refs,
                             metadata_before[1],
                         ):
@@ -893,7 +906,12 @@ class Steward:
                             "review_mode": review.review_mode,
                             "review_receipt_sha256": review.review_receipt_sha256,
                             "verdict": review.status,
-                            "autonomous_repairs_remaining": 0,
+                            "finding_ledger_digest": review_decision.finding_ledger_digest,
+                            "open_blocker_ids": list(review_decision.open_blocker_ids),
+                            "deferred_note_ids": list(review_decision.deferred_note_ids),
+                            "decision_required_ids": list(review_decision.decision_required_ids),
+                            "security_ok": review_decision.security_ok,
+                            "rollback_ok": review_decision.rollback_ok,
                         },
                     )
                     if stage_facts is None:

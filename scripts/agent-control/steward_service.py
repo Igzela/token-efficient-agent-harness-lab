@@ -62,6 +62,12 @@ def _review_binding(
         "review_mode",
         "review_receipt_sha256",
         "verdict",
+        "finding_ledger_digest",
+        "open_blocker_ids",
+        "deferred_note_ids",
+        "decision_required_ids",
+        "security_ok",
+        "rollback_ok",
     )
     if not all(key in data for key in required):
         return None
@@ -87,6 +93,18 @@ def _review_binding(
         or not isinstance(data["review_receipt_sha256"], str)
         or not steward_workers.SHA256.fullmatch(data["review_receipt_sha256"])
         or data["verdict"] != "PASS"
+            or not isinstance(data["finding_ledger_digest"], str)
+        or not steward_workers.SHA256.fullmatch(data["finding_ledger_digest"])
+        or not isinstance(data["security_ok"], bool)
+        or not isinstance(data["rollback_ok"], bool)
+        or data["security_ok"] is not True
+        or data["rollback_ok"] is not True
+    ):
+        return None
+    if any(
+        not isinstance(data[name], list)
+        or not all(isinstance(item, str) and item for item in data[name])
+        for name in ("open_blocker_ids", "deferred_note_ids", "decision_required_ids")
     ):
         return None
     try:
@@ -103,10 +121,20 @@ def _review_binding(
             data["review_round"],
             data["review_mode"],
             data["review_receipt_sha256"],
+            finding_ledger_digest=data["finding_ledger_digest"],
+            security_ok=data["security_ok"],
+            rollback_ok=data["rollback_ok"],
         )
     except (TypeError, ValueError, steward_workers.WorkerError):
         return None
     if review.review_receipt_sha256 != steward_workers.review_receipt_digest(review):
+        return None
+    decision = steward_workers.canonical_review_decision(review)
+    if (
+        tuple(data["open_blocker_ids"]) != decision.open_blocker_ids
+        or tuple(data["deferred_note_ids"]) != decision.deferred_note_ids
+        or tuple(data["decision_required_ids"]) != decision.decision_required_ids
+    ):
         return None
     return base_sha, head_sha, data["reviewed_range_sha256"]
 

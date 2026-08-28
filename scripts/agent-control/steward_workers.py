@@ -15,10 +15,13 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 from typing import Any, Callable, Mapping, Protocol
+import uuid
 
 import local_verification
 import mission_contract
+import review_convergence
 from review_loop.locking import ChatLock, LockBusy
 import state_manager
 
@@ -56,6 +59,7 @@ _NETWORK_ENVIRONMENT_KEYS = frozenset(
         "XDG_RUNTIME_DIR",
     }
 )
+_GIT_ENVIRONMENT_PREFIX = "GIT_"
 _SAFE_EXECUTABLES = frozenset({"python", "python3", "git"})
 _SAFE_ABSOLUTE_EXECUTABLES = frozenset({"/usr/bin/python3", "/usr/bin/git"})
 _GIT_FORBIDDEN_ARGUMENTS = frozenset(
@@ -104,6 +108,9 @@ def child_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
     # selectors that the broader local-run owner may preserve for other lanes.
     for key in _NETWORK_ENVIRONMENT_KEYS:
         environment.pop(key, None)
+    for key in tuple(environment):
+        if key.startswith(_GIT_ENVIRONMENT_PREFIX):
+            environment.pop(key, None)
     environment["HOME"] = "/nonexistent"
     environment["PATH"] = "/usr/bin:/bin"
     return environment
@@ -181,6 +188,7 @@ class WorkerContext:
     negative_checks: tuple[str, ...]
     expected_evidence: tuple[str, ...]
     environment: Mapping[str, str]
+    worktree_branch: str = ""
 
     def __post_init__(self) -> None:
         if not SHA40.fullmatch(self.base_sha):
@@ -264,6 +272,12 @@ class ReviewOutcome:
     review_round: int = 1
     review_mode: str = "full"
     review_receipt_sha256: str = ""
+    summary: str = "bounded independent review"
+    findings: tuple[dict[str, Any], ...] | None = None
+    security_ok: bool = True
+    rollback_ok: bool = True
+    observed_ci_status: str = "unknown"
+    finding_ledger_digest: str = ""
 
     def __post_init__(self) -> None:
         if self.status not in REVIEW_STATUSES:
@@ -298,6 +312,13 @@ class ReviewOutcome:
             raise WorkerError("review_mode_invalid")
         if not SHA256.fullmatch(self.review_receipt_sha256):
             raise WorkerError("review_receipt_digest_invalid")
+        try:
+            decision = canonical_review_decision(self)
+        except (TypeError, ValueError, review_convergence.ConvergenceError) as exc:
+            raise WorkerError("review_convergence_invalid") from exc
+        if self.finding_ledger_digest and self.finding_ledger_digest != decision.finding_ledger_digest:
+            raise WorkerError("review_finding_ledger_mismatch")
+        object.__setattr__(self, "finding_ledger_digest", decision.finding_ledger_digest)
         if self.review_receipt_sha256 != review_receipt_digest(self):
             raise WorkerError("review_receipt_digest_mismatch")
 
@@ -316,6 +337,12 @@ class ReviewOutcome:
             "review_round": self.review_round,
             "review_mode": self.review_mode,
             "review_receipt_sha256": self.review_receipt_sha256,
+            "summary": self.summary,
+            "findings": None if self.findings is None else [dict(item) for item in self.findings],
+            "security_ok": self.security_ok,
+            "rollback_ok": self.rollback_ok,
+            "observed_ci_status": self.observed_ci_status,
+            "finding_ledger_digest": self.finding_ledger_digest,
         }
 
     @classmethod
@@ -324,7 +351,8 @@ class ReviewOutcome:
             "schema_version", "status", "reviewer_session_id", "implementation_session_id",
             "reviewed_head_sha", "blockers", "detail", "reviewed_base_sha",
             "reviewed_range_sha256", "review_axes", "review_round", "review_mode",
-            "review_receipt_sha256",
+            "review_receipt_sha256", "summary", "findings", "security_ok", "rollback_ok",
+            "observed_ci_status", "finding_ledger_digest",
         } or value.get("schema_version") != "steward_review_outcome.v1":
             raise WorkerError("review_outcome_wire_invalid")
         blockers = value.get("blockers")
@@ -336,12 +364,93 @@ class ReviewOutcome:
             or not all(isinstance(item, str) for item in axes)
         ):
             raise WorkerError("review_outcome_wire_invalid")
+        findings = value.get("findings")
+        if findings is not None and (
+            not isinstance(findings, list)
+            or not all(isinstance(item, dict) for item in findings)
+        ):
+            raise WorkerError("review_outcome_wire_invalid")
         return cls(
             value["status"], value["reviewer_session_id"], value["implementation_session_id"],
             value["reviewed_head_sha"], tuple(blockers), value["detail"], value["reviewed_base_sha"],
             value["reviewed_range_sha256"], tuple(axes), value["review_round"], value["review_mode"],
-            value["review_receipt_sha256"],
+            value["review_receipt_sha256"], value["summary"],
+            None if findings is None else tuple(dict(item) for item in findings),
+            value["security_ok"], value["rollback_ok"], value["observed_ci_status"],
+            value["finding_ledger_digest"],
         )
+
+
+def _review_artifact(value: ReviewOutcome | Mapping[str, Any]) -> dict[str, Any]:
+    """Build the bounded input accepted by the canonical convergence owner."""
+
+    if isinstance(value, ReviewOutcome):
+        status = value.status
+        blockers = value.blockers
+        findings = value.findings
+        summary = value.summary
+        head = value.reviewed_head_sha
+        base = value.reviewed_base_sha
+        mode = value.review_mode
+        review_round = value.review_round
+        security_ok = value.security_ok
+        rollback_ok = value.rollback_ok
+        observed_ci_status = value.observed_ci_status
+    else:
+        status = value["status"]
+        blockers = tuple(value.get("blockers", ()))
+        findings = value.get("findings")
+        summary = value["summary"]
+        head = value["reviewed_head_sha"]
+        base = value["reviewed_base_sha"]
+        mode = value["review_mode"]
+        review_round = value["review_round"]
+        security_ok = value["security_ok"]
+        rollback_ok = value["rollback_ok"]
+        observed_ci_status = value["observed_ci_status"]
+    if findings is None:
+        artifact: dict[str, Any] = {
+            "blockers": list(blockers),
+            "summary": summary,
+        }
+    else:
+        artifact = {
+            "findings": [dict(item) for item in findings],
+            "summary": summary,
+        }
+    artifact.update(
+        {
+            "verdict": status,
+            "reviewed_head_sha": head,
+            "reviewed_base": base,
+            "reviewed_range": f"{base}...{head}",
+            "review_mode": mode,
+            "review_round": review_round,
+            "security_ok": security_ok,
+            "rollback_ok": rollback_ok,
+            "observed_ci_status": observed_ci_status,
+        }
+    )
+    return artifact
+
+
+def canonical_review_decision(
+    outcome: ReviewOutcome | Mapping[str, Any],
+) -> review_convergence.ReviewDecision:
+    """Normalize the bounded outcome through the canonical R1/R2 owner."""
+
+    artifact = _review_artifact(outcome)
+    decision = review_convergence.decision_from_legacy_artifact(
+        artifact,
+        base_sha=artifact["reviewed_base"],
+        review_mode=artifact["review_mode"],
+        review_round=artifact["review_round"],
+    )
+    if decision.reviewed_range != artifact["reviewed_range"]:
+        raise review_convergence.ConvergenceError(
+            "reviewed range is not the complete base...head range"
+        )
+    return decision
 
 
 def review_receipt_digest(outcome: ReviewOutcome | Mapping[str, Any]) -> str:
@@ -352,6 +461,10 @@ def review_receipt_digest(outcome: ReviewOutcome | Mapping[str, Any]) -> str:
     # is intentionally excluded so restart recovery can revalidate the same
     # receipt without persisting raw reviewer prose.
     payload.pop("detail", None)
+    # Finding evidence is also transient.  The canonical ledger digest and
+    # bounded blocker/deferred projections remain sealed in the receipt.
+    payload.pop("findings", None)
+    payload.pop("summary", None)
     payload["review_receipt_sha256"] = ""
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -362,6 +475,7 @@ def seal_review_outcome_wire(value: Mapping[str, Any]) -> dict[str, Any]:
     """Return a wire outcome with its self-contained receipt digest sealed."""
 
     payload = dict(value)
+    payload["finding_ledger_digest"] = canonical_review_decision(payload).finding_ledger_digest
     payload["review_receipt_sha256"] = ""
     payload["review_receipt_sha256"] = review_receipt_digest(payload)
     return payload
@@ -402,6 +516,42 @@ def _head_or_base(context: WorkerContext) -> str:
     return head if SHA40.fullmatch(head) else context.base_sha
 
 
+def process_session_id(context: WorkerContext) -> str:
+    """Derive a parent-bound implementation session identity."""
+
+    return f"steward-process:{context.card_id}:{context.attempt}"
+
+
+def reviewer_session_id(context: WorkerContext, outcome: WorkerOutcome) -> str:
+    """Derive an independent reviewer identity from parent-owned bindings."""
+
+    material = "\x00".join(
+        (context.mission_id, context.stage_id, context.card_id, str(context.attempt), outcome.session_id)
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+    return str(uuid.UUID(hex=digest))
+
+
+def _sandbox_for_context(context: WorkerContext) -> _SandboxGit | None:
+    """Prepare a private Git view only for a real linked worktree."""
+
+    branch = context.worktree_branch
+    if not branch:
+        try:
+            result = subprocess.run(
+                ["/usr/bin/git", "branch", "--show-current"],
+                cwd=context.worktree,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise WorkerError("sandbox_branch_unavailable") from exc
+        branch = result.stdout.strip() if result.returncode == 0 else ""
+    return _SandboxGit.create(context.worktree, base_sha=context.base_sha, branch=branch)
+
+
 def _validate_command(command: object) -> list[str]:
     if (
         not isinstance(command, (list, tuple))
@@ -428,47 +578,157 @@ def _validate_command(command: object) -> list[str]:
     return argv
 
 
-def _sandbox_git_sources(worktree: Path) -> tuple[Path, ...]:
-    """Find linked-worktree metadata that must remain writable for commits."""
+@dataclass
+class _SandboxGit:
+    """Disposable private Git dir used by one child process."""
 
-    sources = [worktree.resolve()]
+    temporary: tempfile.TemporaryDirectory[str]
+    worktree: Path
+    git_dir: Path
+    common_dir: Path
+    marker_copy: Path
+    branch: str
+    guest_git_dir: Path = Path("/steward-sandbox/git")
+
+    def cleanup(self) -> None:
+        self.temporary.cleanup()
+
+    @classmethod
+    def create(
+        cls, worktree: Path, *, base_sha: str, branch: str
+    ) -> "_SandboxGit | None":
+        marker = worktree / ".git"
+        if not marker.is_file() or marker.is_symlink():
+            return None
+        gitdir, common = _linked_git_metadata(worktree)
+        if gitdir is None or common is None:
+            raise WorkerError("sandbox_git_metadata_invalid")
+        if (
+            not branch
+            or not branch.startswith("agent/")
+            or ".." in Path(branch).parts
+            or "\\" in branch
+        ):
+            raise WorkerError("sandbox_branch_invalid")
+        temporary = tempfile.TemporaryDirectory(prefix="steward-git-")
+        try:
+            clone_path = Path(temporary.name) / "repo"
+            result = subprocess.run(
+                [
+                    "/usr/bin/git", "clone", "--shared", "--no-checkout", "--no-tags",
+                    str(worktree), str(clone_path),
+                ],
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise WorkerError("sandbox_git_clone_failed")
+            sandbox_git = clone_path / ".git"
+            ref = f"refs/heads/{branch}"
+            for command in (
+                ["update-ref", ref, base_sha],
+                ["symbolic-ref", "HEAD", ref],
+                ["config", "core.hooksPath", "/dev/null"],
+                ["config", "user.name", "Steward Worker"],
+                ["config", "user.email", "steward-worker@localhost.invalid"],
+                ["read-tree", base_sha],
+            ):
+                result = subprocess.run(
+                    ["/usr/bin/git", "--git-dir", str(sandbox_git), *command],
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    raise WorkerError("sandbox_git_init_failed")
+            marker_copy = Path(temporary.name) / "git-marker"
+            marker_copy.write_bytes(marker.read_bytes())
+            return cls(temporary, worktree.resolve(), sandbox_git, common, marker_copy, branch)
+        except Exception:
+            temporary.cleanup()
+            raise
+
+    def import_head(self, *, base_sha: str, head_sha: str, branch: str) -> None:
+        """Import only the child branch tip and its reachable objects."""
+
+        if head_sha == base_sha:
+            return
+        ref = f"refs/heads/{branch}"
+        import_ref = f"refs/steward-import/{head_sha}"
+        try:
+            for command in (
+                [
+                    "/usr/bin/git", "fetch", "--no-tags", "--no-write-fetch-head",
+                    str(self.git_dir), f"{ref}:{import_ref}",
+                ],
+                ["/usr/bin/git", "update-ref", ref, head_sha, base_sha],
+            ):
+                result = subprocess.run(
+                    command,
+                    cwd=self.worktree,
+                    capture_output=True,
+                    timeout=60,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    raise WorkerError("sandbox_git_import_failed")
+            result = subprocess.run(
+                ["/usr/bin/git", "update-ref", "-d", import_ref, head_sha],
+                cwd=self.worktree,
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise WorkerError("sandbox_git_import_cleanup_failed")
+            result = subprocess.run(
+                ["/usr/bin/git", "read-tree", "--reset", head_sha],
+                cwd=self.worktree,
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise WorkerError("sandbox_git_index_sync_failed")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise WorkerError("sandbox_git_import_unavailable") from exc
+
+
+def _linked_git_metadata(worktree: Path) -> tuple[Path | None, Path | None]:
+    """Resolve linked-worktree metadata without exposing it as writable child state."""
+
     marker = worktree / ".git"
     if not marker.is_file() or marker.is_symlink():
-        return tuple(sources)
+        return None, None
     try:
         line = marker.read_text(encoding="utf-8").strip()
         if not line.startswith("gitdir: "):
-            return tuple(sources)
+            return None, None
         gitdir = Path(line[8:])
-        if not gitdir.is_absolute():
-            gitdir = (marker.parent / gitdir).resolve()
-        else:
-            gitdir = gitdir.resolve()
-        if not gitdir.is_dir():
-            return tuple(sources)
-        sources.append(gitdir)
+        gitdir = (marker.parent / gitdir).resolve() if not gitdir.is_absolute() else gitdir.resolve()
         commondir = gitdir / "commondir"
-        if commondir.is_file() and not commondir.is_symlink():
-            common = Path(commondir.read_text(encoding="utf-8").strip())
-            if not common.is_absolute():
-                common = (gitdir / common).resolve()
-            else:
-                common = common.resolve()
-            if common.is_dir():
-                sources.append(common)
+        if not gitdir.is_dir() or not commondir.is_file() or commondir.is_symlink():
+            return None, None
+        common = Path(commondir.read_text(encoding="utf-8").strip())
+        common = (gitdir / common).resolve() if not common.is_absolute() else common.resolve()
+        return (gitdir, common) if common.is_dir() else (None, None)
     except (OSError, UnicodeError):
-        return tuple(sources)
-    return tuple(dict.fromkeys(sources))
+        return None, None
 
 
-def _sandbox_command(command: list[str], worktree: Path, environment: Mapping[str, str]) -> list[str]:
-    """Run a bounded child in a minimal read-only root with a writable worktree."""
+def _sandbox_command(
+    command: list[str],
+    worktree: Path,
+    environment: Mapping[str, str],
+    *,
+    git_sandbox: _SandboxGit | None = None,
+) -> list[str]:
+    """Run a bounded child with only its worktree and private Git dir writable."""
 
     bubblewrap = Path("/usr/bin/bwrap")
     if not bubblewrap.is_file():
         raise WorkerError("sandbox_unavailable")
-    sources = _sandbox_git_sources(worktree)
-    destinations = [path.resolve() for path in sources]
     args = [
         str(bubblewrap),
         "--die-with-parent",
@@ -483,7 +743,8 @@ def _sandbox_command(command: list[str], worktree: Path, environment: Mapping[st
             args.extend(("--ro-bind", system_path, system_path))
     args.extend(("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"))
     created_dirs: set[str] = set()
-    for destination in destinations:
+
+    def add_parent_dirs(destination: Path) -> None:
         for parent in reversed(destination.parents):
             if parent == Path("/"):
                 break
@@ -491,8 +752,21 @@ def _sandbox_command(command: list[str], worktree: Path, environment: Mapping[st
             if parent_text not in created_dirs:
                 args.extend(("--dir", parent_text))
                 created_dirs.add(parent_text)
-        args.extend(("--bind", str(destination), str(destination)))
-    args.extend(("--chdir", str(worktree.resolve())))
+    worktree = worktree.resolve()
+    add_parent_dirs(worktree)
+    args.extend(("--bind", str(worktree), str(worktree)))
+    if git_sandbox is not None:
+        add_parent_dirs(git_sandbox.common_dir)
+        args.extend(("--ro-bind", str(git_sandbox.common_dir), str(git_sandbox.common_dir)))
+        add_parent_dirs(git_sandbox.guest_git_dir)
+        args.extend(("--bind", str(git_sandbox.git_dir.parent), str(git_sandbox.guest_git_dir)))
+        args.extend(("--ro-bind", str(git_sandbox.marker_copy), str(worktree / ".git")))
+        environment = dict(environment)
+        environment["GIT_DIR"] = str(git_sandbox.guest_git_dir / ".git")
+        environment["GIT_WORK_TREE"] = str(worktree)
+        environment["GIT_CONFIG_NOSYSTEM"] = "1"
+        environment["GIT_TERMINAL_PROMPT"] = "0"
+    args.extend(("--chdir", str(worktree)))
     for key, value in sorted(environment.items()):
         if "\x00" in key or "\x00" in value or "\n" in key or "\n" in value:
             raise WorkerError("sandbox_environment_invalid")
@@ -526,31 +800,62 @@ class BoundedProcessWorker:
         import local_run_once
 
         command = _validate_command(self.command_builder(context))
-        session_id = f"steward-process:{context.card_id}:{context.attempt}"
+        session_id = process_session_id(context)
+        git_sandbox = _sandbox_for_context(context)
         try:
-            sandboxed_command = _sandbox_command(
-                command, context.worktree, context.environment
-            )
-            exit_code, stdout, _stderr = local_run_once._bounded_process(
-                sandboxed_command,
-                cwd=context.worktree,
-                timeout_seconds=self.timeout_seconds,
-                env=dict(context.environment),
-            )
+            if git_sandbox is None:
+                sandboxed_command = _sandbox_command(
+                    command, context.worktree, context.environment
+                )
+                exit_code, stdout, _stderr = local_run_once._bounded_process(
+                    sandboxed_command,
+                    cwd=context.worktree,
+                    timeout_seconds=self.timeout_seconds,
+                    env=dict(context.environment),
+                )
+            else:
+                sandboxed_command = _sandbox_command(
+                    command,
+                    context.worktree,
+                    context.environment,
+                    git_sandbox=git_sandbox,
+                )
+                child_environment = dict(context.environment)
+                child_environment["GIT_DIR"] = str(git_sandbox.guest_git_dir / ".git")
+                child_environment["GIT_WORK_TREE"] = str(context.worktree.resolve())
+                child_environment["GIT_CONFIG_NOSYSTEM"] = "1"
+                child_environment["GIT_TERMINAL_PROMPT"] = "0"
+                exit_code, stdout, _stderr = local_run_once._bounded_process(
+                    sandboxed_command,
+                    cwd=context.worktree,
+                    timeout_seconds=self.timeout_seconds,
+                    env=child_environment,
+                )
+            if exit_code == 124:
+                return WorkerOutcome("TIMEOUT", session_id, _head_or_base(context), (), "worker_timeout")
+            if exit_code != 0:
+                return WorkerOutcome("FAIL", session_id, _head_or_base(context), (), "worker_process_failed")
+            try:
+                payload = json.loads(stdout)
+                outcome = WorkerOutcome.from_wire(payload)
+            except (TypeError, ValueError, json.JSONDecodeError, WorkerError) as exc:
+                raise WorkerError("worker_output_invalid") from exc
+            if outcome.session_id != session_id:
+                raise WorkerError("worker_session_binding_mismatch")
+            if git_sandbox is not None and outcome.status == "PASS":
+                git_sandbox.import_head(
+                    base_sha=context.base_sha,
+                    head_sha=outcome.head_sha,
+                    branch=git_sandbox.branch,
+                )
+            return outcome
+        except WorkerError:
+            raise
         except Exception as exc:
             raise WorkerError("worker_process_unavailable") from exc
-        if exit_code == 124:
-            return WorkerOutcome("TIMEOUT", session_id, _head_or_base(context), (), "worker_timeout")
-        if exit_code != 0:
-            return WorkerOutcome("FAIL", session_id, _head_or_base(context), (), "worker_process_failed")
-        try:
-            payload = json.loads(stdout)
-            outcome = WorkerOutcome.from_wire(payload)
-        except (TypeError, ValueError, json.JSONDecodeError, WorkerError) as exc:
-            raise WorkerError("worker_output_invalid") from exc
-        if outcome.session_id != session_id:
-            raise WorkerError("worker_session_binding_mismatch")
-        return outcome
+        finally:
+            if git_sandbox is not None:
+                git_sandbox.cleanup()
 
 
 class BoundedProcessReviewer:
@@ -573,28 +878,55 @@ class BoundedProcessReviewer:
         import local_run_once
 
         command = _validate_command(self.command_builder(context, outcome))
+        git_sandbox = _sandbox_for_context(context)
         try:
-            sandboxed_command = _sandbox_command(
-                command, context.worktree, context.environment
-            )
-            exit_code, stdout, _stderr = local_run_once._bounded_process(
-                sandboxed_command,
-                cwd=context.worktree,
-                timeout_seconds=self.timeout_seconds,
-                env=dict(context.environment),
-            )
+            if git_sandbox is None:
+                sandboxed_command = _sandbox_command(
+                    command, context.worktree, context.environment
+                )
+                exit_code, stdout, _stderr = local_run_once._bounded_process(
+                    sandboxed_command,
+                    cwd=context.worktree,
+                    timeout_seconds=self.timeout_seconds,
+                    env=dict(context.environment),
+                )
+            else:
+                sandboxed_command = _sandbox_command(
+                    command,
+                    context.worktree,
+                    context.environment,
+                    git_sandbox=git_sandbox,
+                )
+                child_environment = dict(context.environment)
+                child_environment["GIT_DIR"] = str(git_sandbox.guest_git_dir / ".git")
+                child_environment["GIT_WORK_TREE"] = str(context.worktree.resolve())
+                child_environment["GIT_CONFIG_NOSYSTEM"] = "1"
+                child_environment["GIT_TERMINAL_PROMPT"] = "0"
+                exit_code, stdout, _stderr = local_run_once._bounded_process(
+                    sandboxed_command,
+                    cwd=context.worktree,
+                    timeout_seconds=self.timeout_seconds,
+                    env=child_environment,
+                )
+            if exit_code != 0:
+                raise WorkerError("review_process_failed")
+            try:
+                review = ReviewOutcome.from_wire(json.loads(stdout))
+            except (TypeError, ValueError, json.JSONDecodeError, WorkerError) as exc:
+                raise WorkerError("review_output_invalid") from exc
+            expected_session = reviewer_session_id(context, outcome)
+            if review.reviewer_session_id != expected_session:
+                raise WorkerError("reviewer_session_binding_mismatch")
+            if review.implementation_session_id != outcome.session_id:
+                raise WorkerError("review_implementation_session_mismatch")
+            return review
+        except WorkerError:
+            raise
         except Exception as exc:
             raise WorkerError("review_process_unavailable") from exc
-        if exit_code != 0:
-            raise WorkerError("review_process_failed")
-        try:
-            review = ReviewOutcome.from_wire(json.loads(stdout))
-        except (TypeError, ValueError, json.JSONDecodeError, WorkerError) as exc:
-            raise WorkerError("review_output_invalid") from exc
-        expected_session = f"steward-review-process:{context.card_id}:{context.attempt}"
-        if review.reviewer_session_id != expected_session:
-            raise WorkerError("reviewer_session_binding_mismatch")
-        return review
+        finally:
+            if git_sandbox is not None:
+                git_sandbox.cleanup()
 
 
 def validate_worker_outcome(

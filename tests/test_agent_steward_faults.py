@@ -59,16 +59,24 @@ class StewardFaultTests(unittest.TestCase):
             "implementation_session_id": "implementation-session",
             "reviewed_head_sha": HEAD,
             "blockers": [],
+            "detail": "",
             "reviewed_base_sha": BASE,
             "reviewed_range_sha256": workers.review_range_digest(BASE, HEAD),
             "review_axes": ["standards", "spec"],
             "review_round": 1,
             "review_mode": "full",
+            "summary": "bounded independent review",
+            "findings": None,
+            "security_ok": True,
+            "rollback_ok": True,
+            "observed_ci_status": "unknown",
+            "finding_ledger_digest": "",
             "review_receipt_sha256": "",
         }
-        receipt_sha = hashlib.sha256(
-            json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
+        review = workers.ReviewOutcome.from_wire(
+            workers.seal_review_outcome_wire(receipt_payload)
+        )
+        review_wire = review.to_wire()
         self.journal.append(
             event="REVIEW_PASSED",
             idempotency_key=f"review-pass:{card}",
@@ -87,8 +95,14 @@ class StewardFaultTests(unittest.TestCase):
                 "review_axes": ["standards", "spec"],
                 "review_round": 1,
                 "review_mode": "full",
-                "review_receipt_sha256": receipt_sha,
+                "review_receipt_sha256": review_wire["review_receipt_sha256"],
                 "verdict": "PASS",
+                "finding_ledger_digest": review_wire["finding_ledger_digest"],
+                "open_blocker_ids": [],
+                "deferred_note_ids": [],
+                "decision_required_ids": [],
+                "security_ok": True,
+                "rollback_ok": True,
             },
         )
         self.journal.append(
@@ -527,6 +541,82 @@ class StewardFaultTests(unittest.TestCase):
         )
         result = worker.run(context)
         self.assertEqual(result.status, "TIMEOUT")
+
+    def test_bounded_process_worker_imports_commit_from_private_git_view(self):
+        repo = self.root / "repo"
+        worktree = self.root / "worktree"
+        subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Steward Test"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "steward-test@example.invalid"],
+            cwd=repo,
+            check=True,
+        )
+        (repo / "README.md").write_text("before\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
+        base = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        branch = "agent/steward-sandbox-test"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", branch, str(worktree), base],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+        canonical_ref = str(repo / ".git" / "refs" / "heads" / "main")
+        script = (
+            "from pathlib import Path; import json, subprocess; "
+            "Path('README.md').write_text('after\\n'); "
+            f"denied=subprocess.run(['/usr/bin/python3','-c',"
+            f"\"from pathlib import Path; Path({canonical_ref!r}).write_text('x')\"], "
+            "capture_output=True).returncode != 0; "
+            "subprocess.run(['/usr/bin/git','add','README.md'], check=True); "
+            "subprocess.run(['/usr/bin/git','commit','-m','worker'], check=True, "
+            "capture_output=True); "
+            "head=subprocess.run(['/usr/bin/git','rev-parse','HEAD'], check=True, "
+            "capture_output=True, text=True).stdout.strip(); "
+            "print(json.dumps({'schema_version':'steward_worker_outcome.v1',"
+            "'status':'PASS','session_id':'steward-process:card-1:1',"
+            "'head_sha':head,'changed_paths':['README.md'],"
+            "'detail':'canonical_git_denied' if denied else 'canonical_git_writable'}))"
+        )
+        context = workers.WorkerContext(
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id="card-1",
+            attempt=1,
+            model_tier="T1",
+            base_sha=base,
+            worktree=worktree,
+            allowed_paths=("README.md",),
+            steps=("bounded",),
+            focused_tests=("focused",),
+            negative_checks=("negative",),
+            expected_evidence=("receipt",),
+            environment=workers.child_environment({"PATH": "/usr/bin"}),
+            worktree_branch=branch,
+        )
+        result = workers.BoundedProcessWorker(
+            lambda _context: ["/usr/bin/python3", "-c", script], timeout_seconds=10
+        ).run(context)
+        self.assertEqual(result.status, "PASS")
+        self.assertEqual(result.detail, "canonical_git_denied")
+        self.assertNotEqual(result.head_sha, base)
+        self.assertEqual(
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=worktree, check=True, capture_output=True, text=True
+            ).stdout.strip(),
+            result.head_sha,
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "status", "--porcelain"], cwd=worktree, check=True, capture_output=True, text=True
+            ).stdout,
+            "",
+        )
 
     def test_path_lock_and_worktree_names_are_digest_bound(self):
         digest = hashlib.sha256(b"card:untrusted/../value").hexdigest()[:24]
