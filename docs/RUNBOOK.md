@@ -466,6 +466,50 @@ Canonical CI acquisition binds repository, trusted head repository, workflow ide
 
 The Codex wrapper constructs an allowlisted child environment for version, login-status, help, implementation, repair, and review calls. It preserves only the documented runtime/login variables (`HOME`, optional `CODEX_HOME`, `PATH`, locale/temp/terminal and service-user identity variables) and excludes GitHub, provider, cloud, and unknown secret-shaped variables. It does not fall back to API-key billing, mutate login files, print the environment, or retain raw failure output.
 
+### PR3 provider-free Steward recovery
+
+PR3's `steward.py` drives only an approved repository-maintenance WorkCard and
+stops at a verified `WAITING_FOR_MERGE` observation. Its SQLite file is a
+rebuildable operator projection, not the application store or a second queue,
+lease, budget, approval, output, audit, rollback, scheduler, or lifecycle
+writer. Do not place prompts, model output, transcripts, credentials, private
+paths, or unredacted repository content in its journal.
+
+The programmatic `StewardService.execute_stage` entrypoint runs heartbeat and
+restart-recovery preflight before dispatching an explicitly supplied approved
+stage. The service CLI remains reconciliation-only because loading a plan or
+creating a Stage PR would cross the PR3 authority boundary. Reviewer children
+cannot write the admitted WorkCard worktree. Their result is a bounded local
+observation only; recovery and merge eligibility use the canonical exact-head
+CI/review/thread readers rather than a child self-report or aggregate approval
+alone.
+
+Run the heartbeat smoke check against an operator-owned path before installing
+any unit:
+
+```bash
+uv run --no-project python scripts/agent-control/steward_service.py \
+  --heartbeat-loop --once --journal /var/lib/agent-steward/steward.sqlite3
+```
+
+The checked-in `scripts/agent-control/steward.service` is an installation
+template only. A later, separately accepted canary must provision the service
+user and writable journal directory, inspect the registered worktrees and
+active legacy writer, and prove one-writer ownership before activation. PR3
+does not authorize installation, enablement, Provider access, target writes,
+release, deployment, destructive cleanup, or automatic merge. Until that gate
+is accepted, keep the service stopped and use only the provider-free focused
+tests and the `--once` heartbeat smoke check.
+
+On restart, replay the journal and call the read-only reconciliation owner.
+`RUNNING`, `VERIFYING`, and `REVIEWING` cards are recovery-required and must
+not be rerun from a local self-report. `OUTCOME_UNKNOWN`, malformed journal
+records, unavailable GitHub facts, base/head drift, pending CI, or a review
+blocker remain paused; never delete the journal or blindly retry. Retain the
+worktree and exact-head evidence for operator inspection. Only a live,
+exactly bound PR with passing CI and independent review may be projected as
+`WAITING_FOR_MERGE`; the existing manual merge owner handles the merge.
+
 ### Self-hosted runner readiness
 
 Use the repository-owned bounded readiness checker for the Actions runner. It verifies the local runner files by metadata only, checks the listener version, resolves exactly one systemd service layout, and uses fully paginated GitHub runner status. The default check requires the runner to be online and idle; `--allow-busy` is only for a check deliberately executed from inside the active runner job.

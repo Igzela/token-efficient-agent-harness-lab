@@ -52,6 +52,35 @@ lifecycle writer; GitHub remains the durable queue/lease owner and
 consume authority, write state, call a Provider, or create a second store,
 scheduler, evaluator, budget, output, audit, rollback, or workspace owner.
 
+### PR3 provider-free Steward executor
+
+PR3 adds `scripts/agent-control/steward.py` as a bounded packet-internal
+executor. `steward_journal.py` stores only a hash-chained, idempotent,
+rebuildable operator projection in SQLite; it is not `LocalProductStore`, a
+GitHub queue or lease, a budget, approval, output, audit, rollback, or
+lifecycle authority. `steward_service.py` supplies heartbeat, restart
+classification, and read-only GitHub reconciliation. `steward_workers.py`
+reuses the existing credential-free child environment, WorkCard validation,
+allowlisted verification, and `ChatLock` path locks. Reviewer children receive
+a read-only WorkCard worktree and a disposable private Git view. The
+`StewardService.execute_stage` entrypoint performs heartbeat/recovery
+preflight before invoking the bounded coordinator; it does not create another
+queue or lifecycle writer. `steward_github.py` is read-only and can classify an
+already integrated Stage PR only when repository, base SHA, head SHA, CI, and
+canonical exact-head review/thread facts match exactly.
+
+The executor admits at most K=2 disjoint WorkCards and serializes overlapping
+path locks. A worker exception or unavailable head is `OUTCOME_UNKNOWN` and is
+never replayed blindly; ordinary bounded worker/check/review failures may
+retry only within the WorkCard attempt budget. Review requires a different
+session identity from implementation. The executor stops at
+`WAITING_FOR_MERGE`; exact-head CI, canonical independent review, Ready, merge,
+and any external/product/target/release/deployment/destructive effect remain
+owned by the existing repository control plane. A local reviewer child is only
+a bounded preflight observation; its self-reported PASS is never the recovery
+or merge-authorizing review fact. The systemd unit is a disabled-by-default
+operator template and does not enable automatic merge or Provider access.
+
 ## Repository Agent Loop Control Plane
 
 Repository automation separates two loops:
