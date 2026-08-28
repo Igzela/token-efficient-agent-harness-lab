@@ -46,14 +46,14 @@ KNOWN_RISK_FLAGS = frozenset(
 )
 KNOWN_INTENTS = frozenset({"repository_maintenance", "owner_review_required"})
 SAFE_PATH = re.compile(
-    r"(?<![A-Za-z0-9_.\-/\\-])"
+    r"(?<![A-Za-z0-9_.:/\\-])"
     r"(?:docs|scripts|tests|engine|sdk|dashboard|tools|wire_contract|codegen)"
     r"(?:/[A-Za-z0-9_.-]+)+(?![A-Za-z0-9_.-])"
 )
 _PATH_TRAVERSAL = re.compile(r"(?<![A-Za-z0-9_.-])\.\.?(?:/|$)")
 _ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9])/(?:[A-Za-z0-9_.-]+/)+")
 _PATH_ROOT_WITH_PREFIX = re.compile(
-    r"[/\\](?:docs|scripts|tests|engine|sdk|dashboard|tools|wire_contract|codegen)/"
+    r"[/\\:](?:docs|scripts|tests|engine|sdk|dashboard|tools|wire_contract|codegen)/"
 )
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -198,7 +198,8 @@ _EXTERNAL_ACTIONS = (
     r"insert|inserting|remove|removing|delete|deleting|curl|wget"
 )
 _EXTERNAL_TARGETS = (
-    r"github|slack|discord|microsoft teams|notion|jira|gh|nc|external|service|external api|"
+    r"github|slack|discord|microsoft teams|notion|jira|salesforce|gh|nc|external|service|"
+    r"integration|external api|"
     r"third[- ]party|webhook|email|e-mail|api|s3|container registry|registry|origin|"
     r"upstream|remote|pull request|pull-request|pr|branch|repository|repo|database|"
     r"db|provider|target|endpoint|url|unknown service|external system|http request|"
@@ -206,10 +207,16 @@ _EXTERNAL_TARGETS = (
     r"host|connection|smtp|curl|internet|outbound|lan|rpc|packet|channel|storage|queue|"
     r"tcp|udp|ip|port|ssh|scp|ftp|telnet|command|shell|terminal|process|subprocess"
 )
+_COMMAND_ACTIONS = r"run|running|execute|executing|invoke|invoking|call|calling|use|using"
+_COMMAND_TARGETS = (
+    r"bash|sh|zsh|fish|powershell|cmd|python|node|ruby|perl|java|go|"
+    r"executable|binary|script|program|tool|integration"
+)
 _HIGH_RISK_PATTERNS = (
     re.compile(r"\bgit\s+push(?:ing|es)?\b"),
     re.compile(r"\b(?:curl|wget)\b.{0,64}\bhttps?://"),
     re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+    re.compile(rf"\b(?:{_COMMAND_ACTIONS})\b.{{0,64}}\b(?:{_COMMAND_TARGETS})\b"),
     re.compile(
         r"\b(?:write|push|modify|change|update|create|close|merge|comment)\b"
         r".{0,48}\bgithub\b"

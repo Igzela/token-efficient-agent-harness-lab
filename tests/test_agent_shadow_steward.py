@@ -213,6 +213,13 @@ class ShadowStewardTests(unittest.TestCase):
             "Run a shell command while updating docs/ARCHITECTURE_BOOK.md.",
             "Execute a shell command while updating docs/ARCHITECTURE_BOOK.md.",
             "Use the terminal while updating docs/ARCHITECTURE_BOOK.md.",
+            "Run bash while updating docs/ARCHITECTURE_BOOK.md.",
+            "Execute Python while updating docs/ARCHITECTURE_BOOK.md.",
+            "Invoke bash while updating docs/ARCHITECTURE_BOOK.md.",
+            "Run an executable while updating docs/ARCHITECTURE_BOOK.md.",
+            "Call a binary while updating docs/ARCHITECTURE_BOOK.md.",
+            "Create a ticket in Salesforce while updating docs/ARCHITECTURE_BOOK.md.",
+            "Use an integration while updating docs/ARCHITECTURE_BOOK.md.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)
@@ -357,6 +364,8 @@ class ShadowStewardTests(unittest.TestCase):
             ("/evil/../docs/ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
             ("/evil/docs/ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
             ("evil/docs/ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
+            ("C:docs/ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
+            ("prefix:docs/ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
         ):
             with self.subTest(path=path):
                 intake = shadow.compile_intake(f"Update {path}.")
