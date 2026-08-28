@@ -111,7 +111,9 @@ This table is the durable cross-document prerequisite index. A packet may appear
 | `PE7-AUTONOMOUS-STEWARD-PR0` | `COMPLETE` | PR #626 exact head `6fd4c05479f3a1512eafb35d374245539df950f9`; merge `3f5a3c305d317e5fa160369ac3965adae4634721`; exact-head `PASS`; canonical workflow `33090558938`; refreshed-main workflow `33091453322` |
 | `PE7-AUTONOMOUS-STEWARD-PR1` | `COMPLETE` | PR #628 exact head `07e9080f176c7176f6c55a7b966fac1ea4fa8c1b`; merge `1dda023ace9f2bef7ec54ac3fc316693a145dfa7`; exact-head `PASS`; canonical workflow `33112792625` |
 | `PE7-AUTONOMOUS-STEWARD-PR2` | `COMPLETE` | PR #631 exact head `62032137c1127d56d2dcb865a90efc7cbe412b6b`; merge `daaf91e824e044683d9c2de6d024e429faf71ff6`; exact-head `PASS`; canonical workflow `33136649992` |
-| `PE7-AUTONOMOUS-STEWARD-PR3` | `COMPLETE` | PR #634 exact head `fed967ebf03bf43ea452f1b450b972b991b0d92d`; merge `84fdb7b12cd7cd1bebd0214f56592944dbe42ee3`; exact-head `PASS`; canonical workflow `33167984966`; independent receipt comment `5452081999`; service entrypoint reached `WAITING_FOR_MERGE`; post-merge `main` workflow `33169425071` |
+| `PE7-AUTONOMOUS-STEWARD-PR3` | `COMPLETE` | PR #634 exact head `fed967ebf03bf43ea452f1b450b972b991b0d92d`; merge `84fdb7b12cd7cd1bebd0214f56592944dbe42ee3`; exact-head `PASS`; canonical workflow `33167984966` |
+
+PR3 operational closeout evidence: independent receipt comment `5452081999`; service entrypoint reached `WAITING_FOR_MERGE`; post-merge `main` workflow `33169425071`.
 
 Durable closeout consequences (receipts above own identity): AC7 cleanup/closeout proved a merged-tree fixed-string zero-match inventory with separate approve/output authority paths intact; its rollback anchor is revert-PR #562 to pre-cleanup tree `eb692703ab3b3d030478b539fff4496014e45c7a`. Lifecycle-cost receipt fields remain defined by the Architecture Book evidence contract; normalized CI-compute aggregates were never instrumented and stay explicitly unavailable rather than estimated.
 
