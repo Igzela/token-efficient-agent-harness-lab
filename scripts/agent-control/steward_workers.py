@@ -831,7 +831,9 @@ class BoundedProcessWorker:
         try:
             if git_sandbox is None:
                 sandboxed_command = _sandbox_command(
-                    command, context.worktree, context.environment
+                    command,
+                    context.worktree,
+                    context.environment,
                 )
                 exit_code, stdout, _stderr = local_run_once._bounded_process(
                     sandboxed_command,
@@ -908,7 +910,10 @@ class BoundedProcessReviewer:
         try:
             if git_sandbox is None:
                 sandboxed_command = _sandbox_command(
-                    command, context.worktree, context.environment
+                    command,
+                    context.worktree,
+                    context.environment,
+                    worktree_writable=False,
                 )
                 exit_code, stdout, _stderr = local_run_once._bounded_process(
                     sandboxed_command,

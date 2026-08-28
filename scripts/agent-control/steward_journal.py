@@ -53,7 +53,14 @@ _EDGES: dict[str | None, frozenset[str]] = {
         {"REVIEWING", "RETRYING", "BLOCKED", "OUTCOME_UNKNOWN"}
     ),
     "REVIEWING": frozenset(
-        {"REVIEWING", "WAITING_FOR_MERGE", "RETRYING", "BLOCKED", "OUTCOME_UNKNOWN"}
+        {
+            "REVIEWING",
+            "WAITING_FOR_MERGE",
+            "COMPLETE",
+            "RETRYING",
+            "BLOCKED",
+            "OUTCOME_UNKNOWN",
+        }
     ),
     "WAITING_FOR_MERGE": frozenset(
         {"WAITING_FOR_MERGE", "COMPLETE", "BLOCKED"}

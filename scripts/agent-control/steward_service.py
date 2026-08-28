@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import argparse
 import os
 from pathlib import Path
-import time
+import threading
 from typing import Any, Callable, Mapping
 
 import mission_contract
@@ -211,6 +211,7 @@ class StewardService:
         self.journal = journal
         self.github = github
         self.repo_path = Path(repo_path).resolve() if repo_path is not None else None
+        self._wakeup = threading.Event()
 
     def heartbeat(self, *, tick_id: str | None = None) -> dict[str, Any]:
         """Record one idempotent liveness fact without changing work state."""
@@ -263,6 +264,20 @@ class StewardService:
         if not isinstance(result, dict):
             raise TypeError("stage dispatcher returned an invalid result")
         return result
+
+    def wakeup(self) -> None:
+        """Wake a waiting service loop for an in-process state/event change."""
+
+        self._wakeup.set()
+
+    def wait_for_wakeup(self, timeout_seconds: int) -> bool:
+        """Wait for a bounded event or periodic reconciliation deadline."""
+
+        if type(timeout_seconds) is not int or not 0 <= timeout_seconds <= 3600:
+            raise ValueError("wakeup timeout is outside the bounded range")
+        signaled = self._wakeup.wait(timeout_seconds)
+        self._wakeup.clear()
+        return signaled
 
     def recover(self) -> ReconciliationReport:
         """Rebuild local state and mark in-flight work for inspection.
@@ -320,9 +335,18 @@ class StewardService:
                 items.append(
                     RecoveryItem(binding["card_id"], state, "BLOCKED", "worker_binding_missing_or_invalid")
                 )
-            elif state in {"RUNNING", "VERIFYING", "REVIEWING"}:
+            elif state in {"RUNNING", "VERIFYING", "REVIEWING", "OUTCOME_UNKNOWN"}:
                 items.append(
-                    RecoveryItem(binding["card_id"], state, "RECOVERY_REQUIRED", "in_flight_work_requires_read_only_reconciliation")
+                    RecoveryItem(
+                        binding["card_id"],
+                        state,
+                        "RECOVERY_REQUIRED",
+                        (
+                            "unknown_outcome_requires_read_only_reconciliation"
+                            if state == "OUTCOME_UNKNOWN"
+                            else "in_flight_work_requires_read_only_reconciliation"
+                        ),
+                    )
                 )
             else:
                 items.append(
@@ -416,7 +440,7 @@ class StewardService:
                     str(binding.get("base_sha", "0" * 40)),
                     str(binding.get("head_sha", "0" * 40)),
                 )
-            if status.outcome == "COMPLETE" and state == "WAITING_FOR_MERGE":
+            if status.outcome == "COMPLETE" and state in {"WAITING_FOR_MERGE", "REVIEWING"}:
                 self.journal.append(
                     event="STAGE_MERGED_OBSERVED",
                     idempotency_key=_reconcile_key(
@@ -495,7 +519,7 @@ def main(argv: list[str] | None = None) -> int:
         service.reconcile(stage_bindings={})
         if args.once:
             return 0
-        time.sleep(args.interval_seconds)
+        service.wait_for_wakeup(args.interval_seconds)
 
 
 __all__ = ["RecoveryItem", "ReconciliationReport", "StewardService", "main"]

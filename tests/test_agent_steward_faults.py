@@ -246,6 +246,14 @@ class StewardFaultTests(unittest.TestCase):
         self.assertEqual(self.journal.projection()["card_states"]["card-1"], "WAITING_FOR_MERGE")
         self.assertEqual(reader.reads, [("Igzela/token-efficient-agent-harness-lab", 7)])
 
+    def test_reconciliation_observes_merge_from_reviewing_after_restart(self):
+        self.make_waiting_journal()
+        reader = steward_github.FakeGitHubReader(self.facts(merged=True))
+        service = StewardService(mission_id=MISSION, journal=self.journal, github=reader)
+        report = service.reconcile(stage_bindings={})
+        self.assertEqual(report.items[0].outcome, "COMPLETE")
+        self.assertEqual(self.journal.projection()["card_states"]["card-1"], "COMPLETE")
+
     def test_reconciliation_ignores_caller_binding_projection(self):
         self.make_waiting_journal()
         reader = steward_github.FakeGitHubReader(self.facts())
@@ -427,6 +435,66 @@ class StewardFaultTests(unittest.TestCase):
         self.assertEqual(
             self.journal.projection()["card_states"]["card-1"], "REVIEWING"
         )
+
+    def test_recover_keeps_unknown_outcome_paused_for_reconciliation(self):
+        expected_path, expected_branch = worktree_manager.steward_worktree_location(
+            MISSION, "stage-1", "card-1", BASE
+        )
+        binding_digest = worktree_manager.steward_binding_digest(
+            MISSION, "stage-1", "card-1", BASE
+        )
+        self.append("QUEUED", "queue:unknown")
+        self.journal.append(
+            event="WORKER_STARTED",
+            idempotency_key="run:unknown",
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id="card-1",
+            attempt=1,
+            state="RUNNING",
+            detail="isolated_worktree_bound",
+            data={
+                "base_sha": BASE,
+                "worktree_binding_sha256": binding_digest,
+                "branch": expected_branch,
+            },
+        )
+        self.append("OUTCOME_UNKNOWN", "unknown:outcome")
+        service = StewardService(
+            mission_id=MISSION,
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(),
+            repo_path=self.root,
+        )
+        with mock.patch.object(worktree_manager, "verify_worktree", return_value=True):
+            report = service.recover()
+        self.assertEqual(report.items[0].outcome, "RECOVERY_REQUIRED")
+        self.assertEqual(
+            report.items[0].reason,
+            "unknown_outcome_requires_read_only_reconciliation",
+        )
+
+    def test_reviewer_sandbox_uses_read_only_mount_for_non_linked_worktree(self):
+        command = workers._sandbox_command(
+            ["/usr/bin/python3", "-c", "pass"],
+            self.root,
+            workers.child_environment({"PATH": "/usr/bin"}),
+            worktree_writable=False,
+        )
+        worktree_index = command.index(str(self.root))
+        self.assertEqual(command[worktree_index - 1], "--ro-bind")
+        self.assertNotIn(("--ro-bind", "/etc", "/etc"), zip(command, command[1:], command[2:]))
+
+    def test_service_wakeup_interrupts_periodic_wait(self):
+        service = StewardService(
+            mission_id=MISSION,
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(),
+        )
+        self.assertFalse(service.wait_for_wakeup(0))
+        service.wakeup()
+        self.assertTrue(service.wait_for_wakeup(0))
+        self.assertFalse(service.wait_for_wakeup(0))
 
     def test_github_binding_requires_exact_head_and_base(self):
         observed = steward_github.StagePRFacts.from_wire(self.facts())
