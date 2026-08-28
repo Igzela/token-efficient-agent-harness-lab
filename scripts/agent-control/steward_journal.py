@@ -238,6 +238,12 @@ def _validate_data(data: object | None) -> dict[str, Any]:
         if isinstance(value, str):
             if IDENTIFIER.fullmatch(value) is None and REPOSITORY.fullmatch(value) is None:
                 raise JournalError("journal_data_value_invalid")
+        elif isinstance(value, list):
+            if len(value) > 16 or any(
+                not isinstance(item, str) or IDENTIFIER.fullmatch(item) is None
+                for item in value
+            ):
+                raise JournalError("journal_data_value_invalid")
         elif not isinstance(value, (int, bool, type(None))):
             raise JournalError("journal_data_value_invalid")
     return dict(data)
@@ -320,10 +326,21 @@ class StewardJournal:
         finally:
             connection.close()
 
-    def _latest_state(self, events: Iterable[JournalEvent], card_id: str) -> str | None:
+    def _latest_state(
+        self,
+        events: Iterable[JournalEvent],
+        mission_id: str,
+        stage_id: str,
+        card_id: str,
+    ) -> str | None:
         latest: str | None = None
         for event in events:
-            if event.card_id == card_id and event.state in CARD_STATES:
+            if (
+                event.mission_id == mission_id
+                and event.stage_id == stage_id
+                and event.card_id == card_id
+                and event.state in CARD_STATES
+            ):
                 latest = event.state
         return latest
 
@@ -393,7 +410,11 @@ class StewardJournal:
                     raise IdempotencyConflict("idempotency key has different transition facts")
                 connection.commit()
                 return existing
-            current = self._latest_state(events, card_id) if card_id else None
+            current = (
+                self._latest_state(events, mission_id, stage_id, card_id)
+                if card_id
+                else None
+            )
             if enforce_transition and card_id and not transition_allowed(current, state):
                 raise TransitionRejected(current, state)
             previous = events[-1].sha256 if events else ""
@@ -485,6 +506,15 @@ class StewardJournal:
                     "pr_number": data["pr_number"],
                     "base_sha": data["base_sha"],
                     "head_sha": data["head_sha"],
+                    **(
+                        {
+                            "base_branch": data["base_branch"],
+                            "head_branch": data["head_branch"],
+                        }
+                        if isinstance(data.get("base_branch"), str)
+                        and isinstance(data.get("head_branch"), str)
+                        else {}
+                    ),
                 }
         return None
 
@@ -500,17 +530,48 @@ class StewardJournal:
             if (mission_id is None or event.mission_id == mission_id)
             and (stage_id is None or event.stage_id == stage_id)
         ]
-        latest: dict[str, JournalEvent] = {}
+        latest: dict[tuple[str, str, str], JournalEvent] = {}
         for event in events:
             if event.card_id:
-                latest[event.card_id] = event
+                latest[(event.mission_id, event.stage_id, event.card_id)] = event
+        card_states: dict[str, str] = {}
+        card_occurrences: dict[str, list[tuple[str, str, str]]] = {}
+        for binding, event in latest.items():
+            card_occurrences.setdefault(binding[2], []).append(binding)
+        for binding, event in latest.items():
+            card_id = binding[2]
+            key = card_id if len(card_occurrences[card_id]) == 1 else ":".join(binding)
+            card_states[key] = event.state
         return {
             "schema_version": SCHEMA_VERSION,
             "event_count": len(events),
-            "card_states": {card: event.state for card, event in sorted(latest.items())},
+            "card_states": dict(sorted(card_states.items())),
             "active_cards": sorted(
-                card for card, event in latest.items() if event.state not in TERMINAL_STATES
+                {
+                    binding[2]
+                    for binding, event in latest.items()
+                    if event.state not in TERMINAL_STATES
+                }
             ),
+            "active_bindings": [
+                {
+                    "mission_id": mission,
+                    "stage_id": stage,
+                    "card_id": card,
+                    "state": event.state,
+                }
+                for (mission, stage, card), event in sorted(latest.items())
+                if event.state not in TERMINAL_STATES
+            ],
+            "bindings": [
+                {
+                    "mission_id": mission,
+                    "stage_id": stage,
+                    "card_id": card,
+                    "state": event.state,
+                }
+                for (mission, stage, card), event in sorted(latest.items())
+            ],
             "last_heartbeat": next(
                 (event.timestamp for event in reversed(events) if event.event == "HEARTBEAT"),
                 None,

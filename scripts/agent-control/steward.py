@@ -17,6 +17,7 @@ import subprocess
 from typing import Any, Callable, Mapping
 
 import mission_contract as contract
+import review_convergence
 import state_manager
 import steward_github
 from steward_journal import JournalError, StewardJournal
@@ -76,6 +77,43 @@ def _git_head(worktree: Path) -> str:
     if result.returncode != 0 or SHA40.fullmatch(head) is None:
         raise StewardError("worktree_head_invalid")
     return head
+
+
+def _git_repository_identity(repo_path: Path, repository: str) -> bool:
+    """Prove the checkout and its origin name before creating a worktree."""
+
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        remote = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if top.returncode != 0 or remote.returncode != 0:
+        return False
+    try:
+        if Path(top.stdout.strip()).resolve() != repo_path.resolve():
+            return False
+    except OSError:
+        return False
+    origin = remote.stdout.strip().removesuffix(".git").rstrip("/")
+    if ":" in origin and "/" not in origin.rsplit(":", 1)[0]:
+        origin = origin.rsplit(":", 1)[1]
+    else:
+        origin = origin.rsplit("/", 2)[-2] + "/" + origin.rsplit("/", 1)[-1]
+    return origin.casefold() == repository.casefold()
 
 
 def _git_changed_paths(worktree: Path, base_sha: str, head_sha: str) -> tuple[str, ...]:
@@ -290,6 +328,27 @@ class Steward:
             return ExecutionResult(card.card_id, "BLOCKED", latest.attempt, None, latest.detail)
         return None
 
+    def _review_attempt(self, mission: contract.MaintenanceMission, card: contract.WorkCard, head_sha: str) -> dict[str, Any]:
+        previous: dict[str, Any] | None = None
+        for event in reversed(self.journal.replay()):
+            if (
+                event.mission_id == mission.mission_id
+                and event.stage_id == card.stage_id
+                and event.card_id == card.card_id
+                and event.event in {"REVIEW_FAILED", "REVIEW_PASSED"}
+            ):
+                previous = dict(event.data)
+                break
+        try:
+            return review_convergence.derive_next_review_attempt(previous, head_sha)
+        except (TypeError, ValueError, KeyError):
+            return {
+                "allowed": False,
+                "deny_reason": "review_attempt_state_invalid",
+                "review_mode": "full",
+                "review_round": 1,
+            }
+
     def dispatch_card(
         self,
         mission: contract.MaintenanceMission,
@@ -314,6 +373,8 @@ class Steward:
             contract.validate_workcard(card, stage, mission)
         except contract.MissionContractError as exc:
             raise StewardError("mission_or_stage_or_card_invalid") from exc
+        if not _git_repository_identity(self.repo_path, self.repository):
+            raise StewardError("repository_identity_unavailable")
         existing = self._existing_result(
             card,
             self.journal.latest_for_card(
@@ -327,6 +388,12 @@ class Steward:
         )
         attempt = 1 if latest is None else latest.attempt + (1 if latest.state == "RETRYING" else 0)
         stage_facts = _stage_pr_facts(stage_pr)
+        if (
+            stage_facts is not None
+            and stage.integration_pr is not None
+            and stage_facts.pr_number != stage.integration_pr
+        ):
+            raise StewardError("stage_pr_number_mismatch")
         while attempt <= card.max_attempts:
             self._record(
                 event="CARD_QUEUED",
@@ -538,6 +605,13 @@ class Steward:
                             head_sha=observed_head,
                         )
                     try:
+                        review_attempt = self._review_attempt(
+                            mission, card, observed_head
+                        )
+                        if not review_attempt.get("allowed"):
+                            raise workers.WorkerError(
+                                str(review_attempt.get("deny_reason", "review_attempt_denied"))
+                            )
                         review = self.reviewer.review(context, outcome)
                         if not isinstance(review, workers.ReviewOutcome):
                             raise workers.WorkerError("review_adapter_return_invalid")
@@ -562,6 +636,64 @@ class Steward:
                             head_sha=observed_head,
                         )
                     if (
+                        review.review_round != review_attempt["review_round"]
+                        or review.review_mode != review_attempt["review_mode"]
+                    ):
+                        return self._failure(
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            reason="review_convergence_binding_mismatch",
+                            retryable=False,
+                            head_sha=observed_head,
+                        )
+                    try:
+                        reviewed_head = _git_head(worktree_path)
+                        reviewed_paths = _git_changed_paths(
+                            worktree_path, base_sha, reviewed_head
+                        )
+                        workers.validate_changed_paths(card, reviewed_paths)
+                        _git_worktree_clean(worktree_path)
+                    except workers.WorkerError as exc:
+                        return self._failure(
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            reason=str(exc)[:200],
+                            retryable=False,
+                            head_sha=observed_head,
+                        )
+                    except StewardError:
+                        self._record(
+                            event="REVIEW_OUTCOME_UNKNOWN",
+                            key=f"unknown:review-head:{card.card_id}:{attempt}",
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            state="OUTCOME_UNKNOWN",
+                            detail="review_head_unavailable_after_review",
+                        )
+                        return ExecutionResult(
+                            card.card_id,
+                            "OUTCOME_UNKNOWN",
+                            attempt,
+                            None,
+                            "review_head_unavailable_after_review",
+                        )
+                    if reviewed_head != observed_head or set(reviewed_paths) != set(actual_paths):
+                        return self._failure(
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            reason="reviewed_head_or_paths_changed",
+                            retryable=False,
+                            head_sha=reviewed_head,
+                        )
+                    if (
                         review.reviewed_base_sha != base_sha
                         or review.reviewed_range_sha256
                         != workers.review_range_digest(base_sha, observed_head)
@@ -576,6 +708,32 @@ class Steward:
                             head_sha=observed_head,
                         )
                     if review.status != "PASS":
+                        self._record(
+                            event="REVIEW_FAILED",
+                            key=f"review-failed:{card.card_id}:{attempt}:{observed_head}",
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            state="REVIEWING",
+                            detail="independent_review_not_passed",
+                            data={
+                                "head_sha": observed_head,
+                                "review_round": review.review_round,
+                                "review_mode": review.review_mode,
+                                "verdict": review.status,
+                                "open_blocker_ids": [
+                                    _digest(item)
+                                    for item in (review.blockers or (review.detail or "review_failed",))
+                                ],
+                                "finding_ledger_digest": _digest(
+                                    "|".join(review.blockers or (review.detail or "review_failed",))
+                                ),
+                                "autonomous_repairs_remaining": 1
+                                if review.review_round < 2
+                                else 0,
+                            },
+                        )
                         result = self._failure(
                             mission=mission,
                             stage=stage,
@@ -607,19 +765,56 @@ class Steward:
                             "review_round": review.review_round,
                             "review_mode": review.review_mode,
                             "review_receipt_sha256": review.review_receipt_sha256,
+                            "review_verdict": review.status,
+                            "autonomous_repairs_remaining": 0,
                         },
                     )
                     if stage_facts is None:
                         return ExecutionResult(card.card_id, "WAITING_FOR_PR", attempt, observed_head, "stage_pr_facts_required", review.reviewer_session_id)
                     try:
+                        live_stage_facts = _stage_pr_facts(
+                            self.github.fetch_stage_pr(
+                                self.repository, stage_facts.pr_number
+                            )
+                        )
+                        if live_stage_facts is None:
+                            raise steward_github.GitHubFactsError(
+                                "github_live_facts_missing"
+                            )
+                        if (
+                            stage.integration_pr is not None
+                            and live_stage_facts.pr_number != stage.integration_pr
+                        ):
+                            raise steward_github.GitHubFactsError(
+                                "stage_pr_number_mismatch"
+                            )
                         status = steward_github.reconcile_stage_pr(
-                            stage_facts,
+                            live_stage_facts,
                             repository=self.repository,
                             pr_number=stage_facts.pr_number,
                             expected_base_sha=base_sha,
                             expected_head_sha=observed_head,
                             expected_base_branch=stage.repository_identity.branch,
                             expected_head_branch=worktree_branch,
+                        )
+                    except steward_github.GitHubReadError as exc:
+                        self._record(
+                            event="STAGE_GATES_PENDING",
+                            key=f"github-read:{card.card_id}:{observed_head}",
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            state="REVIEWING",
+                            detail="github_facts_unavailable",
+                        )
+                        return ExecutionResult(
+                            card.card_id,
+                            "WAITING",
+                            attempt,
+                            observed_head,
+                            "github_facts_unavailable",
+                            review.reviewer_session_id,
                         )
                     except steward_github.GitHubFactsError as exc:
                         return self._failure(

@@ -108,14 +108,15 @@ class StewardService:
         projection = self.journal.projection(mission_id=self.mission_id)
         items = tuple(
             RecoveryItem(
-                card,
-                state,
+                binding["card_id"],
+                binding["state"],
                 "RECOVERY_REQUIRED" if state in {"RUNNING", "VERIFYING", "REVIEWING"} else "REBUILT",
                 "in_flight_work_requires_read_only_reconciliation"
                 if state in {"RUNNING", "VERIFYING", "REVIEWING"}
                 else "journal_projection_rebuilt",
             )
-            for card, state in sorted(projection["card_states"].items())
+            for binding in projection["bindings"]
+            for state in (binding["state"],)
         )
         return ReconciliationReport(_now(), items, projection)
 
@@ -128,7 +129,7 @@ class StewardService:
 
         projection = self.journal.projection(mission_id=self.mission_id)
         review_bound_heads = {
-            (event.card_id, event.data["reviewed_head_sha"])
+            (event.card_id, event.stage_id, event.data["reviewed_head_sha"])
             for event in self.journal.replay()
             if event.mission_id == self.mission_id
             and event.event == "REVIEW_PASSED"
@@ -138,13 +139,17 @@ class StewardService:
             and isinstance(event.data.get("reviewed_head_sha"), str)
         }
         items: list[RecoveryItem] = []
-        for card_id in projection["active_cards"]:
-            binding = stage_bindings.get(card_id)
+        for record in projection["active_bindings"]:
+            card_id = record["card_id"]
+            stage_id = record["stage_id"]
+            binding = stage_bindings.get(f"{stage_id}:{card_id}")
+            if not isinstance(binding, Mapping):
+                binding = stage_bindings.get(card_id)
             if not isinstance(binding, Mapping):
                 binding = self.journal.stage_binding_for_card(
-                    card_id, mission_id=self.mission_id
+                    card_id, mission_id=self.mission_id, stage_id=stage_id
                 )
-            state = projection["card_states"][card_id]
+            state = record["state"]
             if not isinstance(binding, Mapping):
                 items.append(
                     RecoveryItem(card_id, state, "BLOCKED", "stage_binding_missing")
@@ -162,10 +167,20 @@ class StewardService:
                     pr_number=pr_number,
                     expected_base_sha=base_sha,
                     expected_head_sha=head_sha,
+                    expected_base_branch=(
+                        binding.get("base_branch")
+                        if isinstance(binding.get("base_branch"), str)
+                        else None
+                    ),
+                    expected_head_branch=(
+                        binding.get("head_branch")
+                        if isinstance(binding.get("head_branch"), str)
+                        else None
+                    ),
                 )
                 if (
                     status.outcome in {"WAITING_FOR_MERGE", "COMPLETE"}
-                    and (card_id, head_sha) not in review_bound_heads
+                    and (card_id, stage_id, head_sha) not in review_bound_heads
                 ):
                     status = StagePRStatus(
                         "BLOCKED",
@@ -198,7 +213,7 @@ class StewardService:
                     event="STAGE_MERGED_OBSERVED",
                     idempotency_key=f"reconcile:merged:{card_id}:{status.head_sha}",
                     mission_id=self.mission_id,
-                    stage_id=f"stage:{card_id}",
+                    stage_id=stage_id,
                     card_id=card_id,
                     state="COMPLETE",
                     detail="live_pr_merged",
@@ -208,7 +223,7 @@ class StewardService:
                     event="STAGE_WAITING_FOR_MERGE",
                     idempotency_key=f"reconcile:waiting:{card_id}:{status.head_sha}",
                     mission_id=self.mission_id,
-                    stage_id=f"stage:{card_id}",
+                    stage_id=stage_id,
                     card_id=card_id,
                     state="WAITING_FOR_MERGE",
                     detail="reconciled_exact_head_ci_and_review_pass",
@@ -219,7 +234,7 @@ class StewardService:
                     event="RECONCILIATION_BLOCKED",
                     idempotency_key=f"reconcile:blocked:{card_id}:{status.reason}",
                     mission_id=self.mission_id,
-                    stage_id=f"stage:{card_id}",
+                    stage_id=stage_id,
                     card_id=card_id,
                     state="BLOCKED",
                     detail=status.reason,

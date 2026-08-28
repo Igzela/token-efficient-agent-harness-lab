@@ -64,6 +64,8 @@ class StagePRFacts:
             "head_sha",
             "ci_state",
             "review_state",
+            "base_branch",
+            "head_branch",
         }
         if set(value) != required:
             raise GitHubFactsError("github_facts_fields_invalid")

@@ -93,6 +93,8 @@ class StewardFaultTests(unittest.TestCase):
             "merged": merged,
             "base_sha": BASE,
             "head_sha": head,
+            "base_branch": "main",
+            "head_branch": "agent/steward-card",
             "ci_state": "PASS",
             "review_state": "PASS",
         }
@@ -148,6 +150,45 @@ class StewardFaultTests(unittest.TestCase):
         )
         report = service.recover()
         self.assertEqual([item.card_id for item in report.items], ["other"])
+
+    def test_journal_transition_isolated_by_stage(self):
+        for state, key in (
+            ("QUEUED", "queue:stage-one"),
+            ("RUNNING", "run:stage-one"),
+            ("VERIFYING", "verify:stage-one"),
+            ("REVIEWING", "review:stage-one"),
+            ("WAITING_FOR_MERGE", "waiting:stage-one"),
+            ("COMPLETE", "complete:stage-one"),
+        ):
+            self.append(state, key, card="same-card")
+        self.journal.append(
+            event="STAGE_TWO_QUEUE",
+            idempotency_key="queue:stage-two",
+            mission_id=MISSION,
+            stage_id="stage-2",
+            card_id="same-card",
+            attempt=1,
+            state="QUEUED",
+            detail="queued",
+        )
+        self.journal.append(
+            event="STAGE_TWO_RUN",
+            idempotency_key="run:stage-two",
+            mission_id=MISSION,
+            stage_id="stage-2",
+            card_id="same-card",
+            attempt=1,
+            state="RUNNING",
+            detail="running",
+        )
+        projection = self.journal.projection(mission_id=MISSION)
+        self.assertEqual(
+            projection["card_states"],
+            {
+                f"{MISSION}:stage-1:same-card": "COMPLETE",
+                f"{MISSION}:stage-2:same-card": "RUNNING",
+            },
+        )
 
     def test_reconciliation_requires_review_binding_for_exact_head(self):
         self.append("QUEUED", "queue:unreviewed", card="unreviewed")
@@ -349,6 +390,63 @@ class StewardFaultTests(unittest.TestCase):
         self.assertNotIn("OPENAI_API_KEY", environment)
         self.assertNotIn("PROVIDER_SECRET", environment)
         self.assertEqual(environment["PATH"], "/usr/bin")
+
+    def test_bounded_process_worker_produces_untrusted_wire_outcome(self):
+        context = workers.WorkerContext(
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id="card-1",
+            attempt=1,
+            model_tier="T1",
+            base_sha=BASE,
+            worktree=self.root,
+            allowed_paths=("docs/ARCHITECTURE_BOOK.md",),
+            steps=("bounded",),
+            focused_tests=("focused",),
+            negative_checks=("negative",),
+            expected_evidence=("receipt",),
+            environment=workers.child_environment({"PATH": "/usr/bin"}),
+        )
+        payload = json.dumps(
+            {
+                "schema_version": "steward_worker_outcome.v1",
+                "status": "PASS",
+                "session_id": "child-session",
+                "head_sha": BASE,
+                "changed_paths": [],
+                "detail": "no_change",
+            }
+        )
+        worker = workers.BoundedProcessWorker(
+            lambda _context: [sys.executable, "-c", f"print({payload!r})"],
+            timeout_seconds=5,
+        )
+        result = worker.run(context)
+        self.assertEqual(result.status, "PASS")
+        self.assertEqual(result.session_id, "child-session")
+
+    def test_bounded_process_worker_timeout_is_not_success(self):
+        context = workers.WorkerContext(
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id="card-1",
+            attempt=1,
+            model_tier="T1",
+            base_sha=BASE,
+            worktree=self.root,
+            allowed_paths=("docs/ARCHITECTURE_BOOK.md",),
+            steps=("bounded",),
+            focused_tests=("focused",),
+            negative_checks=("negative",),
+            expected_evidence=("receipt",),
+            environment=workers.child_environment({"PATH": "/usr/bin"}),
+        )
+        worker = workers.BoundedProcessWorker(
+            lambda _context: [sys.executable, "-c", "import time; time.sleep(2)"],
+            timeout_seconds=1,
+        )
+        result = worker.run(context)
+        self.assertEqual(result.status, "TIMEOUT")
 
     def test_path_lock_and_worktree_names_are_digest_bound(self):
         digest = hashlib.sha256(b"card:untrusted/../value").hexdigest()[:24]

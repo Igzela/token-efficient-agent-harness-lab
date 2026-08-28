@@ -155,6 +155,8 @@ def verify_worktree(
     repo_root = _git("rev-parse", "--show-toplevel", cwd=repo_path)
     if repo_root is None:
         return False
+    if pathlib.Path(repo_root).resolve() != pathlib.Path(repo_path).resolve():
+        return False
     record = _record_for_path(candidate, repo_path)
     if not record or record.get("branch") != f"refs/heads/{expected_branch}":
         return False

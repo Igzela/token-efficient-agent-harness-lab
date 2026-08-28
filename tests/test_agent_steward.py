@@ -103,7 +103,7 @@ class StewardExecutionTests(unittest.TestCase):
             repository=contract.CAMPAIGN_REPOSITORY,
             repo_path=self.root,
             journal=StewardJournal(self.root / "journal.sqlite3"),
-            github=steward_github.FakeGitHubReader(),
+            github=steward_github.FakeGitHubReader(dict(self.facts.__dict__)),
             worker=worker,
             reviewer=reviewer,
             verifier=verifier
@@ -119,17 +119,18 @@ class StewardExecutionTests(unittest.TestCase):
             else mock.patch.object(steward, "_git_head", side_effect=git_heads)
         )
         actual_paths = (
-            [(), (self.card.allowed_paths[0],)]
+            [(), (self.card.allowed_paths[0],), (self.card.allowed_paths[0],)]
             if git_heads is not None
-            else [(self.card.allowed_paths[0],)]
+            else [(self.card.allowed_paths[0],), (self.card.allowed_paths[0],)]
         )
         diff_patch = mock.patch.object(steward, "_git_changed_paths", side_effect=actual_paths)
         clean_patch = mock.patch.object(steward, "_git_worktree_clean")
+        identity_patch = mock.patch.object(steward, "_git_repository_identity", return_value=True)
         with mock.patch.object(
             worktree_manager,
             "create_steward_worktree",
             return_value=(str(self.root), "agent/steward-card", BASE, None),
-        ), head_patch, diff_patch, clean_patch:
+        ), head_patch, diff_patch, clean_patch, identity_patch:
             return service.dispatch_card(
                 self.mission,
                 self.stage,
@@ -182,7 +183,7 @@ class StewardExecutionTests(unittest.TestCase):
         result, _service = self.run_with_facts(
             workers.CallableWorker(run),
             workers.CallableReviewer(lambda _context, _outcome: review),
-            git_heads=[BASE, HEAD],
+            git_heads=[BASE, HEAD, HEAD],
         )
         self.assertEqual(result.status, "WAITING_FOR_MERGE")
         self.assertEqual(seen, [(1, "T1"), (2, "T2")])
@@ -226,6 +227,7 @@ class StewardExecutionTests(unittest.TestCase):
                 steward, "_git_changed_paths", return_value=("tests/test_mission_contract.py",)
             ),
             mock.patch.object(steward, "_git_worktree_clean"),
+            mock.patch.object(steward, "_git_repository_identity", return_value=True),
         ):
             result = instance.dispatch_card(
                 self.mission, self.stage, self.card, base_sha=BASE, stage_pr=self.facts
@@ -246,7 +248,7 @@ class StewardExecutionTests(unittest.TestCase):
             worktree_manager,
             "create_steward_worktree",
             return_value=(str(self.root), "agent/steward-card", BASE, None),
-        ):
+        ), mock.patch.object(steward, "_git_repository_identity", return_value=True):
             result = instance.dispatch_card(self.mission, self.stage, self.card, base_sha=BASE)
         self.assertEqual(result.status, "BLOCKED")
         self.assertEqual(result.reason, "provider_free_worker_not_configured")
