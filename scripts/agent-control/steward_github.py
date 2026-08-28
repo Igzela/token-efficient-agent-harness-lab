@@ -19,6 +19,7 @@ import ci_verifier
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 PR_STATES = frozenset({"OPEN", "CLOSED"})
 CHECK_STATES = frozenset({"PASS", "PENDING", "FAIL", "UNKNOWN"})
 
@@ -88,6 +89,15 @@ class StagePRFacts:
             raise GitHubFactsError("github_head_sha_invalid")
         if value["ci_state"] not in CHECK_STATES or value["review_state"] not in CHECK_STATES:
             raise GitHubFactsError("github_gate_state_invalid")
+        for field in ("base_branch", "head_branch"):
+            branch = value[field]
+            if (
+                not isinstance(branch, str)
+                or BRANCH.fullmatch(branch) is None
+                or ".." in branch
+                or branch.endswith("/")
+            ):
+                raise GitHubFactsError("github_branch_invalid")
         return cls(
             repository,
             number,

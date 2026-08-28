@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import argparse
 import os
+import re
 import time
 from typing import Any, Mapping
 
@@ -19,6 +20,8 @@ from steward_github import (
     reconcile_stage_pr,
 )
 from steward_journal import JournalError, StewardJournal
+import steward_workers
+import worktree_manager
 
 
 def _bounded_key(value: str) -> str:
@@ -29,6 +32,51 @@ def _bounded_key(value: str) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _review_binding(event: Any) -> tuple[str, str, str] | None:
+    """Return only a complete, canonical exact-head review binding."""
+
+    if getattr(event, "event", None) != "REVIEW_PASSED":
+        return None
+    data = getattr(event, "data", {})
+    required = (
+        "implementation_session_digest",
+        "reviewer_session_digest",
+        "base_sha",
+        "head_sha",
+        "reviewed_range_sha256",
+        "review_axes",
+        "review_round",
+        "review_mode",
+        "review_receipt_sha256",
+        "verdict",
+    )
+    if not all(key in data for key in required):
+        return None
+    base_sha = data["base_sha"]
+    head_sha = data["head_sha"]
+    if (
+        not isinstance(base_sha, str)
+        or not steward_workers.SHA40.fullmatch(base_sha)
+        or not isinstance(head_sha, str)
+        or not steward_workers.SHA40.fullmatch(head_sha)
+        or data["reviewed_range_sha256"]
+        != steward_workers.review_range_digest(base_sha, head_sha)
+        or not isinstance(data["review_axes"], list)
+        or set(data["review_axes"]) != {"standards", "spec"}
+        or type(data["review_round"]) is not int
+        or data["review_round"] not in {1, 2}
+        or data["review_mode"] not in {"full", "repair_verification"}
+        or not isinstance(data["review_receipt_sha256"], str)
+        or not steward_workers.SHA256.fullmatch(data["review_receipt_sha256"])
+        or data["verdict"] != "PASS"
+        or not isinstance(data["implementation_session_digest"], str)
+        or not isinstance(data["reviewer_session_digest"], str)
+        or data["implementation_session_digest"] == data["reviewer_session_digest"]
+    ):
+        return None
+    return base_sha, head_sha, data["reviewed_range_sha256"]
 
 
 @dataclass(frozen=True)
@@ -106,19 +154,44 @@ class StewardService:
         """
 
         projection = self.journal.projection(mission_id=self.mission_id)
-        items = tuple(
-            RecoveryItem(
-                binding["card_id"],
-                binding["state"],
-                "RECOVERY_REQUIRED" if state in {"RUNNING", "VERIFYING", "REVIEWING"} else "REBUILT",
-                "in_flight_work_requires_read_only_reconciliation"
-                if state in {"RUNNING", "VERIFYING", "REVIEWING"}
-                else "journal_projection_rebuilt",
+        events = self.journal.replay()
+        started: dict[tuple[str, str, str], Any] = {}
+        for event in events:
+            if event.mission_id == self.mission_id and event.event == "WORKER_STARTED":
+                started[(event.mission_id, event.stage_id, event.card_id)] = event
+        registered = mission_contract.validate_registered_campaign()
+        items: list[RecoveryItem] = []
+        for binding in projection["bindings"]:
+            state = binding["state"]
+            key = (binding["mission_id"], binding["stage_id"], binding["card_id"])
+            worker_event = started.get(key)
+            worker_data = worker_event.data if worker_event is not None else {}
+            expected_binding = worktree_manager.steward_binding_digest(
+                binding["mission_id"], binding["stage_id"], binding["card_id"], registered.repository_identity.base_sha
             )
-            for binding in projection["bindings"]
-            for state in (binding["state"],)
-        )
-        return ReconciliationReport(_now(), items, projection)
+            binding_valid = (
+                state not in {"RUNNING", "VERIFYING", "REVIEWING", "OUTCOME_UNKNOWN"}
+                or (
+                    isinstance(worker_data.get("base_sha"), str)
+                    and worker_data["base_sha"] == registered.repository_identity.base_sha
+                    and worker_data.get("worktree_binding_sha256") == expected_binding
+                    and isinstance(worker_data.get("branch_binding_sha256"), str)
+                    and re.fullmatch(r"[0-9a-f]{24}", worker_data["branch_binding_sha256"]) is not None
+                )
+            )
+            if not binding_valid:
+                items.append(
+                    RecoveryItem(binding["card_id"], state, "BLOCKED", "worker_binding_missing_or_invalid")
+                )
+            elif state in {"RUNNING", "VERIFYING", "REVIEWING"}:
+                items.append(
+                    RecoveryItem(binding["card_id"], state, "RECOVERY_REQUIRED", "in_flight_work_requires_read_only_reconciliation")
+                )
+            else:
+                items.append(
+                    RecoveryItem(binding["card_id"], state, "REBUILT", "journal_projection_rebuilt")
+                )
+        return ReconciliationReport(_now(), tuple(items), projection)
 
     def reconcile(
         self,
@@ -129,14 +202,10 @@ class StewardService:
 
         projection = self.journal.projection(mission_id=self.mission_id)
         review_bound_heads = {
-            (event.card_id, event.stage_id, event.data["reviewed_head_sha"])
+            (event.card_id, event.stage_id, binding[1])
             for event in self.journal.replay()
             if event.mission_id == self.mission_id
-            and event.event == "REVIEW_PASSED"
-            and isinstance(event.data.get("implementation_session_digest"), str)
-            and isinstance(event.data.get("reviewer_session_digest"), str)
-            and event.data["implementation_session_digest"] != event.data["reviewer_session_digest"]
-            and isinstance(event.data.get("reviewed_head_sha"), str)
+            and (binding := _review_binding(event)) is not None
         }
         items: list[RecoveryItem] = []
         for record in projection["active_bindings"]:
@@ -160,6 +229,10 @@ class StewardService:
                 pr_number = binding["pr_number"]
                 base_sha = binding["base_sha"]
                 head_sha = binding["head_sha"]
+                base_branch = binding.get("base_branch")
+                head_branch = binding.get("head_branch")
+                if not isinstance(base_branch, str) or not isinstance(head_branch, str):
+                    raise GitHubFactsError("stage_binding_branch_missing")
                 facts = self.github.fetch_stage_pr(repository, pr_number)
                 status = reconcile_stage_pr(
                     facts,
@@ -167,16 +240,8 @@ class StewardService:
                     pr_number=pr_number,
                     expected_base_sha=base_sha,
                     expected_head_sha=head_sha,
-                    expected_base_branch=(
-                        binding.get("base_branch")
-                        if isinstance(binding.get("base_branch"), str)
-                        else None
-                    ),
-                    expected_head_branch=(
-                        binding.get("head_branch")
-                        if isinstance(binding.get("head_branch"), str)
-                        else None
-                    ),
+                    expected_base_branch=base_branch,
+                    expected_head_branch=head_branch,
                 )
                 if (
                     status.outcome in {"WAITING_FOR_MERGE", "COMPLETE"}

@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 from typing import Any, Callable, Mapping, Protocol
 
 import local_verification
@@ -38,6 +39,39 @@ _CREDENTIAL_MARKERS = (
     "APIKEY",
     "CREDENTIAL",
     "AUTH",
+)
+_NETWORK_ENVIRONMENT_KEYS = frozenset(
+    {
+        "CODEX_HOME",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+    }
+)
+_SAFE_EXECUTABLES = frozenset(
+    {"python", "python3", "uv", "cargo", "bun", "node", "git"}
+)
+_GIT_FORBIDDEN_ARGUMENTS = frozenset(
+    {
+        "clone",
+        "fetch",
+        "merge",
+        "pull",
+        "push",
+        "remote",
+        "reset",
+        "clean",
+        "worktree",
+        "submodule",
+    }
 )
 
 
@@ -63,6 +97,13 @@ def child_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
     for key in environment:
         if any(marker in key.upper() for marker in _CREDENTIAL_MARKERS):
             raise WorkerError("credential_shaped_child_environment")
+    # Steward children are repository-maintenance workers, not provider or
+    # operator sessions.  Remove the reusable local configuration and egress
+    # selectors that the broader local-run owner may preserve for other lanes.
+    for key in _NETWORK_ENVIRONMENT_KEYS:
+        environment.pop(key, None)
+    environment["HOME"] = "/nonexistent"
+    environment["PATH"] = "/usr/bin:/bin"
     return environment
 
 
@@ -237,6 +278,8 @@ class ReviewOutcome:
             raise WorkerError("review_mode_invalid")
         if not SHA256.fullmatch(self.review_receipt_sha256):
             raise WorkerError("review_receipt_digest_invalid")
+        if self.review_receipt_sha256 != review_receipt_digest(self):
+            raise WorkerError("review_receipt_digest_mismatch")
 
     def to_wire(self) -> dict[str, Any]:
         return {
@@ -281,6 +324,16 @@ class ReviewOutcome:
         )
 
 
+def review_receipt_digest(outcome: ReviewOutcome) -> str:
+    """Seal every bounded ReviewOutcome field except its digest itself."""
+
+    payload = dict(outcome.to_wire())
+    payload["review_receipt_sha256"] = ""
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 class WorkerAdapter(Protocol):
     def run(self, context: WorkerContext) -> WorkerOutcome:
         """Perform one bounded repository-maintenance attempt."""
@@ -321,10 +374,20 @@ def _validate_command(command: object) -> list[str]:
         not isinstance(command, (list, tuple))
         or not command
         or len(command) > 32
-        or not all(isinstance(item, str) and item and len(item) <= 512 and "\x00" not in item for item in command)
+        or not all(isinstance(item, str) and item and len(item) <= 4096 and "\x00" not in item for item in command)
     ):
         raise WorkerError("worker_command_invalid")
-    return list(command)
+    argv = list(command)
+    executable = Path(argv[0]).name
+    if argv[0] != sys.executable and (
+        Path(argv[0]).is_absolute() or argv[0] not in _SAFE_EXECUTABLES
+    ):
+        raise WorkerError("worker_executable_not_allowlisted")
+    if executable == "git":
+        arguments = {item.casefold() for item in argv[1:]}
+        if arguments & _GIT_FORBIDDEN_ARGUMENTS:
+            raise WorkerError("worker_git_effect_forbidden")
+    return argv
 
 
 class BoundedProcessWorker:
@@ -599,6 +662,7 @@ __all__ = [
     "PathLockSet",
     "ProviderFreeWorker",
     "ReviewOutcome",
+    "review_receipt_digest",
     "ReviewerAdapter",
     "SAFE_STATUSES",
     "WorkerAdapter",

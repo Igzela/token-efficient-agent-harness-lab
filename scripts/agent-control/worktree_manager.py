@@ -107,6 +107,21 @@ def _is_steward_path(path: str | os.PathLike[str]) -> bool:
         return False
 
 
+def steward_binding_digest(
+    mission_id: str, stage_id: str, card_id: str, expected_sha: str
+) -> str:
+    """Return the full digest for one Mission/Stage/card/base worktree binding."""
+
+    if any(
+        not isinstance(value, str) or not value or "\x00" in value
+        for value in (mission_id, stage_id, card_id, expected_sha)
+    ):
+        raise ValueError("steward worktree binding is invalid")
+    return hashlib.sha256(
+        "\x00".join((mission_id, stage_id, card_id, expected_sha)).encode("utf-8")
+    ).hexdigest()
+
+
 def _worktree_records(repo_path: str | os.PathLike[str]) -> list[dict[str, str]] | None:
     output = _git("worktree", "list", "--porcelain", cwd=repo_path)
     if output is None:
@@ -276,6 +291,8 @@ def create_steward_worktree(
     repo_path: str,
     expected_sha: str,
     branch_name: str | None = None,
+    *,
+    binding_key: str | None = None,
 ) -> tuple[str, str, str, str | None] | None:
     """Create one exact-base registered worktree without pushing or merging.
 
@@ -287,7 +304,9 @@ def create_steward_worktree(
         return None
     if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
         return None
-    digest = hashlib.sha256(card_id.encode("utf-8")).hexdigest()[:24]
+    digest = hashlib.sha256(
+        (binding_key if binding_key is not None else card_id).encode("utf-8")
+    ).hexdigest()[:24]
     branch = branch_name or f"{STEWARD_BRANCH_PREFIX}{digest}"
     if branch != f"{STEWARD_BRANCH_PREFIX}{digest}":
         return None
@@ -324,7 +343,11 @@ def create_steward_worktree(
 
 
 def remove_steward_worktree(
-    card_id: str, repo_path: str, branch_name: str | None = None
+    card_id: str,
+    repo_path: str,
+    branch_name: str | None = None,
+    *,
+    binding_key: str | None = None,
 ) -> bool:
     """Remove only a verified, clean Steward worktree.
 
@@ -333,7 +356,9 @@ def remove_steward_worktree(
     """
     if not isinstance(card_id, str) or not card_id or len(card_id) > 128:
         return False
-    digest = hashlib.sha256(card_id.encode("utf-8")).hexdigest()[:24]
+    digest = hashlib.sha256(
+        (binding_key if binding_key is not None else card_id).encode("utf-8")
+    ).hexdigest()[:24]
     branch = branch_name or f"{STEWARD_BRANCH_PREFIX}{digest}"
     worktree_path = WORKTREE_BASE / f"{STEWARD_WORKTREE_PREFIX}{digest}"
     if not worktree_path.exists() and not worktree_path.is_symlink():

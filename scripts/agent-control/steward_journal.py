@@ -24,6 +24,7 @@ MAX_ID_CHARS = 128
 MAX_DETAIL_CHARS = 512
 MAX_EVENTS = 100_000
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 
@@ -236,7 +237,11 @@ def _validate_data(data: object | None) -> dict[str, Any]:
         ):
             raise JournalError("journal_data_key_credential_shaped")
         if isinstance(value, str):
-            if IDENTIFIER.fullmatch(value) is None and REPOSITORY.fullmatch(value) is None:
+            if (
+                IDENTIFIER.fullmatch(value) is None
+                and REPOSITORY.fullmatch(value) is None
+                and (BRANCH.fullmatch(value) is None or ".." in value or value.endswith("/"))
+            ):
                 raise JournalError("journal_data_value_invalid")
         elif isinstance(value, list):
             if len(value) > 16 or any(
@@ -500,21 +505,22 @@ class StewardJournal:
                 and re.fullmatch(r"[0-9a-f]{40}", data["base_sha"])
                 and isinstance(data.get("head_sha"), str)
                 and re.fullmatch(r"[0-9a-f]{40}", data["head_sha"])
+                and isinstance(data.get("base_branch"), str)
+                and BRANCH.fullmatch(data["base_branch"])
+                and ".." not in data["base_branch"]
+                and not data["base_branch"].endswith("/")
+                and isinstance(data.get("head_branch"), str)
+                and BRANCH.fullmatch(data["head_branch"])
+                and ".." not in data["head_branch"]
+                and not data["head_branch"].endswith("/")
             ):
                 return {
                     "repository": data["repository"],
                     "pr_number": data["pr_number"],
                     "base_sha": data["base_sha"],
                     "head_sha": data["head_sha"],
-                    **(
-                        {
-                            "base_branch": data["base_branch"],
-                            "head_branch": data["head_branch"],
-                        }
-                        if isinstance(data.get("base_branch"), str)
-                        and isinstance(data.get("head_branch"), str)
-                        else {}
-                    ),
+                    "base_branch": data["base_branch"],
+                    "head_branch": data["head_branch"],
                 }
         return None
 

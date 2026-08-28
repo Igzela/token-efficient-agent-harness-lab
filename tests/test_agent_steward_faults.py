@@ -64,7 +64,14 @@ class StewardFaultTests(unittest.TestCase):
             data={
                 "implementation_session_digest": "implementation-digest",
                 "reviewer_session_digest": "reviewer-digest",
-                "reviewed_head_sha": HEAD,
+                "base_sha": BASE,
+                "head_sha": HEAD,
+                "reviewed_range_sha256": workers.review_range_digest(BASE, HEAD),
+                "review_axes": ["standards", "spec"],
+                "review_round": 1,
+                "review_mode": "full",
+                "review_receipt_sha256": "c" * 64,
+                "verdict": "PASS",
             },
         )
         self.journal.append(
@@ -81,6 +88,8 @@ class StewardFaultTests(unittest.TestCase):
                 "pr_number": 7,
                 "base_sha": BASE,
                 "head_sha": HEAD,
+                "base_branch": "main",
+                "head_branch": "agent/steward-card",
             },
         )
 
@@ -108,8 +117,8 @@ class StewardFaultTests(unittest.TestCase):
             github=steward_github.FakeGitHubReader(),
         )
         report = service.recover()
-        self.assertEqual(report.items[0].outcome, "RECOVERY_REQUIRED")
-        self.assertEqual(report.items[0].reason, "in_flight_work_requires_read_only_reconciliation")
+        self.assertEqual(report.items[0].outcome, "BLOCKED")
+        self.assertEqual(report.items[0].reason, "worker_binding_missing_or_invalid")
         self.assertEqual(report.journal_projection["card_states"]["card-1"], "RUNNING")
 
     def test_service_rejects_unregistered_mission_identity(self):
@@ -205,14 +214,18 @@ class StewardFaultTests(unittest.TestCase):
                 "card-1": {
                     "repository": "Igzela/token-efficient-agent-harness-lab",
                     "pr_number": 7,
-                    "base_sha": BASE,
-                    "head_sha": HEAD,
-                },
+                "base_sha": BASE,
+                "head_sha": HEAD,
+                "base_branch": "main",
+                "head_branch": "agent/steward-card",
+            },
                 "unreviewed": {
                     "repository": "Igzela/token-efficient-agent-harness-lab",
                     "pr_number": 7,
                     "base_sha": BASE,
                     "head_sha": HEAD,
+                    "base_branch": "main",
+                    "head_branch": "agent/steward-card",
                 },
             }
         )
@@ -240,9 +253,11 @@ class StewardFaultTests(unittest.TestCase):
                 "card-1": {
                     "repository": "Igzela/token-efficient-agent-harness-lab",
                     "pr_number": 7,
-                    "base_sha": BASE,
-                    "head_sha": HEAD,
-                }
+                "base_sha": BASE,
+                "head_sha": HEAD,
+                "base_branch": "main",
+                "head_branch": "agent/steward-card",
+            }
             }
         )
         self.assertEqual(report.items[0].outcome, "COMPLETE")
@@ -258,9 +273,11 @@ class StewardFaultTests(unittest.TestCase):
                 "card-1": {
                     "repository": "Igzela/token-efficient-agent-harness-lab",
                     "pr_number": 7,
-                    "base_sha": BASE,
-                    "head_sha": HEAD,
-                }
+                "base_sha": BASE,
+                "head_sha": HEAD,
+                "base_branch": "main",
+                "head_branch": "agent/steward-card",
+            }
             }
         )
         self.assertEqual(report.items[0].outcome, "WAITING")
@@ -389,7 +406,16 @@ class StewardFaultTests(unittest.TestCase):
         self.assertNotIn("GITHUB_TOKEN", environment)
         self.assertNotIn("OPENAI_API_KEY", environment)
         self.assertNotIn("PROVIDER_SECRET", environment)
-        self.assertEqual(environment["PATH"], "/usr/bin")
+        self.assertEqual(environment["PATH"], "/usr/bin:/bin")
+        self.assertEqual(environment["HOME"], "/nonexistent")
+        for key in ("CODEX_HOME", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
+            self.assertNotIn(key, environment)
+
+    def test_bounded_command_policy_rejects_network_and_git_effects(self):
+        with self.assertRaisesRegex(workers.WorkerError, "executable_not_allowlisted"):
+            workers._validate_command(["gh", "pr", "merge", "7"])
+        with self.assertRaisesRegex(workers.WorkerError, "git_effect_forbidden"):
+            workers._validate_command(["git", "push", "origin", "HEAD"])
 
     def test_bounded_process_worker_produces_untrusted_wire_outcome(self):
         context = workers.WorkerContext(

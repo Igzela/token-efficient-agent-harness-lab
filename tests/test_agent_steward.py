@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 import hashlib
+import json
 import sys
 import tempfile
 import threading
@@ -27,6 +29,11 @@ BASE = contract.CAMPAIGN_BASE_SHA
 HEAD = "b" * 40
 
 
+class ExplodingWorker(workers.BoundedProcessWorker):
+    def run(self, context):
+        raise RuntimeError("worker stopped after mutation boundary")
+
+
 class StewardExecutionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -34,6 +41,12 @@ class StewardExecutionTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.mission = contract.campaign_mission()
         self.stage, self.card = self.make_stage_card()
+        binding = worktree_manager.steward_binding_digest(
+            self.mission.mission_id, self.stage.stage_id, self.card.card_id, BASE
+        )
+        self.mock_worktree_path = self.root / f"steward-{binding[:24]}"
+        self.mock_worktree_path.mkdir()
+        self.mock_worktree_branch = f"agent/steward-{binding[:24]}"
         self.facts = steward_github.StagePRFacts(
             contract.CAMPAIGN_REPOSITORY,
             42,
@@ -45,10 +58,25 @@ class StewardExecutionTests(unittest.TestCase):
             "PASS",
             "PASS",
             "main",
-            "agent/steward-card",
+            self.mock_worktree_branch,
         )
 
     def review(self, *, head=HEAD, reviewer="review-session", implementation="impl-session"):
+        receipt_payload = {
+            "schema_version": "steward_review_outcome.v1",
+            "status": "PASS",
+            "reviewer_session_id": reviewer,
+            "implementation_session_id": implementation,
+            "reviewed_head_sha": head,
+            "blockers": [],
+            "detail": "",
+            "reviewed_base_sha": BASE,
+            "reviewed_range_sha256": workers.review_range_digest(BASE, head),
+            "review_axes": ["standards", "spec"],
+            "review_round": 1,
+            "review_mode": "full",
+            "review_receipt_sha256": "",
+        }
         return workers.ReviewOutcome(
             "PASS",
             reviewer,
@@ -61,8 +89,28 @@ class StewardExecutionTests(unittest.TestCase):
             ("standards", "spec"),
             1,
             "full",
-            hashlib.sha256(b"review-receipt").hexdigest(),
+            hashlib.sha256(
+                json.dumps(
+                    receipt_payload, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest(),
         )
+
+    def process_worker(self, callback):
+        def command(context):
+            outcome = callback(context)
+            payload = json.dumps(outcome.to_wire())
+            return [sys.executable, "-c", f"print({payload!r})"]
+
+        return workers.BoundedProcessWorker(command, timeout_seconds=5)
+
+    def process_reviewer(self, callback):
+        def command(context, outcome):
+            review = callback(context, outcome)
+            payload = json.dumps(review.to_wire())
+            return [sys.executable, "-c", f"print({payload!r})"]
+
+        return workers.BoundedProcessReviewer(command, timeout_seconds=5)
 
     def make_stage_card(self, *, second: bool = False, shared_path: bool = False):
         path = "tests/test_mission_contract.py" if second else "docs/ARCHITECTURE_BOOK.md"
@@ -129,7 +177,9 @@ class StewardExecutionTests(unittest.TestCase):
         with mock.patch.object(
             worktree_manager,
             "create_steward_worktree",
-            return_value=(str(self.root), "agent/steward-card", BASE, None),
+            return_value=(
+                str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
+            ),
         ), head_patch, diff_patch, clean_patch, identity_patch:
             return service.dispatch_card(
                 self.mission,
@@ -143,8 +193,8 @@ class StewardExecutionTests(unittest.TestCase):
         implementation = workers.WorkerOutcome("PASS", "impl-session", HEAD, (self.card.allowed_paths[0],))
         review = self.review()
         result, service = self.run_with_facts(
-            workers.CallableWorker(lambda _context: implementation),
-            workers.CallableReviewer(lambda _context, _outcome: review),
+            self.process_worker(lambda _context: implementation),
+            self.process_reviewer(lambda _context, _outcome: review),
         )
         self.assertEqual(result.status, "WAITING_FOR_MERGE")
         self.assertEqual(result.pr_number, 42)
@@ -159,7 +209,7 @@ class StewardExecutionTests(unittest.TestCase):
             raise RuntimeError("worker stopped after mutation boundary")
 
         result, service = self.run_with_facts(
-            workers.CallableWorker(explode),
+            ExplodingWorker(lambda _context: []),
             None,
         )
         self.assertEqual(result.status, "OUTCOME_UNKNOWN")
@@ -181,8 +231,8 @@ class StewardExecutionTests(unittest.TestCase):
 
         review = self.review(implementation="impl-2")
         result, _service = self.run_with_facts(
-            workers.CallableWorker(run),
-            workers.CallableReviewer(lambda _context, _outcome: review),
+            self.process_worker(run),
+            self.process_reviewer(lambda _context, _outcome: review),
             git_heads=[BASE, HEAD, HEAD],
         )
         self.assertEqual(result.status, "WAITING_FOR_MERGE")
@@ -196,16 +246,46 @@ class StewardExecutionTests(unittest.TestCase):
                 "PASS", "review-session", "impl-session", HEAD, blockers=("open",)
             )
 
+    def test_review_receipt_must_seal_the_review_outcome(self):
+        review = self.review()
+        with self.assertRaisesRegex(workers.WorkerError, "receipt_digest_mismatch"):
+            workers.ReviewOutcome(
+                review.status,
+                review.reviewer_session_id,
+                review.implementation_session_id,
+                review.reviewed_head_sha,
+                review.blockers,
+                review.detail,
+                review.reviewed_base_sha,
+                review.reviewed_range_sha256,
+                review.review_axes,
+                review.review_round,
+                review.review_mode,
+                "d" * 64,
+            )
+
     def test_review_head_drift_blocks_exact_head_delivery(self):
         implementation = workers.WorkerOutcome("PASS", "impl-session", HEAD, ("docs/ARCHITECTURE_BOOK.md",))
         review = self.review(head="c" * 40)
         result, service = self.run_with_facts(
-            workers.CallableWorker(lambda _context: implementation),
-            workers.CallableReviewer(lambda _context, _outcome: review),
+            self.process_worker(lambda _context: implementation),
+            self.process_reviewer(lambda _context, _outcome: review),
         )
         self.assertEqual(result.status, "BLOCKED")
         self.assertEqual(result.reason, "review_head_binding_mismatch")
         self.assertEqual(service.journal.projection()["card_states"]["card-1"], "BLOCKED")
+
+    def test_stage_exact_head_is_checked_against_live_stage_pr(self):
+        self.stage = replace(self.stage, integration_pr=42, exact_head="c" * 40)
+        implementation = workers.WorkerOutcome(
+            "PASS", "impl-session", HEAD, (self.card.allowed_paths[0],)
+        )
+        result, _service = self.run_with_facts(
+            self.process_worker(lambda _context: implementation),
+            self.process_reviewer(lambda _context, _outcome: self.review()),
+        )
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertEqual(result.reason, "stage_exact_head_mismatch")
 
     def test_observed_diff_is_checked_against_card_scope(self):
         implementation = workers.WorkerOutcome(
@@ -213,14 +293,16 @@ class StewardExecutionTests(unittest.TestCase):
         )
         review = self.review()
         instance = self.make_steward(
-            workers.CallableWorker(lambda _context: implementation),
-            workers.CallableReviewer(lambda _context, _outcome: review),
+            self.process_worker(lambda _context: implementation),
+            self.process_reviewer(lambda _context, _outcome: review),
         )
         with (
             mock.patch.object(
                 worktree_manager,
                 "create_steward_worktree",
-                return_value=(str(self.root), "agent/steward-card", BASE, None),
+                return_value=(
+                    str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
+                ),
             ),
             mock.patch.object(steward, "_git_head", return_value=HEAD),
             mock.patch.object(
@@ -247,7 +329,9 @@ class StewardExecutionTests(unittest.TestCase):
         with mock.patch.object(
             worktree_manager,
             "create_steward_worktree",
-            return_value=(str(self.root), "agent/steward-card", BASE, None),
+            return_value=(
+                str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
+            ),
         ), mock.patch.object(steward, "_git_repository_identity", return_value=True):
             result = instance.dispatch_card(self.mission, self.stage, self.card, base_sha=BASE)
         self.assertEqual(result.status, "BLOCKED")

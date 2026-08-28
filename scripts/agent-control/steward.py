@@ -227,6 +227,14 @@ class Steward:
             raise StewardError("repository_invalid")
         if max_concurrency != MAX_CONCURRENCY:
             raise StewardError("steward_concurrency_must_be_two")
+        if worker is not None and not isinstance(
+            worker, (workers.BoundedProcessWorker, workers.ProviderFreeWorker)
+        ):
+            raise StewardError("worker_adapter_must_be_bounded_process")
+        if reviewer is not None and not isinstance(
+            reviewer, workers.BoundedProcessReviewer
+        ):
+            raise StewardError("reviewer_adapter_must_be_bounded_process")
         self.repository = repository
         self.repo_path = Path(repo_path).resolve()
         self.journal = journal
@@ -421,7 +429,12 @@ class Steward:
                     self.lock_dir, card.path_locks
                 ):
                     created = worktree_manager.create_steward_worktree(
-                        card.card_id, str(self.repo_path), base_sha
+                        card.card_id,
+                        str(self.repo_path),
+                        base_sha,
+                        binding_key="\x00".join(
+                            (mission.mission_id, stage.stage_id, card.card_id, base_sha)
+                        ),
                     )
                     if not created:
                         result = self._failure(
@@ -438,6 +451,16 @@ class Steward:
                         return result
                     worktree_path = Path(created[0])
                     worktree_branch = created[1]
+                    worktree_binding_sha256 = worktree_manager.steward_binding_digest(
+                        mission.mission_id, stage.stage_id, card.card_id, base_sha
+                    )
+                    expected_worktree_suffix = worktree_binding_sha256[:24]
+                    if (
+                        worktree_path.name != f"steward-{expected_worktree_suffix}"
+                        or worktree_branch != f"agent/steward-{expected_worktree_suffix}"
+                        or created[2] != base_sha
+                    ):
+                        raise StewardError("worktree_binding_mismatch")
                     self._record(
                         event="WORKER_STARTED",
                         key=f"start:{card.card_id}:{attempt}:{base_sha}",
@@ -447,6 +470,11 @@ class Steward:
                         attempt=attempt,
                         state="RUNNING",
                         detail="isolated_worktree_bound",
+                        data={
+                            "base_sha": base_sha,
+                            "worktree_binding_sha256": worktree_binding_sha256,
+                            "branch_binding_sha256": _digest(worktree_branch),
+                        },
                     )
                     context = workers.WorkerContext(
                         mission_id=mission.mission_id,
@@ -770,13 +798,14 @@ class Steward:
                         data={
                             "implementation_session_digest": _digest(outcome.session_id),
                             "reviewer_session_digest": _digest(review.reviewer_session_id),
-                            "reviewed_head_sha": observed_head,
-                            "reviewed_base_sha": base_sha,
+                            "base_sha": base_sha,
+                            "head_sha": observed_head,
                             "reviewed_range_sha256": review.reviewed_range_sha256,
+                            "review_axes": list(review.review_axes),
                             "review_round": review.review_round,
                             "review_mode": review.review_mode,
                             "review_receipt_sha256": review.review_receipt_sha256,
-                            "review_verdict": review.status,
+                            "verdict": review.status,
                             "autonomous_repairs_remaining": 0,
                         },
                     )
@@ -798,6 +827,13 @@ class Steward:
                         ):
                             raise steward_github.GitHubFactsError(
                                 "stage_pr_number_mismatch"
+                            )
+                        if (
+                            stage.exact_head is not None
+                            and live_stage_facts.head_sha != stage.exact_head
+                        ):
+                            raise steward_github.GitHubFactsError(
+                                "stage_exact_head_mismatch"
                             )
                         status = steward_github.reconcile_stage_pr(
                             live_stage_facts,
