@@ -24,7 +24,7 @@ import worktree_manager  # noqa: E402
 
 
 MISSION = contract.CAMPAIGN_MISSION_ID
-BASE = "a" * 40
+BASE = contract.CAMPAIGN_BASE_SHA
 HEAD = "b" * 40
 
 
@@ -52,6 +52,23 @@ class StewardFaultTests(unittest.TestCase):
         self.append("RUNNING", f"run:{card}", card=card)
         self.append("VERIFYING", f"verify:{card}", card=card)
         self.append("REVIEWING", f"review:{card}", card=card)
+        receipt_payload = {
+            "schema_version": "steward_review_outcome.v1",
+            "status": "PASS",
+            "reviewer_session_id": "reviewer-session",
+            "implementation_session_id": "implementation-session",
+            "reviewed_head_sha": HEAD,
+            "blockers": [],
+            "reviewed_base_sha": BASE,
+            "reviewed_range_sha256": workers.review_range_digest(BASE, HEAD),
+            "review_axes": ["standards", "spec"],
+            "review_round": 1,
+            "review_mode": "full",
+            "review_receipt_sha256": "",
+        }
+        receipt_sha = hashlib.sha256(
+            json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
         self.journal.append(
             event="REVIEW_PASSED",
             idempotency_key=f"review-pass:{card}",
@@ -62,15 +79,15 @@ class StewardFaultTests(unittest.TestCase):
             state="REVIEWING",
             detail="independent_review_passed",
             data={
-                "implementation_session_digest": "implementation-digest",
-                "reviewer_session_digest": "reviewer-digest",
+                "implementation_session_id": "implementation-session",
+                "reviewer_session_id": "reviewer-session",
                 "base_sha": BASE,
                 "head_sha": HEAD,
                 "reviewed_range_sha256": workers.review_range_digest(BASE, HEAD),
                 "review_axes": ["standards", "spec"],
                 "review_round": 1,
                 "review_mode": "full",
-                "review_receipt_sha256": "c" * 64,
+                "review_receipt_sha256": receipt_sha,
                 "verdict": "PASS",
             },
         )
@@ -140,6 +157,25 @@ class StewardFaultTests(unittest.TestCase):
         self.assertEqual(self.journal.projection()["card_states"]["card-1"], "WAITING_FOR_MERGE")
         self.assertEqual(reader.reads, [("Igzela/token-efficient-agent-harness-lab", 7)])
 
+    def test_reconciliation_ignores_caller_binding_projection(self):
+        self.make_waiting_journal()
+        reader = steward_github.FakeGitHubReader(self.facts())
+        service = StewardService(mission_id=MISSION, journal=self.journal, github=reader)
+        report = service.reconcile(
+            stage_bindings={
+                "card-1": {
+                    "repository": "attacker/redirected",
+                    "pr_number": 999,
+                    "base_sha": "d" * 40,
+                    "head_sha": "e" * 40,
+                    "base_branch": "main",
+                    "head_branch": "agent/redirected",
+                }
+            }
+        )
+        self.assertEqual(report.items[0].outcome, "WAITING_FOR_MERGE")
+        self.assertEqual(reader.reads, [("Igzela/token-efficient-agent-harness-lab", 7)])
+
     def test_reconciliation_ignores_other_mission_cards(self):
         self.append("QUEUED", "queue:other", card="other")
         self.journal.append(
@@ -204,6 +240,24 @@ class StewardFaultTests(unittest.TestCase):
         self.append("RUNNING", "run:unreviewed", card="unreviewed")
         self.append("VERIFYING", "verify:unreviewed", card="unreviewed")
         self.append("REVIEWING", "review:unreviewed", card="unreviewed")
+        self.journal.append(
+            event="STAGE_PR_BOUND",
+            idempotency_key="stage-bind:unreviewed",
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id="unreviewed",
+            attempt=1,
+            state="REVIEWING",
+            detail="stage_pr_binding_observed",
+            data={
+                "repository": "Igzela/token-efficient-agent-harness-lab",
+                "pr_number": 7,
+                "base_sha": BASE,
+                "head_sha": HEAD,
+                "base_branch": "main",
+                "head_branch": "agent/steward-card",
+            },
+        )
         service = StewardService(
             mission_id=MISSION,
             journal=self.journal,
@@ -444,7 +498,7 @@ class StewardFaultTests(unittest.TestCase):
             }
         )
         worker = workers.BoundedProcessWorker(
-            lambda _context: [sys.executable, "-c", f"print({payload!r})"],
+            lambda _context: ["/usr/bin/python3", "-c", f"print({payload!r})"],
             timeout_seconds=5,
         )
         result = worker.run(context)
@@ -468,7 +522,7 @@ class StewardFaultTests(unittest.TestCase):
             environment=workers.child_environment({"PATH": "/usr/bin"}),
         )
         worker = workers.BoundedProcessWorker(
-            lambda _context: [sys.executable, "-c", "import time; time.sleep(2)"],
+            lambda _context: ["/usr/bin/python3", "-c", "import time; time.sleep(2)"],
             timeout_seconds=1,
         )
         result = worker.run(context)

@@ -197,6 +197,27 @@ def _journal_detail(value: str) -> str:
     return f"reason_{_digest(str(value))}"
 
 
+def _journal_key(
+    kind: str,
+    mission: contract.MaintenanceMission,
+    stage: contract.Stage,
+    card: contract.WorkCard,
+    *parts: object,
+) -> str:
+    """Bind every Steward key to the full Mission/Stage/card identity."""
+
+    raw = ":".join(
+        (
+            kind,
+            mission.mission_id,
+            stage.stage_id,
+            card.card_id,
+            *(str(part) for part in parts),
+        )
+    )
+    return raw if len(raw) <= 128 else f"{kind}:{_digest(raw)}"
+
+
 def _stage_pr_facts(
     value: steward_github.StagePRFacts | dict[str, Any] | None,
 ) -> steward_github.StagePRFacts | None:
@@ -253,6 +274,7 @@ class Steward:
                 mission_id=mission.mission_id,
                 journal=self.journal,
                 github=self.github,
+                repo_path=self.repo_path,
             )
             self.mission_id = mission.mission_id
         return self.service
@@ -311,7 +333,7 @@ class Steward:
         if retryable and attempt < card.max_attempts:
             self._record(
                 event="ATTEMPT_RETRY_SCHEDULED",
-                key=f"retry:{card.card_id}:{attempt}:{_digest(safe_reason)}",
+                key=_journal_key("retry", mission, stage, card, attempt, _digest(safe_reason)),
                 mission=mission,
                 stage=stage,
                 card=card,
@@ -322,7 +344,7 @@ class Steward:
             return ExecutionResult(card.card_id, "RETRY_SCHEDULED", attempt, head_sha, safe_reason)
         self._record(
             event="CARD_BLOCKED",
-            key=f"blocked:{card.card_id}:{attempt}:{_digest(safe_reason)}",
+            key=_journal_key("blocked", mission, stage, card, attempt, _digest(safe_reason)),
             mission=mission,
             stage=stage,
             card=card,
@@ -416,7 +438,7 @@ class Steward:
         while attempt <= card.max_attempts:
             self._record(
                 event="CARD_QUEUED",
-                key=f"queue:{card.card_id}:{attempt}:{base_sha}",
+                key=_journal_key("queue", mission, stage, card, attempt, base_sha),
                 mission=mission,
                 stage=stage,
                 card=card,
@@ -454,16 +476,20 @@ class Steward:
                     worktree_binding_sha256 = worktree_manager.steward_binding_digest(
                         mission.mission_id, stage.stage_id, card.card_id, base_sha
                     )
-                    expected_worktree_suffix = worktree_binding_sha256[:24]
+                    expected_worktree_path, expected_worktree_branch = (
+                        worktree_manager.steward_worktree_location(
+                            mission.mission_id, stage.stage_id, card.card_id, base_sha
+                        )
+                    )
                     if (
-                        worktree_path.name != f"steward-{expected_worktree_suffix}"
-                        or worktree_branch != f"agent/steward-{expected_worktree_suffix}"
+                        worktree_path.name != expected_worktree_path.name
+                        or worktree_branch != expected_worktree_branch
                         or created[2] != base_sha
                     ):
                         raise StewardError("worktree_binding_mismatch")
                     self._record(
                         event="WORKER_STARTED",
-                        key=f"start:{card.card_id}:{attempt}:{base_sha}",
+                        key=_journal_key("start", mission, stage, card, attempt, base_sha),
                         mission=mission,
                         stage=stage,
                         card=card,
@@ -473,7 +499,7 @@ class Steward:
                         data={
                             "base_sha": base_sha,
                             "worktree_binding_sha256": worktree_binding_sha256,
-                            "branch_binding_sha256": _digest(worktree_branch),
+                            "branch": worktree_branch,
                         },
                     )
                     context = workers.WorkerContext(
@@ -505,7 +531,7 @@ class Steward:
                     except Exception:
                         self._record(
                             event="WORKER_OUTCOME_UNKNOWN",
-                            key=f"unknown:worker:{card.card_id}:{attempt}",
+                            key=_journal_key("unknown-worker", mission, stage, card, attempt),
                             mission=mission,
                             stage=stage,
                             card=card,
@@ -534,7 +560,7 @@ class Steward:
                     except StewardError:
                         self._record(
                             event="WORKER_OUTCOME_UNKNOWN",
-                            key=f"unknown:head:{card.card_id}:{attempt}",
+                            key=_journal_key("unknown-head", mission, stage, card, attempt),
                             mission=mission,
                             stage=stage,
                             card=card,
@@ -547,7 +573,7 @@ class Steward:
                         if outcome.status == "OUTCOME_UNKNOWN":
                             self._record(
                                 event="WORKER_OUTCOME_UNKNOWN",
-                                key=f"unknown:reported:{card.card_id}:{attempt}",
+                                key=_journal_key("unknown-reported", mission, stage, card, attempt),
                                 mission=mission,
                                 stage=stage,
                                 card=card,
@@ -597,7 +623,7 @@ class Steward:
                         )
                     self._record(
                         event="FOCUSED_CHECKS_STARTED",
-                        key=f"verify:{card.card_id}:{attempt}:{observed_head}",
+                        key=_journal_key("verify", mission, stage, card, attempt, observed_head),
                         mission=mission,
                         stage=stage,
                         card=card,
@@ -624,7 +650,7 @@ class Steward:
                         return result
                     self._record(
                         event="FOCUSED_CHECKS_PASSED",
-                        key=f"checks-passed:{card.card_id}:{attempt}:{observed_head}",
+                        key=_journal_key("checks-passed", mission, stage, card, attempt, observed_head),
                         mission=mission,
                         stage=stage,
                         card=card,
@@ -707,7 +733,7 @@ class Steward:
                     except StewardError:
                         self._record(
                             event="REVIEW_OUTCOME_UNKNOWN",
-                            key=f"unknown:review-head:{card.card_id}:{attempt}",
+                            key=_journal_key("unknown-review-head", mission, stage, card, attempt),
                             mission=mission,
                             stage=stage,
                             card=card,
@@ -732,10 +758,23 @@ class Steward:
                             retryable=False,
                             head_sha=reviewed_head,
                         )
+                    try:
+                        expected_review_range = workers.review_range_digest(
+                            base_sha, observed_head, worktree=worktree_path
+                        )
+                    except workers.WorkerError:
+                        return self._failure(
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            reason="review_range_unavailable",
+                            retryable=False,
+                            head_sha=observed_head,
+                        )
                     if (
                         review.reviewed_base_sha != base_sha
-                        or review.reviewed_range_sha256
-                        != workers.review_range_digest(base_sha, observed_head)
+                        or review.reviewed_range_sha256 != expected_review_range
                     ):
                         return self._failure(
                             mission=mission,
@@ -749,7 +788,7 @@ class Steward:
                     if review.status != "PASS":
                         self._record(
                             event="REVIEW_FAILED",
-                            key=f"review-failed:{card.card_id}:{attempt}:{observed_head}",
+                            key=_journal_key("review-failed", mission, stage, card, attempt, observed_head),
                             mission=mission,
                             stage=stage,
                             card=card,
@@ -788,7 +827,10 @@ class Steward:
                         return result
                     self._record(
                         event="REVIEW_PASSED",
-                        key=f"review:{card.card_id}:{attempt}:{observed_head}:{_digest(review.reviewer_session_id)}",
+                        key=_journal_key(
+                            "review", mission, stage, card, attempt, observed_head,
+                            _digest(review.reviewer_session_id),
+                        ),
                         mission=mission,
                         stage=stage,
                         card=card,
@@ -796,8 +838,8 @@ class Steward:
                         state="REVIEWING",
                         detail="independent_review_passed",
                         data={
-                            "implementation_session_digest": _digest(outcome.session_id),
-                            "reviewer_session_digest": _digest(review.reviewer_session_id),
+                            "implementation_session_id": outcome.session_id,
+                            "reviewer_session_id": review.reviewer_session_id,
                             "base_sha": base_sha,
                             "head_sha": observed_head,
                             "reviewed_range_sha256": review.reviewed_range_sha256,
@@ -847,7 +889,7 @@ class Steward:
                     except steward_github.GitHubReadError as exc:
                         self._record(
                             event="STAGE_GATES_PENDING",
-                            key=f"github-read:{card.card_id}:{observed_head}",
+                            key=_journal_key("github-read", mission, stage, card, observed_head),
                             mission=mission,
                             stage=stage,
                             card=card,
@@ -875,7 +917,9 @@ class Steward:
                         )
                     self._record(
                         event="STAGE_PR_BOUND",
-                        key=f"stage-bind:{card.card_id}:{status.pr_number}:{observed_head}",
+                        key=_journal_key(
+                            "stage-bind", mission, stage, card, status.pr_number, observed_head
+                        ),
                         mission=mission,
                         stage=stage,
                         card=card,
@@ -895,7 +939,9 @@ class Steward:
                     if status.outcome == "WAITING_FOR_MERGE":
                         self._record(
                             event="STAGE_WAITING_FOR_MERGE",
-                            key=f"waiting:{card.card_id}:{observed_head}:{status.pr_number}",
+                            key=_journal_key(
+                                "waiting", mission, stage, card, observed_head, status.pr_number
+                            ),
                             mission=mission,
                             stage=stage,
                             card=card,
@@ -908,7 +954,9 @@ class Steward:
                     if status.outcome == "COMPLETE":
                         self._record(
                             event="STAGE_MERGED_OBSERVED",
-                            key=f"complete:{card.card_id}:{observed_head}:{status.pr_number}",
+                            key=_journal_key(
+                                "complete", mission, stage, card, observed_head, status.pr_number
+                            ),
                             mission=mission,
                             stage=stage,
                             card=card,
@@ -921,7 +969,9 @@ class Steward:
                     if status.outcome == "WAITING":
                         self._record(
                             event="STAGE_GATES_PENDING",
-                            key=f"gates:{card.card_id}:{observed_head}:{_digest(status.reason)}",
+                        key=_journal_key(
+                            "gates", mission, stage, card, observed_head, _digest(status.reason)
+                        ),
                             mission=mission,
                             stage=stage,
                             card=card,

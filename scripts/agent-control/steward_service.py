@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import argparse
 import os
-import re
+from pathlib import Path
 import time
 from typing import Any, Mapping
 
@@ -30,19 +30,30 @@ def _bounded_key(value: str) -> str:
     return value
 
 
+def _reconcile_key(kind: str, mission_id: str, stage_id: str, card_id: str, *parts: object) -> str:
+    """Bind reconciliation idempotency to the complete card identity."""
+
+    value = ":".join(("reconcile", kind, mission_id, stage_id, card_id, *(str(part) for part in parts)))
+    if len(value) > 128:
+        raise ValueError("reconciliation idempotency key is too long")
+    return value
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _review_binding(event: Any) -> tuple[str, str, str] | None:
+def _review_binding(
+    event: Any, *, worktree: Path | None = None
+) -> tuple[str, str, str] | None:
     """Return only a complete, canonical exact-head review binding."""
 
     if getattr(event, "event", None) != "REVIEW_PASSED":
         return None
     data = getattr(event, "data", {})
     required = (
-        "implementation_session_digest",
-        "reviewer_session_digest",
+        "implementation_session_id",
+        "reviewer_session_id",
         "base_sha",
         "head_sha",
         "reviewed_range_sha256",
@@ -56,13 +67,18 @@ def _review_binding(event: Any) -> tuple[str, str, str] | None:
         return None
     base_sha = data["base_sha"]
     head_sha = data["head_sha"]
+    try:
+        expected_range = steward_workers.review_range_digest(
+            base_sha, head_sha, worktree=worktree
+        )
+    except (TypeError, ValueError, steward_workers.WorkerError):
+        return None
     if (
         not isinstance(base_sha, str)
         or not steward_workers.SHA40.fullmatch(base_sha)
         or not isinstance(head_sha, str)
         or not steward_workers.SHA40.fullmatch(head_sha)
-        or data["reviewed_range_sha256"]
-        != steward_workers.review_range_digest(base_sha, head_sha)
+        or data["reviewed_range_sha256"] != expected_range
         or not isinstance(data["review_axes"], list)
         or set(data["review_axes"]) != {"standards", "spec"}
         or type(data["review_round"]) is not int
@@ -71,10 +87,26 @@ def _review_binding(event: Any) -> tuple[str, str, str] | None:
         or not isinstance(data["review_receipt_sha256"], str)
         or not steward_workers.SHA256.fullmatch(data["review_receipt_sha256"])
         or data["verdict"] != "PASS"
-        or not isinstance(data["implementation_session_digest"], str)
-        or not isinstance(data["reviewer_session_digest"], str)
-        or data["implementation_session_digest"] == data["reviewer_session_digest"]
     ):
+        return None
+    try:
+        review = steward_workers.ReviewOutcome(
+            "PASS",
+            data["reviewer_session_id"],
+            data["implementation_session_id"],
+            head_sha,
+            (),
+            "",
+            base_sha,
+            data["reviewed_range_sha256"],
+            tuple(data["review_axes"]),
+            data["review_round"],
+            data["review_mode"],
+            data["review_receipt_sha256"],
+        )
+    except (TypeError, ValueError, steward_workers.WorkerError):
+        return None
+    if review.review_receipt_sha256 != steward_workers.review_receipt_digest(review):
         return None
     return base_sha, head_sha, data["reviewed_range_sha256"]
 
@@ -119,6 +151,7 @@ class StewardService:
         mission_id: str,
         journal: StewardJournal,
         github: ReadOnlyGitHub,
+        repo_path: str | os.PathLike[str] | None = None,
     ):
         try:
             registered = mission_contract.validate_registered_campaign()
@@ -129,6 +162,7 @@ class StewardService:
         self.mission_id = mission_id
         self.journal = journal
         self.github = github
+        self.repo_path = Path(repo_path).resolve() if repo_path is not None else None
 
     def heartbeat(self, *, tick_id: str | None = None) -> dict[str, Any]:
         """Record one idempotent liveness fact without changing work state."""
@@ -175,10 +209,29 @@ class StewardService:
                     isinstance(worker_data.get("base_sha"), str)
                     and worker_data["base_sha"] == registered.repository_identity.base_sha
                     and worker_data.get("worktree_binding_sha256") == expected_binding
-                    and isinstance(worker_data.get("branch_binding_sha256"), str)
-                    and re.fullmatch(r"[0-9a-f]{24}", worker_data["branch_binding_sha256"]) is not None
+                    and isinstance(worker_data.get("branch"), str)
                 )
             )
+            if binding_valid and state in {"RUNNING", "VERIFYING", "REVIEWING", "OUTCOME_UNKNOWN"}:
+                try:
+                    expected_path, expected_branch = worktree_manager.steward_worktree_location(
+                        binding["mission_id"],
+                        binding["stage_id"],
+                        binding["card_id"],
+                        registered.repository_identity.base_sha,
+                    )
+                    binding_valid = (
+                        worker_data["branch"] == expected_branch
+                        and self.repo_path is not None
+                        and worktree_manager.verify_worktree(
+                            expected_path,
+                            expected_branch,
+                            self.repo_path,
+                            registered.repository_identity.base_sha,
+                        )
+                    )
+                except (OSError, ValueError, TypeError):
+                    binding_valid = False
             if not binding_valid:
                 items.append(
                     RecoveryItem(binding["card_id"], state, "BLOCKED", "worker_binding_missing_or_invalid")
@@ -205,19 +258,18 @@ class StewardService:
             (event.card_id, event.stage_id, binding[1])
             for event in self.journal.replay()
             if event.mission_id == self.mission_id
-            and (binding := _review_binding(event)) is not None
+            and (binding := _review_binding(event, worktree=self.repo_path)) is not None
         }
         items: list[RecoveryItem] = []
         for record in projection["active_bindings"]:
             card_id = record["card_id"]
             stage_id = record["stage_id"]
-            binding = stage_bindings.get(f"{stage_id}:{card_id}")
-            if not isinstance(binding, Mapping):
-                binding = stage_bindings.get(card_id)
-            if not isinstance(binding, Mapping):
-                binding = self.journal.stage_binding_for_card(
-                    card_id, mission_id=self.mission_id, stage_id=stage_id
-                )
+            # Recovery accepts only the append-only binding recorded by the
+            # executor.  Caller-provided projections cannot redirect a card
+            # to another repository, base, branch, or PR.
+            binding = self.journal.stage_binding_for_card(
+                card_id, mission_id=self.mission_id, stage_id=stage_id
+            )
             state = record["state"]
             if not isinstance(binding, Mapping):
                 items.append(
@@ -233,6 +285,13 @@ class StewardService:
                 head_branch = binding.get("head_branch")
                 if not isinstance(base_branch, str) or not isinstance(head_branch, str):
                     raise GitHubFactsError("stage_binding_branch_missing")
+                registered = mission_contract.validate_registered_campaign()
+                if (
+                    repository != registered.repository_identity.repository
+                    or base_sha != registered.repository_identity.base_sha
+                    or base_branch != registered.repository_identity.branch
+                ):
+                    raise GitHubFactsError("stage_binding_mission_mismatch")
                 facts = self.github.fetch_stage_pr(repository, pr_number)
                 status = reconcile_stage_pr(
                     facts,
@@ -276,7 +335,9 @@ class StewardService:
             if status.outcome == "COMPLETE" and state == "WAITING_FOR_MERGE":
                 self.journal.append(
                     event="STAGE_MERGED_OBSERVED",
-                    idempotency_key=f"reconcile:merged:{card_id}:{status.head_sha}",
+                    idempotency_key=_reconcile_key(
+                        "merged", self.mission_id, stage_id, card_id, status.head_sha
+                    ),
                     mission_id=self.mission_id,
                     stage_id=stage_id,
                     card_id=card_id,
@@ -286,7 +347,9 @@ class StewardService:
             elif status.outcome == "WAITING_FOR_MERGE" and state == "REVIEWING":
                 self.journal.append(
                     event="STAGE_WAITING_FOR_MERGE",
-                    idempotency_key=f"reconcile:waiting:{card_id}:{status.head_sha}",
+                    idempotency_key=_reconcile_key(
+                        "waiting", self.mission_id, stage_id, card_id, status.head_sha
+                    ),
                     mission_id=self.mission_id,
                     stage_id=stage_id,
                     card_id=card_id,
@@ -297,7 +360,9 @@ class StewardService:
             elif status.outcome == "BLOCKED" and state not in {"BLOCKED", "OUTCOME_UNKNOWN"}:
                 self.journal.append(
                     event="RECONCILIATION_BLOCKED",
-                    idempotency_key=f"reconcile:blocked:{card_id}:{status.reason}",
+                    idempotency_key=_reconcile_key(
+                        "blocked", self.mission_id, stage_id, card_id, status.reason
+                    ),
                     mission_id=self.mission_id,
                     stage_id=stage_id,
                     card_id=card_id,
@@ -336,6 +401,7 @@ def main(argv: list[str] | None = None) -> int:
         mission_id=args.mission_id,
         journal=StewardJournal(args.journal),
         github=GhReadOnlyGitHub(),
+        repo_path=Path.cwd(),
     )
     tick = 0
     while True:

@@ -15,7 +15,6 @@ import json
 from pathlib import Path
 import re
 import subprocess
-import sys
 from typing import Any, Callable, Mapping, Protocol
 
 import local_verification
@@ -26,6 +25,7 @@ import state_manager
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+MAX_REVIEW_DIFF_BYTES = 8 * 1024 * 1024
 SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 SAFE_STATUSES = frozenset({"PASS", "FAIL", "TIMEOUT", "BLOCKED", "OUTCOME_UNKNOWN"})
 REVIEW_STATUSES = frozenset({"PASS", "FAIL", "BLOCKED", "OUTCOME_UNKNOWN"})
@@ -56,9 +56,8 @@ _NETWORK_ENVIRONMENT_KEYS = frozenset(
         "XDG_RUNTIME_DIR",
     }
 )
-_SAFE_EXECUTABLES = frozenset(
-    {"python", "python3", "uv", "cargo", "bun", "node", "git"}
-)
+_SAFE_EXECUTABLES = frozenset({"python", "python3", "git"})
+_SAFE_ABSOLUTE_EXECUTABLES = frozenset({"/usr/bin/python3", "/usr/bin/git"})
 _GIT_FORBIDDEN_ARGUMENTS = frozenset(
     {
         "clone",
@@ -117,11 +116,29 @@ def select_model_tier(base_tier: str, attempt: int) -> str:
     return tiers[index]
 
 
-def review_range_digest(base_sha: str, head_sha: str) -> str:
-    """Digest the exact base...head range a reviewer claims to inspect."""
+def review_range_digest(
+    base_sha: str, head_sha: str, *, worktree: Path | None = None
+) -> str:
+    """Digest the exact reviewed range, including its complete Git diff."""
 
     if not SHA40.fullmatch(base_sha) or not SHA40.fullmatch(head_sha):
         raise WorkerError("review_range_invalid")
+    if worktree is not None:
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--binary", "--no-ext-diff", f"{base_sha}...{head_sha}"],
+                cwd=worktree,
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise WorkerError("review_range_unavailable") from exc
+        if result.returncode != 0 or len(result.stdout) > MAX_REVIEW_DIFF_BYTES:
+            raise WorkerError("review_range_unavailable")
+        return hashlib.sha256(result.stdout).hexdigest()
+    # The no-worktree form is retained for typed receipt construction and
+    # deterministic tests; the coordinator supplies the live worktree.
     return hashlib.sha256(f"{base_sha}...{head_sha}".encode("ascii")).hexdigest()
 
 
@@ -325,9 +342,13 @@ class ReviewOutcome:
 
 
 def review_receipt_digest(outcome: ReviewOutcome) -> str:
-    """Seal every bounded ReviewOutcome field except its digest itself."""
+    """Seal every bounded review identity field except detail and the digest."""
 
     payload = dict(outcome.to_wire())
+    # Detail is an operator-facing bounded note, not acceptance evidence.  It
+    # is intentionally excluded so restart recovery can revalidate the same
+    # receipt without persisting raw reviewer prose.
+    payload.pop("detail", None)
     payload["review_receipt_sha256"] = ""
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -379,7 +400,7 @@ def _validate_command(command: object) -> list[str]:
         raise WorkerError("worker_command_invalid")
     argv = list(command)
     executable = Path(argv[0]).name
-    if argv[0] != sys.executable and (
+    if argv[0] not in _SAFE_ABSOLUTE_EXECUTABLES and (
         Path(argv[0]).is_absolute() or argv[0] not in _SAFE_EXECUTABLES
     ):
         raise WorkerError("worker_executable_not_allowlisted")
@@ -388,6 +409,78 @@ def _validate_command(command: object) -> list[str]:
         if arguments & _GIT_FORBIDDEN_ARGUMENTS:
             raise WorkerError("worker_git_effect_forbidden")
     return argv
+
+
+def _sandbox_git_sources(worktree: Path) -> tuple[Path, ...]:
+    """Find linked-worktree metadata that must remain writable for commits."""
+
+    sources = [worktree.resolve()]
+    marker = worktree / ".git"
+    if not marker.is_file() or marker.is_symlink():
+        return tuple(sources)
+    try:
+        line = marker.read_text(encoding="utf-8").strip()
+        if not line.startswith("gitdir: "):
+            return tuple(sources)
+        gitdir = Path(line[8:])
+        if not gitdir.is_absolute():
+            gitdir = (marker.parent / gitdir).resolve()
+        else:
+            gitdir = gitdir.resolve()
+        if not gitdir.is_dir():
+            return tuple(sources)
+        sources.append(gitdir)
+        commondir = gitdir / "commondir"
+        if commondir.is_file() and not commondir.is_symlink():
+            common = Path(commondir.read_text(encoding="utf-8").strip())
+            if not common.is_absolute():
+                common = (gitdir / common).resolve()
+            else:
+                common = common.resolve()
+            if common.is_dir():
+                sources.append(common)
+    except (OSError, UnicodeError):
+        return tuple(sources)
+    return tuple(dict.fromkeys(sources))
+
+
+def _sandbox_command(command: list[str], worktree: Path, environment: Mapping[str, str]) -> list[str]:
+    """Run a bounded child in a minimal read-only root with a writable worktree."""
+
+    bubblewrap = Path("/usr/bin/bwrap")
+    if not bubblewrap.is_file():
+        raise WorkerError("sandbox_unavailable")
+    sources = _sandbox_git_sources(worktree)
+    destinations = [path.resolve() for path in sources]
+    args = [
+        str(bubblewrap),
+        "--die-with-parent",
+        "--unshare-net",
+        "--unshare-pid",
+        "--clearenv",
+        "--tmpfs",
+        "/",
+    ]
+    for system_path in ("/usr", "/bin", "/lib", "/lib64", "/etc"):
+        if Path(system_path).exists():
+            args.extend(("--ro-bind", system_path, system_path))
+    args.extend(("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"))
+    created_dirs: set[str] = set()
+    for destination in destinations:
+        for parent in reversed(destination.parents):
+            if parent == Path("/"):
+                break
+            parent_text = str(parent)
+            if parent_text not in created_dirs:
+                args.extend(("--dir", parent_text))
+                created_dirs.add(parent_text)
+        args.extend(("--bind", str(destination), str(destination)))
+    args.extend(("--chdir", str(worktree.resolve())))
+    for key, value in sorted(environment.items()):
+        if "\x00" in key or "\x00" in value or "\n" in key or "\n" in value:
+            raise WorkerError("sandbox_environment_invalid")
+        args.extend(("--setenv", key, value))
+    return [*args, "--", *command]
 
 
 class BoundedProcessWorker:
@@ -418,8 +511,11 @@ class BoundedProcessWorker:
         command = _validate_command(self.command_builder(context))
         session_id = f"steward-process:{context.card_id}:{context.attempt}"
         try:
+            sandboxed_command = _sandbox_command(
+                command, context.worktree, context.environment
+            )
             exit_code, stdout, _stderr = local_run_once._bounded_process(
-                command,
+                sandboxed_command,
                 cwd=context.worktree,
                 timeout_seconds=self.timeout_seconds,
                 env=dict(context.environment),
@@ -459,8 +555,11 @@ class BoundedProcessReviewer:
 
         command = _validate_command(self.command_builder(context, outcome))
         try:
+            sandboxed_command = _sandbox_command(
+                command, context.worktree, context.environment
+            )
             exit_code, stdout, _stderr = local_run_once._bounded_process(
-                command,
+                sandboxed_command,
                 cwd=context.worktree,
                 timeout_seconds=self.timeout_seconds,
                 env=dict(context.environment),
@@ -473,28 +572,6 @@ class BoundedProcessReviewer:
             return ReviewOutcome.from_wire(json.loads(stdout))
         except (TypeError, ValueError, json.JSONDecodeError, WorkerError) as exc:
             raise WorkerError("review_output_invalid") from exc
-
-
-class CallableWorker:
-    def __init__(self, callback: Callable[[WorkerContext], WorkerOutcome]):
-        self.callback = callback
-
-    def run(self, context: WorkerContext) -> WorkerOutcome:
-        value = self.callback(context)
-        if not isinstance(value, WorkerOutcome):
-            raise WorkerError("worker_adapter_return_invalid")
-        return value
-
-
-class CallableReviewer:
-    def __init__(self, callback: Callable[[WorkerContext, WorkerOutcome], ReviewOutcome]):
-        self.callback = callback
-
-    def review(self, context: WorkerContext, outcome: WorkerOutcome) -> ReviewOutcome:
-        value = self.callback(context, outcome)
-        if not isinstance(value, ReviewOutcome):
-            raise WorkerError("review_adapter_return_invalid")
-        return value
 
 
 def validate_worker_outcome(
@@ -655,8 +732,6 @@ def validate_check_results(checks: object) -> list[dict[str, Any]]:
 
 
 __all__ = [
-    "CallableReviewer",
-    "CallableWorker",
     "CapacityLock",
     "PathConflict",
     "PathLockSet",

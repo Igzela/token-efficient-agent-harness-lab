@@ -69,7 +69,6 @@ class StewardExecutionTests(unittest.TestCase):
             "implementation_session_id": implementation,
             "reviewed_head_sha": head,
             "blockers": [],
-            "detail": "",
             "reviewed_base_sha": BASE,
             "reviewed_range_sha256": workers.review_range_digest(BASE, head),
             "review_axes": ["standards", "spec"],
@@ -100,7 +99,7 @@ class StewardExecutionTests(unittest.TestCase):
         def command(context):
             outcome = callback(context)
             payload = json.dumps(outcome.to_wire())
-            return [sys.executable, "-c", f"print({payload!r})"]
+            return ["/usr/bin/python3", "-c", f"print({payload!r})"]
 
         return workers.BoundedProcessWorker(command, timeout_seconds=5)
 
@@ -108,7 +107,7 @@ class StewardExecutionTests(unittest.TestCase):
         def command(context, outcome):
             review = callback(context, outcome)
             payload = json.dumps(review.to_wire())
-            return [sys.executable, "-c", f"print({payload!r})"]
+            return ["/usr/bin/python3", "-c", f"print({payload!r})"]
 
         return workers.BoundedProcessReviewer(command, timeout_seconds=5)
 
@@ -174,13 +173,18 @@ class StewardExecutionTests(unittest.TestCase):
         diff_patch = mock.patch.object(steward, "_git_changed_paths", side_effect=actual_paths)
         clean_patch = mock.patch.object(steward, "_git_worktree_clean")
         identity_patch = mock.patch.object(steward, "_git_repository_identity", return_value=True)
+        range_patch = mock.patch.object(
+            workers,
+            "review_range_digest",
+            return_value=hashlib.sha256(f"{BASE}...{HEAD}".encode("ascii")).hexdigest(),
+        )
         with mock.patch.object(
             worktree_manager,
             "create_steward_worktree",
             return_value=(
                 str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
             ),
-        ), head_patch, diff_patch, clean_patch, identity_patch:
+        ), head_patch, diff_patch, clean_patch, identity_patch, range_patch:
             return service.dispatch_card(
                 self.mission,
                 self.stage,
@@ -263,6 +267,14 @@ class StewardExecutionTests(unittest.TestCase):
                 review.review_mode,
                 "d" * 64,
             )
+
+    def test_journal_keys_bind_stage_identity(self):
+        first = steward._journal_key("queue", self.mission, self.stage, self.card, 1, BASE)
+        second_stage = replace(self.stage, stage_id="stage-2")
+        second = steward._journal_key("queue", self.mission, second_stage, self.card, 1, BASE)
+        self.assertNotEqual(first, second)
+        self.assertIn(self.mission.mission_id, first)
+        self.assertIn(self.stage.stage_id, first)
 
     def test_review_head_drift_blocks_exact_head_delivery(self):
         implementation = workers.WorkerOutcome("PASS", "impl-session", HEAD, ("docs/ARCHITECTURE_BOOK.md",))

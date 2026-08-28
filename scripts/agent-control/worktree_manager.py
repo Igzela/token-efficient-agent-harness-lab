@@ -122,6 +122,18 @@ def steward_binding_digest(
     ).hexdigest()
 
 
+def steward_worktree_location(
+    mission_id: str, stage_id: str, card_id: str, expected_sha: str
+) -> tuple[pathlib.Path, str]:
+    """Derive the only path and branch allowed for one exact Steward binding."""
+
+    digest = steward_binding_digest(mission_id, stage_id, card_id, expected_sha)[:24]
+    return (
+        WORKTREE_BASE / f"{STEWARD_WORKTREE_PREFIX}{digest}",
+        f"{STEWARD_BRANCH_PREFIX}{digest}",
+    )
+
+
 def _worktree_records(repo_path: str | os.PathLike[str]) -> list[dict[str, str]] | None:
     output = _git("worktree", "list", "--porcelain", cwd=repo_path)
     if output is None:
