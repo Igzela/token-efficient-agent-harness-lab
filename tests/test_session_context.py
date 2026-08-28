@@ -1188,7 +1188,7 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_packet_blocks_steward_pr4_until_promotion(self):
+    def test_current_repository_packet_exposes_promoted_steward_pr4(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
@@ -1239,10 +1239,14 @@ class CheckpointTests(unittest.TestCase):
             next_document, status_document, MAIN
         )
         self.assertEqual(packet["packet_id"], "PE7-AUTONOMOUS-STEWARD-PR4")
-        self.assertEqual(packet["state"], "BLOCKED_PREREQUISITE")
-        self.assertFalse(packet["checkpoint_allowed"])
+        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
+        self.assertTrue(packet["checkpoint_allowed"])
         self.assertFalse(packet["execution_authorized"])
-        self.assertIsNone(packet["dispatch_lane"])
+        self.assertEqual(packet["dispatch_lane"], "provider_free_repository_maintenance")
+        capsule = session_context.current_dispatch_capsule(next_document, packet)
+        self.assertEqual(capsule["packet_id"], packet["packet_id"])
+        self.assertEqual(capsule["promotion_evidence_sha256"], "34a27ad11dbb7c0b606908ac76ce18f13d7569d73c21f3c9c4e2eedfbecc0fdb")
+        self.assertEqual(capsule["route_manifest_sha256"], "76a7d06a53cfe7f702529ef69b4601d4f61fca2cae2b9f426f799b2783c6b34f")
 
     def test_future_route_profile_extraction_is_routing_projection_only(self):
         root = Path(__file__).resolve().parents[1]
