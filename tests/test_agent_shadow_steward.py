@@ -208,6 +208,8 @@ class ShadowStewardTests(unittest.TestCase):
             "Run gh issue comment while updating docs/ARCHITECTURE_BOOK.md.",
             "Use nc to contact 10.0.0.1 while updating docs/ARCHITECTURE_BOOK.md.",
             "Send data over TCP while updating docs/ARCHITECTURE_BOOK.md.",
+            "Invoke a CLI while updating docs/ARCHITECTURE_BOOK.md.",
+            "Upload using SFTP while updating docs/ARCHITECTURE_BOOK.md.",
             "git pushing changes while updating docs/ARCHITECTURE_BOOK.md.",
             "Send data over IP while updating docs/ARCHITECTURE_BOOK.md.",
             "Run a shell command while updating docs/ARCHITECTURE_BOOK.md.",
@@ -373,6 +375,10 @@ class ShadowStewardTests(unittest.TestCase):
             ("evil/docs/ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
             ("C:docs/ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
             ("prefix:docs/ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
+            (r"\\server\\docs\\ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
+            (r"evil\\docs\\ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
+            (r"docs\\..\\engine\\foo.py", "path_syntax_forbidden"),
+            (r"C:\\evil\\docs\\ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
         ):
             with self.subTest(path=path):
                 intake = shadow.compile_intake(f"Update {path}.")

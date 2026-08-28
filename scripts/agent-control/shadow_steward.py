@@ -53,7 +53,12 @@ SAFE_PATH = re.compile(
 _PATH_TRAVERSAL = re.compile(r"(?<![A-Za-z0-9_.-])\.\.?(?:/|$)")
 _ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9])/(?:[A-Za-z0-9_.-]+/)+")
 _PATH_ROOT_WITH_PREFIX = re.compile(
-    r"[/\\:](?:docs|scripts|tests|engine|sdk|dashboard|tools|wire_contract|codegen)/"
+    r"[/\\:](?:docs|scripts|tests|engine|sdk|dashboard|tools|wire_contract|codegen)[/\\]"
+)
+_BACKSLASH_PATH = re.compile(
+    r"(?<![A-Za-z0-9_.-])(?:[A-Za-z]:)?"
+    r"(?:\\+|[A-Za-z0-9_.-]+\\)+"
+    r"[A-Za-z0-9_.-]+(?:\\[A-Za-z0-9_.-]+)*"
 )
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -206,7 +211,7 @@ _EXTERNAL_TARGETS = (
     r"db|provider|target|endpoint|url|unknown service|external system|http request|"
     r"network request|socket|network|system|http|https|arbitrary|unknown|destination|"
     r"host|connection|smtp|curl|internet|outbound|lan|rpc|packet|channel|storage|queue|"
-    r"tcp|udp|ip|port|ssh|scp|ftp|telnet|command|shell|terminal|process|subprocess|"
+    r"tcp|udp|ip|port|ssh|scp|ftp|sftp|telnet|command|shell|terminal|process|subprocess|"
     r"outside|offsite|colleague"
 )
 _COMMAND_ACTIONS = (
@@ -215,7 +220,7 @@ _COMMAND_ACTIONS = (
 )
 _COMMAND_TARGETS = (
     r"bash|sh|zsh|fish|powershell|cmd|python|node|ruby|perl|java|go|"
-    r"executable|binary|script|program|tool|integration"
+    r"executable|binary|script|program|tool|integration|cli"
 )
 _HIGH_RISK_PATTERNS = (
     re.compile(r"\bgit\s+push(?:ing|es)?\b"),
@@ -363,6 +368,7 @@ def _has_unsafe_path_syntax(text: str) -> bool:
         _PATH_TRAVERSAL.search(text) is not None
         or _ABSOLUTE_PATH.search(text) is not None
         or _PATH_ROOT_WITH_PREFIX.search(text) is not None
+        or _BACKSLASH_PATH.search(text) is not None
     )
 
 
