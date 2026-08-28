@@ -1,0 +1,21 @@
+[Unit]
+Description=Provider-free repository-maintenance Steward heartbeat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent-steward
+WorkingDirectory=/opt/token-efficient-agent-harness-lab
+ExecStart=/usr/bin/python3 /opt/token-efficient-agent-harness-lab/scripts/agent-control/steward_service.py --heartbeat-loop
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/agent-steward
+Environment=STEWARD_JOURNAL_PATH=/var/lib/agent-steward/steward.sqlite3
+
+[Install]
+WantedBy=multi-user.target

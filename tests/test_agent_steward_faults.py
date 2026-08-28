@@ -1,0 +1,317 @@
+"""Failure, restart, security, and GitHub-boundary tests for Steward."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import hashlib
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts" / "agent-control"))
+
+import mission_contract as contract  # noqa: E402
+import steward_github  # noqa: E402
+from steward_journal import StewardJournal  # noqa: E402
+from steward_service import StewardService, main as service_main  # noqa: E402
+import steward_workers as workers  # noqa: E402
+import worktree_manager  # noqa: E402
+
+
+MISSION = contract.CAMPAIGN_MISSION_ID
+BASE = "a" * 40
+HEAD = "b" * 40
+
+
+class StewardFaultTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.journal = StewardJournal(Path(self.temp.name) / "steward.sqlite3")
+
+    def append(self, state: str, key: str, *, attempt: int = 1, card: str = "card-1"):
+        return self.journal.append(
+            event=f"EVENT_{state}",
+            idempotency_key=key,
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id=card,
+            attempt=attempt,
+            state=state,
+            detail=state.lower(),
+        )
+
+    def make_waiting_journal(self, card: str = "card-1"):
+        self.append("QUEUED", f"queue:{card}", card=card)
+        self.append("RUNNING", f"run:{card}", card=card)
+        self.append("VERIFYING", f"verify:{card}", card=card)
+        self.append("REVIEWING", f"review:{card}", card=card)
+
+    def facts(self, *, merged: bool = False, head: str = HEAD):
+        return {
+            "repository": "Igzela/token-efficient-agent-harness-lab",
+            "pr_number": 7,
+            "state": "OPEN" if not merged else "CLOSED",
+            "draft": False,
+            "merged": merged,
+            "base_sha": BASE,
+            "head_sha": head,
+            "ci_state": "PASS",
+            "review_state": "PASS",
+        }
+
+    def test_restart_rebuilds_projection_and_does_not_replay_inflight_card(self):
+        self.append("QUEUED", "queue:1")
+        self.append("RUNNING", "run:1")
+        service = StewardService(
+            mission_id=MISSION,
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(),
+        )
+        report = service.recover()
+        self.assertEqual(report.items[0].outcome, "RECOVERY_REQUIRED")
+        self.assertEqual(report.items[0].reason, "in_flight_work_requires_read_only_reconciliation")
+        self.assertEqual(report.journal_projection["card_states"]["card-1"], "RUNNING")
+
+    def test_reconciliation_promotes_reviewing_card_from_live_read_only_facts(self):
+        self.make_waiting_journal()
+        reader = steward_github.FakeGitHubReader(self.facts())
+        service = StewardService(mission_id=MISSION, journal=self.journal, github=reader)
+        report = service.reconcile(
+            stage_bindings={
+                "card-1": {
+                    "repository": "Igzela/token-efficient-agent-harness-lab",
+                    "pr_number": 7,
+                    "base_sha": BASE,
+                    "head_sha": HEAD,
+                }
+            }
+        )
+        self.assertEqual(report.items[0].outcome, "WAITING_FOR_MERGE")
+        self.assertEqual(self.journal.projection()["card_states"]["card-1"], "WAITING_FOR_MERGE")
+        self.assertEqual(reader.reads, [("Igzela/token-efficient-agent-harness-lab", 7)])
+
+    def test_reconciliation_records_observed_merge_but_never_requests_one(self):
+        self.make_waiting_journal()
+        self.journal.append(
+            event="STAGE_WAITING_FOR_MERGE",
+            idempotency_key="waiting:1",
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id="card-1",
+            attempt=1,
+            state="WAITING_FOR_MERGE",
+            detail="gates_passed",
+        )
+        reader = steward_github.FakeGitHubReader(self.facts(merged=True))
+        service = StewardService(mission_id=MISSION, journal=self.journal, github=reader)
+        report = service.reconcile(
+            stage_bindings={
+                "card-1": {
+                    "repository": "Igzela/token-efficient-agent-harness-lab",
+                    "pr_number": 7,
+                    "base_sha": BASE,
+                    "head_sha": HEAD,
+                }
+            }
+        )
+        self.assertEqual(report.items[0].outcome, "COMPLETE")
+        self.assertEqual(self.journal.projection()["card_states"]["card-1"], "COMPLETE")
+
+    def test_github_read_failure_blocks_without_guessing_external_state(self):
+        self.make_waiting_journal()
+        reader = steward_github.FakeGitHubReader(self.facts())
+        reader.fail = True
+        service = StewardService(mission_id=MISSION, journal=self.journal, github=reader)
+        report = service.reconcile(
+            stage_bindings={
+                "card-1": {
+                    "repository": "Igzela/token-efficient-agent-harness-lab",
+                    "pr_number": 7,
+                    "base_sha": BASE,
+                    "head_sha": HEAD,
+                }
+            }
+        )
+        self.assertEqual(report.items[0].outcome, "BLOCKED")
+        self.assertEqual(self.journal.projection()["card_states"]["card-1"], "BLOCKED")
+
+    def test_github_binding_requires_exact_head_and_base(self):
+        observed = steward_github.StagePRFacts.from_wire(self.facts())
+        with self.assertRaisesRegex(steward_github.GitHubFactsError, "head_or_base"):
+            steward_github.reconcile_stage_pr(
+                observed,
+                repository=observed.repository,
+                pr_number=observed.pr_number,
+                expected_base_sha="c" * 40,
+                expected_head_sha=HEAD,
+            )
+        status = steward_github.reconcile_stage_pr(
+            observed,
+            repository=observed.repository,
+            pr_number=observed.pr_number,
+            expected_base_sha=BASE,
+            expected_head_sha=HEAD,
+        )
+        self.assertTrue(status.waiting_for_merge)
+
+    def test_pending_and_draft_gates_do_not_claim_waiting_for_merge(self):
+        for change, reason in (
+            ({"ci_state": "PENDING"}, "ci_pending"),
+            ({"review_state": "FAIL"}, "review_fail"),
+            ({"draft": True}, "pr_is_draft"),
+        ):
+            with self.subTest(change=change):
+                payload = self.facts()
+                payload.update(change)
+                status = steward_github.reconcile_stage_pr(
+                    payload,
+                    repository=payload["repository"],
+                    pr_number=7,
+                    expected_base_sha=BASE,
+                    expected_head_sha=HEAD,
+                )
+                self.assertFalse(status.waiting_for_merge)
+                self.assertEqual(status.reason, reason)
+
+    def test_github_reader_rejects_malformed_flags_and_mixed_check_states(self):
+        malformed = self.facts()
+        malformed["isDraft"] = "false"
+        reader = steward_github.GhReadOnlyGitHub()
+        with mock.patch("steward_github.subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = json.dumps(
+                {
+                    "state": "OPEN",
+                    "isDraft": "false",
+                    "mergedAt": None,
+                    "baseRefOid": BASE,
+                    "headRefOid": HEAD,
+                    "statusCheckRollup": [],
+                    "reviewDecision": "APPROVED",
+                }
+            )
+            run.return_value.stderr = ""
+            with self.assertRaises(steward_github.GitHubReadError):
+                reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
+
+            run.return_value.stdout = json.dumps(
+                {
+                    "state": "OPEN",
+                    "isDraft": False,
+                    "mergedAt": None,
+                    "baseRefOid": BASE,
+                    "headRefOid": HEAD,
+                    "statusCheckRollup": [
+                        {"conclusion": "SUCCESS", "status": "COMPLETED"},
+                        {"conclusion": None, "status": "IN_PROGRESS"},
+                    ],
+                    "reviewDecision": "APPROVED",
+                }
+            )
+            observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
+            self.assertEqual(observed["ci_state"], "PENDING")
+
+    def test_child_environment_drops_github_and_provider_credentials(self):
+        environment = workers.child_environment(
+            {
+                "PATH": "/usr/bin",
+                "HOME": "/tmp/safe",
+                "GITHUB_TOKEN": "redacted",
+                "OPENAI_API_KEY": "redacted",
+                "PROVIDER_SECRET": "redacted",
+            }
+        )
+        self.assertNotIn("GITHUB_TOKEN", environment)
+        self.assertNotIn("OPENAI_API_KEY", environment)
+        self.assertNotIn("PROVIDER_SECRET", environment)
+        self.assertEqual(environment["PATH"], "/usr/bin")
+
+    def test_path_lock_and_worktree_names_are_digest_bound(self):
+        digest = hashlib.sha256(b"card:untrusted/../value").hexdigest()[:24]
+        self.assertTrue(
+            worktree_manager._is_steward_path(
+                worktree_manager.WORKTREE_BASE / f"steward-{digest}"
+            )
+        )
+        self.assertFalse(
+            worktree_manager._is_steward_path(
+                worktree_manager.WORKTREE_BASE / "steward-../escape"
+            )
+        )
+        with self.assertRaises(workers.PathConflict):
+            workers.PathLockSet(Path(self.temp.name) / "locks", ("../outside",))
+
+    def test_real_steward_worktree_is_exact_base_and_dirty_cleanup_is_retained(self):
+        remote = self.root / "remote.git"
+        repo = self.root / "repo"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Steward Test"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "steward-test@example.invalid"], cwd=repo, check=True)
+        (repo / "README.md").write_text("steward test\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=repo, check=True)
+        subprocess.run(["git", "push", "-u", "origin", "main"], cwd=repo, check=True, capture_output=True)
+        expected = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+        old_base = worktree_manager.WORKTREE_BASE
+        worktree_manager.WORKTREE_BASE = self.root / "worktrees"
+        self.addCleanup(setattr, worktree_manager, "WORKTREE_BASE", old_base)
+        created = worktree_manager.create_steward_worktree("card-real", str(repo), expected)
+        self.assertIsNotNone(created)
+        path, branch, base, _remote_sha = created
+        self.assertEqual(base, expected)
+        self.assertTrue(worktree_manager.verify_worktree(path, branch, str(repo), expected))
+
+        (Path(path) / "README.md").write_text("dirty evidence\n", encoding="utf-8")
+        self.assertFalse(worktree_manager.remove_steward_worktree("card-real", str(repo)))
+        self.assertTrue(Path(path).exists())
+        subprocess.run(["git", "checkout", "--", "README.md"], cwd=path, check=True, capture_output=True)
+        self.assertTrue(worktree_manager.remove_steward_worktree("card-real", str(repo)))
+
+    def test_heartbeat_service_cli_is_once_only_and_persists_no_raw_content(self):
+        journal_path = Path(self.temp.name) / "heartbeat.sqlite3"
+        self.assertEqual(
+            service_main(
+                ["--heartbeat-loop", "--once", "--journal", str(journal_path)]
+            ),
+            0,
+        )
+        projection = StewardJournal(journal_path).projection()
+        self.assertEqual(projection["event_count"], 1)
+        self.assertEqual(projection["card_states"], {})
+
+    def test_worker_outcome_rejects_private_and_out_of_scope_paths(self):
+        card = contract.WorkCard(
+            "card-1",
+            "stage-1",
+            ("docs/ARCHITECTURE_BOOK.md",),
+            (),
+            ("bounded",),
+            ("focused",),
+            ("negative",),
+            ("receipt",),
+            (),
+            ("docs/ARCHITECTURE_BOOK.md",),
+            1,
+            "T1",
+            contract.campaign_mission().rollback,
+            "PENDING",
+        )
+        outcome = workers.WorkerOutcome("PASS", "impl", HEAD, (".codex/secret",))
+        with self.assertRaisesRegex(workers.WorkerError, "outside_card"):
+            workers.validate_worker_outcome(card, outcome, expected_head_sha=HEAD)
+
+
+if __name__ == "__main__":
+    unittest.main()

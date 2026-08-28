@@ -8,6 +8,7 @@ boundaries so callers cannot accidentally split values on whitespace.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import pathlib
 import re
@@ -22,6 +23,8 @@ ORCHESTRATOR_PREFIXES = ("issue-",)
 ORCHESTRATOR_BRANCH_PREFIX = "agent/issue-"
 PLAN_WORKTREE_PREFIX = "plan-"
 PLAN_BRANCH_PREFIX = "agent/packet-"
+STEWARD_WORKTREE_PREFIX = "steward-"
+STEWARD_BRANCH_PREFIX = "agent/steward-"
 ACTIVE_LABELS = {"agent-running", "ci-repairing", "review-running"}
 TERMINAL_LABELS = {"agent-complete", "agent-blocked", "agent-review-blocked"}
 LAST_CLEANUP_REPORT: list[dict[str, str]] = []
@@ -90,6 +93,20 @@ def _is_plan_path(path: str | os.PathLike[str]) -> bool:
         return False
 
 
+def _is_steward_path(path: str | os.PathLike[str]) -> bool:
+    """Require a direct, digest-named worktree for one Steward card."""
+    try:
+        resolved = pathlib.Path(path).resolve()
+        base = WORKTREE_BASE.resolve()
+        relative = resolved.relative_to(base)
+        return (
+            len(relative.parts) == 1
+            and re.fullmatch(r"steward-[0-9a-f]{24}", resolved.name) is not None
+        )
+    except (OSError, ValueError):
+        return False
+
+
 def _worktree_records(repo_path: str | os.PathLike[str]) -> list[dict[str, str]] | None:
     output = _git("worktree", "list", "--porcelain", cwd=repo_path)
     if output is None:
@@ -129,7 +146,11 @@ def verify_worktree(
 ) -> bool:
     """Verify path, repository registration, branch, and optionally HEAD."""
     candidate = pathlib.Path(path)
-    if not (_is_orchestrator_path(candidate) or _is_plan_path(candidate)) or not candidate.is_dir():
+    if not (
+        _is_orchestrator_path(candidate)
+        or _is_plan_path(candidate)
+        or _is_steward_path(candidate)
+    ) or not candidate.is_dir():
         return False
     repo_root = _git("rev-parse", "--show-toplevel", cwd=repo_path)
     if repo_root is None:
@@ -246,6 +267,85 @@ def create_plan_worktree(
         _git("worktree", "remove", "--force", str(worktree_path), cwd=repo_path)
         return None
     return str(worktree_path), branch_name, base_sha, previous_remote_sha
+
+
+def create_steward_worktree(
+    card_id: str,
+    repo_path: str,
+    expected_sha: str,
+    branch_name: str | None = None,
+) -> tuple[str, str, str, str | None] | None:
+    """Create one exact-base registered worktree without pushing or merging.
+
+    The path and branch are derived from a digest rather than untrusted card
+    text.  A pre-existing branch is accepted only when it already points at
+    the exact expected base; stale branch movement is deliberately refused.
+    """
+    if not isinstance(card_id, str) or not card_id or len(card_id) > 128:
+        return None
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+        return None
+    digest = hashlib.sha256(card_id.encode("utf-8")).hexdigest()[:24]
+    branch = branch_name or f"{STEWARD_BRANCH_PREFIX}{digest}"
+    if branch != f"{STEWARD_BRANCH_PREFIX}{digest}":
+        return None
+    worktree_path = WORKTREE_BASE / f"{STEWARD_WORKTREE_PREFIX}{digest}"
+    if not _is_steward_path(worktree_path):
+        return None
+    if _git("fetch", "origin", cwd=repo_path) is None:
+        return None
+    previous_remote_sha = _remote_sha(branch, repo_path)
+    local_branch = _git("rev-parse", "--verify", f"refs/heads/{branch}", cwd=repo_path)
+    if local_branch is None:
+        if _git("branch", branch, expected_sha, cwd=repo_path) is None:
+            return None
+    elif local_branch != expected_sha:
+        print("FATAL: Steward branch is not bound to the expected base", file=sys.stderr)
+        return None
+    if _git("rev-parse", branch, cwd=repo_path) != expected_sha:
+        return None
+    WORKTREE_BASE.mkdir(parents=True, exist_ok=True)
+    if worktree_path.exists() or worktree_path.is_symlink():
+        if verify_worktree(worktree_path, branch, repo_path, expected_sha):
+            return str(worktree_path), branch, expected_sha, previous_remote_sha
+        print(
+            f"FATAL: Steward worktree {worktree_path} exists but ownership cannot be proven",
+            file=sys.stderr,
+        )
+        return None
+    if _git("worktree", "add", str(worktree_path), branch, cwd=repo_path) is None:
+        return None
+    if not verify_worktree(worktree_path, branch, repo_path, expected_sha):
+        _git("worktree", "remove", str(worktree_path), cwd=repo_path)
+        return None
+    return str(worktree_path), branch, expected_sha, previous_remote_sha
+
+
+def remove_steward_worktree(
+    card_id: str, repo_path: str, branch_name: str | None = None
+) -> bool:
+    """Remove only a verified, clean Steward worktree.
+
+    Dirty or unregistered worktrees are retained for operator recovery; this
+    function never force-removes candidate changes.
+    """
+    if not isinstance(card_id, str) or not card_id or len(card_id) > 128:
+        return False
+    digest = hashlib.sha256(card_id.encode("utf-8")).hexdigest()[:24]
+    branch = branch_name or f"{STEWARD_BRANCH_PREFIX}{digest}"
+    worktree_path = WORKTREE_BASE / f"{STEWARD_WORKTREE_PREFIX}{digest}"
+    if not worktree_path.exists() and not worktree_path.is_symlink():
+        _git("worktree", "prune", cwd=repo_path)
+        return True
+    if not verify_worktree(worktree_path, branch, repo_path):
+        return False
+    status = _git("status", "--porcelain", cwd=worktree_path)
+    if status is None or status:
+        return False
+    if _git("worktree", "remove", str(worktree_path), cwd=repo_path) is None:
+        return False
+    _git("worktree", "prune", cwd=repo_path)
+    return not worktree_path.exists()
 
 
 def remove_worktree(issue_number: int, repo_path: str, branch: str | None = None) -> bool:
