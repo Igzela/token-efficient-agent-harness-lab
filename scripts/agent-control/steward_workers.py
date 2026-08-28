@@ -631,6 +631,7 @@ class _SandboxGit:
             sandbox_git = clone_path / ".git"
             ref = f"refs/heads/{branch}"
             for command in (
+                ["config", "--remove-section", "remote.origin"],
                 ["update-ref", ref, base_sha],
                 ["symbolic-ref", "HEAD", ref],
                 ["config", "core.hooksPath", "/dev/null"],
@@ -727,8 +728,9 @@ def _sandbox_command(
     environment: Mapping[str, str],
     *,
     git_sandbox: _SandboxGit | None = None,
+    worktree_writable: bool = True,
 ) -> list[str]:
-    """Run a bounded child with only its worktree and private Git dir writable."""
+    """Run a bounded child with explicitly scoped worktree and Git access."""
 
     bubblewrap = Path("/usr/bin/bwrap")
     if not bubblewrap.is_file():
@@ -742,9 +744,23 @@ def _sandbox_command(
         "--tmpfs",
         "/",
     ]
-    for system_path in ("/usr", "/bin", "/lib", "/lib64", "/etc"):
+    for system_path in ("/usr", "/bin", "/lib", "/lib64"):
         if Path(system_path).exists():
             args.extend(("--ro-bind", system_path, system_path))
+    # A child needs loader/account metadata, but must not receive a readable
+    # copy of the host's complete /etc (which can contain credentials or
+    # operator configuration).  Network files and package configuration stay
+    # outside the namespace; the child has no network and GIT_CONFIG_NOSYSTEM.
+    args.extend(("--dir", "/etc"))
+    for system_file in (
+        "/etc/ld.so.cache",
+        "/etc/nsswitch.conf",
+        "/etc/passwd",
+        "/etc/group",
+        "/etc/localtime",
+    ):
+        if Path(system_file).is_file():
+            args.extend(("--ro-bind", system_file, system_file))
     args.extend(("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"))
     created_dirs: set[str] = set()
 
@@ -758,7 +774,13 @@ def _sandbox_command(
                 created_dirs.add(parent_text)
     worktree = worktree.resolve()
     add_parent_dirs(worktree)
-    args.extend(("--bind", str(worktree), str(worktree)))
+    args.extend(
+        (
+            "--bind" if worktree_writable else "--ro-bind",
+            str(worktree),
+            str(worktree),
+        )
+    )
     if git_sandbox is not None:
         add_parent_dirs(git_sandbox.common_dir)
         args.extend(("--ro-bind", str(git_sandbox.common_dir), str(git_sandbox.common_dir)))
@@ -900,6 +922,7 @@ class BoundedProcessReviewer:
                     context.worktree,
                     context.environment,
                     git_sandbox=git_sandbox,
+                    worktree_writable=False,
                 )
                 child_environment = dict(context.environment)
                 child_environment["GIT_DIR"] = str(git_sandbox.guest_git_dir / ".git")

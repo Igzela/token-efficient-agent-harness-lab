@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "agent-control"))
 
 import mission_contract as contract  # noqa: E402
 import steward_github  # noqa: E402
+import steward_service  # noqa: E402
 from steward_journal import StewardJournal  # noqa: E402
 from steward_service import StewardService, main as service_main  # noqa: E402
 import steward_workers as workers  # noqa: E402
@@ -122,6 +123,80 @@ class StewardFaultTests(unittest.TestCase):
                 "base_branch": "main",
                 "head_branch": "agent/steward-card",
             },
+        )
+
+    def test_review_binding_revalidates_pass_with_deferred_findings_after_restart(self):
+        self.append("QUEUED", "queue:deferred")
+        self.append("RUNNING", "run:deferred")
+        self.append("VERIFYING", "verify:deferred")
+        self.append("REVIEWING", "review:deferred")
+        finding = {
+            "id": "note-1",
+            "axis": "standards",
+            "evidence": "bounded residual note",
+            "severity": "minor",
+            "disposition": "defer",
+            "scope_relation": "in_packet",
+            "origin_head": HEAD,
+            "acceptance_condition": "retain for later packet",
+            "status": "deferred",
+        }
+        review_payload = {
+            "schema_version": "steward_review_outcome.v1",
+            "status": "PASS",
+            "reviewer_session_id": "reviewer-session",
+            "implementation_session_id": "implementation-session",
+            "reviewed_head_sha": HEAD,
+            "blockers": [],
+            "detail": "",
+            "reviewed_base_sha": BASE,
+            "reviewed_range_sha256": workers.review_range_digest(BASE, HEAD),
+            "review_axes": ["standards", "spec"],
+            "review_round": 1,
+            "review_mode": "full",
+            "summary": "bounded independent review",
+            "findings": [finding],
+            "security_ok": True,
+            "rollback_ok": True,
+            "observed_ci_status": "unknown",
+            "finding_ledger_digest": "",
+            "review_receipt_sha256": "",
+        }
+        review = workers.ReviewOutcome.from_wire(
+            workers.seal_review_outcome_wire(review_payload)
+        )
+        review_wire = review.to_wire()
+        event = self.journal.append(
+            event="REVIEW_PASSED",
+            idempotency_key="review-pass:deferred",
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id="card-1",
+            attempt=1,
+            state="REVIEWING",
+            detail="independent_review_passed",
+            data={
+                "implementation_session_id": review.implementation_session_id,
+                "reviewer_session_id": review.reviewer_session_id,
+                "base_sha": BASE,
+                "head_sha": HEAD,
+                "reviewed_range_sha256": review.reviewed_range_sha256,
+                "review_axes": list(review.review_axes),
+                "review_round": review.review_round,
+                "review_mode": review.review_mode,
+                "review_receipt_sha256": review_wire["review_receipt_sha256"],
+                "verdict": "PASS",
+                "finding_ledger_digest": review_wire["finding_ledger_digest"],
+                "open_blocker_ids": [],
+                "deferred_note_ids": ["note-1"],
+                "security_ok": True,
+                "rollback_ok": True,
+                "observed_ci_status": "unknown",
+            },
+        )
+        self.assertEqual(
+            steward_service._review_binding(event),
+            (BASE, HEAD, review.reviewed_range_sha256),
         )
 
     def facts(self, *, merged: bool = False, head: str = HEAD):
@@ -395,7 +470,29 @@ class StewardFaultTests(unittest.TestCase):
         malformed = self.facts()
         malformed["isDraft"] = "false"
         reader = steward_github.GhReadOnlyGitHub()
-        with mock.patch("steward_github.subprocess.run") as run:
+        with (
+            mock.patch("steward_github.subprocess.run") as run,
+            mock.patch.object(
+                steward_github.state_manager,
+                "current_effective_reviews",
+                return_value={
+                    "complete": True,
+                    "review_decision": "APPROVED",
+                    "requested_changes": [],
+                    "effective_reviews": [
+                        {"state": "APPROVED", "is_current_head": True}
+                    ],
+                },
+            ),
+            mock.patch.object(
+                steward_github.state_manager,
+                "review_threads_status",
+                return_value={
+                    "complete": True,
+                    "unresolved_thread_ids": [],
+                },
+            ),
+        ):
             run.return_value.returncode = 0
             run.return_value.stdout = json.dumps(
                 {
@@ -460,6 +557,75 @@ class StewardFaultTests(unittest.TestCase):
             )
             observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
             self.assertEqual(observed["ci_state"], "PASS")
+
+    def test_github_reader_rejects_aggregate_approval_without_current_head_review(self):
+        reader = steward_github.GhReadOnlyGitHub()
+        payload = {
+            "state": "OPEN",
+            "isDraft": False,
+            "mergedAt": None,
+            "baseRefName": "main",
+            "headRefName": "agent/steward-card",
+            "baseRefOid": BASE,
+            "headRefOid": HEAD,
+            "statusCheckRollup": [],
+            "reviewDecision": "APPROVED",
+        }
+        with (
+            mock.patch("steward_github.subprocess.run") as run,
+            mock.patch.object(
+                steward_github.state_manager,
+                "current_effective_reviews",
+                return_value={
+                    "complete": True,
+                    "review_decision": "APPROVED",
+                    "requested_changes": [],
+                    "effective_reviews": [
+                        {"state": "APPROVED", "is_current_head": False}
+                    ],
+                },
+            ),
+            mock.patch.object(
+                steward_github.state_manager,
+                "review_threads_status",
+                return_value={"complete": True, "unresolved_thread_ids": []},
+            ),
+        ):
+            run.return_value.returncode = 0
+            run.return_value.stdout = json.dumps(payload)
+            run.return_value.stderr = ""
+            with self.assertRaisesRegex(
+                steward_github.GitHubReadError, "current_head_review_approval_missing"
+            ):
+                reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
+
+    def test_service_execute_stage_runs_recovery_preflight_then_dispatcher(self):
+        mission = contract.campaign_mission()
+        service = StewardService(
+            mission_id=MISSION,
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(),
+        )
+        calls = []
+
+        def dispatch(received_mission, stage, cards, **kwargs):
+            calls.append((received_mission, stage, cards, kwargs))
+            return {"card-1": "WAITING_FOR_MERGE"}
+
+        stage = mock.Mock(stage_id="stage-1")
+        result = service.execute_stage(
+            dispatch,
+            mission=mission,
+            stage=stage,
+            cards=(),
+            base_sha=BASE,
+            stage_pr=None,
+        )
+        self.assertEqual(result, {"card-1": "WAITING_FOR_MERGE"})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], mission)
+        self.assertEqual(calls[0][3]["base_sha"], BASE)
+        self.assertEqual(self.journal.projection()["event_count"], 1)
 
     def test_child_environment_drops_github_and_provider_credentials(self):
         environment = workers.child_environment(

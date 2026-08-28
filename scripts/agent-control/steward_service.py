@@ -8,7 +8,7 @@ import argparse
 import os
 from pathlib import Path
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import mission_contract
 from steward_github import (
@@ -51,6 +51,8 @@ def _review_binding(
     if getattr(event, "event", None) != "REVIEW_PASSED":
         return None
     data = getattr(event, "data", {})
+    if not isinstance(data, Mapping):
+        return None
     required = (
         "implementation_session_id",
         "reviewer_session_id",
@@ -108,34 +110,51 @@ def _review_binding(
     ):
         return None
     try:
-        review = steward_workers.ReviewOutcome(
-            "PASS",
-            data["reviewer_session_id"],
-            data["implementation_session_id"],
-            head_sha,
-            (),
-            "",
-            base_sha,
-            data["reviewed_range_sha256"],
-            tuple(data["review_axes"]),
-            data["review_round"],
-            data["review_mode"],
-            data["review_receipt_sha256"],
-            finding_ledger_digest=data["finding_ledger_digest"],
-            security_ok=data["security_ok"],
-            rollback_ok=data["rollback_ok"],
-            observed_ci_status=data["observed_ci_status"],
+        steward_workers._safe_session(
+            data["reviewer_session_id"], "reviewer_session_id"
         )
-    except (TypeError, ValueError, steward_workers.WorkerError):
+        steward_workers._safe_session(
+            data["implementation_session_id"], "implementation_session_id"
+        )
+        if data["reviewer_session_id"] == data["implementation_session_id"]:
+            return None
+        steward_workers._safe_detail(
+            data["observed_ci_status"], "review_observed_ci_status"
+        )
+        open_blockers = tuple(data["open_blocker_ids"])
+        deferred_notes = tuple(data["deferred_note_ids"])
+        decision_required = tuple(data.get("decision_required_ids", []))
+        receipt_wire = {
+            "schema_version": "steward_review_outcome.v1",
+            "status": "PASS",
+            "reviewer_session_id": data["reviewer_session_id"],
+            "implementation_session_id": data["implementation_session_id"],
+            "reviewed_head_sha": head_sha,
+            "blockers": list(open_blockers),
+            "detail": "",
+            "reviewed_base_sha": base_sha,
+            "reviewed_range_sha256": data["reviewed_range_sha256"],
+            "review_axes": list(data["review_axes"]),
+            "review_round": data["review_round"],
+            "review_mode": data["review_mode"],
+            "review_receipt_sha256": data["review_receipt_sha256"],
+            "summary": "",
+            "findings": None,
+            "security_ok": data["security_ok"],
+            "rollback_ok": data["rollback_ok"],
+            "observed_ci_status": data["observed_ci_status"],
+            "finding_ledger_digest": data["finding_ledger_digest"],
+        }
+    except (KeyError, TypeError, ValueError, steward_workers.WorkerError):
         return None
-    if review.review_receipt_sha256 != steward_workers.review_receipt_digest(review):
+    if data["review_receipt_sha256"] != steward_workers.review_receipt_digest(receipt_wire):
         return None
-    decision = steward_workers.canonical_review_decision(review)
-    if (
-        tuple(data.get("open_blocker_ids", [])) != decision.open_blocker_ids
-        or tuple(data.get("deferred_note_ids", [])) != decision.deferred_note_ids
-        or tuple(data.get("decision_required_ids", [])) != decision.decision_required_ids
-    ):
+    # The parent already normalized the full finding ledger before persisting
+    # this bounded projection.  Rebuilding an empty ReviewOutcome here would
+    # discard deferred findings and manufacture a different ledger digest.
+    # The sealed wire receipt preserves that ledger identity across restart;
+    # the bounded blocker/deferred/decision projections are checked above.
+    if open_blockers or decision_required:
         return None
     return base_sha, head_sha, data["reviewed_range_sha256"]
 
@@ -208,6 +227,42 @@ class StewardService:
             "seq": event.seq,
             "tail_sha256": event.sha256,
         }
+
+    def execute_stage(
+        self,
+        dispatch: Callable[..., dict[str, Any]],
+        *,
+        mission: mission_contract.MaintenanceMission,
+        stage: mission_contract.Stage,
+        cards: tuple[mission_contract.WorkCard, ...],
+        base_sha: str,
+        stage_pr: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run one admitted stage through the bounded Steward coordinator.
+
+        The service owns the liveness/recovery preflight and invokes the
+        packet-scoped coordinator supplied by the caller.  It does not load a
+        plan, create a second queue, or perform a GitHub/product mutation.
+        """
+
+        if not callable(dispatch):
+            raise TypeError("stage dispatcher must be callable")
+        if mission.mission_id != self.mission_id:
+            raise ValueError("mission_id_not_registered")
+        self.heartbeat(tick_id=f"execute:{mission.mission_id}:{stage.stage_id}")
+        recovery = self.recover()
+        if any(item.outcome == "RECOVERY_REQUIRED" for item in recovery.items):
+            raise ValueError("recovery_required_before_dispatch")
+        result = dispatch(
+            mission,
+            stage,
+            cards,
+            base_sha=base_sha,
+            stage_pr=stage_pr,
+        )
+        if not isinstance(result, dict):
+            raise TypeError("stage dispatcher returned an invalid result")
+        return result
 
     def recover(self) -> ReconciliationReport:
         """Rebuild local state and mark in-flight work for inspection.

@@ -261,7 +261,7 @@ def _stage_pr_facts(
     if value is None:
         return None
     if isinstance(value, steward_github.StagePRFacts):
-        return value
+        return steward_github.StagePRFacts.from_wire(value.__dict__)
     return steward_github.StagePRFacts.from_wire(value)
 
 
@@ -331,6 +331,26 @@ class Steward:
         stage_bindings: Mapping[str, Mapping[str, Any]],
     ) -> ReconciliationReport:
         return self._service_for(mission).reconcile(stage_bindings=stage_bindings)
+
+    def execute_stage(
+        self,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+        cards: tuple[contract.WorkCard, ...],
+        *,
+        base_sha: str,
+        stage_pr: steward_github.StagePRFacts | dict[str, Any] | None = None,
+    ) -> dict[str, ExecutionResult]:
+        """Enter one full stage through service preflight and bounded dispatch."""
+
+        return self._service_for(mission).execute_stage(
+            self.dispatch_cards,
+            mission=mission,
+            stage=stage,
+            cards=cards,
+            base_sha=base_sha,
+            stage_pr=stage_pr,
+        )
 
     def _record(
         self,
@@ -756,8 +776,12 @@ class Steward:
                             retryable=False,
                             head_sha=observed_head,
                         )
+                    # This is the restart checkpoint for the admitted worker
+                    # result.  It binds the exact head, scope projection,
+                    # worktree identity, and implementation session before
+                    # any verification or review proceeds.
                     self._record(
-                        event="FOCUSED_CHECKS_STARTED",
+                        event="WORKER_CHECKPOINT",
                         key=_journal_key("verify", mission, stage, card, attempt, observed_head),
                         mission=mission,
                         stage=stage,
@@ -765,6 +789,13 @@ class Steward:
                         attempt=attempt,
                         state="VERIFYING",
                         detail="allowlisted_checks_only",
+                        data={
+                            "base_sha": base_sha,
+                            "head_sha": observed_head,
+                            "changed_paths_digest": _digest("\x00".join(actual_paths)),
+                            "worktree_binding_sha256": worktree_binding_sha256,
+                            "implementation_session_id": outcome.session_id,
+                        },
                     )
                     try:
                         checks = self.verifier(worktree_path, list(outcome.changed_paths))
@@ -811,6 +842,37 @@ class Steward:
                         if not review_attempt.get("allowed"):
                             raise workers.WorkerError(
                                 str(review_attempt.get("deny_reason", "review_attempt_denied"))
+                            )
+                        repair_state = None
+                        if review_attempt["review_round"] == 2:
+                            previous_data = review_attempt.get("_previous_review_data")
+                            if not isinstance(previous_data, Mapping):
+                                raise workers.WorkerError(
+                                    "R2 prior review state is missing"
+                                )
+                            repair_state = review_convergence.after_repair_batch_consumed(
+                                self._prior_review_state(previous_data),
+                                new_head_sha=observed_head,
+                            )
+                            persisted_repair = repair_state.to_persistence_fields()
+                            persisted_repair.pop("findings", None)
+                            self._record(
+                                event="REVIEW_REPAIR_BATCH_CONSUMED",
+                                key=_journal_key(
+                                    "repair-consumed",
+                                    mission,
+                                    stage,
+                                    card,
+                                    attempt,
+                                    observed_head,
+                                ),
+                                mission=mission,
+                                stage=stage,
+                                card=card,
+                                attempt=attempt,
+                                state="REVIEWING",
+                                detail="review_repair_batch_consumed",
+                                data=persisted_repair,
                             )
                         review = self.reviewer.review(context, outcome)
                         if not isinstance(review, workers.ReviewOutcome):
@@ -939,8 +1001,13 @@ class Steward:
                                 raise review_convergence.ConvergenceError(
                                     "R2 prior review state is missing"
                                 )
+                            invalidated_state = repair_state
+                            if invalidated_state is None:
+                                raise review_convergence.ConvergenceError(
+                                    "R2 repair transition is missing"
+                                )
                             convergence_state = review_convergence.apply_r2_decision(
-                                self._prior_review_state(previous_data), review_decision
+                                invalidated_state, review_decision
                             )
                     except (TypeError, ValueError, KeyError, review_convergence.ConvergenceError) as exc:
                         return self._failure(
@@ -980,7 +1047,10 @@ class Steward:
                             card=card,
                             attempt=attempt,
                             reason=review.detail or "independent_review_not_passed",
-                            retryable=review.status == "FAIL",
+                            retryable=(
+                                review.status in {"FAIL", "BLOCKED"}
+                                and bool(review_decision.open_blocker_ids)
+                            ),
                             head_sha=observed_head,
                         )
                         if result.status == "RETRY_SCHEDULED":
@@ -1016,6 +1086,54 @@ class Steward:
                     )
                     if stage_facts is None:
                         return ExecutionResult(card.card_id, "WAITING_FOR_PR", attempt, observed_head, "stage_pr_facts_required", review.reviewer_session_id)
+                    try:
+                        if (
+                            stage_facts.repository.casefold() != self.repository.casefold()
+                            or stage_facts.base_sha != base_sha
+                            or stage_facts.head_sha != observed_head
+                            or stage_facts.base_branch != stage.repository_identity.branch
+                            or stage_facts.head_branch != worktree_branch
+                        ):
+                            raise steward_github.GitHubFactsError(
+                                "stage_pr_binding_input_mismatch"
+                            )
+                        # Preserve a validated binding before the live read so
+                        # a transient GitHub outage remains recoverable rather
+                        # than turning the external identity into a missing
+                        # binding.  The subsequent live read must still prove
+                        # the same exact identity and gates.
+                        self._record(
+                            event="STAGE_PR_BOUND",
+                            key=_journal_key(
+                                "stage-bind", mission, stage, card,
+                                stage_facts.pr_number, observed_head
+                            ),
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            state="REVIEWING",
+                            detail="stage_pr_binding_observed",
+                            data={
+                                "repository": stage_facts.repository,
+                                "pr_number": stage_facts.pr_number,
+                                "base_sha": stage_facts.base_sha,
+                                "head_sha": stage_facts.head_sha,
+                                "stage_id": stage.stage_id,
+                                "base_branch": stage_facts.base_branch,
+                                "head_branch": stage_facts.head_branch,
+                            },
+                        )
+                    except steward_github.GitHubFactsError as exc:
+                        return self._failure(
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            reason=str(exc),
+                            retryable=False,
+                            head_sha=observed_head,
+                        )
                     try:
                         live_stage_facts = _stage_pr_facts(
                             self.github.fetch_stage_pr(

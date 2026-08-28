@@ -61,9 +61,13 @@ GitHub queue or lease, a budget, approval, output, audit, rollback, or
 lifecycle authority. `steward_service.py` supplies heartbeat, restart
 classification, and read-only GitHub reconciliation. `steward_workers.py`
 reuses the existing credential-free child environment, WorkCard validation,
-allowlisted verification, and `ChatLock` path locks. `steward_github.py` is
-read-only and can classify an already integrated Stage PR only when repository,
-base SHA, head SHA, CI, and independent review facts match exactly.
+allowlisted verification, and `ChatLock` path locks. Reviewer children receive
+a read-only WorkCard worktree and a disposable private Git view. The
+`StewardService.execute_stage` entrypoint performs heartbeat/recovery
+preflight before invoking the bounded coordinator; it does not create another
+queue or lifecycle writer. `steward_github.py` is read-only and can classify an
+already integrated Stage PR only when repository, base SHA, head SHA, CI, and
+canonical exact-head review/thread facts match exactly.
 
 The executor admits at most K=2 disjoint WorkCards and serializes overlapping
 path locks. A worker exception or unavailable head is `OUTCOME_UNKNOWN` and is

@@ -475,6 +475,14 @@ lease, budget, approval, output, audit, rollback, scheduler, or lifecycle
 writer. Do not place prompts, model output, transcripts, credentials, private
 paths, or unredacted repository content in its journal.
 
+The programmatic `StewardService.execute_stage` entrypoint runs heartbeat and
+restart-recovery preflight before dispatching an explicitly supplied approved
+stage. The service CLI remains reconciliation-only because loading a plan or
+creating a Stage PR would cross the PR3 authority boundary. Reviewer children
+cannot write the admitted WorkCard worktree, and GitHub review acceptance uses
+the canonical exact-head review and thread readers rather than aggregate
+approval alone.
+
 Run the heartbeat smoke check against an operator-owned path before installing
 any unit:
 

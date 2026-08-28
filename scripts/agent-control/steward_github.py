@@ -15,6 +15,7 @@ import subprocess
 from typing import Any, Protocol
 
 import ci_verifier
+import state_manager
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -292,10 +293,8 @@ class GhReadOnlyGitHub:
             ):
                 ci_state = "PASS"
         review = payload.get("reviewDecision")
-        review_state = {
-            "APPROVED": "PASS",
-            "CHANGES_REQUESTED": "FAIL",
-        }.get(review, "PENDING" if review is None else "UNKNOWN")
+        if review not in (None, "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"):
+            raise GitHubReadError("github_review_decision_malformed")
         state = payload.get("state")
         draft = payload.get("isDraft")
         merged_at = payload.get("mergedAt")
@@ -313,6 +312,42 @@ class GhReadOnlyGitHub:
             or not isinstance(head_branch, str)
         ):
             raise GitHubReadError("github_read_malformed")
+        review_state = "PENDING" if review in (None, "REVIEW_REQUIRED") else "FAIL"
+        if review == "APPROVED":
+            # The REST-shaped PR projection is not an exact-head review
+            # receipt.  Reuse the canonical, paginated review/thread owner so
+            # aggregate approval cannot substitute for a current-head human
+            # approval or hide unresolved threads.
+            try:
+                effective = state_manager.current_effective_reviews(
+                    pr_number, head_sha, repository
+                )
+                threads = state_manager.review_threads_status(
+                    pr_number, head_sha, repository
+                )
+            except state_manager.StateUnavailableError as exc:
+                raise GitHubReadError("canonical_review_facts_unavailable") from exc
+            if (
+                effective.get("complete") is not True
+                or threads.get("complete") is not True
+                or threads.get("unresolved_thread_ids")
+            ):
+                raise GitHubReadError("exact_head_review_incomplete")
+            if effective.get("review_decision") != "APPROVED":
+                raise GitHubReadError("review_decision_changed_during_read")
+            if effective.get("requested_changes"):
+                review_state = "FAIL"
+            else:
+                current_head_approvals = [
+                    item
+                    for item in effective.get("effective_reviews", [])
+                    if isinstance(item, dict)
+                    and item.get("state") == "APPROVED"
+                    and item.get("is_current_head") is True
+                ]
+                if not current_head_approvals:
+                    raise GitHubReadError("current_head_review_approval_missing")
+                review_state = "PASS"
         return {
             "repository": repository,
             "pr_number": pr_number,
