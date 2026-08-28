@@ -46,12 +46,15 @@ KNOWN_RISK_FLAGS = frozenset(
 )
 KNOWN_INTENTS = frozenset({"repository_maintenance", "owner_review_required"})
 SAFE_PATH = re.compile(
-    r"(?<![A-Za-z0-9_.-])"
+    r"(?<![A-Za-z0-9_.\-/\\-])"
     r"(?:docs|scripts|tests|engine|sdk|dashboard|tools|wire_contract|codegen)"
     r"(?:/[A-Za-z0-9_.-]+)+(?![A-Za-z0-9_.-])"
 )
 _PATH_TRAVERSAL = re.compile(r"(?<![A-Za-z0-9_.-])\.\.?(?:/|$)")
 _ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9])/(?:[A-Za-z0-9_.-]+/)+")
+_PATH_ROOT_WITH_PREFIX = re.compile(
+    r"[/\\](?:docs|scripts|tests|engine|sdk|dashboard|tools|wire_contract|codegen)/"
+)
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -335,6 +338,7 @@ def _has_unsafe_path_syntax(text: str) -> bool:
     return (
         _PATH_TRAVERSAL.search(text) is not None
         or _ABSOLUTE_PATH.search(text) is not None
+        or _PATH_ROOT_WITH_PREFIX.search(text) is not None
     )
 
 
