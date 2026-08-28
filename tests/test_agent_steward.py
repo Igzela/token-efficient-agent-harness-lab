@@ -395,6 +395,7 @@ class StewardExecutionTests(unittest.TestCase):
         (repo / "docs" / "ARCHITECTURE_BOOK.md").write_text("base docs\n", encoding="utf-8")
         (repo / "docs" / "RUNBOOK.md").write_text("base runbook\n", encoding="utf-8")
         (repo / "tests" / "test_mission_contract.py").write_text("base tests\n", encoding="utf-8")
+        (repo / "tests" / "test_review_loop.py").write_text("base review tests\n", encoding="utf-8")
         git("add", ".")
         git("commit", "-m", "base")
         base_sha = git("rev-parse", "HEAD")
@@ -504,18 +505,25 @@ class StewardExecutionTests(unittest.TestCase):
                 (), ("tests/test_mission_contract.py",), 1, "T1", mission.rollback, "PENDING",
             ),
             contract.WorkCard(
-                "card-c", stage_id, ("docs/RUNBOOK.md",),
+                "card-c", stage_id, ("docs/RUNBOOK.md", "docs/ARCHITECTURE_BOOK.md"),
                 (), ("integrate",), ("check",), ("negative",), ("receipt",),
-                ("card-a", "card-b"), ("docs/RUNBOOK.md",), 1, "T1", mission.rollback, "PENDING",
+                ("card-a",), ("docs/ARCHITECTURE_BOOK.md",), 1, "T1", mission.rollback, "PENDING",
+            ),
+            contract.WorkCard(
+                "card-d", stage_id, ("tests/test_review_loop.py", "docs/ARCHITECTURE_BOOK.md"),
+                (), ("integrate",), ("check",), ("negative",), ("receipt",),
+                ("card-b",), ("docs/ARCHITECTURE_BOOK.md",), 1, "T1", mission.rollback, "PENDING",
             ),
         )
         stage = contract.Stage(
             stage_id, mission.mission_id, "real worker execution", mission.repository_identity,
-            ("focused",), ("no effects",), ("card-a", "card-b", "card-c"),
+            ("focused",), ("no effects",), ("card-a", "card-b", "card-c", "card-d"),
             mission.rollback, None, None,
         )
         active = 0
         maximum = 0
+        overlap_active = 0
+        overlap_maximum = 0
         active_lock = threading.Lock()
 
         class RealTestWorker(workers.BoundedProcessWorker):
@@ -523,10 +531,13 @@ class StewardExecutionTests(unittest.TestCase):
                 super().__init__(lambda _context: ["/usr/bin/python3", "-c", "pass"])
 
             def run(self, context):
-                nonlocal active, maximum
+                nonlocal active, maximum, overlap_active, overlap_maximum
                 with active_lock:
                     active += 1
                     maximum = max(maximum, active)
+                    if context.card_id in {"card-c", "card-d"}:
+                        overlap_active += 1
+                        overlap_maximum = max(overlap_maximum, overlap_active)
                 try:
                     relative = context.allowed_paths[0]
                     target = context.worktree / relative
@@ -550,6 +561,8 @@ class StewardExecutionTests(unittest.TestCase):
                 finally:
                     with active_lock:
                         active -= 1
+                        if context.card_id in {"card-c", "card-d"}:
+                            overlap_active -= 1
 
         class RealTestReviewer(workers.BoundedProcessReviewer):
             def __init__(self):
@@ -608,6 +621,7 @@ class StewardExecutionTests(unittest.TestCase):
                     "card-a": "WAITING_FOR_PR",
                     "card-b": "WAITING_FOR_PR",
                     "card-c": "WAITING_FOR_PR",
+                    "card-d": "WAITING_FOR_PR",
                 },
                 instance.journal.replay(),
             )
@@ -617,9 +631,15 @@ class StewardExecutionTests(unittest.TestCase):
 
         self.assertEqual(
             set(git("diff", "--name-only", f"{base_sha}..{integration.head_sha}").splitlines()),
-            {"docs/ARCHITECTURE_BOOK.md", "docs/RUNBOOK.md", "tests/test_mission_contract.py"},
+            {
+                "docs/ARCHITECTURE_BOOK.md",
+                "docs/RUNBOOK.md",
+                "tests/test_mission_contract.py",
+                "tests/test_review_loop.py",
+            },
         )
         self.assertEqual(maximum, 2)
+        self.assertEqual(overlap_maximum, 1)
 
     def test_worker_exception_is_outcome_unknown_and_is_never_retried(self):
         def explode(_context):

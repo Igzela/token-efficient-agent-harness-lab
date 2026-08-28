@@ -29,6 +29,8 @@ import mission_contract
 import plan_lane
 import shadow_steward
 import state_manager
+import steward
+import steward_github
 from steward_journal import StewardJournal
 
 
@@ -644,6 +646,100 @@ class TestMissionExecutionBridge(unittest.TestCase):
         self.assertEqual(continued["status"], "waiting_for_merge")
         self.assertEqual(len(continuations), 1)
         self.assertEqual(continuations[0][3]["stage_pr"]["pr_number"], 42)
+
+    def test_production_bridge_uses_real_steward_continuation_and_fresh_facts(self):
+        github = FakeGitHub()
+        github.metadata["name_with_owner"] = mission_contract.CAMPAIGN_REPOSITORY
+        proposal = shadow_steward.compile_proposal(
+            "Update docs/ARCHITECTURE_BOOK.md and tests/test_mission_contract.py."
+        )
+        approved_at = "2026-08-29T00:00:00Z"
+        github.comments = [{
+            "author": {"login": "Igzela"},
+            "body": "<!-- steward-owner-approval:v1 " + json.dumps({
+                "owner_identity": "repository-owner",
+                "proposal_sha256": proposal.proposal_sha256,
+                "approval_id": "approval-real-bridge",
+                "approved_at": approved_at,
+                "accepted_main_sha": MAIN_SHA,
+            }) + " -->",
+            "createdAt": approved_at,
+        }]
+        facts = {
+            "state": "OPEN",
+            "draft": False,
+            "merged": False,
+            "base_sha": MAIN_SHA,
+            "head_sha": "b" * 40,
+            "ci_state": "PASS",
+            "review_state": "PASS",
+            "base_branch": "main",
+            "head_branch": "agent/steward-stage-ready",
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            reader = steward_github.FakeGitHubReader(facts)
+            steward_instance = steward.Steward(
+                repository=mission_contract.CAMPAIGN_REPOSITORY,
+                repo_path=Path(temp),
+                journal=StewardJournal(Path(temp) / "journal.sqlite3"),
+                github=reader,
+                lock_dir=Path(temp) / "locks",
+            )
+            runner = local_run_once.LocalRunOnce(
+                github,
+                FakeGit(),
+                repository=mission_contract.CAMPAIGN_REPOSITORY,
+                repo_path=Path("/workspace/example"),
+            )
+
+            def reconcile(_mission, _stage, cards, *, stage_pr):
+                return {
+                    card.card_id: steward.ExecutionResult(
+                        card.card_id, "WAITING_FOR_MERGE", 1,
+                        stage_pr.head_sha, "real_bridge_reconciliation",
+                    )
+                    for card in cards
+                }
+
+            with (
+                mock.patch.object(
+                    steward_instance,
+                    "execute_stage_to_waiting_for_merge",
+                    return_value={
+                        "status": "stage_pr_draft",
+                        "pr": {"number": 42},
+                        "results": {},
+                    },
+                ) as execute_stage,
+                mock.patch.object(
+                    steward_instance, "reconcile_stage_pr", side_effect=reconcile
+                ) as reconcile_stage,
+                mock.patch.object(
+                    steward_instance,
+                    "continue_stage_to_waiting_for_merge",
+                    wraps=steward_instance.continue_stage_to_waiting_for_merge,
+                ) as continue_stage,
+            ):
+                first = runner.run_mission_stage(
+                    proposal,
+                    approval_issue=99,
+                    steward=steward_instance,
+                    now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+                )
+                second = runner.run_mission_stage(
+                    proposal,
+                    approval_issue=99,
+                    steward=steward_instance,
+                    stage_pr=42,
+                    now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+                )
+
+        self.assertEqual(first["status"], "stage_pr_draft")
+        self.assertEqual(second["status"], "waiting_for_merge")
+        execute_stage.assert_called_once()
+        continue_stage.assert_called_once()
+        reconcile_stage.assert_called_once()
+        self.assertEqual(reader.reads, [(mission_contract.CAMPAIGN_REPOSITORY, 42)])
 
 
 class TestGitHubAdapterActiveScopes(unittest.TestCase):
