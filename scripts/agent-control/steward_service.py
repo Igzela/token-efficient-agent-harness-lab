@@ -320,12 +320,8 @@ class StewardService:
                 )
             except (KeyError, TypeError, GitHubFactsError):
                 status = StagePRStatus(
-                    "WAITING" if state == "OUTCOME_UNKNOWN" else "BLOCKED",
-                    (
-                        "unknown_outcome_reconciliation_unproven"
-                        if state == "OUTCOME_UNKNOWN"
-                        else "github_facts_unavailable_or_invalid"
-                    ),
+                    "WAITING",
+                    "github_facts_unavailable_or_invalid",
                     str(binding.get("repository", "unknown/unknown")),
                     int(binding.get("pr_number", 1)) if str(binding.get("pr_number", "")).isdigit() else 1,
                     str(binding.get("base_sha", "0" * 40)),
@@ -377,6 +373,22 @@ class StewardService:
                     card_id=card_id,
                     state="BLOCKED",
                     detail=status.reason,
+                )
+            elif (
+                status.outcome == "WAITING"
+                and state == "WAITING_FOR_MERGE"
+                and status.reason != "github_facts_unavailable_or_invalid"
+            ):
+                self.journal.append(
+                    event="STAGE_GATES_REVOKED",
+                    idempotency_key=_reconcile_key(
+                        "gates-revoked", self.mission_id, stage_id, card_id, status.reason
+                    ),
+                    mission_id=self.mission_id,
+                    stage_id=stage_id,
+                    card_id=card_id,
+                    state="REVIEWING",
+                    detail="live_stage_gates_no_longer_pass",
                 )
             if state == "OUTCOME_UNKNOWN" and status.outcome not in {
                 "COMPLETE",

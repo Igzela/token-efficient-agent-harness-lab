@@ -165,6 +165,24 @@ def reconcile_stage_pr(
         raise GitHubFactsError("github_pr_base_branch_mismatch")
     if expected_head_branch is not None and observed.head_branch != expected_head_branch:
         raise GitHubFactsError("github_pr_head_branch_mismatch")
+    if observed.merged and observed.ci_state != "PASS":
+        return StagePRStatus(
+            "WAITING",
+            f"merged_pr_ci_{observed.ci_state.lower()}",
+            observed.repository,
+            observed.pr_number,
+            observed.base_sha,
+            observed.head_sha,
+        )
+    if observed.merged and observed.review_state != "PASS":
+        return StagePRStatus(
+            "WAITING",
+            f"merged_pr_review_{observed.review_state.lower()}",
+            observed.repository,
+            observed.pr_number,
+            observed.base_sha,
+            observed.head_sha,
+        )
     if observed.merged:
         return StagePRStatus(
             "COMPLETE",

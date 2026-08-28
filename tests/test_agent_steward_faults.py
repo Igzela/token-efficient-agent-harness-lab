@@ -300,6 +300,55 @@ class StewardFaultTests(unittest.TestCase):
             "OUTCOME_UNKNOWN",
         )
 
+    def test_unknown_outcome_with_insufficient_merged_facts_stays_paused(self):
+        self.make_waiting_journal()
+        self.append("OUTCOME_UNKNOWN", "unknown:merged-gates")
+        facts = self.facts(merged=True)
+        facts.update({"ci_state": "PENDING", "review_state": "PENDING"})
+        reader = steward_github.FakeGitHubReader(facts)
+        service = StewardService(mission_id=MISSION, journal=self.journal, github=reader)
+        report = service.reconcile(stage_bindings={})
+        self.assertEqual(report.items[0].outcome, "RECOVERY_REQUIRED")
+        self.assertEqual(
+            self.journal.projection()["card_states"]["card-1"],
+            "OUTCOME_UNKNOWN",
+        )
+
+    def test_reconciliation_keeps_identity_drift_paused_for_reviewing_card(self):
+        self.make_waiting_journal()
+        reader = steward_github.FakeGitHubReader(self.facts(head="c" * 40))
+        service = StewardService(mission_id=MISSION, journal=self.journal, github=reader)
+        report = service.reconcile(stage_bindings={})
+        self.assertEqual(report.items[0].outcome, "WAITING")
+        self.assertEqual(
+            self.journal.projection()["card_states"]["card-1"],
+            "REVIEWING",
+        )
+
+    def test_reconciliation_revokes_waiting_for_merge_when_ci_regresses(self):
+        self.make_waiting_journal()
+        self.journal.append(
+            event="STAGE_WAITING_FOR_MERGE",
+            idempotency_key="waiting:regression",
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id="card-1",
+            attempt=1,
+            state="WAITING_FOR_MERGE",
+            detail="gates_passed",
+        )
+        facts = self.facts()
+        facts["ci_state"] = "PENDING"
+        reader = steward_github.FakeGitHubReader(facts)
+        service = StewardService(mission_id=MISSION, journal=self.journal, github=reader)
+        report = service.reconcile(stage_bindings={})
+        self.assertEqual(report.items[0].outcome, "WAITING")
+        self.assertEqual(report.items[0].reason, "ci_pending")
+        self.assertEqual(
+            self.journal.projection()["card_states"]["card-1"],
+            "REVIEWING",
+        )
+
     def test_reconciliation_ignores_caller_binding_projection(self):
         self.make_waiting_journal()
         reader = steward_github.FakeGitHubReader(self.facts())
@@ -582,6 +631,18 @@ class StewardFaultTests(unittest.TestCase):
                 )
                 self.assertFalse(status.waiting_for_merge)
                 self.assertEqual(status.reason, reason)
+
+        merged = self.facts(merged=True)
+        merged.update({"ci_state": "PENDING", "review_state": "PENDING"})
+        status = steward_github.reconcile_stage_pr(
+            merged,
+            repository=merged["repository"],
+            pr_number=merged["pr_number"],
+            expected_base_sha=BASE,
+            expected_head_sha=HEAD,
+        )
+        self.assertEqual(status.outcome, "WAITING")
+        self.assertEqual(status.reason, "merged_pr_ci_pending")
 
     def test_github_reader_rejects_malformed_flags_and_mixed_check_states(self):
         malformed = self.facts()
