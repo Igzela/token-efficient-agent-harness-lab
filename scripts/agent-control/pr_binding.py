@@ -348,6 +348,122 @@ def verify_post_push_plan_binding(
     raise last_error or PRBindingError("post-push plan PR binding was not observable")
 
 
+def _candidate_stage_prs(prs: list[dict[str, Any]], stage_id: str, branch: str) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for pr in prs:
+        marker = state_manager.parse_binding_marker(pr.get("body", ""))
+        if pr.get("headRefName") == branch or (
+            marker
+            and marker.get("subject_kind") == "steward-stage"
+            and marker.get("stage_id") == stage_id
+        ):
+            candidates.append(pr)
+    return candidates
+
+
+def _verify_stage_pr(
+    pr: dict[str, Any], stage_id: str, mission_id: str, branch: str,
+    expected_sha: str, base_sha: str, prs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    number = pr.get("number")
+    if not isinstance(number, int):
+        raise PRBindingError("stage PR number is missing")
+    if str(pr.get("state", "")).upper() not in {"OPEN", ""}:
+        raise PRBindingError("stage PR is not open")
+    if pr.get("isDraft") is not True or pr.get("baseRefName") != "main":
+        raise PRBindingError("stage PR is not a Draft targeting main")
+    if pr.get("headRefName") != branch or pr.get("headRefOid") != expected_sha:
+        raise PRBindingError("stage PR branch or head does not match")
+    marker = state_manager.parse_binding_marker(pr.get("body", ""))
+    expected = {
+        "subject_kind": "steward-stage",
+        "stage_id": stage_id,
+        "mission_id": mission_id,
+        "base_sha": base_sha,
+        "branch": branch,
+    }
+    if not marker or any(marker.get(key) != value for key, value in expected.items()):
+        raise PRBindingError("stage PR binding marker is invalid")
+    competitors = [
+        item for item in _candidate_stage_prs(prs, stage_id, branch)
+        if item.get("number") != number
+    ]
+    if competitors:
+        raise PRBindingError("multiple open PRs are bound to the Stage")
+    return {"number": number, "head_sha": expected_sha, "url": pr.get("url", "")}
+
+
+def find_stage_pr(
+    stage_id: str, mission_id: str, branch: str, expected_sha: str, base_sha: str,
+    repo: str | None = None,
+) -> dict[str, Any]:
+    """Return the authoritative final view of one exact Stage Draft PR."""
+
+    target = _repo(repo)
+    open_prs = _open_prs(target)
+    candidates = _candidate_stage_prs(open_prs, stage_id, branch)
+    if len(candidates) != 1:
+        raise PRBindingError("zero or multiple open PRs bound to the Stage")
+    number = candidates[0].get("number")
+    if not isinstance(number, int):
+        raise PRBindingError("stage PR number is invalid")
+    verified = _view_pr(target, number)
+    if verified.get("number") != number:
+        raise PRBindingError("stage PR final view is inconsistent")
+    _verify_stage_pr(verified, stage_id, mission_id, branch, expected_sha, base_sha, open_prs)
+    head_repo = verified.get("headRepository")
+    if not isinstance(head_repo, dict) or head_repo.get("nameWithOwner") != target:
+        raise PRBindingError("stage PR head repository is not the target repository")
+    return verified
+
+
+def create_or_update_stage_pr(
+    stage_id: str,
+    mission_id: str,
+    branch: str,
+    expected_sha: str,
+    base_sha: str,
+    title: str,
+    body: str,
+    repo: str | None = None,
+) -> dict[str, Any]:
+    """Create/update one parent-owned Draft PR bound to a Stage identity."""
+
+    target = _repo(repo)
+    open_prs = _open_prs(target)
+    candidates = _candidate_stage_prs(open_prs, stage_id, branch)
+    if len(candidates) > 1:
+        raise PRBindingError("multiple open PRs are already bound to the Stage")
+    if candidates:
+        number = candidates[0].get("number")
+        if not isinstance(number, int) or candidates[0].get("isDraft") is not True:
+            raise PRBindingError("existing stage PR is not a Draft")
+        _verify_stage_pr(
+            candidates[0], stage_id, mission_id, branch, expected_sha, base_sha, open_prs
+        )
+        _gh(
+            "api", "--method", "PATCH", f"repos/{target}/pulls/{number}",
+            "--field", f"body={body}",
+        )
+    else:
+        created = _gh_json(
+            "api", "--method", "POST", f"repos/{target}/pulls",
+            "--field", f"title={title}", "--field", f"head={branch}",
+            "--field", "base=main", "--field", f"body={body}", "--field", "draft=true",
+        )
+        if not isinstance(created, dict) or not isinstance(created.get("number"), int):
+            raise PRBindingError("stage PR creation returned no number")
+        number = int(created["number"])
+    verified = _view_pr(target, number)
+    result = _verify_stage_pr(
+        verified, stage_id, mission_id, branch, expected_sha, base_sha, _open_prs(target)
+    )
+    head_repo = verified.get("headRepository")
+    if not isinstance(head_repo, dict) or head_repo.get("nameWithOwner") != target:
+        raise PRBindingError("stage PR head repository is not the target repository")
+    return result | verified
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)

@@ -107,6 +107,52 @@ class MissionContractTests(unittest.TestCase):
             self.mission,
         )
 
+        activation_proposal = "d" * 64
+        activation_approval = replace(
+            self.mission.owner_approval,
+            proposal_sha256=activation_proposal,
+            approval_id="activation-test",
+        )
+        activated = contract.activate_current_mission(
+            repository=self.mission.repository_identity.repository,
+            base_sha="c" * 40,
+            branch="main",
+            source_ref=self.mission.repository_identity.source_ref,
+            source_sha256=self.mission.repository_identity.source_sha256,
+            proposal_sha256=activation_proposal,
+            owner_approval=activation_approval,
+            owner_authenticator=type(
+                "Authenticator", (), {"verify": lambda _self, _approval, _proposal: True}
+            )(),
+        )
+        self.assertEqual(activated.state, "RUNNING")
+        self.assertEqual(activated.repository_identity.base_sha, "c" * 40)
+        self.assertEqual(activated.proposal_sha256, self.mission.proposal_sha256)
+        self.assertEqual(
+            contract.MaintenanceMission.from_wire(activated.to_wire()), activated
+        )
+        forged_running = replace(self.mission, state="RUNNING")
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "mission_activation_missing"
+        ):
+            contract.validate_current_mission(
+                forged_running,
+                require_running=True,
+                **self.current_identity_kwargs(),
+            )
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "mission_activation_missing"
+        ):
+            contract.validate_current_mission(
+                contract.MaintenanceMission.from_wire(activated.to_wire()),
+                require_running=True,
+                repository=activated.repository_identity.repository,
+                base_sha=activated.repository_identity.base_sha,
+                branch=activated.repository_identity.branch,
+                source_ref=activated.repository_identity.source_ref,
+                source_sha256=activated.repository_identity.source_sha256,
+            )
+
         attacker = replace(
             self.mission,
             owner_approval=replace(
@@ -165,6 +211,16 @@ class MissionContractTests(unittest.TestCase):
             contract.MissionContractError, "grant_allowed_paths_sensitive"
         ):
             contract.Grant.from_wire(sensitive)
+
+        contract.validate_execution_scope(
+            self.mission,
+            ["scripts/agent-control/steward.py"],
+            ["read", "write", "test", "branch", "draft_pr", "review", "ci_repair"],
+        )
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "execution_path_outside_grant"
+        ):
+            contract.validate_execution_scope(self.mission, ["engine/foo.py"], ["write"])
 
     def test_paths_stops_and_rollbacks_are_bounded(self):
         with self.assertRaisesRegex(contract.MissionContractError, "candidate_path_invalid"):

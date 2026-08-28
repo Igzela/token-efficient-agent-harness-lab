@@ -482,6 +482,106 @@ class StewardJournal:
             enforce_transition=False,
         )
 
+    def consume_owner_approval(
+        self,
+        *,
+        repository: str,
+        mission_id: str,
+        approval_id: str,
+        proposal_sha256: str,
+        accepted_main_sha: str,
+    ) -> bool:
+        """Record one authenticated approval consumption as replay evidence.
+
+        GitHub remains the approval authority.  This journal entry is only a
+        durable, hash-chained deny-on-replay fact, written under the same
+        SQLite lock as the rest of the journal so a process restart cannot
+        forget an already-consumed approval.
+        """
+
+        values = (mission_id, approval_id)
+        if any(not isinstance(value, str) or IDENTIFIER.fullmatch(value) is None for value in values):
+            raise JournalError("approval_identity_invalid")
+        if REPOSITORY.fullmatch(repository) is None:
+            raise JournalError("approval_repository_invalid")
+        if SHA256.fullmatch(proposal_sha256) is None or re.fullmatch(r"[0-9a-f]{40}", accepted_main_sha) is None:
+            raise JournalError("approval_digest_invalid")
+        event = "MISSION_APPROVAL_CONSUMED"
+        stage_id = "approval"
+        detail = "owner_approval_consumed"
+        idempotency_key = (
+            f"approval-consumed:{hashlib.sha256(repository.encode('utf-8')).hexdigest()[:16]}:{approval_id}"
+        )
+        data = _validate_data(
+            {
+                "repository": repository,
+                "approval_id": approval_id,
+                "proposal_sha256": proposal_sha256,
+                "accepted_main_sha": accepted_main_sha,
+            }
+        )
+        semantic = (
+            event,
+            idempotency_key,
+            mission_id,
+            stage_id,
+            "",
+            0,
+            "HEALTHY",
+            detail,
+            _canonical(data),
+        )
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            events = self._read_locked(connection)
+            existing_row = connection.execute(
+                "SELECT record_json FROM steward_journal_events WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if existing_row is not None:
+                try:
+                    existing = JournalEvent.from_wire(json.loads(existing_row["record_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise JournalCorrupt("approval replay record cannot be decoded") from exc
+                if _semantic(existing) != semantic:
+                    raise IdempotencyConflict("approval replay key has different facts")
+                connection.commit()
+                return False
+            if len(events) >= MAX_EVENTS:
+                raise JournalError("journal_event_limit_exceeded")
+            previous = events[-1].sha256 if events else ""
+            candidate = JournalEvent(
+                seq=len(events) + 1,
+                timestamp=_now(),
+                event=event,
+                idempotency_key=idempotency_key,
+                mission_id=mission_id,
+                stage_id=stage_id,
+                card_id="",
+                attempt=0,
+                state="HEALTHY",
+                detail=detail,
+                data=data,
+                prev_sha256=previous,
+                sha256="",
+            )
+            record = JournalEvent(**{**candidate.__dict__, "sha256": _sha256(candidate.unsigned_wire())})
+            connection.execute(
+                "INSERT INTO steward_journal_events(seq, idempotency_key, record_json) VALUES (?, ?, ?)",
+                (record.seq, record.idempotency_key, _canonical(record.to_wire())),
+            )
+            connection.commit()
+            return True
+        except sqlite3.IntegrityError as exc:
+            connection.rollback()
+            raise JournalError("approval_replay_append_conflict") from exc
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def latest_for_card(
         self,
         card_id: str,

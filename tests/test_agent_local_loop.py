@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import signal
 import shutil
@@ -24,8 +25,11 @@ import local_loop
 import local_run_once
 import local_supervisor
 import loopctl
+import mission_contract
 import plan_lane
+import shadow_steward
 import state_manager
+from steward_journal import StewardJournal
 
 
 MAIN_SHA = "a" * 40
@@ -78,6 +82,7 @@ class FakeGitHub:
         self.open_pr_issues = set()
         self.active = set()
         self.active_scopes = {}
+        self.comments = []
 
     @staticmethod
     def issue(number, *, author="Igzela", body=f"{SCOPE}\n{TASK}", labels=None):
@@ -123,10 +128,16 @@ class FakeGitHub:
             for issue_number in self.active
         }
 
+    def issue_comments(self, issue_number):
+        return list(self.comments)
+
 
 class FakeGit:
     def __init__(self, main_sha=MAIN_SHA):
         self.main_sha = main_sha
+
+    def refresh_origin_main(self, repo_path, branch):
+        self.refreshed = (Path(repo_path), branch)
 
     def origin_main_sha(self, repo_path, branch):
         self.repo_path = Path(repo_path)
@@ -293,6 +304,7 @@ class TestLoopControllerPoll(unittest.TestCase):
         self.assertEqual(decision["status"], "unavailable")
         self.assertEqual(decision["action"], "none")
 
+
     def test_missing_active_claim_scope_fails_closed(self):
         github = FakeGitHub()
         github.active = {3}
@@ -428,6 +440,210 @@ class TestLoopControllerPoll(unittest.TestCase):
             [7],
         )
         self.assertEqual(decision["deferred_issue_numbers"], [8, 9])
+
+
+class TestGitHubOwnerApprovalAuthenticator(unittest.TestCase):
+    def test_owner_comment_is_current_one_time_approval(self):
+        github = FakeGitHub()
+        proposal = shadow_steward.compile_proposal(
+            "Update docs/ARCHITECTURE_BOOK.md and tests/test_mission_contract.py."
+        )
+        approved_at = "2026-08-29T00:00:00Z"
+        payload = {
+            "owner_identity": "repository-owner",
+            "proposal_sha256": proposal.proposal_sha256,
+            "approval_id": "approval-1",
+            "approved_at": approved_at,
+            "accepted_main_sha": MAIN_SHA,
+        }
+        github.comments = [{
+            "author": {"login": "Igzela"},
+            "body": "<!-- steward-owner-approval:v1 " + json.dumps(payload, separators=(",", ":")) + " -->",
+            "createdAt": approved_at,
+        }]
+        auth = local_loop.GitHubOwnerApprovalAuthenticator(
+            github,
+            repository="Igzela/example",
+            issue_number=99,
+            accepted_main_sha=MAIN_SHA,
+            now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+        )
+        approval = auth.read_approval(proposal.proposal_sha256)
+        self.assertIsNotNone(approval)
+        self.assertTrue(auth.verify(approval, proposal.proposal_sha256))
+        self.assertFalse(auth.verify(approval, proposal.proposal_sha256))
+
+    def test_forged_author_stale_and_wrong_main_are_rejected(self):
+        github = FakeGitHub()
+        proposal = shadow_steward.compile_proposal("Update docs/ARCHITECTURE_BOOK.md.")
+        payload = {
+            "owner_identity": "repository-owner",
+            "proposal_sha256": proposal.proposal_sha256,
+            "approval_id": "approval-2",
+            "approved_at": "2026-08-01T00:00:00Z",
+            "accepted_main_sha": MAIN_SHA,
+        }
+        github.comments = [{
+            "author": {"login": "attacker"},
+            "body": "<!-- steward-owner-approval:v1 " + json.dumps(payload) + " -->",
+            "createdAt": payload["approved_at"],
+        }]
+        auth = local_loop.GitHubOwnerApprovalAuthenticator(
+            github,
+            repository="Igzela/example",
+            issue_number=99,
+            accepted_main_sha=MAIN_SHA,
+            now=lambda: datetime(2026, 8, 29, tzinfo=timezone.utc),
+        )
+        self.assertIsNone(auth.read_approval(proposal.proposal_sha256))
+        github.comments[0]["author"] = {"login": "Igzela"}
+        stale = auth.read_approval(proposal.proposal_sha256)
+        self.assertIsNone(stale)
+        self.assertFalse(auth.verify(stale, proposal.proposal_sha256))
+        payload["accepted_main_sha"] = "b" * 40
+        payload["approval_id"] = "approval-3"
+        self.assertIsNone(auth.read_approval(proposal.proposal_sha256))
+
+    def test_owner_approval_replay_is_denied_after_authenticator_restart(self):
+        github = FakeGitHub()
+        proposal = shadow_steward.compile_proposal("Update docs/ARCHITECTURE_BOOK.md.")
+        approved_at = "2026-08-29T00:00:00Z"
+        payload = {
+            "owner_identity": "repository-owner",
+            "proposal_sha256": proposal.proposal_sha256,
+            "approval_id": "approval-journal-replay",
+            "approved_at": approved_at,
+            "accepted_main_sha": MAIN_SHA,
+        }
+        github.comments = [{
+            "author": {"login": "Igzela"},
+            "body": "<!-- steward-owner-approval:v1 " + json.dumps(payload, separators=(",", ":")) + " -->",
+            "createdAt": approved_at,
+        }]
+        with tempfile.TemporaryDirectory() as temp:
+            journal_path = Path(temp) / "steward.sqlite3"
+            first = local_loop.GitHubOwnerApprovalAuthenticator(
+                github,
+                repository="Igzela/example",
+                issue_number=99,
+                accepted_main_sha=MAIN_SHA,
+                now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+                replay_store=StewardJournal(journal_path),
+            )
+            approval = first.read_approval(proposal.proposal_sha256)
+            self.assertTrue(first.verify(approval, proposal.proposal_sha256))
+
+            second = local_loop.GitHubOwnerApprovalAuthenticator(
+                github,
+                repository="Igzela/example",
+                issue_number=99,
+                accepted_main_sha=MAIN_SHA,
+                now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+                replay_store=StewardJournal(journal_path),
+            )
+            self.assertFalse(second.verify(approval, proposal.proposal_sha256))
+
+
+class TestMissionExecutionBridge(unittest.TestCase):
+    def test_missing_approval_does_not_activate_mission(self):
+        github = FakeGitHub()
+        github.metadata["name_with_owner"] = mission_contract.CAMPAIGN_REPOSITORY
+        proposal = shadow_steward.compile_proposal("Update docs/ARCHITECTURE_BOOK.md.")
+        controller = local_loop.LoopController(
+            github,
+            FakeGit(),
+            repository=mission_contract.CAMPAIGN_REPOSITORY,
+            repo_path=Path("/workspace/example"),
+        )
+        with mock.patch.object(
+            mission_contract,
+            "activate_current_mission",
+            side_effect=AssertionError("approval is required before activation"),
+        ):
+            result = controller.run_mission_stage(
+                proposal,
+                approval_issue=99,
+                steward=object(),
+            )
+        self.assertEqual(result["status"], "waiting_approval")
+
+    def test_non_test_bridge_activates_and_calls_steward(self):
+        github = FakeGitHub()
+        github.metadata["name_with_owner"] = mission_contract.CAMPAIGN_REPOSITORY
+        proposal = shadow_steward.compile_proposal(
+            "Update docs/ARCHITECTURE_BOOK.md and tests/test_mission_contract.py."
+        )
+        approved_at = "2026-08-29T00:00:00Z"
+        payload = {
+            "owner_identity": "repository-owner",
+            "proposal_sha256": proposal.proposal_sha256,
+            "approval_id": "approval-bridge",
+            "approved_at": approved_at,
+            "accepted_main_sha": MAIN_SHA,
+        }
+        github.comments = [{
+            "author": {"login": "Igzela"},
+            "body": "<!-- steward-owner-approval:v1 " + json.dumps(payload) + " -->",
+            "createdAt": approved_at,
+        }]
+        controller = local_loop.LoopController(
+            github,
+            FakeGit(),
+            repository=mission_contract.CAMPAIGN_REPOSITORY,
+            repo_path=Path("/workspace/example"),
+        )
+        calls = []
+        continuations = []
+
+        class Steward:
+            def __init__(self):
+                self.github = self
+
+            def fetch_stage_pr(self, repository, pr_number):
+                return {
+                    "repository": repository,
+                    "pr_number": pr_number,
+                    "state": "OPEN",
+                    "draft": False,
+                    "merged": False,
+                    "base_sha": MAIN_SHA,
+                    "head_sha": "b" * 40,
+                    "ci_state": "PASS",
+                    "review_state": "PASS",
+                    "base_branch": "main",
+                    "head_branch": "agent/stage-ready",
+                }
+
+            def execute_stage_to_waiting_for_merge(self, mission, stage, cards, **kwargs):
+                calls.append((mission, stage, cards, kwargs))
+                return {"status": "executed", "results": {}}
+
+            def continue_stage_to_waiting_for_merge(self, mission, stage, cards, **kwargs):
+                continuations.append((mission, stage, cards, kwargs))
+                return {"status": "waiting_for_merge", "results": {}}
+
+        steward_instance = Steward()
+        result = controller.run_mission_stage(
+            proposal,
+            approval_issue=99,
+            steward=steward_instance,
+            now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result["status"], "executed")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0].state, "RUNNING")
+        self.assertEqual(len(calls[0][2]), 2)
+        self.assertEqual(calls[0][3]["base_sha"], MAIN_SHA)
+        continued = controller.run_mission_stage(
+            proposal,
+            approval_issue=99,
+            steward=steward_instance,
+            stage_pr=42,
+            now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(continued["status"], "waiting_for_merge")
+        self.assertEqual(len(continuations), 1)
+        self.assertEqual(continuations[0][3]["stage_pr"]["pr_number"], 42)
 
 
 class TestGitHubAdapterActiveScopes(unittest.TestCase):

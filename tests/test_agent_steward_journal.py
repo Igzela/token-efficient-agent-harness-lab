@@ -95,6 +95,26 @@ class StewardJournalTests(unittest.TestCase):
         self.assertEqual(projection["last_heartbeat"], first.timestamp)
         self.assertEqual(projection["card_states"], {})
 
+    def test_owner_approval_consumption_survives_new_journal_instance(self):
+        journal = self.make_journal()
+        first = journal.consume_owner_approval(
+            repository="Igzela/token-efficient-agent-harness-lab",
+            mission_id=MISSION,
+            approval_id="approval-1",
+            proposal_sha256="a" * 64,
+            accepted_main_sha="b" * 40,
+        )
+        second = StewardJournal(journal.path).consume_owner_approval(
+            repository="Igzela/token-efficient-agent-harness-lab",
+            mission_id=MISSION,
+            approval_id="approval-1",
+            proposal_sha256="a" * 64,
+            accepted_main_sha="b" * 40,
+        )
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(len(journal.replay()), 1)
+
     def test_corrupt_record_is_refused_not_repaired(self):
         journal = self.make_journal()
         self.append(journal)

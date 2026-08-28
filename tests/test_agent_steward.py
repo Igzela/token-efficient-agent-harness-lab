@@ -6,6 +6,7 @@ from pathlib import Path
 from dataclasses import replace
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import threading
@@ -39,7 +40,17 @@ class StewardExecutionTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.mission = contract.campaign_mission()
+        registered = contract.campaign_mission()
+        self.mission = contract.activate_current_mission(
+            repository=registered.repository_identity.repository,
+            base_sha=registered.repository_identity.base_sha,
+            branch=registered.repository_identity.branch,
+            source_ref=registered.repository_identity.source_ref,
+            source_sha256=registered.repository_identity.source_sha256,
+            proposal_sha256=registered.proposal_sha256,
+            owner_approval=registered.owner_approval,
+            owner_authenticator=type("Authenticator", (), {"verify": lambda *_args: True})(),
+        )
         self.stage, self.card = self.make_stage_card()
         binding = worktree_manager.steward_binding_digest(
             self.mission.mission_id, self.stage.stage_id, self.card.card_id, BASE
@@ -291,6 +302,325 @@ class StewardExecutionTests(unittest.TestCase):
             "WAITING_FOR_MERGE",
         )
 
+    def test_parent_stage_promotion_stops_at_waiting_for_merge(self):
+        instance = self.make_steward(None, None)
+        integration = steward.StageIntegration(
+            self.stage.stage_id,
+            steward._stage_branch(self.mission, self.stage, BASE),
+            BASE,
+            HEAD,
+            ((self.card.card_id, HEAD),),
+        )
+        bound_stage = replace(self.stage, integration_pr=42, exact_head=HEAD)
+        waiting = steward.ExecutionResult(
+            self.card.card_id, "WAITING_FOR_MERGE", 1, HEAD,
+            "exact_head_ci_and_review_pass", None, 42,
+        )
+        with (
+            mock.patch.object(instance, "execute_stage", return_value={
+                self.card.card_id: steward.ExecutionResult(
+                    self.card.card_id, "WAITING_FOR_PR", 1, HEAD,
+                    "local_review_pass",
+                )
+            }) as execute,
+            mock.patch.object(instance, "assemble_stage", return_value=integration) as assemble,
+            mock.patch.object(instance, "publish_stage_branch") as publish,
+            mock.patch.object(instance, "bind_stage_draft_pr", return_value=(
+                bound_stage, {"number": 42, "head_sha": HEAD}
+            )) as bind,
+            mock.patch.object(
+                instance.github, "fetch_stage_pr", return_value=self.facts.__dict__
+            ) as fetch,
+            mock.patch.object(instance, "reconcile_stage_pr", return_value={
+                self.card.card_id: waiting
+            }) as reconcile,
+        ):
+            result = instance.execute_stage_to_waiting_for_merge(
+                self.mission,
+                self.stage,
+                (self.card,),
+                base_sha=BASE,
+                title="Stage",
+                body="Body",
+            )
+        self.assertEqual(result["stage"], bound_stage)
+        self.assertEqual(result["integration"], integration)
+        self.assertEqual(result["results"][self.card.card_id].status, "WAITING_FOR_MERGE")
+        execute.assert_called_once()
+        assemble.assert_called_once()
+        publish.assert_called_once_with(integration)
+        bind.assert_called_once()
+        fetch.assert_called_once_with(contract.CAMPAIGN_REPOSITORY, 42)
+        reconcile.assert_called_once()
+
+    def test_parent_stage_continuation_reuses_ready_pr_reconciliation(self):
+        instance = self.make_steward(None, None)
+        waiting = steward.ExecutionResult(
+            self.card.card_id, "WAITING_FOR_MERGE", 1, HEAD,
+            "exact_head_ci_and_review_pass", None, 42,
+        )
+        with mock.patch.object(instance, "reconcile_stage_pr", return_value={
+            self.card.card_id: waiting
+        }) as reconcile, mock.patch(
+            "pr_binding.create_or_update_stage_pr",
+            side_effect=AssertionError("Ready continuation must not update the PR"),
+        ):
+            result = instance.continue_stage_to_waiting_for_merge(
+                self.mission,
+                self.stage,
+                (self.card,),
+                stage_pr=self.facts,
+            )
+        self.assertEqual(result["status"], "waiting_for_merge")
+        self.assertEqual(result["stage"].integration_pr, 42)
+        self.assertEqual(result["stage"].exact_head, HEAD)
+        reconcile.assert_called_once()
+
+    def test_parent_assembly_cherry_picks_two_real_card_heads(self):
+        repo = self.root / "Projects" / "repo"
+        repo.mkdir(parents=True)
+        (self.root / ".worktrees").mkdir()
+
+        def git(*args):
+            return subprocess.run(
+                ["git", *args], cwd=repo, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+
+        git("init", "-b", "main")
+        git("config", "user.name", "Test")
+        git("config", "user.email", "test@example.invalid")
+        (repo / "docs").mkdir()
+        (repo / "tests").mkdir()
+        (repo / "docs" / "ARCHITECTURE_BOOK.md").write_text("base docs\n", encoding="utf-8")
+        (repo / "docs" / "RUNBOOK.md").write_text("base runbook\n", encoding="utf-8")
+        (repo / "tests" / "test_mission_contract.py").write_text("base tests\n", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-m", "base")
+        base_sha = git("rev-parse", "HEAD")
+
+        git("switch", "-c", "agent/card-a")
+        (repo / "docs" / "ARCHITECTURE_BOOK.md").write_text("card a\n", encoding="utf-8")
+        git("add", "docs/ARCHITECTURE_BOOK.md")
+        git("commit", "-m", "card a")
+        head_a = git("rev-parse", "HEAD")
+        git("switch", "main")
+        git("switch", "-c", "agent/card-b")
+        (repo / "tests" / "test_mission_contract.py").write_text("card b\n", encoding="utf-8")
+        git("add", "tests/test_mission_contract.py")
+        git("commit", "-m", "card b")
+        head_b = git("rev-parse", "HEAD")
+        git("switch", "main")
+
+        mission = replace(
+            self.mission,
+            repository_identity=replace(
+                self.mission.repository_identity, base_sha=base_sha
+            ),
+        )
+        stage_id = "stage-real"
+        cards = (
+            contract.WorkCard(
+                "card-a", stage_id, ("docs/ARCHITECTURE_BOOK.md",),
+                ("outside-approved/",), ("apply",), ("check",), ("negative",),
+                ("receipt",), (), ("docs/ARCHITECTURE_BOOK.md",), 1, "T1",
+                mission.rollback, "PENDING",
+            ),
+            contract.WorkCard(
+                "card-b", stage_id, ("tests/test_mission_contract.py",),
+                ("outside-approved/",), ("apply",), ("check",), ("negative",),
+                ("receipt",), (), ("tests/test_mission_contract.py",), 1, "T1",
+                mission.rollback, "PENDING",
+            ),
+        )
+        stage = contract.Stage(
+            stage_id, mission.mission_id, "real assembly", mission.repository_identity,
+            ("checks",), ("no effects",), ("card-a", "card-b"),
+            mission.rollback, None, None,
+        )
+        instance = steward.Steward(
+            repository=contract.CAMPAIGN_REPOSITORY,
+            repo_path=repo,
+            journal=StewardJournal(repo / "journal.sqlite3"),
+            github=steward_github.FakeGitHubReader(),
+            lock_dir=repo / "locks",
+        )
+        results = {
+            "card-a": steward.ExecutionResult("card-a", "WAITING_FOR_PR", 1, head_a, "reviewed"),
+            "card-b": steward.ExecutionResult("card-b", "WAITING_FOR_PR", 1, head_b, "reviewed"),
+        }
+        integration = instance.assemble_stage(
+            mission, stage, cards, results, base_sha=base_sha
+        )
+        self.assertEqual(integration.base_sha, base_sha)
+        self.assertNotEqual(integration.head_sha, base_sha)
+        self.assertEqual(
+            set(git("diff", "--name-only", f"{base_sha}..{integration.head_sha}").splitlines()),
+            {"docs/ARCHITECTURE_BOOK.md", "tests/test_mission_contract.py"},
+        )
+
+    def test_real_workcards_run_through_k_two_dependencies_and_assembly(self):
+        repo = self.root / "Projects" / "repo"
+        repo.mkdir(parents=True)
+        origin = self.root / "origin.git"
+        (self.root / ".worktrees").mkdir()
+        (self.root / "worker-worktrees").mkdir()
+
+        def git(*args):
+            return subprocess.run(
+                ["git", *args], cwd=repo, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+
+        subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
+        git("init", "-b", "main")
+        git("config", "user.name", "Test")
+        git("config", "user.email", "test@example.invalid")
+        (repo / "docs").mkdir()
+        (repo / "tests").mkdir()
+        (repo / "docs" / "ARCHITECTURE_BOOK.md").write_text("base docs\n", encoding="utf-8")
+        (repo / "docs" / "RUNBOOK.md").write_text("base runbook\n", encoding="utf-8")
+        (repo / "tests" / "test_mission_contract.py").write_text("base tests\n", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-m", "base")
+        base_sha = git("rev-parse", "HEAD")
+        git("remote", "add", "origin", str(origin))
+        git("push", "origin", "main")
+
+        mission = replace(
+            self.mission,
+            repository_identity=replace(self.mission.repository_identity, base_sha=base_sha),
+        )
+        stage_id = "stage-real-execution"
+        cards = (
+            contract.WorkCard(
+                "card-a", stage_id, ("docs/ARCHITECTURE_BOOK.md",),
+                (), ("apply",), ("check",), ("negative",), ("receipt",),
+                (), ("docs/ARCHITECTURE_BOOK.md",), 1, "T1", mission.rollback, "PENDING",
+            ),
+            contract.WorkCard(
+                "card-b", stage_id, ("tests/test_mission_contract.py",),
+                (), ("apply",), ("check",), ("negative",), ("receipt",),
+                (), ("tests/test_mission_contract.py",), 1, "T1", mission.rollback, "PENDING",
+            ),
+            contract.WorkCard(
+                "card-c", stage_id, ("docs/RUNBOOK.md",),
+                (), ("integrate",), ("check",), ("negative",), ("receipt",),
+                ("card-a", "card-b"), ("docs/RUNBOOK.md",), 1, "T1", mission.rollback, "PENDING",
+            ),
+        )
+        stage = contract.Stage(
+            stage_id, mission.mission_id, "real worker execution", mission.repository_identity,
+            ("focused",), ("no effects",), ("card-a", "card-b", "card-c"),
+            mission.rollback, None, None,
+        )
+        active = 0
+        maximum = 0
+        active_lock = threading.Lock()
+
+        class RealTestWorker(workers.BoundedProcessWorker):
+            def __init__(self):
+                super().__init__(lambda _context: ["/usr/bin/python3", "-c", "pass"])
+
+            def run(self, context):
+                nonlocal active, maximum
+                with active_lock:
+                    active += 1
+                    maximum = max(maximum, active)
+                try:
+                    relative = context.allowed_paths[0]
+                    target = context.worktree / relative
+                    target.write_text(f"real worker {context.card_id}\n", encoding="utf-8")
+                    subprocess.run(
+                        ["git", "add", "--", relative], cwd=context.worktree,
+                        check=True, capture_output=True, text=True,
+                    )
+                    subprocess.run(
+                        ["git", "commit", "-m", f"worker {context.card_id}"],
+                        cwd=context.worktree, check=True, capture_output=True, text=True,
+                    )
+                    head = subprocess.run(
+                        ["git", "rev-parse", "HEAD"], cwd=context.worktree,
+                        check=True, capture_output=True, text=True,
+                    ).stdout.strip()
+                    return workers.WorkerOutcome(
+                        "PASS", workers.process_session_id(context), head, (relative,),
+                        "real_worker_commit",
+                    )
+                finally:
+                    with active_lock:
+                        active -= 1
+
+        class RealTestReviewer(workers.BoundedProcessReviewer):
+            def __init__(self):
+                super().__init__(lambda _context, _outcome: ["/usr/bin/python3", "-c", "pass"])
+
+            def review(self, context, outcome):
+                payload = {
+                    "schema_version": "steward_review_outcome.v1",
+                    "status": "PASS",
+                    "reviewer_session_id": workers.reviewer_session_id(context, outcome),
+                    "implementation_session_id": outcome.session_id,
+                    "reviewed_head_sha": outcome.head_sha,
+                    "blockers": [],
+                    "detail": "real_independent_review",
+                    "reviewed_base_sha": context.base_sha,
+                    "reviewed_range_sha256": workers.review_range_digest(
+                        context.base_sha, outcome.head_sha, worktree=context.worktree
+                    ),
+                    "review_axes": ["standards", "spec"],
+                    "review_round": 1,
+                    "review_mode": "full",
+                    "review_receipt_sha256": "",
+                    "summary": "real independent review",
+                    "findings": None,
+                    "security_ok": True,
+                    "rollback_ok": True,
+                    "observed_ci_status": "unknown",
+                    "finding_ledger_digest": "",
+                }
+                return workers.ReviewOutcome.from_wire(
+                    workers.seal_review_outcome_wire(payload)
+                )
+
+        with (
+            mock.patch.object(worktree_manager, "WORKTREE_BASE", self.root / "worker-worktrees"),
+            mock.patch.object(steward, "_git_repository_identity", return_value=True),
+            mock.patch.object(
+                workers,
+                "run_allowlisted_checks",
+                return_value=[{"command": "git diff --check", "exit_code": 0}],
+            ),
+        ):
+            instance = steward.Steward(
+                repository=contract.CAMPAIGN_REPOSITORY,
+                repo_path=repo,
+                journal=StewardJournal(repo / "journal.sqlite3"),
+                github=steward_github.FakeGitHubReader(),
+                worker=RealTestWorker(),
+                reviewer=RealTestReviewer(),
+                lock_dir=repo / "locks",
+            )
+            results = instance.dispatch_cards(mission, stage, cards, base_sha=base_sha)
+            self.assertEqual(
+                {card_id: result.status for card_id, result in results.items()},
+                {
+                    "card-a": "WAITING_FOR_PR",
+                    "card-b": "WAITING_FOR_PR",
+                    "card-c": "WAITING_FOR_PR",
+                },
+                instance.journal.replay(),
+            )
+            integration = instance.assemble_stage(
+                mission, stage, cards, results, base_sha=base_sha
+            )
+
+        self.assertEqual(
+            set(git("diff", "--name-only", f"{base_sha}..{integration.head_sha}").splitlines()),
+            {"docs/ARCHITECTURE_BOOK.md", "docs/RUNBOOK.md", "tests/test_mission_contract.py"},
+        )
+        self.assertEqual(maximum, 2)
+
     def test_worker_exception_is_outcome_unknown_and_is_never_retried(self):
         def explode(_context):
             raise RuntimeError("worker stopped after mutation boundary")
@@ -470,7 +800,17 @@ class StewardConcurrencyTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.mission = contract.campaign_mission()
+        registered = contract.campaign_mission()
+        self.mission = contract.activate_current_mission(
+            repository=registered.repository_identity.repository,
+            base_sha=registered.repository_identity.base_sha,
+            branch=registered.repository_identity.branch,
+            source_ref=registered.repository_identity.source_ref,
+            source_sha256=registered.repository_identity.source_sha256,
+            proposal_sha256=registered.proposal_sha256,
+            owner_approval=registered.owner_approval,
+            owner_authenticator=type("Authenticator", (), {"verify": lambda *_args: True})(),
+        )
 
     def card(self, card_id: str, path: str, locks: tuple[str, ...], dependency=()):
         return contract.WorkCard(

@@ -569,10 +569,19 @@ def _validate_mission(mission: contract.MaintenanceMission) -> contract.Maintena
     if not isinstance(mission, contract.MaintenanceMission):
         raise ShadowStewardError("mission_invalid")
     try:
-        current = contract.validate_registered_campaign()
+        current = contract.validate_owner_approval(mission)
+    except contract.MissionContractError as exc:
+        raise ShadowStewardError("mission_registration_invalid") from exc
+    try:
+        registered = contract.validate_registered_campaign()
     except contract.MissionContractError as exc:
         raise ShadowStewardError("registered_mission_invalid") from exc
-    if mission.to_wire() != current.to_wire():
+    if (
+        current.mission_id != registered.mission_id
+        or current.proposal_wire() != registered.proposal_wire()
+        or current.proposal_sha256 != registered.proposal_sha256
+        or current.owner_approval != registered.owner_approval
+    ):
         raise ShadowStewardError("mission_registration_invalid")
     return current
 
@@ -1166,37 +1175,50 @@ def plan_stage(
     if decision.status != "SHADOW_RECOMMENDATION":
         return _waiting_projection(model.proposal_sha256, current.mission_id)
     stage_id = f"shadow-stage-{model.proposal_sha256[:16]}"
-    card_id = f"{stage_id}:card"
+    requested_paths = tuple(model.requested_paths)
+    # Two leaf cards make independent paths eligible for the real K=2
+    # scheduler.  The parent performs integration after both cards have been
+    # reviewed; integration is deliberately not another implementation card.
+    # For a one-path proposal the leaves intentionally share a lock, proving
+    # serialization without widening the approved path scope.
+    midpoint = max(1, (len(requested_paths) + 1) // 2)
+    leaf_paths = (requested_paths[:midpoint], requested_paths[midpoint:])
+    if not leaf_paths[1]:
+        leaf_paths = (leaf_paths[0], leaf_paths[0])
+    card_ids = (f"{stage_id}:leaf-a", f"{stage_id}:leaf-b")
     stage = contract.Stage(
         stage_id,
         current.mission_id,
         "Provider-free bounded repository maintenance recommendation.",
         current.repository_identity,
-        ("focused_checks_required", "full_checks_required", "exact_head_review_required"),
-        ("legacy_controller_remains_lifecycle_writer", "no_external_effects"),
-        (card_id,),
+        ("focused_checks_required", "full_checks_required", "exact_head_review_required", "k2_scheduler_observed"),
+        ("legacy_controller_remains_lifecycle_writer", "no_external_effects", "parent_only_draft_pr"),
+        card_ids,
         current.rollback,
         None,
         None,
     )
-    card = contract.WorkCard(
-        card_id,
-        stage_id,
-        model.requested_paths,
-        ("outside-approved-scope/",),
-        ("Apply only the bounded approved change.",),
-        current.quality_checks,
-        ("Reject scope, authority, secret, and unknown-outcome expansion.",),
-        ("redacted verification receipts", "exact-head review and CI"),
-        (),
-        model.requested_paths,
-        1,
-        "T1",
-        current.rollback,
-        "PENDING",
+    cards = tuple(
+        contract.WorkCard(
+            card_id,
+            stage_id,
+            paths,
+            ("outside-approved-scope/",),
+            ("Apply only the bounded approved change.",),
+            current.quality_checks,
+            ("Reject scope, authority, secret, and unknown-outcome expansion.",),
+            ("redacted verification receipts", "exact-head review and CI"),
+            (),
+            paths,
+            2,
+            "T1",
+            current.rollback,
+            "PENDING",
+        )
+        for card_id, paths in zip(card_ids[:2], leaf_paths)
     )
     try:
-        contract.validate_stage(stage, current, (card,))
+        contract.validate_stage(stage, current, cards)
     except contract.MissionContractError as exc:
         raise ShadowStewardError("stage_projection_invalid") from exc
     return _seal_projection(
@@ -1206,7 +1228,7 @@ def plan_stage(
             current.mission_id,
             "PLANNED",
             stage,
-            (card,),
+            cards,
             None,
             0,
         )
@@ -1221,13 +1243,22 @@ def replan(plan: PlanProjection, failure_code: str, *, attempt_number: int = 1) 
     if not isinstance(attempt_number, int) or attempt_number < 1:
         raise ShadowStewardError("attempt_number_invalid")
     try:
-        current = _validate_mission(contract.campaign_mission())
+        if plan.stage is None:
+            raise ShadowStewardError("plan_projection_invalid")
+        registered = contract.campaign_mission()
+        current = _validate_mission(
+            replace(
+                registered,
+                state="RUNNING",
+                repository_identity=plan.stage.repository_identity,
+            )
+        )
         _sha(plan.proposal_sha256, "proposal_sha256")
         if (
             plan.mission_id != current.mission_id
             or plan.disposition not in {"PLANNED", "RECOVERY_RECOMMENDED"}
             or plan.stage is None
-            or len(plan.workcards) != 1
+            or len(plan.workcards) < 2
         ):
             raise ShadowStewardError("plan_projection_invalid")
         contract.validate_stage(plan.stage, current, plan.workcards)

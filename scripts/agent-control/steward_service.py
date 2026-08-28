@@ -84,14 +84,27 @@ class StewardService:
         journal: StewardJournal,
         github: ReadOnlyGitHub,
         repo_path: str | os.PathLike[str] | None = None,
+        mission: mission_contract.MaintenanceMission | None = None,
     ):
         try:
-            registered = mission_contract.validate_registered_campaign()
+            registered = (
+                mission_contract.validate_registered_campaign()
+                if mission is None
+                else mission_contract.validate_current_mission(
+                    mission,
+                    repository=mission.repository_identity.repository,
+                    base_sha=mission.repository_identity.base_sha,
+                    branch=mission.repository_identity.branch,
+                    source_ref=mission.repository_identity.source_ref,
+                    source_sha256=mission.repository_identity.source_sha256,
+                )
+            )
         except mission_contract.MissionContractError as exc:
-            raise ValueError("registered_mission_invalid") from exc
+            raise ValueError("active_mission_invalid") from exc
         if mission_id != registered.mission_id:
             raise ValueError("mission_id_not_registered")
         self.mission_id = mission_id
+        self.mission = registered
         self.journal = journal
         self.github = github
         self.repo_path = Path(repo_path).resolve() if repo_path is not None else None
@@ -132,6 +145,18 @@ class StewardService:
 
         if not callable(dispatch):
             raise TypeError("stage dispatcher must be callable")
+        try:
+            mission_contract.validate_current_mission(
+                mission,
+                repository=self.mission.repository_identity.repository,
+                base_sha=base_sha,
+                branch=mission.repository_identity.branch,
+                source_ref=mission.repository_identity.source_ref,
+                source_sha256=mission.repository_identity.source_sha256,
+                require_running=True,
+            )
+        except mission_contract.MissionContractError as exc:
+            raise ValueError("active_mission_invalid") from exc
         if mission.mission_id != self.mission_id:
             raise ValueError("mission_id_not_registered")
         self.heartbeat(tick_id=f"execute:{mission.mission_id}:{stage.stage_id}")
@@ -176,7 +201,7 @@ class StewardService:
         for event in events:
             if event.mission_id == self.mission_id and event.event == "WORKER_STARTED":
                 started[(event.mission_id, event.stage_id, event.card_id)] = event
-        registered = mission_contract.validate_registered_campaign()
+        registered = self.mission
         items: list[RecoveryItem] = []
         for binding in projection["bindings"]:
             state = binding["state"]
@@ -292,7 +317,7 @@ class StewardService:
                 head_branch = binding.get("head_branch")
                 if not isinstance(base_branch, str) or not isinstance(head_branch, str):
                     raise GitHubFactsError("stage_binding_branch_missing")
-                registered = mission_contract.validate_registered_campaign()
+                registered = self.mission
                 if (
                     repository != registered.repository_identity.repository
                     or base_sha != registered.repository_identity.base_sha

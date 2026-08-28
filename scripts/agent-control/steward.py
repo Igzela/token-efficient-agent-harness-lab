@@ -9,8 +9,9 @@ manual exact-head CI/review/merge owners retain their authority.
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -58,6 +59,30 @@ class ExecutionResult:
             "reviewer_session_id": self.reviewer_session_id,
             "pr_number": self.pr_number,
             "automatic_merge": False,
+        }
+
+
+@dataclass(frozen=True)
+class StageIntegration:
+    """Parent-owned local Stage branch assembled from verified card heads."""
+
+    stage_id: str
+    branch: str
+    base_sha: str
+    head_sha: str
+    card_heads: tuple[tuple[str, str], ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "schema_version": "steward_stage_integration.v1",
+            "stage_id": self.stage_id,
+            "branch": self.branch,
+            "base_sha": self.base_sha,
+            "head_sha": self.head_sha,
+            "card_heads": [
+                {"card_id": card_id, "head_sha": head_sha}
+                for card_id, head_sha in self.card_heads
+            ],
         }
 
 
@@ -163,6 +188,17 @@ def _git_changed_paths(worktree: Path, base_sha: str, head_sha: str) -> tuple[st
     ):
         raise StewardError("worktree_diff_path_invalid")
     return paths
+
+
+def _stage_branch(
+    mission: contract.MaintenanceMission,
+    stage: contract.Stage,
+    base_sha: str,
+) -> str:
+    digest = hashlib.sha256(
+        "\x00".join((mission.mission_id, stage.stage_id, base_sha)).encode("utf-8")
+    ).hexdigest()[:24]
+    return f"agent/stage-{digest}"
 
 
 def _git_worktree_clean(worktree: Path) -> None:
@@ -306,16 +342,28 @@ class Steward:
         self.max_concurrency = max_concurrency
         self.service: StewardService | None = None
         self.mission_id: str | None = None
+        self.mission_binding: tuple[str, ...] | None = None
 
     def _service_for(self, mission: contract.MaintenanceMission) -> StewardService:
-        if self.service is None or self.mission_id != mission.mission_id:
+        binding = (
+            mission.mission_id,
+            mission.state,
+            mission.repository_identity.repository,
+            mission.repository_identity.base_sha,
+            mission.repository_identity.branch,
+            mission.repository_identity.source_ref,
+            mission.repository_identity.source_sha256,
+        )
+        if self.service is None or self.mission_binding != binding:
             self.service = StewardService(
                 mission_id=mission.mission_id,
                 journal=self.journal,
                 github=self.github,
                 repo_path=self.repo_path,
+                mission=mission,
             )
             self.mission_id = mission.mission_id
+            self.mission_binding = binding
         return self.service
 
     def heartbeat(self, mission: contract.MaintenanceMission, *, tick_id: str) -> dict[str, Any]:
@@ -351,6 +399,418 @@ class Steward:
             base_sha=base_sha,
             stage_pr=stage_pr,
         )
+
+    def execute_stage_to_waiting_for_merge(
+        self,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+        cards: tuple[contract.WorkCard, ...],
+        *,
+        base_sha: str,
+        title: str,
+        body: str,
+    ) -> dict[str, Any]:
+        """Run the parent-owned provider-free Stage promotion path.
+
+        The method stops before merge.  Child cards only produce reviewed
+        commits; this parent then assembles and pushes one exact Stage branch,
+        binds its Draft PR through the existing owner, and re-reads live facts.
+        A newly created Draft remains ``stage_pr_draft`` until the existing
+        Ready, CI, and review owners make the exact head merge-eligible.
+        """
+
+        results = self.execute_stage(
+            mission, stage, cards, base_sha=base_sha, stage_pr=None
+        )
+        if any(
+            result.status not in {"WAITING_FOR_PR", "COMPLETE"}
+            for result in results.values()
+        ) or set(results) != {card.card_id for card in cards}:
+            raise StewardError("stage_execution_not_ready")
+        integration = self.assemble_stage(
+            mission, stage, cards, results, base_sha=base_sha
+        )
+        self.publish_stage_branch(integration)
+        bound_stage, pr = self.bind_stage_draft_pr(
+            mission,
+            stage,
+            cards,
+            integration,
+            title=title,
+            body=body,
+        )
+        observed = self.github.fetch_stage_pr(self.repository, int(pr["number"]))
+        facts = _stage_pr_facts(observed)
+        if facts is None:
+            raise StewardError("stage_pr_facts_required")
+        if facts.draft:
+            return {
+                "status": "stage_pr_draft",
+                "stage": bound_stage,
+                "integration": integration,
+                "pr": pr,
+                "results": results,
+            }
+        reconciled = self.reconcile_stage_pr(
+            mission, bound_stage, cards, stage_pr=observed
+        )
+        status = (
+            "waiting_for_merge"
+            if all(result.status == "WAITING_FOR_MERGE" for result in reconciled.values())
+            else "stage_pr_waiting"
+        )
+        return {
+            "status": status,
+            "stage": bound_stage,
+            "integration": integration,
+            "pr": pr,
+            "results": reconciled,
+        }
+
+    def continue_stage_to_waiting_for_merge(
+        self,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+        cards: tuple[contract.WorkCard, ...],
+        *,
+        stage_pr: steward_github.StagePRFacts | dict[str, Any],
+    ) -> dict[str, Any]:
+        """Resume the parent-owned Stage gate after Draft promotion.
+
+        Ready/CI/review owners operate on the existing Stage PR.  This seam
+        only rebinds the live exact PR facts and reuses the canonical
+        reconciliation owner; it never calls Draft create/update again or
+        attempts to mark Ready, merge, or alter lifecycle ownership.
+        """
+
+        facts = _stage_pr_facts(stage_pr)
+        if facts is None:
+            raise StewardError("stage_pr_facts_required")
+        bound_stage = replace(
+            stage,
+            integration_pr=facts.pr_number,
+            exact_head=facts.head_sha,
+        )
+        if facts.draft:
+            return {
+                "status": "stage_pr_draft",
+                "stage": bound_stage,
+                "pr": {"number": facts.pr_number, "head_sha": facts.head_sha},
+                "results": {},
+            }
+        reconciled = self.reconcile_stage_pr(
+            mission, bound_stage, cards, stage_pr=facts
+        )
+        status = (
+            "waiting_for_merge"
+            if all(result.status == "WAITING_FOR_MERGE" for result in reconciled.values())
+            else "stage_pr_waiting"
+        )
+        return {
+            "status": status,
+            "stage": bound_stage,
+            "pr": {"number": facts.pr_number, "head_sha": facts.head_sha},
+            "results": reconciled,
+        }
+
+    def assemble_stage(
+        self,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+        cards: tuple[contract.WorkCard, ...],
+        results: Mapping[str, ExecutionResult],
+        *,
+        base_sha: str,
+    ) -> StageIntegration:
+        """Assemble verified card commits into one parent-owned Stage branch.
+
+        Card worktrees are exact-base and isolated.  This method is the only
+        parent-side assembly seam: it rechecks each committed diff against its
+        WorkCard before cherry-picking, refuses stale/ambiguous branches, and
+        never gives the child worker a PR or GitHub write path.
+        """
+
+        if not SHA40.fullmatch(base_sha):
+            raise StewardError("base_sha_invalid")
+        try:
+            contract.validate_current_mission(
+                mission,
+                repository=self.repository,
+                base_sha=base_sha,
+                branch=mission.repository_identity.branch,
+                source_ref=mission.repository_identity.source_ref,
+                source_sha256=mission.repository_identity.source_sha256,
+                require_running=True,
+            )
+            contract.validate_execution_scope(
+                mission,
+                tuple(sorted({path for card in cards for path in card.allowed_paths})),
+                ("draft_pr",),
+            )
+            contract.validate_stage(stage, mission, cards)
+            contract.validate_execution_scope(
+                mission,
+                tuple(sorted({path for card in cards for path in card.allowed_paths})),
+                ("read", "write", "test", "branch", "draft_pr"),
+            )
+        except contract.MissionContractError as exc:
+            raise StewardError("stage_integration_scope_invalid") from exc
+        if set(results) != {card.card_id for card in cards}:
+            raise StewardError("stage_integration_results_incomplete")
+        card_heads: list[tuple[str, str]] = []
+        for card in cards:
+            result = results[card.card_id]
+            if result.status not in {"WAITING_FOR_PR", "COMPLETE"}:
+                raise StewardError("stage_card_not_ready_for_integration")
+            if not isinstance(result.head_sha, str) or not SHA40.fullmatch(result.head_sha):
+                raise StewardError("stage_card_head_missing")
+            card_heads.append((card.card_id, result.head_sha))
+
+        branch = _stage_branch(mission, stage, base_sha)
+        digest = branch.removeprefix("agent/stage-")
+        if self.repo_path.parent.parent.name == ".worktrees":
+            worktree_root = self.repo_path.parent
+        else:
+            worktree_root = self.repo_path.parent.parent / ".worktrees" / self.repo_path.name
+        stage_path = worktree_root / f"steward-stage-{digest}"
+        if stage_path.exists() or stage_path.is_symlink():
+            raise StewardError("stage_integration_path_occupied")
+        existing = self._git_text("rev-parse", "--verify", f"refs/heads/{branch}", allow_failure=True)
+        if existing is not None and existing != base_sha:
+            raise StewardError("stage_integration_branch_stale")
+        if existing is None:
+            self._git_text("branch", branch, base_sha)
+        self._git_text("worktree", "add", str(stage_path), branch)
+        try:
+            for card, (_card_id, head_sha) in zip(cards, card_heads):
+                if self._git_text("merge-base", "--is-ancestor", base_sha, head_sha, cwd=stage_path, allow_failure=True) is None:
+                    raise StewardError("stage_card_head_not_descendant")
+                paths = _git_changed_paths(stage_path, base_sha, head_sha)
+                workers.validate_changed_paths(card, paths)
+                if head_sha == base_sha:
+                    continue
+                if self._git_text("cherry-pick", "--no-commit", head_sha, cwd=stage_path, allow_failure=True) is None:
+                    self._git_text("cherry-pick", "--abort", cwd=stage_path, allow_failure=True)
+                    raise StewardError("stage_integration_conflict")
+            if not self._git_text("diff", "--cached", "--name-only", cwd=stage_path):
+                raise StewardError("stage_integration_no_changes")
+            self._git_text(
+                "-c", "user.name=Autonomous Steward", "-c",
+                "user.email=steward@localhost.invalid", "commit", "-m",
+                f"feat: integrate Steward stage {stage.stage_id}", cwd=stage_path,
+            )
+            head_sha = self._git_text("rev-parse", "HEAD", cwd=stage_path)
+            if not SHA40.fullmatch(head_sha):
+                raise StewardError("stage_integration_head_invalid")
+        finally:
+            if stage_path.exists():
+                self._git_text("worktree", "remove", str(stage_path), allow_failure=True)
+        return StageIntegration(stage.stage_id, branch, base_sha, head_sha, tuple(card_heads))
+
+    def _git_text(
+        self, *args: str, cwd: Path | None = None, allow_failure: bool = False
+    ) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", *args], cwd=cwd or self.repo_path, capture_output=True,
+                text=True, timeout=120, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise StewardError("stage_git_unavailable") from exc
+        if result.returncode != 0:
+            if allow_failure:
+                return None
+            raise StewardError("stage_git_command_failed")
+        return result.stdout.strip()
+
+    def publish_stage_branch(self, integration: StageIntegration) -> None:
+        """Push one exact Stage branch and reconcile the remote head."""
+
+        remote = self._git_text(
+            "ls-remote", "origin", f"refs/heads/{integration.branch}", allow_failure=True
+        )
+        if remote:
+            parts = remote.split()
+            if len(parts) != 2 or parts[1] != f"refs/heads/{integration.branch}":
+                raise StewardError("stage_remote_head_ambiguous")
+            if parts[0] != integration.head_sha:
+                raise StewardError("stage_remote_branch_not_reusable")
+            return
+        try:
+            self._git_text(
+                "push", "origin",
+                f"refs/heads/{integration.branch}:refs/heads/{integration.branch}"
+            )
+        except StewardError as exc:
+            observed = self._git_text(
+                "ls-remote", "origin", f"refs/heads/{integration.branch}", allow_failure=True
+            )
+            if not observed or not observed.startswith(integration.head_sha + " "):
+                raise StewardError("stage_push_outcome_unknown") from exc
+        observed = self._git_text("ls-remote", "origin", f"refs/heads/{integration.branch}")
+        if not observed.startswith(integration.head_sha + " "):
+            raise StewardError("stage_remote_head_mismatch")
+
+    def bind_stage_draft_pr(
+        self,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+        cards: tuple[contract.WorkCard, ...],
+        integration: StageIntegration,
+        *,
+        title: str,
+        body: str,
+    ) -> tuple[contract.Stage, dict[str, Any]]:
+        """Create/update exactly one parent-owned Stage Draft PR."""
+
+        try:
+            contract.validate_current_mission(
+                mission,
+                repository=self.repository,
+                base_sha=integration.base_sha,
+                branch=mission.repository_identity.branch,
+                source_ref=mission.repository_identity.source_ref,
+                source_sha256=mission.repository_identity.source_sha256,
+                require_running=True,
+            )
+            contract.validate_stage(stage, mission, cards)
+            contract.validate_execution_scope(
+                mission,
+                tuple(sorted({path for card in cards for path in card.allowed_paths})),
+                ("draft_pr",),
+            )
+        except contract.MissionContractError:
+            raise StewardError("stage_pr_stage_invalid")
+        if integration.stage_id != stage.stage_id or integration.base_sha != mission.repository_identity.base_sha:
+            raise StewardError("stage_pr_integration_binding_invalid")
+        if integration.branch != _stage_branch(mission, stage, integration.base_sha):
+            raise StewardError("stage_pr_branch_binding_invalid")
+        marker = {
+            "subject_kind": "steward-stage",
+            "stage_id": stage.stage_id,
+            "mission_id": mission.mission_id,
+            "base_sha": integration.base_sha,
+            "branch": integration.branch,
+        }
+        pr_body = (
+            f"<!-- agent-orchestrator-binding: {json.dumps(marker, sort_keys=True, separators=(',', ':'))} -->\n\n"
+            f"{body.strip()}"
+        )
+        import pr_binding
+
+        bound = pr_binding.create_or_update_stage_pr(
+            stage.stage_id,
+            mission.mission_id,
+            integration.branch,
+            integration.head_sha,
+            integration.base_sha,
+            title,
+            pr_body,
+            self.repository,
+        )
+        number = bound.get("number")
+        if type(number) is not int:
+            raise StewardError("stage_pr_number_invalid")
+        return replace(stage, integration_pr=number, exact_head=integration.head_sha), bound
+
+    def reconcile_stage_pr(
+        self,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+        cards: tuple[contract.WorkCard, ...],
+        *,
+        stage_pr: steward_github.StagePRFacts | dict[str, Any],
+    ) -> dict[str, ExecutionResult]:
+        """Reconcile one Stage PR for every locally reviewed WorkCard."""
+
+        facts = _stage_pr_facts(stage_pr)
+        if facts is None or stage.integration_pr is None or stage.exact_head is None:
+            raise StewardError("stage_pr_facts_required")
+        try:
+            contract.validate_current_mission(
+                mission,
+                repository=self.repository,
+                base_sha=mission.repository_identity.base_sha,
+                branch=mission.repository_identity.branch,
+                source_ref=mission.repository_identity.source_ref,
+                source_sha256=mission.repository_identity.source_sha256,
+                require_running=True,
+            )
+            contract.validate_stage(
+                stage,
+                mission,
+                cards,
+                observed_integration_pr=facts.pr_number,
+                observed_exact_head=facts.head_sha,
+            )
+            live = _stage_pr_facts(self.github.fetch_stage_pr(self.repository, facts.pr_number))
+            if live is None:
+                raise StewardError("stage_pr_live_facts_missing")
+            status = steward_github.reconcile_stage_pr(
+                live,
+                repository=self.repository,
+                pr_number=facts.pr_number,
+                expected_base_sha=mission.repository_identity.base_sha,
+                expected_head_sha=stage.exact_head,
+                expected_base_branch=stage.repository_identity.branch,
+                expected_head_branch=_stage_branch(
+                    mission, stage, mission.repository_identity.base_sha
+                ),
+            )
+        except (contract.MissionContractError, steward_github.GitHubFactsError) as exc:
+            raise StewardError(str(exc)) from exc
+        except steward_github.GitHubReadError as exc:
+            return {
+                card.card_id: ExecutionResult(
+                    card.card_id, "WAITING", 0, stage.exact_head,
+                    "github_facts_unavailable", None, facts.pr_number,
+                )
+                for card in cards
+            }
+        results: dict[str, ExecutionResult] = {}
+        for card in cards:
+            latest = self.journal.latest_for_card(
+                card.card_id, mission_id=mission.mission_id, stage_id=stage.stage_id
+            )
+            attempt = latest.attempt if latest is not None else 1
+            if status.outcome == "WAITING_FOR_MERGE":
+                self._record(
+                    event="STAGE_WAITING_FOR_MERGE",
+                    key=_journal_key("stage-waiting", mission, stage, card, facts.pr_number, stage.exact_head),
+                    mission=mission,
+                    stage=stage,
+                    card=card,
+                    attempt=attempt,
+                    state="WAITING_FOR_MERGE",
+                    detail="exact_head_ci_and_review_pass",
+                    data={"pr_number": facts.pr_number, "stage_head_sha": stage.exact_head},
+                )
+                results[card.card_id] = ExecutionResult(
+                    card.card_id, "WAITING_FOR_MERGE", attempt, stage.exact_head,
+                    status.reason, None, facts.pr_number,
+                )
+            elif status.outcome == "COMPLETE":
+                self._record(
+                    event="STAGE_MERGED_OBSERVED",
+                    key=_journal_key("stage-complete", mission, stage, card, facts.pr_number, stage.exact_head),
+                    mission=mission,
+                    stage=stage,
+                    card=card,
+                    attempt=attempt,
+                    state="COMPLETE",
+                    detail="live_stage_pr_merged",
+                    data={"pr_number": facts.pr_number, "stage_head_sha": stage.exact_head},
+                )
+                results[card.card_id] = ExecutionResult(
+                    card.card_id, "COMPLETE", attempt, stage.exact_head,
+                    status.reason, None, facts.pr_number,
+                )
+            else:
+                results[card.card_id] = ExecutionResult(
+                    card.card_id, "WAITING", attempt, stage.exact_head,
+                    status.reason, None, facts.pr_number,
+                )
+        return results
 
     def _record(
         self,
@@ -517,13 +977,20 @@ class Steward:
         if not SHA40.fullmatch(base_sha):
             raise StewardError("base_sha_invalid")
         try:
-            validated_mission = contract.validate_owner_approval(mission)
-            if validated_mission != contract.campaign_mission():
-                raise StewardError("mission_registration_invalid")
-            if validated_mission.repository_identity.repository != self.repository:
-                raise StewardError("mission_repository_mismatch")
-            if validated_mission.repository_identity.base_sha != base_sha:
-                raise StewardError("mission_base_sha_mismatch")
+            validated_mission = contract.validate_current_mission(
+                mission,
+                repository=self.repository,
+                base_sha=base_sha,
+                branch=mission.repository_identity.branch,
+                source_ref=mission.repository_identity.source_ref,
+                source_sha256=mission.repository_identity.source_sha256,
+                require_running=True,
+            )
+            contract.validate_execution_scope(
+                validated_mission,
+                card.allowed_paths,
+                ("read", "write", "test", "branch", "review", "ci_repair"),
+            )
             contract.validate_workcard(card, stage, mission)
         except contract.MissionContractError as exc:
             raise StewardError("mission_or_stage_or_card_invalid") from exc
@@ -1327,7 +1794,11 @@ class Steward:
                         dependency_results = [results.get(item) for item in card.dependencies]
                         if any(item is None for item in dependency_results):
                             continue
-                        if any(item.status != "COMPLETE" for item in dependency_results if item is not None):
+                        if any(
+                            item.status not in {"COMPLETE", "WAITING_FOR_PR"}
+                            for item in dependency_results
+                            if item is not None
+                        ):
                             results[card_id] = ExecutionResult(card_id, "BLOCKED", 0, None, "dependency_not_complete")
                             del pending[card_id]
                             launched = True
@@ -1373,4 +1844,10 @@ class Steward:
         return results
 
 
-__all__ = ["ExecutionResult", "MAX_CONCURRENCY", "Steward", "StewardError"]
+__all__ = [
+    "ExecutionResult",
+    "MAX_CONCURRENCY",
+    "StageIntegration",
+    "Steward",
+    "StewardError",
+]
