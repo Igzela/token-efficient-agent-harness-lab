@@ -185,6 +185,38 @@ def _git_worktree_clean(worktree: Path) -> None:
         raise workers.WorkerError("worktree_dirty_after_worker")
 
 
+def _git_metadata_snapshot(worktree: Path) -> tuple[dict[str, str], str]:
+    """Capture refs and local config without retaining their raw contents."""
+
+    try:
+        refs = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname) %(objectname)"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        config = subprocess.run(
+            ["git", "config", "--local", "--null", "--list"],
+            cwd=worktree,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise StewardError("worktree_metadata_unavailable") from exc
+    if refs.returncode != 0 or config.returncode != 0:
+        raise StewardError("worktree_metadata_unavailable")
+    ref_map: dict[str, str] = {}
+    for line in refs.stdout.splitlines():
+        name, separator, object_id = line.partition(" ")
+        if not separator or not name or not object_id:
+            raise StewardError("worktree_metadata_invalid")
+        ref_map[name] = object_id
+    return ref_map, hashlib.sha256(config.stdout).hexdigest()
+
+
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
 
@@ -487,6 +519,7 @@ class Steward:
                         or created[2] != base_sha
                     ):
                         raise StewardError("worktree_binding_mismatch")
+                    metadata_before = _git_metadata_snapshot(worktree_path)
                     self._record(
                         event="WORKER_STARTED",
                         key=_journal_key("start", mission, stage, card, attempt, base_sha),
@@ -548,6 +581,13 @@ class Steward:
                         actual_paths = _git_changed_paths(worktree_path, base_sha, observed_head)
                         workers.validate_changed_paths(card, actual_paths)
                         _git_worktree_clean(worktree_path)
+                        expected_refs = dict(metadata_before[0])
+                        expected_refs[f"refs/heads/{worktree_branch}"] = observed_head
+                        if _git_metadata_snapshot(worktree_path) != (
+                            expected_refs,
+                            metadata_before[1],
+                        ):
+                            raise workers.WorkerError("worker_git_metadata_changed")
                     except workers.WorkerError as exc:
                         return self._failure(
                             mission=mission,
@@ -720,6 +760,11 @@ class Steward:
                         )
                         workers.validate_changed_paths(card, reviewed_paths)
                         _git_worktree_clean(worktree_path)
+                        if _git_metadata_snapshot(worktree_path) != (
+                            expected_refs,
+                            metadata_before[1],
+                        ):
+                            raise workers.WorkerError("review_git_metadata_changed")
                     except workers.WorkerError as exc:
                         return self._failure(
                             mission=mission,

@@ -98,7 +98,9 @@ class StewardExecutionTests(unittest.TestCase):
     def process_worker(self, callback):
         def command(context):
             outcome = callback(context)
-            payload = json.dumps(outcome.to_wire())
+            payload = outcome.to_wire()
+            payload["session_id"] = f"steward-process:{context.card_id}:{context.attempt}"
+            payload = json.dumps(payload)
             return ["/usr/bin/python3", "-c", f"print({payload!r})"]
 
         return workers.BoundedProcessWorker(command, timeout_seconds=5)
@@ -106,7 +108,12 @@ class StewardExecutionTests(unittest.TestCase):
     def process_reviewer(self, callback):
         def command(context, outcome):
             review = callback(context, outcome)
-            payload = json.dumps(review.to_wire())
+            payload = review.to_wire()
+            payload["reviewer_session_id"] = (
+                f"steward-review-process:{context.card_id}:{context.attempt}"
+            )
+            payload = workers.seal_review_outcome_wire(payload)
+            payload = json.dumps(payload)
             return ["/usr/bin/python3", "-c", f"print({payload!r})"]
 
         return workers.BoundedProcessReviewer(command, timeout_seconds=5)
@@ -178,13 +185,22 @@ class StewardExecutionTests(unittest.TestCase):
             "review_range_digest",
             return_value=hashlib.sha256(f"{BASE}...{HEAD}".encode("ascii")).hexdigest(),
         )
+        metadata_heads = [BASE, HEAD, HEAD] if git_heads is None else [BASE, BASE, BASE, HEAD, HEAD]
+        metadata_patch = mock.patch.object(
+            steward,
+            "_git_metadata_snapshot",
+            side_effect=lambda _worktree: (
+                {f"refs/heads/{self.mock_worktree_branch}": metadata_heads.pop(0)},
+                "config",
+            ),
+        )
         with mock.patch.object(
             worktree_manager,
             "create_steward_worktree",
             return_value=(
                 str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
             ),
-        ), head_patch, diff_patch, clean_patch, identity_patch, range_patch:
+        ), head_patch, diff_patch, clean_patch, identity_patch, range_patch, metadata_patch:
             return service.dispatch_card(
                 self.mission,
                 self.stage,
@@ -322,6 +338,11 @@ class StewardExecutionTests(unittest.TestCase):
             ),
             mock.patch.object(steward, "_git_worktree_clean"),
             mock.patch.object(steward, "_git_repository_identity", return_value=True),
+            mock.patch.object(
+                steward,
+                "_git_metadata_snapshot",
+                return_value=({f"refs/heads/{self.mock_worktree_branch}": BASE}, "config"),
+            ),
         ):
             result = instance.dispatch_card(
                 self.mission, self.stage, self.card, base_sha=BASE, stage_pr=self.facts
@@ -344,7 +365,11 @@ class StewardExecutionTests(unittest.TestCase):
             return_value=(
                 str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
             ),
-        ), mock.patch.object(steward, "_git_repository_identity", return_value=True):
+        ), mock.patch.object(steward, "_git_repository_identity", return_value=True), mock.patch.object(
+            steward,
+            "_git_metadata_snapshot",
+            return_value=({f"refs/heads/{self.mock_worktree_branch}": BASE}, "config"),
+        ):
             result = instance.dispatch_card(self.mission, self.stage, self.card, base_sha=BASE)
         self.assertEqual(result.status, "BLOCKED")
         self.assertEqual(result.reason, "provider_free_worker_not_configured")

@@ -491,7 +491,7 @@ class StewardFaultTests(unittest.TestCase):
             {
                 "schema_version": "steward_worker_outcome.v1",
                 "status": "PASS",
-                "session_id": "child-session",
+                "session_id": "steward-process:card-1:1",
                 "head_sha": BASE,
                 "changed_paths": [],
                 "detail": "no_change",
@@ -503,7 +503,7 @@ class StewardFaultTests(unittest.TestCase):
         )
         result = worker.run(context)
         self.assertEqual(result.status, "PASS")
-        self.assertEqual(result.session_id, "child-session")
+        self.assertEqual(result.session_id, "steward-process:card-1:1")
 
     def test_bounded_process_worker_timeout_is_not_success(self):
         context = workers.WorkerContext(

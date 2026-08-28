@@ -72,6 +72,9 @@ _GIT_FORBIDDEN_ARGUMENTS = frozenset(
         "submodule",
     }
 )
+_GIT_ALLOWED_COMMANDS = frozenset(
+    {"add", "commit", "diff", "log", "ls-files", "rev-parse", "show", "status"}
+)
 
 
 class WorkerError(RuntimeError):
@@ -341,10 +344,10 @@ class ReviewOutcome:
         )
 
 
-def review_receipt_digest(outcome: ReviewOutcome) -> str:
+def review_receipt_digest(outcome: ReviewOutcome | Mapping[str, Any]) -> str:
     """Seal every bounded review identity field except detail and the digest."""
 
-    payload = dict(outcome.to_wire())
+    payload = dict(outcome.to_wire() if isinstance(outcome, ReviewOutcome) else outcome)
     # Detail is an operator-facing bounded note, not acceptance evidence.  It
     # is intentionally excluded so restart recovery can revalidate the same
     # receipt without persisting raw reviewer prose.
@@ -353,6 +356,15 @@ def review_receipt_digest(outcome: ReviewOutcome) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def seal_review_outcome_wire(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a wire outcome with its self-contained receipt digest sealed."""
+
+    payload = dict(value)
+    payload["review_receipt_sha256"] = ""
+    payload["review_receipt_sha256"] = review_receipt_digest(payload)
+    return payload
 
 
 class WorkerAdapter(Protocol):
@@ -405,9 +417,14 @@ def _validate_command(command: object) -> list[str]:
     ):
         raise WorkerError("worker_executable_not_allowlisted")
     if executable == "git":
-        arguments = {item.casefold() for item in argv[1:]}
-        if arguments & _GIT_FORBIDDEN_ARGUMENTS:
+        arguments = [item.casefold() for item in argv[1:]]
+        if any(item in _GIT_FORBIDDEN_ARGUMENTS for item in arguments):
             raise WorkerError("worker_git_effect_forbidden")
+        subcommands = [item for item in arguments if not item.startswith("-")]
+        if not subcommands or subcommands[0] not in _GIT_ALLOWED_COMMANDS:
+            raise WorkerError("worker_git_command_not_allowlisted")
+        if any(item in {"-c", "--config-env", "--config"} for item in arguments):
+            raise WorkerError("worker_git_config_forbidden")
     return argv
 
 
@@ -531,6 +548,8 @@ class BoundedProcessWorker:
             outcome = WorkerOutcome.from_wire(payload)
         except (TypeError, ValueError, json.JSONDecodeError, WorkerError) as exc:
             raise WorkerError("worker_output_invalid") from exc
+        if outcome.session_id != session_id:
+            raise WorkerError("worker_session_binding_mismatch")
         return outcome
 
 
@@ -569,9 +588,13 @@ class BoundedProcessReviewer:
         if exit_code != 0:
             raise WorkerError("review_process_failed")
         try:
-            return ReviewOutcome.from_wire(json.loads(stdout))
+            review = ReviewOutcome.from_wire(json.loads(stdout))
         except (TypeError, ValueError, json.JSONDecodeError, WorkerError) as exc:
             raise WorkerError("review_output_invalid") from exc
+        expected_session = f"steward-review-process:{context.card_id}:{context.attempt}"
+        if review.reviewer_session_id != expected_session:
+            raise WorkerError("reviewer_session_binding_mismatch")
+        return review
 
 
 def validate_worker_outcome(
@@ -738,6 +761,7 @@ __all__ = [
     "ProviderFreeWorker",
     "ReviewOutcome",
     "review_receipt_digest",
+    "seal_review_outcome_wire",
     "ReviewerAdapter",
     "SAFE_STATUSES",
     "WorkerAdapter",
