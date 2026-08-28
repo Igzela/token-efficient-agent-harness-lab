@@ -589,6 +589,22 @@ class Steward:
                             retryable=False,
                             head_sha=observed_head,
                         )
+                    self._record(
+                        event="STAGE_PR_BOUND",
+                        key=f"stage-bind:{card.card_id}:{status.pr_number}:{observed_head}",
+                        mission=mission,
+                        stage=stage,
+                        card=card,
+                        attempt=attempt,
+                        state="REVIEWING",
+                        detail="stage_pr_binding_observed",
+                        data={
+                            "repository": status.repository,
+                            "pr_number": status.pr_number,
+                            "base_sha": status.base_sha,
+                            "head_sha": status.head_sha,
+                        },
+                    )
                     if status.outcome == "WAITING_FOR_MERGE":
                         self._record(
                             event="STAGE_WAITING_FOR_MERGE",

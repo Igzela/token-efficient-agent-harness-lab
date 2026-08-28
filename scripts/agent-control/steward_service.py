@@ -131,6 +131,8 @@ class StewardService:
         items: list[RecoveryItem] = []
         for card_id in projection["active_cards"]:
             binding = stage_bindings.get(card_id)
+            if not isinstance(binding, Mapping):
+                binding = self.journal.stage_binding_for_card(card_id)
             state = projection["card_states"][card_id]
             if not isinstance(binding, Mapping):
                 items.append(

@@ -67,6 +67,22 @@ class StewardFaultTests(unittest.TestCase):
                 "reviewed_head_sha": HEAD,
             },
         )
+        self.journal.append(
+            event="STAGE_PR_BOUND",
+            idempotency_key=f"stage-bind:{card}",
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id=card,
+            attempt=1,
+            state="REVIEWING",
+            detail="stage_pr_binding_observed",
+            data={
+                "repository": "Igzela/token-efficient-agent-harness-lab",
+                "pr_number": 7,
+                "base_sha": BASE,
+                "head_sha": HEAD,
+            },
+        )
 
     def facts(self, *, merged: bool = False, head: str = HEAD):
         return {
@@ -99,14 +115,7 @@ class StewardFaultTests(unittest.TestCase):
         reader = steward_github.FakeGitHubReader(self.facts())
         service = StewardService(mission_id=MISSION, journal=self.journal, github=reader)
         report = service.reconcile(
-            stage_bindings={
-                "card-1": {
-                    "repository": "Igzela/token-efficient-agent-harness-lab",
-                    "pr_number": 7,
-                    "base_sha": BASE,
-                    "head_sha": HEAD,
-                }
-            }
+            stage_bindings={}
         )
         self.assertEqual(report.items[0].outcome, "WAITING_FOR_MERGE")
         self.assertEqual(self.journal.projection()["card_states"]["card-1"], "WAITING_FOR_MERGE")

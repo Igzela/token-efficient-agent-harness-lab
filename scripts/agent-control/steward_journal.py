@@ -25,6 +25,7 @@ MAX_DETAIL_CHARS = 512
 MAX_EVENTS = 100_000
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 
 CARD_STATES = frozenset(
     {
@@ -230,7 +231,7 @@ def _validate_data(data: object | None) -> dict[str, Any]:
         if not isinstance(key, str) or IDENTIFIER.fullmatch(key) is None:
             raise JournalError("journal_data_key_invalid")
         if isinstance(value, str):
-            if IDENTIFIER.fullmatch(value) is None:
+            if IDENTIFIER.fullmatch(value) is None and REPOSITORY.fullmatch(value) is None:
                 raise JournalError("journal_data_value_invalid")
         elif not isinstance(value, (int, bool, type(None))):
             raise JournalError("journal_data_value_invalid")
@@ -438,6 +439,31 @@ class StewardJournal:
         for event in reversed(events):
             if event.card_id == card_id:
                 return event
+        return None
+
+    def stage_binding_for_card(self, card_id: str) -> dict[str, Any] | None:
+        """Return the latest exact Stage PR binding recorded for one card."""
+
+        for event in reversed(self.replay()):
+            if event.card_id != card_id or event.event != "STAGE_PR_BOUND":
+                continue
+            data = event.data
+            if (
+                isinstance(data.get("repository"), str)
+                and REPOSITORY.fullmatch(data["repository"])
+                and type(data.get("pr_number")) is int
+                and 1 <= data["pr_number"] <= 1_000_000_000
+                and isinstance(data.get("base_sha"), str)
+                and re.fullmatch(r"[0-9a-f]{40}", data["base_sha"])
+                and isinstance(data.get("head_sha"), str)
+                and re.fullmatch(r"[0-9a-f]{40}", data["head_sha"])
+            ):
+                return {
+                    "repository": data["repository"],
+                    "pr_number": data["pr_number"],
+                    "base_sha": data["base_sha"],
+                    "head_sha": data["head_sha"],
+                }
         return None
 
     def projection(self) -> dict[str, Any]:
