@@ -2,7 +2,7 @@
 
 Last updated: 2026-08-28.
 
-This document owns only the blocked successor order for the owner-approved Autonomous Steward migration campaign. The current execution window is `PE7-AUTONOMOUS-STEWARD-PR2` in `docs/NEXT_DECISION.md`. All packets below are routing-only and `BLOCKED_PREREQUISITE`; none authorizes implementation, GitHub mutation, Provider spend, target writes, release, deployment, destructive effects, or automatic merge.
+This document owns only the blocked successor order for the owner-approved Autonomous Steward migration campaign. The current execution window is `PE7-AUTONOMOUS-STEWARD-PR3` in `docs/NEXT_DECISION.md`. All packets below are routing-only and `BLOCKED_PREREQUISITE`; none authorizes implementation, GitHub mutation, Provider spend, target writes, release, deployment, destructive effects, or automatic merge.
 
 The former Harness-Evolution route is parked, not erased. Its accepted receipts remain in `docs/CURRENT_STATUS.md`, and its exact historical planning remains recoverable from Git. Unaccepted MX1 work is preserved only through the recovery references recorded in `docs/CURRENT_STATUS.md`. It may enter a later Mission only through an explicit symbol-level audit and never by wholesale merge.
 
@@ -15,11 +15,11 @@ The former Harness-Evolution route is parked, not erased. Its accepted receipts 
 
 ## Known Planned-Seam Gaps
 
-- The Shadow Steward has no accepted planner, policy, replay, or status projection owner yet.
-- No continuously running, crash-recoverable Steward service exists.
+- The Shadow Steward planner, policy, replay, and status projection are accepted; no continuously running, crash-recoverable Steward service exists.
+- No accepted durable service journal, reconciliation loop, isolated WorkCard executor, path-lock coordinator, or bounded autonomous review/repair loop exists.
 - Every successor must preserve the accepted PR0 exact-head/check contract and its guarded merge path; the acceptance receipt belongs to `docs/CURRENT_STATUS.md`.
 - The legacy controller, workflows, packet route, and documentation remain authoritative until their individually verified cutover or removal.
-- Natural-language intake, digest-bound owner approval, reconciliation, single-writer recovery, and bounded effect envelopes are planned but not accepted capability.
+- Reconciliation, single-writer recovery, bounded autonomous execution, and bounded effect envelopes are planned but not accepted capability.
 
 ## Promotion Profile Contract
 
@@ -28,22 +28,6 @@ Before promotion, the planning owner must refresh accepted `main`, live GitHub s
 ## Stop and Resume Protocol
 
 Ordinary implementation, test, review, CI, main-drift, worker, or retry failures stay inside the accepted Mission budget and must be repaired or replanned without escalating to the owner. Enter `DECISION_REQUIRED` only for a material Mission-goal change, authority or budget expansion, unapproved production/destructive action, incompatible product direction, unresolved safety contradiction, or `OUTCOME_UNKNOWN` external mutation. On restart, reconcile GitHub and durable journal facts before replaying any mutation.
-
-### Packet PE7-AUTONOMOUS-STEWARD-PR3
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE7-AUTONOMOUS-STEWARD-PR2
-
-**Class:** `IMPLEMENT`
-
-**Outcome:** Add the provider-free Steward service, durable journal, reconciliation, isolated WorkCard execution, path locking, bounded concurrency, repair/review loop, and Stage PR integration with automatic merge disabled.
-
-**Allowed delta:** Provider-free local service, SQLite journal, worker/reviewer adapters, GitHub reconciliation adapter, systemd packaging, fault tests, and operator runbook; no live Provider call or auto-merge.
-
-**Exit:** One approved provider-free Mission reaches a verified waiting-for-merge state after crash/restart testing without duplicate external mutations, overlapping-path writes, credential leakage, or self-review.
-
-**Stop:** The Steward becomes a second product runtime/store, child sessions receive write credentials, mutation intent cannot be reconciled, or restart safety is unproved.
 
 ### Packet PE7-AUTONOMOUS-STEWARD-PR4
 
@@ -111,8 +95,8 @@ Ordinary implementation, test, review, CI, main-drift, worker, or retry failures
 
 ## Portfolio Inventory Manifest
 
-The five successor packets above replace the 54-packet routing horizon as repository-maintenance migration work. Accepted runtime capability and historical evidence remain owned by `docs/CURRENT_STATUS.md` and Git; this compression grants no product, research, Provider, release, deployment, or adoption authority.
+The four successor packets above replace the 54-packet routing horizon as repository-maintenance migration work. Accepted runtime capability and historical evidence remain owned by `docs/CURRENT_STATUS.md` and Git; this compression grants no product, research, Provider, release, deployment, or adoption authority.
 
 <!-- future-route-inventory:v1
-{"schema_version":"future_route_inventory.v1","packet_count":5,"ordered_packet_ids":["PE7-AUTONOMOUS-STEWARD-PR3","PE7-AUTONOMOUS-STEWARD-PR4","PE7-AUTONOMOUS-STEWARD-PR5","PE7-AUTONOMOUS-STEWARD-PR6","PE7-AUTONOMOUS-STEWARD-PR7"],"ordered_packet_ids_sha256":"69290a6b8c9abec656cbb7b4756fe95fb4d18b80f5bd2a8ececf51b9d1a5611a","dependency_graph_sha256":"ef9b249a589a568f4c9d04b8d8004a55f9ec119f56032bbba7f8934c0d9c94ff","profiles_sha256":"822a42762346ba753e529b373cca0f8c8ffdbab1f007bf256200c563a4ef7780","profiles":[["PE7-AUTONOMOUS-STEWARD-PR3","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR4","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR5","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR6","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR7","CLOSEOUT","T2","none","evidence_review"]]}
+{"schema_version":"future_route_inventory.v1","packet_count":4,"ordered_packet_ids":["PE7-AUTONOMOUS-STEWARD-PR4","PE7-AUTONOMOUS-STEWARD-PR5","PE7-AUTONOMOUS-STEWARD-PR6","PE7-AUTONOMOUS-STEWARD-PR7"],"ordered_packet_ids_sha256":"9fcd5d0669e7d597799c9d8aa881b1a0f6293c7a338eac29a4f555324a8262a8","dependency_graph_sha256":"b1f61fa6807a188504f18009d7e82cd76f330244e0a0546a8a43b4b5481f398a","profiles_sha256":"cab7f0fad130a2357d1b510115cea0bb9e9c6f0733454b511f76335509f05e17","profiles":[["PE7-AUTONOMOUS-STEWARD-PR4","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR5","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR6","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR7","CLOSEOUT","T2","none","evidence_review"]]}
 -->
