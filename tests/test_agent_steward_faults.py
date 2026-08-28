@@ -100,9 +100,9 @@ class StewardFaultTests(unittest.TestCase):
                 "finding_ledger_digest": review_wire["finding_ledger_digest"],
                 "open_blocker_ids": [],
                 "deferred_note_ids": [],
-                "decision_required_ids": [],
                 "security_ok": True,
                 "rollback_ok": True,
+                "observed_ci_status": "unknown",
             },
         )
         self.journal.append(

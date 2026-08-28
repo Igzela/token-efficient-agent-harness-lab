@@ -420,7 +420,10 @@ class Steward:
                 previous = dict(event.data)
                 break
         try:
-            return review_convergence.derive_next_review_attempt(previous, head_sha)
+            attempt = review_convergence.derive_next_review_attempt(previous, head_sha)
+            if previous is not None:
+                attempt["_previous_review_data"] = previous
+            return attempt
         except (TypeError, ValueError, KeyError):
             return {
                 "allowed": False,
@@ -428,6 +431,53 @@ class Steward:
                 "review_mode": "full",
                 "review_round": 1,
             }
+
+    @staticmethod
+    def _prior_review_state(data: Mapping[str, Any]) -> review_convergence.ReviewRoundState:
+        """Rebuild the bounded convergence projection needed for R2."""
+
+        return review_convergence.ReviewRoundState(
+            review_protocol_version=review_convergence.REVIEW_PROTOCOL_VERSION,
+            review_mode=str(data["review_mode"]),
+            review_round=int(data["review_round"]),
+            prior_reviewed_head=str(data.get("prior_reviewed_head", "")),
+            reviewed_base=str(data["base_sha"]),
+            reviewed_head=str(data["head_sha"]),
+            reviewed_range=f"{data['base_sha']}...{data['head_sha']}",
+            verdict=str(data["verdict"]),
+            findings=(),
+            finding_ledger_digest=str(data["finding_ledger_digest"]),
+            open_blocker_ids=tuple(data.get("open_blocker_ids", ())),
+            deferred_note_ids=tuple(data.get("deferred_note_ids", ())),
+            decision_required_ids=tuple(data.get("decision_required_ids", ())),
+            autonomous_repairs_remaining=int(data.get("autonomous_repairs_remaining", 0)),
+            stop_reason=str(data.get("stop_reason", "")),
+            summary="",
+        )
+
+    @staticmethod
+    def _review_convergence_data(
+        decision: review_convergence.ReviewDecision,
+        *,
+        base_sha: str,
+        head_sha: str,
+    ) -> dict[str, Any]:
+        """Project only bounded canonical convergence facts into the journal."""
+
+        return {
+            "base_sha": base_sha,
+            "head_sha": head_sha,
+            "review_round": decision.review_round,
+            "review_mode": decision.review_mode,
+            "verdict": decision.verdict,
+            "open_blocker_ids": list(decision.open_blocker_ids),
+            "deferred_note_ids": list(decision.deferred_note_ids),
+            "decision_required_ids": list(decision.decision_required_ids),
+            "finding_ledger_digest": decision.finding_ledger_digest,
+            "security_ok": decision.security_ok,
+            "rollback_ok": decision.rollback_ok,
+            "observed_ci_status": decision.observed_ci_status,
+        }
 
     def dispatch_card(
         self,
@@ -572,6 +622,34 @@ class Steward:
                             retryable=False,
                         )
                     except Exception:
+                        integrity = "unavailable"
+                        integrity_data: dict[str, Any] = {}
+                        try:
+                            failure_head = _git_head(worktree_path)
+                            failure_clean = True
+                            try:
+                                _git_worktree_clean(worktree_path)
+                            except (StewardError, workers.WorkerError):
+                                failure_clean = False
+                            failure_metadata = _git_metadata_snapshot(
+                                worktree_path, branch=worktree_branch
+                            )
+                            metadata_unchanged = failure_metadata == (
+                                metadata_before[0],
+                                metadata_before[1],
+                            )
+                            integrity = (
+                                "clean_unchanged"
+                                if failure_clean and metadata_unchanged and failure_head == base_sha
+                                else "changed_or_dirty"
+                            )
+                            integrity_data = {
+                                "head_sha": failure_head,
+                                "worktree_clean": failure_clean,
+                                "metadata_unchanged": metadata_unchanged,
+                            }
+                        except (StewardError, workers.WorkerError, OSError):
+                            pass
                         self._record(
                             event="WORKER_OUTCOME_UNKNOWN",
                             key=_journal_key("unknown-worker", mission, stage, card, attempt),
@@ -580,9 +658,16 @@ class Steward:
                             card=card,
                             attempt=attempt,
                             state="OUTCOME_UNKNOWN",
-                            detail="worker_exception_after_admission",
+                            detail=f"worker_exception_after_admission_{integrity}",
+                            data=integrity_data,
                         )
-                        return ExecutionResult(card.card_id, "OUTCOME_UNKNOWN", attempt, None, "worker_exception_after_admission")
+                        return ExecutionResult(
+                            card.card_id,
+                            "OUTCOME_UNKNOWN",
+                            attempt,
+                            None,
+                            f"worker_exception_after_admission_{integrity}",
+                        )
                     try:
                         observed_head = _git_head(worktree_path)
                         workers.validate_worker_outcome(
@@ -843,7 +928,41 @@ class Steward:
                             retryable=False,
                             head_sha=observed_head,
                         )
+                    try:
+                        if review_attempt["review_round"] == 1:
+                            convergence_state = review_convergence.initial_r1_state(
+                                review_decision
+                            )
+                        else:
+                            previous_data = review_attempt.get("_previous_review_data")
+                            if not isinstance(previous_data, Mapping):
+                                raise review_convergence.ConvergenceError(
+                                    "R2 prior review state is missing"
+                                )
+                            convergence_state = review_convergence.apply_r2_decision(
+                                self._prior_review_state(previous_data), review_decision
+                            )
+                    except (TypeError, ValueError, KeyError, review_convergence.ConvergenceError) as exc:
+                        return self._failure(
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            reason="review_convergence_invalid",
+                            retryable=False,
+                            head_sha=observed_head,
+                        )
                     if review.status != "PASS":
+                        convergence_data = self._review_convergence_data(
+                            review_decision, base_sha=base_sha, head_sha=observed_head
+                        )
+                        convergence_data.update(
+                            {
+                                "verdict": convergence_state.verdict,
+                                "stop_reason": convergence_state.stop_reason,
+                                "autonomous_repairs_remaining": convergence_state.autonomous_repairs_remaining,
+                            }
+                        )
                         self._record(
                             event="REVIEW_FAILED",
                             key=_journal_key("review-failed", mission, stage, card, attempt, observed_head),
@@ -853,22 +972,7 @@ class Steward:
                             attempt=attempt,
                             state="REVIEWING",
                             detail="independent_review_not_passed",
-                            data={
-                                "head_sha": observed_head,
-                                "review_round": review.review_round,
-                                "review_mode": review.review_mode,
-                                "verdict": review.status,
-                                "open_blocker_ids": [
-                                    _digest(item)
-                                    for item in (review.blockers or (review.detail or "review_failed",))
-                                ],
-                                "finding_ledger_digest": _digest(
-                                    "|".join(review.blockers or (review.detail or "review_failed",))
-                                ),
-                                "autonomous_repairs_remaining": 1
-                                if review.review_round < 2
-                                else 0,
-                            },
+                            data=convergence_data,
                         )
                         result = self._failure(
                             mission=mission,
@@ -883,6 +987,19 @@ class Steward:
                             attempt += 1
                             continue
                         return result
+                    convergence_data = self._review_convergence_data(
+                        review_decision, base_sha=base_sha, head_sha=observed_head
+                    )
+                    convergence_data.pop("decision_required_ids", None)
+                    convergence_data.update(
+                        {
+                            "implementation_session_id": outcome.session_id,
+                            "reviewer_session_id": review.reviewer_session_id,
+                            "reviewed_range_sha256": review.reviewed_range_sha256,
+                            "review_axes": list(review.review_axes),
+                            "review_receipt_sha256": review.review_receipt_sha256,
+                        }
+                    )
                     self._record(
                         event="REVIEW_PASSED",
                         key=_journal_key(
@@ -895,24 +1012,7 @@ class Steward:
                         attempt=attempt,
                         state="REVIEWING",
                         detail="independent_review_passed",
-                        data={
-                            "implementation_session_id": outcome.session_id,
-                            "reviewer_session_id": review.reviewer_session_id,
-                            "base_sha": base_sha,
-                            "head_sha": observed_head,
-                            "reviewed_range_sha256": review.reviewed_range_sha256,
-                            "review_axes": list(review.review_axes),
-                            "review_round": review.review_round,
-                            "review_mode": review.review_mode,
-                            "review_receipt_sha256": review.review_receipt_sha256,
-                            "verdict": review.status,
-                            "finding_ledger_digest": review_decision.finding_ledger_digest,
-                            "open_blocker_ids": list(review_decision.open_blocker_ids),
-                            "deferred_note_ids": list(review_decision.deferred_note_ids),
-                            "decision_required_ids": list(review_decision.decision_required_ids),
-                            "security_ok": review_decision.security_ok,
-                            "rollback_ok": review_decision.rollback_ok,
-                        },
+                        data=convergence_data,
                     )
                     if stage_facts is None:
                         return ExecutionResult(card.card_id, "WAITING_FOR_PR", attempt, observed_head, "stage_pr_facts_required", review.reviewer_session_id)

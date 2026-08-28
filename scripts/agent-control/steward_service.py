@@ -65,9 +65,9 @@ def _review_binding(
         "finding_ledger_digest",
         "open_blocker_ids",
         "deferred_note_ids",
-        "decision_required_ids",
         "security_ok",
         "rollback_ok",
+        "observed_ci_status",
     )
     if not all(key in data for key in required):
         return None
@@ -102,8 +102,8 @@ def _review_binding(
     ):
         return None
     if any(
-        not isinstance(data[name], list)
-        or not all(isinstance(item, str) and item for item in data[name])
+        not isinstance(data.get(name, []), list)
+        or not all(isinstance(item, str) and item for item in data.get(name, []))
         for name in ("open_blocker_ids", "deferred_note_ids", "decision_required_ids")
     ):
         return None
@@ -124,6 +124,7 @@ def _review_binding(
             finding_ledger_digest=data["finding_ledger_digest"],
             security_ok=data["security_ok"],
             rollback_ok=data["rollback_ok"],
+            observed_ci_status=data["observed_ci_status"],
         )
     except (TypeError, ValueError, steward_workers.WorkerError):
         return None
@@ -131,9 +132,9 @@ def _review_binding(
         return None
     decision = steward_workers.canonical_review_decision(review)
     if (
-        tuple(data["open_blocker_ids"]) != decision.open_blocker_ids
-        or tuple(data["deferred_note_ids"]) != decision.deferred_note_ids
-        or tuple(data["decision_required_ids"]) != decision.decision_required_ids
+        tuple(data.get("open_blocker_ids", [])) != decision.open_blocker_ids
+        or tuple(data.get("deferred_note_ids", [])) != decision.deferred_note_ids
+        or tuple(data.get("decision_required_ids", [])) != decision.decision_required_ids
     ):
         return None
     return base_sha, head_sha, data["reviewed_range_sha256"]

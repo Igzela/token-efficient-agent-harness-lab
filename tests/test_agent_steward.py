@@ -61,7 +61,15 @@ class StewardExecutionTests(unittest.TestCase):
             self.mock_worktree_branch,
         )
 
-    def review(self, *, head=HEAD, reviewer="review-session", implementation="impl-session"):
+    def review(
+        self,
+        *,
+        head=HEAD,
+        reviewer="review-session",
+        implementation="impl-session",
+        review_round=1,
+        review_mode="full",
+    ):
         receipt_payload = {
             "schema_version": "steward_review_outcome.v1",
             "status": "PASS",
@@ -73,8 +81,8 @@ class StewardExecutionTests(unittest.TestCase):
             "reviewed_base_sha": BASE,
             "reviewed_range_sha256": workers.review_range_digest(BASE, head),
             "review_axes": ["standards", "spec"],
-            "review_round": 1,
-            "review_mode": "full",
+            "review_round": review_round,
+            "review_mode": review_mode,
             "summary": "bounded independent review",
             "findings": None,
             "security_ok": True,
@@ -277,6 +285,29 @@ class StewardExecutionTests(unittest.TestCase):
                 review.review_mode,
                 "d" * 64,
             )
+
+    def test_r2_applies_canonical_prior_blocker_resolution(self):
+        prior = {
+            "base_sha": BASE,
+            "head_sha": "a" * 40,
+            "review_round": 1,
+            "review_mode": "full",
+            "verdict": "FAIL",
+            "open_blocker_ids": ["blocker-1"],
+            "deferred_note_ids": [],
+            "decision_required_ids": [],
+            "finding_ledger_digest": "c" * 64,
+            "security_ok": True,
+            "rollback_ok": True,
+        }
+        review = self.review(head=HEAD, review_round=2, review_mode="repair_verification")
+        next_state = steward.review_convergence.apply_r2_decision(
+            steward.Steward._prior_review_state(prior),
+            workers.canonical_review_decision(review),
+        )
+        self.assertEqual(next_state.verdict, "PASS")
+        self.assertEqual(next_state.open_blocker_ids, ())
+        self.assertEqual(next_state.review_round, 2)
 
     def test_journal_keys_bind_stage_identity(self):
         first = steward._journal_key("queue", self.mission, self.stage, self.card, 1, BASE)

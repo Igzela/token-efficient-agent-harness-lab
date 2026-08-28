@@ -296,6 +296,10 @@ class ReviewOutcome:
         if self.status == "PASS" and self.blockers:
             raise WorkerError("review_pass_has_blockers")
         _safe_detail(self.detail, "review_detail")
+        _safe_detail(self.summary, "review_summary")
+        _safe_detail(self.observed_ci_status, "review_observed_ci_status")
+        if type(self.security_ok) is not bool or type(self.rollback_ok) is not bool:
+            raise WorkerError("review_gate_flags_invalid")
         if not SHA40.fullmatch(self.reviewed_base_sha):
             raise WorkerError("review_base_sha_invalid")
         if not SHA256.fullmatch(self.reviewed_range_sha256):
