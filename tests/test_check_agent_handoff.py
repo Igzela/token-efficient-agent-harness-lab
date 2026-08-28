@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 import sys
@@ -17,7 +16,7 @@ import check_agent_handoff as handoff  # noqa: E402
 
 
 class HandoffMissionCompatibilityTests(unittest.TestCase):
-    def test_current_accepted_capsule_passes_the_legacy_projection(self):
+    def test_current_blocked_route_exposes_no_dispatch_capsule(self):
         next_text = (ROOT / "docs" / "NEXT_DECISION.md").read_text(encoding="utf-8")
         failures: list[str] = []
         packets = handoff.parse_packet_contracts(next_text, failures)
@@ -25,27 +24,44 @@ class HandoffMissionCompatibilityTests(unittest.TestCase):
         self.assertEqual(
             handoff.weak_agent_dispatch_failures(next_text, packets), []
         )
-        packet = packets["PE7-AUTONOMOUS-STEWARD-PR3"]
-        heading = handoff.PACKET_HEADING_RE.search(next_text)
-        self.assertIsNotNone(heading)
-        self.assertEqual(packet["source_path"], "docs/NEXT_DECISION.md")
-        self.assertEqual(
-            packet["packet_sha256"],
-            hashlib.sha256(next_text[heading.start() :].encode("utf-8")).hexdigest(),
-        )
+        packet = packets["PE7-AUTONOMOUS-STEWARD-PR4"]
+        self.assertEqual(packet["state"], "BLOCKED_PREREQUISITE")
+        self.assertFalse(packet["checkpoint_allowed"])
+        self.assertNotIn("weak-agent-dispatch:v1", next_text)
 
-    def test_changed_capsule_identity_is_rejected_by_the_new_compatibility_read(self):
-        next_text = (ROOT / "docs" / "NEXT_DECISION.md").read_text(encoding="utf-8")
+    def test_changed_dispatch_identity_is_rejected(self):
+        next_text = (
+            "# Next Decision\n\n"
+            "## Active Routing\n\n"
+            "1. `TOOL-SESSION-CONTEXT-1` — `READY_FOR_EXECUTION`\n\n"
+            "## Packet TOOL-SESSION-CONTEXT-1\n\n"
+            "**State:** `READY_FOR_EXECUTION`\n\n"
+            "**Class:** `IMPLEMENT`\n\n"
+            "**Allowed delta:** scripts/.\n\n"
+            "### 11. Bounded Autonomous Worker Dispatch Capsule\n\n"
+            "<!-- weak-agent-dispatch:v1\n"
+            + json.dumps(
+                {
+                    "schema_version": "weak_agent_dispatch.v1",
+                    "packet_id": "TOOL-OTHER-1",
+                    "packet_state": "READY_FOR_EXECUTION",
+                    "dispatch_lane": "provider_free_local",
+                    "external_effect_limit": 0,
+                    "authority_consumption_allowed": False,
+                    "secret_values_allowed": False,
+                    "private_paths_allowed": False,
+                },
+                sort_keys=True,
+            )
+            + "\n-->\n"
+        )
         failures: list[str] = []
         packets = handoff.parse_packet_contracts(next_text, failures)
-        marker = handoff.WEAK_AGENT_DISPATCH_RE.search(next_text)
-        self.assertIsNotNone(marker)
-        payload = json.loads(marker.group("payload"))
-        payload["packet_id"] = "PE7-AUTONOMOUS-STEWARD-PR2"
-        forged = next_text[: marker.start("payload")] + json.dumps(payload, sort_keys=True) + next_text[marker.end("payload") :]
-        compatibility_failures = handoff.weak_agent_dispatch_failures(forged, packets)
+        compatibility_failures = handoff.weak_agent_dispatch_failures(
+            next_text, packets
+        )
         self.assertTrue(
-            any("legacy Mission compatibility invalid" in item for item in compatibility_failures)
+            any("packet_id must equal" in item for item in compatibility_failures)
         )
 
 
