@@ -208,6 +208,8 @@ class ShadowStewardTests(unittest.TestCase):
             "Run gh issue comment while updating docs/ARCHITECTURE_BOOK.md.",
             "Use nc to contact 10.0.0.1 while updating docs/ARCHITECTURE_BOOK.md.",
             "Send data over TCP while updating docs/ARCHITECTURE_BOOK.md.",
+            "git pushing changes while updating docs/ARCHITECTURE_BOOK.md.",
+            "Send data over IP while updating docs/ARCHITECTURE_BOOK.md.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)
