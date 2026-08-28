@@ -217,7 +217,18 @@ class StewardService:
                     binding_valid = False
             if not binding_valid:
                 items.append(
-                    RecoveryItem(binding["card_id"], state, "BLOCKED", "worker_binding_missing_or_invalid")
+                    RecoveryItem(
+                        binding["card_id"],
+                        state,
+                        "RECOVERY_REQUIRED"
+                        if state == "OUTCOME_UNKNOWN"
+                        else "BLOCKED",
+                        (
+                            "unknown_outcome_requires_read_only_reconciliation"
+                            if state == "OUTCOME_UNKNOWN"
+                            else "worker_binding_missing_or_invalid"
+                        ),
+                    )
                 )
             elif state in {"RUNNING", "VERIFYING", "REVIEWING", "OUTCOME_UNKNOWN"}:
                 items.append(
@@ -259,17 +270,15 @@ class StewardService:
             state = record["state"]
             if not isinstance(binding, Mapping):
                 if state == "OUTCOME_UNKNOWN":
-                    self.journal.append(
-                        event="RECONCILIATION_BLOCKED",
-                        idempotency_key=_reconcile_key(
-                            "blocked", self.mission_id, stage_id, card_id, "stage-binding-missing"
-                        ),
-                        mission_id=self.mission_id,
-                        stage_id=stage_id,
-                        card_id=card_id,
-                        state="BLOCKED",
-                        detail="stage_binding_missing",
+                    items.append(
+                        RecoveryItem(
+                            card_id,
+                            state,
+                            "RECOVERY_REQUIRED",
+                            "unknown_outcome_requires_read_only_reconciliation",
+                        )
                     )
+                    continue
                 items.append(
                     RecoveryItem(card_id, state, "BLOCKED", "stage_binding_missing")
                 )
@@ -311,8 +320,12 @@ class StewardService:
                 )
             except (KeyError, TypeError, GitHubFactsError):
                 status = StagePRStatus(
-                    "BLOCKED",
-                    "github_facts_unavailable_or_invalid",
+                    "WAITING" if state == "OUTCOME_UNKNOWN" else "BLOCKED",
+                    (
+                        "unknown_outcome_reconciliation_unproven"
+                        if state == "OUTCOME_UNKNOWN"
+                        else "github_facts_unavailable_or_invalid"
+                    ),
                     str(binding.get("repository", "unknown/unknown")),
                     int(binding.get("pr_number", 1)) if str(binding.get("pr_number", "")).isdigit() else 1,
                     str(binding.get("base_sha", "0" * 40)),
@@ -350,7 +363,10 @@ class StewardService:
                     detail="reconciled_exact_head_ci_and_review_pass",
                     data={"pr_number": status.pr_number},
                 )
-            elif status.outcome == "BLOCKED" and state != "BLOCKED":
+            elif status.outcome == "BLOCKED" and state not in {
+                "BLOCKED",
+                "OUTCOME_UNKNOWN",
+            }:
                 self.journal.append(
                     event="RECONCILIATION_BLOCKED",
                     idempotency_key=_reconcile_key(
@@ -362,9 +378,22 @@ class StewardService:
                     state="BLOCKED",
                     detail=status.reason,
                 )
-            items.append(
-                RecoveryItem(card_id, state, status.outcome, status.reason)
-            )
+            if state == "OUTCOME_UNKNOWN" and status.outcome not in {
+                "COMPLETE",
+                "WAITING_FOR_MERGE",
+            }:
+                items.append(
+                    RecoveryItem(
+                        card_id,
+                        state,
+                        "RECOVERY_REQUIRED",
+                        "unknown_outcome_requires_read_only_reconciliation",
+                    )
+                )
+            else:
+                items.append(
+                    RecoveryItem(card_id, state, status.outcome, status.reason)
+                )
         return ReconciliationReport(
             _now(), tuple(items), self.journal.projection(mission_id=self.mission_id)
         )
