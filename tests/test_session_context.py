@@ -9,8 +9,10 @@ matrix that closed the earlier review blocker.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -21,8 +23,10 @@ from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(SCRIPTS / "agent-control"))
 
 import session_context  # noqa: E402
+import route_driver  # noqa: E402
 
 
 MAIN = "a" * 40
@@ -1188,13 +1192,13 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_packet_blocks_steward_pr4_until_promotion(self):
+    def test_current_repository_packet_exposes_promoted_steward_pr4a(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
         status_document = (root / "docs/CURRENT_STATUS.md").read_text(encoding="utf-8")
         future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
-        self.assertIn("current routed window is PR4", next_document)
+        self.assertIn("current routed window is PR4A", next_document)
         self.assertIn(
             "| `PE7-HE-EC3-CONTRACT-1` | `COMPLETE` | PR #603 ",
             status_document,
@@ -1216,7 +1220,7 @@ class CheckpointTests(unittest.TestCase):
             status_document,
         )
         self.assertIn("former Harness-Evolution route is parked, not erased", future_document)
-        self.assertIn("three successor packets above replace the 54-packet routing horizon", future_document)
+        self.assertIn("four successor packets above replace the 54-packet routing horizon", future_document)
         self.assertIn("PE7-AUTONOMOUS-STEWARD-PR7", future_document)
         for packet_id in (
             "PE7-AUTONOMOUS-STEWARD-PR5",
@@ -1232,17 +1236,138 @@ class CheckpointTests(unittest.TestCase):
                 "**State:** `BLOCKED_PREREQUISITE`",
                 future_document[start:end],
             )
-        self.assertIn("PE7-AUTONOMOUS-STEWARD-PR0 — COMPLETE", next_document)
-        self.assertIn("PE7-AUTONOMOUS-STEWARD-PR0", next_document)
-        self.assertIn("PE7-AUTONOMOUS-STEWARD-PR1", next_document)
+        self.assertIn("Immediate predecessor bridge", next_document)
+        self.assertIn("PR #634 exact head", next_document)
         packet = session_context.current_packet_binding(
             next_document, status_document, MAIN
         )
-        self.assertEqual(packet["packet_id"], "PE7-AUTONOMOUS-STEWARD-PR4")
-        self.assertEqual(packet["state"], "BLOCKED_PREREQUISITE")
-        self.assertFalse(packet["checkpoint_allowed"])
+        self.assertEqual(packet["packet_id"], "PE7-AUTONOMOUS-STEWARD-PR4A")
+        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
+        self.assertTrue(packet["checkpoint_allowed"])
         self.assertFalse(packet["execution_authorized"])
-        self.assertIsNone(packet["dispatch_lane"])
+        self.assertEqual(packet["dispatch_lane"], "provider_free_repository_maintenance")
+        capsule = session_context.current_dispatch_capsule(next_document, packet)
+        self.assertEqual(capsule["packet_id"], packet["packet_id"])
+        self.assertEqual(capsule["promotion_evidence_sha256"], "633b23d31727b8e533dd2c86e92b09e39836423913cd298238d2fcd833586b62")
+        self.assertEqual(capsule["route_manifest_sha256"], "76a7d06a53cfe7f702529ef69b4601d4f61fca2cae2b9f426f799b2783c6b34f")
+        self.assertTrue(
+            any(
+                "Parent packet coordinator owns the bound Stage Draft-PR create/update"
+                in item
+                for item in capsule["allowed_outputs"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "Child execution, repair, and review sessions must not invoke GitHub writes"
+                in item
+                for item in capsule["forbidden_changes"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "must not receive GitHub write credentials or Provider secrets" in item
+                for item in capsule["forbidden_changes"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "Do not switch the lifecycle writer or perform a canary/single-writer cutover" in item
+                for item in capsule["forbidden_changes"]
+            )
+        )
+
+    def test_pr4a_promotion_evidence_record_recomputes_from_accepted_main(self):
+        root = Path(__file__).resolve().parents[1]
+        next_document = (root / "docs" / "NEXT_DECISION.md").read_text(encoding="utf-8")
+        record_start = next_document.index("<!-- route-promotion-evidence:v2")
+        record_end = next_document.index("-->", record_start)
+        record_payload = next_document[
+            record_start + len("<!-- route-promotion-evidence:v2") : record_end
+        ].strip()
+        capsule_match = re.search(
+            r"<!-- weak-agent-dispatch:v1\s*(?P<payload>\{.*?\})\s*-->",
+            next_document,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(capsule_match)
+        record = json.loads(record_payload)
+        capsule = json.loads(capsule_match.group("payload"))
+        accepted = record["accepted_main_sha"]
+        sketch = route_driver.packet_sketches(next_document)[
+            "PE7-AUTONOMOUS-STEWARD-PR4A"
+        ]
+        successor = route_driver.EligibleSuccessor(
+            sketch.packet_id,
+            sketch,
+            (sketch.packet_id, "IMPLEMENT", "T1", "authority", "source_focused_full"),
+        )
+        recomputed = route_driver.CurrentMainEvidenceVerifier(
+            root, accepted
+        ).verify(
+            json.dumps(record["proposal"], separators=(",", ":")),
+            successor,
+            record["predecessor_receipt"],
+            closed_packet_id="PE7-AUTONOMOUS-STEWARD-PR3",
+        )
+        self.assertEqual(recomputed.state, "READY_FOR_EXECUTION")
+        self.assertEqual(recomputed.reason, "promotion_candidate_valid")
+        self.assertIsNotNone(recomputed.candidate)
+        self.assertEqual(
+            recomputed.candidate.evidence_sha256,
+            record["promotion_evidence_sha256"],
+        )
+        self.assertEqual(recomputed.candidate.manifest_sha256, record["route_manifest_sha256"])
+        self.assertEqual(recomputed.candidate.spec_digest, record["spec_digest"])
+        self.assertEqual(recomputed.candidate.contract, record["contract"])
+        self.assertEqual(recomputed.candidate.capsule, capsule)
+        status = subprocess.check_output(
+            ["git", "show", f"{accepted}:docs/CURRENT_STATUS.md"],
+            cwd=root,
+            text=True,
+        )
+        future = subprocess.check_output(
+            ["git", "show", f"{accepted}:docs/FUTURE_ROUTE.md"],
+            cwd=root,
+            text=True,
+        )
+        self.assertEqual(
+            hashlib.sha256(status.encode("utf-8")).hexdigest(),
+            record["evidence"]["status_document_sha256"],
+        )
+        self.assertEqual(
+            route_driver._json_sha256(record["evidence"]),
+            record["promotion_evidence_sha256"],
+        )
+        self.assertEqual(
+            route_driver._json_sha256(route_driver.inventory_manifest(future)),
+            record["route_manifest_sha256"],
+        )
+        self.assertEqual(record["contract"]["manifest_sha256"], record["route_manifest_sha256"])
+        self.assertEqual(
+            route_driver._json_sha256(
+                {
+                    "packet_id": record["packet_id"],
+                    "accepted_main_sha": accepted,
+                    "predecessor_receipt": record["predecessor_receipt"],
+                    "manifest_sha256": record["route_manifest_sha256"],
+                    "evidence_sha256": record["promotion_evidence_sha256"],
+                    "capsule": capsule,
+                    "contract": record["contract"],
+                }
+            ),
+            record["spec_digest"],
+        )
+        for path in record["evidence"]["read_paths"]:
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "cat-file", "-e", f"{accepted}:{path}"],
+                    cwd=root,
+                    check=False,
+                ).returncode,
+                0,
+                path,
+            )
 
     def test_future_route_profile_extraction_is_routing_projection_only(self):
         root = Path(__file__).resolve().parents[1]

@@ -2322,11 +2322,36 @@ class RoutePromotionPlanner:
             "Do not create a second controller, ledger, queue, lease, store, or workflow owner.",
             "Do not mint T3 authority, execute an EFFECT, auto-merge, call a Provider, or write a target.",
         ]
+        allowed_outputs = [
+            "A provider-free change limited to the independently proved current-main allowed paths.",
+            "Exact-head verification and review evidence through the existing lifecycle owners.",
+        ]
+        if packet_id == "PE7-AUTONOMOUS-STEWARD-PR4A":
+            allowed_outputs.insert(
+                0,
+                "Parent packet coordinator owns the bound Stage Draft-PR create/update through pr_binding.py:create_or_update_pr; isolated execution, repair, and review child sessions cannot invoke that operation.",
+            )
+            forbidden_changes.append(
+                "Child execution, repair, and review sessions must not invoke GitHub writes; only the parent packet coordinator may submit the bound Draft PR through pr_binding.py:create_or_update_pr.",
+            )
+            forbidden_changes.append(
+                "Child execution, repair, and review sessions must not receive GitHub write credentials or Provider secrets.",
+            )
+            forbidden_changes.append(
+                "Do not switch the lifecycle writer or perform a canary/single-writer cutover.",
+            )
+        external_effect_gate = (
+            "Stop before a Provider, target, automatic merge, authority consumption, or external effect."
+        )
+        if packet_id == "PE7-AUTONOMOUS-STEWARD-PR4A":
+            external_effect_gate = (
+                "Stop before a Provider, target, automatic merge, authority consumption, cutover, or external effect other than the explicitly bounded parent-owned Draft-PR repository-maintenance submission."
+            )
         pause_gates = [
             "Stop when an owner, caller, test, path, operation, destination, or decision cannot be re-proved from accepted main.",
             "Stop when exact-head review or canonical CI is missing, stale, failed, or conflicting.",
             "Recover ordinary worker, CI, review, checkpoint, duplicate, restart, and main-drift failures through existing owners; stop if recovery evidence is unproved.",
-            "Stop before a Provider, target, automatic merge, authority consumption, or external effect.",
+            external_effect_gate,
             "Do not retry a possibly executed external effect whose outcome is unknown.",
         ]
         forbidden_next_actions = [
@@ -2348,10 +2373,7 @@ class RoutePromotionPlanner:
             "goal": successor.sketch.outcome,
             "allowed_paths": list(evidence.allowed_paths),
             "read_paths": list(evidence.read_paths),
-            "allowed_outputs": [
-                "A provider-free change limited to the independently proved current-main allowed paths.",
-                "Exact-head verification and review evidence through the existing lifecycle owners.",
-            ],
+            "allowed_outputs": allowed_outputs,
             "prerequisites": list(successor.sketch.prerequisites),
             "prerequisite_receipts": list(prerequisite_receipts),
             "forbidden_changes": forbidden_changes,

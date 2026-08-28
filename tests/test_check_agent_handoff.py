@@ -16,7 +16,15 @@ import check_agent_handoff as handoff  # noqa: E402
 
 
 class HandoffMissionCompatibilityTests(unittest.TestCase):
-    def test_current_blocked_route_exposes_no_dispatch_capsule(self):
+    def test_codegraph_fallback_policy_is_explicit(self):
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        policy = agents[agents.index("## Reading and Verification") :]
+        self.assertIn("at most one bounded local repair attempt", policy)
+        self.assertIn("immediately fall back to `rg`, raw source, compiler, and tests", policy)
+        self.assertIn("not `DECISION_REQUIRED`", policy)
+        self.assertIn("must never be committed", policy)
+
+    def test_current_ready_route_exposes_bound_dispatch_capsule(self):
         next_text = (ROOT / "docs" / "NEXT_DECISION.md").read_text(encoding="utf-8")
         failures: list[str] = []
         packets = handoff.parse_packet_contracts(next_text, failures)
@@ -24,10 +32,10 @@ class HandoffMissionCompatibilityTests(unittest.TestCase):
         self.assertEqual(
             handoff.weak_agent_dispatch_failures(next_text, packets), []
         )
-        packet = packets["PE7-AUTONOMOUS-STEWARD-PR4"]
-        self.assertEqual(packet["state"], "BLOCKED_PREREQUISITE")
-        self.assertFalse(packet["checkpoint_allowed"])
-        self.assertNotIn("weak-agent-dispatch:v1", next_text)
+        packet = packets["PE7-AUTONOMOUS-STEWARD-PR4A"]
+        self.assertEqual(packet["state"], "READY_FOR_EXECUTION")
+        self.assertTrue(packet["checkpoint_allowed"])
+        self.assertIn("weak-agent-dispatch:v1", next_text)
 
     def test_changed_dispatch_identity_is_rejected(self):
         next_text = (
