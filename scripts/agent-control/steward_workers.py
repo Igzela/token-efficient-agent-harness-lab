@@ -951,6 +951,18 @@ class BoundedProcessReviewer:
                 raise WorkerError("reviewer_session_binding_mismatch")
             if review.implementation_session_id != outcome.session_id:
                 raise WorkerError("review_implementation_session_mismatch")
+            try:
+                expected_range = review_range_digest(
+                    context.base_sha,
+                    outcome.head_sha,
+                    worktree=context.worktree,
+                )
+            except WorkerError:
+                raise
+            if review.reviewed_base_sha != context.base_sha or review.reviewed_head_sha != outcome.head_sha:
+                raise WorkerError("review_head_binding_mismatch")
+            if review.reviewed_range_sha256 != expected_range:
+                raise WorkerError("review_range_binding_mismatch")
             return review
         except WorkerError:
             raise
