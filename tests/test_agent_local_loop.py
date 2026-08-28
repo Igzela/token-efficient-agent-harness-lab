@@ -31,7 +31,9 @@ import shadow_steward
 import state_manager
 import steward
 import steward_github
+import steward_workers as workers
 from steward_journal import StewardJournal
+import worktree_manager
 
 
 MAIN_SHA = "a" * 40
@@ -665,61 +667,168 @@ class TestMissionExecutionBridge(unittest.TestCase):
             }) + " -->",
             "createdAt": approved_at,
         }]
-        facts = {
-            "state": "OPEN",
-            "draft": False,
-            "merged": False,
-            "base_sha": MAIN_SHA,
-            "head_sha": "b" * 40,
-            "ci_state": "PASS",
-            "review_state": "PASS",
-            "base_branch": "main",
-            "head_branch": "agent/steward-stage-ready",
-        }
         with tempfile.TemporaryDirectory() as temp:
-            reader = steward_github.FakeGitHubReader(facts)
+            root = Path(temp)
+            repo = root / "Projects" / "repo"
+            origin = root / "origin.git"
+            repo.mkdir(parents=True)
+            subprocess.run(
+                ["git", "init", "--bare", str(origin)], check=True,
+                capture_output=True, text=True,
+            )
+
+            def git(*args):
+                return subprocess.run(
+                    ["git", *args], cwd=repo, check=True,
+                    capture_output=True, text=True,
+                ).stdout.strip()
+
+            git("init", "-b", "main")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.invalid")
+            (repo / "docs").mkdir()
+            (repo / "tests").mkdir()
+            (repo / "docs" / "ARCHITECTURE_BOOK.md").write_text("base docs\n", encoding="utf-8")
+            (repo / "tests" / "test_mission_contract.py").write_text("base tests\n", encoding="utf-8")
+            git("add", ".")
+            git("commit", "-m", "base")
+            base_sha = git("rev-parse", "HEAD")
+            git("remote", "add", "origin", str(origin))
+            git("push", "origin", "main")
+            github.main_sha = base_sha
+            approval = dict(github.comments[0])
+            approval_payload = json.loads(
+                approval["body"].split(" ", 2)[2].removesuffix(" -->")
+            )
+            approval_payload["accepted_main_sha"] = base_sha
+            github.comments[0]["body"] = (
+                "<!-- steward-owner-approval:v1 "
+                + json.dumps(approval_payload)
+                + " -->"
+            )
+            git_reader = FakeGit(base_sha)
+
+            class StageReader:
+                def __init__(self):
+                    self.reads = []
+                    self.head_sha = None
+                    self.head_branch = None
+
+                def fetch_stage_pr(self, repository, pr_number):
+                    self.reads.append((repository, pr_number))
+                    if self.head_sha is None or self.head_branch is None:
+                        raise steward_github.GitHubReadError("stage_facts_not_bound")
+                    return {
+                        "repository": repository,
+                        "pr_number": pr_number,
+                        "state": "OPEN",
+                        "draft": len(self.reads) == 1,
+                        "merged": False,
+                        "base_sha": base_sha,
+                        "head_sha": self.head_sha,
+                        "ci_state": "PASS",
+                        "review_state": "PASS",
+                        "base_branch": "main",
+                        "head_branch": self.head_branch,
+                    }
+
+            reader = StageReader()
+
+            class RealBridgeWorker(workers.BoundedProcessWorker):
+                def __init__(self):
+                    super().__init__(lambda _context: ["/usr/bin/python3", "-c", "pass"])
+
+                def run(self, context):
+                    relative = context.allowed_paths[0]
+                    (context.worktree / relative).write_text(
+                        f"real bridge worker {context.card_id}\n", encoding="utf-8"
+                    )
+                    subprocess.run(
+                        ["git", "add", "--", relative], cwd=context.worktree,
+                        check=True, capture_output=True, text=True,
+                    )
+                    subprocess.run(
+                        ["git", "commit", "-m", f"worker {context.card_id}"],
+                        cwd=context.worktree, check=True, capture_output=True, text=True,
+                    )
+                    head = subprocess.run(
+                        ["git", "rev-parse", "HEAD"], cwd=context.worktree,
+                        check=True, capture_output=True, text=True,
+                    ).stdout.strip()
+                    return workers.WorkerOutcome(
+                        "PASS", workers.process_session_id(context), head,
+                        (relative,), "real_bridge_worker",
+                    )
+
+            class RealBridgeReviewer(workers.BoundedProcessReviewer):
+                def __init__(self):
+                    super().__init__(lambda _context, _outcome: ["/usr/bin/python3", "-c", "pass"])
+
+                def review(self, context, outcome):
+                    payload = {
+                        "schema_version": "steward_review_outcome.v1",
+                        "status": "PASS",
+                        "reviewer_session_id": workers.reviewer_session_id(context, outcome),
+                        "implementation_session_id": outcome.session_id,
+                        "reviewed_head_sha": outcome.head_sha,
+                        "blockers": [],
+                        "detail": "real_bridge_review",
+                        "reviewed_base_sha": context.base_sha,
+                        "reviewed_range_sha256": workers.review_range_digest(
+                            context.base_sha, outcome.head_sha, worktree=context.worktree
+                        ),
+                        "review_axes": ["standards", "spec"],
+                        "review_round": 1,
+                        "review_mode": "full",
+                        "review_receipt_sha256": "",
+                        "summary": "real bridge review",
+                        "findings": None,
+                        "security_ok": True,
+                        "rollback_ok": True,
+                        "observed_ci_status": "unknown",
+                        "finding_ledger_digest": "",
+                    }
+                    return workers.ReviewOutcome.from_wire(
+                        workers.seal_review_outcome_wire(payload)
+                    )
+
             steward_instance = steward.Steward(
                 repository=mission_contract.CAMPAIGN_REPOSITORY,
-                repo_path=Path(temp),
-                journal=StewardJournal(Path(temp) / "journal.sqlite3"),
+                repo_path=repo,
+                journal=StewardJournal(root / "journal.sqlite3"),
                 github=reader,
-                lock_dir=Path(temp) / "locks",
+                worker=RealBridgeWorker(),
+                reviewer=RealBridgeReviewer(),
+                lock_dir=root / "locks",
             )
             runner = local_run_once.LocalRunOnce(
                 github,
-                FakeGit(),
+                git_reader,
                 repository=mission_contract.CAMPAIGN_REPOSITORY,
-                repo_path=Path("/workspace/example"),
+                repo_path=repo,
             )
-
-            def reconcile(_mission, _stage, cards, *, stage_pr):
-                return {
-                    card.card_id: steward.ExecutionResult(
-                        card.card_id, "WAITING_FOR_MERGE", 1,
-                        stage_pr.head_sha, "real_bridge_reconciliation",
-                    )
-                    for card in cards
-                }
 
             with (
                 mock.patch.object(
-                    steward_instance,
-                    "execute_stage_to_waiting_for_merge",
-                    return_value={
-                        "status": "stage_pr_draft",
-                        "pr": {"number": 42},
-                        "results": {},
-                    },
-                ) as execute_stage,
+                    worktree_manager, "WORKTREE_BASE", root / "worker-worktrees"
+                ),
+                mock.patch.object(steward, "_git_repository_identity", return_value=True),
                 mock.patch.object(
-                    steward_instance, "reconcile_stage_pr", side_effect=reconcile
-                ) as reconcile_stage,
-                mock.patch.object(
-                    steward_instance,
-                    "continue_stage_to_waiting_for_merge",
-                    wraps=steward_instance.continue_stage_to_waiting_for_merge,
-                ) as continue_stage,
+                    workers,
+                    "run_allowlisted_checks",
+                    return_value=[{"command": "git diff --check", "exit_code": 0}],
+                ),
+                mock.patch(
+                    "pr_binding.create_or_update_stage_pr",
+                    side_effect=lambda _stage_id, _mission_id, branch, head_sha,
+                    _base_sha, _title, _body, _repository: (
+                        setattr(reader, "head_sha", head_sha),
+                        setattr(reader, "head_branch", branch),
+                        {"number": 42, "head_sha": head_sha},
+                    )[-1],
+                ) as bind_stage_pr,
             ):
+                steward_instance.verifier = workers.run_allowlisted_checks
                 first = runner.run_mission_stage(
                     proposal,
                     approval_issue=99,
@@ -736,10 +845,15 @@ class TestMissionExecutionBridge(unittest.TestCase):
 
         self.assertEqual(first["status"], "stage_pr_draft")
         self.assertEqual(second["status"], "waiting_for_merge")
-        execute_stage.assert_called_once()
-        continue_stage.assert_called_once()
-        reconcile_stage.assert_called_once()
-        self.assertEqual(reader.reads, [(mission_contract.CAMPAIGN_REPOSITORY, 42)])
+        bind_stage_pr.assert_called_once()
+        self.assertEqual(
+            reader.reads,
+            [
+                (mission_contract.CAMPAIGN_REPOSITORY, 42),
+                (mission_contract.CAMPAIGN_REPOSITORY, 42),
+                (mission_contract.CAMPAIGN_REPOSITORY, 42),
+            ],
+        )
 
 
 class TestGitHubAdapterActiveScopes(unittest.TestCase):

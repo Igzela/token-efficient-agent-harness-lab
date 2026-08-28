@@ -376,6 +376,26 @@ class StewardExecutionTests(unittest.TestCase):
         self.assertEqual(result["stage"].exact_head, HEAD)
         reconcile.assert_called_once()
 
+    def test_stage_publish_refuses_local_branch_head_drift_before_push(self):
+        instance = self.make_steward(None, None)
+        integration = steward.StageIntegration(
+            self.stage.stage_id,
+            steward._stage_branch(self.mission, self.stage, BASE),
+            BASE,
+            HEAD,
+            ((self.card.card_id, HEAD),),
+        )
+        with mock.patch.object(instance, "_git_text", return_value=BASE) as git:
+            with self.assertRaisesRegex(
+                steward.StewardError, "stage_local_branch_head_mismatch"
+            ):
+                instance.publish_stage_branch(integration)
+        git.assert_called_once_with(
+            "rev-parse", "--verify",
+            f"refs/heads/{integration.branch}",
+            allow_failure=True,
+        )
+
     def test_parent_assembly_cherry_picks_two_real_card_heads(self):
         repo = self.root / "Projects" / "repo"
         repo.mkdir(parents=True)

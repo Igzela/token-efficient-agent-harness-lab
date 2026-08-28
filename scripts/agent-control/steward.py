@@ -568,11 +568,28 @@ class Steward:
 
         branch = _stage_branch(mission, stage, base_sha)
         digest = branch.removeprefix("agent/stage-")
-        if self.repo_path.parent.parent.name == ".worktrees":
-            worktree_root = self.repo_path.parent
+        projects_root: Path | None = None
+        for parent in (self.repo_path, *self.repo_path.parents):
+            if parent.name == "Projects":
+                projects_root = parent
+                break
+        if projects_root is not None:
+            if (
+                self.repo_path.parent.parent.name == ".worktrees"
+                and self.repo_path.parent.parent.parent == projects_root
+            ):
+                repository_name = self.repo_path.parent.name
+            elif self.repo_path.parent == projects_root:
+                repository_name = self.repo_path.name
+            else:
+                repository_name = self.repo_path.name
+            worktree_root = projects_root / ".worktrees" / repository_name
         else:
-            worktree_root = self.repo_path.parent.parent / ".worktrees" / self.repo_path.name
+            # Test and externally embedded checkouts may not have the shared
+            # Projects root; keep their fallback local and bounded.
+            worktree_root = self.repo_path.parent / ".worktrees" / self.repo_path.name
         stage_path = worktree_root / f"steward-stage-{digest}"
+        worktree_root.mkdir(parents=True, exist_ok=True)
         if stage_path.exists() or stage_path.is_symlink():
             raise StewardError("stage_integration_path_occupied")
         existing = self._git_text("rev-parse", "--verify", f"refs/heads/{branch}", allow_failure=True)
@@ -626,6 +643,29 @@ class Steward:
     def publish_stage_branch(self, integration: StageIntegration) -> None:
         """Push one exact Stage branch and reconcile the remote head."""
 
+        if (
+            not isinstance(integration, StageIntegration)
+            or not re.fullmatch(r"agent/stage-[0-9a-f]{24}", integration.branch)
+            or not SHA40.fullmatch(integration.base_sha)
+            or not SHA40.fullmatch(integration.head_sha)
+        ):
+            raise StewardError("stage_integration_binding_invalid")
+        local_head = self._git_text(
+            "rev-parse", "--verify", f"refs/heads/{integration.branch}",
+            allow_failure=True,
+        )
+        if local_head != integration.head_sha:
+            raise StewardError("stage_local_branch_head_mismatch")
+
+        def remote_matches(observed: str | None) -> bool:
+            if not observed:
+                return False
+            parts = observed.split()
+            return len(parts) == 2 and parts == [
+                integration.head_sha,
+                f"refs/heads/{integration.branch}",
+            ]
+
         remote = self._git_text(
             "ls-remote", "origin", f"refs/heads/{integration.branch}", allow_failure=True
         )
@@ -645,10 +685,10 @@ class Steward:
             observed = self._git_text(
                 "ls-remote", "origin", f"refs/heads/{integration.branch}", allow_failure=True
             )
-            if not observed or not observed.startswith(integration.head_sha + " "):
+            if not remote_matches(observed):
                 raise StewardError("stage_push_outcome_unknown") from exc
         observed = self._git_text("ls-remote", "origin", f"refs/heads/{integration.branch}")
-        if not observed.startswith(integration.head_sha + " "):
+        if not remote_matches(observed):
             raise StewardError("stage_remote_head_mismatch")
 
     def bind_stage_draft_pr(
