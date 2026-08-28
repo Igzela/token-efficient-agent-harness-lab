@@ -98,11 +98,18 @@ class StewardExecutionTests(unittest.TestCase):
             if git_heads is None
             else mock.patch.object(steward, "_git_head", side_effect=git_heads)
         )
+        actual_paths = (
+            [(), (self.card.allowed_paths[0],)]
+            if git_heads is not None
+            else [(self.card.allowed_paths[0],)]
+        )
+        diff_patch = mock.patch.object(steward, "_git_changed_paths", side_effect=actual_paths)
+        clean_patch = mock.patch.object(steward, "_git_worktree_clean")
         with mock.patch.object(
             worktree_manager,
             "create_steward_worktree",
             return_value=(str(self.root), "agent/steward-card", BASE, None),
-        ), head_patch:
+        ), head_patch, diff_patch, clean_patch:
             return service.dispatch_card(
                 self.mission,
                 self.stage,

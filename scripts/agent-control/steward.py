@@ -77,6 +77,54 @@ def _git_head(worktree: Path) -> str:
     return head
 
 
+def _git_changed_paths(worktree: Path, base_sha: str, head_sha: str) -> tuple[str, ...]:
+    """Read committed paths from the exact base-to-head diff."""
+
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", f"{base_sha}..{head_sha}"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise StewardError("worktree_diff_unavailable") from exc
+    if result.returncode != 0:
+        raise StewardError("worktree_diff_unavailable")
+    paths = tuple(line for line in result.stdout.splitlines() if line)
+    if any(
+        not path
+        or Path(path).is_absolute()
+        or "\\" in path
+        or ".." in Path(path).parts
+        for path in paths
+    ):
+        raise StewardError("worktree_diff_path_invalid")
+    return paths
+
+
+def _git_worktree_clean(worktree: Path) -> None:
+    """Refuse uncommitted or untracked residue after a worker attempt."""
+
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise StewardError("worktree_status_unavailable") from exc
+    if result.returncode != 0:
+        raise StewardError("worktree_status_unavailable")
+    if result.stdout.strip():
+        raise workers.WorkerError("worktree_dirty_after_worker")
+
+
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
 
@@ -333,6 +381,9 @@ class Steward:
                             card, outcome, expected_head_sha=outcome.head_sha
                         )
                         observed_head = _git_head(worktree_path)
+                        actual_paths = _git_changed_paths(worktree_path, base_sha, observed_head)
+                        workers.validate_changed_paths(card, actual_paths)
+                        _git_worktree_clean(worktree_path)
                     except workers.WorkerError as exc:
                         return self._failure(
                             mission=mission,
@@ -396,7 +447,17 @@ class Steward:
                             attempt += 1
                             continue
                         return result
-                    if observed_head == base_sha and not outcome.changed_paths:
+                    if set(actual_paths) != set(outcome.changed_paths):
+                        return self._failure(
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            reason="worker_changed_paths_mismatch",
+                            retryable=False,
+                            head_sha=observed_head,
+                        )
+                    if observed_head == base_sha and not actual_paths:
                         return self._failure(
                             mission=mission,
                             stage=stage,

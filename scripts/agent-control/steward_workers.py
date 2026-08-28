@@ -249,12 +249,20 @@ def validate_worker_outcome(
         raise WorkerError("expected_head_sha_invalid")
     if not SHA40.fullmatch(outcome.head_sha):
         raise WorkerError("worker_head_sha_invalid")
-    for path in outcome.changed_paths:
+    validate_changed_paths(card, outcome.changed_paths)
+    return outcome
+
+
+def validate_changed_paths(
+    card: mission_contract.WorkCard, paths: tuple[str, ...] | list[str]
+) -> None:
+    """Enforce the WorkCard path boundary on observed or reported paths."""
+
+    for path in paths:
         if any(mission_contract.path_in_scope((forbidden,), path) for forbidden in card.forbidden_paths):
             raise WorkerError("worker_forbidden_path")
         if not mission_contract.path_in_scope(card.allowed_paths, path):
             raise WorkerError("worker_path_outside_card")
-    return outcome
 
 
 class PathLockSet(AbstractContextManager["PathLockSet"]):
@@ -327,4 +335,5 @@ __all__ = [
     "run_allowlisted_checks",
     "select_model_tier",
     "validate_worker_outcome",
+    "validate_changed_paths",
 ]
