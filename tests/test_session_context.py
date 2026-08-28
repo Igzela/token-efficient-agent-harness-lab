@@ -9,8 +9,10 @@ matrix that closed the earlier review blocker.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -21,8 +23,10 @@ from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(SCRIPTS / "agent-control"))
 
 import session_context  # noqa: E402
+import route_driver  # noqa: E402
 
 
 MAIN = "a" * 40
@@ -1247,6 +1251,71 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(capsule["packet_id"], packet["packet_id"])
         self.assertEqual(capsule["promotion_evidence_sha256"], "34a27ad11dbb7c0b606908ac76ce18f13d7569d73c21f3c9c4e2eedfbecc0fdb")
         self.assertEqual(capsule["route_manifest_sha256"], "76a7d06a53cfe7f702529ef69b4601d4f61fca2cae2b9f426f799b2783c6b34f")
+
+    def test_pr4_promotion_evidence_record_recomputes_from_accepted_main(self):
+        root = Path(__file__).resolve().parents[1]
+        next_document = (root / "docs" / "NEXT_DECISION.md").read_text(encoding="utf-8")
+        record_start = next_document.index("<!-- route-promotion-evidence:v2")
+        record_end = next_document.index("-->", record_start)
+        record_payload = next_document[
+            record_start + len("<!-- route-promotion-evidence:v2") : record_end
+        ].strip()
+        capsule_match = re.search(
+            r"<!-- weak-agent-dispatch:v1\s*(?P<payload>\{.*?\})\s*-->",
+            next_document,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(capsule_match)
+        record = json.loads(record_payload)
+        capsule = json.loads(capsule_match.group("payload"))
+        accepted = record["accepted_main_sha"]
+        status = subprocess.check_output(
+            ["git", "show", f"{accepted}:docs/CURRENT_STATUS.md"],
+            cwd=root,
+            text=True,
+        )
+        future = subprocess.check_output(
+            ["git", "show", f"{accepted}:docs/FUTURE_ROUTE.md"],
+            cwd=root,
+            text=True,
+        )
+        self.assertEqual(
+            hashlib.sha256(status.encode("utf-8")).hexdigest(),
+            record["evidence"]["status_document_sha256"],
+        )
+        self.assertEqual(
+            route_driver._json_sha256(record["evidence"]),
+            record["promotion_evidence_sha256"],
+        )
+        self.assertEqual(
+            route_driver._json_sha256(route_driver.inventory_manifest(future)),
+            record["route_manifest_sha256"],
+        )
+        self.assertEqual(record["contract"]["manifest_sha256"], record["route_manifest_sha256"])
+        self.assertEqual(
+            route_driver._json_sha256(
+                {
+                    "packet_id": record["packet_id"],
+                    "accepted_main_sha": accepted,
+                    "predecessor_receipt": record["predecessor_receipt"],
+                    "manifest_sha256": record["route_manifest_sha256"],
+                    "evidence_sha256": record["promotion_evidence_sha256"],
+                    "capsule": capsule,
+                    "contract": record["contract"],
+                }
+            ),
+            record["spec_digest"],
+        )
+        for path in record["evidence"]["read_paths"]:
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "cat-file", "-e", f"{accepted}:{path}"],
+                    cwd=root,
+                    check=False,
+                ).returncode,
+                0,
+                path,
+            )
 
     def test_future_route_profile_extraction_is_routing_projection_only(self):
         root = Path(__file__).resolve().parents[1]
