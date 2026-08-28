@@ -1203,6 +1203,14 @@ class CheckpointTests(unittest.TestCase):
             "| `PE7-HE-EC3-ENFORCEMENT-1` | `COMPLETE` | PR #610 ",
             status_document,
         )
+        self.assertIn(
+            "| Autonomous Steward Shadow Steward | `COMPLETE` | PR #631 accepted",
+            status_document,
+        )
+        self.assertIn(
+            "| Autonomous Steward autonomous executor | `NOT_ACCEPTED` | PR3 is the current",
+            status_document,
+        )
         self.assertNotIn(
             "no lifecycle-cost instrumentation or enforcement is accepted",
             status_document,
@@ -1210,6 +1218,21 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn("former Harness-Evolution route is parked, not erased", future_document)
         self.assertIn("four successor packets above replace the 54-packet routing horizon", future_document)
         self.assertIn("PE7-AUTONOMOUS-STEWARD-PR7", future_document)
+        for packet_id in (
+            "PE7-AUTONOMOUS-STEWARD-PR4",
+            "PE7-AUTONOMOUS-STEWARD-PR5",
+            "PE7-AUTONOMOUS-STEWARD-PR6",
+            "PE7-AUTONOMOUS-STEWARD-PR7",
+        ):
+            start = future_document.index(f"### Packet {packet_id}")
+            next_packet = future_document.find("### Packet ", start + 1)
+            end = next_packet if next_packet >= 0 else future_document.index(
+                "## Portfolio Inventory Manifest", start
+            )
+            self.assertIn(
+                "**State:** `BLOCKED_PREREQUISITE`",
+                future_document[start:end],
+            )
         self.assertIn("PE7-AUTONOMOUS-STEWARD-PR0 — COMPLETE", next_document)
         self.assertIn("PE7-AUTONOMOUS-STEWARD-PR0", next_document)
         self.assertIn("PE7-AUTONOMOUS-STEWARD-PR1", next_document)

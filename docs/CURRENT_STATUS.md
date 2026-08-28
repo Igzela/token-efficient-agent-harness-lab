@@ -420,7 +420,8 @@ Candidate evidence remains non-authoritative until it is bound to one exact PR h
 | Harness-Evolution C0–C4 capability spiral | `PARKED_MIGRATION_INPUT` | EC3, the executed-and-closed C0 pilot/closeout, the C1 three-axis contract, and the provider-free C1 CORE implementation remain accepted on `main`; the former `PE7-HE-MX1-PILOT-1` effect is parked and cannot request or execute a matrix effect unless a later accepted Mission imports it with an exact finite authority |
 | Experimental C5–C8 research spiral | `PARKED_MIGRATION_INPUT` | The 28 formal default-off packets are retained only as migration input; their fixed-Meta, advanced gate/R4, Harness-plus-weight R5, and bounded outer-policy R6 contracts do not create a current execution window or effect authority |
 | Dashboard #225 / successor | `DEFERRED` | 3 formal packets: disposition, presentation-only refresh, exact-head closeout; it projects accepted core and optional-research dispositions without owning backend behavior |
-| Autonomous Steward Shadow Steward | `NOT_ACCEPTED` | PR2 is the current provider-free shadow-planner window; no autonomous writer, service, or Mission persistence owner is accepted yet |
+| Autonomous Steward Shadow Steward | `COMPLETE` | PR #631 accepted the provider-free proposal compiler, digest-bound approval evaluator, Stage/WorkCard planner and replanner, stop classifier, compact status projection, and sealed historical replay; it performs no lifecycle or external-effect mutation |
+| Autonomous Steward autonomous executor | `NOT_ACCEPTED` | PR3 is the current provider-free executor window; no continuously running service, rebuildable journal, reconciliation loop, or autonomous lifecycle writer is accepted yet |
 
 ## C1 three-axis experiment contract (provider-free contract freeze)
 
