@@ -72,7 +72,7 @@ A difficult implementation or failed first attempt is not a blocker: diagnose an
 
 ## Reading and Verification
 
-After `START_HERE.md`, follow only the returned role route and packet-targeted reads. `docs/MODULE_MAP.md` owns modules; `docs/ARCHITECTURE_BOOK.md` durable design and boundaries; `docs/REAL_WORLD_TESTING_PLAYBOOK.md` repository delivery; `docs/RUNBOOK.md` only proven operator procedures. Code, tests, Git/GitHub, and accepted canonical documents outrank stale prose. Use CodeGraph first when its repository index exists and code relationships must be located.
+After `START_HERE.md`, follow only the returned role route and packet-targeted reads. `docs/MODULE_MAP.md` owns modules; `docs/ARCHITECTURE_BOOK.md` durable design and boundaries; `docs/REAL_WORLD_TESTING_PLAYBOOK.md` repository delivery; `docs/RUNBOOK.md` only proven operator procedures. Code, tests, Git/GitHub, and accepted canonical documents outrank stale prose. When `.codegraph/` exists, invoke `codegraph_explore` before broad grep/reads for structural, dependency, or call-flow navigation; read raw files afterward only for unestablished details. In linked worktrees without `.codegraph/`, agents are authorized to run `codegraph index` to establish branch-local code intelligence.
 
 ## Documentation Maintenance Rule
 
