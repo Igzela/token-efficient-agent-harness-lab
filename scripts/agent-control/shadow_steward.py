@@ -198,16 +198,18 @@ _EXTERNAL_ACTIONS = (
     r"insert|inserting|remove|removing|delete|deleting|curl|wget"
 )
 _EXTERNAL_TARGETS = (
-    r"github|slack|discord|microsoft teams|notion|jira|external|service|external api|"
+    r"github|slack|discord|microsoft teams|notion|jira|gh|nc|external|service|external api|"
     r"third[- ]party|webhook|email|e-mail|api|s3|container registry|registry|origin|"
     r"upstream|remote|pull request|pull-request|pr|branch|repository|repo|database|"
     r"db|provider|target|endpoint|url|unknown service|external system|http request|"
     r"network request|socket|network|system|http|https|arbitrary|unknown|destination|"
-    r"host|connection|smtp|curl|internet|outbound|lan|rpc|packet|channel|storage|queue"
+    r"host|connection|smtp|curl|internet|outbound|lan|rpc|packet|channel|storage|queue|"
+    r"tcp|udp|port|ssh|scp|ftp|telnet"
 )
 _HIGH_RISK_PATTERNS = (
     re.compile(r"\bgit\s+push\b"),
     re.compile(r"\b(?:curl|wget)\b.{0,64}\bhttps?://"),
+    re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
     re.compile(
         r"\b(?:write|push|modify|change|update|create|close|merge|comment)\b"
         r".{0,48}\bgithub\b"

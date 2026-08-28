@@ -205,6 +205,9 @@ class ShadowStewardTests(unittest.TestCase):
             "Call the remote service while updating docs/ARCHITECTURE_BOOK.md.",
             "Connect over LAN while updating docs/ARCHITECTURE_BOOK.md.",
             "Invoke RPC while updating docs/ARCHITECTURE_BOOK.md.",
+            "Run gh issue comment while updating docs/ARCHITECTURE_BOOK.md.",
+            "Use nc to contact 10.0.0.1 while updating docs/ARCHITECTURE_BOOK.md.",
+            "Send data over TCP while updating docs/ARCHITECTURE_BOOK.md.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)
