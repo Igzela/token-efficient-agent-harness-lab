@@ -182,6 +182,33 @@ class StewardExecutionTests(unittest.TestCase):
         self.assertEqual(result.reason, "review_head_binding_mismatch")
         self.assertEqual(service.journal.projection()["card_states"]["card-1"], "BLOCKED")
 
+    def test_observed_diff_is_checked_against_card_scope(self):
+        implementation = workers.WorkerOutcome(
+            "PASS", "impl-session", HEAD, ("docs/ARCHITECTURE_BOOK.md",)
+        )
+        review = workers.ReviewOutcome("PASS", "review-session", "impl-session", HEAD)
+        instance = self.make_steward(
+            workers.CallableWorker(lambda _context: implementation),
+            workers.CallableReviewer(lambda _context, _outcome: review),
+        )
+        with (
+            mock.patch.object(
+                worktree_manager,
+                "create_steward_worktree",
+                return_value=(str(self.root), "agent/steward-card", BASE, None),
+            ),
+            mock.patch.object(steward, "_git_head", return_value=HEAD),
+            mock.patch.object(
+                steward, "_git_changed_paths", return_value=("tests/test_mission_contract.py",)
+            ),
+            mock.patch.object(steward, "_git_worktree_clean"),
+        ):
+            result = instance.dispatch_card(
+                self.mission, self.stage, self.card, base_sha=BASE, stage_pr=self.facts
+            )
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertEqual(result.reason, "worker_path_outside_card")
+
     def test_default_worker_is_explicitly_provider_free_and_unconfigured(self):
         instance = steward.Steward(
             repository=contract.CAMPAIGN_REPOSITORY,

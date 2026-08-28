@@ -175,8 +175,10 @@ class JournalEvent:
             raise JournalCorrupt("event state is invalid")
         if value["detail"] and IDENTIFIER.fullmatch(value["detail"]) is None:
             raise JournalCorrupt("event detail is invalid")
-        if not isinstance(value["data"], dict):
-            raise JournalCorrupt("event data is invalid")
+        try:
+            clean_data = _validate_data(value["data"])
+        except JournalError as exc:
+            raise JournalCorrupt("event data is invalid") from exc
         if value["prev_sha256"] and SHA256.fullmatch(value["prev_sha256"]) is None:
             raise JournalCorrupt("event prev hash is invalid")
         if SHA256.fullmatch(value["sha256"]) is None:
@@ -192,7 +194,7 @@ class JournalEvent:
             attempt,
             value["state"],
             value["detail"],
-            dict(value["data"]),
+            clean_data,
             value["prev_sha256"],
             value["sha256"],
         )
@@ -227,7 +229,10 @@ def _validate_data(data: object | None) -> dict[str, Any]:
     for key, value in data.items():
         if not isinstance(key, str) or IDENTIFIER.fullmatch(key) is None:
             raise JournalError("journal_data_key_invalid")
-        if not isinstance(value, (int, bool, type(None))):
+        if isinstance(value, str):
+            if IDENTIFIER.fullmatch(value) is None:
+                raise JournalError("journal_data_value_invalid")
+        elif not isinstance(value, (int, bool, type(None))):
             raise JournalError("journal_data_value_invalid")
     return dict(data)
 

@@ -119,6 +119,15 @@ class StewardService:
         """Read live PR facts and append only observed, idempotent transitions."""
 
         projection = self.journal.projection()
+        review_bound_heads = {
+            (event.card_id, event.data["reviewed_head_sha"])
+            for event in self.journal.replay()
+            if event.event == "REVIEW_PASSED"
+            and isinstance(event.data.get("implementation_session_id"), str)
+            and isinstance(event.data.get("reviewer_session_id"), str)
+            and event.data["implementation_session_id"] != event.data["reviewer_session_id"]
+            and isinstance(event.data.get("reviewed_head_sha"), str)
+        }
         items: list[RecoveryItem] = []
         for card_id in projection["active_cards"]:
             binding = stage_bindings.get(card_id)
@@ -141,6 +150,18 @@ class StewardService:
                     expected_base_sha=base_sha,
                     expected_head_sha=head_sha,
                 )
+                if (
+                    status.outcome in {"WAITING_FOR_MERGE", "COMPLETE"}
+                    and (card_id, head_sha) not in review_bound_heads
+                ):
+                    status = StagePRStatus(
+                        "BLOCKED",
+                        "review_binding_missing",
+                        status.repository,
+                        status.pr_number,
+                        status.base_sha,
+                        status.head_sha,
+                    )
             except (KeyError, TypeError, GitHubFactsError, GitHubReadError, OSError):
                 status = StagePRStatus(
                     "BLOCKED",

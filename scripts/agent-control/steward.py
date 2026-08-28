@@ -554,6 +554,21 @@ class Steward:
                             attempt += 1
                             continue
                         return result
+                    self._record(
+                        event="REVIEW_PASSED",
+                        key=f"review:{card.card_id}:{attempt}:{observed_head}:{_digest(review.reviewer_session_id)}",
+                        mission=mission,
+                        stage=stage,
+                        card=card,
+                        attempt=attempt,
+                        state="REVIEWING",
+                        detail="independent_review_passed",
+                        data={
+                            "implementation_session_id": outcome.session_id,
+                            "reviewer_session_id": review.reviewer_session_id,
+                            "reviewed_head_sha": observed_head,
+                        },
+                    )
                     if stage_facts is None:
                         return ExecutionResult(card.card_id, "WAITING_FOR_PR", attempt, observed_head, "stage_pr_facts_required", review.reviewer_session_id)
                     try:

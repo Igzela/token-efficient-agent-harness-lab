@@ -52,6 +52,21 @@ class StewardFaultTests(unittest.TestCase):
         self.append("RUNNING", f"run:{card}", card=card)
         self.append("VERIFYING", f"verify:{card}", card=card)
         self.append("REVIEWING", f"review:{card}", card=card)
+        self.journal.append(
+            event="REVIEW_PASSED",
+            idempotency_key=f"review-pass:{card}",
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id=card,
+            attempt=1,
+            state="REVIEWING",
+            detail="independent_review_passed",
+            data={
+                "implementation_session_id": "implementation",
+                "reviewer_session_id": "reviewer",
+                "reviewed_head_sha": HEAD,
+            },
+        )
 
     def facts(self, *, merged: bool = False, head: str = HEAD):
         return {
@@ -96,6 +111,37 @@ class StewardFaultTests(unittest.TestCase):
         self.assertEqual(report.items[0].outcome, "WAITING_FOR_MERGE")
         self.assertEqual(self.journal.projection()["card_states"]["card-1"], "WAITING_FOR_MERGE")
         self.assertEqual(reader.reads, [("Igzela/token-efficient-agent-harness-lab", 7)])
+
+    def test_reconciliation_requires_review_binding_for_exact_head(self):
+        self.append("QUEUED", "queue:unreviewed", card="unreviewed")
+        self.append("RUNNING", "run:unreviewed", card="unreviewed")
+        self.append("VERIFYING", "verify:unreviewed", card="unreviewed")
+        self.append("REVIEWING", "review:unreviewed", card="unreviewed")
+        service = StewardService(
+            mission_id=MISSION,
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(self.facts()),
+        )
+        report = service.reconcile(
+            stage_bindings={
+                "card-1": {
+                    "repository": "Igzela/token-efficient-agent-harness-lab",
+                    "pr_number": 7,
+                    "base_sha": BASE,
+                    "head_sha": HEAD,
+                },
+                "unreviewed": {
+                    "repository": "Igzela/token-efficient-agent-harness-lab",
+                    "pr_number": 7,
+                    "base_sha": BASE,
+                    "head_sha": HEAD,
+                },
+            }
+        )
+        item = next(item for item in report.items if item.card_id == "unreviewed")
+        self.assertEqual(item.outcome, "BLOCKED")
+        self.assertEqual(item.reason, "review_binding_missing")
+        self.assertEqual(self.journal.projection()["card_states"]["unreviewed"], "BLOCKED")
 
     def test_reconciliation_records_observed_merge_but_never_requests_one(self):
         self.make_waiting_journal()
