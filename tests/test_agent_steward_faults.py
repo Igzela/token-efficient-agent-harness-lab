@@ -62,8 +62,8 @@ class StewardFaultTests(unittest.TestCase):
             state="REVIEWING",
             detail="independent_review_passed",
             data={
-                "implementation_session_id": "implementation",
-                "reviewer_session_id": "reviewer",
+                "implementation_session_digest": "implementation-digest",
+                "reviewer_session_digest": "reviewer-digest",
                 "reviewed_head_sha": HEAD,
             },
         )
@@ -272,6 +272,23 @@ class StewardFaultTests(unittest.TestCase):
             )
             observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
             self.assertEqual(observed["ci_state"], "PENDING")
+
+            run.return_value.stdout = json.dumps(
+                {
+                    "state": "OPEN",
+                    "isDraft": False,
+                    "mergedAt": None,
+                    "baseRefOid": BASE,
+                    "headRefOid": HEAD,
+                    "statusCheckRollup": [
+                        {"conclusion": "SUCCESS", "status": "COMPLETED"},
+                        {"conclusion": "SUCCESS", "status": "COMPLETED"},
+                    ],
+                    "reviewDecision": "APPROVED",
+                }
+            )
+            observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
+            self.assertEqual(observed["ci_state"], "PASS")
 
     def test_child_environment_drops_github_and_provider_credentials(self):
         environment = workers.child_environment(

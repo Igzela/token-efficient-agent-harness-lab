@@ -97,7 +97,7 @@ class StewardService:
         explicit ``reconcile`` call with live read-only facts can converge it.
         """
 
-        projection = self.journal.projection()
+        projection = self.journal.projection(mission_id=self.mission_id)
         items = tuple(
             RecoveryItem(
                 card,
@@ -122,17 +122,20 @@ class StewardService:
         review_bound_heads = {
             (event.card_id, event.data["reviewed_head_sha"])
             for event in self.journal.replay()
-            if event.event == "REVIEW_PASSED"
-            and isinstance(event.data.get("implementation_session_id"), str)
-            and isinstance(event.data.get("reviewer_session_id"), str)
-            and event.data["implementation_session_id"] != event.data["reviewer_session_id"]
+            if event.mission_id == self.mission_id
+            and event.event == "REVIEW_PASSED"
+            and isinstance(event.data.get("implementation_session_digest"), str)
+            and isinstance(event.data.get("reviewer_session_digest"), str)
+            and event.data["implementation_session_digest"] != event.data["reviewer_session_digest"]
             and isinstance(event.data.get("reviewed_head_sha"), str)
         }
         items: list[RecoveryItem] = []
         for card_id in projection["active_cards"]:
             binding = stage_bindings.get(card_id)
             if not isinstance(binding, Mapping):
-                binding = self.journal.stage_binding_for_card(card_id)
+                binding = self.journal.stage_binding_for_card(
+                    card_id, mission_id=self.mission_id
+                )
             state = projection["card_states"][card_id]
             if not isinstance(binding, Mapping):
                 items.append(
@@ -207,7 +210,9 @@ class StewardService:
             items.append(
                 RecoveryItem(card_id, state, status.outcome, status.reason)
             )
-        return ReconciliationReport(_now(), tuple(items), self.journal.projection())
+        return ReconciliationReport(
+            _now(), tuple(items), self.journal.projection(mission_id=self.mission_id)
+        )
 
 
 class _HeartbeatOnlyGitHub:

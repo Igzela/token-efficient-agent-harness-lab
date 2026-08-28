@@ -237,27 +237,26 @@ class GhReadOnlyGitHub:
         checks = payload.get("statusCheckRollup")
         ci_state = "UNKNOWN"
         if isinstance(checks, list) and checks:
-            conclusions = {
-                item.get("conclusion")
-                for item in checks
-                if isinstance(item, dict)
-            }
+            check_items = [item for item in checks if isinstance(item, dict)]
+            conclusions = [item.get("conclusion") for item in check_items]
             statuses = {
                 item.get("status")
-                for item in checks
-                if isinstance(item, dict)
+                for item in check_items
             }
             ci_state = (
                 "FAIL"
                 if "FAILURE" in conclusions or "CANCELLED" in conclusions
                 else "PENDING"
-                if None in conclusions
+                if len(check_items) != len(checks)
+                or None in conclusions
                 or bool(
                     statuses
                     & {"IN_PROGRESS", "QUEUED", "REQUESTED", "WAITING", "PENDING"}
                 )
                 else "PASS"
-                if len(conclusions) == len(checks) and conclusions == {"SUCCESS"}
+                if len(conclusions) == len(checks) and all(
+                    conclusion == "SUCCESS" for conclusion in conclusions
+                )
                 else "UNKNOWN"
             )
         review = payload.get("reviewDecision")

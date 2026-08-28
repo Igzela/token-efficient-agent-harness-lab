@@ -81,6 +81,16 @@ def _git_changed_paths(worktree: Path, base_sha: str, head_sha: str) -> tuple[st
     """Read committed paths from the exact base-to-head diff."""
 
     try:
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", base_sha, head_sha],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if ancestry.returncode != 0:
+            raise StewardError("worker_head_not_descendant")
         result = subprocess.run(
             ["git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", f"{base_sha}..{head_sha}"],
             cwd=worktree,
@@ -293,13 +303,23 @@ class Steward:
         if not SHA40.fullmatch(base_sha):
             raise StewardError("base_sha_invalid")
         try:
+            validated_mission = contract.validate_owner_approval(mission)
+            if validated_mission != contract.campaign_mission():
+                raise StewardError("mission_registration_invalid")
             contract.validate_workcard(card, stage, mission)
         except contract.MissionContractError as exc:
-            raise StewardError("stage_or_card_invalid") from exc
-        existing = self._existing_result(card, self.journal.latest_for_card(card.card_id))
+            raise StewardError("mission_or_stage_or_card_invalid") from exc
+        existing = self._existing_result(
+            card,
+            self.journal.latest_for_card(
+                card.card_id, mission_id=mission.mission_id, stage_id=stage.stage_id
+            ),
+        )
         if existing is not None:
             return existing
-        latest = self.journal.latest_for_card(card.card_id)
+        latest = self.journal.latest_for_card(
+            card.card_id, mission_id=mission.mission_id, stage_id=stage.stage_id
+        )
         attempt = 1 if latest is None else latest.attempt + (1 if latest.state == "RETRYING" else 0)
         stage_facts = _stage_pr_facts(stage_pr)
         while attempt <= card.max_attempts:
@@ -564,8 +584,8 @@ class Steward:
                         state="REVIEWING",
                         detail="independent_review_passed",
                         data={
-                            "implementation_session_id": outcome.session_id,
-                            "reviewer_session_id": review.reviewer_session_id,
+                            "implementation_session_digest": _digest(outcome.session_id),
+                            "reviewer_session_digest": _digest(review.reviewer_session_id),
                             "reviewed_head_sha": observed_head,
                         },
                     )
@@ -603,6 +623,7 @@ class Steward:
                             "pr_number": status.pr_number,
                             "base_sha": status.base_sha,
                             "head_sha": status.head_sha,
+                            "stage_id": stage.stage_id,
                         },
                     )
                     if status.outcome == "WAITING_FOR_MERGE":

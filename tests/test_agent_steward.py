@@ -170,6 +170,10 @@ class StewardExecutionTests(unittest.TestCase):
     def test_self_review_is_rejected_before_execution(self):
         with self.assertRaisesRegex(workers.WorkerError, "self_review_forbidden"):
             workers.ReviewOutcome("PASS", "same-session", "same-session", HEAD)
+        with self.assertRaisesRegex(workers.WorkerError, "review_pass_has_blockers"):
+            workers.ReviewOutcome(
+                "PASS", "review-session", "impl-session", HEAD, blockers=("open",)
+            )
 
     def test_review_head_drift_blocks_exact_head_delivery(self):
         implementation = workers.WorkerOutcome("PASS", "impl-session", HEAD, ("docs/ARCHITECTURE_BOOK.md",))

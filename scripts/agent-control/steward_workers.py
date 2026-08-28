@@ -180,6 +180,8 @@ class ReviewOutcome:
             for item in self.blockers
         ):
             raise WorkerError("review_blockers_invalid")
+        if self.status == "PASS" and self.blockers:
+            raise WorkerError("review_pass_has_blockers")
         _safe_detail(self.detail, "review_detail")
 
     def to_wire(self) -> dict[str, Any]:

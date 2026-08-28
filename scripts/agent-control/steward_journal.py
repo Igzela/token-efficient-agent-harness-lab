@@ -230,6 +230,11 @@ def _validate_data(data: object | None) -> dict[str, Any]:
     for key, value in data.items():
         if not isinstance(key, str) or IDENTIFIER.fullmatch(key) is None:
             raise JournalError("journal_data_key_invalid")
+        if any(
+            marker in key.upper()
+            for marker in ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "APIKEY", "CREDENTIAL", "AUTH")
+        ):
+            raise JournalError("journal_data_key_credential_shaped")
         if isinstance(value, str):
             if IDENTIFIER.fullmatch(value) is None and REPOSITORY.fullmatch(value) is None:
                 raise JournalError("journal_data_value_invalid")
@@ -434,18 +439,35 @@ class StewardJournal:
             enforce_transition=False,
         )
 
-    def latest_for_card(self, card_id: str) -> JournalEvent | None:
+    def latest_for_card(
+        self,
+        card_id: str,
+        *,
+        mission_id: str | None = None,
+        stage_id: str | None = None,
+    ) -> JournalEvent | None:
         events = self.replay()
         for event in reversed(events):
-            if event.card_id == card_id:
+            if (
+                event.card_id == card_id
+                and (mission_id is None or event.mission_id == mission_id)
+                and (stage_id is None or event.stage_id == stage_id)
+            ):
                 return event
         return None
 
-    def stage_binding_for_card(self, card_id: str) -> dict[str, Any] | None:
+    def stage_binding_for_card(
+        self, card_id: str, *, mission_id: str | None = None, stage_id: str | None = None
+    ) -> dict[str, Any] | None:
         """Return the latest exact Stage PR binding recorded for one card."""
 
         for event in reversed(self.replay()):
-            if event.card_id != card_id or event.event != "STAGE_PR_BOUND":
+            if (
+                event.card_id != card_id
+                or event.event != "STAGE_PR_BOUND"
+                or (mission_id is not None and event.mission_id != mission_id)
+                or (stage_id is not None and event.stage_id != stage_id)
+            ):
                 continue
             data = event.data
             if (
@@ -466,10 +488,18 @@ class StewardJournal:
                 }
         return None
 
-    def projection(self) -> dict[str, Any]:
+    def projection(
+        self, *, mission_id: str | None = None, stage_id: str | None = None
+    ) -> dict[str, Any]:
         """Rebuild a bounded, non-authoritative view from the verified chain."""
 
-        events = self.replay()
+        all_events = self.replay()
+        events = [
+            event
+            for event in all_events
+            if (mission_id is None or event.mission_id == mission_id)
+            and (stage_id is None or event.stage_id == stage_id)
+        ]
         latest: dict[str, JournalEvent] = {}
         for event in events:
             if event.card_id:
