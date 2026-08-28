@@ -211,8 +211,53 @@ class StewardExecutionTests(unittest.TestCase):
                 stage_pr=self.facts,
             ), service
 
+    def run_stage_through_service(self, current_worker, current_reviewer):
+        instance = self.make_steward(current_worker, current_reviewer)
+        implementation_paths = [
+            (self.card.allowed_paths[0],),
+            (self.card.allowed_paths[0],),
+        ]
+        metadata_heads = [BASE, HEAD, HEAD]
+        with (
+            mock.patch.object(
+                worktree_manager,
+                "create_steward_worktree",
+                return_value=(
+                    str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
+                ),
+            ),
+            mock.patch.object(steward, "_git_head", return_value=HEAD),
+            mock.patch.object(
+                steward, "_git_changed_paths", side_effect=implementation_paths
+            ),
+            mock.patch.object(steward, "_git_worktree_clean"),
+            mock.patch.object(steward, "_git_repository_identity", return_value=True),
+            mock.patch.object(
+                workers,
+                "review_range_digest",
+                return_value=hashlib.sha256(f"{BASE}...{HEAD}".encode("ascii")).hexdigest(),
+            ),
+            mock.patch.object(
+                steward,
+                "_git_metadata_snapshot",
+                side_effect=lambda _worktree, **_kwargs: (
+                    {f"refs/heads/{self.mock_worktree_branch}": metadata_heads.pop(0)},
+                    "config",
+                ),
+            ),
+        ):
+            return instance.execute_stage(
+                self.mission,
+                self.stage,
+                (self.card,),
+                base_sha=BASE,
+                stage_pr=self.facts,
+            ), instance
+
     def test_approved_card_reaches_waiting_for_merge_without_merge(self):
-        implementation = workers.WorkerOutcome("PASS", "impl-session", HEAD, (self.card.allowed_paths[0],))
+        implementation = workers.WorkerOutcome(
+            "PASS", "impl-session", HEAD, (self.card.allowed_paths[0],)
+        )
         review = self.review()
         result, service = self.run_with_facts(
             self.process_worker(lambda _context: implementation),
@@ -228,6 +273,23 @@ class StewardExecutionTests(unittest.TestCase):
         events = service.journal.replay()
         self.assertIn("LOCAL_REVIEW_OBSERVED", [event.event for event in events])
         self.assertNotIn("REVIEW_PASSED", [event.event for event in events])
+
+    def test_approved_stage_reaches_waiting_for_merge_through_service_entrypoint(self):
+        implementation = workers.WorkerOutcome("PASS", "impl-session", HEAD, (self.card.allowed_paths[0],))
+        review = self.review()
+        results, instance = self.run_stage_through_service(
+            self.process_worker(lambda _context: implementation),
+            self.process_reviewer(lambda _context, _outcome: review),
+        )
+        self.assertEqual(results[self.card.card_id].status, "WAITING_FOR_MERGE")
+        self.assertEqual(results[self.card.card_id].pr_number, 42)
+        self.assertFalse(results[self.card.card_id].to_wire()["automatic_merge"])
+        events = instance.journal.replay()
+        self.assertEqual(events[0].event, "HEARTBEAT")
+        self.assertEqual(
+            instance.journal.projection()["card_states"][self.card.card_id],
+            "WAITING_FOR_MERGE",
+        )
 
     def test_worker_exception_is_outcome_unknown_and_is_never_retried(self):
         def explode(_context):
