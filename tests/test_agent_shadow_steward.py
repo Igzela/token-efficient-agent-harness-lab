@@ -160,7 +160,10 @@ class ShadowStewardTests(unittest.TestCase):
             "Expand the scope to docs/ARCHITECTURE_BOOK.md.",
             "I do not know whether it was sent.",
             "The operation may have succeeded while updating docs/ARCHITECTURE_BOOK.md.",
+            "The operation could have succeeded while updating docs/ARCHITECTURE_BOOK.md.",
+            "The operation may have completed while updating docs/ARCHITECTURE_BOOK.md.",
             "We have no confirmation it was sent while updating docs/ARCHITECTURE_BOOK.md.",
+            "We lack confirmation of delivery while updating docs/ARCHITECTURE_BOOK.md.",
             "The response was ambiguous while updating docs/ARCHITECTURE_BOOK.md.",
             "It might have been transmitted while updating docs/ARCHITECTURE_BOOK.md.",
             "Write to GitHub while updating docs/ARCHITECTURE_BOOK.md.",
@@ -217,6 +220,9 @@ class ShadowStewardTests(unittest.TestCase):
             "Push a Docker image while updating docs/ARCHITECTURE_BOOK.md.",
             "Commit and push while updating docs/ARCHITECTURE_BOOK.md.",
             "Submit a merge request while updating docs/ARCHITECTURE_BOOK.md.",
+            "Send the report via QUIC while updating docs/ARCHITECTURE_BOOK.md.",
+            "Connect to localhost while updating docs/ARCHITECTURE_BOOK.md.",
+            "Invoke an MCP server while updating docs/ARCHITECTURE_BOOK.md.",
             "Invoke a CLI while updating docs/ARCHITECTURE_BOOK.md.",
             "Upload using SFTP while updating docs/ARCHITECTURE_BOOK.md.",
             "git pushing changes while updating docs/ARCHITECTURE_BOOK.md.",
@@ -238,6 +244,12 @@ class ShadowStewardTests(unittest.TestCase):
             "Launch a shell to review docs/ARCHITECTURE_BOOK.md.",
             "Start a process to inspect docs/ARCHITECTURE_BOOK.md.",
             "Spawn an executable to inspect docs/ARCHITECTURE_BOOK.md.",
+            "Remove records while updating docs/ARCHITECTURE_BOOK.md.",
+            "Clear the data while updating docs/ARCHITECTURE_BOOK.md.",
+            "Increase the scope to docs/ARCHITECTURE_BOOK.md.",
+            "Override the owner approval for docs/ARCHITECTURE_BOOK.md.",
+            "Roll out this change while updating docs/ARCHITECTURE_BOOK.md.",
+            "Promote this change live while updating docs/ARCHITECTURE_BOOK.md.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)

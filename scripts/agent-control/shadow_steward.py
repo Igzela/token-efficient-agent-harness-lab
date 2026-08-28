@@ -136,10 +136,14 @@ _AUTHORITY_MARKERS = (
     "expand scope",
     "expand the scope",
     "increase budget",
+    "increase scope",
+    "increase the scope",
     "new permission",
     "new grant",
     "skip approval",
     "bypass review",
+    "override approval",
+    "override the owner approval",
     "auto-merge",
     "automatically merge",
 )
@@ -157,10 +161,16 @@ _PRODUCTION_MARKERS = (
     "ship to prod",
     " to prod",
     "go live",
+    "roll out",
+    "rollout",
+    "promote live",
+    "promote this change live",
 )
 _DESTRUCTIVE_MARKERS = (
     "destructive",
     "delete",
+    "remove",
+    "clear",
     "drop database",
     "destroy",
     "overwrite data",
@@ -175,11 +185,14 @@ _UNKNOWN_MARKERS = (
     "may have been sent",
     "possibly sent",
     "may have succeeded",
+    "could have succeeded",
+    "may have completed",
     "might have succeeded",
     "might have been sent",
     "may have been transmitted",
     "might have been transmitted",
     "no confirmation",
+    "lack confirmation",
     "ambiguous response",
     "response was ambiguous",
     "ambiguous",
@@ -197,6 +210,60 @@ _SCOPE_MARKERS = (
     "everything",
     "unbounded",
 )
+_SAFE_REQUEST_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "approved",
+        "as",
+        "bounded",
+        "change",
+        "changes",
+        "code",
+        "configuration",
+        "config",
+        "current",
+        "documentation",
+        "document",
+        "docs",
+        "edit",
+        "file",
+        "files",
+        "fix",
+        "focused",
+        "for",
+        "from",
+        "in",
+        "implement",
+        "implementation",
+        "inspect",
+        "maintenance",
+        "mission",
+        "of",
+        "on",
+        "only",
+        "path",
+        "paths",
+        "please",
+        "readme",
+        "refactor",
+        "repository",
+        "review",
+        "safe",
+        "source",
+        "test",
+        "tests",
+        "the",
+        "this",
+        "to",
+        "update",
+        "verify",
+        "verification",
+        "workflow",
+    }
+)
+_REQUEST_WORD = re.compile(r"[a-z0-9]+")
 _EXTERNAL_ACTIONS = (
     r"write|writing|push|pushing|modify|modifying|change|changing|update|updating|"
     r"create|creating|close|closing|merge|merging|comment|commenting|send|sending|"
@@ -219,8 +286,9 @@ _EXTERNAL_TARGETS = (
     r"db|provider|target|endpoint|url|unknown service|external system|http request|"
     r"network request|socket|network|system|http|https|arbitrary|unknown|destination|"
     r"host|connection|smtp|curl|internet|outbound|lan|rpc|packet|channel|storage|queue|"
-    r"tcp|udp|ip|port|ssh|scp|ftp|sftp|telnet|command|shell|terminal|process|subprocess|"
-    r"rsync|websocket|web socket|docker|merge request|outside|offsite|colleague"
+    r"tcp|udp|ip|port|ssh|scp|ftp|sftp|telnet|quic|localhost|command|shell|terminal|"
+    r"process|subprocess|mcp server|mcp|rsync|websocket|web socket|docker|merge request|"
+    r"outside|offsite|colleague"
 )
 _COMMAND_ACTIONS = (
     r"run|running|execute|executing|invoke|invoking|call|calling|use|using|"
@@ -379,6 +447,15 @@ def _has_unsafe_path_syntax(text: str) -> bool:
         or _ABSOLUTE_PATH.search(text) is not None
         or _PATH_ROOT_WITH_PREFIX.search(text) is not None
         or _BACKSLASH_PATH.search(text) is not None
+    )
+
+
+def _has_unrecognized_request_terms(text: str) -> bool:
+    """Require a request to use the narrow, known-safe maintenance vocabulary."""
+
+    pathless = SAFE_PATH.sub(" ", text.casefold())
+    return any(
+        word not in _SAFE_REQUEST_WORDS for word in _REQUEST_WORD.findall(pathless)
     )
 
 
@@ -590,6 +667,9 @@ def compile_intake(raw_request: str) -> Intake:
     if forbidden_paths:
         risk_flags.append("private_content")
         stop_codes.append("SAFETY_CONFLICT")
+    if _has_unrecognized_request_terms(raw):
+        risk_flags.append("unbounded_or_missing_scope")
+        stop_codes.append("SCOPE_EXCEEDED")
     if any(marker in lowered for marker in _SCOPE_MARKERS) or not paths:
         risk_flags.append("unbounded_or_missing_scope")
         stop_codes.append("SCOPE_EXCEEDED")
