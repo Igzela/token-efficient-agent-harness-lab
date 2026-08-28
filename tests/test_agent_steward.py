@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import sys
 import tempfile
 import threading
@@ -43,6 +44,24 @@ class StewardExecutionTests(unittest.TestCase):
             HEAD,
             "PASS",
             "PASS",
+            "main",
+            "agent/steward-card",
+        )
+
+    def review(self, *, head=HEAD, reviewer="review-session", implementation="impl-session"):
+        return workers.ReviewOutcome(
+            "PASS",
+            reviewer,
+            implementation,
+            head,
+            (),
+            "",
+            BASE,
+            workers.review_range_digest(BASE, head),
+            ("standards", "spec"),
+            1,
+            "full",
+            hashlib.sha256(b"review-receipt").hexdigest(),
         )
 
     def make_stage_card(self, *, second: bool = False, shared_path: bool = False):
@@ -121,7 +140,7 @@ class StewardExecutionTests(unittest.TestCase):
 
     def test_approved_card_reaches_waiting_for_merge_without_merge(self):
         implementation = workers.WorkerOutcome("PASS", "impl-session", HEAD, (self.card.allowed_paths[0],))
-        review = workers.ReviewOutcome("PASS", "review-session", "impl-session", HEAD)
+        review = self.review()
         result, service = self.run_with_facts(
             workers.CallableWorker(lambda _context: implementation),
             workers.CallableReviewer(lambda _context, _outcome: review),
@@ -159,7 +178,7 @@ class StewardExecutionTests(unittest.TestCase):
             seen.append((context.attempt, context.model_tier))
             return attempts.pop(0)
 
-        review = workers.ReviewOutcome("PASS", "review-session", "impl-2", HEAD)
+        review = self.review(implementation="impl-2")
         result, _service = self.run_with_facts(
             workers.CallableWorker(run),
             workers.CallableReviewer(lambda _context, _outcome: review),
@@ -178,7 +197,7 @@ class StewardExecutionTests(unittest.TestCase):
 
     def test_review_head_drift_blocks_exact_head_delivery(self):
         implementation = workers.WorkerOutcome("PASS", "impl-session", HEAD, ("docs/ARCHITECTURE_BOOK.md",))
-        review = workers.ReviewOutcome("PASS", "review-session", "impl-session", "c" * 40)
+        review = self.review(head="c" * 40)
         result, service = self.run_with_facts(
             workers.CallableWorker(lambda _context: implementation),
             workers.CallableReviewer(lambda _context, _outcome: review),
@@ -191,7 +210,7 @@ class StewardExecutionTests(unittest.TestCase):
         implementation = workers.WorkerOutcome(
             "PASS", "impl-session", HEAD, ("docs/ARCHITECTURE_BOOK.md",)
         )
-        review = workers.ReviewOutcome("PASS", "review-session", "impl-session", HEAD)
+        review = self.review()
         instance = self.make_steward(
             workers.CallableWorker(lambda _context: implementation),
             workers.CallableReviewer(lambda _context, _outcome: review),

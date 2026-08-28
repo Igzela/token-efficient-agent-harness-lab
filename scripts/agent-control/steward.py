@@ -17,6 +17,7 @@ import subprocess
 from typing import Any, Callable, Mapping
 
 import mission_contract as contract
+import state_manager
 import steward_github
 from steward_journal import JournalError, StewardJournal
 from steward_service import ReconciliationReport, StewardService
@@ -25,7 +26,7 @@ import worktree_manager
 
 
 SHA40 = workers.SHA40
-MAX_CONCURRENCY = 2
+MAX_CONCURRENCY = state_manager.MAX_ACTIVE
 RETRYABLE_WORKER_STATUSES = frozenset({"FAIL", "TIMEOUT"})
 RECOVERY_STATES = frozenset({"RUNNING", "VERIFYING", "REVIEWING", "OUTCOME_UNKNOWN"})
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -358,6 +359,7 @@ class Steward:
                             continue
                         return result
                     worktree_path = Path(created[0])
+                    worktree_branch = created[1]
                     self._record(
                         event="WORKER_STARTED",
                         key=f"start:{card.card_id}:{attempt}:{base_sha}",
@@ -559,6 +561,20 @@ class Steward:
                             retryable=False,
                             head_sha=observed_head,
                         )
+                    if (
+                        review.reviewed_base_sha != base_sha
+                        or review.reviewed_range_sha256
+                        != workers.review_range_digest(base_sha, observed_head)
+                    ):
+                        return self._failure(
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            reason="review_range_binding_mismatch",
+                            retryable=False,
+                            head_sha=observed_head,
+                        )
                     if review.status != "PASS":
                         result = self._failure(
                             mission=mission,
@@ -586,6 +602,11 @@ class Steward:
                             "implementation_session_digest": _digest(outcome.session_id),
                             "reviewer_session_digest": _digest(review.reviewer_session_id),
                             "reviewed_head_sha": observed_head,
+                            "reviewed_base_sha": base_sha,
+                            "reviewed_range_sha256": review.reviewed_range_sha256,
+                            "review_round": review.review_round,
+                            "review_mode": review.review_mode,
+                            "review_receipt_sha256": review.review_receipt_sha256,
                         },
                     )
                     if stage_facts is None:
@@ -597,6 +618,8 @@ class Steward:
                             pr_number=stage_facts.pr_number,
                             expected_base_sha=base_sha,
                             expected_head_sha=observed_head,
+                            expected_base_branch=stage.repository_identity.branch,
+                            expected_head_branch=worktree_branch,
                         )
                     except steward_github.GitHubFactsError as exc:
                         return self._failure(
@@ -623,6 +646,8 @@ class Steward:
                             "base_sha": status.base_sha,
                             "head_sha": status.head_sha,
                             "stage_id": stage.stage_id,
+                            "base_branch": stage.repository_identity.branch,
+                            "head_branch": worktree_branch,
                         },
                     )
                     if status.outcome == "WAITING_FOR_MERGE":

@@ -47,6 +47,8 @@ class StagePRFacts:
     head_sha: str
     ci_state: str
     review_state: str
+    base_branch: str | None = None
+    head_branch: str | None = None
 
     @classmethod
     def from_wire(cls, value: object) -> "StagePRFacts":
@@ -94,6 +96,8 @@ class StagePRFacts:
             head_sha,
             value["ci_state"],
             value["review_state"],
+            value.get("base_branch"),
+            value.get("head_branch"),
         )
 
 
@@ -129,6 +133,8 @@ def reconcile_stage_pr(
     pr_number: int,
     expected_base_sha: str,
     expected_head_sha: str,
+    expected_base_branch: str | None = None,
+    expected_head_branch: str | None = None,
 ) -> StagePRStatus:
     """Classify live PR facts without issuing a write or merge request."""
 
@@ -142,6 +148,10 @@ def reconcile_stage_pr(
         raise GitHubFactsError("expected_pr_sha_invalid")
     if observed.base_sha != expected_base_sha or observed.head_sha != expected_head_sha:
         raise GitHubFactsError("github_pr_head_or_base_mismatch")
+    if expected_base_branch is not None and observed.base_branch != expected_base_branch:
+        raise GitHubFactsError("github_pr_base_branch_mismatch")
+    if expected_head_branch is not None and observed.head_branch != expected_head_branch:
+        raise GitHubFactsError("github_pr_head_branch_mismatch")
     if observed.merged:
         return StagePRStatus(
             "COMPLETE",
@@ -216,7 +226,7 @@ class GhReadOnlyGitHub:
             "--repo",
             repository,
             "--json",
-            "state,isDraft,mergedAt,baseRefOid,headRefOid,statusCheckRollup,reviewDecision",
+            "state,isDraft,mergedAt,baseRefName,headRefName,baseRefOid,headRefOid,statusCheckRollup,reviewDecision",
         ]
         try:
             result = subprocess.run(
@@ -279,12 +289,16 @@ class GhReadOnlyGitHub:
         merged_at = payload.get("mergedAt")
         base_sha = payload.get("baseRefOid")
         head_sha = payload.get("headRefOid")
+        base_branch = payload.get("baseRefName")
+        head_branch = payload.get("headRefName")
         if (
             state not in PR_STATES
             or type(draft) is not bool
             or (merged_at is not None and not isinstance(merged_at, str))
             or not isinstance(base_sha, str)
             or not isinstance(head_sha, str)
+            or not isinstance(base_branch, str)
+            or not isinstance(head_branch, str)
         ):
             raise GitHubReadError("github_read_malformed")
         return {
@@ -297,6 +311,8 @@ class GhReadOnlyGitHub:
             "head_sha": head_sha,
             "ci_state": ci_state,
             "review_state": review_state,
+            "base_branch": base_branch,
+            "head_branch": head_branch,
         }
 
 

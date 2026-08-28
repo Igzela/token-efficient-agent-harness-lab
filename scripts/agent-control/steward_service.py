@@ -9,6 +9,7 @@ import os
 import time
 from typing import Any, Mapping
 
+import mission_contract
 from steward_github import (
     GhReadOnlyGitHub,
     GitHubFactsError,
@@ -71,6 +72,12 @@ class StewardService:
         journal: StewardJournal,
         github: ReadOnlyGitHub,
     ):
+        try:
+            registered = mission_contract.validate_registered_campaign()
+        except mission_contract.MissionContractError as exc:
+            raise ValueError("registered_mission_invalid") from exc
+        if mission_id != registered.mission_id:
+            raise ValueError("mission_id_not_registered")
         self.mission_id = mission_id
         self.journal = journal
         self.github = github

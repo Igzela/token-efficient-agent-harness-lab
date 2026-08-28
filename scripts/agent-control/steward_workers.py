@@ -10,19 +10,26 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+import hashlib
+import json
 from pathlib import Path
 import re
+import subprocess
 from typing import Any, Callable, Mapping, Protocol
 
 import local_verification
 import mission_contract
 from review_loop.locking import ChatLock, LockBusy
+import state_manager
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 SAFE_STATUSES = frozenset({"PASS", "FAIL", "TIMEOUT", "BLOCKED", "OUTCOME_UNKNOWN"})
 REVIEW_STATUSES = frozenset({"PASS", "FAIL", "BLOCKED", "OUTCOME_UNKNOWN"})
+REVIEW_AXES = frozenset({"standards", "spec"})
+REVIEW_MODES = frozenset({"full", "repair_verification"})
 _CREDENTIAL_MARKERS = (
     "TOKEN",
     "SECRET",
@@ -67,6 +74,14 @@ def select_model_tier(base_tier: str, attempt: int) -> str:
     tiers = ("T0", "T1", "T2")
     index = min(2, tiers.index(base_tier) + attempt - 1)
     return tiers[index]
+
+
+def review_range_digest(base_sha: str, head_sha: str) -> str:
+    """Digest the exact base...head range a reviewer claims to inspect."""
+
+    if not SHA40.fullmatch(base_sha) or not SHA40.fullmatch(head_sha):
+        raise WorkerError("review_range_invalid")
+    return hashlib.sha256(f"{base_sha}...{head_sha}".encode("ascii")).hexdigest()
 
 
 def _safe_detail(value: object, field: str) -> str:
@@ -160,6 +175,19 @@ class WorkerOutcome:
             "detail": self.detail,
         }
 
+    @classmethod
+    def from_wire(cls, value: object) -> "WorkerOutcome":
+        if not isinstance(value, dict) or set(value) != {
+            "schema_version", "status", "session_id", "head_sha", "changed_paths", "detail"
+        } or value.get("schema_version") != "steward_worker_outcome.v1":
+            raise WorkerError("worker_outcome_wire_invalid")
+        paths = value.get("changed_paths")
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            raise WorkerError("worker_outcome_wire_invalid")
+        return cls(
+            value["status"], value["session_id"], value["head_sha"], tuple(paths), value["detail"]
+        )
+
 
 @dataclass(frozen=True)
 class ReviewOutcome:
@@ -169,6 +197,12 @@ class ReviewOutcome:
     reviewed_head_sha: str
     blockers: tuple[str, ...] = ()
     detail: str = ""
+    reviewed_base_sha: str = ""
+    reviewed_range_sha256: str = ""
+    review_axes: tuple[str, ...] = ()
+    review_round: int = 1
+    review_mode: str = "full"
+    review_receipt_sha256: str = ""
 
     def __post_init__(self) -> None:
         if self.status not in REVIEW_STATUSES:
@@ -187,6 +221,22 @@ class ReviewOutcome:
         if self.status == "PASS" and self.blockers:
             raise WorkerError("review_pass_has_blockers")
         _safe_detail(self.detail, "review_detail")
+        if not SHA40.fullmatch(self.reviewed_base_sha):
+            raise WorkerError("review_base_sha_invalid")
+        if not SHA256.fullmatch(self.reviewed_range_sha256):
+            raise WorkerError("review_range_digest_invalid")
+        if (
+            not self.review_axes
+            or len(self.review_axes) != len(set(self.review_axes))
+            or set(self.review_axes) != REVIEW_AXES
+        ):
+            raise WorkerError("review_axes_invalid")
+        if type(self.review_round) is not int or not 1 <= self.review_round <= 2:
+            raise WorkerError("review_round_invalid")
+        if self.review_mode not in REVIEW_MODES:
+            raise WorkerError("review_mode_invalid")
+        if not SHA256.fullmatch(self.review_receipt_sha256):
+            raise WorkerError("review_receipt_digest_invalid")
 
     def to_wire(self) -> dict[str, Any]:
         return {
@@ -197,7 +247,38 @@ class ReviewOutcome:
             "reviewed_head_sha": self.reviewed_head_sha,
             "blockers": list(self.blockers),
             "detail": self.detail,
+            "reviewed_base_sha": self.reviewed_base_sha,
+            "reviewed_range_sha256": self.reviewed_range_sha256,
+            "review_axes": list(self.review_axes),
+            "review_round": self.review_round,
+            "review_mode": self.review_mode,
+            "review_receipt_sha256": self.review_receipt_sha256,
         }
+
+    @classmethod
+    def from_wire(cls, value: object) -> "ReviewOutcome":
+        if not isinstance(value, dict) or set(value) != {
+            "schema_version", "status", "reviewer_session_id", "implementation_session_id",
+            "reviewed_head_sha", "blockers", "detail", "reviewed_base_sha",
+            "reviewed_range_sha256", "review_axes", "review_round", "review_mode",
+            "review_receipt_sha256",
+        } or value.get("schema_version") != "steward_review_outcome.v1":
+            raise WorkerError("review_outcome_wire_invalid")
+        blockers = value.get("blockers")
+        axes = value.get("review_axes")
+        if (
+            not isinstance(blockers, list)
+            or not all(isinstance(item, str) for item in blockers)
+            or not isinstance(axes, list)
+            or not all(isinstance(item, str) for item in axes)
+        ):
+            raise WorkerError("review_outcome_wire_invalid")
+        return cls(
+            value["status"], value["reviewer_session_id"], value["implementation_session_id"],
+            value["reviewed_head_sha"], tuple(blockers), value["detail"], value["reviewed_base_sha"],
+            value["reviewed_range_sha256"], tuple(axes), value["review_round"], value["review_mode"],
+            value["review_receipt_sha256"],
+        )
 
 
 class WorkerAdapter(Protocol):
@@ -217,6 +298,118 @@ class ProviderFreeWorker:
 
     def run(self, context: WorkerContext) -> WorkerOutcome:
         raise WorkerUnavailable("provider_free_worker_not_configured")
+
+
+def _head_or_base(context: WorkerContext) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=context.worktree,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return context.base_sha
+    head = result.stdout.strip()
+    return head if SHA40.fullmatch(head) else context.base_sha
+
+
+def _validate_command(command: object) -> list[str]:
+    if (
+        not isinstance(command, (list, tuple))
+        or not command
+        or len(command) > 32
+        or not all(isinstance(item, str) and item and len(item) <= 512 and "\x00" not in item for item in command)
+    ):
+        raise WorkerError("worker_command_invalid")
+    return list(command)
+
+
+class BoundedProcessWorker:
+    """Run one operator-supplied provider-free worker in an isolated child.
+
+    The command is argv-only and receives the existing credential-free child
+    environment. Its bounded JSON stdout is an untrusted WorkerOutcome; all
+    head, path, clean-worktree, verification, and review checks remain owned
+    by the parent Steward.
+    """
+
+    def __init__(
+        self,
+        command_builder: Callable[[WorkerContext], list[str] | tuple[str, ...]],
+        *,
+        timeout_seconds: int = 1800,
+    ):
+        if not callable(command_builder):
+            raise ValueError("command_builder must be callable")
+        if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 3600:
+            raise ValueError("timeout_seconds is outside the bounded range")
+        self.command_builder = command_builder
+        self.timeout_seconds = timeout_seconds
+
+    def run(self, context: WorkerContext) -> WorkerOutcome:
+        import local_run_once
+
+        command = _validate_command(self.command_builder(context))
+        session_id = f"steward-process:{context.card_id}:{context.attempt}"
+        try:
+            exit_code, stdout, _stderr = local_run_once._bounded_process(
+                command,
+                cwd=context.worktree,
+                timeout_seconds=self.timeout_seconds,
+                env=dict(context.environment),
+            )
+        except Exception as exc:
+            raise WorkerError("worker_process_unavailable") from exc
+        if exit_code == 124:
+            return WorkerOutcome("TIMEOUT", session_id, _head_or_base(context), (), "worker_timeout")
+        if exit_code != 0:
+            return WorkerOutcome("FAIL", session_id, _head_or_base(context), (), "worker_process_failed")
+        try:
+            payload = json.loads(stdout)
+            outcome = WorkerOutcome.from_wire(payload)
+        except (TypeError, ValueError, json.JSONDecodeError, WorkerError) as exc:
+            raise WorkerError("worker_output_invalid") from exc
+        return outcome
+
+
+class BoundedProcessReviewer:
+    """Run an independent review child with the same bounded process owner."""
+
+    def __init__(
+        self,
+        command_builder: Callable[[WorkerContext, WorkerOutcome], list[str] | tuple[str, ...]],
+        *,
+        timeout_seconds: int = 1800,
+    ):
+        if not callable(command_builder):
+            raise ValueError("command_builder must be callable")
+        if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 3600:
+            raise ValueError("timeout_seconds is outside the bounded range")
+        self.command_builder = command_builder
+        self.timeout_seconds = timeout_seconds
+
+    def review(self, context: WorkerContext, outcome: WorkerOutcome) -> ReviewOutcome:
+        import local_run_once
+
+        command = _validate_command(self.command_builder(context, outcome))
+        try:
+            exit_code, stdout, _stderr = local_run_once._bounded_process(
+                command,
+                cwd=context.worktree,
+                timeout_seconds=self.timeout_seconds,
+                env=dict(context.environment),
+            )
+        except Exception as exc:
+            raise WorkerError("review_process_unavailable") from exc
+        if exit_code != 0:
+            raise WorkerError("review_process_failed")
+        try:
+            return ReviewOutcome.from_wire(json.loads(stdout))
+        except (TypeError, ValueError, json.JSONDecodeError, WorkerError) as exc:
+            raise WorkerError("review_output_invalid") from exc
 
 
 class CallableWorker:
@@ -322,7 +515,7 @@ class CapacityLock(AbstractContextManager["CapacityLock"]):
         self._lock: ChatLock | None = None
 
     def acquire(self) -> "CapacityLock":
-        for slot in range(2):
+        for slot in range(state_manager.MAX_ACTIVE):
             lock = ChatLock(self.lock_dir, f"steward-capacity:{slot}")
             try:
                 lock.acquire()

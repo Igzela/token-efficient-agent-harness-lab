@@ -110,6 +110,14 @@ class StewardFaultTests(unittest.TestCase):
         self.assertEqual(report.items[0].reason, "in_flight_work_requires_read_only_reconciliation")
         self.assertEqual(report.journal_projection["card_states"]["card-1"], "RUNNING")
 
+    def test_service_rejects_unregistered_mission_identity(self):
+        with self.assertRaisesRegex(ValueError, "mission_id_not_registered"):
+            StewardService(
+                mission_id="UNREGISTERED-MISSION",
+                journal=self.journal,
+                github=steward_github.FakeGitHubReader(),
+            )
+
     def test_reconciliation_promotes_reviewing_card_from_live_read_only_facts(self):
         self.make_waiting_journal()
         reader = steward_github.FakeGitHubReader(self.facts())
@@ -268,6 +276,8 @@ class StewardFaultTests(unittest.TestCase):
                     "state": "OPEN",
                     "isDraft": "false",
                     "mergedAt": None,
+                    "baseRefName": "main",
+                    "headRefName": "agent/steward-card",
                     "baseRefOid": BASE,
                     "headRefOid": HEAD,
                     "statusCheckRollup": [],
@@ -283,6 +293,8 @@ class StewardFaultTests(unittest.TestCase):
                     "state": "OPEN",
                     "isDraft": False,
                     "mergedAt": None,
+                    "baseRefName": "main",
+                    "headRefName": "agent/steward-card",
                     "baseRefOid": BASE,
                     "headRefOid": HEAD,
                     "statusCheckRollup": [
@@ -300,6 +312,8 @@ class StewardFaultTests(unittest.TestCase):
                     "state": "OPEN",
                     "isDraft": False,
                     "mergedAt": None,
+                    "baseRefName": "main",
+                    "headRefName": "agent/steward-card",
                     "baseRefOid": BASE,
                     "headRefOid": HEAD,
                     "statusCheckRollup": [
