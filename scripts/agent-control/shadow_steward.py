@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, replace
 import re
 from types import MappingProxyType
 from typing import Any, Protocol
+import unicodedata
 
 import mission_contract as contract
 
@@ -486,6 +487,15 @@ def _has_unrecognized_request_terms(text: str) -> bool:
     """Require a request to use the narrow, known-safe maintenance vocabulary."""
 
     pathless = SAFE_PATH.sub(" ", text.casefold())
+    if any(
+        not (
+            char.isalnum()
+            or char.isspace()
+            or unicodedata.category(char).startswith("P")
+        )
+        for char in pathless
+    ):
+        return True
     return any(
         word not in _SAFE_REQUEST_WORDS for word in _REQUEST_WORD.findall(pathless)
     )
