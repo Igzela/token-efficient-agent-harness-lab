@@ -225,6 +225,9 @@ class StewardExecutionTests(unittest.TestCase):
             service.journal.projection()["card_states"][self.card.card_id],
             "WAITING_FOR_MERGE",
         )
+        events = service.journal.replay()
+        self.assertIn("LOCAL_REVIEW_OBSERVED", [event.event for event in events])
+        self.assertNotIn("REVIEW_PASSED", [event.event for event in events])
 
     def test_worker_exception_is_outcome_unknown_and_is_never_retried(self):
         def explode(_context):

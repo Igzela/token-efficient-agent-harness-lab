@@ -43,122 +43,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _review_binding(
-    event: Any, *, worktree: Path | None = None
-) -> tuple[str, str, str] | None:
-    """Return only a complete, canonical exact-head review binding."""
-
-    if getattr(event, "event", None) != "REVIEW_PASSED":
-        return None
-    data = getattr(event, "data", {})
-    if not isinstance(data, Mapping):
-        return None
-    required = (
-        "implementation_session_id",
-        "reviewer_session_id",
-        "base_sha",
-        "head_sha",
-        "reviewed_range_sha256",
-        "review_axes",
-        "review_round",
-        "review_mode",
-        "review_receipt_sha256",
-        "verdict",
-        "finding_ledger_digest",
-        "open_blocker_ids",
-        "deferred_note_ids",
-        "security_ok",
-        "rollback_ok",
-        "observed_ci_status",
-    )
-    if not all(key in data for key in required):
-        return None
-    base_sha = data["base_sha"]
-    head_sha = data["head_sha"]
-    try:
-        expected_range = steward_workers.review_range_digest(
-            base_sha, head_sha, worktree=worktree
-        )
-    except (TypeError, ValueError, steward_workers.WorkerError):
-        return None
-    if (
-        not isinstance(base_sha, str)
-        or not steward_workers.SHA40.fullmatch(base_sha)
-        or not isinstance(head_sha, str)
-        or not steward_workers.SHA40.fullmatch(head_sha)
-        or data["reviewed_range_sha256"] != expected_range
-        or not isinstance(data["review_axes"], list)
-        or set(data["review_axes"]) != {"standards", "spec"}
-        or type(data["review_round"]) is not int
-        or data["review_round"] not in {1, 2}
-        or data["review_mode"] not in {"full", "repair_verification"}
-        or not isinstance(data["review_receipt_sha256"], str)
-        or not steward_workers.SHA256.fullmatch(data["review_receipt_sha256"])
-        or data["verdict"] != "PASS"
-            or not isinstance(data["finding_ledger_digest"], str)
-        or not steward_workers.SHA256.fullmatch(data["finding_ledger_digest"])
-        or not isinstance(data["security_ok"], bool)
-        or not isinstance(data["rollback_ok"], bool)
-        or data["security_ok"] is not True
-        or data["rollback_ok"] is not True
-    ):
-        return None
-    if any(
-        not isinstance(data.get(name, []), list)
-        or not all(isinstance(item, str) and item for item in data.get(name, []))
-        for name in ("open_blocker_ids", "deferred_note_ids", "decision_required_ids")
-    ):
-        return None
-    try:
-        steward_workers._safe_session(
-            data["reviewer_session_id"], "reviewer_session_id"
-        )
-        steward_workers._safe_session(
-            data["implementation_session_id"], "implementation_session_id"
-        )
-        if data["reviewer_session_id"] == data["implementation_session_id"]:
-            return None
-        steward_workers._safe_detail(
-            data["observed_ci_status"], "review_observed_ci_status"
-        )
-        open_blockers = tuple(data["open_blocker_ids"])
-        deferred_notes = tuple(data["deferred_note_ids"])
-        decision_required = tuple(data.get("decision_required_ids", []))
-        receipt_wire = {
-            "schema_version": "steward_review_outcome.v1",
-            "status": "PASS",
-            "reviewer_session_id": data["reviewer_session_id"],
-            "implementation_session_id": data["implementation_session_id"],
-            "reviewed_head_sha": head_sha,
-            "blockers": list(open_blockers),
-            "detail": "",
-            "reviewed_base_sha": base_sha,
-            "reviewed_range_sha256": data["reviewed_range_sha256"],
-            "review_axes": list(data["review_axes"]),
-            "review_round": data["review_round"],
-            "review_mode": data["review_mode"],
-            "review_receipt_sha256": data["review_receipt_sha256"],
-            "summary": "",
-            "findings": None,
-            "security_ok": data["security_ok"],
-            "rollback_ok": data["rollback_ok"],
-            "observed_ci_status": data["observed_ci_status"],
-            "finding_ledger_digest": data["finding_ledger_digest"],
-        }
-    except (KeyError, TypeError, ValueError, steward_workers.WorkerError):
-        return None
-    if data["review_receipt_sha256"] != steward_workers.review_receipt_digest(receipt_wire):
-        return None
-    # The parent already normalized the full finding ledger before persisting
-    # this bounded projection.  Rebuilding an empty ReviewOutcome here would
-    # discard deferred findings and manufacture a different ledger digest.
-    # The sealed wire receipt preserves that ledger identity across restart;
-    # the bounded blocker/deferred/decision projections are checked above.
-    if open_blockers or decision_required:
-        return None
-    return base_sha, head_sha, data["reviewed_range_sha256"]
-
-
 @dataclass(frozen=True)
 class RecoveryItem:
     card_id: str
@@ -362,12 +246,6 @@ class StewardService:
         """Read live PR facts and append only observed, idempotent transitions."""
 
         projection = self.journal.projection(mission_id=self.mission_id)
-        review_bound_heads = {
-            (event.card_id, event.stage_id, binding[1])
-            for event in self.journal.replay()
-            if event.mission_id == self.mission_id
-            and (binding := _review_binding(event, worktree=self.repo_path)) is not None
-        }
         items: list[RecoveryItem] = []
         for record in projection["active_bindings"]:
             card_id = record["card_id"]
@@ -410,18 +288,6 @@ class StewardService:
                     expected_base_branch=base_branch,
                     expected_head_branch=head_branch,
                 )
-                if (
-                    status.outcome in {"WAITING_FOR_MERGE", "COMPLETE"}
-                    and (card_id, stage_id, head_sha) not in review_bound_heads
-                ):
-                    status = StagePRStatus(
-                        "BLOCKED",
-                        "review_binding_missing",
-                        status.repository,
-                        status.pr_number,
-                        status.base_sha,
-                        status.head_sha,
-                    )
             except (GitHubReadError, OSError):
                 status = StagePRStatus(
                     "WAITING",

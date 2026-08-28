@@ -194,10 +194,8 @@ class StewardFaultTests(unittest.TestCase):
                 "observed_ci_status": "unknown",
             },
         )
-        self.assertEqual(
-            steward_service._review_binding(event),
-            (BASE, HEAD, review.reviewed_range_sha256),
-        )
+        self.assertEqual(event.data["deferred_note_ids"], ["note-1"])
+        self.assertEqual(event.data["review_receipt_sha256"], review_wire["review_receipt_sha256"])
 
     def facts(self, *, merged: bool = False, head: str = HEAD):
         return {
@@ -332,7 +330,7 @@ class StewardFaultTests(unittest.TestCase):
             },
         )
 
-    def test_reconciliation_requires_review_binding_for_exact_head(self):
+    def test_reconciliation_uses_canonical_facts_without_local_review_receipt(self):
         self.append("QUEUED", "queue:unreviewed", card="unreviewed")
         self.append("RUNNING", "run:unreviewed", card="unreviewed")
         self.append("VERIFYING", "verify:unreviewed", card="unreviewed")
@@ -381,9 +379,12 @@ class StewardFaultTests(unittest.TestCase):
             }
         )
         item = next(item for item in report.items if item.card_id == "unreviewed")
-        self.assertEqual(item.outcome, "BLOCKED")
-        self.assertEqual(item.reason, "review_binding_missing")
-        self.assertEqual(self.journal.projection()["card_states"]["unreviewed"], "BLOCKED")
+        self.assertEqual(item.outcome, "WAITING_FOR_MERGE")
+        self.assertEqual(item.reason, "exact_head_ci_and_review_pass")
+        self.assertEqual(
+            self.journal.projection()["card_states"]["unreviewed"],
+            "WAITING_FOR_MERGE",
+        )
 
     def test_reconciliation_records_observed_merge_but_never_requests_one(self):
         self.make_waiting_journal()

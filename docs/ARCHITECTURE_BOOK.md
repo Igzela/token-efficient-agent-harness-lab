@@ -74,11 +74,12 @@ path locks. A worker exception or unavailable head is `OUTCOME_UNKNOWN` and is
 never replayed blindly; ordinary bounded worker/check/review failures may
 retry only within the WorkCard attempt budget. Review requires a different
 session identity from implementation. The executor stops at
-`WAITING_FOR_MERGE`; exact-head CI, independent review, Ready, merge, and any
-external/product/target/release/deployment/destructive effect remain owned by
-the existing repository control plane. The systemd unit is a disabled-by-
-default operator template and does not enable automatic merge or Provider
-access.
+`WAITING_FOR_MERGE`; exact-head CI, canonical independent review, Ready, merge,
+and any external/product/target/release/deployment/destructive effect remain
+owned by the existing repository control plane. A local reviewer child is only
+a bounded preflight observation; its self-reported PASS is never the recovery
+or merge-authorizing review fact. The systemd unit is a disabled-by-default
+operator template and does not enable automatic merge or Provider access.
 
 ## Repository Agent Loop Control Plane
 

@@ -435,7 +435,11 @@ class Steward:
                 event.mission_id == mission.mission_id
                 and event.stage_id == card.stage_id
                 and event.card_id == card.card_id
-                and event.event in {"REVIEW_FAILED", "REVIEW_PASSED"}
+                and event.event in {
+                    "REVIEW_FAILED",
+                    "REVIEW_PASSED",
+                    "LOCAL_REVIEW_OBSERVED",
+                }
             ):
                 previous = dict(event.data)
                 break
@@ -1071,7 +1075,7 @@ class Steward:
                         }
                     )
                     self._record(
-                        event="REVIEW_PASSED",
+                        event="LOCAL_REVIEW_OBSERVED",
                         key=_journal_key(
                             "review", mission, stage, card, attempt, observed_head,
                             _digest(review.reviewer_session_id),
@@ -1081,7 +1085,7 @@ class Steward:
                         card=card,
                         attempt=attempt,
                         state="REVIEWING",
-                        detail="independent_review_passed",
+                        detail="local_review_observation_only",
                         data=convergence_data,
                     )
                     if stage_facts is None:
