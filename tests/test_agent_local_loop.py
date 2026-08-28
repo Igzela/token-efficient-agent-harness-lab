@@ -1036,6 +1036,54 @@ class TestLoopctl(unittest.TestCase):
                     "--max-transitions", value,
                 ])
 
+    def test_mission_stage_cli_is_a_production_runner_caller(self):
+        captured = {}
+
+        class Runner:
+            def run_mission_stage(self, proposal, **kwargs):
+                captured["proposal"] = proposal
+                captured["runner_kwargs"] = kwargs
+                return {"status": "stage_pr_draft", "mission_id": "mission"}
+
+        def runner_factory(*args, **kwargs):
+            captured["runner_args"] = args
+            captured["runner_init"] = kwargs
+            return Runner()
+
+        def stage_steward_factory(*args, **kwargs):
+            captured["steward_args"] = args
+            captured["steward_init"] = kwargs
+            return object()
+
+        output = StringIO()
+        with redirect_stdout(output):
+            code = loopctl.main(
+                [
+                    "mission-stage",
+                    "--repo", mission_contract.CAMPAIGN_REPOSITORY,
+                    "--repo-path", "/workspace/example",
+                    "--approval-issue", "99",
+                    "--request", "Update docs/ARCHITECTURE_BOOK.md.",
+                    "--journal", "/tmp/steward-test.sqlite3",
+                    "--lock-dir", "/tmp/steward-locks",
+                ],
+                run_once_factory=runner_factory,
+                steward_factory=stage_steward_factory,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            {
+                "kind": "repo-agent-mission-stage.v1",
+                "status": "stage_pr_draft",
+                "mission_id": "mission",
+            },
+        )
+        self.assertEqual(captured["runner_init"]["repository"], mission_contract.CAMPAIGN_REPOSITORY)
+        self.assertEqual(captured["runner_kwargs"]["approval_issue"], 99)
+        self.assertIsNone(captured["runner_kwargs"]["stage_pr"])
+        self.assertEqual(captured["steward_init"]["lock_dir"], "/tmp/steward-locks")
+
 
 class TestPlanDocumentDecode(unittest.TestCase):
     def test_github_base64_newlines_are_accepted(self):

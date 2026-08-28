@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Callable, Sequence
@@ -12,8 +13,12 @@ from typing import Callable, Sequence
 import local_loop
 import local_run_once
 import local_supervisor
+import shadow_steward
 import route_driver
 import state_manager
+import steward
+import steward_github
+from steward_journal import StewardJournal
 
 
 NORMAL_IDLE = {"control_stopped", "capacity_full", "no_eligible_task"}
@@ -70,6 +75,34 @@ def build_parser() -> argparse.ArgumentParser:
     run_subject.add_argument("--plan-id")
     run_subject.add_argument("--route-drive", metavar="PACKET_ID", help="drive the closeout/promotion PR lifecycle for one closed packet")
     run_once.add_argument("--attempt-id", required=True)
+    mission_stage = subparsers.add_parser(
+        "mission-stage",
+        help="load and run one authenticated current Mission Stage",
+    )
+    mission_stage.add_argument("--repo", required=True, help="GitHub repository as owner/name")
+    mission_stage.add_argument(
+        "--repo-path", required=True, type=Path, help="exact local Git worktree root"
+    )
+    mission_stage.add_argument(
+        "--approval-issue", required=True, type=int,
+        help="Issue carrying the exact owner-approval marker",
+    )
+    mission_stage.add_argument(
+        "--request", required=True,
+        help="bounded request text; only its redacted proposal facts are retained",
+    )
+    mission_stage.add_argument(
+        "--stage-pr", type=int,
+        help="existing Stage PR number to re-read after Ready/CI/review",
+    )
+    mission_stage.add_argument(
+        "--journal",
+        default=os.environ.get("STEWARD_JOURNAL_PATH", "/var/lib/agent-steward/steward.sqlite3"),
+    )
+    mission_stage.add_argument(
+        "--lock-dir",
+        default=os.environ.get("STEWARD_LOCK_DIR", "/var/lib/agent-steward/locks"),
+    )
     route_run = subparsers.add_parser(
         "route-run",
         help="continuously drive the accepted route without a caller-selected packet",
@@ -94,6 +127,7 @@ def main(
     run_once_factory: Callable[..., local_run_once.LocalRunOnce] | None = None,
     supervisor_factory: Callable[..., local_supervisor.LocalSupervisor] | None = None,
     route_run_factory: Callable[..., route_driver.RepositoryRouteRunner] | None = None,
+    steward_factory: Callable[..., steward.Steward] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "run-batch":
@@ -143,6 +177,43 @@ def main(
             }
         print(json.dumps(wire, ensure_ascii=False, sort_keys=True))
         return 0 if wire.get("status") == "handed_off" else 2
+    if args.command == "mission-stage":
+        try:
+            runner = (run_once_factory or local_run_once.LocalRunOnce)(
+                repository=args.repo, repo_path=args.repo_path
+            )
+            proposal = shadow_steward.compile_proposal(args.request)
+            stage_steward = (steward_factory or steward.Steward)(
+                repository=args.repo,
+                repo_path=args.repo_path,
+                journal=StewardJournal(args.journal),
+                github=steward_github.GhReadOnlyGitHub(),
+                lock_dir=args.lock_dir,
+            )
+            result = runner.run_mission_stage(
+                proposal,
+                approval_issue=args.approval_issue,
+                steward=stage_steward,
+                stage_pr=args.stage_pr,
+            )
+            wire = {"kind": "repo-agent-mission-stage.v1", **result}
+        except (
+            OSError,
+            ValueError,
+            local_loop.LoopUnavailable,
+            shadow_steward.ShadowStewardError,
+            steward.StewardError,
+            steward_github.GitHubFactsError,
+        ) as exc:
+            wire = {
+                "kind": "repo-agent-mission-stage.v1",
+                "status": "unavailable",
+                "details": {"reason": str(exc)[:300]},
+            }
+        print(json.dumps(wire, ensure_ascii=False, sort_keys=True))
+        return 0 if wire.get("status") in {
+            "waiting_approval", "stage_pr_draft", "stage_pr_waiting", "waiting_for_merge"
+        } else 2
     if args.command == "route-run":
         try:
             factory = route_run_factory or route_driver.RepositoryRouteRunner
