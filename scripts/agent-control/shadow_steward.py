@@ -50,6 +50,8 @@ SAFE_PATH = re.compile(
     r"(?:docs|scripts|tests|engine|sdk|dashboard|tools|wire_contract|codegen)"
     r"(?:/[A-Za-z0-9_.-]+)+(?![A-Za-z0-9_.-])"
 )
+_PATH_TRAVERSAL = re.compile(r"(?<![A-Za-z0-9_.-])\.\.?(?:/|$)")
+_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9])/(?:[A-Za-z0-9_.-]+/)+")
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -329,6 +331,13 @@ def _safe_paths(text: str) -> tuple[str, ...]:
     return result
 
 
+def _has_unsafe_path_syntax(text: str) -> bool:
+    return (
+        _PATH_TRAVERSAL.search(text) is not None
+        or _ABSOLUTE_PATH.search(text) is not None
+    )
+
+
 def _is_sensitive_path(path: str) -> bool:
     parts = path.casefold().split("/")
     for part in parts:
@@ -483,8 +492,9 @@ def compile_intake(raw_request: str) -> Intake:
 
     raw = _text(raw_request, "raw_request")
     lowered = raw.casefold()
-    candidate_paths = _safe_paths(raw)
-    forbidden_paths = any(
+    unsafe_path_syntax = _has_unsafe_path_syntax(raw)
+    candidate_paths = () if unsafe_path_syntax else _safe_paths(raw)
+    forbidden_paths = unsafe_path_syntax or any(
         SAFE_PATH.fullmatch(path) is None
         or any(part in {".", ".."} for part in path.split("/"))
         or _is_sensitive_path(path)

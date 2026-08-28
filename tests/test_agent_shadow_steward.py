@@ -338,6 +338,8 @@ class ShadowStewardTests(unittest.TestCase):
             ("docs/access_token", "private_path_forbidden"),
             ("docs/../engine/foo.py", "path_syntax_forbidden"),
             ("docs/../../etc/passwd", "path_syntax_forbidden"),
+            ("/evil/../docs/ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
+            ("/evil/docs/ARCHITECTURE_BOOK.md", "path_syntax_forbidden"),
         ):
             with self.subTest(path=path):
                 intake = shadow.compile_intake(f"Update {path}.")
