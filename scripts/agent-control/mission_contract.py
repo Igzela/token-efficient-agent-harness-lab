@@ -112,6 +112,7 @@ CAMPAIGN_SOURCE_REF = "autonomous-steward-migration-plan-2026-08-27"
 CAMPAIGN_SOURCE_SHA256 = "4b6eacaa4ff58337a02a6a73f458ffb0e4d3cb4e71f256c1024b3dd6205e1d39"
 CAMPAIGN_BASE_SHA = "7f0e5afd22a9441073e1ac71d981dfc74060a948"
 CAMPAIGN_ALLOWED_PATHS = (
+    "AGENTS.md",
     "docs/ARCHITECTURE_BOOK.md",
     "scripts/agent-control/mission_contract.py",
     "scripts/check_agent_handoff.py",
@@ -120,7 +121,7 @@ CAMPAIGN_ALLOWED_PATHS = (
     "tests/test_mission_contract.py",
     "tests/test_session_context.py",
 )
-LEGACY_COMPATIBILITY_PATHS = ("docs/", "engine/", "scripts/", "tests/")
+LEGACY_COMPATIBILITY_PATHS = ("AGENTS.md", "docs/", "engine/", "scripts/", "tests/")
 
 
 class MissionContractError(ValueError):
@@ -1145,6 +1146,17 @@ def validate_legacy_compatibility(packet: object, capsule: object) -> LegacyMiss
     )
     if capsule_paths != packet_paths or capsule_forbidden != forbidden:
         raise MissionContractError("legacy_dispatch_scope_mismatch")
+    if packet_id == "PE7-AUTONOMOUS-STEWARD-PR4A":
+        required_boundary_markers = (
+            "only the parent packet coordinator may submit the bound Draft PR through pr_binding.py:create_or_update_pr.",
+            "Child execution, repair, and review sessions must not receive GitHub write credentials or Provider secrets.",
+            "Do not switch the lifecycle writer or perform a canary/single-writer cutover.",
+        )
+        if any(
+            not any(marker in item for item in capsule_forbidden)
+            for marker in required_boundary_markers
+        ):
+            raise MissionContractError("legacy_pr4a_boundary_missing")
     if any(
         not path_in_scope(LEGACY_COMPATIBILITY_PATHS, path.rstrip("/"))
         for path in packet_paths

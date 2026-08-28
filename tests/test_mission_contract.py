@@ -464,6 +464,25 @@ class LegacyCompatibilityTests(unittest.TestCase):
                 with self.assertRaisesRegex(contract.MissionContractError, expected):
                     contract.validate_legacy_compatibility(self.packet(), self.capsule(**overrides))
 
+    def test_pr4a_projection_requires_machine_checked_boundary_markers(self):
+        packet = self.packet(
+            packet_id="PE7-AUTONOMOUS-STEWARD-PR4A",
+            forbidden_next_actions=[
+                "only the parent packet coordinator may submit the bound Draft PR through pr_binding.py:create_or_update_pr.",
+                "Child execution, repair, and review sessions must not receive GitHub write credentials or Provider secrets.",
+                "Do not switch the lifecycle writer or perform a canary/single-writer cutover.",
+            ],
+        )
+        capsule = self.capsule(
+            packet_id=packet["packet_id"],
+            forbidden_next_actions=packet["forbidden_next_actions"],
+        )
+        contract.validate_legacy_compatibility(packet, capsule)
+        packet["forbidden_next_actions"] = packet["forbidden_next_actions"][:-1]
+        capsule["forbidden_next_actions"] = capsule["forbidden_next_actions"][:-1]
+        with self.assertRaisesRegex(contract.MissionContractError, "legacy_pr4a_boundary_missing"):
+            contract.validate_legacy_compatibility(packet, capsule)
+
 
 if __name__ == "__main__":
     unittest.main()
