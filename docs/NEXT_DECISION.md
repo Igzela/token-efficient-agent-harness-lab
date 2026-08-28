@@ -41,10 +41,11 @@ executor is the prerequisite for the blocked canary and single-writer cutover.
 `fed967ebf03bf43ea452f1b450b972b991b0d92d`, exact-head `PASS`, canonical PR
 workflow `33167984966`, merged as
 `84fdb7b12cd7cd1bebd0214f56592944dbe42ee3`. Post-merge `main` workflow
-`33169425071` passed all required jobs. The provider-free service and
-rebuildable journal remain repository-maintenance projections; the legacy
-controller remains the sole lifecycle writer and automatic merge remains
-disabled.
+`33169425071` passed all required jobs. Independent receipt comment
+`5452081999` and the service-entrypoint E2E receipt reached
+`WAITING_FOR_MERGE`. The provider-free service and rebuildable journal remain
+repository-maintenance projections; the legacy controller remains the sole
+lifecycle writer and automatic merge remains disabled.
 
 ## Packet PE7-AUTONOMOUS-STEWARD-PR4
 
@@ -53,7 +54,16 @@ disabled.
 **Prerequisite:** `PE7-AUTONOMOUS-STEWARD-PR3` — COMPLETE on accepted main
 `84fdb7b12cd7cd1bebd0214f56592944dbe42ee3`.
 
-**Route:** See `docs/FUTURE_ROUTE.md` for the routing-only PR4 profile.
+**Class:** `IMPLEMENT`
+
+**Outcome:** Run the provider-free canary and perform the explicit single-writer cutover from the legacy controller to the Steward, enabling guarded merge only after ruleset and exact-head gates are proved.
+
+**Allowed delta:** Fault injection, canary fixtures, emergency-stop/cutover wiring, guarded merge integration, and bounded operator evidence; no Provider, production, deployment, or destructive effect.
+
+**Exit:** Crash, timeout, bad output, path conflict, stale head, CI/review failure, GitHub ambiguity, and restart cases pass; one real provider-free Mission reaches merge with zero routine owner questions and exactly one active writer.
+
+**Stop:** Both controllers can write, emergency stop or rollback is unavailable, review/CI can be bypassed, API ambiguity is replayed blindly, or auto-merge is enabled before all gates are proved.
+
 Promotion requires a refreshed accepted-main/live-GitHub audit, exact allowed
 paths, verification and rollback contract, stop conditions, and a new
 machine-bound dispatch capsule. This blocked route grants no implementation,
@@ -86,5 +96,6 @@ authority.
 
 ## Future Route Boundary
 
-`docs/FUTURE_ROUTE.md` contains only blocked PR4-PR7 routing. Promotion requires
-the refreshed accepted PR3 evidence and a new exact dispatch capsule.
+`docs/FUTURE_ROUTE.md` contains only blocked PR5-PR7 routing; the active blocked
+PR4 contract remains in this document. Promotion requires the refreshed
+accepted PR3 evidence and a new exact dispatch capsule.
