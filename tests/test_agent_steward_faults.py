@@ -252,6 +252,18 @@ class StewardFaultTests(unittest.TestCase):
         self.assertEqual(report.items[0].outcome, "COMPLETE")
         self.assertEqual(self.journal.projection()["card_states"]["card-1"], "COMPLETE")
 
+    def test_reconciliation_resolves_unknown_outcome_from_live_stage_facts(self):
+        self.make_waiting_journal()
+        self.append("OUTCOME_UNKNOWN", "unknown:stage-facts")
+        reader = steward_github.FakeGitHubReader(self.facts(merged=True))
+        service = StewardService(mission_id=MISSION, journal=self.journal, github=reader)
+        report = service.reconcile(stage_bindings={})
+        self.assertEqual(report.items[0].outcome, "COMPLETE")
+        self.assertEqual(
+            self.journal.projection()["card_states"]["card-1"],
+            "COMPLETE",
+        )
+
     def test_reconciliation_ignores_caller_binding_projection(self):
         self.make_waiting_journal()
         reader = steward_github.FakeGitHubReader(self.facts())
@@ -626,6 +638,34 @@ class StewardFaultTests(unittest.TestCase):
             )
             observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
             self.assertEqual(observed["ci_state"], "PASS")
+
+            run.return_value.stdout = json.dumps(
+                {
+                    "state": "OPEN",
+                    "isDraft": False,
+                    "mergedAt": None,
+                    "baseRefName": "main",
+                    "headRefName": "agent/steward-card",
+                    "baseRefOid": BASE,
+                    "headRefOid": HEAD,
+                    "statusCheckRollup": [
+                        {"name": name, "conclusion": "SUCCESS", "status": "NOT_COMPLETED"}
+                        for name in (
+                            "docker-build",
+                            "native-runtime",
+                            "pg-integration-tests",
+                            "python-tests",
+                            "rust-tests",
+                            "rust-typescript-cutover",
+                            "typescript-tests",
+                            "context-capsule",
+                        )
+                    ],
+                    "reviewDecision": "APPROVED",
+                }
+            )
+            observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
+            self.assertEqual(observed["ci_state"], "UNKNOWN")
 
     def test_github_reader_rejects_aggregate_approval_without_current_head_review(self):
         reader = steward_github.GhReadOnlyGitHub()

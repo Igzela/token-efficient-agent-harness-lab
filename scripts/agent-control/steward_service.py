@@ -258,6 +258,18 @@ class StewardService:
             )
             state = record["state"]
             if not isinstance(binding, Mapping):
+                if state == "OUTCOME_UNKNOWN":
+                    self.journal.append(
+                        event="RECONCILIATION_BLOCKED",
+                        idempotency_key=_reconcile_key(
+                            "blocked", self.mission_id, stage_id, card_id, "stage-binding-missing"
+                        ),
+                        mission_id=self.mission_id,
+                        stage_id=stage_id,
+                        card_id=card_id,
+                        state="BLOCKED",
+                        detail="stage_binding_missing",
+                    )
                 items.append(
                     RecoveryItem(card_id, state, "BLOCKED", "stage_binding_missing")
                 )
@@ -306,7 +318,11 @@ class StewardService:
                     str(binding.get("base_sha", "0" * 40)),
                     str(binding.get("head_sha", "0" * 40)),
                 )
-            if status.outcome == "COMPLETE" and state in {"WAITING_FOR_MERGE", "REVIEWING"}:
+            if status.outcome == "COMPLETE" and state in {
+                "WAITING_FOR_MERGE",
+                "REVIEWING",
+                "OUTCOME_UNKNOWN",
+            }:
                 self.journal.append(
                     event="STAGE_MERGED_OBSERVED",
                     idempotency_key=_reconcile_key(
@@ -318,7 +334,10 @@ class StewardService:
                     state="COMPLETE",
                     detail="live_pr_merged",
                 )
-            elif status.outcome == "WAITING_FOR_MERGE" and state == "REVIEWING":
+            elif status.outcome == "WAITING_FOR_MERGE" and state in {
+                "REVIEWING",
+                "OUTCOME_UNKNOWN",
+            }:
                 self.journal.append(
                     event="STAGE_WAITING_FOR_MERGE",
                     idempotency_key=_reconcile_key(
@@ -331,7 +350,7 @@ class StewardService:
                     detail="reconciled_exact_head_ci_and_review_pass",
                     data={"pr_number": status.pr_number},
                 )
-            elif status.outcome == "BLOCKED" and state not in {"BLOCKED", "OUTCOME_UNKNOWN"}:
+            elif status.outcome == "BLOCKED" and state != "BLOCKED":
                 self.journal.append(
                     event="RECONCILIATION_BLOCKED",
                     idempotency_key=_reconcile_key(

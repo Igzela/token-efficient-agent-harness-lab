@@ -42,7 +42,9 @@ CARD_STATES = frozenset(
         "OUTCOME_UNKNOWN",
     }
 )
-TERMINAL_STATES = frozenset({"COMPLETE", "BLOCKED", "OUTCOME_UNKNOWN"})
+# OUTCOME_UNKNOWN is deliberately recoverable: it must remain visible to the
+# read-only reconciliation loop and may never be replayed as if it succeeded.
+TERMINAL_STATES = frozenset({"COMPLETE", "BLOCKED"})
 _EDGES: dict[str | None, frozenset[str]] = {
     None: frozenset({"QUEUED", "BLOCKED"}),
     "QUEUED": frozenset({"RUNNING", "RETRYING", "BLOCKED", "OUTCOME_UNKNOWN"}),
@@ -69,7 +71,15 @@ _EDGES: dict[str | None, frozenset[str]] = {
     "RECONCILED": frozenset({"QUEUED", "BLOCKED"}),
     "COMPLETE": frozenset(),
     "BLOCKED": frozenset(),
-    "OUTCOME_UNKNOWN": frozenset({"RECONCILED", "BLOCKED", "OUTCOME_UNKNOWN"}),
+    "OUTCOME_UNKNOWN": frozenset(
+        {
+            "RECONCILED",
+            "WAITING_FOR_MERGE",
+            "COMPLETE",
+            "BLOCKED",
+            "OUTCOME_UNKNOWN",
+        }
+    ),
 }
 
 

@@ -280,12 +280,19 @@ class GhReadOnlyGitHub:
             elif (
                 len(check_items) != len(checks)
                 or None in conclusions
-                or bool(
-                    statuses
-                    & {"IN_PROGRESS", "QUEUED", "REQUESTED", "WAITING", "PENDING"}
-                )
             ):
                 ci_state = "PENDING"
+            elif any(status != "COMPLETED" for status in statuses):
+                # A successful conclusion is not terminal evidence unless the
+                # corresponding check is explicitly COMPLETED.  Unknown
+                # status values remain unknown rather than being treated as
+                # green.
+                ci_state = (
+                    "PENDING"
+                    if statuses
+                    & {"IN_PROGRESS", "QUEUED", "REQUESTED", "WAITING", "PENDING"}
+                    else "UNKNOWN"
+                )
             elif not required_jobs.issubset(observed_names):
                 ci_state = "UNKNOWN"
             elif len(conclusions) == len(checks) and all(
