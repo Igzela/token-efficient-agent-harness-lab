@@ -1269,6 +1269,33 @@ class CheckpointTests(unittest.TestCase):
         record = json.loads(record_payload)
         capsule = json.loads(capsule_match.group("payload"))
         accepted = record["accepted_main_sha"]
+        sketch = route_driver.packet_sketches(next_document)[
+            "PE7-AUTONOMOUS-STEWARD-PR4"
+        ]
+        successor = route_driver.EligibleSuccessor(
+            sketch.packet_id,
+            sketch,
+            (sketch.packet_id, "IMPLEMENT", "T1", "none", "source_focused_full"),
+        )
+        recomputed = route_driver.CurrentMainEvidenceVerifier(
+            root, accepted
+        ).verify(
+            json.dumps(record["proposal"], separators=(",", ":")),
+            successor,
+            record["predecessor_receipt"],
+            closed_packet_id="PE7-AUTONOMOUS-STEWARD-PR3",
+        )
+        self.assertEqual(recomputed.state, "READY_FOR_EXECUTION")
+        self.assertEqual(recomputed.reason, "promotion_candidate_valid")
+        self.assertIsNotNone(recomputed.candidate)
+        self.assertEqual(
+            recomputed.candidate.evidence_sha256,
+            record["promotion_evidence_sha256"],
+        )
+        self.assertEqual(recomputed.candidate.manifest_sha256, record["route_manifest_sha256"])
+        self.assertEqual(recomputed.candidate.spec_digest, record["spec_digest"])
+        self.assertEqual(recomputed.candidate.contract, record["contract"])
+        self.assertEqual(recomputed.candidate.capsule, capsule)
         status = subprocess.check_output(
             ["git", "show", f"{accepted}:docs/CURRENT_STATUS.md"],
             cwd=root,
