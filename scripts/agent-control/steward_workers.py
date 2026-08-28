@@ -100,6 +100,10 @@ class WorkerContext:
     base_sha: str
     worktree: Path
     allowed_paths: tuple[str, ...]
+    steps: tuple[str, ...]
+    focused_tests: tuple[str, ...]
+    negative_checks: tuple[str, ...]
+    expected_evidence: tuple[str, ...]
     environment: Mapping[str, str]
 
     def __post_init__(self) -> None:
@@ -251,6 +255,8 @@ def validate_worker_outcome(
         raise WorkerError("expected_head_sha_invalid")
     if not SHA40.fullmatch(outcome.head_sha):
         raise WorkerError("worker_head_sha_invalid")
+    if outcome.head_sha != expected_head_sha:
+        raise WorkerError("worker_head_binding_mismatch")
     validate_changed_paths(card, outcome.changed_paths)
     return outcome
 
@@ -272,7 +278,10 @@ class PathLockSet(AbstractContextManager["PathLockSet"]):
 
     def __init__(self, lock_dir: str | Path, paths: tuple[str, ...] | list[str]):
         self.lock_dir = Path(lock_dir)
-        self.paths = tuple(sorted(set(paths)))
+        try:
+            self.paths = lock_footprint(paths)
+        except WorkerError as exc:
+            raise PathConflict("path_lock_invalid") from exc
         if len(self.paths) > 100:
             raise PathConflict("path_lock_invalid")
         try:
@@ -305,6 +314,54 @@ class PathLockSet(AbstractContextManager["PathLockSet"]):
         self.release()
 
 
+class CapacityLock(AbstractContextManager["CapacityLock"]):
+    """Reserve one of two host-wide Steward slots across service instances."""
+
+    def __init__(self, lock_dir: str | Path):
+        self.lock_dir = Path(lock_dir)
+        self._lock: ChatLock | None = None
+
+    def acquire(self) -> "CapacityLock":
+        for slot in range(2):
+            lock = ChatLock(self.lock_dir, f"steward-capacity:{slot}")
+            try:
+                lock.acquire()
+            except (LockBusy, OSError):
+                continue
+            self._lock = lock
+            return self
+        raise PathConflict("steward_capacity_busy")
+
+    def release(self) -> None:
+        if self._lock is not None:
+            self._lock.release()
+            self._lock = None
+
+    def __enter__(self) -> "CapacityLock":
+        return self.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+
+def lock_footprint(paths: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    """Expand declared paths to stable parent locks to prevent directory overlap."""
+
+    footprint: set[str] = set()
+    for path in paths:
+        try:
+            _safe_path(path)
+        except WorkerError as exc:
+            raise PathConflict("path_lock_invalid") from exc
+        parts = Path(path.rstrip("/")).parts
+        if not parts:
+            raise PathConflict("path_lock_invalid")
+        footprint.update("/".join(parts[:index]) for index in range(1, len(parts) + 1))
+    if len(footprint) > 256:
+        raise PathConflict("path_lock_invalid")
+    return tuple(sorted(footprint))
+
+
 def run_allowlisted_checks(
     worktree: Path,
     changed_paths: list[str],
@@ -319,9 +376,32 @@ def run_allowlisted_checks(
     )
 
 
+def validate_check_results(checks: object) -> list[dict[str, Any]]:
+    """Require repository-owned allowlisted commands to pass exactly."""
+
+    if not isinstance(checks, list) or not checks:
+        raise WorkerError("focused_checks_empty")
+    validated: list[dict[str, Any]] = []
+    for result in checks:
+        if not isinstance(result, dict):
+            raise WorkerError("focused_check_result_invalid")
+        command = result.get("command")
+        exit_code = result.get("exit_code")
+        if (
+            not isinstance(command, str)
+            or local_verification.allowlisted_command(command) is None
+            or type(exit_code) is not int
+            or exit_code != 0
+        ):
+            raise WorkerError("focused_check_not_passed")
+        validated.append({"command": command, "exit_code": exit_code})
+    return validated
+
+
 __all__ = [
     "CallableReviewer",
     "CallableWorker",
+    "CapacityLock",
     "PathConflict",
     "PathLockSet",
     "ProviderFreeWorker",
@@ -335,6 +415,8 @@ __all__ = [
     "WorkerUnavailable",
     "child_environment",
     "run_allowlisted_checks",
+    "lock_footprint",
+    "validate_check_results",
     "select_model_tier",
     "validate_worker_outcome",
     "validate_changed_paths",

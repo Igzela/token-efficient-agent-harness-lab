@@ -121,6 +121,26 @@ class StewardFaultTests(unittest.TestCase):
         self.assertEqual(self.journal.projection()["card_states"]["card-1"], "WAITING_FOR_MERGE")
         self.assertEqual(reader.reads, [("Igzela/token-efficient-agent-harness-lab", 7)])
 
+    def test_reconciliation_ignores_other_mission_cards(self):
+        self.append("QUEUED", "queue:other", card="other")
+        self.journal.append(
+            event="CARD_QUEUED",
+            idempotency_key="queue:other-mission",
+            mission_id="OTHER-MISSION",
+            stage_id="stage-other",
+            card_id="other-mission-card",
+            attempt=1,
+            state="QUEUED",
+            detail="queued",
+        )
+        service = StewardService(
+            mission_id=MISSION,
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(),
+        )
+        report = service.recover()
+        self.assertEqual([item.card_id for item in report.items], ["other"])
+
     def test_reconciliation_requires_review_binding_for_exact_head(self):
         self.append("QUEUED", "queue:unreviewed", card="unreviewed")
         self.append("RUNNING", "run:unreviewed", card="unreviewed")
@@ -194,8 +214,10 @@ class StewardFaultTests(unittest.TestCase):
                 }
             }
         )
-        self.assertEqual(report.items[0].outcome, "BLOCKED")
-        self.assertEqual(self.journal.projection()["card_states"]["card-1"], "BLOCKED")
+        self.assertEqual(report.items[0].outcome, "WAITING")
+        self.assertEqual(
+            self.journal.projection()["card_states"]["card-1"], "REVIEWING"
+        )
 
     def test_github_binding_requires_exact_head_and_base(self):
         observed = steward_github.StagePRFacts.from_wire(self.facts())
@@ -281,8 +303,17 @@ class StewardFaultTests(unittest.TestCase):
                     "baseRefOid": BASE,
                     "headRefOid": HEAD,
                     "statusCheckRollup": [
-                        {"conclusion": "SUCCESS", "status": "COMPLETED"},
-                        {"conclusion": "SUCCESS", "status": "COMPLETED"},
+                        {"name": name, "conclusion": "SUCCESS", "status": "COMPLETED"}
+                        for name in (
+                            "docker-build",
+                            "native-runtime",
+                            "pg-integration-tests",
+                            "python-tests",
+                            "rust-tests",
+                            "rust-typescript-cutover",
+                            "typescript-tests",
+                            "context-capsule",
+                        )
                     ],
                     "reviewDecision": "APPROVED",
                 }
@@ -316,6 +347,10 @@ class StewardFaultTests(unittest.TestCase):
             worktree_manager._is_steward_path(
                 worktree_manager.WORKTREE_BASE / "steward-../escape"
             )
+        )
+        self.assertTrue(
+            set(workers.lock_footprint(("scripts/",)))
+            & set(workers.lock_footprint(("scripts/agent-control/steward.py",)))
         )
         with self.assertRaises(workers.PathConflict):
             workers.PathLockSet(Path(self.temp.name) / "locks", ("../outside",))

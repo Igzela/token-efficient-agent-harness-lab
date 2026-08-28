@@ -10,6 +10,7 @@ import time
 from typing import Any, Mapping
 
 from steward_github import (
+    GhReadOnlyGitHub,
     GitHubFactsError,
     GitHubReadError,
     ReadOnlyGitHub,
@@ -118,7 +119,7 @@ class StewardService:
     ) -> ReconciliationReport:
         """Read live PR facts and append only observed, idempotent transitions."""
 
-        projection = self.journal.projection()
+        projection = self.journal.projection(mission_id=self.mission_id)
         review_bound_heads = {
             (event.card_id, event.data["reviewed_head_sha"])
             for event in self.journal.replay()
@@ -167,7 +168,16 @@ class StewardService:
                         status.base_sha,
                         status.head_sha,
                     )
-            except (KeyError, TypeError, GitHubFactsError, GitHubReadError, OSError):
+            except (GitHubReadError, OSError):
+                status = StagePRStatus(
+                    "WAITING",
+                    "github_facts_unavailable_or_invalid",
+                    str(binding.get("repository", "unknown/unknown")),
+                    int(binding.get("pr_number", 1)) if str(binding.get("pr_number", "")).isdigit() else 1,
+                    str(binding.get("base_sha", "0" * 40)),
+                    str(binding.get("head_sha", "0" * 40)),
+                )
+            except (KeyError, TypeError, GitHubFactsError):
                 status = StagePRStatus(
                     "BLOCKED",
                     "github_facts_unavailable_or_invalid",
@@ -215,15 +225,8 @@ class StewardService:
         )
 
 
-class _HeartbeatOnlyGitHub:
-    """Service CLI dependency; it cannot satisfy a PR read by accident."""
-
-    def fetch_stage_pr(self, repository: str, pr_number: int) -> dict[str, Any]:
-        raise GitHubReadError("heartbeat_only_service_has_no_github_reader")
-
-
 def main(argv: list[str] | None = None) -> int:
-    """Run a liveness-only loop suitable for an explicitly installed unit."""
+    """Run heartbeat plus read-only recovery/reconciliation."""
 
     parser = argparse.ArgumentParser(prog="steward-service")
     parser.add_argument("--heartbeat-loop", action="store_true")
@@ -245,12 +248,14 @@ def main(argv: list[str] | None = None) -> int:
     service = StewardService(
         mission_id=args.mission_id,
         journal=StewardJournal(args.journal),
-        github=_HeartbeatOnlyGitHub(),
+        github=GhReadOnlyGitHub(),
     )
     tick = 0
     while True:
         tick += 1
         service.heartbeat(tick_id=f"heartbeat:{tick}")
+        service.recover()
+        service.reconcile(stage_bindings={})
         if args.once:
             return 0
         time.sleep(args.interval_seconds)

@@ -306,6 +306,10 @@ class Steward:
             validated_mission = contract.validate_owner_approval(mission)
             if validated_mission != contract.campaign_mission():
                 raise StewardError("mission_registration_invalid")
+            if validated_mission.repository_identity.repository != self.repository:
+                raise StewardError("mission_repository_mismatch")
+            if validated_mission.repository_identity.base_sha != base_sha:
+                raise StewardError("mission_base_sha_mismatch")
             contract.validate_workcard(card, stage, mission)
         except contract.MissionContractError as exc:
             raise StewardError("mission_or_stage_or_card_invalid") from exc
@@ -334,7 +338,9 @@ class Steward:
                 detail="bounded_workcard_admitted",
             )
             try:
-                with workers.PathLockSet(self.lock_dir, card.path_locks):
+                with workers.CapacityLock(self.lock_dir), workers.PathLockSet(
+                    self.lock_dir, card.path_locks
+                ):
                     created = worktree_manager.create_steward_worktree(
                         card.card_id, str(self.repo_path), base_sha
                     )
@@ -371,6 +377,10 @@ class Steward:
                         base_sha=base_sha,
                         worktree=worktree_path,
                         allowed_paths=card.allowed_paths,
+                        steps=card.steps,
+                        focused_tests=card.focused_tests,
+                        negative_checks=card.negative_checks,
+                        expected_evidence=card.expected_evidence,
                         environment=workers.child_environment(),
                     )
                     try:
@@ -397,10 +407,10 @@ class Steward:
                         )
                         return ExecutionResult(card.card_id, "OUTCOME_UNKNOWN", attempt, None, "worker_exception_after_admission")
                     try:
-                        workers.validate_worker_outcome(
-                            card, outcome, expected_head_sha=outcome.head_sha
-                        )
                         observed_head = _git_head(worktree_path)
+                        workers.validate_worker_outcome(
+                            card, outcome, expected_head_sha=observed_head
+                        )
                         actual_paths = _git_changed_paths(worktree_path, base_sha, observed_head)
                         workers.validate_changed_paths(card, actual_paths)
                         _git_worktree_clean(worktree_path)
@@ -425,16 +435,6 @@ class Steward:
                             detail="worker_head_unavailable_after_attempt",
                         )
                         return ExecutionResult(card.card_id, "OUTCOME_UNKNOWN", attempt, None, "worker_head_unavailable_after_attempt")
-                    if outcome.head_sha != observed_head:
-                        return self._failure(
-                            mission=mission,
-                            stage=stage,
-                            card=card,
-                            attempt=attempt,
-                            reason="worker_head_binding_mismatch",
-                            retryable=False,
-                            head_sha=observed_head,
-                        )
                     if outcome.status != "PASS":
                         if outcome.status == "OUTCOME_UNKNOWN":
                             self._record(
@@ -499,8 +499,7 @@ class Steward:
                     )
                     try:
                         checks = self.verifier(worktree_path, list(outcome.changed_paths))
-                        if not isinstance(checks, list) or not checks:
-                            raise StewardError("focused_checks_empty")
+                        checks = workers.validate_check_results(checks)
                     except Exception as exc:
                         result = self._failure(
                             mission=mission,
@@ -731,7 +730,7 @@ class Steward:
                             del pending[card_id]
                             launched = True
                             break
-                        paths = set(card.path_locks)
+                        paths = set(workers.lock_footprint(card.path_locks))
                         if occupied & paths:
                             continue
                         del pending[card_id]

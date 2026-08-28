@@ -14,6 +14,8 @@ import re
 import subprocess
 from typing import Any, Protocol
 
+import ci_verifier
+
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -243,22 +245,30 @@ class GhReadOnlyGitHub:
                 item.get("status")
                 for item in check_items
             }
-            ci_state = (
-                "FAIL"
-                if "FAILURE" in conclusions or "CANCELLED" in conclusions
-                else "PENDING"
-                if len(check_items) != len(checks)
+            try:
+                required_jobs = set(ci_verifier.load_requirements()["required_jobs"])
+            except (OSError, ValueError, ci_verifier.CIVerificationError) as exc:
+                raise GitHubReadError("canonical_ci_requirements_unavailable") from exc
+            observed_names = {
+                item.get("name") for item in check_items if isinstance(item.get("name"), str)
+            }
+            if "FAILURE" in conclusions or "CANCELLED" in conclusions:
+                ci_state = "FAIL"
+            elif (
+                len(check_items) != len(checks)
                 or None in conclusions
                 or bool(
                     statuses
                     & {"IN_PROGRESS", "QUEUED", "REQUESTED", "WAITING", "PENDING"}
                 )
-                else "PASS"
-                if len(conclusions) == len(checks) and all(
-                    conclusion == "SUCCESS" for conclusion in conclusions
-                )
-                else "UNKNOWN"
-            )
+            ):
+                ci_state = "PENDING"
+            elif not required_jobs.issubset(observed_names):
+                ci_state = "UNKNOWN"
+            elif len(conclusions) == len(checks) and all(
+                conclusion == "SUCCESS" for conclusion in conclusions
+            ):
+                ci_state = "PASS"
         review = payload.get("reviewDecision")
         review_state = {
             "APPROVED": "PASS",

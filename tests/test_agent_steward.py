@@ -22,7 +22,7 @@ import steward_workers as workers  # noqa: E402
 import worktree_manager  # noqa: E402
 
 
-BASE = "a" * 40
+BASE = contract.CAMPAIGN_BASE_SHA
 HEAD = "b" * 40
 
 
@@ -87,7 +87,8 @@ class StewardExecutionTests(unittest.TestCase):
             github=steward_github.FakeGitHubReader(),
             worker=worker,
             reviewer=reviewer,
-            verifier=verifier or (lambda _worktree, _paths: [{"check": "pass"}]),
+            verifier=verifier
+            or (lambda _worktree, _paths: [{"command": "git diff --check", "exit_code": 0}]),
             lock_dir=self.root / "locks",
         )
 
