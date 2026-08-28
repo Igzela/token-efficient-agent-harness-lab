@@ -185,11 +185,17 @@ _SCOPE_MARKERS = (
     "unbounded",
 )
 _EXTERNAL_ACTIONS = (
-    r"write|push|modify|change|update|create|close|merge|comment|send|post|submit|"
-    r"upload|notify|open|call|invoke|request|trigger|email|publish|release|deploy|"
-    r"sync|forward|transfer|share|export|connect|contact|access|make|transmit|"
-    r"run|execute|perform|relay|route|fetch|download|hit|use|message|visit|deliver|"
-    r"store|save|insert|remove|delete"
+    r"write|writing|push|pushing|modify|modifying|change|changing|update|updating|"
+    r"create|creating|close|closing|merge|merging|comment|commenting|send|sending|"
+    r"post|posting|submit|submitting|upload|uploading|notify|notifying|open|opening|"
+    r"call|calling|invoke|invoking|request|requesting|trigger|triggering|email|emailing|"
+    r"publish|publishing|release|releasing|deploy|deploying|sync|synchronizing|"
+    r"forward|forwarding|transfer|transferring|share|sharing|export|exporting|"
+    r"connect|connecting|contact|contacting|access|accessing|make|making|transmit|"
+    r"transmitting|run|running|execute|executing|perform|performing|relay|relaying|"
+    r"route|routing|fetch|fetching|download|downloading|hit|hitting|use|using|"
+    r"message|messaging|visit|visiting|deliver|delivering|store|storing|save|saving|"
+    r"insert|inserting|remove|removing|delete|deleting|curl|wget"
 )
 _EXTERNAL_TARGETS = (
     r"github|slack|discord|microsoft teams|notion|jira|external|service|external api|"
@@ -200,6 +206,8 @@ _EXTERNAL_TARGETS = (
     r"host|connection|smtp|curl|internet|outbound|lan|rpc|packet|channel|storage|queue"
 )
 _HIGH_RISK_PATTERNS = (
+    re.compile(r"\bgit\s+push\b"),
+    re.compile(r"\b(?:curl|wget)\b.{0,64}\bhttps?://"),
     re.compile(
         r"\b(?:write|push|modify|change|update|create|close|merge|comment)\b"
         r".{0,48}\bgithub\b"
