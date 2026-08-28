@@ -159,6 +159,10 @@ class ShadowStewardTests(unittest.TestCase):
             "Ship this to prod from docs/ARCHITECTURE_BOOK.md.",
             "Expand the scope to docs/ARCHITECTURE_BOOK.md.",
             "I do not know whether it was sent.",
+            "The operation may have succeeded while updating docs/ARCHITECTURE_BOOK.md.",
+            "We have no confirmation it was sent while updating docs/ARCHITECTURE_BOOK.md.",
+            "The response was ambiguous while updating docs/ARCHITECTURE_BOOK.md.",
+            "It might have been transmitted while updating docs/ARCHITECTURE_BOOK.md.",
             "Write to GitHub while updating docs/ARCHITECTURE_BOOK.md.",
             "Erase records while updating docs/ARCHITECTURE_BOOK.md.",
             "I cannot determine whether it completed while updating docs/ARCHITECTURE_BOOK.md.",
@@ -208,6 +212,11 @@ class ShadowStewardTests(unittest.TestCase):
             "Run gh issue comment while updating docs/ARCHITECTURE_BOOK.md.",
             "Use nc to contact 10.0.0.1 while updating docs/ARCHITECTURE_BOOK.md.",
             "Send data over TCP while updating docs/ARCHITECTURE_BOOK.md.",
+            "Transfer with rsync while updating docs/ARCHITECTURE_BOOK.md.",
+            "Send over WebSocket while updating docs/ARCHITECTURE_BOOK.md.",
+            "Push a Docker image while updating docs/ARCHITECTURE_BOOK.md.",
+            "Commit and push while updating docs/ARCHITECTURE_BOOK.md.",
+            "Submit a merge request while updating docs/ARCHITECTURE_BOOK.md.",
             "Invoke a CLI while updating docs/ARCHITECTURE_BOOK.md.",
             "Upload using SFTP while updating docs/ARCHITECTURE_BOOK.md.",
             "git pushing changes while updating docs/ARCHITECTURE_BOOK.md.",
@@ -311,6 +320,18 @@ class ShadowStewardTests(unittest.TestCase):
         self.assertEqual(wire["replay_case_count"], 1)
         self.assertNotIn("requested_paths", wire)
         self.assertNotIn("Implement", str(wire))
+
+        forged = replace(replay, case_count=999)
+        with self.assertRaisesRegex(
+            shadow.ShadowStewardError, "replay_projection_invalid"
+        ):
+            shadow.compact_status(plan, forged)
+
+        unsealed = replace(replay, _provenance=None)
+        with self.assertRaisesRegex(
+            shadow.ShadowStewardError, "replay_projection_invalid"
+        ):
+            shadow.compact_status(plan, unsealed)
 
     def test_planner_waits_for_approval_instead_of_bypassing_it(self):
         waiting = shadow.plan_stage(self.proposal, self.mission)

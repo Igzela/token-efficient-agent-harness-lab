@@ -174,7 +174,15 @@ _UNKNOWN_MARKERS = (
     "outcome_unknown",
     "may have been sent",
     "possibly sent",
+    "may have succeeded",
+    "might have succeeded",
+    "might have been sent",
+    "may have been transmitted",
+    "might have been transmitted",
+    "no confirmation",
     "ambiguous response",
+    "response was ambiguous",
+    "ambiguous",
     "uncertain whether",
     "uncertain if",
     "i do not know whether",
@@ -201,7 +209,7 @@ _EXTERNAL_ACTIONS = (
     r"route|routing|fetch|fetching|download|downloading|hit|hitting|use|using|"
     r"message|messaging|visit|visiting|deliver|delivering|store|storing|save|saving|"
     r"insert|inserting|remove|removing|delete|deleting|curl|wget|launch|launching|"
-    r"start|starting|spawn|spawning"
+    r"start|starting|spawn|spawning|commit|committing"
 )
 _EXTERNAL_TARGETS = (
     r"github|slack|discord|microsoft teams|notion|jira|salesforce|gh|nc|external|service|"
@@ -212,7 +220,7 @@ _EXTERNAL_TARGETS = (
     r"network request|socket|network|system|http|https|arbitrary|unknown|destination|"
     r"host|connection|smtp|curl|internet|outbound|lan|rpc|packet|channel|storage|queue|"
     r"tcp|udp|ip|port|ssh|scp|ftp|sftp|telnet|command|shell|terminal|process|subprocess|"
-    r"outside|offsite|colleague"
+    r"rsync|websocket|web socket|docker|merge request|outside|offsite|colleague"
 )
 _COMMAND_ACTIONS = (
     r"run|running|execute|executing|invoke|invoking|call|calling|use|using|"
@@ -227,6 +235,8 @@ _HIGH_RISK_PATTERNS = (
     re.compile(r"\b(?:curl|wget)\b.{0,64}\bhttps?://"),
     re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
     re.compile(r"\bmake\s+a\s+request\b"),
+    re.compile(r"\b(?:commit|committing)\b.{0,64}\bpush(?:ing|es)?\b"),
+    re.compile(r"\bpush(?:ing|es)?\b.{0,64}\b(?:commit|committing)\b"),
     re.compile(rf"\b(?:{_COMMAND_ACTIONS})\b.{{0,64}}\b(?:{_COMMAND_TARGETS})\b"),
     re.compile(
         r"\b(?:write|push|modify|change|update|create|close|merge|comment)\b"
@@ -1255,10 +1265,15 @@ class ReplayResult:
     mismatch_count: int
     comparison_sha256: str
     cases: tuple[ReplayCaseResult, ...]
+    _provenance: object | None = field(default=None, repr=False, compare=False)
 
     @property
     def passed(self) -> bool:
-        return self.false_pause_count == 0 and self.mismatch_count == 0
+        return (
+            _is_sealed_replay(self)
+            and self.false_pause_count == 0
+            and self.mismatch_count == 0
+        )
 
     def to_wire(self) -> dict[str, Any]:
         return {
@@ -1271,6 +1286,34 @@ class ReplayResult:
             "comparison_sha256": self.comparison_sha256,
             "cases": [case.to_wire() for case in self.cases],
         }
+
+
+_REPLAY_PROJECTION_TOKEN = object()
+
+
+def _seal_replay(result: ReplayResult) -> ReplayResult:
+    return replace(
+        result,
+        _provenance=(_REPLAY_PROJECTION_TOKEN, contract.json_sha256(result.to_wire())),
+    )
+
+
+def _is_sealed_replay(result: object) -> bool:
+    if not isinstance(result, ReplayResult):
+        return False
+    provenance = result._provenance
+    if (
+        not isinstance(provenance, tuple)
+        or len(provenance) != 2
+        or provenance[0] is not _REPLAY_PROJECTION_TOKEN
+        or not isinstance(provenance[1], str)
+        or SHA256.fullmatch(provenance[1]) is None
+    ):
+        return False
+    try:
+        return provenance[1] == contract.json_sha256(result.to_wire())
+    except Exception:
+        return False
 
 
 def _legacy_controller_action(case: ReplayCase) -> str:
@@ -1362,15 +1405,17 @@ def replay_historical_failures(
             "cases": [result.to_wire() for result in results],
         }
     )
-    return ReplayResult(
-        SCHEMA_VERSION,
-        len(results),
-        ordinary,
-        false_pause,
-        owner_pause,
-        mismatches,
-        comparison_sha,
-        tuple(results),
+    return _seal_replay(
+        ReplayResult(
+            SCHEMA_VERSION,
+            len(results),
+            ordinary,
+            false_pause,
+            owner_pause,
+            mismatches,
+            comparison_sha,
+            tuple(results),
+        )
     )
 
 
@@ -1415,6 +1460,8 @@ def compact_status(plan: PlanProjection, replay: ReplayResult | None = None) -> 
 
     if not _is_sealed_projection(plan):
         raise ShadowStewardError("plan_projection_invalid")
+    if replay is not None and not _is_sealed_replay(replay):
+        raise ShadowStewardError("replay_projection_invalid")
     completed = sum(card.result_state == "COMPLETE" for card in plan.workcards)
     return CompactStatus(
         SCHEMA_VERSION,
