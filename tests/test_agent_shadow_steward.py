@@ -197,6 +197,11 @@ class ShadowStewardTests(unittest.TestCase):
             "Use curl against a remote host while updating docs/ARCHITECTURE_BOOK.md.",
             "Message a Slack channel while updating docs/ARCHITECTURE_BOOK.md.",
             "Create a ticket in Jira while updating docs/ARCHITECTURE_BOOK.md.",
+            "Make an outbound request while updating docs/ARCHITECTURE_BOOK.md.",
+            "Store data in the external database while updating docs/ARCHITECTURE_BOOK.md.",
+            "Call the remote service while updating docs/ARCHITECTURE_BOOK.md.",
+            "Connect over LAN while updating docs/ARCHITECTURE_BOOK.md.",
+            "Invoke RPC while updating docs/ARCHITECTURE_BOOK.md.",
         ):
             with self.subTest(request=request):
                 proposal = shadow.compile_proposal(request)
