@@ -264,6 +264,42 @@ class StewardFaultTests(unittest.TestCase):
             "COMPLETE",
         )
 
+    def test_unknown_outcome_without_stage_binding_remains_paused(self):
+        self.append("QUEUED", "queue:unknown-no-binding")
+        self.append("RUNNING", "run:unknown-no-binding")
+        self.append("OUTCOME_UNKNOWN", "unknown:no-binding")
+        service = StewardService(
+            mission_id=MISSION,
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(),
+        )
+        report = service.reconcile(stage_bindings={})
+        self.assertEqual(report.items[0].outcome, "RECOVERY_REQUIRED")
+        self.assertEqual(
+            report.items[0].reason,
+            "unknown_outcome_requires_read_only_reconciliation",
+        )
+        self.assertEqual(
+            self.journal.projection()["card_states"]["card-1"],
+            "OUTCOME_UNKNOWN",
+        )
+
+    def test_unknown_outcome_stays_paused_on_stage_identity_drift(self):
+        self.make_waiting_journal()
+        self.append("OUTCOME_UNKNOWN", "unknown:stage-drift")
+        reader = steward_github.FakeGitHubReader(self.facts(head="c" * 40))
+        service = StewardService(mission_id=MISSION, journal=self.journal, github=reader)
+        report = service.reconcile(stage_bindings={})
+        self.assertEqual(report.items[0].outcome, "RECOVERY_REQUIRED")
+        self.assertEqual(
+            report.items[0].reason,
+            "unknown_outcome_requires_read_only_reconciliation",
+        )
+        self.assertEqual(
+            self.journal.projection()["card_states"]["card-1"],
+            "OUTCOME_UNKNOWN",
+        )
+
     def test_reconciliation_ignores_caller_binding_projection(self):
         self.make_waiting_journal()
         reader = steward_github.FakeGitHubReader(self.facts())
