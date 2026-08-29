@@ -1192,7 +1192,7 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_packet_exposes_blocked_steward_pr4b(self):
+    def test_current_repository_packet_exposes_t3_steward_pr4b(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
         next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
@@ -1242,7 +1242,7 @@ class CheckpointTests(unittest.TestCase):
             next_document, status_document, MAIN
         )
         self.assertEqual(packet["packet_id"], "PE7-AUTONOMOUS-STEWARD-PR4B")
-        self.assertEqual(packet["state"], "BLOCKED_PREREQUISITE")
+        self.assertEqual(packet["state"], "T3_REQUIRED")
         self.assertFalse(packet["checkpoint_allowed"])
         self.assertFalse(packet["execution_authorized"])
         self.assertIsNone(packet["dispatch_lane"])
