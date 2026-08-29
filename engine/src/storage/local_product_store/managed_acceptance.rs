@@ -5837,6 +5837,25 @@ impl LocalProductStore {
                     ],
                 )
                 .map_err(|e| e.to_string())?;
+                append_effect_audit_pg(
+                    &mut tx,
+                    &now,
+                    &principal.principal_id,
+                    "managed_acceptance.effect_child_derived",
+                    &request.child_authorization_id,
+                    &json!({
+                        "parent_authorization_id": parent_authorization_id,
+                        "parent_envelope_id": envelope.envelope_id,
+                        "spend_body_sha256": body_sha256,
+                        "logical_authorization_sha256": logical_authorization_sha256,
+                        "effect_kind": request.effect_kind,
+                        "target_repository": request.target_repository,
+                        "target_main_sha": request.target_main_sha,
+                        "max_cost_usd": request.max_cost_usd,
+                        "expires_at": expires_at,
+                        "outcome_unknown_retry": false,
+                    }),
+                )?;
                 let spend = load_spend_pg(&mut tx, &request.child_authorization_id)?;
                 let receipt = effect_child_receipt(&spend, &body, false)?;
                 tx.commit().map_err(|e| e.to_string())?;
@@ -6123,6 +6142,7 @@ impl LocalProductStore {
                     &mut tx,
                     &now,
                     &principal.principal_id,
+                    "managed_acceptance.effect_child_settled",
                     child_authorization_id,
                     &json!({
                         "attempt_id": attempt_id,
@@ -9412,8 +9432,21 @@ fn validate_effect_outcome_evidence(evidence: &Value) -> Result<Value, String> {
     let object = evidence
         .as_object()
         .ok_or("effect outcome evidence must be a digest object")?;
-    if object.len() != 1 || !object.contains_key("evidence_sha256") {
-        return Err("effect outcome evidence must contain only evidence_sha256".into());
+    if object.len() != 2
+        || !object.contains_key("evidence")
+        || !object.contains_key("evidence_sha256")
+    {
+        return Err("effect outcome evidence must contain evidence and evidence_sha256".into());
+    }
+    let payload = object
+        .get("evidence")
+        .and_then(Value::as_object)
+        .ok_or("effect outcome evidence must contain a metadata object")?;
+    if payload
+        .keys()
+        .any(|key| matches!(key.as_str(), "raw" | "output" | "transcript" | "content"))
+    {
+        return Err("effect outcome evidence cannot contain raw effect data".into());
     }
     let digest = object
         .get("evidence_sha256")
@@ -9421,6 +9454,10 @@ fn validate_effect_outcome_evidence(evidence: &Value) -> Result<Value, String> {
         .ok_or("effect outcome evidence_sha256 is missing")?;
     if digest.len() != 64 || !digest.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err("effect outcome evidence_sha256 must be 64 hex chars".into());
+    }
+    let expected = sha256_hex(canonical_json(&Value::Object(payload.clone()))?.as_bytes());
+    if digest != expected {
+        return Err("effect outcome evidence_sha256 does not match evidence metadata".into());
     }
     Ok(sort_value(evidence))
 }
@@ -9489,6 +9526,7 @@ fn append_effect_audit_pg(
     tx: &mut postgres::Transaction<'_>,
     now: &str,
     actor: &str,
+    action: &str,
     resource: &str,
     details: &Value,
 ) -> Result<(), String> {
@@ -9496,13 +9534,7 @@ fn append_effect_audit_pg(
     tx.execute(
         "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
          VALUES ($1, $2, $3, $4, $5)",
-        &[
-            &now,
-            &actor,
-            &"managed_acceptance.effect_child_settled",
-            &resource,
-            &details_json,
-        ],
+        &[&now, &actor, &action, &resource, &details_json],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -14118,6 +14150,19 @@ mod tests {
         }
     }
 
+    fn effect_evidence(child_authorization_id: &str, effect_executed: bool) -> Value {
+        let payload = json!({
+            "kind": "provider_free_canary",
+            "child_authorization_id": child_authorization_id,
+            "effect_executed": effect_executed,
+        });
+        let evidence_sha256 = sha256_hex(canonical_json(&payload).unwrap().as_bytes());
+        json!({
+            "evidence": payload,
+            "evidence_sha256": evidence_sha256,
+        })
+    }
+
     #[test]
     fn effect_envelope_validation_is_immutable_and_bounded() {
         let mut envelope = effect_envelope_for(
@@ -14280,7 +14325,7 @@ mod tests {
         store
             .derive_effect_child_authorization(&principal, unknown_parent, &unknown_child)
             .unwrap();
-        let evidence = json!({"evidence_sha256": "c".repeat(64)});
+        let evidence = effect_evidence("effect-unknown-child", false);
         let settled = store
             .settle_effect_child_authorization(
                 &principal,
@@ -14315,7 +14360,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(settlement_replay["idempotent_replay"], true);
-        let conflicting_evidence = json!({"evidence_sha256": "d".repeat(64)});
+        let conflicting_evidence = effect_evidence("effect-unknown-child", true);
         assert!(store
             .settle_effect_child_authorization(
                 &principal,
@@ -14385,7 +14430,7 @@ mod tests {
                 &child_id,
                 &attempt_id,
                 EFFECT_OUTCOME_UNKNOWN,
-                &json!({"evidence_sha256": "f".repeat(64)}),
+                &effect_evidence(&child_id, false),
             )
             .unwrap();
         assert_eq!(outcome["status"], EFFECT_OUTCOME_UNKNOWN);
