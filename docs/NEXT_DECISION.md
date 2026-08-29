@@ -106,7 +106,13 @@ active Plan-Ledger claim with its packet, attempt, claim nonce, source-main,
 scope, and status. The bounded source-of-truth reads are the workflow list,
 `GitHubAdapter.active_execution_scopes()`/`state_manager` claim read, and the
 Plan-Ledger read; a label-only read is insufficient. The current audit found
-no nonterminal controller run and no open active Issue claim. If exactly one
+no nonterminal controller run and no open active Issue claim. The raw
+Plan-Ledger audit found the historical Issue #383 closed, frozen, and retired,
+so there is no active plan lane or admitted plan claim for PR4B. This is a
+negative readback, not permission to recreate or reopen the ledger; PR4B must
+not mutate Issue #383 or provision another ledger. If a distinct provisioned
+ledger is independently observed, read its exact claims as specified; an
+ambiguous or unavailable active-ledger read remains a stop. If exactly one
 nonterminal old-controller run or claim generation is present,
 `legacy-controller-stop` may issue exactly one authenticated cancellation or
 release for that exact identity and must read back terminal workflow state,
@@ -155,14 +161,19 @@ emergency stop alone terminated an already-running workflow.
 
 **Approval transport:** The existing `GitHubOwnerApprovalAuthenticator` is the
 machine validation owner. After this contract is accepted, regenerate the
-proposal/capsule from the new accepted-main SHA, then publish one authenticated
-owner comment on Issue #208
-containing the exact `steward-owner-approval:v1` marker, the exact capsule
-SHA-256 below, `approval_id`, `approved_at`, and accepted-main SHA. Read back
-the author, server `createdAt`, issue number, digest, and age before consuming
-it. The approval is one-time, replay-protected, and expires 86,400 seconds
-after `approved_at`; this contract does not treat the user message itself as
-consumed authority.
+redacted request proposal and capsule from the new accepted-main SHA. The
+Issue marker's `proposal_sha256` must be the exact compiled
+`shadow_steward.MissionProposal` digest consumed by `loopctl.py mission-stage`;
+it is not the capsule digest. Bind the regenerated capsule without adding
+unsupported marker fields by setting `approval_id` to
+`pr4b-capsule-<exact-capsule-sha256>`, where the full 64-hex capsule SHA-256 is
+retained in that field. Publish one authenticated owner comment on Issue #208
+with the exact `steward-owner-approval:v1` marker, that proposal digest,
+`approval_id`, `approved_at`, and accepted-main SHA. Read back the author,
+server `createdAt`, issue number, proposal digest, capsule binding, and age
+before consuming it. The approval is one-time, replay-protected, and expires
+86,400 seconds after `approved_at`; this contract does not treat the user
+message itself as consumed authority.
 
 **Exit:** PR4B closes only after the canary, rollback, one-writer proof,
 guarded-merge gates, and retained evidence are accepted.
