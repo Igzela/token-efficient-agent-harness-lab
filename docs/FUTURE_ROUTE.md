@@ -2,7 +2,7 @@
 
 Last updated: 2026-08-29.
 
-This document owns the blocked successor order for the owner-approved Autonomous Steward migration campaign. The current execution window is `PE7-AUTONOMOUS-STEWARD-PR4B` in `docs/NEXT_DECISION.md`; PR4A is accepted on main and recorded in `docs/CURRENT_STATUS.md`. All packets below are routing-only and `BLOCKED_PREREQUISITE`; none authorizes implementation, GitHub mutation, Provider spend, target writes, release, deployment, destructive effects, or automatic merge.
+This document owns the blocked successor order for the owner-approved Autonomous Steward migration campaign. The current execution window is the `T3_REQUIRED` PR4B contract in `docs/NEXT_DECISION.md`; PR4A is accepted on main and recorded in `docs/CURRENT_STATUS.md`. The packets below are PR5–PR7 routing-only and `BLOCKED_PREREQUISITE`; none authorizes implementation, GitHub mutation, Provider spend, target writes, release, deployment, destructive effects, or automatic merge.
 
 The former Harness-Evolution route is parked, not erased. Its accepted receipts remain in `docs/CURRENT_STATUS.md`, and its exact historical planning remains recoverable from Git. Unaccepted MX1 work is preserved only through the recovery references recorded in `docs/CURRENT_STATUS.md`. It may enter a later Mission only through an explicit symbol-level audit and never by wholesale merge.
 
@@ -79,7 +79,7 @@ Ordinary implementation, test, review, CI, main-drift, worker, or retry failures
 
 ## Portfolio Inventory Manifest
 
-The three successor packets above replace the 54-packet routing horizon as repository-maintenance migration work. The current PR4B window is owned by `docs/NEXT_DECISION.md`; accepted runtime capability and historical evidence remain owned by `docs/CURRENT_STATUS.md` and Git. This compression grants no product, research, Provider, release, deployment, or adoption authority.
+The three successor packets above replace the 54-packet routing horizon as repository-maintenance migration work. PR4B is owned by `docs/NEXT_DECISION.md` until its effect closeout is accepted. Accepted runtime capability and historical evidence remain owned by `docs/CURRENT_STATUS.md` and Git; this compression grants no product, research, Provider, release, deployment, or adoption authority.
 
 <!-- future-route-inventory:v1
 {"dependency_graph_sha256":"64b96b9e4c4e5788fecff7ccfa476b6d3d87a464d432ec8c60f99c91ee5a0b7e","ordered_packet_ids":["PE7-AUTONOMOUS-STEWARD-PR5","PE7-AUTONOMOUS-STEWARD-PR6","PE7-AUTONOMOUS-STEWARD-PR7"],"ordered_packet_ids_sha256":"e6534ef18a3c9ffc8f059d0510a571e109802571b137740916feb7db0dacfc48","packet_count":3,"profiles":[["PE7-AUTONOMOUS-STEWARD-PR5","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR6","IMPLEMENT","T1","none","source_focused_full"],["PE7-AUTONOMOUS-STEWARD-PR7","CLOSEOUT","T2","none","evidence_review"]],"profiles_sha256":"a3a1c62eeaf6aae1f1af67383b1fd9cac792686dc8768eb02be54bc2827ab790","schema_version":"future_route_inventory.v1"}
