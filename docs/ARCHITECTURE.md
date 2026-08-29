@@ -85,7 +85,11 @@ the call.
 
 ```mermaid
 flowchart LR
-    SCHED["Scheduler\nclaim / execute / settle"] -->|lease transaction| STORE["LocalProductStore\npersistence and audit"]
+    SCHED["Scheduler"] -->|admit| CLAIM["Claim transaction"]
+    CLAIM -->|commit lease + heartbeat| STORE["LocalProductStore\npersistence and audit"]
+    CLAIM -->|after claim commit| EXEC["External executor / worker"]
+    EXEC -->|result or failure| SETTLE["Settlement transaction"]
+    SETTLE -->|record terminal state + release lease| STORE
     API["HTTP/API handlers"] -->|typed transaction views| STORE
     POLICY["ToolPolicy\nregistry + policy snapshots"] -->|validated policy data| STORE
     TASK["ProductTask\nintake + output gate"] -->|workspace-bound output| TARGET["Dedicated branch worktree"]
@@ -103,12 +107,9 @@ flowchart LR
 | **ProductTask** | `product_tasks` transaction view, product-task handlers, and `target_repo_output` | Product intake, approval/output gates, workspace-bound patch export | Target default branch is never a workspace; target-output and golden-path recovery tests |
 | **agent-control** | `steward.py`, `steward_service.py`, `steward_journal.py`, `steward_workers.py`, `steward_github.py`, `mission_contract.py` | Repository-maintenance missions, stages, WorkCards, reviews, and PR integration | Provider-free outer loop stops at the repository PR boundary and does not import or persist ProductStore runtime state |
 
-### PR7 Acceptance Record
+### PR7 Acceptance Scope
 
 The final non-regression check is provider-free and read-only outside the
-repository's normal test/build outputs. It verifies the five invariants above,
-the complete canonical CI matrix, exact-head review, rollback evidence, and
-single-writer evidence. A residual scan must find no second owner, unwired
-canonical path, test-only substitute promoted as runtime, dead legacy control
-plane, or duplicate governance owner. The accepted PR7 head and its CI/review
-receipts are the authoritative evidence; this map is explanatory only.
+repository's normal test/build outputs. Its acceptance evidence is owned by
+the canonical PR and CI/review records described in `docs/AUTONOMY.md`; this
+architecture map records the boundaries under test and is explanatory only.

@@ -2352,9 +2352,7 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
         if not project_context.ensure_commit_available(sha, offline=offline):
             raise SessionContextError("accepted_main_commit_unavailable")
 
-        def reader(path: str) -> str:
-            content = project_context.git_show_text(sha, path)
-            return content
+        reader = lambda path: project_context.git_show_text(sha, path)
 
         source_binding = sha
     elif source == "working-tree":
