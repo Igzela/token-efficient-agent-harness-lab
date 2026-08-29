@@ -61,12 +61,13 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
                 "effect_parent_children_are_one_use_bounded_revocable_and_unknown_is_not_retryable",
             ],
             cwd=ROOT,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             timeout=600,
             check=False,
         )
-        output = result.stdout + result.stderr
+        output = result.stdout
         self.assertEqual(result.returncode, 0, output[-4_000:])
         self.assertIn(
             "managed_acceptance::tests::effect_parent_children_are_one_use_bounded_revocable_and_unknown_is_not_retryable ... ok",
@@ -147,12 +148,13 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
                 result = subprocess.run(
                     ["cargo", "test", "-p", "engine", "--lib", test_name],
                     cwd=ROOT,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     text=True,
                     timeout=600,
                     check=False,
                 )
-                output = result.stdout + result.stderr
+                output = result.stdout
                 self.assertEqual(result.returncode, 0, output[-4_000:])
                 self.assertIn("test result: ok", output[-4_000:])
 
@@ -268,7 +270,8 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
                 result = subprocess.run(
                     command,
                     cwd=ROOT,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     text=True,
                     timeout=600,
                     check=False,
@@ -276,9 +279,9 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
                 self.assertEqual(
                     result.returncode,
                     0,
-                    (result.stdout + result.stderr)[-4_000:],
+                    result.stdout[-4_000:],
                 )
-                output = result.stdout + result.stderr
+                output = result.stdout
                 if command[0] == sys.executable:
                     self.assertIn("OK", output[-4_000:])
                 else:
