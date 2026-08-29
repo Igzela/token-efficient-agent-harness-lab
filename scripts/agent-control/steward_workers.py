@@ -504,6 +504,49 @@ class ProviderFreeWorker:
         raise WorkerUnavailable("provider_free_worker_not_configured")
 
 
+PR4B_CANARY_PROPOSAL_SHA256 = (
+    "3a55ac107a2cae2a049e37804ea851036849c37aa84f95138db7d7f611db7eae"
+)
+
+
+def pr4b_canary_worker() -> BoundedProcessWorker:
+    """Build the fixed provider-free worker for the approved PR4B canary."""
+
+    def command(context: WorkerContext) -> list[str]:
+        if context.allowed_paths != ("docs/CURRENT_STATUS.md",):
+            raise WorkerUnavailable("pr4b_canary_scope_not_supported")
+        return [
+            "/usr/bin/python3",
+            "scripts/agent-control/steward_canary.py",
+            "worker",
+            context.card_id,
+            str(context.attempt),
+            process_session_id(context),
+        ]
+
+    return BoundedProcessWorker(command, timeout_seconds=300)
+
+
+def pr4b_canary_reviewer() -> BoundedProcessReviewer:
+    """Build the separate read-only reviewer for the approved PR4B canary."""
+
+    def command(context: WorkerContext, outcome: WorkerOutcome) -> list[str]:
+        if context.allowed_paths != ("docs/CURRENT_STATUS.md",):
+            raise WorkerUnavailable("pr4b_canary_review_scope_not_supported")
+        return [
+            "/usr/bin/python3",
+            "scripts/agent-control/steward_canary.py",
+            "review",
+            context.card_id,
+            context.base_sha,
+            outcome.head_sha,
+            outcome.session_id,
+            reviewer_session_id(context, outcome),
+        ]
+
+    return BoundedProcessReviewer(command, timeout_seconds=300)
+
+
 def _head_or_base(context: WorkerContext) -> str:
     try:
         result = subprocess.run(
@@ -1135,6 +1178,9 @@ __all__ = [
     "PathConflict",
     "PathLockSet",
     "ProviderFreeWorker",
+    "PR4B_CANARY_PROPOSAL_SHA256",
+    "pr4b_canary_reviewer",
+    "pr4b_canary_worker",
     "ReviewOutcome",
     "review_receipt_digest",
     "seal_review_outcome_wire",

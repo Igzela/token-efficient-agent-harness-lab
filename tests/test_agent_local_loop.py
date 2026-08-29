@@ -1114,6 +1114,67 @@ class TestLoopctl(unittest.TestCase):
         self.assertIsNone(captured["runner_kwargs"]["stage_pr"])
         self.assertEqual(captured["steward_init"]["lock_dir"], "/tmp/steward-locks")
 
+    def test_mission_stage_cli_selects_only_the_fixed_pr4b_canary_adapters(self):
+        captured = {}
+
+        class Runner:
+            def run_mission_stage(self, proposal, **kwargs):
+                captured["proposal"] = proposal
+                captured["runner_kwargs"] = kwargs
+                return {"status": "stage_pr_draft", "mission_id": "mission"}
+
+        def runner_factory(*args, **kwargs):
+            return Runner()
+
+        def stage_steward_factory(*args, **kwargs):
+            captured["steward_init"] = kwargs
+            return object()
+
+        output = StringIO()
+        with redirect_stdout(output):
+            code = loopctl.main(
+                [
+                    "mission-stage",
+                    "--repo", mission_contract.CAMPAIGN_REPOSITORY,
+                    "--repo-path", "/workspace/example",
+                    "--approval-issue", "208",
+                    "--request", "Update docs/CURRENT_STATUS.md.",
+                    "--journal", "/tmp/steward-test.sqlite3",
+                    "--lock-dir", "/tmp/steward-locks",
+                ],
+                run_once_factory=runner_factory,
+                steward_factory=stage_steward_factory,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            type(captured["steward_init"]["worker"]).__name__,
+            "BoundedProcessWorker",
+        )
+        self.assertEqual(
+            type(captured["steward_init"]["reviewer"]).__name__,
+            "BoundedProcessReviewer",
+        )
+
+        captured.clear()
+        output = StringIO()
+        with redirect_stdout(output):
+            code = loopctl.main(
+                [
+                    "mission-stage",
+                    "--repo", mission_contract.CAMPAIGN_REPOSITORY,
+                    "--repo-path", "/workspace/example",
+                    "--approval-issue", "208",
+                    "--request", "Update docs/ARCHITECTURE_BOOK.md.",
+                    "--journal", "/tmp/steward-test.sqlite3",
+                    "--lock-dir", "/tmp/steward-locks",
+                ],
+                run_once_factory=runner_factory,
+                steward_factory=stage_steward_factory,
+            )
+        self.assertEqual(code, 0)
+        self.assertIsNone(captured["steward_init"]["worker"])
+        self.assertIsNone(captured["steward_init"]["reviewer"])
+
 
 class TestPlanDocumentDecode(unittest.TestCase):
     def test_github_base64_newlines_are_accepted(self):
