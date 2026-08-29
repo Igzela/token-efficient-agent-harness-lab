@@ -148,6 +148,12 @@ class TestExactHeadAction(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("review=confirmed", result.stdout)
 
+    def test_mocked_current_receipt_with_stale_history_passes(self):
+        stale = self._receipt(reviewed_sha="c" * 40)
+        result = self._run_verify(issue_comments=[stale, self._receipt()])
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("review=confirmed", result.stdout)
+
     def test_mocked_stale_receipt_fails_closed(self):
         stale = self._receipt(reviewed_sha="c" * 40)
         result = self._run_verify(issue_comments=[stale])
