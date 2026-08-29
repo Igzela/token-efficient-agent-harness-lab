@@ -318,7 +318,7 @@ class GhReadOnlyGitHub:
             ):
                 ci_state = "PASS"
         review = payload.get("reviewDecision")
-        if review not in (None, "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"):
+        if review not in (None, "", "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"):
             raise GitHubReadError("github_review_decision_malformed")
         state = payload.get("state")
         draft = payload.get("isDraft")
@@ -337,7 +337,7 @@ class GhReadOnlyGitHub:
             or not isinstance(head_branch, str)
         ):
             raise GitHubReadError("github_read_malformed")
-        review_state = "PENDING" if review in (None, "REVIEW_REQUIRED") else "FAIL"
+        review_state = "PENDING" if review in (None, "", "REVIEW_REQUIRED") else "FAIL"
         if review == "APPROVED":
             # The REST-shaped PR projection is not an exact-head review
             # receipt.  Reuse the canonical, paginated review/thread owner so
