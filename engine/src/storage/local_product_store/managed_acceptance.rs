@@ -20,6 +20,7 @@ use uuid::Uuid;
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::infrastructure::auth::{LOCAL_BOOTSTRAP_API_KEY_ID, LOCAL_BOOTSTRAP_TENANT_ID};
 use crate::node_executor::ProcessOutcome;
+use crate::provider::redaction::contains_sensitive_patterns;
 
 /// Required scopes for managed-acceptance authority operations.
 pub const SCOPE_RISK_ACKNOWLEDGE: &str = "managed_acceptance:risk_acknowledge";
@@ -245,6 +246,7 @@ pub const EFFECT_OUTCOME_UNKNOWN: &str = "outcome_unknown";
 /// an authority-bearing free-form scope by a caller.
 pub const EFFECT_ENVELOPE_APPROVAL_PHRASE: &str = "APPROVE_MANAGED_EFFECT_ENVELOPE_V1";
 const MAX_EFFECT_CHILD_AUTHORIZATIONS: u64 = 64;
+const MAX_EFFECT_OUTCOME_EVIDENCE_BYTES: usize = 2048;
 const DELEGATED_MANIFEST_APPROVAL_SCHEMA_VERSION: &str = "managed_delegated_manifest_approval.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -5903,7 +5905,15 @@ impl LocalProductStore {
                     &parent,
                     &decision,
                     principal,
+                    &now,
                 )?;
+                if evidence
+                    .pointer("/evidence/child_authorization_id")
+                    .and_then(Value::as_str)
+                    != Some(child_authorization_id)
+                {
+                    return Err("effect outcome evidence child binding is invalid".into());
+                }
                 let receipt = effect_outcome_receipt(
                     &spend,
                     &child,
@@ -6037,7 +6047,15 @@ impl LocalProductStore {
                     &parent,
                     &decision,
                     principal,
+                    &now,
                 )?;
+                if evidence
+                    .pointer("/evidence/child_authorization_id")
+                    .and_then(Value::as_str)
+                    != Some(child_authorization_id)
+                {
+                    return Err("effect outcome evidence child binding is invalid".into());
+                }
                 let receipt = effect_outcome_receipt(
                     &spend,
                     &child,
@@ -9206,6 +9224,7 @@ fn effect_parent_from_authority(
             .get("principal_id")
             .and_then(Value::as_str)
             != Some(envelope.owner_principal_id.as_str())
+        || principal.principal_id != envelope.owner_principal_id
     {
         return Err("effect parent owner binding is stale or mismatched".into());
     }
@@ -9306,6 +9325,7 @@ fn validate_effect_child_for_settlement(
     parent_authorization: &Value,
     decision: &Value,
     principal: &AuthenticatedPrincipal,
+    now: &str,
 ) -> Result<(Value, EffectEnvelopeContract), String> {
     if spend.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id.as_str())
         || spend.get("principal_id").and_then(Value::as_str)
@@ -9348,25 +9368,15 @@ fn validate_effect_child_for_settlement(
     let decision_body = decision
         .get("body_json")
         .ok_or("effect parent decision body is missing")?;
-    let envelope_hint: EffectEnvelopeContract = serde_json::from_value(
-        decision_body
-            .get("effect_envelope")
-            .cloned()
-            .ok_or("effect parent decision has no effect envelope")?,
-    )
-    .map_err(|error| format!("effect parent envelope is malformed: {error}"))?;
-    let envelope = validate_effect_envelope_body(
-        decision_body,
-        principal.tenant_id.as_str(),
-        None,
-        &envelope_hint.created_at,
-    )?;
+    let envelope =
+        validate_effect_envelope_body(decision_body, principal.tenant_id.as_str(), None, now)?;
     if parent_authorization
         .get("principal_id")
         .and_then(Value::as_str)
         != Some(envelope.owner_principal_id.as_str())
         || decision.get("principal_id").and_then(Value::as_str)
             != Some(envelope.owner_principal_id.as_str())
+        || principal.principal_id != envelope.owner_principal_id
     {
         return Err("effect parent owner binding is stale or mismatched".into());
     }
@@ -9425,6 +9435,12 @@ fn validate_effect_child_for_settlement(
     {
         return Err("effect child one-use or no-retry binding is invalid".into());
     }
+    if child.get("principal_id").and_then(Value::as_str) != Some(principal.principal_id.as_str())
+        || child.get("principal_kind").and_then(Value::as_str)
+            != Some(principal.principal_kind.as_str())
+    {
+        return Err("effect child owner binding is stale or mismatched".into());
+    }
     Ok((child, envelope))
 }
 
@@ -9442,11 +9458,36 @@ fn validate_effect_outcome_evidence(evidence: &Value) -> Result<Value, String> {
         .get("evidence")
         .and_then(Value::as_object)
         .ok_or("effect outcome evidence must contain a metadata object")?;
-    if payload
-        .keys()
-        .any(|key| matches!(key.as_str(), "raw" | "output" | "transcript" | "content"))
+    if payload.len() != 3
+        || !payload.contains_key("kind")
+        || !payload.contains_key("child_authorization_id")
+        || !payload.contains_key("effect_executed")
     {
-        return Err("effect outcome evidence cannot contain raw effect data".into());
+        return Err("effect outcome evidence metadata schema is invalid".into());
+    }
+    if payload.get("kind").and_then(Value::as_str) != Some("provider_free_canary") {
+        return Err("effect outcome evidence kind is not provider_free_canary".into());
+    }
+    let child_authorization_id = payload
+        .get("child_authorization_id")
+        .and_then(Value::as_str)
+        .ok_or("effect outcome evidence child id is missing")?;
+    if child_authorization_id.trim().is_empty()
+        || child_authorization_id.chars().count() > 256
+        || payload
+            .get("effect_executed")
+            .and_then(Value::as_bool)
+            .is_none()
+        || payload.get("effect_executed").and_then(Value::as_bool) != Some(false)
+    {
+        return Err("effect outcome evidence metadata values are invalid".into());
+    }
+    let payload = Value::Object(payload.clone());
+    let payload_json = canonical_json(&payload)?;
+    if payload_json.len() > MAX_EFFECT_OUTCOME_EVIDENCE_BYTES
+        || contains_sensitive_patterns(&payload_json)
+    {
+        return Err("effect outcome evidence metadata is oversized or sensitive".into());
     }
     let digest = object
         .get("evidence_sha256")
@@ -9455,7 +9496,7 @@ fn validate_effect_outcome_evidence(evidence: &Value) -> Result<Value, String> {
     if digest.len() != 64 || !digest.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err("effect outcome evidence_sha256 must be 64 hex chars".into());
     }
-    let expected = sha256_hex(canonical_json(&Value::Object(payload.clone()))?.as_bytes());
+    let expected = sha256_hex(payload_json.as_bytes());
     if digest != expected {
         return Err("effect outcome evidence_sha256 does not match evidence metadata".into());
     }
@@ -14207,6 +14248,14 @@ mod tests {
             0.50,
             "2026-07-26T12:00:00Z",
         );
+        let other_principal = delegated_test_principal("other-effect-owner");
+        assert!(store
+            .derive_effect_child_authorization(
+                &other_principal,
+                &parent_authorization_id,
+                &child_one,
+            )
+            .is_err());
         let first = store
             .derive_effect_child_authorization(&principal, &parent_authorization_id, &child_one)
             .unwrap();
@@ -14380,6 +14429,88 @@ mod tests {
         );
         assert!(expiry_envelope.validate("2026-07-26T12:00:01Z").is_err());
         drop(dir);
+    }
+
+    #[test]
+    fn effect_outcome_evidence_is_strict_bounded_and_digest_bound() {
+        let valid = effect_evidence("effect-evidence-child", false);
+        assert!(validate_effect_outcome_evidence(&valid).is_ok());
+
+        let nested = json!({
+            "evidence": {
+                "kind": "provider_free_canary",
+                "child_authorization_id": "effect-evidence-child",
+                "effect_executed": false,
+                "metadata": {"output": "must not persist"}
+            },
+            "evidence_sha256": "a".repeat(64)
+        });
+        assert!(validate_effect_outcome_evidence(&nested).is_err());
+
+        let oversized = json!({
+            "evidence": {
+                "kind": "provider_free_canary",
+                "child_authorization_id": "x".repeat(257),
+                "effect_executed": false
+            },
+            "evidence_sha256": "b".repeat(64)
+        });
+        assert!(validate_effect_outcome_evidence(&oversized).is_err());
+
+        let sensitive_child_id = ["api_", "key=secret-value"].concat();
+        let sensitive = json!({
+            "evidence": {
+                "kind": "provider_free_canary",
+                "child_authorization_id": sensitive_child_id,
+                "effect_executed": false
+            },
+            "evidence_sha256": "c".repeat(64)
+        });
+        assert!(validate_effect_outcome_evidence(&sensitive).is_err());
+    }
+
+    #[test]
+    fn effect_child_settlement_rejects_expired_envelope() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("effect-expiry.db");
+        let early = LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
+            .unwrap();
+        let principal = delegated_test_principal("effect-owner");
+        let envelope = effect_envelope_for(
+            "effect-expiry-settlement-decision",
+            "effect-expiry-settlement-envelope",
+            0.10,
+            1,
+            "2026-07-25T13:00:00Z",
+        );
+        let residual = "d".repeat(64);
+        let approved = early
+            .approve_effect_envelope(&principal, &envelope, &residual)
+            .unwrap();
+        let parent_id = approved["authorization_id"].as_str().unwrap();
+        let child = effect_child_for(
+            "effect-expiry-settlement-child",
+            "effect-expiry-settlement-operation",
+            0.10,
+            "2026-07-25T13:00:00Z",
+        );
+        early
+            .derive_effect_child_authorization(&principal, parent_id, &child)
+            .unwrap();
+        drop(early);
+
+        let late = LocalProductStore::new_with_clock(&path, || "2026-07-25T14:00:00Z".to_string())
+            .unwrap();
+        let error = late
+            .settle_effect_child_authorization(
+                &principal,
+                "effect-expiry-settlement-child",
+                "effect-expiry-settlement-attempt",
+                EFFECT_OUTCOME_UNKNOWN,
+                &effect_evidence("effect-expiry-settlement-child", false),
+            )
+            .unwrap_err();
+        assert!(error.contains("expired"), "{error}");
     }
 
     #[cfg(feature = "pg-tests")]
