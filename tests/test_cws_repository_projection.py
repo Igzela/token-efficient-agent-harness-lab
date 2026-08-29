@@ -21,12 +21,12 @@ class CwsRepositoryProjectionTests(unittest.TestCase):
             packet_id="PE7-CWS-REPOSITORY-INTEGRATION-1",
             mode="fresh",
             documents={
-                "docs/CURRENT_STATUS.md": status,
-                "docs/NEXT_DECISION.md": "packet",
+                "docs/ARCHITECTURE.md": status,
+                "docs/AUTONOMY.md": "contract",
             },
         )
         self.assertIn("accepted_main_sha", block)
-        self.assertIn("docs/CURRENT_STATUS.md", block)
+        self.assertIn("docs/ARCHITECTURE.md", block)
         self.assertEqual(block.count("STATUS-BODY"), 0)
         self.assertIn("sha256", block)
 
@@ -42,7 +42,7 @@ class CwsRepositoryProjectionTests(unittest.TestCase):
 
     def test_duplicate_document_path_is_listed_once(self) -> None:
         docs = {
-            "docs/CURRENT_STATUS.md": "once",
+            "docs/ARCHITECTURE.md": "once",
         }
         # dict cannot duplicate keys; simulate by calling with same path rebuilt
         block = prompt_builder.cws_session_projection_block(
@@ -52,7 +52,7 @@ class CwsRepositoryProjectionTests(unittest.TestCase):
             mode="repair",
             documents=docs,
         )
-        self.assertEqual(block.count("docs/CURRENT_STATUS.md"), 1)
+        self.assertEqual(block.count("docs/ARCHITECTURE.md"), 1)
 
 
 if __name__ == "__main__":

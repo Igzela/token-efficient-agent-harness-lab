@@ -13,25 +13,42 @@ SPEC.loader.exec_module(project_context)
 
 
 class TestProjectContextRouting(unittest.TestCase):
-    def test_ready_live_packet_does_not_infer_pr_from_prerequisites(self):
+    def test_registered_campaign_contract_provides_fallback_route(self):
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "agent-control"
+            / "mission_contract.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(
+            project_context.parse_registered_campaign_mission(source),
+            {
+                "mission_id": "AUTONOMOUS-STEWARD-MIGRATION-2026-08-27",
+                "state": "IDLE",
+                "pr_number": None,
+            },
+        )
+
+    def test_ready_live_mission_does_not_infer_pr_from_prerequisites(self):
         text = """\
 ## Active Routing
 
 1. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `READY_FOR_EXECUTION`: satisfied by PRs #339/#340 and #342.
 
-## Packet PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1
+## Mission PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** Packets A and B are accepted by PR #342.
+**Prerequisite:** Missions A and B are accepted by PR #342.
 """
 
-        parsed = project_context.parse_first_routed_packet(text)
+        parsed = project_context.parse_first_routed_mission(text)
 
         self.assertEqual(
             parsed,
             {
-                "packet": "PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1",
+                "mission_id": "PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1",
                 "state": "READY_FOR_EXECUTION",
                 "pr_number": None,
             },
@@ -43,23 +60,23 @@ class TestProjectContextRouting(unittest.TestCase):
 
 1. `PE7-TEST-1` — `IN_PROGRESS`
 
-## Packet PE7-TEST-1
+## Mission PE7-TEST-1
 
 **State:** `IN_PROGRESS`
 
 **Owned PR:** #342
 """
 
-        parsed = project_context.parse_first_routed_packet(text)
+        parsed = project_context.parse_first_routed_mission(text)
 
-        self.assertEqual(parsed["packet"], "PE7-TEST-1")
+        self.assertEqual(parsed["mission_id"], "PE7-TEST-1")
         self.assertEqual(parsed["state"], "IN_PROGRESS")
         self.assertEqual(parsed["pr_number"], "342")
 
-    def test_ready_packet_without_pr_does_not_infer_implementation_pr(self):
+    def test_ready_mission_without_pr_does_not_infer_implementation_pr(self):
         action = project_context.next_permitted_action(
             {
-                "packet": "PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1",
+                "mission_id": "PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1",
                 "state": "READY_FOR_EXECUTION",
             },
             None,
@@ -74,14 +91,14 @@ class TestProjectContextRouting(unittest.TestCase):
 
 1. `PE7-TEST-1` — `IN_PROGRESS`
 
-## Packet PE7-TEST-1
+## Mission PE7-TEST-1
 
 **State:** `IN_PROGRESS`
 
 Prerequisite: PR #342 is accepted.
 """
 
-        self.assertIsNone(project_context.parse_first_routed_packet(text)["pr_number"])
+        self.assertIsNone(project_context.parse_first_routed_mission(text)["pr_number"])
 
 
 class TestReviewStateProjection(unittest.TestCase):
@@ -151,13 +168,19 @@ class TestReviewStateProjection(unittest.TestCase):
             "reviewed_range": f"{'c' * 40}...{'a' * 40}",
             "review_mode": "full",
             "review_round": 1,
+            "prior_reviewed_head": "",
             "findings": [],
-            "finding_ledger_digest": "0" * 64,
+            "finding_ledger_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
             "open_blocker_ids": [],
             "deferred_note_ids": [],
             "decision_required_ids": [],
             "autonomous_repairs_remaining": 1,
             "stop_reason": "",
+            "artifact_sha256": "",
+            "review_workflow_run_id": None,
+            "blockers": [],
+            "major_notes": [],
+            "minor_notes": [],
             "review_protocol_version": rc.REVIEW_PROTOCOL_VERSION,
         }
         confirmed = rc.project_capsule_fields(v3_state, expected_head="a" * 40)

@@ -8,15 +8,12 @@ and exact-head CI/review owners remain outside the Steward lifecycle.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import json
 from pathlib import Path
 import re
 import subprocess
 from typing import Any, Protocol
-
-import ci_verifier
-import dispatcher
-import state_manager
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -24,6 +21,9 @@ REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 PR_STATES = frozenset({"OPEN", "CLOSED", "MERGED"})
 CHECK_STATES = frozenset({"PASS", "PENDING", "FAIL", "UNKNOWN"})
+REVIEW_STATES = frozenset(
+    {"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"}
+)
 
 
 class GitHubFactsError(RuntimeError):
@@ -239,8 +239,333 @@ def reconcile_stage_pr(
     )
 
 
+REQUIRED_CI_JOBS = frozenset({
+    "docker-build",
+    "exact-head-check",
+    "native-runtime",
+    "pg-integration-tests",
+    "python-tests",
+    "rust-tests",
+    "rust-typescript-cutover",
+    "typescript-tests",
+    "context-capsule",
+})
+CI_CHECK_ALIASES = {
+    "exact-head": "exact-head-check",
+    "exact-head-check": "exact-head-check",
+}
+
+
+MAX_GRAPHQL_PAGES = 20
+
+
+def _validate_review_page_head(page: dict[str, Any], head_sha: str) -> None:
+    observed_head = page.get("headRefOid")
+    if not isinstance(observed_head, str) or SHA40.fullmatch(observed_head) is None:
+        raise GitHubReadError("github_review_head_malformed")
+    if observed_head != head_sha:
+        raise GitHubReadError("github_review_head_changed")
+
+
+def _next_review_page(
+    page_info: object, *, error: str, cursor: str | None
+) -> str | None:
+    if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
+        raise GitHubReadError(error)
+    if not page_info["hasNextPage"]:
+        return None
+    next_cursor = page_info.get("endCursor")
+    if not isinstance(next_cursor, str) or not next_cursor or next_cursor == cursor:
+        raise GitHubReadError("github_review_cursor_invalid")
+    return next_cursor
+
+
+def _review_timestamp(value: object) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise GitHubReadError("github_review_timestamp_malformed")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GitHubReadError("github_review_timestamp_malformed") from exc
+    if parsed.tzinfo is None:
+        raise GitHubReadError("github_review_timestamp_malformed")
+    return parsed
+
+
+def _graphql_page(
+    repository: str,
+    pr_number: int,
+    query: str,
+    *,
+    cursor: str | None,
+) -> dict[str, Any]:
+    """Read one bounded GraphQL page through ``gh``; never mutate GitHub."""
+
+    owner, name = repository.split("/", 1)
+    command = [
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={query}",
+        "-f",
+        f"owner={owner}",
+        "-f",
+        f"name={name}",
+        "-F",
+        f"number={pr_number}",
+    ]
+    if cursor is not None:
+        command.extend(["-f", f"after={cursor}"])
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise GitHubReadError("github_review_read_unavailable") from exc
+    if result.returncode != 0:
+        raise GitHubReadError("github_review_read_failed")
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise GitHubReadError("github_review_read_malformed") from exc
+    if not isinstance(payload, dict) or payload.get("errors"):
+        raise GitHubReadError("github_review_read_malformed")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise GitHubReadError("github_review_read_malformed")
+    repository_data = data.get("repository")
+    if not isinstance(repository_data, dict):
+        raise GitHubReadError("github_review_read_malformed")
+    pull_request = repository_data.get("pullRequest")
+    if not isinstance(pull_request, dict):
+        raise GitHubReadError("github_review_read_malformed")
+    return pull_request
+
+
+def _review_connection_pages(
+    pr_number: int, head_sha: str, repository: str
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Fetch every review page and retain only bounded review facts."""
+
+    query = """
+      query($owner:String!, $name:String!, $number:Int!, $after:String) {
+        repository(owner:$owner, name:$name) {
+          pullRequest(number:$number) {
+            headRefOid
+            reviewDecision
+            reviews(first:100, after:$after) {
+              nodes {
+                id
+                author { login }
+                state
+                submittedAt
+                commit { oid }
+              }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+      }
+    """
+    cursor: str | None = None
+    decision: str | None = None
+    nodes: list[dict[str, Any]] = []
+    decision_seen = False
+    for _ in range(MAX_GRAPHQL_PAGES):
+        page = _graphql_page(repository, pr_number, query, cursor=cursor)
+        _validate_review_page_head(page, head_sha)
+        page_decision = page.get("reviewDecision")
+        if page_decision is not None and (
+            not isinstance(page_decision, str)
+            or page_decision not in {"", "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"}
+        ):
+            raise GitHubReadError("github_review_decision_malformed")
+        if not decision_seen:
+            decision = page_decision
+            decision_seen = True
+        elif page_decision != decision:
+            raise GitHubReadError("github_review_decision_changed_during_read")
+        connection = page.get("reviews")
+        if not isinstance(connection, dict):
+            raise GitHubReadError("github_review_read_malformed")
+        page_nodes = connection.get("nodes")
+        page_info = connection.get("pageInfo")
+        if not isinstance(page_nodes, list) or not isinstance(page_info, dict):
+            raise GitHubReadError("github_review_read_malformed")
+        for node in page_nodes:
+            if not isinstance(node, dict):
+                raise GitHubReadError("github_review_read_malformed")
+            nodes.append(node)
+        next_cursor = _next_review_page(
+            page_info, error="github_review_read_malformed", cursor=cursor
+        )
+        if next_cursor is None:
+            break
+        cursor = next_cursor
+    else:
+        raise GitHubReadError("github_review_page_limit_exceeded")
+    return decision, nodes
+
+
+def _authoritative_plan_review(
+    pr_number: int, head_sha: str, repository: str, base_sha: str
+) -> bool:
+    """Return true only after live current-head review and thread proof."""
+
+    try:
+        effective = current_effective_reviews(pr_number, head_sha, repository)
+        threads = review_threads_status(pr_number, head_sha, repository)
+    except GitHubReadError:
+        return False
+    return (
+        effective.get("complete") is True
+        and effective.get("review_decision") == "APPROVED"
+        and not effective.get("requested_changes")
+        and any(
+            isinstance(item, dict)
+            and item.get("state") == "APPROVED"
+            and item.get("is_current_head") is True
+            for item in effective.get("effective_reviews", [])
+        )
+        and threads.get("complete") is True
+        and not threads.get("unresolved_thread_ids")
+    )
+
+
+def current_effective_reviews(
+    pr_number: int, head_sha: str, repository: str
+) -> dict[str, Any]:
+    if (
+        REPOSITORY.fullmatch(repository) is None
+        or type(pr_number) is not int
+        or pr_number < 1
+        or SHA40.fullmatch(head_sha) is None
+    ):
+        raise GitHubReadError("github_review_query_identity_invalid")
+    review_decision, nodes = _review_connection_pages(pr_number, head_sha, repository)
+    effective_by_author: dict[str, tuple[datetime, str, dict[str, Any]]] = {}
+    seen_ids: set[str] = set()
+    for node in nodes:
+        review_id = node.get("id")
+        if not isinstance(review_id, str) or not review_id or review_id in seen_ids:
+            raise GitHubReadError("github_review_node_malformed")
+        seen_ids.add(review_id)
+        author = node.get("author")
+        login = author.get("login") if isinstance(author, dict) else None
+        state = node.get("state")
+        commit = node.get("commit")
+        commit_oid = commit.get("oid") if isinstance(commit, dict) else None
+        submitted_at = node.get("submittedAt")
+        if (
+            not isinstance(login, str)
+            or not login
+            or not isinstance(state, str)
+            or state not in REVIEW_STATES
+            or not isinstance(commit_oid, str)
+            or SHA40.fullmatch(commit_oid) is None
+        ):
+            raise GitHubReadError("github_review_node_malformed")
+        submitted_time = _review_timestamp(submitted_at)
+        normalized = {
+            "review_id": review_id,
+            "login": login,
+            "state": state,
+            "submitted_at": submitted_at,
+            "is_current_head": commit_oid == head_sha,
+        }
+        author_key = login.casefold()
+        previous = effective_by_author.get(author_key)
+        candidate = (submitted_time, review_id, normalized)
+        if previous is None or candidate[:2] > previous[:2]:
+            effective_by_author[author_key] = candidate
+    effective = [
+        value[2]
+        for value in sorted(
+            effective_by_author.values(), key=lambda item: (item[0], item[1])
+        )
+    ]
+    requested_changes = [
+        item for item in effective if item.get("state") == "CHANGES_REQUESTED"
+    ]
+    return {
+        "complete": True,
+        "review_decision": review_decision,
+        "requested_changes": requested_changes,
+        "effective_reviews": effective,
+    }
+
+
+def review_threads_status(
+    pr_number: int, head_sha: str, repository: str
+) -> dict[str, Any]:
+    if (
+        REPOSITORY.fullmatch(repository) is None
+        or type(pr_number) is not int
+        or pr_number < 1
+        or SHA40.fullmatch(head_sha) is None
+    ):
+        raise GitHubReadError("github_review_query_identity_invalid")
+    query = """
+      query($owner:String!, $name:String!, $number:Int!, $after:String) {
+        repository(owner:$owner, name:$name) {
+          pullRequest(number:$number) {
+            headRefOid
+            reviewThreads(first:100, after:$after) {
+              nodes { id isResolved }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+      }
+    """
+    cursor: str | None = None
+    unresolved: list[str] = []
+    seen_ids: set[str] = set()
+    for _ in range(MAX_GRAPHQL_PAGES):
+        page = _graphql_page(repository, pr_number, query, cursor=cursor)
+        _validate_review_page_head(page, head_sha)
+        connection = page.get("reviewThreads")
+        if not isinstance(connection, dict):
+            raise GitHubReadError("github_review_thread_read_malformed")
+        nodes = connection.get("nodes")
+        page_info = connection.get("pageInfo")
+        if not isinstance(nodes, list) or not isinstance(page_info, dict):
+            raise GitHubReadError("github_review_thread_read_malformed")
+        for node in nodes:
+            if not isinstance(node, dict):
+                raise GitHubReadError("github_review_thread_read_malformed")
+            thread_id = node.get("id")
+            resolved = node.get("isResolved")
+            if (
+                not isinstance(thread_id, str)
+                or not thread_id
+                or thread_id in seen_ids
+                or type(resolved) is not bool
+            ):
+                raise GitHubReadError("github_review_thread_read_malformed")
+            seen_ids.add(thread_id)
+            if not resolved:
+                unresolved.append(thread_id)
+        next_cursor = _next_review_page(
+            page_info,
+            error="github_review_thread_read_malformed",
+            cursor=cursor,
+        )
+        if next_cursor is None:
+            break
+        cursor = next_cursor
+    else:
+        raise GitHubReadError("github_review_page_limit_exceeded")
+    return {"complete": True, "unresolved_thread_ids": unresolved}
+
+
 class GhReadOnlyGitHub:
-    """Small operator-side ``gh pr view`` reader with no write command."""
+    """Live read-only GitHub query adapter through gh CLI."""
 
     def __init__(self, *, timeout_seconds: int = 30):
         if not 1 <= timeout_seconds <= 120:
@@ -287,12 +612,11 @@ class GhReadOnlyGitHub:
                 item.get("status")
                 for item in check_items
             }
-            try:
-                required_jobs = set(ci_verifier.load_requirements()["required_jobs"])
-            except (OSError, ValueError, ci_verifier.CIVerificationError) as exc:
-                raise GitHubReadError("canonical_ci_requirements_unavailable") from exc
+            required_jobs = set(REQUIRED_CI_JOBS)
             observed_names = {
-                item.get("name") for item in check_items if isinstance(item.get("name"), str)
+                CI_CHECK_ALIASES.get(item["name"], item["name"])
+                for item in check_items
+                if isinstance(item.get("name"), str)
             }
             if "FAILURE" in conclusions or "CANCELLED" in conclusions:
                 ci_state = "FAIL"
@@ -342,25 +666,18 @@ class GhReadOnlyGitHub:
         if review_state == "PENDING" and merged_at is not None:
             review_state = (
                 "PASS"
-                if dispatcher._authoritative_plan_review(
+                if _authoritative_plan_review(
                     pr_number, head_sha, repository, base_sha
                 )
                 else "PENDING"
             )
         if review == "APPROVED":
-            # The REST-shaped PR projection is not an exact-head review
-            # receipt.  Reuse the canonical, paginated review/thread owner so
-            # aggregate approval cannot substitute for a current-head human
-            # approval or hide unresolved threads.
-            try:
-                effective = state_manager.current_effective_reviews(
-                    pr_number, head_sha, repository
-                )
-                threads = state_manager.review_threads_status(
-                    pr_number, head_sha, repository
-                )
-            except state_manager.StateUnavailableError as exc:
-                raise GitHubReadError("canonical_review_facts_unavailable") from exc
+            effective = current_effective_reviews(
+                pr_number, head_sha, repository
+            )
+            threads = review_threads_status(
+                pr_number, head_sha, repository
+            )
             if (
                 effective.get("complete") is not True
                 or threads.get("complete") is not True

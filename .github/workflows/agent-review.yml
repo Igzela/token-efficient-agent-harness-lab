@@ -1,36 +1,25 @@
 name: agent-review
 
-env:
-  INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+# This workflow prepares a bounded, read-only review input from live GitHub
+# state.  It never approves, merges, edits labels, or executes PR checkout
+# code.  An independent reviewer and the exact-head merge gate remain the
+# authority for a review verdict.
 
 on:
   workflow_dispatch:
     inputs:
-      operation:
-        required: true
-        type: choice
-        default: review
-        options:
-          - review
-          - retrospective-correction
       pr_number:
-        required: true
-        type: number
-      issue_number:
+        description: Open PR to review
         required: true
         type: number
       head_sha:
+        description: Exact PR head expected by the review request
         required: true
         type: string
-      correction_payload:
-        required: false
-        type: string
-        default: "{}"
 
 permissions:
-  actions: write
   contents: read
-  issues: write
+  issues: read
   pull-requests: read
 
 concurrency:
@@ -39,236 +28,65 @@ concurrency:
 
 jobs:
   prepare:
-    if: inputs.operation == 'review'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      actions: write
-      contents: read
-      issues: write
-      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      EXPECTED_HEAD: ${{ inputs.head_sha }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Check out trusted base action source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: main
+          path: trusted-base
           persist-credentials: false
-      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
-        with:
-          python-version: "3.11"
-      - name: Verify control, exact head, and Issue-to-PR binding
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py verify-review-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
-      - name: Recheck control immediately before recording review-running
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" review-running
-      - name: Build trusted review prompt
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          python3 scripts/agent-control/prompt_builder.py review
-          "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA" "${{ inputs.issue_number }}"
-          > "$RUNNER_TEMP/review-prompt.txt"
-      - name: Upload trusted review input
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
-      - name: Upload trusted review input artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: review-input-${{ github.run_id }}-${{ inputs.pr_number }}
-          path: ${{ runner.temp }}/review-prompt.txt
-          retention-days: 1
-          if-no-files-found: error
 
-  vader-review:
-    if: inputs.operation == 'review'
-    needs: prepare
-    runs-on: [self-hosted, vader, agent-worker]
-    timeout-minutes: 35
-    permissions:
-      actions: write
-      contents: read
-      issues: read
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: ${{ inputs.head_sha }}
-          persist-credentials: false
-          fetch-depth: 1
-      - name: Clean only verified stale terminal worktrees
-        env:
-          AGENT_REPO_PATH: ${{ github.workspace }}
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/agent-control/cleanup.py
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: review-input-${{ github.run_id }}-${{ inputs.pr_number }}
-          path: ${{ runner.temp }}/review-input
-      - name: Recheck control immediately before read-only Codex review
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
-      - name: Run Codex review in read-only sandbox with no GitHub credentials
-        run: |
-          bash scripts/agent-control/codex_wrapper.sh review "$RUNNER_TEMP/review-input/review-prompt.txt" \
-            "$RUNNER_TEMP/codex-output" "$GITHUB_WORKSPACE"
-          mkdir -p "$RUNNER_TEMP/review-artifact"
-          cp "$RUNNER_TEMP/codex-output/codex-last-message.txt" "$RUNNER_TEMP/review-artifact/review-result.txt"
-      - name: Recheck control immediately before review artifact upload
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
-      - name: Upload untrusted structured review artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: review-result-${{ github.run_id }}-${{ inputs.pr_number }}
-          path: ${{ runner.temp }}/review-artifact/review-result.txt
-          retention-days: 1
-          if-no-files-found: error
-
-  finalize:
-    needs: vader-review
-    if: inputs.operation == 'review' && needs.vader-review.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      actions: write
-      contents: read
-      issues: write
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          python-version: "3.11"
-          enable-cache: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: review-result-${{ github.run_id }}-${{ inputs.pr_number }}
-          path: ${{ runner.temp }}/review-artifact
-      - name: Validate full review schema and exact reviewed head
-        id: verdict
-        run: >-
-          python3 scripts/agent-control/validate_review.py
-          "$RUNNER_TEMP/review-artifact/review-result.txt"
-          "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
-          "$RUNNER_TEMP/review-validation.json"
-      - name: Record malformed or infrastructure review result without trusting it as a verdict
-        if: always() && steps.verdict.outcome == 'failure'
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          python3 scripts/agent-control/state_manager.py record-review-failure
-          "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
-          --evidence-file "$RUNNER_TEMP/review-validation.json"
-      - name: Recheck live control and binding before recording verdict
-        if: steps.verdict.outcome == 'success'
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py verify-review-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
-          python3 scripts/agent-control/state_manager.py record-review \
-            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA" \
-            --evidence-file "$RUNNER_TEMP/review-validation.json"
-      - name: Authorize only exact PASS
-        if: steps.verdict.outputs.verdict == 'PASS'
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
+      - name: Validate live PR identity and exact head
         run: |
           set -euo pipefail
-          python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py finalize-review-labels "${{ inputs.issue_number }}" PASS
-          if python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null; then
-            python3 scripts/agent-control/dispatcher.py dispatch-merge "${{ inputs.pr_number }}" "${{ inputs.issue_number }}" "$INPUT_HEAD_SHA"
-          fi
-      - name: Move non-PASS verdict to operator-review state
-        if: steps.verdict.outputs.verdict != 'PASS'
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-          REVIEW_VERDICT: ${{ steps.verdict.outputs.verdict }}
-        run: |
-          python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py finalize-review-labels "${{ inputs.issue_number }}" "$REVIEW_VERDICT"
+          [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || { echo "invalid PR number" >&2; exit 1; }
+          [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid head SHA" >&2; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr.json"
+          jq -e --argjson number "${PR_NUMBER}" --arg head "${EXPECTED_HEAD}" '
+            .number == $number and
+            .state == "open" and
+            .base.ref == "main" and
+            .head.sha == $head
+          ' "$RUNNER_TEMP/pr.json" >/dev/null
 
-  failure-handler:
-    needs: [prepare, vader-review, finalize]
-    if: inputs.operation == 'review' && always() && (needs.prepare.result != 'success' || needs.vader-review.result != 'success' || needs.finalize.result != 'success')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      actions: read
-      contents: read
-      issues: write
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Verify exact head with trusted action
+        uses: ./trusted-base/actions/exact-head-check
         with:
-          persist-credentials: false
-      - name: Move only the current failed review to operator-review state
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/agent-control/state_manager.py record-review-infrastructure-failure \
-            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
-          python3 scripts/agent-control/state_manager.py release-failed-evidence \
-            "${{ inputs.issue_number }}" review-running agent-review-blocked review \
-            "${{ github.run_id }}" "$INPUT_HEAD_SHA" "" ""
+          github-token: ${{ github.token }}
+          pull-request: ${{ inputs.pr_number }}
+          expected-head: ${{ inputs.head_sha }}
+          allow-fork-head: "true"
+          require-review-receipt: "false"
+          proof-path: ${{ runner.temp }}/exact-head-proof.json
 
-  retrospective-correction:
-    if: inputs.operation == 'retrospective-correction'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Prepare non-sensitive exact-head review binding
+        run: |
+          set -euo pipefail
+          base_sha=$(jq -er '.base.sha' "$RUNNER_TEMP/pr.json")
+          jq -n \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --argjson pr_number "${PR_NUMBER}" \
+            --arg base_sha "$base_sha" \
+            --arg head_sha "${EXPECTED_HEAD}" \
+            '{schema_version:"agent_review_input.v1", repository:$repository,
+              pr_number:$pr_number, base_sha:$base_sha, head_sha:$head_sha,
+              diff_persisted:false,
+              review_range:($base_sha + "..." + $head_sha),
+              verdict_authority:"independent reviewer and exact-head merge gate"}' \
+            > "$RUNNER_TEMP/review-input.json"
+
+      - name: Upload read-only review input and proof
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          persist-credentials: false
-      - name: Validate correction input binding
-        env:
-          CORRECTION_PAYLOAD: ${{ inputs.correction_payload }}
-        run: >-
-          jq -e --argjson pr "${{ inputs.pr_number }}" --arg head "$INPUT_HEAD_SHA"
-          '.pr_number == $pr and .controller_head_sha == $head'
-          <<<"$CORRECTION_PAYLOAD" >/dev/null
-      - name: Append trusted retrospective correction
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-          CORRECTION_PAYLOAD: ${{ inputs.correction_payload }}
-        run: >-
-          python3 scripts/agent-control/state_manager.py record-review-correction
-          "${{ inputs.issue_number }}" --payload-json "$CORRECTION_PAYLOAD"
-      - name: Read back effective corrected review state
-        env:
-          AGENT_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          python3 scripts/agent-control/state_manager.py read-review
-          "${{ inputs.issue_number }}" |
-          jq -e --arg head "$INPUT_HEAD_SHA"
-          '.head_sha == $head and .verdict == "PASS" and
-          .retrospective_correction == true and
-          .historical_merge_compliant == false' >/dev/null
+          name: agent-review-input-${{ inputs.pr_number }}-${{ inputs.head_sha }}
+          path: |
+            ${{ runner.temp }}/review-input.json
+            ${{ runner.temp }}/exact-head-proof.json
+          retention-days: 1
+          if-no-files-found: error

@@ -39,7 +39,7 @@ Clean-environment stranger path (disposable build + no-provider demo + exact-hea
 
 Do **not** hand-maintain “N tests pass” claims in docs. CI and release evidence report current counts.
 
-Contributors run **focused** checks for the surfaces they change. Full matrix verification is CI’s job (seven required jobs on the exact PR head).
+Contributors run **focused** checks for the surfaces they change. Full matrix verification is CI’s job (nine required jobs on the exact PR head, as listed in `docs/AUTONOMY.md`).
 
 ### Docs only
 
@@ -82,18 +82,15 @@ PostgreSQL integration (when you touch storage parity):
 cargo test -p engine --features pg-tests -- --test-threads=1
 ```
 
-### Workflows / orchestrator scripts
+### Workflows / steward scripts
 
 ```bash
-uv run --no-project --with pyyaml python scripts/check_agent_workflow_yaml.py
 PYTHONPATH=scripts/agent-control uv run --no-project python -m unittest \
-  tests/test_agent_control_ci.py \
-  tests/test_agent_control_dry_run.py \
-  tests/test_agent_control_state.py \
-  tests/test_agent_control_worktree.py \
-  tests/test_agent_orchestrator_repairs.py \
-  tests/test_agent_orchestrator_artifacts.py \
-  tests/test_agent_review_finalization.py
+  tests/test_agent_steward.py \
+  tests/test_agent_steward_faults.py \
+  tests/test_agent_steward_journal.py \
+  tests/test_mission_contract.py \
+  tests/test_steward_deferred_acceptance.py
 uv run --no-project python tools/check_security_baseline.py
 ```
 
@@ -120,9 +117,9 @@ git diff --check
 1. Branch from latest `main` (or continue an owned PR).
 2. Keep the PR one coherent change.
 3. Run focused checks for the surfaces you touched.
-4. Open a PR targeting `main`. Required CI must be green on the **exact** reviewed head (unless a strict documentation-only exception applies; see `docs/REAL_WORLD_TESTING_PLAYBOOK.md`).
+4. Open a PR targeting `main`. Required CI must be green on the **exact** reviewed head (see `docs/AUTONOMY.md`).
 5. Describe goal, scope, tests, compatibility, and rollback.
-6. Auto-merge stays off by default; maintainers merge when classifier, CI, and review allow.
+6. Guarded merge applies when classifier, CI, and review allow.
 
 Default daily path for maintainers and agents: local Agent → focused branch → PR → exact-head CI → independent review → manual squash merge.
 
@@ -153,7 +150,7 @@ Conduct / harassment: see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) (private cont
 
 General help and response policy: [SUPPORT.md](SUPPORT.md).
 
-Forward plan: [docs/NEXT_DECISION.md](docs/NEXT_DECISION.md) only. Do not add a second roadmap document.
+Forward plan: [docs/ROADMAP.md](docs/ROADMAP.md) only. Do not add a second roadmap document.
 
 ## Dependency updates
 

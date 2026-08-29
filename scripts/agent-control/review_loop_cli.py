@@ -22,9 +22,9 @@ import os
 import pathlib
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+CONTROL_DIR = pathlib.Path(__file__).resolve().parent
+if str(CONTROL_DIR) not in sys.path:
+    sys.path.insert(0, str(CONTROL_DIR))
 
 from review_loop import github_adapter, journal as journal_mod  # noqa: E402
 from review_loop.cli import main  # noqa: E402

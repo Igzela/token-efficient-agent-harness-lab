@@ -15,7 +15,7 @@ Prove that agent-generated patches, reviews, and CI results belong to the exact 
 | **Engine** | Rust package `engine` · binary `agent-control-plane` · axum · SQLite (PostgreSQL optional) |
 | **Surfaces** | Dashboard · TypeScript SDK · Python SDK |
 | **Posture** | Local-first research lab · MIT · not a cloud SaaS |
-| **Status** | Active development. Verified capabilities and limits: [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) |
+| **Status** | Active development. Verified capabilities and architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · autonomy and testing: [`docs/AUTONOMY.md`](docs/AUTONOMY.md) |
 
 ### The failure this prevents
 
@@ -29,9 +29,9 @@ A green CI check is not enough if it belongs to an older PR head. This lab binds
 - Supervised repository patch/PR output (never silent target-`main` writes)
 - Local dashboard that refuses invented success
 
-> **Boundary:** local / small-team research tool — not multi-tenant SaaS, not a free provider proxy, no container/VM isolation claim. Provider, managed-CLI, adaptive, and autonomous paths remain default-off and use explicit fail-closed authority, identity, budget, lease, audit, and kill controls. The current executable window is owned by `docs/NEXT_DECISION.md`; the blocked routing-only horizon is in `docs/FUTURE_ROUTE.md`; historical phase labels do not define the forward plan.
+> **Boundary:** local / small-team research tool — not multi-tenant SaaS, not a free provider proxy, no container/VM isolation claim. Provider, managed-CLI, adaptive, and autonomous paths remain default-off and use explicit fail-closed authority, identity, budget, lease, audit, and kill controls. Governance and testing rules are owned by `docs/AUTONOMY.md`; the roadmap is in `docs/ROADMAP.md`.
 
-Maintainer and Agent entry: [`START_HERE.md`](START_HERE.md) · architecture: [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) · current plan: [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md) · future route: [`docs/FUTURE_ROUTE.md`](docs/FUTURE_ROUTE.md) · implementation rules: [`AGENTS.md`](AGENTS.md) · support: [`SUPPORT.md`](SUPPORT.md).
+Maintainer and Agent entry: [`START_HERE.md`](START_HERE.md) · architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · autonomy & testing: [`docs/AUTONOMY.md`](docs/AUTONOMY.md) · roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md) · implementation rules: [`AGENTS.md`](AGENTS.md) · support: [`SUPPORT.md`](SUPPORT.md).
 
 ## Quick Start
 
@@ -178,11 +178,11 @@ There is **no** verified public `docker run …:latest` image path. For containe
 
 ## What This Project Is Not
 
-This repository is not a cloud production SaaS, hosted multi-tenant service, or direct-deploy tool. Accepted real-repository patch/PR, trusted-local Provider, and bounded autonomous-task capabilities are described in `docs/CURRENT_STATUS.md`; the one next executable window is owned by `docs/NEXT_DECISION.md`, while blocked successors remain non-executable in `docs/FUTURE_ROUTE.md`. Historical `V2` and `IAE` labels may remain in compatibility surfaces or Git history, but they are not current routing authorities.
+This repository is not a cloud production SaaS, hosted multi-tenant service, or direct-deploy tool. Accepted real-repository patch/PR, trusted-local Provider, and bounded autonomous-task capabilities are described in `docs/ARCHITECTURE.md`; autonomy and testing contracts are in `docs/AUTONOMY.md`, while the roadmap is in `docs/ROADMAP.md`. Historical phase labels do not define the forward plan.
 
 Provider API execution requires explicit endpoint/auth/budget configuration; CI uses stub/mock paths and does not call real provider APIs. A ready trusted-local profile activates bounded provider execution, adaptive routing, experiments, promotion, default routing, and acknowledged task advancement for internal local operation. Managed CLI execution is default-off. Codex retains its existing `workspace-write` adapter. Claude Code registration is currently disabled because provider-independent worktree-only filesystem mediation is unproved; exact identity, model, usage, and process checks alone do not establish read confinement. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
 
-Internal maintainer paths (repository-agent / Issue orchestrator, emergency stop, runner recovery) live in [`AGENTS.md`](AGENTS.md) and [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md). They are not the public product entry.
+Internal maintainer paths (repository-agent / Issue orchestrator, emergency stop, runner recovery) live in [`AGENTS.md`](AGENTS.md) and [`docs/AUTONOMY.md`](docs/AUTONOMY.md). They are not the public product entry.
 
 ## Toolchain
 
@@ -376,7 +376,7 @@ bundle = client.dispatch("Summarize docs without provider calls")
 - Adaptive Fusion supports guarded candidate selection, bounded parallel-panel fusion, safe observations, controlled experiments, auto promotion, completion routing, policy evidence, and rollback. A ready trusted-local profile may compose these gates only after readiness validation; every path remains bounded, killable, audited, and redacted.
 - The Adaptive Fusion operator surface exposes effective authority, spend/traffic/worker bounds, safe observation aggregates, redacted recent audit actions, confirmed scheduler pause/resume/kill, and existing policy rollback without exposing model content or credentials.
 - No destructive runtime filesystem behavior.
-- Accepted capabilities require the explicit gates, audit events, tests, rollback/kill paths, and current packet eligibility in `docs/NEXT_DECISION.md`.
+- Accepted capabilities require the explicit gates, audit events, tests, rollback/kill paths, and current eligibility in `docs/AUTONOMY.md`.
 
 ## Repository Structure
 
@@ -394,23 +394,23 @@ scripts/                 Verification, packaging, and smoke-test scripts
 
 ## Active Documentation
 
-Daily agent work uses a small active set:
+Daily agent work uses a consolidated active set of ≤ 7 governance documents:
 
-- [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) — architecture and safety boundaries
-- [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — accepted truth and confirmed gaps
-- [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md) — one current executable window
-- [`docs/FUTURE_ROUTE.md`](docs/FUTURE_ROUTE.md) — blocked routing-only horizon
-- [`docs/MODULE_MAP.md`](docs/MODULE_MAP.md) — source ownership and verification routing
-- [`docs/REAL_WORLD_TESTING_PLAYBOOK.md`](docs/REAL_WORLD_TESTING_PLAYBOOK.md) — PR/CI/maintenance workflow
+- [`README.md`](README.md) — public product entry and capabilities
+- [`START_HERE.md`](START_HERE.md) — navigation and role routes
+- [`AGENTS.md`](AGENTS.md) — implementation instructions and safety stops
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — architecture, trust boundaries, and module ownership
+- [`docs/AUTONOMY.md`](docs/AUTONOMY.md) — autonomy, testing, review, and merge rules
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — high-level milestones and research horizons
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — operator procedures
 
 Historical phase plans, closeouts, validation reports, and low-frequency reference docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
 ## Agent Maintenance
 
-Repository maintenance authority is governed by [`START_HERE.md`](START_HERE.md), [`AGENTS.md`](AGENTS.md), and [`docs/REAL_WORLD_TESTING_PLAYBOOK.md`](docs/REAL_WORLD_TESTING_PLAYBOOK.md). Agents may plan, implement, test, review, repair CI, and manually merge eligible repository work only inside the current documented packet scope and after the required exact-head review, canonical CI, objection, compatibility, recovery, and rollback gates pass. A missing or conflicting architecture, authority, schema, security, evaluator, release, or recovery decision stops at `DECISION_REQUIRED`; an agent may not silently supersede it.
+Repository maintenance authority is governed by [`START_HERE.md`](START_HERE.md), [`AGENTS.md`](AGENTS.md), and [`docs/AUTONOMY.md`](docs/AUTONOMY.md). Autonomous Steward coordinates mission execution, stage verification, independent review, CI, and guarded merges. A missing or conflicting architecture, authority, schema, security, evaluator, release, or recovery decision pauses with `PAUSED_FOR_OWNER` or `DECISION_REQUIRED`.
 
-This maintenance authority does not grant a runtime, candidate, experiment, or generated plan Provider spend, target output, merge, release, deployment, or production-adoption authority. Documentation-only changes use a branch/PR by default; direct-to-`main` documentation requires explicit current authority plus handoff and diff validation. The complete hard-stop set is owned by the testing playbook—there is no five-stop shortcut. The durable architecture baseline is [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md); historical phase labels remain in Git history rather than owning current direction.
+This maintenance authority does not grant a runtime, candidate, experiment, or generated plan Provider spend, target output, merge, release, deployment, or production-adoption authority. The durable architecture baseline is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Contributing
 

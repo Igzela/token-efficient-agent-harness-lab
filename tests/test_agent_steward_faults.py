@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 from unittest import mock
 
 
@@ -581,6 +582,7 @@ class StewardFaultTests(unittest.TestCase):
             worktree_writable=False,
         )
         worktree_index = command.index(str(self.root))
+        self.assertEqual(command[0], "/usr/bin/bwrap")
         self.assertEqual(command[worktree_index - 1], "--ro-bind")
         self.assertNotIn(("--ro-bind", "/etc", "/etc"), zip(command, command[1:], command[2:]))
 
@@ -652,7 +654,7 @@ class StewardFaultTests(unittest.TestCase):
         with (
             mock.patch("steward_github.subprocess.run") as run,
             mock.patch.object(
-                steward_github.state_manager,
+                steward_github,
                 "current_effective_reviews",
                 return_value={
                     "complete": True,
@@ -664,7 +666,7 @@ class StewardFaultTests(unittest.TestCase):
                 },
             ),
             mock.patch.object(
-                steward_github.state_manager,
+                steward_github,
                 "review_threads_status",
                 return_value={
                     "complete": True,
@@ -728,6 +730,7 @@ class StewardFaultTests(unittest.TestCase):
                             "rust-tests",
                             "rust-typescript-cutover",
                             "typescript-tests",
+                            "exact-head",
                             "context-capsule",
                         )
                     ],
@@ -756,6 +759,7 @@ class StewardFaultTests(unittest.TestCase):
                             "rust-tests",
                             "rust-typescript-cutover",
                             "typescript-tests",
+                            "exact-head",
                             "context-capsule",
                         )
                     ],
@@ -785,6 +789,204 @@ class StewardFaultTests(unittest.TestCase):
             observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
         self.assertEqual(observed["review_state"], "PENDING")
 
+    def test_github_reader_requires_exact_head_job(self):
+        reader = steward_github.GhReadOnlyGitHub()
+        payload = {
+            "state": "OPEN",
+            "isDraft": False,
+            "mergedAt": None,
+            "baseRefName": "main",
+            "headRefName": "agent/steward-card",
+            "baseRefOid": BASE,
+            "headRefOid": HEAD,
+            "statusCheckRollup": [],
+            "reviewDecision": "",
+        }
+        payload["statusCheckRollup"] = [
+            {
+                "name": name,
+                "conclusion": "SUCCESS",
+                "status": "COMPLETED",
+            }
+            for name in steward_github.REQUIRED_CI_JOBS
+            if name != "exact-head-check"
+        ]
+        payload["reviewDecision"] = ""
+        with mock.patch("steward_github.subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = json.dumps(payload)
+            run.return_value.stderr = ""
+            observed = reader.fetch_stage_pr(
+                "Igzela/token-efficient-agent-harness-lab", 7
+            )
+        self.assertEqual(observed["ci_state"], "UNKNOWN")
+
+    def test_review_authority_fails_closed_when_live_review_facts_are_unavailable(self):
+        with mock.patch.object(
+            steward_github,
+            "current_effective_reviews",
+            side_effect=steward_github.GitHubReadError("github_review_read_failed"),
+        ):
+            self.assertFalse(
+                steward_github._authoritative_plan_review(
+                    7, HEAD, "Igzela/token-efficient-agent-harness-lab", BASE
+                )
+            )
+
+    def test_review_authority_does_not_accept_aggregate_approval_without_current_head(self):
+        with (
+            mock.patch.object(
+                steward_github,
+                "current_effective_reviews",
+                return_value={
+                    "complete": True,
+                    "review_decision": "APPROVED",
+                    "requested_changes": [],
+                    "effective_reviews": [
+                        {"state": "APPROVED", "is_current_head": False}
+                    ],
+                },
+            ),
+            mock.patch.object(
+                steward_github,
+                "review_threads_status",
+                return_value={"complete": True, "unresolved_thread_ids": []},
+            ),
+        ):
+            self.assertFalse(
+                steward_github._authoritative_plan_review(
+                    7, HEAD, "Igzela/token-efficient-agent-harness-lab", BASE
+                )
+            )
+
+    def test_review_reader_uses_latest_review_per_author_deterministically(self):
+        page = {
+            "headRefOid": HEAD,
+            "reviewDecision": "APPROVED",
+            "reviews": {
+                "nodes": [
+                    {
+                        "id": "review-old",
+                        "author": {"login": "reviewer"},
+                        "state": "CHANGES_REQUESTED",
+                        "submittedAt": "2026-08-29T03:00:00Z",
+                        "commit": {"oid": HEAD},
+                    },
+                    {
+                        "id": "review-new",
+                        "author": {"login": "reviewer"},
+                        "state": "APPROVED",
+                        "submittedAt": "2026-08-29T04:00:00Z",
+                        "commit": {"oid": HEAD},
+                    },
+                ],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+        }
+        with mock.patch.object(steward_github, "_graphql_page", return_value=page):
+            observed = steward_github.current_effective_reviews(
+                7, HEAD, "Igzela/token-efficient-agent-harness-lab"
+            )
+        self.assertEqual(observed["review_decision"], "APPROVED")
+        self.assertEqual(
+            [(item["review_id"], item["state"]) for item in observed["effective_reviews"]],
+            [("review-new", "APPROVED")],
+        )
+        self.assertEqual(observed["requested_changes"], [])
+
+    def test_review_reader_rejects_head_drift_and_malformed_pagination(self):
+        base_page = {
+            "headRefOid": HEAD,
+            "reviewDecision": "APPROVED",
+            "reviews": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+        }
+        for change, reason in (
+            ({"headRefOid": "c" * 40}, "github_review_head_changed"),
+            ({"headRefOid": "not-a-sha"}, "github_review_head_malformed"),
+            (
+                {"reviews": {"nodes": [], "pageInfo": {"hasNextPage": "false"}}},
+                "github_review_read_malformed",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                page = dict(base_page)
+                page.update(change)
+                with mock.patch.object(steward_github, "_graphql_page", return_value=page):
+                    with self.assertRaisesRegex(steward_github.GitHubReadError, reason):
+                        steward_github.current_effective_reviews(
+                            7, HEAD, "Igzela/token-efficient-agent-harness-lab"
+                        )
+
+    def test_review_reader_rejects_cross_page_decision_or_malformed_review(self):
+        first = {
+            "headRefOid": HEAD,
+            "reviewDecision": "APPROVED",
+            "reviews": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+            },
+        }
+        second = {
+            "headRefOid": HEAD,
+            "reviewDecision": "",
+            "reviews": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+        }
+        with mock.patch.object(
+            steward_github, "_graphql_page", side_effect=[first, second]
+        ):
+            with self.assertRaisesRegex(
+                steward_github.GitHubReadError,
+                "github_review_decision_changed_during_read",
+            ):
+                steward_github.current_effective_reviews(
+                    7, HEAD, "Igzela/token-efficient-agent-harness-lab"
+                )
+
+        malformed = dict(first)
+        malformed["reviews"] = {
+            "nodes": [{"id": "bad"}],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        }
+        with mock.patch.object(steward_github, "_graphql_page", return_value=malformed):
+            with self.assertRaisesRegex(
+                steward_github.GitHubReadError, "github_review_node_malformed"
+            ):
+                steward_github.current_effective_reviews(
+                    7, HEAD, "Igzela/token-efficient-agent-harness-lab"
+                )
+
+    def test_review_thread_reader_rejects_head_drift_and_malformed_pagination(self):
+        page = {
+            "headRefOid": HEAD,
+            "reviewThreads": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": "false", "endCursor": None},
+            },
+        }
+        with mock.patch.object(steward_github, "_graphql_page", return_value=page):
+            with self.assertRaisesRegex(
+                steward_github.GitHubReadError, "github_review_thread_read_malformed"
+            ):
+                steward_github.review_threads_status(
+                    7, HEAD, "Igzela/token-efficient-agent-harness-lab"
+                )
+
+        page["headRefOid"] = "c" * 40
+        page["reviewThreads"]["pageInfo"]["hasNextPage"] = False
+        with mock.patch.object(steward_github, "_graphql_page", return_value=page):
+            with self.assertRaisesRegex(
+                steward_github.GitHubReadError, "github_review_head_changed"
+            ):
+                steward_github.review_threads_status(
+                    7, HEAD, "Igzela/token-efficient-agent-harness-lab"
+                )
+
     def test_github_reader_accepts_merged_state_with_exact_head_receipt(self):
         reader = steward_github.GhReadOnlyGitHub()
         payload = {
@@ -809,6 +1011,7 @@ class StewardFaultTests(unittest.TestCase):
                     "rust-tests",
                     "rust-typescript-cutover",
                     "typescript-tests",
+                    "exact-head",
                     "context-capsule",
                 )
             ],
@@ -830,7 +1033,7 @@ Unresolved objections: none
         with (
             mock.patch("steward_github.subprocess.run") as run,
             mock.patch.object(
-                steward_github.dispatcher,
+                steward_github,
                 "_authoritative_plan_review",
                 return_value={
                     "base_sha": BASE,
@@ -864,7 +1067,7 @@ Unresolved objections: none
         with (
             mock.patch("steward_github.subprocess.run") as run,
             mock.patch.object(
-                steward_github.state_manager,
+                steward_github,
                 "current_effective_reviews",
                 return_value={
                     "complete": True,
@@ -876,7 +1079,7 @@ Unresolved objections: none
                 },
             ),
             mock.patch.object(
-                steward_github.state_manager,
+                steward_github,
                 "review_threads_status",
                 return_value={"complete": True, "unresolved_thread_ids": []},
             ),
@@ -1005,7 +1208,9 @@ Unresolved objections: none
             lambda _context: ["/usr/bin/python3", "-c", "import time; time.sleep(2)"],
             timeout_seconds=1,
         )
-        result = worker.run(context)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ResourceWarning)
+            result = worker.run(context)
         self.assertEqual(result.status, "TIMEOUT")
 
     def test_bounded_process_worker_imports_commit_from_private_git_view(self):
@@ -1040,7 +1245,7 @@ Unresolved objections: none
             f"\"from pathlib import Path; Path({canonical_ref!r}).write_text('x')\"], "
             "capture_output=True).returncode != 0; "
             "subprocess.run(['/usr/bin/git','add','README.md'], check=True); "
-            "subprocess.run(['/usr/bin/git','commit','-m','worker'], check=True, "
+            "subprocess.run(['/usr/bin/git','-c','user.name=Steward Test','-c','user.email=steward-test@example.invalid','commit','-m','worker'], check=True, "
             "capture_output=True); "
             "head=subprocess.run(['/usr/bin/git','rev-parse','HEAD'], check=True, "
             "capture_output=True, text=True).stdout.strip(); "

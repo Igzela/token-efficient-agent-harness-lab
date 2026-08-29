@@ -163,7 +163,10 @@ jobs:
 
   python-tests:
     needs: classify-change-impact
-    runs-on: ubuntu-latest
+    # Steward's bubblewrap contract requires unprivileged user namespaces.
+    # Keep this lane on a runner whose baseline provides that capability;
+    # never relax the runner's kernel/AppArmor policy from a PR workflow.
+    runs-on: ubuntu-22.04
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -257,17 +260,62 @@ jobs:
       - name: Verify canonical orchestrator regression suite is wired
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: uv run --no-project python scripts/verify_orchestrator_test_suite.py
+      - name: Install bubblewrap
+        if: needs.classify-change-impact.outputs.mode == 'full'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          test -x /usr/bin/bwrap
+      - name: Verify bubblewrap user namespace capability
+        if: needs.classify-change-impact.outputs.mode == 'full'
+        run: |
+          set -euo pipefail
+          if ! /usr/bin/unshare -Urn /usr/bin/true; then
+            echo "runner lacks the user/network namespace required by Steward sandboxing" >&2
+            exit 1
+          fi
+          /usr/bin/bwrap \
+            --die-with-parent \
+            --unshare-user \
+            --unshare-net \
+            --unshare-pid \
+            --clearenv \
+            --tmpfs / \
+            --ro-bind /usr /usr \
+            --ro-bind /bin /bin \
+            --ro-bind /lib /lib \
+            --ro-bind /lib64 /lib64 \
+            --proc /proc \
+            --dev /dev \
+            --dir /tmp \
+            -- /usr/bin/true
+      - name: Configure test git identity
+        if: needs.classify-change-impact.outputs.mode == 'full'
+        run: |
+          git config --global user.name "CI Agent"
+          git config --global user.email "ci@example.invalid"
       - name: Run orchestrator regression tests
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
-          PYTHONPATH=scripts/agent-control uv run --no-project python -m unittest \
-            tests/test_agent_control_ci.py \
-            tests/test_agent_control_dry_run.py \
-            tests/test_agent_control_state.py \
-            tests/test_agent_control_worktree.py \
-            tests/test_agent_orchestrator_repairs.py \
-            tests/test_agent_orchestrator_artifacts.py \
-            tests/test_agent_review_finalization.py
+          # Canonical orchestrator regression test files:
+          # tests/test_agent_shadow_steward.py
+          # tests/test_agent_steward.py
+          # tests/test_agent_steward_faults.py
+          # tests/test_agent_steward_journal.py
+          # tests/test_mission_contract.py
+          # tests/test_review_convergence.py
+          # tests/test_review_loop.py
+          # tests/test_steward_deferred_acceptance.py
+          PYTHONPATH=scripts/agent-control:. python3 -m unittest \
+            tests.test_agent_shadow_steward \
+            tests.test_agent_steward \
+            tests.test_agent_steward_faults \
+            tests.test_agent_steward_journal \
+            tests.test_mission_contract \
+            tests.test_review_convergence \
+            tests.test_review_loop \
+            tests.test_steward_deferred_acceptance
       - name: Run Python SDK tests
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests

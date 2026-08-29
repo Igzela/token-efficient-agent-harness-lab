@@ -29,7 +29,43 @@ from github_observer import (  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPOSITORY = "Igzela/token-efficient-agent-harness-lab"
-PACKET_ID = r"(?:PE\d+|PR\d+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+"
+MISSION_ID = r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+"
+CANONICAL_DOCUMENT_PATHS = (
+    "START_HERE.md",
+    "AGENTS.md",
+    "README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/AUTONOMY.md",
+    "docs/ROADMAP.md",
+    "docs/RUNBOOK.md",
+)
+# PR6 is based on the last accepted tree that still has the consolidated
+# documents' predecessors.  This read-only bridge is deliberately pinned to
+# that exact base and has a hard sunset; it becomes unreachable after PR6 is
+# accepted and never reads the working tree or grants execution.
+ACCEPTED_DOCUMENT_COMPATIBILITY_BASE_SHA = "f73ad914675d4c561c64517e3b87412d5cb992a3"
+ACCEPTED_DOCUMENT_COMPATIBILITY_EXPIRES_AT = "2026-09-06T00:00:00Z"
+ACCEPTED_DOCUMENT_COMPATIBILITY = {
+    "docs/ARCHITECTURE.md": "docs/ARCHITECTURE_BOOK.md",
+    "docs/AUTONOMY.md": "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+    "docs/ROADMAP.md": "docs/FUTURE_ROUTE.md",
+}
+
+
+def accepted_document_compatibility_path(
+    baseline: dict[str, Any], path: str
+) -> str | None:
+    if baseline.get("sha") != ACCEPTED_DOCUMENT_COMPATIBILITY_BASE_SHA:
+        return None
+    try:
+        expires_at = datetime.fromisoformat(
+            ACCEPTED_DOCUMENT_COMPATIBILITY_EXPIRES_AT.replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    if datetime.now(timezone.utc) >= expires_at:
+        return None
+    return ACCEPTED_DOCUMENT_COMPATIBILITY.get(path)
 
 # Logical required check names. These are the canonical names used in the matrix.
 REQUIRED_CI_CHECKS = (
@@ -121,20 +157,20 @@ def section(text: str, heading: str) -> str:
     return text[start:] if end < 0 else text[start:end]
 
 
-def parse_first_routed_packet(next_text: str) -> dict[str, str | None]:
+def parse_first_routed_mission(next_text: str) -> dict[str, str | None]:
     routing = section(next_text, "## Active Routing")
-    packet_match = re.search(PACKET_ID, routing)
-    if not packet_match:
-        return {"packet": None, "state": None, "pr_number": None}
-    packet = packet_match.group(0)
+    mission_match = re.search(MISSION_ID, routing)
+    if not mission_match:
+        return {"mission_id": None, "state": None, "pr_number": None}
+    mission = mission_match.group(0)
     heading = re.search(
-        rf"^#{{2,3}} Packet {re.escape(packet)}\b.*$",
+        rf"^#{{2,3}} Mission {re.escape(mission)}\b.*$",
         next_text,
         re.MULTILINE,
     )
     block = ""
     if heading:
-        next_heading = re.search(r"^#{2,3} Packet ", next_text[heading.end() :], re.MULTILINE)
+        next_heading = re.search(r"^#{2,3} Mission ", next_text[heading.end() :], re.MULTILINE)
         end = heading.end() + next_heading.start() if next_heading else len(next_text)
         block = next_text[heading.start() : end]
     state_match = re.search(r"^\*\*State:\*\* `([A-Z0-9_]+)`", block, re.MULTILINE)
@@ -150,10 +186,10 @@ def parse_first_routed_packet(next_text: str) -> dict[str, str | None]:
         )
         if structured_pr:
             pr_number = structured_pr.group("number")
-    # Older in-progress packets used a prose review-surface line before the
+    # Older in-progress missions used a prose review-surface line before the
     # structured owner field was introduced.  Keep those exact legacy forms
     # readable, but never infer a PR from prerequisite/history prose.  In
-    # particular, READY packets may list accepted prerequisite PRs and must
+    # particular, READY missions may list accepted prerequisite PRs and must
     # remain unbound until an owner field exists.
     if pr_number is None and state_match and state_match.group(1) == "IN_PROGRESS":
         legacy_review = re.search(
@@ -169,17 +205,35 @@ def parse_first_routed_packet(next_text: str) -> dict[str, str | None]:
         if legacy_review and not has_prerequisite_prose:
             pr_number = legacy_review.group("number")
     return {
-        "packet": packet,
+        "mission_id": mission,
         "state": state_match.group(1) if state_match else None,
         "pr_number": pr_number,
     }
 
 
-def parse_open_frontiers(status_text: str) -> list[dict[str, Any]]:
-    """Read the legacy status table; new capsules use live observations.
+def parse_registered_campaign_mission(contract_text: str) -> dict[str, str | None]:
+    """Project the one registered campaign when no document route is present.
 
-    Kept for backward-compatible tooling/tests while accepted branches move
-    dynamic PR state out of ``CURRENT_STATUS.md``.
+    The campaign contract is an accepted source of mission identity; this
+    parser does not infer a PR or lifecycle authority from it.  A live PR is
+    still discovered separately by ``observe_open_frontiers``.
+    """
+    match = re.search(
+        r'^CAMPAIGN_MISSION_ID\s*=\s*["\'](?P<mission>[^"\']+)["\']\s*$',
+        contract_text,
+        re.MULTILINE,
+    )
+    mission = match.group("mission") if match else None
+    if not mission or re.fullmatch(MISSION_ID, mission) is None:
+        return {"mission_id": None, "state": None, "pr_number": None}
+    return {"mission_id": mission, "state": "IDLE", "pr_number": None}
+
+
+def parse_open_frontiers(status_text: str) -> list[dict[str, Any]]:
+    """Read a compatibility status table; new capsules use live observations.
+
+    Kept for bounded compatibility tooling/tests; the active route never reads
+    a status document and obtains dynamic PR state from live observations.
     """
     block = section(status_text, "## Open Review Surfaces")
     frontiers: list[dict[str, Any]] = []
@@ -197,11 +251,11 @@ def parse_open_frontiers(status_text: str) -> list[dict[str, Any]]:
     return frontiers
 
 
-def _packet_body_binding(body: str, packet: str) -> bool:
-    """Return whether a PR body explicitly binds itself to one packet."""
+def _mission_body_binding(body: str, mission: str) -> bool:
+    """Return whether a PR body explicitly binds itself to one mission."""
     return bool(
         re.search(
-            rf"(?im)^\s*(?:Packet|Packet ID|Packet-ID)\s*:\s*`?{re.escape(packet)}`?\s*$",
+            rf"(?im)^\s*(?:Mission|Mission ID|Mission-ID)\s*:\s*`?{re.escape(mission)}`?\s*$",
             body,
         )
     )
@@ -209,7 +263,7 @@ def _packet_body_binding(body: str, packet: str) -> bool:
 
 def observe_open_frontiers(
     repository: str,
-    packet: dict[str, Any],
+    mission: dict[str, Any],
     *,
     offline: bool,
     observer: GitHubObserver | None = None,
@@ -217,16 +271,17 @@ def observe_open_frontiers(
     """Discover bounded live PR routing without making it authoritative.
 
     Canonical ``Owned PR`` wins when present. Otherwise an exact structured
-    packet binding in the PR body is preferred. The exact normalized packet
-    branch is a temporary legacy bridge. Ambiguity fails closed.
+    mission binding in the PR body is preferred. A single unbound open PR is
+    accepted only as a bounded discovery fallback; multiple unbound PRs fail
+    closed.
     """
     unavailable = {
         "availability": "unavailable",
         "source": None,
         "active_pr_number": (
-            int(packet["pr_number"]) if packet.get("pr_number") else None
+            int(mission["pr_number"]) if mission.get("pr_number") else None
         ),
-        "binding": "canonical_owned_pr" if packet.get("pr_number") else None,
+        "binding": "canonical_owned_pr" if mission.get("pr_number") else None,
         "warning": "offline_observation_disabled" if offline else None,
         "open_frontiers": [],
     }
@@ -262,34 +317,34 @@ def observe_open_frontiers(
             return {
                 **unavailable,
                 "availability": "conflict",
-                "source": "accepted_next_decision_plus_github_rest",
+                "source": "accepted_main_plus_github_rest",
                 "warning": "canonical_owned_pr_is_not_open_against_main",
                 "open_frontiers": frontiers,
             }
         return {
             **unavailable,
             "availability": "confirmed",
-            "source": "accepted_next_decision_plus_github_rest",
+            "source": "accepted_main_plus_github_rest",
             "warning": None,
             "open_frontiers": frontiers,
         }
 
-    packet_id = packet.get("packet")
-    if not packet_id:
+    mission_id = mission.get("mission_id")
+    if not mission_id:
         return {
             **unavailable,
-            "availability": "confirmed",
+            "availability": "unavailable",
             "source": "github_rest",
-            "warning": "canonical_packet_unavailable",
+            "warning": "canonical_mission_missing",
             "open_frontiers": frontiers,
         }
 
     explicit = [
         item
         for item in pulls
-        if _packet_body_binding(str(item.get("body") or ""), str(packet_id))
+        if _mission_body_binding(str(item.get("body") or ""), str(mission_id))
     ]
-    normalized_branch = str(packet_id).lower()
+    normalized_branch = str(mission_id).lower()
     legacy = [
         item
         for item in pulls
@@ -310,7 +365,7 @@ def observe_open_frontiers(
             **unavailable,
             "availability": "conflict",
             "source": "github_rest",
-            "warning": "structured_and_legacy_packet_bindings_conflict",
+            "warning": "structured_and_legacy_mission_bindings_conflict",
             "open_frontiers": frontiers,
         }
     candidates = explicit or legacy
@@ -324,7 +379,7 @@ def observe_open_frontiers(
             **unavailable,
             "availability": "conflict",
             "source": "github_rest",
-            "warning": "multiple_open_prs_bind_active_packet",
+            "warning": "multiple_open_prs_bind_active_mission",
             "open_frontiers": frontiers,
         }
     active = next(iter(distinct), None)
@@ -334,12 +389,12 @@ def observe_open_frontiers(
         "source": "github_rest",
         "active_pr_number": active,
         "binding": (
-            "pr_body_packet" if explicit and active is not None
-            else "legacy_exact_packet_branch" if active is not None
+            "pr_body_mission" if explicit and active is not None
+            else "legacy_exact_mission_branch" if active is not None
             else None
         ),
         "warning": (
-            "legacy_exact_packet_branch_binding" if legacy and not explicit
+            "legacy_exact_mission_branch_binding" if legacy and not explicit
             else None
         ),
         "open_frontiers": frontiers,
@@ -414,22 +469,26 @@ def canonical_documents(baseline: dict[str, Any], *, offline: bool) -> dict[str,
     unavailable = {
         "availability": "unavailable",
         "source_sha": sha,
-        "current_status": "",
-        "next_decision": "",
+        "documents": {},
     }
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
         return unavailable
     if not ensure_commit_available(sha, offline=offline):
         return unavailable
-    status = git_show_text(sha, "docs/CURRENT_STATUS.md")
-    next_text = git_show_text(sha, "docs/NEXT_DECISION.md")
-    if not status or not next_text:
+    documents: dict[str, str] = {}
+    for path in CANONICAL_DOCUMENT_PATHS:
+        content = git_show_text(sha, path)
+        if not content:
+            compatibility_path = accepted_document_compatibility_path(baseline, path)
+            if compatibility_path:
+                content = git_show_text(sha, compatibility_path)
+        documents[path] = content
+    if any(not content for content in documents.values()):
         return unavailable
     return {
         "availability": baseline.get("availability", "local_only"),
         "source_sha": sha,
-        "current_status": status,
-        "next_decision": next_text,
+        "documents": documents,
     }
 
 
@@ -475,7 +534,7 @@ def _review_state_projection_conflict(reason: str) -> dict[str, Any]:
 
 
 def _linked_issue_numbers(pr_body: str) -> list[int]:
-    """Linked packet issue numbers from the PR body binding convention."""
+    """Linked mission issue numbers from the PR body binding convention."""
     if not pr_body:
         return []
     numbers: list[int] = []
@@ -503,7 +562,7 @@ def _load_review_state_projection(
 ) -> dict[str, Any]:
     """Project only trusted bounded fields from the durable review state.
 
-    The durable ReviewState lives in the linked packet Issue comments
+    The durable ReviewState lives in the linked mission Issue comments
     (written by the trusted orchestrator finalize step).  This projection is
     non-authoritative and never decides severity, disposition, repair, Ready,
     or merge.  Full finding text never enters the capsule; only bounded ids,
@@ -568,10 +627,14 @@ def _load_review_state_projection(
             continue
         expected_pr_number = payload.get("number")
         if (
-            state.get("issue_number") != issue_number
+            type(state.get("issue_number")) is not int
+            or state.get("issue_number") != issue_number
             or (
                 isinstance(expected_pr_number, int)
-                and state.get("pr_number") != expected_pr_number
+                and (
+                    type(state.get("pr_number")) is not int
+                    or state.get("pr_number") != expected_pr_number
+                )
             )
         ):
             found[issue_number] = _review_state_projection_conflict(
@@ -918,7 +981,7 @@ def _build_review_observation(
 
     Exact-head acceptance is never inferred from aggregate state or prose.
     A review receipt comment (``EXACT-HEAD REVIEW RECEIPT`` marker, see
-    ``docs/REAL_WORLD_TESTING_PLAYBOOK.md``) is the only evidence that a
+    ``docs/AUTONOMY.md``) is the only evidence that a
     complete-diff review was bound to a specific head; a receipt naming a
     different head is stale, not acceptance.
     """
@@ -1437,7 +1500,7 @@ def compute_fingerprint(capsule: dict[str, Any]) -> str:
     binding = capsule.get("binding", {})
     accepted = binding.get("accepted_baseline", {})
     canonical = binding.get("canonical_document_source", {})
-    routed = binding.get("canonical_routed_packet", {})
+    routed = binding.get("canonical_routed_mission", {})
     pr = binding.get("pr_exact_head", {})
     canonical_pr = binding.get("canonical_active_pr_exact_head", {})
     requested_pr = binding.get("requested_pr_exact_head", {})
@@ -1446,7 +1509,7 @@ def compute_fingerprint(capsule: dict[str, Any]) -> str:
         "repository": capsule.get("repository"),
         "accepted_main_sha": accepted.get("sha"),
         "canonical_document_source_sha": canonical.get("source_sha"),
-        "canonical_routed_packet": routed.get("packet"),
+        "canonical_routed_mission": routed.get("mission_id"),
         "pr_number": pr.get("number"),
         "pr_exact_head_sha": pr.get("head_sha"),
         "canonical_active_pr_number": canonical_pr.get("number"),
@@ -1462,20 +1525,20 @@ def compute_fingerprint(capsule: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()[:24]
 
 
-def next_permitted_action(packet: dict[str, Any], active_pr: dict[str, Any] | None) -> str:
-    packet_id = packet.get("packet") or "the earliest eligible packet"
-    state = packet.get("state")
+def next_permitted_action(mission: dict[str, Any], active_pr: dict[str, Any] | None) -> str:
+    mission_id = mission.get("mission_id") or "the earliest eligible mission"
+    state = mission.get("state")
     if state == "BLOCKED_PREREQUISITE":
-        return f"resolve the named prerequisite for {packet_id}; do not implement the blocked packet"
+        return f"resolve the named prerequisite for {mission_id}; do not implement the blocked mission"
     if state == "COMPLETE":
-        return f"{packet_id} is complete; refresh accepted main and select the next eligible packet"
+        return f"{mission_id} is complete; refresh accepted main and select the next eligible mission"
     if not active_pr:
         if state == "READY_FOR_EXECUTION":
             return (
-                f"confirm the documented prerequisites and bounded action for {packet_id}; "
+                f"confirm the documented prerequisites and bounded action for {mission_id}; "
                 "do not infer an implementation PR or provider effect"
             )
-        return f"inspect {packet_id}, confirm ownership, and create or continue one focused PR"
+        return f"inspect {mission_id}, confirm ownership, and create or continue one focused PR"
     number = active_pr.get("number")
     if active_pr.get("availability") != "confirmed":
         return f"refresh PR #{number} exact head, CI, and review state before acting"
@@ -1522,14 +1585,26 @@ def build_capsule(
     repository = repository or repository_from_git()
     baseline = accepted_baseline(offline=offline)
     documents = canonical_documents(baseline, offline=offline)
-    next_text = documents.get("next_decision", "")
-    packet = parse_first_routed_packet(next_text)
+    canonical_text = documents.get("documents") or {}
+    next_text = canonical_text.get("docs/ROADMAP.md", "")
+    if not next_text:
+        # Compatibility for test doubles and previously emitted local capsules;
+        # live canonical reads use CANONICAL_DOCUMENT_PATHS above.
+        next_text = documents.get("legacy_route", "")
+    mission = parse_first_routed_mission(next_text)
+    if mission.get("mission_id") is None:
+        # Accepted main may intentionally have no mutable Active Routing
+        # section.  Keep the canonical registered campaign visible without
+        # inventing a current PR or treating the projection as authority.
+        mission = parse_registered_campaign_mission(
+            git_show_text(str(baseline["sha"]), "scripts/agent-control/mission_contract.py")
+        )
     observer = None if offline else GitHubObserver(
         repository, token=token_from_environment()
     )
     frontier_observation = observe_open_frontiers(
         repository,
-        packet,
+        mission,
         offline=offline,
         observer=observer,
     )
@@ -1537,7 +1612,7 @@ def build_capsule(
     event_name = event_name or os.environ.get("GITHUB_EVENT_NAME")
     provided_checks = parse_checks_json(checks_json) if checks_json else []
 
-    routed_pr_number = int(packet["pr_number"]) if packet.get("pr_number") else None
+    routed_pr_number = int(mission["pr_number"]) if mission.get("pr_number") else None
     discovered_pr_number = frontier_observation.get("active_pr_number")
     canonical_pr_number = (
         routed_pr_number
@@ -1690,7 +1765,7 @@ def build_capsule(
             "availability": documents.get("availability"),
             "source_sha": documents.get("source_sha"),
         },
-        "canonical_routed_packet": packet,
+        "canonical_routed_mission": mission,
         "frontier_observation": frontier_observation,
         "session_binding": session,
         "pr_exact_head": {
@@ -1730,7 +1805,7 @@ def build_capsule(
     if documents.get("availability") == "unavailable":
         action = "obtain the accepted-main canonical documents before selecting or advancing work"
     else:
-        action = next_permitted_action(packet, active_pr)
+        action = next_permitted_action(mission, active_pr)
 
     capsule = {
         "schema_version": "project_context.v1",
@@ -1743,7 +1818,7 @@ def build_capsule(
         },
         "binding": binding,
         "local_checkout": checkout,
-        "active_packet": packet,
+        "active_mission": mission,
         "active_frontier": active_pr,
         "workflow_frontier": workflow_pr,
         "frontier_observation": frontier_observation,
@@ -1752,17 +1827,15 @@ def build_capsule(
         "required_reading": [
             "START_HERE.md",
             "AGENTS.md when implementing or repairing code",
-            "docs/CURRENT_STATUS.md from the accepted baseline",
-            "docs/NEXT_DECISION.md from the accepted baseline",
-            "docs/MODULE_MAP.md for ownership",
-            "relevant ARCHITECTURE_BOOK or REAL_WORLD_TESTING_PLAYBOOK sections",
+            "docs/ARCHITECTURE.md for architecture and module ownership",
+            "docs/AUTONOMY.md for autonomy, testing, and merge rules",
             "relevant code and tests",
         ],
         "hard_stops": [
             "no stale-head CI or review claims",
             "no success when a required CI check is failed, pending, skipped, or missing",
             "no aggregate approval treated as exact-head acceptance",
-            "no downstream packet before its prerequisite is accepted",
+            "no downstream mission before its prerequisite is accepted",
             "no provider call, merge, release, deploy, or protected-branch write without explicit authority",
             "no caller-asserted authority, secret exposure, invented evidence, or weakened fail-closed behavior",
             "no second runtime, scheduler, store, evaluator, budget, approval, output, audit, or rollback owner",
@@ -1771,7 +1844,7 @@ def build_capsule(
         "notes": [
             "This capsule is a generated transport view, not an authority owner.",
             "Accepted truth and routing are read from the accepted baseline; live PR, CI, and review state are queried separately.",
-            "The canonical active frontier remains packet-routed; an explicit workflow PR is a separate exact-head validation surface.",
+            "The canonical active frontier remains mission-routed; an explicit workflow PR is a separate exact-head validation surface.",
             "Unavailable remote facts are reported as unavailable rather than inferred.",
             "The generator is on-demand; CI may publish a short-lived artifact and job summary.",
         ],
@@ -1784,7 +1857,7 @@ def markdown(capsule: dict[str, Any]) -> str:
     baseline = capsule["accepted_baseline"]
     document_source = capsule.get("canonical_document_source", {})
     checkout = capsule.get("local_checkout", {})
-    packet = capsule["active_packet"]
+    mission = capsule["active_mission"]
     frontier = capsule.get("active_frontier")
     workflow_frontier = capsule.get("workflow_frontier")
     frontier_observation = capsule.get("frontier_observation", {})
@@ -1806,8 +1879,8 @@ def markdown(capsule: dict[str, Any]) -> str:
             f"branch=`{checkout.get('branch') or 'detached'}` dirty=`{checkout.get('dirty')}`"
         ),
         (
-            f"- Active packet: `{packet.get('packet') or 'unavailable'}` "
-            f"state=`{packet.get('state') or 'unavailable'}`"
+            f"- Active mission: `{mission.get('mission_id') or 'unavailable'}` "
+            f"state=`{mission.get('state') or 'unavailable'}`"
         ),
         (
             f"- Live frontier observation: "

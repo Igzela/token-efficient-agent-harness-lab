@@ -10,12 +10,16 @@ uses a fake.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import typing
+
+import review_convergence
 
 from . import models
 
 COMMENT_MARKER = "independent-review-receipt"
+REVIEW_STATE_KIND = review_convergence.REVIEW_STATE_KIND
 MARKER_RE = re.compile(
     r"<!--\s*" + COMMENT_MARKER + r":([0-9a-f]{64}):([0-9a-f]{64})\s*-->"
 )
@@ -54,6 +58,93 @@ def build_comment_body(
             comment_marker_line(envelope.request_text_sha256, receipt_sha256(receipt)),
         ]
     )
+
+
+def build_review_state_body(
+    state: review_convergence.ReviewRoundState,
+    *,
+    issue_number: int,
+    pr_number: int,
+) -> str:
+    """Build the exact JSON body used for durable linked-Issue recovery."""
+
+    return review_convergence.review_state_json(
+        state,
+        issue_number=issue_number,
+        pr_number=pr_number,
+    )
+
+
+def reconcile_review_state_comments(
+    existing_comments: list[str],
+    state_body: str,
+) -> tuple[str, list[str]]:
+    """Return ``skip``/``post``/``conflict`` for a durable state comment.
+
+    A different state for the same linked Issue is a conflict.  This keeps a
+    retry from overwriting the recovery history or silently selecting an old
+    state after an uncertain POST.
+    """
+
+    if existing_comments is None:
+        return "conflict", ["existing review-state comments unavailable"]
+    try:
+        expected = typing.cast(dict[str, typing.Any], json.loads(state_body))
+    except (TypeError, ValueError):
+        return "conflict", ["new review-state body is not valid JSON"]
+    if not isinstance(expected, dict) or expected.get("kind") != REVIEW_STATE_KIND:
+        return "conflict", ["new review-state body has an invalid kind"]
+    identical = False
+    for body in existing_comments:
+        text = body or ""
+        if REVIEW_STATE_KIND not in text:
+            continue
+        try:
+            candidate = json.loads(text)
+        except (TypeError, ValueError):
+            return "conflict", ["malformed durable review-state comment present"]
+        if not isinstance(candidate, dict) or candidate.get("kind") != REVIEW_STATE_KIND:
+            return "conflict", ["invalid durable review-state comment present"]
+        if candidate == expected:
+            identical = True
+        else:
+            return "conflict", ["different durable review state already posted"]
+    if identical:
+        return "skip", ["identical durable review state already posted"]
+    return "post", []
+
+
+def publish_review_state(
+    client: "GitHubCommentClient",
+    repository: str,
+    *,
+    issue_number: int,
+    pr_number: int,
+    state: review_convergence.ReviewRoundState,
+) -> tuple[str, str | None]:
+    """Publish one state to the linked Issue with read-before-write recovery.
+
+    The client must be the authenticated parent/orchestrator transport.  A
+    raised create call remains outcome-unknown; callers must re-query this
+    same Issue before any retry.
+    """
+
+    body = build_review_state_body(
+        state,
+        issue_number=issue_number,
+        pr_number=pr_number,
+    )
+    action, reasons = reconcile_review_state_comments(
+        client.list_comments(repository, issue_number), body
+    )
+    if action == "skip":
+        return "skipped", None
+    if action != "post":
+        raise RuntimeError("review-state comment conflict: " + "; ".join(reasons))
+    # A raised create call is intentionally not translated into success or
+    # failure.  The caller must re-list this Issue and reconcile the exact
+    # state before attempting another POST.
+    return "posted", client.create_comment(repository, issue_number, body)
 
 
 def reconcile_comments(

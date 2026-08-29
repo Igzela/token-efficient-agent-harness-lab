@@ -11,11 +11,20 @@ import time
 from pathlib import Path
 from typing import Any
 
-import state_manager
-
-
 class PRBindingError(RuntimeError):
     """Raised when an Issue cannot be bound to exactly one safe PR."""
+
+
+def parse_binding_marker(text: str) -> dict[str, Any] | None:
+    """Parse JSON payload from an agent-orchestrator-binding HTML comment."""
+    match = re.search(r"<!--\s*agent-orchestrator-binding:\s*(\{.*?\})\s*-->", text)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(1))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
 
 
 def _repo(repo: str | None = None) -> str:
@@ -54,7 +63,7 @@ def _open_prs(repo: str) -> list[dict[str, Any]]:
 def _candidate_prs(prs: list[dict[str, Any]], issue_number: int, branch: str) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for pr in prs:
-        marker = state_manager.parse_binding_marker(pr.get("body", ""))
+        marker = parse_binding_marker(pr.get("body", ""))
         if pr.get("headRefName") == branch or (
             marker and marker.get("issue_number") == issue_number
         ):
@@ -77,7 +86,7 @@ def _verify_pr(
         raise PRBindingError("bound PR does not target main")
     if pr.get("headRefName") != branch or pr.get("headRefOid") != expected_sha:
         raise PRBindingError("bound PR branch or head does not match")
-    marker = state_manager.parse_binding_marker(pr.get("body", ""))
+    marker = parse_binding_marker(pr.get("body", ""))
     if not marker or marker.get("issue_number") != issue_number or marker.get("branch") != branch:
         raise PRBindingError("bound PR Issue marker is invalid")
     if not re.search(rf"(?:Closes|Fixes|Resolves|Implements)\s+#?{issue_number}\b", pr.get("body", ""), re.I):
@@ -207,7 +216,7 @@ def verify_post_push_binding(
 def _candidate_plan_prs(prs: list[dict[str, Any]], subject_id: str, branch: str) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for pr in prs:
-        marker = state_manager.parse_binding_marker(pr.get("body", ""))
+        marker = parse_binding_marker(pr.get("body", ""))
         if pr.get("headRefName") == branch or (
             marker
             and marker.get("subject_kind") == "plan-packet"
@@ -230,7 +239,7 @@ def _verify_plan_pr(
         raise PRBindingError("plan PR is not a Draft targeting main")
     if pr.get("headRefName") != branch or pr.get("headRefOid") != expected_sha:
         raise PRBindingError("plan PR branch or head does not match")
-    marker = state_manager.parse_binding_marker(pr.get("body", ""))
+    marker = parse_binding_marker(pr.get("body", ""))
     if not marker or any(
         marker.get(key) != value
         for key, value in {
@@ -351,7 +360,7 @@ def verify_post_push_plan_binding(
 def _candidate_stage_prs(prs: list[dict[str, Any]], stage_id: str, branch: str) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for pr in prs:
-        marker = state_manager.parse_binding_marker(pr.get("body", ""))
+        marker = parse_binding_marker(pr.get("body", ""))
         if pr.get("headRefName") == branch or (
             marker
             and marker.get("subject_kind") == "steward-stage"
@@ -374,7 +383,7 @@ def _verify_stage_pr(
         raise PRBindingError("stage PR is not a Draft targeting main")
     if pr.get("headRefName") != branch or pr.get("headRefOid") != expected_sha:
         raise PRBindingError("stage PR branch or head does not match")
-    marker = state_manager.parse_binding_marker(pr.get("body", ""))
+    marker = parse_binding_marker(pr.get("body", ""))
     expected = {
         "subject_kind": "steward-stage",
         "stage_id": stage_id,

@@ -12,7 +12,7 @@
 
 ## Focused verification (pick the surfaces you changed)
 
-Do **not** claim you ran the full matrix unless you did. CI owns the seven required jobs on the exact head.
+Do **not** claim you ran the full matrix unless you did. CI owns the nine required jobs on the exact head: `exact-head-check`, `rust-tests`, `pg-integration-tests`, `typescript-tests`, `native-runtime`, `docker-build`, `python-tests`, `rust-typescript-cutover`, and `context-capsule`.
 
 - [ ] **docs only** — `git diff --check` · `uv run --no-project python scripts/check_agent_handoff.py`
 - [ ] **Python SDK** — `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests`

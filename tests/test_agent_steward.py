@@ -6,6 +6,7 @@ from pathlib import Path
 from dataclasses import replace
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -71,6 +72,10 @@ class StewardExecutionTests(unittest.TestCase):
             "main",
             self.mock_worktree_branch,
         )
+
+    def test_outer_loop_capacity_is_canonical_k2(self):
+        self.assertEqual(steward.MAX_CONCURRENCY, 2)
+        self.assertEqual(workers.MAX_ACTIVE_WORKERS, 2)
 
     def review(
         self,
@@ -603,6 +608,7 @@ class StewardExecutionTests(unittest.TestCase):
         overlap_active = 0
         overlap_maximum = 0
         active_lock = threading.Lock()
+        concurrency_barrier = threading.Barrier(2)
 
         class RealTestWorker(workers.BoundedProcessWorker):
             def __init__(self):
@@ -610,6 +616,11 @@ class StewardExecutionTests(unittest.TestCase):
 
             def run(self, context):
                 nonlocal active, maximum, overlap_active, overlap_maximum
+                if context.card_id in {"card-a", "card-b"}:
+                    try:
+                        concurrency_barrier.wait(timeout=1.0)
+                    except threading.BrokenBarrierError:
+                        pass
                 with active_lock:
                     active += 1
                     maximum = max(maximum, active)
@@ -620,6 +631,13 @@ class StewardExecutionTests(unittest.TestCase):
                     relative = context.allowed_paths[0]
                     target = context.worktree / relative
                     target.write_text(f"real worker {context.card_id}\n", encoding="utf-8")
+                    env = {
+                        **os.environ,
+                        "GIT_AUTHOR_NAME": "Test",
+                        "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                        "GIT_COMMITTER_NAME": "Test",
+                        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+                    }
                     subprocess.run(
                         ["git", "add", "--", relative], cwd=context.worktree,
                         check=True, capture_output=True, text=True,
@@ -627,6 +645,7 @@ class StewardExecutionTests(unittest.TestCase):
                     subprocess.run(
                         ["git", "commit", "-m", f"worker {context.card_id}"],
                         cwd=context.worktree, check=True, capture_output=True, text=True,
+                        env=env,
                     )
                     head = subprocess.run(
                         ["git", "rev-parse", "HEAD"], cwd=context.worktree,
@@ -752,6 +771,57 @@ class StewardExecutionTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "WAITING_FOR_MERGE")
         self.assertEqual(seen, [(1, "T1"), (2, "T2")])
+
+    def test_failed_worker_with_mutation_is_outcome_unknown_and_not_retried(self):
+        class MutatingFailureWorker(workers.BoundedProcessWorker):
+            def __init__(self, path):
+                super().__init__(lambda _context: [], timeout_seconds=5)
+                self.path = path
+
+            def run(self, _context):
+                return workers.WorkerOutcome(
+                    "FAIL", "impl-failure", HEAD, (self.path,), "worker failed after mutation"
+                )
+
+        service = self.make_steward(
+            MutatingFailureWorker(self.card.allowed_paths[0]), None
+        )
+        before = {f"refs/heads/{self.mock_worktree_branch}": BASE}
+        after = {f"refs/heads/{self.mock_worktree_branch}": HEAD}
+        with (
+            mock.patch.object(
+                worktree_manager,
+                "create_steward_worktree",
+                return_value=(
+                    str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
+                ),
+            ),
+            mock.patch.object(steward, "_git_head", return_value=HEAD),
+            mock.patch.object(
+                steward, "_git_changed_paths", return_value=(self.card.allowed_paths[0],)
+            ),
+            mock.patch.object(
+                steward,
+                "_git_worktree_clean",
+                side_effect=workers.WorkerError("worktree_dirty_after_worker"),
+            ),
+            mock.patch.object(steward, "_git_repository_identity", return_value=True),
+            mock.patch.object(
+                steward,
+                "_git_metadata_snapshot",
+                side_effect=[(before, "config"), (after, "config")],
+            ),
+        ):
+            result = service.dispatch_card(
+                self.mission,
+                self.stage,
+                self.card,
+                base_sha=BASE,
+                stage_pr=self.facts,
+            )
+        self.assertEqual(result.status, "OUTCOME_UNKNOWN")
+        self.assertEqual(result.attempt, 1)
+        self.assertNotIn("ATTEMPT_RETRY_SCHEDULED", [event.event for event in service.journal.replay()])
 
     def test_self_review_is_rejected_before_execution(self):
         with self.assertRaisesRegex(workers.WorkerError, "self_review_forbidden"):

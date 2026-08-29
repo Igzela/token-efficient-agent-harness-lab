@@ -7,9 +7,9 @@ Canonical owner for:
   ReviewFinding / ReviewDecision normalization
   R1 / repair-batch / R2 transition rules
 
-Persistence remains in state_manager (GitHub Issue comments).
-Capsule/project_context only project fields from durable state; they never
-decide severity, disposition, repair, Ready, or merge.
+Persistence is caller-owned (Steward journal or accepted GitHub evidence).
+This module only validates review facts; it never decides repair, Ready, or
+merge authority.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 REVIEW_PROTOCOL_VERSION = "review-convergence.v1"
+REVIEW_STATE_KIND = "agent-orchestrator-review-state"
+REVIEW_STATE_VERSION = 3
 
 # Substantive independent-review rounds (R1 + R2). Not CI repair attempts.
 MAX_SUBSTANTIVE_REVIEW_ROUNDS = 2
@@ -38,7 +40,8 @@ ADMISSION_REASONS = frozenset(
 )
 
 # Control verdicts used by the repository orchestrator wire.
-# PASS is the only merge-authorizing verdict (see MERGE_AUTHORIZING in state_manager).
+# PASS is the only merge-authorizing verdict; merge authority remains with the
+# canonical GitHub exact-head gate and is never granted by this projection.
 # DECISION_REQUIRED is non-authorizing and stops autonomous advancement.
 # PASS_WITH_NOTES remains schema-valid historical / non-authorizing.
 CONTROL_VERDICTS = frozenset(
@@ -178,19 +181,30 @@ def normalize_finding(raw: dict[str, Any]) -> ReviewFinding:
     unknown = sorted(set(raw) - allowed_keys)
     if unknown:
         raise ConvergenceError(f"finding has unexpected keys: {unknown}")
-    if raw["severity"] not in SEVERITIES:
+    for key in ("axis", "evidence", "acceptance_condition"):
+        if not isinstance(raw[key], str):
+            raise ConvergenceError(f"finding {key} must be a string")
+    if not isinstance(raw["severity"], str) or raw["severity"] not in SEVERITIES:
         raise ConvergenceError("invalid severity")
-    if raw["disposition"] not in DISPOSITIONS:
+    if (
+        not isinstance(raw["disposition"], str)
+        or raw["disposition"] not in DISPOSITIONS
+    ):
         raise ConvergenceError("invalid disposition")
-    if raw["scope_relation"] not in SCOPE_RELATIONS:
+    if (
+        not isinstance(raw["scope_relation"], str)
+        or raw["scope_relation"] not in SCOPE_RELATIONS
+    ):
         raise ConvergenceError("invalid scope_relation")
-    if raw["status"] not in FINDING_STATUSES:
+    if not isinstance(raw["status"], str) or raw["status"] not in FINDING_STATUSES:
         raise ConvergenceError("invalid status")
     admission = raw.get("admission_reason")
-    if admission is not None and admission not in ADMISSION_REASONS:
+    if admission is not None and (
+        not isinstance(admission, str) or admission not in ADMISSION_REASONS
+    ):
         raise ConvergenceError("invalid admission_reason")
     origin = raw["origin_head"]
-    if not isinstance(origin, str) or not origin:
+    if not isinstance(origin, str) or not HEX40.fullmatch(origin):
         raise ConvergenceError("origin_head is invalid")
     return ReviewFinding(
         id=fid,
@@ -285,6 +299,15 @@ def decision_from_legacy_artifact(
     if not isinstance(summary, str) or not (1 <= len(summary) <= MAX_SUMMARY_LEN):
         raise ConvergenceError("summary is invalid")
     if "findings" in artifact and artifact["findings"] is not None:
+        if not isinstance(artifact["findings"], list):
+            raise ConvergenceError("findings must be a list")
+        if any(
+            artifact.get(field) not in (None, [])
+            for field in ("blockers", "major_notes", "minor_notes")
+        ):
+            raise ConvergenceError(
+                "structured findings cannot be mixed with legacy finding lists"
+            )
         findings = tuple(normalize_finding(item) for item in artifact["findings"])
         structured = True
     else:
@@ -404,6 +427,8 @@ class ReviewRoundState:
 
     def to_persistence_fields(self) -> dict[str, Any]:
         return {
+            "kind": REVIEW_STATE_KIND,
+            "version": REVIEW_STATE_VERSION,
             "review_protocol_version": self.review_protocol_version,
             "review_mode": self.review_mode,
             "review_round": self.review_round,
@@ -426,6 +451,96 @@ class ReviewRoundState:
             "major_notes": list(self.major_notes),
             "minor_notes": list(self.minor_notes),
         }
+
+
+def build_review_state(
+    state: ReviewRoundState,
+    *,
+    issue_number: int,
+    pr_number: int,
+) -> dict[str, Any]:
+    """Build the complete v3 state written to the linked Issue comment.
+
+    This is the sole producer for the durable ReviewState consumed by
+    ``project_context`` and ``prompt_builder``.  The caller owns the external
+    comment transport; this function only creates a fully bound, semantically
+    validated JSON object.  The local Steward journal deliberately stores a
+    smaller projection because it is bounded and never replaces this shared
+    recovery record.
+    """
+
+    if not isinstance(state, ReviewRoundState):
+        raise ConvergenceError("review state must be a ReviewRoundState")
+    if type(issue_number) is not int or issue_number <= 0:
+        raise ConvergenceError("issue_number is invalid")
+    if type(pr_number) is not int or pr_number <= 0:
+        raise ConvergenceError("pr_number is invalid")
+    payload = state.to_persistence_fields()
+    payload.update({"issue_number": issue_number, "pr_number": pr_number})
+    reason = _validate_v3_review_state(payload)
+    if reason is not None:
+        raise ConvergenceError(f"review state is not complete: {reason}")
+    return payload
+
+
+def review_state_json(
+    state: ReviewRoundState,
+    *,
+    issue_number: int,
+    pr_number: int,
+) -> str:
+    """Serialize one complete durable state with stable bytes for a comment."""
+
+    return json.dumps(
+        build_review_state(
+            state,
+            issue_number=issue_number,
+            pr_number=pr_number,
+        ),
+        ensure_ascii=True,
+        sort_keys=True,
+        indent=2,
+    )
+
+
+def parse_review_state(value: object) -> tuple[int, int, ReviewRoundState]:
+    """Recover a validated v3 state and its Issue/PR binding from JSON data."""
+
+    if not isinstance(value, dict):
+        raise ConvergenceError("review state must be an object")
+    issue_number = value.get("issue_number")
+    pr_number = value.get("pr_number")
+    if type(issue_number) is not int or issue_number <= 0:
+        raise ConvergenceError("issue_number is invalid")
+    if type(pr_number) is not int or pr_number <= 0:
+        raise ConvergenceError("pr_number is invalid")
+    reason = _validate_v3_review_state(value)
+    if reason is not None:
+        raise ConvergenceError(f"review state is not complete: {reason}")
+    state = ReviewRoundState(
+        review_protocol_version=value["review_protocol_version"],
+        review_mode=value["review_mode"],
+        review_round=value["review_round"],
+        prior_reviewed_head=value["prior_reviewed_head"],
+        reviewed_base=value["base_sha"],
+        reviewed_head=value["head_sha"],
+        reviewed_range=value["reviewed_range"],
+        verdict=value["verdict"],
+        findings=tuple(dict(item) for item in value["findings"]),
+        finding_ledger_digest=value["finding_ledger_digest"],
+        open_blocker_ids=tuple(value["open_blocker_ids"]),
+        deferred_note_ids=tuple(value["deferred_note_ids"]),
+        decision_required_ids=tuple(value["decision_required_ids"]),
+        autonomous_repairs_remaining=value["autonomous_repairs_remaining"],
+        stop_reason=value["stop_reason"],
+        artifact_sha256=value["artifact_sha256"],
+        review_workflow_run_id=value["review_workflow_run_id"],
+        summary=value["summary"],
+        blockers=tuple(value["blockers"]),
+        major_notes=tuple(value["major_notes"]),
+        minor_notes=tuple(value["minor_notes"]),
+    )
+    return issue_number, pr_number, state
 
 
 def initial_r1_state(
@@ -794,6 +909,184 @@ def _state_from_decision(
     )
 
 
+V3_REVIEW_STATE_FIELDS = frozenset(
+    {
+        "kind",
+        "version",
+        "review_protocol_version",
+        "review_mode",
+        "review_round",
+        "prior_reviewed_head",
+        "base_sha",
+        "head_sha",
+        "reviewed_range",
+        "verdict",
+        "findings",
+        "finding_ledger_digest",
+        "open_blocker_ids",
+        "deferred_note_ids",
+        "decision_required_ids",
+        "autonomous_repairs_remaining",
+        "stop_reason",
+        "artifact_sha256",
+        "review_workflow_run_id",
+        "summary",
+        "blockers",
+        "major_notes",
+        "minor_notes",
+    }
+)
+
+
+def _validate_v3_review_state(state: dict[str, Any]) -> str | None:
+    """Return a reason when a persisted v3 state is not semantically complete."""
+
+    missing = sorted(V3_REVIEW_STATE_FIELDS - set(state))
+    if missing:
+        return "incomplete_v3_state"
+    if state.get("kind") != REVIEW_STATE_KIND:
+        return "invalid_review_state_kind"
+    if (
+        type(state.get("version")) is not int
+        or state.get("version") != REVIEW_STATE_VERSION
+    ):
+        return "unsupported_review_state_version"
+    if state.get("review_protocol_version") != REVIEW_PROTOCOL_VERSION:
+        return "invalid_review_protocol_version"
+    if not isinstance(state.get("review_mode"), str) or state["review_mode"] not in REVIEW_MODES:
+        return "invalid_review_mode"
+    review_round = state.get("review_round")
+    if type(review_round) is not int or not 1 <= review_round <= MAX_SUBSTANTIVE_REVIEW_ROUNDS:
+        return "invalid_review_round"
+    expected_mode = "full" if review_round == 1 else "repair_verification"
+    if state["review_mode"] != expected_mode:
+        return "invalid_review_mode_round_pair"
+    base_sha = state.get("base_sha")
+    head_sha = state.get("head_sha")
+    prior_head = state.get("prior_reviewed_head")
+    if not isinstance(base_sha, str) or not HEX40.fullmatch(base_sha):
+        return "invalid_review_base"
+    if not isinstance(head_sha, str) or not HEX40.fullmatch(head_sha):
+        return "invalid_review_head"
+    if "reviewed_head" in state and state["reviewed_head"] != head_sha:
+        return "conflicting_review_head"
+    if prior_head != "" and (
+        not isinstance(prior_head, str) or not HEX40.fullmatch(prior_head)
+    ):
+        return "invalid_prior_reviewed_head"
+    if state.get("reviewed_range") != f"{base_sha}...{head_sha}":
+        return "invalid_reviewed_range"
+    if not isinstance(state.get("verdict"), str) or state["verdict"] not in CONTROL_VERDICTS:
+        return "invalid_review_verdict"
+
+    raw_findings = state.get("findings")
+    if not isinstance(raw_findings, list) or len(raw_findings) > MAX_FINDINGS:
+        return "invalid_findings"
+    try:
+        findings = [normalize_finding(item) for item in raw_findings]
+    except (ConvergenceError, TypeError, ValueError):
+        return "invalid_findings"
+    finding_ids = [finding.id for finding in findings]
+    if len(set(finding_ids)) != len(finding_ids):
+        return "duplicate_finding_ids"
+    if not isinstance(state.get("finding_ledger_digest"), str) or not HEX64.fullmatch(
+        state["finding_ledger_digest"]
+    ):
+        return "invalid_finding_ledger_digest"
+    if ledger_digest(findings) != state["finding_ledger_digest"]:
+        return "finding_ledger_digest_mismatch"
+
+    expected_ids = {
+        "open_blocker_ids": [
+            finding.id
+            for finding in findings
+            if finding.disposition == "block_current_head" and finding.status == "open"
+        ],
+        "deferred_note_ids": [
+            finding.id
+            for finding in findings
+            if finding.disposition == "defer" or finding.status == "deferred"
+        ],
+        "decision_required_ids": [
+            finding.id
+            for finding in findings
+            if finding.disposition == "decision_required" and finding.status == "open"
+        ],
+    }
+    for field, expected in expected_ids.items():
+        value = state.get(field)
+        if (
+            not isinstance(value, list)
+            or len(value) > MAX_FINDINGS
+            or any(not isinstance(item, str) for item in value)
+            or len(set(value)) != len(value)
+            or value != expected
+        ):
+            return f"invalid_{field}"
+
+    expected_blockers = [
+        finding.evidence
+        for finding in findings
+        if finding.disposition == "block_current_head" and finding.status == "open"
+    ]
+    expected_major_notes = [
+        finding.evidence
+        for finding in findings
+        if finding.severity == "major"
+        and (finding.disposition == "defer" or finding.status == "deferred")
+    ]
+    expected_minor_notes = [
+        finding.evidence
+        for finding in findings
+        if finding.severity in {"minor", "note"}
+        and (finding.disposition == "defer" or finding.status == "deferred")
+    ]
+    if (
+        state["blockers"] != expected_blockers
+        or state["major_notes"] != expected_major_notes
+        or state["minor_notes"] != expected_minor_notes
+    ):
+        return "review_note_projection_mismatch"
+    try:
+        validate_decision_cross_fields(
+            ReviewDecision(
+                verdict=state["verdict"],
+                summary=state["summary"],
+                reviewed_base=base_sha,
+                reviewed_head=head_sha,
+                reviewed_range=state["reviewed_range"],
+                review_mode=state["review_mode"],
+                review_round=review_round,
+                findings=tuple(findings),
+            )
+        )
+    except ConvergenceError:
+        return "invalid_review_state_cross_fields"
+
+    repairs = state.get("autonomous_repairs_remaining")
+    if type(repairs) is not int or not 0 <= repairs <= MAX_AUTONOMOUS_REPAIR_BATCHES:
+        return "invalid_repair_budget"
+    if not isinstance(state.get("stop_reason"), str):
+        return "invalid_stop_reason"
+    artifact_sha = state.get("artifact_sha256")
+    if not isinstance(artifact_sha, str) or (
+        artifact_sha and not HEX64.fullmatch(artifact_sha)
+    ):
+        return "invalid_artifact_sha256"
+    workflow_run = state.get("review_workflow_run_id")
+    if workflow_run is not None and (
+        type(workflow_run) is not int or workflow_run < 0
+    ):
+        return "invalid_review_workflow_run_id"
+    if not isinstance(state.get("summary"), str):
+        return "invalid_summary"
+    for field in ("blockers", "major_notes", "minor_notes"):
+        value = state.get(field)
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            return f"invalid_{field}"
+    return None
+
+
 def project_capsule_fields(state: dict[str, Any] | None, *, expected_head: str | None) -> dict[str, Any]:
     """Bounded non-authoritative capsule projection. Never decides severity/repair."""
     unavailable = {
@@ -813,7 +1106,7 @@ def project_capsule_fields(state: dict[str, Any] | None, *, expected_head: str |
     if not state or not isinstance(state, dict):
         return unavailable
     version = state.get("version")
-    if version not in (2, 3):
+    if type(version) is not int or version not in (2, 3):
         out = dict(unavailable)
         out["review_state"] = "conflict"
         out["availability"] = "conflict"
@@ -844,6 +1137,13 @@ def project_capsule_fields(state: dict[str, Any] | None, *, expected_head: str |
             "availability": "legacy",
             "verdict": state.get("verdict"),
         }
+    validation_error = _validate_v3_review_state(state)
+    if validation_error:
+        out = dict(unavailable)
+        out["review_state"] = "conflict"
+        out["availability"] = "conflict"
+        out["unavailable_reason"] = validation_error
+        return out
     return {
         "review_protocol_version": state.get("review_protocol_version") or REVIEW_PROTOCOL_VERSION,
         "review_mode": state.get("review_mode"),

@@ -4,7 +4,7 @@
 Accepted documents and GitHub remain authoritative.  The checkpoint written by
 this tool is a bounded, non-authoritative projection in Git's private path; it
 can prove that a later local checkout still matches a handoff, but it cannot
-select a packet, grant authority, or make lifecycle/CI/review decisions. Its
+select a mission, grant authority, or make lifecycle/CI/review decisions. Its
 verification evidence is bound to the accepted dispatch capsule's exact
 ordered verification contract; a rehashed object with a substituted evidence
 set or an inconsistent work-state/verification-state invariant is rejected
@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping
 from dataclasses import dataclass, fields as dataclass_fields, replace
-import fnmatch
 import hashlib
 import importlib.util
 import json
@@ -52,35 +51,25 @@ MISSION_CONTRACT_PATH = ROOT / "scripts" / "agent-control" / "mission_contract.p
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
-PACKET_ID = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$")
-PACKET_TOKEN = re.compile(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b")
+MISSION_ID = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$")
 OPTION_ID = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 ROUTE_MARKER = re.compile(
     r"<!--\s*agent-context-routes:v1\s*(?P<payload>\{.*?\})\s*-->", re.DOTALL
 )
-WEAK_DISPATCH_MARKER = re.compile(
-    r"<!--\s*weak-agent-dispatch:v1\s*(?P<payload>\{.*?\})\s*-->", re.DOTALL
-)
-PACKET_HEADING = re.compile(
-    r"^#{2,3} Packet (?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)(?:\b.*)?$",
-    re.MULTILINE,
-)
-PACKET_STATE = re.compile(r"^\*\*State:\*\*\s*`(?P<state>[A-Z0-9_]+)`", re.MULTILINE)
-STAGE_HEADING = re.compile(r"^## Stage .+$", re.MULTILINE)
 
 ROLES = frozenset({"planning", "coding", "review", "ci-repair", "operator", "contributor"})
 WORK_STATES = frozenset({"WIP", "STABLE", "BLOCKED", "OUTCOME_UNKNOWN"})
 VERIFICATION_STATES = frozenset({"PASS", "FAIL", "NOT_RUN", "BLOCKED"})
-EXECUTABLE_PACKET_STATES = frozenset({"READY_FOR_EXECUTION", "IN_PROGRESS"})
+EXECUTABLE_MISSION_STATES = frozenset({"READY_FOR_EXECUTION", "IN_PROGRESS"})
 ENTRY_CONTEXT_MODES = frozenset(
-    {"FRESH_PACKET", "RESUME_CHECKPOINT", "REPAIR", "STOP"}
+    {"FRESH_MISSION", "RESUME_CHECKPOINT", "REPAIR", "STOP"}
 )
 
 
 def _checkpoint_write_commands(
     *,
     role: str,
-    packet_id: str,
+    mission_id: str,
     context_mode: str,
     checkpoint_allowed: bool,
     verification_commands: tuple[str, ...],
@@ -98,8 +87,8 @@ def _checkpoint_write_commands(
         "checkpoint-auto",
         "--role",
         role,
-        "--packet",
-        packet_id,
+        "--mission",
+        mission_id,
     ]
     stable_available = all(
         _safe_verification_argv(command) is not None
@@ -167,8 +156,8 @@ DISPATCH_CAPSULE_FIELDS = frozenset(
         "goal",
         "known_store_mutations",
         "ordered_steps",
-        "packet_id",
-        "packet_state",
+        "mission_id",
+        "mission_state",
         "pause_gates",
         "plan_lane_state",
         "promotion_evidence_sha256",
@@ -193,15 +182,32 @@ CANONICAL_DOCUMENTS = frozenset(
         "AGENTS.md",
         "README.md",
         "CLAUDE.md",
+        "docs/ARCHITECTURE.md",
+        "docs/AUTONOMY.md",
+        "docs/ROADMAP.md",
+        "docs/RUNBOOK.md",
+    }
+)
+CANONICAL_DOCUMENT_PATHS = (
+    "START_HERE.md",
+    "AGENTS.md",
+    "README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/AUTONOMY.md",
+    "docs/ROADMAP.md",
+    "docs/RUNBOOK.md",
+)
+LEGACY_ACCEPTED_ROUTE_DOCUMENTS = frozenset(
+    {
         "docs/ARCHITECTURE_BOOK.md",
         "docs/CURRENT_STATUS.md",
         "docs/NEXT_DECISION.md",
         "docs/FUTURE_ROUTE.md",
         "docs/MODULE_MAP.md",
         "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
-        "docs/RUNBOOK.md",
     }
 )
+
 
 class SessionContextError(ValueError):
     """A bounded context or recovery contract could not be proved."""
@@ -292,29 +298,6 @@ def _dispatch_path_list(value: object, field: str) -> list[str]:
     return result
 
 
-def _validate_legacy_mission_compatibility(
-    packet: PacketBinding, capsule: dict[str, object]
-) -> None:
-    """Double-read the new contract without creating a writer or authority."""
-
-    spec = importlib.util.spec_from_file_location(
-        "session_context_mission_contract", MISSION_CONTRACT_PATH
-    )
-    if spec is None or spec.loader is None:
-        raise SessionContextError("legacy_mission_contract_unavailable")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-        module.validate_registered_campaign()
-        module.validate_legacy_compatibility(packet.to_wire(), capsule)
-    except SessionContextError:
-        raise
-    except Exception as exc:
-        reason = getattr(exc, "reason", "legacy_mission_compatibility_invalid")
-        raise SessionContextError(str(reason)) from exc
-
-
 def _path_is_allowed(path: str, allowed_paths: list[str]) -> bool:
     for allowed in allowed_paths:
         if allowed.endswith("/") and path.startswith(allowed):
@@ -363,11 +346,11 @@ class RouteContract:
 
 
 @dataclass(frozen=True)
-class PacketBinding:
-    packet_id: str
+class MissionBinding:
+    mission_id: str
     state: str
     source_path: str
-    packet_sha256: str
+    mission_sha256: str
     allowed_paths: tuple[str, ...]
     forbidden_next_actions: tuple[str, ...]
     execution_authorized: bool
@@ -380,15 +363,15 @@ class PacketBinding:
         value: object,
         *,
         require_checkpoint: bool = False,
-    ) -> PacketBinding:
+    ) -> MissionBinding:
         if isinstance(value, cls):
             value = value.to_wire()
-        wire = _wire_mapping(value, "packet_binding_invalid")
+        wire = _wire_mapping(value, "mission_binding_invalid")
         allowed_fields = {
-            "packet_id",
+            "mission_id",
             "state",
             "source_path",
-            "packet_sha256",
+            "mission_sha256",
             "allowed_paths",
             "forbidden_next_actions",
             "execution_authorized",
@@ -396,33 +379,33 @@ class PacketBinding:
             "dispatch_lane",
         }
         required_fields = {
-            "packet_id",
+            "mission_id",
             "state",
             "source_path",
-            "packet_sha256",
+            "mission_sha256",
             "allowed_paths",
         }
         if not required_fields.issubset(wire) or not set(wire).issubset(allowed_fields):
-            raise SessionContextError("packet_binding_fields_invalid")
-        packet_id = wire.get("packet_id")
-        if not isinstance(packet_id, str) or not PACKET_ID.fullmatch(packet_id):
-            raise SessionContextError("packet_id_invalid")
-        state = _bounded_text(wire.get("state"), "packet_state", max_chars=64)
+            raise SessionContextError("mission_binding_fields_invalid")
+        mission_id = wire.get("mission_id")
+        if not isinstance(mission_id, str) or not MISSION_ID.fullmatch(mission_id):
+            raise SessionContextError("mission_id_invalid")
+        state = _bounded_text(wire.get("state"), "mission_state", max_chars=64)
         if not re.fullmatch(r"[A-Z0-9_]+", state):
-            raise SessionContextError("packet_state_invalid")
-        source_path = _repo_path(wire.get("source_path"), "packet_source_path")
-        packet_sha256 = _validate_sha(
-            wire.get("packet_sha256"), "packet_sha256", SHA256
+            raise SessionContextError("mission_state_invalid")
+        source_path = _repo_path(wire.get("source_path"), "mission_source_path")
+        mission_sha256 = _validate_sha(
+            wire.get("mission_sha256"), "mission_sha256", SHA256
         )
         raw_allowed = wire.get("allowed_paths")
         if not isinstance(raw_allowed, list):
-            raise SessionContextError("packet_allowed_paths_invalid")
+            raise SessionContextError("mission_allowed_paths_invalid")
         try:
             allowed_paths = tuple(
-                sorted({_repo_path(item, "packet_allowed_path") for item in raw_allowed})
+                sorted({_repo_path(item, "mission_allowed_path") for item in raw_allowed})
             )
         except SessionContextError as exc:
-            raise SessionContextError("packet_allowed_paths_invalid") from exc
+            raise SessionContextError("mission_allowed_paths_invalid") from exc
         raw_forbidden = wire.get("forbidden_next_actions", [])
         forbidden_next_actions = tuple(
             _bounded_string_list(
@@ -433,25 +416,25 @@ class PacketBinding:
         )
         execution_authorized = wire.get("execution_authorized", False)
         if not isinstance(execution_authorized, bool):
-            raise SessionContextError("packet_execution_authority_invalid")
+            raise SessionContextError("mission_execution_authority_invalid")
         checkpoint_allowed = wire.get("checkpoint_allowed", execution_authorized)
         if not isinstance(checkpoint_allowed, bool):
-            raise SessionContextError("packet_checkpoint_authority_invalid")
+            raise SessionContextError("mission_checkpoint_authority_invalid")
         dispatch_lane_value = wire.get("dispatch_lane")
         dispatch_lane = (
             None
             if dispatch_lane_value is None
             else _bounded_text(
                 dispatch_lane_value,
-                "packet_dispatch_lane",
+                "mission_dispatch_lane",
                 max_chars=128,
             )
         )
         model = cls(
-            packet_id=packet_id,
+            mission_id=mission_id,
             state=state,
             source_path=source_path,
-            packet_sha256=packet_sha256,
+            mission_sha256=mission_sha256,
             allowed_paths=allowed_paths,
             forbidden_next_actions=forbidden_next_actions,
             execution_authorized=execution_authorized,
@@ -459,19 +442,19 @@ class PacketBinding:
             dispatch_lane=dispatch_lane,
         )
         if require_checkpoint and (
-            model.source_path != "docs/NEXT_DECISION.md"
-            or model.state not in EXECUTABLE_PACKET_STATES
+            model.source_path != "docs/AUTONOMY.md"
+            or model.state not in EXECUTABLE_MISSION_STATES
             or not model.checkpoint_allowed
         ):
-            raise SessionContextError("packet_not_executable")
+            raise SessionContextError("mission_not_executable")
         return model
 
     def to_wire(self) -> dict[str, object]:
         return {
-            "packet_id": self.packet_id,
+            "mission_id": self.mission_id,
             "state": self.state,
             "source_path": self.source_path,
-            "packet_sha256": self.packet_sha256,
+            "mission_sha256": self.mission_sha256,
             "allowed_paths": list(self.allowed_paths),
             "forbidden_next_actions": list(self.forbidden_next_actions),
             "execution_authorized": self.execution_authorized,
@@ -486,9 +469,9 @@ class ContextRoute:
     authority: str
     accepted_main_sha: str
     role: str
-    packet_id: str
-    packet_state: str
-    packet_sha256: str
+    mission_id: str
+    mission_state: str
+    mission_sha256: str
     documents: tuple[str, ...]
     included_options: tuple[str, ...]
     execution_authorized: bool
@@ -501,52 +484,14 @@ class ContextRoute:
             "authority": self.authority,
             "accepted_main_sha": self.accepted_main_sha,
             "role": self.role,
-            "packet_id": self.packet_id,
-            "packet_state": self.packet_state,
-            "packet_sha256": self.packet_sha256,
+            "mission_id": self.mission_id,
+            "mission_state": self.mission_state,
+            "mission_sha256": self.mission_sha256,
             "documents": list(self.documents),
             "included_options": list(self.included_options),
             "execution_authorized": self.execution_authorized,
             "checkpoint_allowed": self.checkpoint_allowed,
             "bootstrap_order": list(self.bootstrap_order),
-        }
-
-
-@dataclass(frozen=True)
-class PacketExtract:
-    schema_version: str
-    authority: str
-    accepted_main_sha: str
-    source_path: str
-    document_sha256: str
-    packet_id: str
-    packet_state: str
-    packet_sha256: str
-    profile_id: str | None
-    worker_tier: str | None
-    prerequisites: tuple[str, ...]
-    execution_authorized: bool
-    stage_heading: str | None
-    global_contract: str
-    packet_text: str
-
-    def to_wire(self) -> dict[str, object]:
-        return {
-            "schema_version": self.schema_version,
-            "authority": self.authority,
-            "accepted_main_sha": self.accepted_main_sha,
-            "source_path": self.source_path,
-            "document_sha256": self.document_sha256,
-            "packet_id": self.packet_id,
-            "packet_state": self.packet_state,
-            "packet_sha256": self.packet_sha256,
-            "profile_id": self.profile_id,
-            "worker_tier": self.worker_tier,
-            "prerequisites": list(self.prerequisites),
-            "execution_authorized": self.execution_authorized,
-            "stage_heading": self.stage_heading,
-            "global_contract": self.global_contract,
-            "packet_text": self.packet_text,
         }
 
 
@@ -636,10 +581,10 @@ class VerificationResult:
 class SessionCheckpoint:
     schema_version: str
     projection_authority: str
-    packet_id: str
-    packet_state: str
-    packet_source_path: str
-    packet_sha256: str
+    mission_id: str
+    mission_state: str
+    mission_source_path: str
+    mission_sha256: str
     accepted_main_sha: str
     head_sha: str
     branch: str
@@ -661,10 +606,10 @@ class SessionCheckpoint:
         return {
             "schema_version": self.schema_version,
             "projection_authority": self.projection_authority,
-            "packet_id": self.packet_id,
-            "packet_state": self.packet_state,
-            "packet_source_path": self.packet_source_path,
-            "packet_sha256": self.packet_sha256,
+            "mission_id": self.mission_id,
+            "mission_state": self.mission_state,
+            "mission_source_path": self.mission_source_path,
+            "mission_sha256": self.mission_sha256,
             "accepted_main_sha": self.accepted_main_sha,
             "head_sha": self.head_sha,
             "branch": self.branch,
@@ -690,7 +635,7 @@ class SessionCheckpoint:
         cls,
         *,
         snapshot: CheckoutSnapshot,
-        packet: PacketBinding,
+        mission: MissionBinding,
         role: str,
         work_state: str,
         completed_step: str,
@@ -704,10 +649,10 @@ class SessionCheckpoint:
         candidate = cls(
             schema_version=CHECKPOINT_SCHEMA,
             projection_authority=CHECKPOINT_AUTHORITY,
-            packet_id=packet.packet_id,
-            packet_state=packet.state,
-            packet_source_path=packet.source_path,
-            packet_sha256=packet.packet_sha256,
+            mission_id=mission.mission_id,
+            mission_state=mission.state,
+            mission_source_path=mission.source_path,
+            mission_sha256=mission.mission_sha256,
             accepted_main_sha=snapshot.accepted_main_sha,
             head_sha=snapshot.head_sha,
             branch=snapshot.branch,
@@ -738,16 +683,16 @@ class SessionCheckpoint:
             raise SessionContextError("checkpoint_version_unsupported")
         if wire.get("projection_authority") != CHECKPOINT_AUTHORITY:
             raise SessionContextError("checkpoint_authority_invalid")
-        packet_id = wire.get("packet_id")
-        if not isinstance(packet_id, str) or not PACKET_ID.fullmatch(packet_id):
-            raise SessionContextError("checkpoint_packet_invalid")
-        packet_state = wire.get("packet_state")
-        if not isinstance(packet_state, str) or packet_state not in EXECUTABLE_PACKET_STATES:
-            raise SessionContextError("checkpoint_packet_state_invalid")
-        if wire.get("packet_source_path") != "docs/NEXT_DECISION.md":
-            raise SessionContextError("checkpoint_packet_source_invalid")
-        packet_sha256 = _validate_sha(
-            wire.get("packet_sha256"), "checkpoint_packet_sha256", SHA256
+        mission_id = wire.get("mission_id")
+        if not isinstance(mission_id, str) or not MISSION_ID.fullmatch(mission_id):
+            raise SessionContextError("checkpoint_mission_invalid")
+        mission_state = wire.get("mission_state")
+        if not isinstance(mission_state, str) or mission_state not in EXECUTABLE_MISSION_STATES:
+            raise SessionContextError("checkpoint_mission_state_invalid")
+        if wire.get("mission_source_path") != "docs/AUTONOMY.md":
+            raise SessionContextError("checkpoint_mission_source_invalid")
+        mission_sha256 = _validate_sha(
+            wire.get("mission_sha256"), "checkpoint_mission_sha256", SHA256
         )
         accepted_main_sha = _validate_sha(
             wire.get("accepted_main_sha"), "checkpoint_accepted_main_sha", SHA40
@@ -814,10 +759,10 @@ class SessionCheckpoint:
         model = cls(
             schema_version=CHECKPOINT_SCHEMA,
             projection_authority=CHECKPOINT_AUTHORITY,
-            packet_id=packet_id,
-            packet_state=packet_state,
-            packet_source_path="docs/NEXT_DECISION.md",
-            packet_sha256=packet_sha256,
+            mission_id=mission_id,
+            mission_state=mission_state,
+            mission_source_path="docs/AUTONOMY.md",
+            mission_sha256=mission_sha256,
             accepted_main_sha=accepted_main_sha,
             head_sha=head_sha,
             branch=branch,
@@ -846,7 +791,7 @@ class ResumeDisposition:
     authority: str
     disposition: str
     reason: str
-    packet_id: str | None
+    mission_id: str | None
     checkpoint_id: str | None
     next_permitted_action: str
     forbidden_next_actions: tuple[str, ...]
@@ -857,7 +802,7 @@ class ResumeDisposition:
             "authority": self.authority,
             "disposition": self.disposition,
             "reason": self.reason,
-            "packet_id": self.packet_id,
+            "mission_id": self.mission_id,
             "checkpoint_id": self.checkpoint_id,
             "next_permitted_action": self.next_permitted_action,
             "forbidden_next_actions": list(self.forbidden_next_actions),
@@ -873,9 +818,9 @@ class SessionEntry:
     document_source_binding: str
     checkout_snapshot_json: str
     role: str
-    packet_id: str
-    packet_state: str
-    packet_sha256: str
+    mission_id: str
+    mission_state: str
+    mission_sha256: str
     context_mode: str
     resume_disposition: str
     resume_reason: str
@@ -905,9 +850,9 @@ class SessionEntry:
             "document_source_binding": self.document_source_binding,
             "checkout_snapshot": json.loads(self.checkout_snapshot_json),
             "role": self.role,
-            "packet_id": self.packet_id,
-            "packet_state": self.packet_state,
-            "packet_sha256": self.packet_sha256,
+            "mission_id": self.mission_id,
+            "mission_state": self.mission_state,
+            "mission_sha256": self.mission_sha256,
             "context_mode": self.context_mode,
             "resume_disposition": self.resume_disposition,
             "resume_reason": self.resume_reason,
@@ -999,16 +944,16 @@ class SessionEntry:
         role = wire.get("role")
         if not isinstance(role, str) or role not in ROLES:
             raise SessionContextError("session_entry_role_invalid")
-        packet_id = wire.get("packet_id")
-        if not isinstance(packet_id, str) or not PACKET_ID.fullmatch(packet_id):
-            raise SessionContextError("session_entry_packet_invalid")
-        packet_state = _bounded_text(
-            wire.get("packet_state"), "session_entry_packet_state", max_chars=64
+        mission_id = wire.get("mission_id")
+        if not isinstance(mission_id, str) or not MISSION_ID.fullmatch(mission_id):
+            raise SessionContextError("session_entry_mission_invalid")
+        mission_state = _bounded_text(
+            wire.get("mission_state"), "session_entry_mission_state", max_chars=64
         )
-        if not re.fullmatch(r"[A-Z0-9_]+", packet_state):
-            raise SessionContextError("session_entry_packet_state_invalid")
-        packet_sha256 = _validate_sha(
-            wire.get("packet_sha256"), "session_entry_packet_sha256", SHA256
+        if not re.fullmatch(r"[A-Z0-9_]+", mission_state):
+            raise SessionContextError("session_entry_mission_state_invalid")
+        mission_sha256 = _validate_sha(
+            wire.get("mission_sha256"), "session_entry_mission_sha256", SHA256
         )
         context_mode = wire.get("context_mode")
         if context_mode not in ENTRY_CONTEXT_MODES:
@@ -1123,13 +1068,13 @@ class SessionEntry:
                 allow_empty=True,
             )
             if (
-                capsule.get("packet_id") != packet_id
+                capsule.get("mission_id") != mission_id
                 or capsule_allowed != list(allowed_paths)
                 or capsule_forbidden != list(forbidden_next_actions)
             ):
                 raise SessionContextError("session_entry_dispatch_binding_invalid")
             expected_contract = _verification_contract_sha256(
-                packet_id, packet_sha256, capsule["verification"]
+                mission_id, mission_sha256, capsule["verification"]
             )
             if verification_contract_sha256 != expected_contract:
                 raise SessionContextError(
@@ -1172,14 +1117,14 @@ class SessionEntry:
             ):
                 raise SessionContextError("session_entry_checkpoint_commands_invalid")
         expected_disposition = {
-            "FRESH_PACKET": "RESUME",
+            "FRESH_MISSION": "RESUME",
             "RESUME_CHECKPOINT": "RESUME",
             "REPAIR": "REPAIR",
             "STOP": "DECISION_REQUIRED",
         }[context_mode]
         if resume_disposition != expected_disposition:
             raise SessionContextError("session_entry_mode_invalid")
-        if context_mode != "STOP" and packet_state not in EXECUTABLE_PACKET_STATES:
+        if context_mode != "STOP" and mission_state not in EXECUTABLE_MISSION_STATES:
             raise SessionContextError("session_entry_mode_invalid")
         checkout_dirty_paths = set(checkout_snapshot.dirty_paths)
         if any(path not in checkout_dirty_paths for path in owned_paths):
@@ -1189,13 +1134,13 @@ class SessionEntry:
                 raise SessionContextError("session_entry_checkpoint_binding_invalid")
         elif (
             checkpoint.accepted_main_sha != accepted_main_sha
-            or checkpoint.packet_id != packet_id
-            or checkpoint.packet_state != packet_state
-            or checkpoint.packet_sha256 != packet_sha256
+            or checkpoint.mission_id != mission_id
+            or checkpoint.mission_state != mission_state
+            or checkpoint.mission_sha256 != mission_sha256
             or checkpoint.owned_paths != owned_paths
         ):
             raise SessionContextError("session_entry_checkpoint_binding_invalid")
-        if context_mode == "FRESH_PACKET":
+        if context_mode == "FRESH_MISSION":
             expected_reads = capsule["read_paths"]
             if (
                 checkpoint is not None
@@ -1225,13 +1170,13 @@ class SessionEntry:
             or (role != "coding" and checkpoint_allowed)
             or (
                 execution_authorized
-                and context_mode not in {"FRESH_PACKET", "RESUME_CHECKPOINT"}
+                and context_mode not in {"FRESH_MISSION", "RESUME_CHECKPOINT"}
             )
         ):
             raise SessionContextError("session_entry_authority_flags_invalid")
         expected_checkpoint_commands = _checkpoint_write_commands(
             role=role,
-            packet_id=packet_id,
+            mission_id=mission_id,
             context_mode=context_mode,
             checkpoint_allowed=checkpoint_allowed,
             verification_commands=verification_commands,
@@ -1240,12 +1185,12 @@ class SessionEntry:
             raise SessionContextError("session_entry_checkpoint_commands_invalid")
         if document_source == "accepted" and context_mode != "STOP":
             assert capsule is not None
-            packet_projection = PacketBinding.from_wire(
+            mission_projection = MissionBinding.from_wire(
                 {
-                    "packet_id": packet_id,
-                    "state": packet_state,
-                    "source_path": "docs/NEXT_DECISION.md",
-                    "packet_sha256": packet_sha256,
+                    "mission_id": mission_id,
+                    "state": mission_state,
+                    "source_path": "docs/AUTONOMY.md",
+                    "mission_sha256": mission_sha256,
                     "allowed_paths": list(allowed_paths),
                     "forbidden_next_actions": list(forbidden_next_actions),
                     "execution_authorized": execution_authorized,
@@ -1257,7 +1202,7 @@ class SessionEntry:
             rebuilt = classify_resume(
                 checkpoint,
                 snapshot=checkout_snapshot,
-                packet=packet_projection,
+                mission=mission_projection,
                 dispatch_capsule=capsule,
             )
             if (
@@ -1280,9 +1225,9 @@ class SessionEntry:
             document_source_binding=document_source_binding,
             checkout_snapshot_json=_canonical_json(checkout_snapshot.to_wire()),
             role=role,
-            packet_id=packet_id,
-            packet_state=packet_state,
-            packet_sha256=packet_sha256,
+            mission_id=mission_id,
+            mission_state=mission_state,
+            mission_sha256=mission_sha256,
             context_mode=context_mode,
             resume_disposition=resume_disposition,
             resume_reason=resume_reason,
@@ -1316,8 +1261,19 @@ class SessionEntry:
         return model
 
 
-def parse_route_contract(document: str) -> RouteContract:
-    """Parse the sole machine-readable role router from ``START_HERE.md``."""
+def parse_route_contract(
+    document: str, *, allow_legacy_accepted_documents: bool = False
+) -> RouteContract:
+    """Parse the sole machine-readable role router from ``START_HERE.md``.
+
+    Accepted ``main`` may briefly contain the pre-PR6 route while the
+    migration is being promoted.  That compatibility is explicit and scoped
+    to the accepted-source loader; working-tree routes remain current-only.
+    """
+
+    allowed_documents = CANONICAL_DOCUMENTS
+    if allow_legacy_accepted_documents:
+        allowed_documents = CANONICAL_DOCUMENTS | LEGACY_ACCEPTED_ROUTE_DOCUMENTS
 
     if not isinstance(document, str) or len(document.encode("utf-8")) > MAX_ROUTE_DOCUMENT_BYTES:
         raise SessionContextError("route_document_unavailable_or_too_large")
@@ -1349,31 +1305,38 @@ def parse_route_contract(document: str) -> RouteContract:
             raise SessionContextError("route_contract_role_fields_invalid")
         required = route["required"]
         optional = route["optional"]
+        if not isinstance(required, list) or not required or any(
+            not isinstance(path, str) for path in required
+        ):
+            raise SessionContextError("route_contract_required_invalid")
+        normalized_required = list(dict.fromkeys(required))
         if (
-            not isinstance(required, list)
-            or not required
-            or len(required) > maximum
-            or required[0] != "START_HERE.md"
-            or len(required) != len(set(required))
-            or any(path not in CANONICAL_DOCUMENTS for path in required)
+            len(normalized_required) > maximum
+            or normalized_required[0] != "START_HERE.md"
+            or any(path not in allowed_documents for path in normalized_required)
         ):
             raise SessionContextError("route_contract_required_invalid")
         if not isinstance(optional, dict) or len(optional) > MAX_ROUTE_DOCUMENTS:
             raise SessionContextError("route_contract_optional_invalid")
+        normalized_optional: dict[str, str] = {}
         for option, path in optional.items():
+            normalized_path = path
             if (
                 not isinstance(option, str)
                 or not OPTION_ID.fullmatch(option)
-                or path not in CANONICAL_DOCUMENTS
-                or path in required
+                or normalized_path not in allowed_documents
             ):
                 raise SessionContextError("route_contract_optional_invalid")
+            if normalized_path not in normalized_required:
+                if normalized_path in normalized_optional.values():
+                    raise SessionContextError("route_contract_optional_invalid")
+                normalized_optional[option] = normalized_path
         normalized_roles.append(
             (
                 role,
                 RouteRole(
-                    required=tuple(required),
-                    optional=tuple(sorted(optional.items())),
+                    required=tuple(normalized_required),
+                    optional=tuple(sorted(normalized_optional.items())),
                 ),
             )
         )
@@ -1389,7 +1352,7 @@ def build_route(
     *,
     role: str,
     accepted_main_sha: str,
-    packet: object,
+    mission: object,
     include: list[str] | None = None,
 ) -> dict[str, object]:
     """Return one bounded document manifest for a known repository role."""
@@ -1397,7 +1360,7 @@ def build_route(
     _validate_sha(accepted_main_sha, "accepted_main_sha", SHA40)
     if not isinstance(contract, RouteContract) or role not in ROLES:
         raise SessionContextError("role_unsupported")
-    packet_model = PacketBinding.from_wire(packet)
+    mission_model = MissionBinding.from_wire(mission)
     selected = include or []
     if len(selected) != len(set(selected)):
         raise SessionContextError("route_option_duplicated")
@@ -1417,9 +1380,9 @@ def build_route(
         authority="accepted_documents_select_context; route_grants_no_execution_authority",
         accepted_main_sha=accepted_main_sha,
         role=role,
-        packet_id=packet_model.packet_id,
-        packet_state=packet_model.state,
-        packet_sha256=packet_model.packet_sha256,
+        mission_id=mission_model.mission_id,
+        mission_state=mission_model.state,
+        mission_sha256=mission_model.mission_sha256,
         documents=tuple(documents),
         included_options=tuple(selected),
         execution_authorized=False,
@@ -1430,403 +1393,6 @@ def build_route(
             "run session_context.py resume before touching an existing worktree",
             "stop on any DECISION_REQUIRED disposition",
         ),
-    ).to_wire()
-
-
-def _packet_blocks(document: str) -> list[tuple[str, int, int, str]]:
-    headings = list(PACKET_HEADING.finditer(document))
-    blocks: list[tuple[str, int, int, str]] = []
-    for index, heading in enumerate(headings):
-        end = headings[index + 1].start() if index + 1 < len(headings) else len(document)
-        blocks.append(
-            (
-                heading.group("packet"),
-                heading.start(),
-                end,
-                document[heading.start() : end].rstrip() + "\n",
-            )
-        )
-    return blocks
-
-
-def _one_packet_block(document: str, packet_id: str) -> tuple[int, int, str]:
-    matches = [item for item in _packet_blocks(document) if item[0] == packet_id]
-    if not matches:
-        raise SessionContextError("packet_missing")
-    if len(matches) != 1:
-        raise SessionContextError("packet_duplicated")
-    _packet, start, end, block = matches[0]
-    return start, end, block
-
-
-def _packet_state(block: str) -> str:
-    states = PACKET_STATE.findall(block)
-    if len(states) != 1:
-        raise SessionContextError("packet_state_missing_or_ambiguous")
-    return states[0]
-
-
-def extract_packet(
-    document: str,
-    *,
-    packet_id: str,
-    accepted_main_sha: str,
-    source_path: str,
-) -> dict[str, object]:
-    """Extract one packet without carrying the neighboring route portfolio."""
-
-    if not isinstance(packet_id, str) or not PACKET_ID.fullmatch(packet_id):
-        raise SessionContextError("packet_id_invalid")
-    _validate_sha(accepted_main_sha, "accepted_main_sha", SHA40)
-    if source_path not in {"docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md"}:
-        raise SessionContextError("packet_source_invalid")
-    start, _end, block = _one_packet_block(document, packet_id)
-    state = _packet_state(block)
-    stages = [match for match in STAGE_HEADING.finditer(document, 0, start)]
-    stage_heading = stages[-1].group(0) if stages else None
-    boundaries = [match.start() for match in STAGE_HEADING.finditer(document)]
-    inventory = re.search(r"^## Portfolio Inventory Manifest$", document, re.MULTILINE)
-    if inventory:
-        boundaries.append(inventory.start())
-    global_end = min(boundaries) if boundaries else start
-    global_contract = document[:global_end].rstrip() + "\n"
-    prerequisite_line = re.search(
-        r"^\*\*Prerequisites?:\*\*\s*(?P<value>.+)$", block, re.MULTILINE
-    )
-    prerequisites = (
-        re.findall(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+", prerequisite_line.group("value"))
-        if prerequisite_line
-        else []
-    )
-    prerequisites = list(dict.fromkeys(item for item in prerequisites if item != packet_id))
-    profile = re.search(r"^\*\*Execution profile:\*\*\s*`?([^`\n]+)`?", block, re.MULTILINE)
-    tier = re.search(r"^\*\*Worker tier:\*\*\s*`?([^`\n]+)`?", block, re.MULTILINE)
-    is_future = source_path == "docs/FUTURE_ROUTE.md"
-    profile_id = profile.group(1).strip() if profile else None
-    worker_tier = tier.group(1).strip() if tier else None
-    if is_future and profile_id is None:
-        inventory = re.search(
-            r"<!--\s*future-route-inventory:v1\s*(?P<payload>\{.*?\})\s*-->",
-            document,
-            re.DOTALL,
-        )
-        if inventory:
-            try:
-                payload = json.loads(inventory.group("payload"))
-                rows = payload.get("profiles") if isinstance(payload, dict) else None
-                if isinstance(rows, list):
-                    for row in rows:
-                        if (
-                            isinstance(row, list)
-                            and len(row) >= 5
-                            and row[0] == packet_id
-                        ):
-                            profile_id = f"{packet_id}.v1"
-                            worker_tier = row[2] if isinstance(row[2], str) else None
-                            break
-            except json.JSONDecodeError:
-                pass
-    return PacketExtract(
-        schema_version="agent_packet_extract.v1",
-        authority="routing_projection_only" if is_future else "current_document_projection",
-        accepted_main_sha=accepted_main_sha,
-        source_path=source_path,
-        document_sha256=hashlib.sha256(document.encode("utf-8")).hexdigest(),
-        packet_id=packet_id,
-        packet_state=state,
-        packet_sha256=hashlib.sha256(block.encode("utf-8")).hexdigest(),
-        profile_id=profile_id,
-        worker_tier=worker_tier,
-        prerequisites=tuple(prerequisites),
-        execution_authorized=not is_future and state in EXECUTABLE_PACKET_STATES,
-        stage_heading=stage_heading,
-        global_contract=global_contract,
-        packet_text=block,
-    ).to_wire()
-
-
-def _packet_contract_binding(
-    block: str,
-    payload: Mapping[str, object],
-    status_document: str,
-) -> None:
-    """Cross-bind one executable packet to prose and accepted receipts."""
-
-    allowed_line = re.search(
-        r"^\*\*Allowed delta:\*\*\s*(?P<value>.+)$", block, re.MULTILINE
-    )
-    if allowed_line is None:
-        raise SessionContextError("packet_allowed_paths_binding_invalid")
-    allowed_text = allowed_line.group("value").split(" Do not modify", 1)[0]
-    backticked = re.findall(r"`([^`]+)`", allowed_text)
-    raw_patterns = (
-        backticked
-        if backticked
-        else [item.strip().rstrip(".") for item in allowed_text.split(",")]
-    )
-    patterns = [
-        item for item in raw_patterns
-        if item and ("/" in item or item.endswith((".md", ".py", ".yml")))
-    ]
-    try:
-        capsule_allowed = sorted(
-            {
-                _repo_path(item, "packet_allowed_path")
-                for item in _bounded_string_list(
-                    payload.get("allowed_paths"), "packet_allowed_paths"
-                )
-            }
-        )
-    except SessionContextError as exc:
-        raise SessionContextError("packet_allowed_paths_binding_invalid") from exc
-    if not patterns or any(
-        not any(
-            (pattern.endswith("/") and path.startswith(pattern))
-            or fnmatch.fnmatchcase(path, pattern)
-            for pattern in patterns
-        )
-        for path in capsule_allowed
-    ):
-        raise SessionContextError("packet_allowed_paths_binding_invalid")
-    # Reverse binding: every concrete repository file named by the prose
-    # Allowed delta must also be admitted by the machine capsule. Without
-    # this direction a packet could mandate edits to paths (for example the
-    # route tests) that the dispatch capsule would then treat as
-    # preserve-only. Glob and directory patterns stay one-directional.
-    uncovered = [
-        pattern
-        for pattern in patterns
-        if "*" not in pattern
-        and "?" not in pattern
-        and "[" not in pattern
-        and (ROOT / pattern).is_file()
-        and not any(
-            (allowed.endswith("/") and pattern.startswith(allowed))
-            or fnmatch.fnmatchcase(pattern, allowed)
-            for allowed in capsule_allowed
-        )
-    ]
-    if uncovered:
-        raise SessionContextError("packet_allowed_paths_binding_invalid")
-
-    prerequisite_line = re.search(
-        r"^\*\*Prerequisites?:\*\*\s*(?P<value>.+)$", block, re.MULTILINE
-    )
-    prose_prerequisites = (
-        list(dict.fromkeys(PACKET_TOKEN.findall(prerequisite_line.group("value"))))
-        if prerequisite_line is not None
-        else []
-    )
-    capsule_prerequisites = _bounded_string_list(
-        payload.get("prerequisites"), "packet_prerequisites", allow_empty=True
-    )
-    packet_id = payload.get("packet_id")
-    stabilization_bridge = packet_id == "PE7-ROUTE-AUTONOMY-STABILIZATION-1"
-    stabilization_prerequisite = (
-        "Accepted main `306b500c43270ca83d7cb9defd365140b525187c` contains the "
-        "accepted route, control-binding, SQLite race-repair, and route-autonomy "
-        "stabilization implementation receipts. PR #416 exact head "
-        "`9ce548f620314303b37753a18539c17b5daa6698`, canonical workflow "
-        "`31630036965`, merge `306b500c43270ca83d7cb9defd365140b525187c`, "
-        "and controller status smoke `31631388199` prove the repaired dispatch "
-        "surface. The failed attempt `ea64fd6d-fb8e-5c54-b86c-ae8f96c17550` "
-        "and route10 remain non-resumable historical evidence."
-    )
-    if (
-        (
-            stabilization_bridge
-            and (
-                prerequisite_line is None
-                or prerequisite_line.group("value") != stabilization_prerequisite
-            )
-        )
-        or (not stabilization_bridge and prose_prerequisites != capsule_prerequisites)
-        or any(PACKET_ID.fullmatch(item) is None for item in capsule_prerequisites)
-    ):
-        raise SessionContextError("packet_prerequisite_binding_invalid")
-
-    receipts = _bounded_string_list(
-        payload.get("prerequisite_receipts"),
-        "packet_prerequisite_receipts",
-        allow_empty=True,
-    )
-    receipt_section = re.search(
-        r"^## Accepted Packet Receipts$(?P<body>.*?)(?=^## |\Z)",
-        status_document,
-        re.MULTILINE | re.DOTALL,
-    )
-    if receipt_section is None:
-        raise SessionContextError("packet_prerequisite_receipt_invalid")
-    accepted_rows: dict[str, str] = {}
-    for line in receipt_section.group("body").splitlines():
-        match = re.fullmatch(
-            r"\|\s*`(?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)`\s*"
-            r"\|\s*`COMPLETE`\s*\|\s*(?P<receipt>[^|]+?)\s*\|",
-            line,
-        )
-        if match is None:
-            continue
-        packet_id = match.group("packet")
-        if packet_id in accepted_rows:
-            raise SessionContextError("packet_prerequisite_receipt_invalid")
-        accepted_rows[packet_id] = match.group("receipt").strip()
-    if stabilization_bridge:
-        expected_prerequisites = [
-            "PE7-ROUTE-AUTOMATION-1",
-            "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1",
-            "PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1",
-        ]
-        expected_receipts = [
-            "PE7-ROUTE-AUTOMATION-1 COMPLETE: PR #390 exact head "
-            "24618e52c969adc93e7bc092c51dde6b2d0ffea9; merge "
-            "5481053c736e7db8481cabd9316741f2a5cd6c7a; canonical workflow "
-            "31467821768",
-            "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1 COMPLETE: "
-            "implementation PR #408 merge "
-            "57a86c78c3f9611ce48c5bce249721af23db5532; canonical workflow "
-            "31593460813; correction workflow 31594277043",
-            "PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1 COMPLETE: PR #413 "
-            "exact head fc8c005981d2fa12f0f494a131b839d65a46a8ba; canonical workflow "
-            "31611860646; merge 9cc118fa72d9d13a24cdf968cc5fc20dbe80b28f",
-            "Route bootstrap failure: attempt "
-            "ea64fd6d-fb8e-5c54-b86c-ae8f96c17550; accepted main "
-            "aa83ac1f5eada74199e0ce28ecb91d37a48769d6; HTTP 422 for 28 "
-            "inputs over GitHub maximum 25; no workflow run or downstream mutation",
-        ]
-        expected_accepted_rows = {
-            "PE7-ROUTE-AUTOMATION-1":
-                "PR #390 exact head `24618e52c969adc93e7bc092c51dde6b2d0ffea9`; "
-                "merge `5481053c736e7db8481cabd9316741f2a5cd6c7a`; exact-head `PASS`; "
-                "canonical workflow `31467821768`",
-            "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1":
-                "Authority PRs #406/#407/#409; implementation PR #408 exact head "
-                "`4a2dcf42728ae53f7daaec73e15310e8b0d67b59`; merge "
-                "`57a86c78c3f9611ce48c5bce249721af23db5532`; exact-head `PASS` on "
-                "both review axes; canonical workflow `31593460813`; #405 "
-                "retrospective correction workflow `31594277043` and production "
-                "readback bind actual head `e68ec0b3a7b78d3ca241922bf3995c2f3ba4ecfa` "
-                "while retaining `historical_merge_compliant=false`",
-            "PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1":
-                "PR #413 base `59cec5745ddd7f89ce8c099a5de2c7e3c3ec3a1e`; exact head "
-                "`fc8c005981d2fa12f0f494a131b839d65a46a8ba`; exact-head `PASS` "
-                "receipt comment `5268787985`; canonical workflow `31611860646`; "
-                "merge `9cc118fa72d9d13a24cdf968cc5fc20dbe80b28f`; deterministic "
-                "production-path concurrent-winner receipt reuse and genuine "
-                "missing-receipt rejection",
-        }
-        if capsule_prerequisites != expected_prerequisites or receipts != expected_receipts:
-            raise SessionContextError("packet_prerequisite_receipt_invalid")
-        for prerequisite_id, expected_receipt in expected_accepted_rows.items():
-            if accepted_rows.get(prerequisite_id) != expected_receipt:
-                raise SessionContextError("packet_prerequisite_receipt_invalid")
-        return
-
-    if len(receipts) != len(capsule_prerequisites):
-        raise SessionContextError("packet_prerequisite_receipt_invalid")
-    for index, prerequisite_id in enumerate(capsule_prerequisites):
-        accepted_receipt = accepted_rows.get(prerequisite_id)
-        if accepted_receipt is None:
-            raise SessionContextError("packet_prerequisite_receipt_invalid")
-        candidate = receipts[index]
-        prefix = f"{prerequisite_id} COMPLETE:"
-        if candidate.startswith(prefix):
-            candidate = candidate[len(prefix):].strip()
-        if candidate != accepted_receipt:
-            raise SessionContextError("packet_prerequisite_receipt_invalid")
-
-
-def current_packet_binding(
-    next_document: str,
-    status_document: str,
-    accepted_main_sha: str,
-) -> dict[str, object]:
-    """Bind the routed packet without interpreting prose as new authority."""
-
-    _validate_sha(accepted_main_sha, "accepted_main_sha", SHA40)
-    markers = list(WEAK_DISPATCH_MARKER.finditer(next_document))
-    if len(markers) == 1:
-        try:
-            payload = json.loads(markers[0].group("payload"))
-        except json.JSONDecodeError as exc:
-            raise SessionContextError("weak_dispatch_json_invalid") from exc
-        if not isinstance(payload, dict) or payload.get("schema_version") != "weak_agent_dispatch.v1":
-            raise SessionContextError("weak_dispatch_invalid")
-        packet_id = payload.get("packet_id")
-        if not isinstance(packet_id, str) or not PACKET_ID.fullmatch(packet_id):
-            raise SessionContextError("packet_id_invalid")
-        start, end, block = _one_packet_block(next_document, packet_id)
-        if markers[0].start() < start or markers[0].end() > end:
-            raise SessionContextError("weak_dispatch_outside_packet")
-        state = _packet_state(block)
-        active = re.search(
-            r"^## Active Routing$(?P<body>.*?)(?=^## |\Z)",
-            next_document,
-            re.MULTILINE | re.DOTALL,
-        )
-        active_body = active.group("body") if active else ""
-        numbered = re.findall(
-            r"^\s*\d+\.\s+`(?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)`",
-            active_body,
-            re.MULTILINE,
-        )
-        labelled = re.findall(
-            r"^Current packet:\s*(?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\s*$",
-            active_body,
-            re.MULTILINE,
-        )
-        routed = list(dict.fromkeys([*numbered, *labelled]))
-        if routed != [packet_id]:
-            raise SessionContextError("packet_not_current_route")
-        _packet_contract_binding(block, payload, status_document)
-        raw_allowed = payload.get("allowed_paths")
-        if not isinstance(raw_allowed, list) or not raw_allowed:
-            raise SessionContextError("packet_allowed_paths_invalid")
-        try:
-            allowed_paths = sorted(
-                {_repo_path(item, "packet_allowed_path") for item in raw_allowed}
-            )
-        except SessionContextError as exc:
-            raise SessionContextError("packet_allowed_paths_invalid") from exc
-        forbidden = payload.get("forbidden_next_actions")
-        forbidden_next = _bounded_string_list(forbidden, "forbidden_next_actions")
-        return PacketBinding.from_wire(
-            {
-                "packet_id": packet_id,
-                "state": state,
-                "source_path": "docs/NEXT_DECISION.md",
-                "packet_sha256": hashlib.sha256(block.encode("utf-8")).hexdigest(),
-                "allowed_paths": allowed_paths,
-                "forbidden_next_actions": forbidden_next,
-                "execution_authorized": False,
-                "checkpoint_allowed": state in EXECUTABLE_PACKET_STATES,
-                "dispatch_lane": payload.get("dispatch_lane"),
-            }
-        ).to_wire()
-    if markers:
-        raise SessionContextError("weak_dispatch_duplicated")
-
-    active = re.search(
-        r"^## Active Routing$(?P<body>.*?)(?=^## |\Z)",
-        next_document,
-        re.MULTILINE | re.DOTALL,
-    )
-    routed = PACKET_TOKEN.findall(active.group("body") if active else "")
-    routed = list(dict.fromkeys(routed))
-    if len(routed) != 1:
-        raise SessionContextError("current_packet_missing_or_ambiguous")
-    _start, _end, block = _one_packet_block(next_document, routed[0])
-    return PacketBinding(
-        packet_id=routed[0],
-        state=_packet_state(block),
-        source_path="docs/NEXT_DECISION.md",
-        packet_sha256=hashlib.sha256(block.encode("utf-8")).hexdigest(),
-        allowed_paths=(),
-        forbidden_next_actions=(
-            "Do not execute without a machine-bound dispatch contract.",
-        ),
-        execution_authorized=False,
-        checkpoint_allowed=False,
-        dispatch_lane=None,
     ).to_wire()
 
 
@@ -1849,13 +1415,13 @@ def _verification_results(value: object) -> list[dict[str, str]]:
 
 
 def _verification_contract_sha256(
-    packet_id: str, packet_sha256: str, verification: list[str]
+    mission_id: str, mission_sha256: str, verification: list[str]
 ) -> str:
     """Bind the checkpoint's verification evidence to one canonical contract.
 
     The contract digest is computed from the accepted dispatch capsule's exact
-    ordered verification commands plus the bound packet identity. A checkpoint
-    produced under a different required set, order, or packet cannot match the
+    ordered verification commands plus the bound mission identity. A checkpoint
+    produced under a different required set, order, or mission cannot match the
     digest, so a rehashed or substituted evidence set is never silently
     accepted as stable proof.
     """
@@ -1864,8 +1430,8 @@ def _verification_contract_sha256(
     return _json_sha256(
         {
             "schema_version": CHECKPOINT_SCHEMA,
-            "packet_id": packet_id,
-            "packet_sha256": packet_sha256,
+            "mission_id": mission_id,
+            "mission_sha256": mission_sha256,
             "verification": ordered,
         }
     )
@@ -1903,7 +1469,7 @@ def _enforce_verification_invariant(
 def _build_checkpoint(
     *,
     snapshot: object,
-    packet: object,
+    mission: object,
     role: str,
     work_state: str,
     completed_step: str,
@@ -1916,7 +1482,7 @@ def _build_checkpoint(
     """Build a digest-bound handoff for the exact current worktree."""
 
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
-    packet_model = PacketBinding.from_wire(packet, require_checkpoint=True)
+    mission_model = MissionBinding.from_wire(mission, require_checkpoint=True)
     if role != "coding":
         raise SessionContextError("checkpoint_role_invalid")
     if work_state not in WORK_STATES:
@@ -1925,7 +1491,7 @@ def _build_checkpoint(
     owned = sorted({_repo_path(path, "owned_path", allow_directory=False) for path in owned_paths})
     if not set(owned).issubset(dirty_paths):
         raise SessionContextError("owned_path_not_dirty")
-    allowed = list(packet_model.allowed_paths)
+    allowed = list(mission_model.allowed_paths)
     if any(not _path_is_allowed(path, allowed) for path in owned):
         raise SessionContextError("owned_path_not_allowed")
     preserve = sorted(set(dirty_paths) - set(owned))
@@ -1941,14 +1507,14 @@ def _build_checkpoint(
     )
     receipt = SessionCheckpoint.create(
         snapshot=snapshot_model,
-        packet=packet_model,
+        mission=mission_model,
         role=role,
         work_state=work_state,
         completed_step=_bounded_text(completed_step, "completed_step"),
         owned_paths=tuple(owned),
         preserve_paths=tuple(preserve),
         verification_contract_sha256=_verification_contract_sha256(
-            packet_model.packet_id, packet_model.packet_sha256, required
+            mission_model.mission_id, mission_model.mission_sha256, required
         ),
         verification_results=checks,
         next_action=_bounded_text(next_action, "next_action"),
@@ -1960,20 +1526,21 @@ def _build_checkpoint(
 def build_auto_checkpoint(
     *,
     snapshot: object,
-    packet: object,
+    mission: object,
     dispatch_capsule: object,
     role: str,
 ) -> dict[str, object]:
-    """Build a fixed-text WIP checkpoint from accepted packet and checkout facts."""
+    """Build a fixed-text WIP checkpoint from accepted mission and checkout facts."""
 
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
-    packet_model = PacketBinding.from_wire(packet, require_checkpoint=True)
-    capsule = _bind_dispatch_capsule(dispatch_capsule, packet_model)
+    mission_model = MissionBinding.from_wire(mission, require_checkpoint=True)
+    capsule = _canonical_dispatch_capsule(dispatch_capsule)
+    _bind_dispatch_capsule(mission_model, capsule)
     if role != "coding":
         raise SessionContextError("checkpoint_auto_role_invalid")
     return _build_auto_checkpoint(
         snapshot_model=snapshot_model,
-        packet_model=packet_model,
+        mission_model=mission_model,
         capsule=capsule,
         role=role,
         work_state="WIP",
@@ -1987,7 +1554,7 @@ def build_auto_checkpoint(
 def build_stable_auto_checkpoint(
     *,
     snapshot: object,
-    packet: object,
+    mission: object,
     dispatch_capsule: object,
     role: str,
 ) -> dict[str, object]:
@@ -2002,8 +1569,9 @@ def build_stable_auto_checkpoint(
     """
 
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
-    packet_model = PacketBinding.from_wire(packet, require_checkpoint=True)
-    capsule = _bind_dispatch_capsule(dispatch_capsule, packet_model)
+    mission_model = MissionBinding.from_wire(mission, require_checkpoint=True)
+    capsule = _canonical_dispatch_capsule(dispatch_capsule)
+    _bind_dispatch_capsule(mission_model, capsule)
     if role != "coding":
         raise SessionContextError("checkpoint_auto_role_invalid")
     parsed = [_safe_verification_argv(check) for check in capsule["verification"]]
@@ -2027,7 +1595,7 @@ def build_stable_auto_checkpoint(
         raise SessionContextError("checkout_changed_during_verification")
     return _build_auto_checkpoint(
         snapshot_model=snapshot_model,
-        packet_model=packet_model,
+        mission_model=mission_model,
         capsule=capsule,
         role=role,
         work_state="STABLE",
@@ -2038,7 +1606,7 @@ def build_stable_auto_checkpoint(
 def _build_auto_checkpoint(
     *,
     snapshot_model: CheckoutSnapshot,
-    packet_model: PacketBinding,
+    mission_model: MissionBinding,
     capsule: dict[str, object],
     role: str,
     work_state: str,
@@ -2047,31 +1615,31 @@ def _build_auto_checkpoint(
     owned_paths = [
         path
         for path in snapshot_model.dirty_paths
-        if _path_is_allowed(path, list(packet_model.allowed_paths))
+        if _path_is_allowed(path, list(mission_model.allowed_paths))
     ]
     if not owned_paths:
         raise SessionContextError("checkpoint_auto_no_owned_paths")
     terminal = work_state == "STABLE"
     return _build_checkpoint(
         snapshot=snapshot_model.to_wire(),
-        packet=packet_model.to_wire(),
+        mission=mission_model.to_wire(),
         role=role,
         work_state=work_state,
         completed_step=(
-            f"{packet_model.packet_id} implementation complete."
+            f"{mission_model.mission_id} implementation complete."
             if terminal
-            else f"Captured bounded WIP for {packet_model.packet_id}; completion not asserted."
+            else f"Captured bounded WIP for {mission_model.mission_id}; completion not asserted."
         ),
         owned_paths=owned_paths,
         verification_commands=list(capsule["verification"]),
         verification_results=verification_results,
         next_action=(
-            "No permitted next packet; terminal STABLE checkpoint."
+            "No permitted next mission; terminal STABLE checkpoint."
             if terminal
             else "Inspect only the checkpoint-owned paths, then continue the earliest "
             "incomplete ordered step from the bound dispatch capsule."
         ),
-        forbidden_next_actions=list(packet_model.forbidden_next_actions),
+        forbidden_next_actions=list(mission_model.forbidden_next_actions),
     )
 
 
@@ -2083,7 +1651,7 @@ def validate_checkpoint(receipt: object) -> dict[str, object]:
 
 def _disposition(
     receipt: SessionCheckpoint | None,
-    packet: PacketBinding,
+    mission: MissionBinding,
     disposition: str,
     reason: str,
     action: str,
@@ -2095,13 +1663,13 @@ def _disposition(
         authority="recovery_projection_only",
         disposition=disposition,
         reason=reason,
-        packet_id=packet.packet_id,
+        mission_id=mission.mission_id,
         checkpoint_id=receipt.checkpoint_id if receipt else None,
         next_permitted_action=action,
         forbidden_next_actions=(
             receipt.forbidden_next_actions
             if receipt
-            else packet.forbidden_next_actions
+            else mission.forbidden_next_actions
         ),
     ).to_wire()
 
@@ -2110,13 +1678,13 @@ def classify_resume(
     receipt: object | None,
     *,
     snapshot: object,
-    packet: object,
+    mission: object,
     dispatch_capsule: object | None = None,
 ) -> dict[str, object]:
     """Classify exact recovery as RESUME, REPAIR, or DECISION_REQUIRED.
 
     ``dispatch_capsule`` must be the current accepted dispatch contract for
-    the bound packet. Its ordered verification set defines the only evidence
+    the bound mission. Its ordered verification set defines the only evidence
     that can support a STABLE boundary; a checkpoint whose verification
     contract, exact result set, or work-state invariant does not match is
     rejected rather than silently adapted.
@@ -2124,12 +1692,12 @@ def classify_resume(
 
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
     try:
-        packet_model = PacketBinding.from_wire(packet, require_checkpoint=True)
+        mission_model = MissionBinding.from_wire(mission, require_checkpoint=True)
     except SessionContextError:
         try:
-            packet_projection = PacketBinding.from_wire(packet)
+            mission_projection = MissionBinding.from_wire(mission)
         except SessionContextError:
-            packet_projection = None
+            mission_projection = None
         try:
             receipt_projection = (
                 SessionCheckpoint.from_wire(receipt) if receipt is not None else None
@@ -2140,8 +1708,8 @@ def classify_resume(
             schema_version="agent_session_resume.v1",
             authority="recovery_projection_only",
             disposition="DECISION_REQUIRED",
-            reason="packet_not_executable",
-            packet_id=packet_projection.packet_id if packet_projection else None,
+            reason="mission_not_executable",
+            mission_id=mission_projection.mission_id if mission_projection else None,
             checkpoint_id=(
                 receipt_projection.checkpoint_id if receipt_projection else None
             ),
@@ -2152,8 +1720,8 @@ def classify_resume(
                 receipt_projection.forbidden_next_actions
                 if receipt_projection
                 else (
-                    packet_projection.forbidden_next_actions
-                    if receipt is None and packet_projection
+                    mission_projection.forbidden_next_actions
+                    if receipt is None and mission_projection
                     else ()
                 )
             ),
@@ -2166,14 +1734,14 @@ def classify_resume(
         ):
             return _disposition(
                 None,
-                packet_model,
+                mission_model,
                 "RESUME",
                 "clean_accepted_baseline",
-                "Enter the current packet only through its authorized dispatch lane.",
+                "Enter the current mission only through its authorized dispatch lane.",
             )
         return _disposition(
             None,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
             "checkpoint_missing_for_noncanonical_checkout",
             "Identify the owner of the existing branch/WIP before changing any file.",
@@ -2182,7 +1750,7 @@ def classify_resume(
     if receipt_model.work_state == "OUTCOME_UNKNOWN":
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
             "checkpoint_outcome_unknown",
             "Resolve external-effect status with the named authority owner.",
@@ -2190,7 +1758,7 @@ def classify_resume(
     if receipt_model.work_state == "BLOCKED":
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
             "checkpoint_blocked",
             "Resolve the recorded blocker before resuming implementation.",
@@ -2198,44 +1766,43 @@ def classify_resume(
     if snapshot_model.accepted_main_sha != receipt_model.accepted_main_sha:
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
             "accepted_main_changed",
             "Rebase the plan through the canonical planning owner; do not reuse this receipt.",
         )
     if (
-        packet_model.packet_id != receipt_model.packet_id
-        or packet_model.packet_sha256 != receipt_model.packet_sha256
-        or packet_model.source_path != receipt_model.packet_source_path
+        mission_model.mission_id != receipt_model.mission_id
+        or mission_model.mission_sha256 != receipt_model.mission_sha256
+        or mission_model.source_path != receipt_model.mission_source_path
     ):
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
-            "packet_binding_changed",
-            "Refresh the packet contract and obtain a replacement checkpoint.",
+            "mission_binding_changed",
+            "Refresh the mission contract and obtain a replacement checkpoint.",
         )
     if dispatch_capsule is None:
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
             "verification_contract_unavailable",
             "Refresh the accepted dispatch contract before resuming any work.",
         )
     capsule = _canonical_dispatch_capsule(dispatch_capsule)
-    if capsule.get("packet_id") != packet_model.packet_id:
-        raise SessionContextError("dispatch_binding_invalid")
+    _bind_dispatch_capsule(mission_model, capsule)
     required = list(
         _bounded_string_list(capsule["verification"], "verification", max_items=50)
     )
     expected_contract = _verification_contract_sha256(
-        packet_model.packet_id, packet_model.packet_sha256, required
+        mission_model.mission_id, mission_model.mission_sha256, required
     )
     if receipt_model.verification_contract_sha256 != expected_contract:
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
             "verification_contract_changed",
             "Refresh the checkpoint against the current accepted verification contract.",
@@ -2243,7 +1810,7 @@ def classify_resume(
     if [item.check for item in receipt_model.verification_results] != required:
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
             "verification_evidence_invalid",
             "The checkpoint evidence set does not match the accepted verification contract.",
@@ -2251,13 +1818,13 @@ def classify_resume(
     if snapshot_model.branch != receipt_model.branch:
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
             "branch_changed",
             "Return to the bound branch or obtain an owner-approved replacement handoff.",
         )
     current_paths = set(snapshot_model.dirty_paths)
-    allowed = list(packet_model.allowed_paths)
+    allowed = list(mission_model.allowed_paths)
     owned = set(receipt_model.owned_paths)
     if (
         any(not _path_is_allowed(path, allowed) for path in owned)
@@ -2265,7 +1832,7 @@ def classify_resume(
     ):
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
             "checkpoint_owned_paths_invalid",
             "Discard the forged or stale checkpoint and recover ownership before continuing.",
@@ -2276,7 +1843,7 @@ def classify_resume(
     if missing_preserve:
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
             "preserved_path_missing",
             "Recover or reconcile preserved user/other-agent work before continuing.",
@@ -2291,7 +1858,7 @@ def classify_resume(
     if changed_preserve:
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
             "preserved_path_changed",
             "Identify the owner of changed preserved work before continuing.",
@@ -2300,7 +1867,7 @@ def classify_resume(
     if any(not _path_is_allowed(path, allowed) for path in added):
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "DECISION_REQUIRED",
             "unbound_dirty_paths",
             "Identify and bind the new dirty paths before changing the worktree.",
@@ -2308,7 +1875,7 @@ def classify_resume(
     if added:
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "REPAIR",
             "uncheckpointed_allowed_changes",
             "Audit the added in-scope changes, rerun focused checks, and replace the checkpoint.",
@@ -2316,7 +1883,7 @@ def classify_resume(
     if snapshot_model.head_sha != receipt_model.head_sha:
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "REPAIR",
             "exact_head_changed",
             "Audit the new exact head and replace the stale checkpoint before implementation.",
@@ -2324,7 +1891,7 @@ def classify_resume(
     if snapshot_model.worktree_sha256 != receipt_model.worktree_sha256:
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "REPAIR",
             "worktree_changed_within_bound_paths",
             "Audit the changed owned paths, rerun focused checks, and replace the checkpoint.",
@@ -2332,14 +1899,14 @@ def classify_resume(
     if any(item.status == "FAIL" for item in receipt_model.verification_results):
         return _disposition(
             receipt_model,
-            packet_model,
+            mission_model,
             "REPAIR",
             "verification_failed",
-            "Repair the recorded failure within packet scope and replace the checkpoint.",
+            "Repair the recorded failure within mission scope and replace the checkpoint.",
         )
     return _disposition(
         receipt_model,
-        packet_model,
+        mission_model,
         "RESUME",
         "exact_checkpoint_match",
         receipt_model.next_action,
@@ -2360,7 +1927,7 @@ def _canonical_dispatch_capsule(value: object) -> dict[str, object]:
         raise SessionContextError("dispatch_capsule_fields_invalid")
     required = {
         "schema_version",
-        "packet_id",
+        "mission_id",
         "dispatch_lane",
         "external_effect_limit",
         "authority_consumption_allowed",
@@ -2396,9 +1963,9 @@ def _canonical_dispatch_capsule(value: object) -> dict[str, object]:
         }
     ):
         raise SessionContextError("dispatch_safety_contract_invalid")
-    packet_id = capsule.get("packet_id")
-    if not isinstance(packet_id, str) or not PACKET_ID.fullmatch(packet_id):
-        raise SessionContextError("dispatch_capsule_packet_invalid")
+    mission_id = capsule.get("mission_id")
+    if not isinstance(mission_id, str) or not MISSION_ID.fullmatch(mission_id):
+        raise SessionContextError("dispatch_capsule_mission_invalid")
     if promotion_fields.issubset(capsule):
         _validate_sha(
             capsule["promotion_evidence_sha256"],
@@ -2439,52 +2006,31 @@ def _canonical_dispatch_capsule(value: object) -> dict[str, object]:
 
 
 def _bind_dispatch_capsule(
-    value: object, packet: PacketBinding
-) -> dict[str, object]:
-    capsule = _canonical_dispatch_capsule(value)
-    capsule_allowed = sorted(
-        {
-            _repo_path(item, "dispatch_allowed_path")
-            for item in capsule["allowed_paths"]
-        }
-    )
-    capsule_forbidden = _bounded_string_list(
-        capsule["forbidden_next_actions"],
-        "dispatch_forbidden_next_actions",
-        allow_empty=True,
-    )
+    mission: MissionBinding, capsule: dict[str, object]
+) -> None:
+    """Require an executable capsule to preserve its mission's exact scope."""
+
     if (
-        capsule.get("packet_id") != packet.packet_id
-        or capsule.get("dispatch_lane") != packet.dispatch_lane
-        or capsule_allowed != list(packet.allowed_paths)
-        or capsule_forbidden != list(packet.forbidden_next_actions)
+        capsule.get("mission_id") != mission.mission_id
+        or capsule.get("mission_state") != mission.state
+        or mission.dispatch_lane is None
+        or capsule.get("dispatch_lane") != mission.dispatch_lane
     ):
         raise SessionContextError("dispatch_binding_invalid")
-    _validate_legacy_mission_compatibility(packet, capsule)
-    return capsule
-
-
-def current_dispatch_capsule(
-    next_document: str, packet: object
-) -> dict[str, object]:
-    """Return the sole current capsule after proving its packet boundaries."""
-
-    if not isinstance(next_document, str) or len(
-        next_document.encode("utf-8")
-    ) > MAX_ROUTE_DOCUMENT_BYTES:
-        raise SessionContextError("dispatch_document_unavailable_or_too_large")
-    packet_model = PacketBinding.from_wire(packet)
-    markers = list(WEAK_DISPATCH_MARKER.finditer(next_document))
-    if len(markers) != 1:
-        raise SessionContextError("weak_dispatch_missing_or_duplicated")
-    start, end, _block = _one_packet_block(next_document, packet_model.packet_id)
-    if markers[0].start() < start or markers[0].end() > end:
-        raise SessionContextError("weak_dispatch_outside_packet")
-    try:
-        value = json.loads(markers[0].group("payload"))
-    except json.JSONDecodeError as exc:
-        raise SessionContextError("weak_dispatch_json_invalid") from exc
-    return _bind_dispatch_capsule(value, packet_model)
+    capsule_allowed = tuple(
+        _dispatch_path_list(capsule["allowed_paths"], "dispatch_allowed_paths")
+    )
+    if capsule_allowed != mission.allowed_paths:
+        raise SessionContextError("dispatch_scope_binding_invalid")
+    capsule_forbidden = tuple(
+        _bounded_string_list(
+            capsule["forbidden_next_actions"],
+            "dispatch_forbidden_next_actions",
+            allow_empty=True,
+        )
+    )
+    if capsule_forbidden != mission.forbidden_next_actions:
+        raise SessionContextError("dispatch_forbidden_binding_invalid")
 
 
 def build_session_entry(
@@ -2494,30 +2040,32 @@ def build_session_entry(
     accepted_main_sha: str,
     document_source: str,
     document_source_binding: str,
-    packet: object,
+    mission: object,
     dispatch_capsule: object | None,
     snapshot: object,
     checkpoint: object | None,
 ) -> dict[str, object]:
     """Compose one bounded startup projection for fresh or resumed work.
 
-    ``dispatch_capsule`` is None when the current packet is not executable
+    ``dispatch_capsule`` is None when the current mission is not executable
     (for example a planning-parked window); the entry then fails closed with a
     ``DECISION_REQUIRED`` disposition and no execution or checkpoint surface.
     """
 
-    packet_model = PacketBinding.from_wire(packet)
+    mission_model = MissionBinding.from_wire(mission)
     route = build_route(
         contract,
         role=role,
         accepted_main_sha=accepted_main_sha,
-        packet=packet_model,
+        mission=mission_model,
     )
     capsule = (
         None
         if dispatch_capsule is None
-        else _bind_dispatch_capsule(dispatch_capsule, packet_model)
+        else _canonical_dispatch_capsule(dispatch_capsule)
     )
+    if capsule is not None and mission_model.checkpoint_allowed:
+        _bind_dispatch_capsule(mission_model, capsule)
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
     checkpoint_model = (
         SessionCheckpoint.from_wire(checkpoint) if checkpoint is not None else None
@@ -2525,7 +2073,7 @@ def build_session_entry(
     disposition = classify_resume(
         checkpoint_model,
         snapshot=snapshot_model,
-        packet=packet_model,
+        mission=mission_model,
         dispatch_capsule=capsule,
     )
     source_accepted = (
@@ -2538,18 +2086,18 @@ def build_session_entry(
             authority="recovery_projection_only",
             disposition="DECISION_REQUIRED",
             reason="unaccepted_document_source",
-            packet_id=packet_model.packet_id,
+            mission_id=mission_model.mission_id,
             checkpoint_id=None,
             next_permitted_action=(
                 "Refresh the accepted document projection before changing any file."
             ),
-            forbidden_next_actions=packet_model.forbidden_next_actions,
+            forbidden_next_actions=mission_model.forbidden_next_actions,
         ).to_wire()
     elif disposition["disposition"] == "RESUME":
         context_mode = (
             "RESUME_CHECKPOINT"
             if disposition["reason"] == "exact_checkpoint_match"
-            else "FRESH_PACKET"
+            else "FRESH_MISSION"
         )
     elif disposition["disposition"] == "REPAIR":
         context_mode = "REPAIR"
@@ -2558,7 +2106,7 @@ def build_session_entry(
     if context_mode == "RESUME_CHECKPOINT" and checkpoint_model is not None:
         owned_paths = checkpoint_model.owned_paths
         targeted_reads = checkpoint_model.owned_paths
-    elif context_mode == "FRESH_PACKET":
+    elif context_mode == "FRESH_MISSION":
         assert capsule is not None
         owned_paths = ()
         targeted_reads = tuple(
@@ -2588,14 +2136,14 @@ def build_session_entry(
         None
         if capsule is None
         else _verification_contract_sha256(
-            packet_model.packet_id, packet_model.packet_sha256, list(verification_commands)
+            mission_model.mission_id, mission_model.mission_sha256, list(verification_commands)
         )
     )
     checkpoint_allowed = (
         source_accepted
         and role == "coding"
         and disposition["disposition"] in {"RESUME", "REPAIR"}
-        and packet_model.checkpoint_allowed
+        and mission_model.checkpoint_allowed
     )
     entry = SessionEntry.create(
         schema_version=ENTRY_SCHEMA,
@@ -2605,9 +2153,9 @@ def build_session_entry(
         document_source_binding=document_source_binding,
         checkout_snapshot_json=_canonical_json(snapshot_model.to_wire()),
         role=role,
-        packet_id=packet_model.packet_id,
-        packet_state=packet_model.state,
-        packet_sha256=packet_model.packet_sha256,
+        mission_id=mission_model.mission_id,
+        mission_state=mission_model.state,
+        mission_sha256=mission_model.mission_sha256,
         context_mode=context_mode,
         resume_disposition=str(disposition["disposition"]),
         resume_reason=str(disposition["reason"]),
@@ -2622,7 +2170,7 @@ def build_session_entry(
             else None
         ),
         next_permitted_action=str(disposition["next_permitted_action"]),
-        allowed_paths=packet_model.allowed_paths,
+        allowed_paths=mission_model.allowed_paths,
         owned_paths=owned_paths,
         forbidden_next_actions=tuple(disposition["forbidden_next_actions"]),
         targeted_reads=targeted_reads,
@@ -2640,7 +2188,7 @@ def build_session_entry(
         execution_authorized=(
             source_accepted
             and disposition["disposition"] == "RESUME"
-            and packet_model.execution_authorized
+            and mission_model.execution_authorized
         ),
         checkpoint_allowed=checkpoint_allowed,
         checkpoint_write_commands_json=(
@@ -2649,7 +2197,7 @@ def build_session_entry(
             else _canonical_json(
                 _checkpoint_write_commands(
                     role=role,
-                    packet_id=packet_model.packet_id,
+                    mission_id=mission_model.mission_id,
                     context_mode=context_mode,
                     checkpoint_allowed=checkpoint_allowed,
                     verification_commands=verification_commands,
@@ -2817,22 +2365,23 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
     if source == "accepted":
         if not project_context.ensure_commit_available(sha, offline=offline):
             raise SessionContextError("accepted_main_commit_unavailable")
-        reader = lambda path: project_context.git_show_text(sha, path)
+
+        def reader(path: str) -> str:
+            content = project_context.git_show_text(sha, path)
+            compatibility_path = project_context.accepted_document_compatibility_path(
+                baseline, path
+            )
+            if not content and isinstance(compatibility_path, str):
+                content = project_context.git_show_text(sha, compatibility_path)
+            return content
+
         source_binding = sha
     elif source == "working-tree":
         reader = lambda path: (ROOT / path).read_text(encoding="utf-8")
         source_binding = "working_tree_unaccepted"
     else:
         raise SessionContextError("document_source_invalid")
-    documents = {
-        path: reader(path)
-        for path in (
-            "START_HERE.md",
-            "docs/CURRENT_STATUS.md",
-            "docs/NEXT_DECISION.md",
-            "docs/FUTURE_ROUTE.md",
-        )
-    }
+    documents = {path: reader(path) for path in CANONICAL_DOCUMENT_PATHS}
     if any(not value for value in documents.values()):
         raise SessionContextError("canonical_document_unavailable")
     return {
@@ -2840,8 +2389,38 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
         "accepted_main_source": baseline.get("source"),
         "document_source": source,
         "document_source_binding": source_binding,
+        "allow_legacy_accepted_documents": (
+            source == "accepted"
+            and project_context.accepted_document_compatibility_path(
+                baseline, "docs/AUTONOMY.md"
+            )
+            is not None
+        ),
         "documents": documents,
     }
+
+
+def _canonical_session_mission(documents: Mapping[str, str]) -> dict[str, object]:
+    """Represent the absence of an executable WorkCard without inventing one."""
+
+    source_path = "docs/AUTONOMY.md"
+    source = documents.get(source_path)
+    if not isinstance(source, str) or not source:
+        raise SessionContextError("canonical_document_unavailable")
+    return MissionBinding(
+        mission_id="CI-SESSION-ROUTE",
+        state="NO_ACTIVE_STAGE",
+        source_path=source_path,
+        mission_sha256=hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        allowed_paths=CANONICAL_DOCUMENT_PATHS,
+        forbidden_next_actions=(
+            "Do not infer execution authority from canonical context.",
+            "Do not continue without an accepted executable WorkCard.",
+        ),
+        execution_authorized=False,
+        checkpoint_allowed=False,
+        dispatch_lane=None,
+    ).to_wire()
 
 
 def _render_route(route: dict[str, Any]) -> str:
@@ -2850,7 +2429,7 @@ def _render_route(route: dict[str, Any]) -> str:
         "",
         f"- Accepted main: `{route['accepted_main_sha']}`",
         f"- Role: `{route['role']}`",
-        f"- Packet: `{route['packet_id']}` (`{route['packet_state']}`)",
+        f"- Mission: `{route['mission_id']}` (`{route['mission_state']}`)",
         f"- Execution authorized by this route: `{str(route['execution_authorized']).lower()}`",
         "",
         "Read in this order:",
@@ -2867,16 +2446,6 @@ def _print(value: dict[str, Any], output_format: str) -> None:
         print(json.dumps(value, indent=2, sort_keys=True))
     elif value.get("schema_version") == "agent_context_route.v1":
         print(_render_route(value), end="")
-    elif value.get("schema_version") == "agent_packet_extract.v1":
-        print(
-            f"<!-- accepted-main: {value['accepted_main_sha']} ; "
-            f"packet-sha256: {value['packet_sha256']} ; execution-authorized: false -->"
-        )
-        print(value["global_contract"], end="")
-        if value.get("stage_heading"):
-            print(value["stage_heading"])
-            print()
-        print(value["packet_text"], end="")
     else:
         print(json.dumps(value, indent=2, sort_keys=True))
 
@@ -2892,12 +2461,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     route.add_argument("--offline", action="store_true")
     route.add_argument("--format", choices=("markdown", "json"), default="markdown")
 
-    extract = subparsers.add_parser("extract-packet", help="Extract one current/future packet.")
-    extract.add_argument("--packet", required=True)
-    extract.add_argument("--source", choices=("accepted", "working-tree"), default="accepted")
-    extract.add_argument("--offline", action="store_true")
-    extract.add_argument("--format", choices=("markdown", "json"), default="markdown")
-
     enter = subparsers.add_parser(
         "enter", help="Compose one bounded fresh-or-resume startup projection."
     )
@@ -2908,10 +2471,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     checkpoint_auto = subparsers.add_parser(
         "checkpoint-auto",
-        help="Replace the local handoff from accepted packet and checkout facts.",
+        help="Replace the local handoff from accepted mission and checkout facts.",
     )
     checkpoint_auto.add_argument("--role", choices=("coding",), default="coding")
-    checkpoint_auto.add_argument("--packet", required=True)
+    checkpoint_auto.add_argument("--mission", required=True)
     checkpoint_auto.add_argument("--work-state", choices=("WIP", "STABLE"), required=True)
     checkpoint_auto.add_argument("--verify", action="store_true")
     checkpoint_auto.add_argument("--offline", action="store_true")
@@ -2930,26 +2493,20 @@ def main(argv: list[str] | None = None) -> int:
         loaded = _load_documents(source=source, offline=args.offline)
         accepted_main_sha = loaded["accepted_main_sha"]
         documents = loaded["documents"]
-        packet = current_packet_binding(
-            documents["docs/NEXT_DECISION.md"],
-            documents["docs/CURRENT_STATUS.md"],
-            accepted_main_sha,
-        )
-        if source != "accepted":
-            packet_model = PacketBinding.from_wire(packet)
-            packet = replace(
-                packet_model,
-                execution_authorized=False,
-                checkpoint_allowed=False,
-            ).to_wire()
+        mission = _canonical_session_mission(documents)
 
         if args.command == "route":
-            contract = parse_route_contract(documents["START_HERE.md"])
+            contract = parse_route_contract(
+                documents["START_HERE.md"],
+                allow_legacy_accepted_documents=loaded.get(
+                    "allow_legacy_accepted_documents", False
+                ),
+            )
             value = build_route(
                 contract,
                 role=args.role,
                 accepted_main_sha=accepted_main_sha,
-                packet=packet,
+                mission=mission,
                 include=args.include,
             )
             value["document_source"] = loaded["document_source"]
@@ -2957,39 +2514,22 @@ def main(argv: list[str] | None = None) -> int:
             _print(value, args.format)
             return 0
 
-        if args.command == "extract-packet":
-            source_path = (
-                "docs/NEXT_DECISION.md"
-                if args.packet == packet["packet_id"]
-                else "docs/FUTURE_ROUTE.md"
-            )
-            value = extract_packet(
-                documents[source_path],
-                packet_id=args.packet,
-                accepted_main_sha=accepted_main_sha,
-                source_path=source_path,
-            )
-            if source != "accepted":
-                value["execution_authorized"] = False
-                value["authority"] = "working_tree_unaccepted_projection_only"
-            _print(value, args.format)
-            return 0
-
         snapshot = capture_checkout(accepted_main_sha)
-        dispatch_capsule = (
-            None
-            if packet["state"] not in EXECUTABLE_PACKET_STATES
-            else current_dispatch_capsule(documents["docs/NEXT_DECISION.md"], packet)
-        )
+        dispatch_capsule = None
         if args.command == "enter":
             receipt = read_checkpoint()
             value = build_session_entry(
-                contract=parse_route_contract(documents["START_HERE.md"]),
+                contract=parse_route_contract(
+                    documents["START_HERE.md"],
+                    allow_legacy_accepted_documents=loaded.get(
+                        "allow_legacy_accepted_documents", False
+                    ),
+                ),
                 role=args.role,
                 accepted_main_sha=accepted_main_sha,
                 document_source=loaded["document_source"],
                 document_source_binding=loaded["document_source_binding"],
-                packet=packet,
+                mission=mission,
                 dispatch_capsule=dispatch_capsule,
                 snapshot=snapshot,
                 checkpoint=receipt,
@@ -3000,53 +2540,16 @@ def main(argv: list[str] | None = None) -> int:
             ]
 
         if args.command == "checkpoint-auto":
-            if args.packet != packet["packet_id"]:
-                raise SessionContextError("checkpoint_packet_not_current")
-            capsule = current_dispatch_capsule(documents["docs/NEXT_DECISION.md"], packet)
-            if args.work_state == "STABLE":
-                if not args.verify:
-                    raise SessionContextError("checkpoint_auto_stable_without_verification")
-                receipt = build_stable_auto_checkpoint(
-                    snapshot=snapshot,
-                    packet=packet,
-                    dispatch_capsule=capsule,
-                    role=args.role,
-                )
-            else:
-                if args.verify:
-                    raise SessionContextError("checkpoint_auto_wip_verification_invalid")
-                receipt = build_auto_checkpoint(
-                    snapshot=snapshot,
-                    packet=packet,
-                    dispatch_capsule=capsule,
-                    role=args.role,
-                )
-            if not args.no_write:
-                write_checkpoint(receipt)
-            _print(
-                {
-                    "schema_version": CHECKPOINT_SCHEMA,
-                    "checkpoint_id": receipt["checkpoint_id"],
-                    "packet_id": receipt["packet_id"],
-                    "head_sha": receipt["head_sha"],
-                    "work_state": receipt["work_state"],
-                    "owned_path_count": len(receipt["owned_paths"]),
-                    "preserve_path_count": len(receipt["preserve_paths"]),
-                    "storage": (
-                        "git_private_projection" if not args.no_write else "not_written"
-                    ),
-                    "authority": CHECKPOINT_AUTHORITY,
-                },
-                "json",
-            )
-            return 0
+            if args.mission != mission["mission_id"]:
+                raise SessionContextError("checkpoint_mission_not_current")
+            raise SessionContextError("current_mission_unavailable")
 
         if args.command == "resume":
             receipt = read_checkpoint()
             value = classify_resume(
                 receipt,
                 snapshot=snapshot,
-                packet=packet,
+                mission=mission,
                 dispatch_capsule=dispatch_capsule,
             )
             _print(value, args.format)

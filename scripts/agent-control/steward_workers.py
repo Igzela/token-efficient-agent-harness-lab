@@ -12,8 +12,10 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import tempfile
 from typing import Any, Callable, Mapping, Protocol
@@ -23,7 +25,9 @@ import local_verification
 import mission_contract
 import review_convergence
 from review_loop.locking import ChatLock, LockBusy
-import state_manager
+
+MAX_ACTIVE_WORKERS = 2
+BWRAP_PATH = Path("/usr/bin/bwrap")
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -96,10 +100,8 @@ class PathConflict(WorkerError):
 def child_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
     """Return the existing repository-owned credential-free child environment."""
 
-    import local_run_once
-
     source = None if base is None else dict(base)
-    environment = local_run_once.child_env(source)
+    environment = local_verification._child_env(source)
     for key in environment:
         if any(marker in key.upper() for marker in _CREDENTIAL_MARKERS):
             raise WorkerError("credential_shaped_child_environment")
@@ -508,7 +510,7 @@ PR4B_CANARY_PROPOSAL_SHA256 = (
     "3a55ac107a2cae2a049e37804ea851036849c37aa84f95138db7d7f611db7eae"
 )
 PR4B_CANARY_APPROVAL_ISSUE = 208
-PR4B_CANARY_ALLOWED_PATHS = ("docs/CURRENT_STATUS.md",)
+PR4B_CANARY_ALLOWED_PATHS = ("docs/ARCHITECTURE.md",)
 
 # The WorkCard worktree is intentionally created from the accepted base.  Keep
 # the tiny provider-free canary program in the argv passed to the bounded
@@ -516,7 +518,7 @@ PR4B_CANARY_ALLOWED_PATHS = ("docs/CURRENT_STATUS.md",)
 # dependency of that exact-base worktree.
 _PR4B_CANARY_CHILD = r'''import hashlib,json,os,socket,subprocess,sys,tempfile
 from pathlib import Path
-T="docs/CURRENT_STATUS.md"; A={"leaf-a":"The repository owner approved the Autonomous Steward migration direction","leaf-b":"The existing controller remains the only lifecycle writer"}
+T="docs/ARCHITECTURE.md"; A={"leaf-a":"Rust `engine/` as the sole runtime, scheduler, policy, and application-owned storage authority.","leaf-b":"Autonomous Steward as the repository-maintenance outer loop coordinating missions, stages, and workcards without creating parallel schedulers or state stores."}
 def g(*a,raw=0):
  r=subprocess.run(["git",*a],capture_output=True,text=not raw)
  if r.returncode: raise RuntimeError("git")
@@ -826,12 +828,22 @@ def _sandbox_command(
 ) -> list[str]:
     """Run a bounded child with explicitly scoped worktree and Git access."""
 
-    bubblewrap = Path("/usr/bin/bwrap")
-    if not bubblewrap.is_file():
+    try:
+        metadata = os.lstat(BWRAP_PATH)
+    except OSError as exc:
+        raise WorkerError("sandbox_unavailable") from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_mode & 0o022
+        or not os.access(BWRAP_PATH, os.X_OK)
+    ):
         raise WorkerError("sandbox_unavailable")
+    bubblewrap = BWRAP_PATH
     args = [
         str(bubblewrap),
         "--die-with-parent",
+        "--unshare-user",
         "--unshare-net",
         "--unshare-pid",
         "--clearenv",
@@ -917,8 +929,6 @@ class BoundedProcessWorker:
         self.timeout_seconds = timeout_seconds
 
     def run(self, context: WorkerContext) -> WorkerOutcome:
-        import local_run_once
-
         command = _validate_command(self.command_builder(context))
         session_id = process_session_id(context)
         git_sandbox = _sandbox_for_context(context)
@@ -929,7 +939,7 @@ class BoundedProcessWorker:
                     context.worktree,
                     context.environment,
                 )
-                exit_code, stdout, _stderr = local_run_once._bounded_process(
+                exit_code, stdout, _stderr = local_verification._bounded_process(
                     sandboxed_command,
                     cwd=context.worktree,
                     timeout_seconds=self.timeout_seconds,
@@ -947,7 +957,7 @@ class BoundedProcessWorker:
                 child_environment["GIT_WORK_TREE"] = str(context.worktree.resolve())
                 child_environment["GIT_CONFIG_NOSYSTEM"] = "1"
                 child_environment["GIT_TERMINAL_PROMPT"] = "0"
-                exit_code, stdout, _stderr = local_run_once._bounded_process(
+                exit_code, stdout, _stderr = local_verification._bounded_process(
                     sandboxed_command,
                     cwd=context.worktree,
                     timeout_seconds=self.timeout_seconds,
@@ -997,8 +1007,6 @@ class BoundedProcessReviewer:
         self.timeout_seconds = timeout_seconds
 
     def review(self, context: WorkerContext, outcome: WorkerOutcome) -> ReviewOutcome:
-        import local_run_once
-
         command = _validate_command(self.command_builder(context, outcome))
         git_sandbox = _sandbox_for_context(context)
         try:
@@ -1009,7 +1017,7 @@ class BoundedProcessReviewer:
                     context.environment,
                     worktree_writable=False,
                 )
-                exit_code, stdout, _stderr = local_run_once._bounded_process(
+                exit_code, stdout, _stderr = local_verification._bounded_process(
                     sandboxed_command,
                     cwd=context.worktree,
                     timeout_seconds=self.timeout_seconds,
@@ -1028,7 +1036,7 @@ class BoundedProcessReviewer:
                 child_environment["GIT_WORK_TREE"] = str(context.worktree.resolve())
                 child_environment["GIT_CONFIG_NOSYSTEM"] = "1"
                 child_environment["GIT_TERMINAL_PROMPT"] = "0"
-                exit_code, stdout, _stderr = local_run_once._bounded_process(
+                exit_code, stdout, _stderr = local_verification._bounded_process(
                     sandboxed_command,
                     cwd=context.worktree,
                     timeout_seconds=self.timeout_seconds,
@@ -1077,6 +1085,11 @@ def validate_worker_outcome(
 
     if not isinstance(outcome, WorkerOutcome):
         raise WorkerError("worker_outcome_invalid")
+    # Non-success outcomes are terminal worker reports. They are not claims
+    # of a committed head or changed-path set, so preserve their bounded
+    # reason instead of turning them into a misleading binding failure.
+    if outcome.status != "PASS":
+        return outcome
     if not SHA40.fullmatch(expected_head_sha):
         raise WorkerError("expected_head_sha_invalid")
     if not SHA40.fullmatch(outcome.head_sha):
@@ -1148,7 +1161,7 @@ class CapacityLock(AbstractContextManager["CapacityLock"]):
         self._lock: ChatLock | None = None
 
     def acquire(self) -> "CapacityLock":
-        for slot in range(state_manager.MAX_ACTIVE):
+        for slot in range(MAX_ACTIVE_WORKERS):
             lock = ChatLock(self.lock_dir, f"steward-capacity:{slot}")
             try:
                 lock.acquire()

@@ -9,14 +9,13 @@ FAILURES=()
 
 # Authoritative docs (living documents agents consult)
 AUTHORITATIVE=(
+  "START_HERE.md"
   "AGENTS.md"
   "CLAUDE.md"
   "README.md"
-  "docs/ARCHITECTURE_BOOK.md"
-  "docs/CURRENT_STATUS.md"
-  "docs/NEXT_DECISION.md"
-  "docs/MODULE_MAP.md"
-  "docs/REAL_WORLD_TESTING_PLAYBOOK.md"
+  "docs/ARCHITECTURE.md"
+  "docs/AUTONOMY.md"
+  "docs/ROADMAP.md"
   "docs/RUNBOOK.md"
 )
 

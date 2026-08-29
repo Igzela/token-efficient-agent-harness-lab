@@ -12,6 +12,7 @@ import tempfile
 
 
 PROMPT_DIR = pathlib.Path(__file__).resolve().parent / "prompts"
+CONTROL_DIR = pathlib.Path(__file__).resolve().parent
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PROJECT_CONTEXT_SCRIPT = PROJECT_ROOT / "scripts" / "project_context.py"
 
@@ -19,6 +20,13 @@ REPO_OWNER = os.environ.get("AGENT_REPO_OWNER", "Igzela")
 REPO_NAME = os.environ.get("AGENT_REPO_NAME", "token-efficient-agent-harness-lab")
 MAX_REVIEW_DIFF_CHARS = 100_000
 MAX_CAPSULE_CHARS = 100_000
+TRUSTED_REVIEW_STATE_AUTHORS = frozenset({"github-actions", "github-actions[bot]"})
+
+# This module is loaded both as a script and through importlib by the local
+# review harness.  Keep the sibling convergence module importable in either
+# mode without relying on test-order side effects.
+if str(CONTROL_DIR) not in sys.path:
+    sys.path.insert(0, str(CONTROL_DIR))
 
 
 def _project_context_paths() -> tuple[pathlib.Path, pathlib.Path]:
@@ -48,13 +56,13 @@ def generate_fresh_capsule(
     offline: bool = False,
     required_pr_number: int | None = None,
     required_head_sha: str | None = None,
-    expected_packet: str | None = None,
+    expected_mission: str | None = None,
     require_local_checkout: bool = False,
 ) -> str:
     """Generate and validate a fresh bounded context capsule.
 
     Regenerates on every invocation. Does not blindly reuse an artifact.
-    Validates the requested PR/head/packet when provided and refuses prompt
+    Validates the requested PR/head/mission when provided and refuses prompt
     construction on mismatch.
     """
     project_root, project_context_script = _project_context_paths()
@@ -87,7 +95,7 @@ def generate_fresh_capsule(
     local_checkout = capsule.get("local_checkout")
     binding = capsule.get("binding")
     workflow_frontier = capsule.get("workflow_frontier")
-    active_packet = capsule.get("active_packet")
+    active_mission = capsule.get("active_mission")
     checkout_sha = (local_checkout if isinstance(local_checkout, dict) else {}).get("head_sha")
     pr_exact_head = (binding if isinstance(binding, dict) else {}).get("pr_exact_head")
     pr_head_sha = (pr_exact_head if isinstance(pr_exact_head, dict) else {}).get("head_sha")
@@ -96,7 +104,9 @@ def generate_fresh_capsule(
     workflow_pr_number = (
         workflow_frontier if isinstance(workflow_frontier, dict) else {}
     ).get("number")
-    canonical_packet = (active_packet if isinstance(active_packet, dict) else {}).get("packet")
+    canonical_mission = (
+        (active_mission if isinstance(active_mission, dict) else {}).get("mission_id")
+    )
 
     if required_head_sha:
         if workflow_bound_sha and workflow_bound_sha != required_head_sha:
@@ -139,10 +149,10 @@ def generate_fresh_capsule(
             raise ValueError(
                 f"Workflow PR #{workflow_pr_number} does not match required PR #{required_pr_number}"
             )
-    if expected_packet:
-        if canonical_packet and canonical_packet != expected_packet:
+    if expected_mission:
+        if canonical_mission != expected_mission:
             raise ValueError(
-                f"Canonical routed packet {canonical_packet} does not match expected {expected_packet}"
+                f"Canonical routed mission {canonical_mission or 'unavailable'} does not match expected {expected_mission}"
             )
 
     with tempfile.TemporaryDirectory(prefix="context-capsule-") as temp_dir:
@@ -197,6 +207,73 @@ def _gh(*args):
         return None
 
 
+def _load_review_convergence_state(
+    pr_number: int, issue_number: int | str, head_sha: str
+) -> dict[str, object] | None:
+    """Load the latest trusted convergence state for an exact review head.
+
+    Missing state is the normal first-review case. A failed or malformed read
+    is different: prompt construction must fail closed instead of silently
+    resetting the R1/R2 budget.
+    """
+
+    raw = _gh("issue", "view", str(issue_number), "--json", "comments")
+    if raw is None:
+        raise ValueError("review state unavailable: live_metadata_unavailable")
+    try:
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("review state unavailable: malformed_comments") from exc
+    comments = payload.get("comments") if isinstance(payload, dict) else None
+    if not isinstance(comments, list):
+        raise ValueError("review state unavailable: malformed_comments")
+
+    trusted: list[dict[str, object]] = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        author = comment.get("author") or comment.get("user")
+        login = author.get("login") if isinstance(author, dict) else None
+        body = comment.get("body")
+        if (
+            login in TRUSTED_REVIEW_STATE_AUTHORS
+            and isinstance(body, str)
+            and "agent-orchestrator-review-state" in body
+        ):
+            trusted.append(comment)
+    if not trusted:
+        return None
+
+    try:
+        trusted.sort(key=lambda item: str(item["createdAt"]))
+        state = json.loads(str(trusted[-1]["body"]))
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("review state unavailable: malformed_latest_state") from exc
+    if not isinstance(state, dict) or state.get("kind") != "agent-orchestrator-review-state":
+        raise ValueError("review state unavailable: malformed_latest_state")
+    try:
+        expected_issue = int(issue_number)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("review state unavailable: invalid_issue_number") from exc
+    if (
+        type(state.get("issue_number")) is not int
+        or type(state.get("pr_number")) is not int
+        or state.get("issue_number") != expected_issue
+        or state.get("pr_number") != pr_number
+    ):
+        raise ValueError("review state unavailable: binding_mismatch")
+
+    import review_convergence as rc
+
+    projection = rc.project_capsule_fields(state, expected_head=head_sha)
+    if projection.get("availability") != "confirmed":
+        raise ValueError(
+            "review state unavailable: "
+            f"{projection.get('unavailable_reason') or 'projection_invalid'}"
+        )
+    return projection
+
+
 def fetch_bounded_failed_logs(run_id, max_chars=50000):
     if not run_id:
         return ""
@@ -245,7 +322,13 @@ def build_context(issue_number):
         except json.JSONDecodeError:
             pass
 
-    for path in ["AGENTS.md", "docs/CURRENT_STATUS.md", "docs/NEXT_DECISION.md", "docs/MODULE_MAP.md"]:
+    for path in [
+        "AGENTS.md",
+        "docs/ARCHITECTURE.md",
+        "docs/AUTONOMY.md",
+        "docs/ROADMAP.md",
+        "docs/RUNBOOK.md",
+    ]:
         content = _cat(path) or _read_repo_file(path) or ""
         ctx[path.replace("/", "_").replace(".", "_")] = content
 
@@ -276,7 +359,7 @@ def _detect_task_requires_governance(issue_body):
     return any(indicator in lower for indicator in indicators)
 
 
-def _build_task_context(issue_body, agents_md, current_status, next_decision, module_map):
+def _build_task_context(issue_body, agents_md, architecture, autonomy, roadmap):
     """Select task-relevant context only. Avoid drowning small tasks in governance."""
     if _detect_task_requires_governance(issue_body):
         parts = []
@@ -287,13 +370,12 @@ def _build_task_context(issue_body, agents_md, current_status, next_decision, mo
                 + agents_md[:2500]
                 + "\n```"
             )
-        if current_status:
-            parts.append("### Accepted status excerpt\n\n```\n" + current_status[:2000] + "\n```")
-        packet_context = _active_packet_context(next_decision)
-        if packet_context:
-            parts.append("### Current packet\n\n```\n" + packet_context + "\n```")
-        if module_map:
-            parts.append("### Module ownership\n\n```\n" + module_map[:2000] + "\n```")
+        if architecture:
+            parts.append("### Architecture excerpt\n\n```\n" + architecture[:2000] + "\n```")
+        if autonomy:
+            parts.append("### Autonomy contract excerpt\n\n```\n" + autonomy[:2500] + "\n```")
+        if roadmap:
+            parts.append("### Roadmap excerpt\n\n```\n" + roadmap[:1500] + "\n```")
         return "\n\n".join(parts) if parts else "No additional context."
     lines = []
     body_lower = (issue_body or "").lower()
@@ -304,41 +386,14 @@ def _build_task_context(issue_body, agents_md, current_status, next_decision, mo
     return "No additional context required for this task."
 
 
-def _active_packet_context(next_decision, max_chars=6000):
-    """Return Active Routing plus exactly one expanded packet block."""
-    if not next_decision:
-        return ""
-    routing_start = next_decision.find("## Active Routing")
-    if routing_start < 0:
-        return ""
-    routing_end = next_decision.find("\n## ", routing_start + 3)
-    routing = next_decision[
-        routing_start : routing_end if routing_end >= 0 else len(next_decision)
-    ]
-    packet_match = re.search(
-        r"(?:PE\d+|PR\d+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+", routing
-    )
-    if not packet_match:
-        return routing[:max_chars]
-    packet = packet_match.group(0)
-    heading_match = re.search(
-        rf"^#{{2,3}} Packet {re.escape(packet)}\b.*$",
-        next_decision,
-        re.MULTILINE,
-    )
-    if not heading_match:
-        return routing[:max_chars]
-    next_heading = re.search(
-        r"^#{2,3} Packet ",
-        next_decision[heading_match.end() :],
-        re.MULTILINE,
-    )
-    end = (
-        heading_match.end() + next_heading.start()
-        if next_heading
-        else len(next_decision)
-    )
-    return (routing + "\n\n" + next_decision[heading_match.start() : end])[:max_chars]
+def _active_canonical_context(autonomy, roadmap, max_chars=6000):
+    """Return bounded current governance context without inventing a task."""
+    parts = []
+    if autonomy:
+        parts.append("## Autonomy contract\n" + autonomy)
+    if roadmap:
+        parts.append("## Roadmap\n" + roadmap)
+    return "\n\n".join(parts)[:max_chars]
 
 
 def _extract_relevant_lines(text, keywords, max_lines=20):
@@ -358,9 +413,9 @@ def build_implementation_prompt(issue_number, template="implementation.md"):
     task_context = _build_task_context(
         ctx["issue"]["body"],
         ctx.get("AGENTS_md", ""),
-        ctx.get("docs_CURRENT_STATUS_md", ""),
-        ctx.get("docs_NEXT_DECISION_md", ""),
-        ctx.get("docs_MODULE_MAP_md", ""),
+        ctx.get("docs_ARCHITECTURE_md", ""),
+        ctx.get("docs_AUTONOMY_md", ""),
+        ctx.get("docs_ROADMAP_md", ""),
     )
 
     prompt = template_text
@@ -418,9 +473,9 @@ def build_claim_bound_implementation_prompt(
     task_context = _build_task_context(
         issue_body,
         read_local("AGENTS.md") or "",
-        read_local("docs/CURRENT_STATUS.md") or "",
-        read_local("docs/NEXT_DECISION.md") or "",
-        read_local("docs/MODULE_MAP.md") or "",
+        read_local("docs/ARCHITECTURE.md") or "",
+        read_local("docs/AUTONOMY.md") or "",
+        read_local("docs/ROADMAP.md") or "",
     )
     prompt = template_text
     prompt = prompt.replace("{{ISSUE_NUMBER}}", str(issue_number))
@@ -443,8 +498,9 @@ def build_claim_bound_implementation_prompt(
         packet_id="claim-bound",
         mode="fresh",
         documents={
-            "docs/CURRENT_STATUS.md": read_local("docs/CURRENT_STATUS.md") or "",
-            "docs/NEXT_DECISION.md": read_local("docs/NEXT_DECISION.md") or "",
+            "docs/ARCHITECTURE.md": read_local("docs/ARCHITECTURE.md") or "",
+            "docs/AUTONOMY.md": read_local("docs/AUTONOMY.md") or "",
+            "docs/ROADMAP.md": read_local("docs/ROADMAP.md") or "",
         },
     )
     return prompt
@@ -545,9 +601,9 @@ def build_claim_bound_plan_implementation_prompt(
     task_context = _build_task_context(
         task_body,
         read_local("AGENTS.md") or "",
-        read_local("docs/CURRENT_STATUS.md") or "",
-        read_local("docs/NEXT_DECISION.md") or "",
-        read_local("docs/MODULE_MAP.md") or "",
+        read_local("docs/ARCHITECTURE.md") or "",
+        read_local("docs/AUTONOMY.md") or "",
+        read_local("docs/ROADMAP.md") or "",
     )
     prompt = template_text
     prompt = prompt.replace("{{ISSUE_NUMBER}}", f"plan packet {packet_id}")
@@ -635,14 +691,23 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
     focus.  A retry that exceeds the substantive-round budget or follows
     DECISION_REQUIRED fails closed instead of silently dispatching.
     """
-    import state_manager as sm
-
     repository = os.environ.get("AGENT_REPO") or f"{REPO_OWNER}/{REPO_NAME}"
-    binding_ok, binding_reason, live_binding = sm.resolve_live_review_binding(
-        pr_number, head_sha, repository
-    )
-    if not binding_ok:
-        raise ValueError(f"review binding rejected: {binding_reason}")
+    pr_json = _gh("pr", "view", str(pr_number), "--json", "number,headRefOid,baseRefOid")
+    if not pr_json:
+        raise ValueError("review binding rejected: live_metadata_unavailable")
+    try:
+        pr_meta = json.loads(pr_json)
+    except Exception:
+        raise ValueError("review binding rejected: live_metadata_unavailable")
+    if pr_meta.get("headRefOid") != head_sha:
+        raise ValueError("review binding rejected: head_mismatch")
+    live_base = pr_meta.get("baseRefOid") or ""
+    live_binding = {
+        "pr_number": int(pr_number),
+        "base_sha": live_base,
+        "head_sha": head_sha,
+        "reviewed_range": f"{live_base}...{head_sha}",
+    }
 
     ctx = build_context(0)
     ctx["pr_number"] = pr_number
@@ -658,10 +723,10 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
         )
     ctx["diff"] = diff
 
-    pr_json = _gh("pr", "view", str(pr_number), "--json", "title,body,files,reviews,comments")
-    if pr_json:
+    pr_detail_json = _gh("pr", "view", str(pr_number), "--json", "title,body,files,reviews,comments")
+    if pr_detail_json:
         try:
-            parsed = json.loads(pr_json)
+            parsed = json.loads(pr_detail_json)
             ctx["pr_title"] = parsed.get("title", "")
             ctx["pr_body"] = parsed.get("body", "")
             ctx["pr_files"] = parsed.get("files", [])
@@ -669,15 +734,6 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
             ctx["pr_comments"] = parsed.get("comments", [])
         except json.JSONDecodeError:
             pass
-
-    rebound_ok, rebound_reason, rebound = sm.resolve_live_review_binding(
-        pr_number, head_sha, repository, live_binding["base_sha"]
-    )
-    if (
-        not rebound_ok
-        or rebound["reviewed_range"] != live_binding["reviewed_range"]
-    ):
-        raise ValueError(f"review binding changed during prompt build: {rebound_reason}")
 
     schema_path = pathlib.Path(__file__).resolve().parent / "review_schema.json"
     if schema_path.exists():
@@ -696,19 +752,11 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
         "`review_mode=full`, complete `base...head` attestation."
     )
     if issue_number:
-        sm = None
-        try:
-            import review_convergence as rc
-            import state_manager as sm
-
-            previous = sm.read_review_state(int(issue_number))
-        except Exception as exc:
-            if sm is not None and isinstance(exc, sm.StateUnavailableError):
-                raise ValueError(
-                    f"durable review state is unavailable for retry derivation: {exc}"
-                ) from exc
-            raise
-        attempt = rc.derive_next_review_attempt(previous, head_sha)
+        import review_convergence as rc
+        persisted_state = _load_review_convergence_state(
+            int(pr_number), issue_number, head_sha
+        )
+        attempt = rc.derive_next_review_attempt(persisted_state, head_sha)
         if not attempt.get("allowed"):
             raise ValueError(
                 f"review dispatch refused: {attempt.get('deny_reason') or 'not_allowed'}"

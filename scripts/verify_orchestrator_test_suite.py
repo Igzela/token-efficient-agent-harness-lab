@@ -7,13 +7,14 @@ from pathlib import Path
 
 
 REQUIRED = (
-    "tests/test_agent_control_ci.py",
-    "tests/test_agent_control_dry_run.py",
-    "tests/test_agent_control_state.py",
-    "tests/test_agent_control_worktree.py",
-    "tests/test_agent_orchestrator_repairs.py",
-    "tests/test_agent_orchestrator_artifacts.py",
-    "tests/test_agent_review_finalization.py",
+    "tests/test_agent_shadow_steward.py",
+    "tests/test_agent_steward.py",
+    "tests/test_agent_steward_faults.py",
+    "tests/test_agent_steward_journal.py",
+    "tests/test_mission_contract.py",
+    "tests/test_review_convergence.py",
+    "tests/test_review_loop.py",
+    "tests/test_steward_deferred_acceptance.py",
 )
 
 

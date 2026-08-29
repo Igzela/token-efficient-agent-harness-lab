@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,71 @@ assert SPEC and SPEC.loader
 prompt_builder = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = prompt_builder
 SPEC.loader.exec_module(prompt_builder)
+
+
+def _persisted_review_state(*, verdict: str, stop_reason: str) -> dict[str, object]:
+    head = "a" * 40
+    base = "b" * 40
+    findings: list[dict[str, str]] = []
+    open_blocker_ids: list[str] = []
+    blockers: list[str] = []
+    if verdict == "DECISION_REQUIRED":
+        findings.append(
+            {
+                "id": "B-1",
+                "axis": "correctness",
+                "evidence": "blocked",
+                "severity": "blocker",
+                "disposition": "block_current_head",
+                "scope_relation": "in_packet",
+                "origin_head": "c" * 40,
+                "acceptance_condition": "repair",
+                "status": "open",
+            }
+        )
+        open_blocker_ids = ["B-1"]
+        blockers = ["blocked"]
+    rows = [
+        {
+            "acceptance_condition": finding["acceptance_condition"],
+            "disposition": finding["disposition"],
+            "id": finding["id"],
+            "origin_head": finding["origin_head"],
+            "severity": finding["severity"],
+            "status": finding["status"],
+        }
+        for finding in sorted(findings, key=lambda item: item["id"])
+    ]
+    digest = hashlib.sha256(
+        json.dumps(rows, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    return {
+        "kind": "agent-orchestrator-review-state",
+        "version": 3,
+        "issue_number": 42,
+        "pr_number": 301,
+        "review_protocol_version": "review-convergence.v1",
+        "review_mode": "repair_verification",
+        "review_round": 2,
+        "prior_reviewed_head": "c" * 40,
+        "base_sha": base,
+        "head_sha": head,
+        "reviewed_range": f"{base}...{head}",
+        "verdict": verdict,
+        "summary": verdict.lower(),
+        "findings": findings,
+        "finding_ledger_digest": digest,
+        "open_blocker_ids": open_blocker_ids,
+        "deferred_note_ids": [],
+        "decision_required_ids": [],
+        "autonomous_repairs_remaining": 0,
+        "stop_reason": stop_reason,
+        "artifact_sha256": "",
+        "review_workflow_run_id": None,
+        "blockers": blockers,
+        "major_notes": [],
+        "minor_notes": [],
+    }
 
 
 class PromptBuilderCapsuleTests(unittest.TestCase):
@@ -69,18 +135,22 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
         self.assertGreater(task_pos, capsule_pos)
 
     def test_review_prompt_prepends_capsule(self) -> None:
+        def fake_gh(*args, **kwargs):
+            if "diff" in args:
+                return "diff content"
+            if "number,headRefOid,baseRefOid" in args:
+                return json.dumps({"number": 301, "headRefOid": "a" * 40, "baseRefOid": "b" * 40})
+            return json.dumps({"title": "test", "body": "test", "files": [], "reviews": [], "comments": []})
+
         with mock.patch.object(
             prompt_builder,
             "generate_fresh_capsule",
             return_value=self._minimal_capsule(),
         ) as gen:
-            with mock.patch(
-                "state_manager.resolve_live_review_binding",
-                return_value=self._live_review_binding(),
-            ), mock.patch.object(
+            with mock.patch.object(
                 prompt_builder,
                 "_gh",
-                return_value="diff content",
+                side_effect=fake_gh,
             ):
                 prompt = prompt_builder.build_review_prompt(301, "a" * 40)
         gen.assert_called_once_with(
@@ -94,6 +164,65 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
         task_pos = prompt.find("## Final Review Task")
         self.assertGreater(task_pos, capsule_pos)
 
+    def test_review_prompt_uses_persisted_r2_state(self) -> None:
+        state = _persisted_review_state(
+            verdict="INVALIDATED", stop_reason="awaiting_r2"
+        )
+
+        def fake_gh(*args, **kwargs):
+            if args[:2] == ("pr", "view") and "number,headRefOid,baseRefOid" in args:
+                return json.dumps({"number": 301, "headRefOid": "a" * 40, "baseRefOid": "b" * 40})
+            if args[:2] == ("pr", "diff"):
+                return "diff content"
+            if args[:2] == ("issue", "view"):
+                return json.dumps({
+                    "comments": [{
+                        "author": {"login": "github-actions[bot]"},
+                        "body": json.dumps(state),
+                        "createdAt": "2026-08-29T00:00:00Z",
+                    }]
+                })
+            return json.dumps({"title": "test", "body": "test", "files": [], "reviews": [], "comments": []})
+
+        with mock.patch.object(
+            prompt_builder,
+            "generate_fresh_capsule",
+            return_value=self._minimal_capsule(),
+        ):
+            with mock.patch.object(prompt_builder, "_gh", side_effect=fake_gh):
+                prompt = prompt_builder.build_review_prompt(301, "a" * 40, issue_number=42)
+        self.assertIn("repair_verification", prompt)
+        self.assertIn("Round 2", prompt)
+
+    def test_review_prompt_denies_exhausted_r2_state(self) -> None:
+        state = _persisted_review_state(
+            verdict="DECISION_REQUIRED", stop_reason="decision_required"
+        )
+
+        def fake_gh(*args, **kwargs):
+            if args[:2] == ("pr", "view") and "number,headRefOid,baseRefOid" in args:
+                return json.dumps({"number": 301, "headRefOid": "a" * 40, "baseRefOid": "b" * 40})
+            if args[:2] == ("pr", "diff"):
+                return "diff content"
+            if args[:2] == ("issue", "view"):
+                return json.dumps({
+                    "comments": [{
+                        "author": {"login": "github-actions[bot]"},
+                        "body": json.dumps(state),
+                        "createdAt": "2026-08-29T00:00:00Z",
+                    }]
+                })
+            return json.dumps({"title": "test", "body": "test", "files": [], "reviews": [], "comments": []})
+
+        with mock.patch.object(
+            prompt_builder,
+            "generate_fresh_capsule",
+            return_value=self._minimal_capsule(),
+        ):
+            with mock.patch.object(prompt_builder, "_gh", side_effect=fake_gh):
+                with self.assertRaisesRegex(ValueError, "human_authority"):
+                    prompt_builder.build_review_prompt(301, "a" * 40, issue_number=42)
+
     def test_head_mismatch_refuses_prompt(self) -> None:
         with mock.patch.object(
             prompt_builder,
@@ -104,31 +233,27 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                 prompt_builder.build_ci_repair_prompt(301, "a" * 40, "[]", "", 0)
 
     def test_review_binding_failure_refuses_diff_acquisition(self) -> None:
-        with mock.patch(
-            "state_manager.resolve_live_review_binding",
-            return_value=(False, "head_mismatch", None),
-        ), mock.patch.object(prompt_builder, "_gh") as gh:
+        with mock.patch.object(
+            prompt_builder,
+            "_gh",
+            side_effect=[
+                json.dumps({"number": 301, "headRefOid": "other" + "a" * 35, "baseRefOid": "b" * 40}),
+            ],
+        ) as gh:
             with self.assertRaisesRegex(ValueError, "review binding rejected: head_mismatch"):
                 prompt_builder.build_review_prompt(301, "a" * 40)
-        gh.assert_not_called()
+        self.assertEqual(gh.call_count, 1)
 
     def test_review_head_move_during_prompt_build_is_rejected(self) -> None:
-        with mock.patch(
-            "state_manager.resolve_live_review_binding",
-            side_effect=[
-                self._live_review_binding(),
-                (False, "head_mismatch", None),
-            ],
-        ), mock.patch.object(
-            prompt_builder, "_gh", return_value="diff content"
-        ), mock.patch.object(
-            prompt_builder, "generate_fresh_capsule"
-        ) as capsule:
+        with mock.patch.object(
+            prompt_builder,
+            "_gh",
+            return_value=None,
+        ):
             with self.assertRaisesRegex(
-                ValueError, "review binding changed during prompt build: head_mismatch"
+                ValueError, "review binding rejected: live_metadata_unavailable"
             ):
                 prompt_builder.build_review_prompt(301, "a" * 40)
-        capsule.assert_not_called()
 
     def test_capsule_size_bound_is_enforced(self) -> None:
         huge = "x" * (prompt_builder.MAX_CAPSULE_CHARS + 1)
@@ -142,24 +267,25 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
 
     def test_capsule_does_not_embed_diff_or_logs(self) -> None:
         """Capsule content must remain separate from task-specific material."""
-        # A real capsule should never contain diff or log content. We verify the
-        # helper enforces separation by returning a capsule without those.
         capsule = "# Project Context Capsule\n- accepted baseline: abc123\n"
+        def fake_gh(*args, **kwargs):
+            if "diff" in args:
+                return "sensitive diff content"
+            if "number,headRefOid,baseRefOid" in args:
+                return json.dumps({"number": 301, "headRefOid": "a" * 40, "baseRefOid": "b" * 40})
+            return json.dumps({"title": "test", "body": "test", "files": [], "reviews": [], "comments": []})
+
         with mock.patch.object(
             prompt_builder,
             "generate_fresh_capsule",
             return_value=capsule,
         ):
-            with mock.patch(
-                "state_manager.resolve_live_review_binding",
-                return_value=self._live_review_binding(),
-            ), mock.patch.object(
+            with mock.patch.object(
                 prompt_builder,
                 "_gh",
-                return_value="sensitive diff content",
+                side_effect=fake_gh,
             ):
                 prompt = prompt_builder.build_review_prompt(301, "a" * 40)
-        # Diff belongs in the task section after the separator, not in the capsule.
         capsule_end = prompt.find("---\n\n")
         self.assertGreater(capsule_end, 0)
         self.assertNotIn("sensitive diff", prompt[:capsule_end])
@@ -249,7 +375,7 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                 "local_checkout": {"head_sha": "a" * 40},
                 "binding": {"pr_exact_head": None},
                 "active_frontier": None,
-                "active_packet": None,
+                "active_mission": None,
             }
         )
 
@@ -271,6 +397,30 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
         )
         self.assertIn("Project Context Capsule", capsule)
 
+    def test_expected_mission_rejects_missing_canonical_route(self) -> None:
+        sha = "a" * 40
+        capsule_json = json.dumps(
+            {
+                "local_checkout": {"head_sha": sha},
+                "binding": {"pr_exact_head": {"head_sha": sha}},
+                "active_frontier": None,
+                "active_mission": None,
+            }
+        )
+
+        def run(command, **_kwargs):
+            output = "# Project Context Capsule\n" if "--capsule-json" in command else capsule_json
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        with mock.patch.object(prompt_builder.subprocess, "run", side_effect=run), self.assertRaisesRegex(
+            ValueError, "Canonical routed mission unavailable"
+        ):
+            prompt_builder.generate_fresh_capsule(
+                offline=True,
+                required_head_sha=sha,
+                expected_mission="AUTONOMOUS-STEWARD-MIGRATION-2026-08-27",
+            )
+
     def test_required_pr_binds_workflow_surface_not_canonical_frontier(self) -> None:
         sha = "a" * 40
         capsule_json = json.dumps(
@@ -285,7 +435,7 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                     "number": 371,
                     "availability": "confirmed",
                 },
-                "active_packet": {"packet": "PE7-RWE-V2-REFREEZE-1"},
+                "active_mission": {"mission_id": "PE7-RWE-V2-REFREEZE-1"},
             }
         )
 
@@ -307,7 +457,7 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                 "local_checkout": {"head_sha": sha},
                 "binding": {"pr_exact_head": None},
                 "active_frontier": None,
-                "active_packet": None,
+                "active_mission": None,
             }
         )
 
@@ -339,7 +489,7 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                 "local_checkout": {"head_sha": "b" * 40},
                 "binding": {"pr_exact_head": None},
                 "active_frontier": None,
-                "active_packet": None,
+                "active_mission": None,
             }
         )
 
@@ -367,7 +517,7 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                 "local_checkout": {"head_sha": sha},
                 "binding": {"pr_exact_head": {"head_sha": sha}},
                 "active_frontier": None,
-                "active_packet": None,
+                "active_mission": None,
             }
         )
 

@@ -5,8 +5,8 @@ bounded untrusted text, reduces it to digested policy facts, and returns
 immutable recommendations.  It never retains the request, calls a Provider,
 touches GitHub or the repository, persists state, consumes authority, or
 executes a mutation.  ``mission_contract`` remains the owner of Mission,
-Stage, and WorkCard validation; ``local_loop`` remains the legacy lifecycle
-writer.
+Stage, and WorkCard validation; ``steward.py`` remains the lifecycle
+coordinator.
 """
 
 from __future__ import annotations

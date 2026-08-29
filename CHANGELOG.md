@@ -2,7 +2,7 @@
 
 All notable **user-facing** changes are recorded here.
 
-This project does not hand-maintain test counts. CI and release evidence report current verification results. Detailed packet state lives in [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md); operational facts live in [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md).
+This project does not hand-maintain test counts. CI and release evidence report current verification results. Detailed roadmap lives in [`docs/ROADMAP.md`](docs/ROADMAP.md); autonomy and testing contracts live in [`docs/AUTONOMY.md`](docs/AUTONOMY.md).
 
 Format is inspired by [Keep a Changelog](https://keepachangelog.com/). Versions follow the repository release tags when published.
 
