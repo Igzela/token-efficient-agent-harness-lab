@@ -397,6 +397,30 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
         )
         self.assertIn("Project Context Capsule", capsule)
 
+    def test_expected_mission_rejects_missing_canonical_route(self) -> None:
+        sha = "a" * 40
+        capsule_json = json.dumps(
+            {
+                "local_checkout": {"head_sha": sha},
+                "binding": {"pr_exact_head": {"head_sha": sha}},
+                "active_frontier": None,
+                "active_mission": None,
+            }
+        )
+
+        def run(command, **_kwargs):
+            output = "# Project Context Capsule\n" if "--capsule-json" in command else capsule_json
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        with mock.patch.object(prompt_builder.subprocess, "run", side_effect=run), self.assertRaisesRegex(
+            ValueError, "Canonical routed mission unavailable"
+        ):
+            prompt_builder.generate_fresh_capsule(
+                offline=True,
+                required_head_sha=sha,
+                expected_mission="AUTONOMOUS-STEWARD-MIGRATION-2026-08-27",
+            )
+
     def test_required_pr_binds_workflow_surface_not_canonical_frontier(self) -> None:
         sha = "a" * 40
         capsule_json = json.dumps(

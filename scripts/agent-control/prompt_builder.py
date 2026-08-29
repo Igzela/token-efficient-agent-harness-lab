@@ -150,9 +150,9 @@ def generate_fresh_capsule(
                 f"Workflow PR #{workflow_pr_number} does not match required PR #{required_pr_number}"
             )
     if expected_mission:
-        if canonical_mission and canonical_mission != expected_mission:
+        if canonical_mission != expected_mission:
             raise ValueError(
-                f"Canonical routed mission {canonical_mission} does not match expected {expected_mission}"
+                f"Canonical routed mission {canonical_mission or 'unavailable'} does not match expected {expected_mission}"
             )
 
     with tempfile.TemporaryDirectory(prefix="context-capsule-") as temp_dir:

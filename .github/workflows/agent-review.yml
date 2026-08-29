@@ -65,35 +65,20 @@ jobs:
           require-review-receipt: "false"
           proof-path: ${{ runner.temp }}/exact-head-proof.json
 
-      - name: Capture bounded complete diff for independent review
+      - name: Prepare non-sensitive exact-head review binding
         run: |
           set -euo pipefail
           base_sha=$(jq -er '.base.sha' "$RUNNER_TEMP/pr.json")
-          head_repo=$(jq -er '.head.repo.full_name' "$RUNNER_TEMP/pr.json")
-          [[ "${head_repo}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
-            echo "invalid head repository identity" >&2
-            exit 1
-          }
-          git -C trusted-base fetch --no-tags --depth=1 origin "${base_sha}"
-          git -C trusted-base fetch --no-tags --depth=1 \
-            "https://github.com/${head_repo}.git" "${EXPECTED_HEAD}"
-          git -C trusted-base -c core.attributesfile=/dev/null diff \
-            --no-ext-diff --no-textconv "${base_sha}" "${EXPECTED_HEAD}" \
-            > "$RUNNER_TEMP/review.diff"
-          bytes=$(wc -c < "$RUNNER_TEMP/review.diff")
-          if [ "$bytes" -gt 8000000 ]; then
-            echo "complete review diff exceeds the bounded 8000000-byte input limit" >&2
-            exit 1
-          fi
           jq -n \
             --arg repository "${GITHUB_REPOSITORY}" \
             --argjson pr_number "${PR_NUMBER}" \
             --arg base_sha "$base_sha" \
             --arg head_sha "${EXPECTED_HEAD}" \
-            --rawfile diff "$RUNNER_TEMP/review.diff" \
             '{schema_version:"agent_review_input.v1", repository:$repository,
               pr_number:$pr_number, base_sha:$base_sha, head_sha:$head_sha,
-              diff:$diff, verdict_authority:"independent reviewer and exact-head merge gate"}' \
+              diff_persisted:false,
+              review_range:($base_sha + "..." + $head_sha),
+              verdict_authority:"independent reviewer and exact-head merge gate"}' \
             > "$RUNNER_TEMP/review-input.json"
 
       - name: Upload read-only review input and proof

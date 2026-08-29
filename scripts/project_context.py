@@ -29,7 +29,7 @@ from github_observer import (  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPOSITORY = "Igzela/token-efficient-agent-harness-lab"
-MISSION_ID = r"(?:PE\d+|PR\d+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+"
+MISSION_ID = r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+"
 CANONICAL_DOCUMENT_PATHS = (
     "START_HERE.md",
     "AGENTS.md",
@@ -209,6 +209,24 @@ def parse_first_routed_mission(next_text: str) -> dict[str, str | None]:
         "state": state_match.group(1) if state_match else None,
         "pr_number": pr_number,
     }
+
+
+def parse_registered_campaign_mission(contract_text: str) -> dict[str, str | None]:
+    """Project the one registered campaign when no document route is present.
+
+    The campaign contract is an accepted source of mission identity; this
+    parser does not infer a PR or lifecycle authority from it.  A live PR is
+    still discovered separately by ``observe_open_frontiers``.
+    """
+    match = re.search(
+        r'^CAMPAIGN_MISSION_ID\s*=\s*["\'](?P<mission>[^"\']+)["\']\s*$',
+        contract_text,
+        re.MULTILINE,
+    )
+    mission = match.group("mission") if match else None
+    if not mission or re.fullmatch(MISSION_ID, mission) is None:
+        return {"mission_id": None, "state": None, "pr_number": None}
+    return {"mission_id": mission, "state": "IDLE", "pr_number": None}
 
 
 def parse_open_frontiers(status_text: str) -> list[dict[str, Any]]:
@@ -1574,6 +1592,13 @@ def build_capsule(
         # live canonical reads use CANONICAL_DOCUMENT_PATHS above.
         next_text = documents.get("legacy_route", "")
     mission = parse_first_routed_mission(next_text)
+    if mission.get("mission_id") is None:
+        # Accepted main may intentionally have no mutable Active Routing
+        # section.  Keep the canonical registered campaign visible without
+        # inventing a current PR or treating the projection as authority.
+        mission = parse_registered_campaign_mission(
+            git_show_text(str(baseline["sha"]), "scripts/agent-control/mission_contract.py")
+        )
     observer = None if offline else GitHubObserver(
         repository, token=token_from_environment()
     )

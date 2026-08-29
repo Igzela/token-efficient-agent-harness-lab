@@ -51,6 +51,27 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
                 ("engine/src/storage/local_product_store/managed_acceptance.rs", "EffectChildAuthorizationRequest"),
             ],
         )
+        result = subprocess.run(
+            [
+                "cargo",
+                "test",
+                "-p",
+                "engine",
+                "--lib",
+                "effect_parent_children_are_one_use_bounded_revocable_and_unknown_is_not_retryable",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output[-4_000:])
+        self.assertIn(
+            "managed_acceptance::tests::effect_parent_children_are_one_use_bounded_revocable_and_unknown_is_not_retryable ... ok",
+            output[-4_000:],
+        )
 
     def test_authority_does_not_carry_across_stages(self) -> None:
         """Requirement 2: Authority does not automatically transfer across stages."""
@@ -102,6 +123,38 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
                 mission,
                 (card, replace(card, card_id="card-02")),
             )
+        # A card bound to the first stage cannot be admitted to a distinct
+        # stage, even when the mission and path scope are otherwise identical.
+        with self.assertRaisesRegex(contract.MissionContractError, "workcard_stage_binding_invalid"):
+            contract.validate_stage(
+                replace(stage, stage_id="stage-test-02", workcard_ids=("card-01",)),
+                mission,
+                (card,),
+            )
+
+        # Exercise the durable runtime boundaries as well: completion closes
+        # the admitted child lease, expiry/revocation invalidate later use, and
+        # malformed or stale stage input is rejected before any provider call.
+        runtime_tests = (
+            "scheduler_admitted_fixture_child_leases_and_completes",
+            "malformed_stage_fails_before_provider_request",
+            "effect_child_settlement_retains_terminal_evidence_after_expiry",
+            "delegated_authority_rechecks_revocation_before_provider_or_workspace_effect",
+            "delegated_authority_rejects_mutation_revocation_expiry_and_output_escape",
+        )
+        for test_name in runtime_tests:
+            with self.subTest(test_name=test_name):
+                result = subprocess.run(
+                    ["cargo", "test", "-p", "engine", "--lib", test_name],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    check=False,
+                )
+                output = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, output[-4_000:])
+                self.assertIn("test result: ok", output[-4_000:])
 
     def test_lease_claim_execute_settle_separation(self) -> None:
         """Requirement 3: Lease claim/execute/settle separation without holding DB transaction."""
@@ -150,6 +203,23 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
         self.assertNotIn("INSERT INTO product_tasks", content)
         self.assertIn("subprocess", content)
         self.assertNotIn("ACP_ENABLE_PROVIDER_EXECUTION", content)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                "tests.test_agent_steward.StewardExecutionTests.test_approved_stage_reaches_waiting_for_merge_through_service_entrypoint",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output[-4_000:])
+        self.assertIn("Ran 1 test", output[-4_000:])
+        self.assertIn("OK", output[-4_000:])
 
     def test_deferred_acceptance_executes_store_lease_and_target_guards(self) -> None:
         """Run the provider-free Rust behavior tests behind this gate.
@@ -192,12 +262,6 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
                 "scheduler_admitted_fixture_child_leases_and_completes",
             ],
             ["cargo", "test", "-p", "engine", "--test", "test_target_repo_output"],
-            [
-                sys.executable,
-                "-m",
-                "unittest",
-                "tests.test_agent_steward.StewardExecutionTests.test_approved_stage_reaches_waiting_for_merge_through_service_entrypoint",
-            ],
         )
         for command in commands:
             with self.subTest(command=" ".join(command)):

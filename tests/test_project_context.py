@@ -13,6 +13,23 @@ SPEC.loader.exec_module(project_context)
 
 
 class TestProjectContextRouting(unittest.TestCase):
+    def test_registered_campaign_contract_provides_fallback_route(self):
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "agent-control"
+            / "mission_contract.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(
+            project_context.parse_registered_campaign_mission(source),
+            {
+                "mission_id": "AUTONOMOUS-STEWARD-MIGRATION-2026-08-27",
+                "state": "IDLE",
+                "pr_number": None,
+            },
+        )
+
     def test_ready_live_mission_does_not_infer_pr_from_prerequisites(self):
         text = """\
 ## Active Routing
