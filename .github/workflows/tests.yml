@@ -163,7 +163,10 @@ jobs:
 
   python-tests:
     needs: classify-change-impact
-    runs-on: ubuntu-latest
+    # Steward's bubblewrap contract requires unprivileged user namespaces.
+    # Keep this lane on a runner whose baseline provides that capability;
+    # never relax the runner's kernel/AppArmor policy from a PR workflow.
+    runs-on: ubuntu-22.04
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -264,17 +267,29 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap
           test -x /usr/bin/bwrap
-      - name: Enable bubblewrap user namespaces
+      - name: Verify bubblewrap user namespace capability
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
           set -euo pipefail
-          # Ubuntu 24.04 can gate unprivileged namespaces behind both a
-          # kernel sysctl and AppArmor. This runner is ephemeral; enable the
-          # namespace required by bubblewrap while retaining --unshare-net.
-          sudo sysctl -w kernel.unprivileged_userns_clone=1
-          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          if ! /usr/bin/unshare -Urn /usr/bin/true; then
+            echo "runner lacks the user/network namespace required by Steward sandboxing" >&2
+            exit 1
           fi
+          /usr/bin/bwrap \
+            --die-with-parent \
+            --unshare-user \
+            --unshare-net \
+            --unshare-pid \
+            --clearenv \
+            --tmpfs / \
+            --ro-bind /usr /usr \
+            --ro-bind /bin /bin \
+            --ro-bind /lib /lib \
+            --ro-bind /lib64 /lib64 \
+            --proc /proc \
+            --dev /dev \
+            --dir /tmp \
+            -- /usr/bin/true
       - name: Configure test git identity
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: |

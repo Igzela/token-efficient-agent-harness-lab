@@ -257,6 +257,42 @@ def _git_metadata_snapshot(
     return ref_map, hashlib.sha256(config.stdout).hexdigest()
 
 
+def _worker_attempt_integrity(
+    worktree: Path,
+    *,
+    base_sha: str,
+    branch: str,
+    metadata_before: tuple[dict[str, str], str],
+) -> tuple[bool, str, dict[str, Any]]:
+    """Prove that a non-successful worker left no replayable mutation."""
+
+    try:
+        observed_head = _git_head(worktree)
+        changed_paths = _git_changed_paths(worktree, base_sha, observed_head)
+        clean = True
+        try:
+            _git_worktree_clean(worktree)
+        except (StewardError, workers.WorkerError):
+            clean = False
+        observed_metadata = _git_metadata_snapshot(worktree, branch=branch)
+        metadata_unchanged = observed_metadata == metadata_before
+        data = {
+            "head_sha": observed_head,
+            "changed_paths_digest": _digest("\x00".join(changed_paths)),
+            "worktree_clean": clean,
+            "metadata_unchanged": metadata_unchanged,
+        }
+        intact = (
+            observed_head == base_sha
+            and not changed_paths
+            and clean
+            and metadata_unchanged
+        )
+        return intact, "clean_unchanged" if intact else "changed_or_dirty", data
+    except (StewardError, workers.WorkerError, OSError):
+        return False, "unavailable", {}
+
+
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
 
@@ -1186,34 +1222,12 @@ class Steward:
                             retryable=False,
                         )
                     except Exception:
-                        integrity = "unavailable"
-                        integrity_data: dict[str, Any] = {}
-                        try:
-                            failure_head = _git_head(worktree_path)
-                            failure_clean = True
-                            try:
-                                _git_worktree_clean(worktree_path)
-                            except (StewardError, workers.WorkerError):
-                                failure_clean = False
-                            failure_metadata = _git_metadata_snapshot(
-                                worktree_path, branch=worktree_branch
-                            )
-                            metadata_unchanged = failure_metadata == (
-                                metadata_before[0],
-                                metadata_before[1],
-                            )
-                            integrity = (
-                                "clean_unchanged"
-                                if failure_clean and metadata_unchanged and failure_head == base_sha
-                                else "changed_or_dirty"
-                            )
-                            integrity_data = {
-                                "head_sha": failure_head,
-                                "worktree_clean": failure_clean,
-                                "metadata_unchanged": metadata_unchanged,
-                            }
-                        except (StewardError, workers.WorkerError, OSError):
-                            pass
+                        _intact, integrity, integrity_data = _worker_attempt_integrity(
+                            worktree_path,
+                            base_sha=base_sha,
+                            branch=worktree_branch,
+                            metadata_before=metadata_before,
+                        )
                         self._record(
                             event="WORKER_OUTCOME_UNKNOWN",
                             key=_journal_key("unknown-worker", mission, stage, card, attempt),
@@ -1233,6 +1247,31 @@ class Steward:
                             f"worker_exception_after_admission_{integrity}",
                         )
                     if outcome.status != "PASS":
+                        intact, integrity, integrity_data = _worker_attempt_integrity(
+                            worktree_path,
+                            base_sha=base_sha,
+                            branch=worktree_branch,
+                            metadata_before=metadata_before,
+                        )
+                        if not intact:
+                            self._record(
+                                event="WORKER_OUTCOME_UNKNOWN",
+                                key=_journal_key("unknown-worker-integrity", mission, stage, card, attempt),
+                                mission=mission,
+                                stage=stage,
+                                card=card,
+                                attempt=attempt,
+                                state="OUTCOME_UNKNOWN",
+                                detail=f"worker_{outcome.status.lower()}_after_{integrity}",
+                                data=integrity_data,
+                            )
+                            return ExecutionResult(
+                                card.card_id,
+                                "OUTCOME_UNKNOWN",
+                                attempt,
+                                None,
+                                f"worker_{outcome.status.lower()}_after_{integrity}",
+                            )
                         if outcome.status == "OUTCOME_UNKNOWN":
                             self._record(
                                 event="WORKER_OUTCOME_UNKNOWN",
