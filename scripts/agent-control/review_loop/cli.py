@@ -19,6 +19,8 @@ import sys
 import uuid
 from typing import Any, Callable
 
+import review_convergence
+
 from . import (
     comment_poster,
     github_adapter,
@@ -643,6 +645,37 @@ def cmd_post(
     print(f"COMMENT_POSTED: {url}")
 
 
+def cmd_publish_state(args: argparse.Namespace, github: Any) -> None:
+    """Publish one complete ReviewState v3 to its linked Issue."""
+
+    path = pathlib.Path(args.state)
+    if not path.exists():
+        _fail(f"review state not found: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        issue_number, pr_number, state = review_convergence.parse_review_state(payload)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        _fail(f"review state is invalid: {type(exc).__name__}")
+    if issue_number != args.issue_number or pr_number != args.pr_number:
+        _fail("review state Issue/PR binding does not match command arguments", 2)
+    try:
+        action, url = comment_poster.publish_review_state(
+            github,
+            args.repository,
+            issue_number=issue_number,
+            pr_number=pr_number,
+            state=state,
+        )
+    except Exception as exc:
+        # The create call may have succeeded before the response was lost.
+        # Re-query the same Issue before attempting any retry.
+        _fail(f"review-state POST outcome unknown: {type(exc).__name__}", 2)
+    if action == "skipped":
+        print("REVIEW_STATE_SKIPPED: identical state already posted")
+    else:
+        print(f"REVIEW_STATE_POSTED: {url}")
+
+
 def cmd_status(args: argparse.Namespace, journal: journal_mod.Journal) -> None:
     print(journal_mod.serialize_projection(journal.projection()))
 
@@ -702,6 +735,13 @@ def main(
     post.add_argument("--allowed-paths", nargs="*", default=[])
     post.set_defaults(func=cmd_post)
 
+    publish_state = sub.add_parser("publish-state")
+    publish_state.add_argument("--repository", required=True)
+    publish_state.add_argument("--issue-number", type=int, required=True)
+    publish_state.add_argument("--pr-number", type=int, required=True)
+    publish_state.add_argument("--state", required=True)
+    publish_state.set_defaults(func=cmd_publish_state)
+
     status = sub.add_parser("status")
     status.set_defaults(func=cmd_status)
 
@@ -747,6 +787,14 @@ def main(
         envelope = _load_envelope(args)
         with locking.ChatLock(lock_dir, envelope.chat_key):
             func(args, github, journal)
+    elif func is cmd_publish_state:
+        if github is None:
+            _fail("publish-state requires an authenticated GitHub comment client")
+        if lock_dir is None:
+            _fail("publish-state requires a lock directory")
+        lock_key = f"review-state:{args.repository}:{args.issue_number}"
+        with locking.ChatLock(lock_dir, lock_key):
+            func(args, github)
     elif func is cmd_parse:
         if lock_dir is None:
             _fail("parse requires a lock directory")

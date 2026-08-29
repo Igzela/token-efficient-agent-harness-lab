@@ -592,10 +592,14 @@ def _load_review_state_projection(
             continue
         expected_pr_number = payload.get("number")
         if (
-            state.get("issue_number") != issue_number
+            type(state.get("issue_number")) is not int
+            or state.get("issue_number") != issue_number
             or (
                 isinstance(expected_pr_number, int)
-                and state.get("pr_number") != expected_pr_number
+                and (
+                    type(state.get("pr_number")) is not int
+                    or state.get("pr_number") != expected_pr_number
+                )
             )
         ):
             found[issue_number] = _review_state_projection_conflict(

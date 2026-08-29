@@ -21,6 +21,8 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "agent-control"))
 
+import review_convergence as rc  # noqa: E402
+
 from review_loop import (  # noqa: E402
     comment_poster,
     github_adapter,
@@ -535,6 +537,88 @@ class TestCommentPoster(unittest.TestCase):
             ["<!-- independent-review-receipt:broken -->"], REQ_SHA, receipt_sha
         )
         self.assertEqual(action, "conflict")
+
+    def test_publish_review_state_is_bound_and_idempotent(self):
+        state = rc.initial_r1_state(
+            rc.ReviewDecision(
+                verdict="PASS",
+                summary="review passed",
+                reviewed_base=BASE,
+                reviewed_head=HEAD,
+                reviewed_range=f"{BASE}...{HEAD}",
+                review_mode="full",
+                review_round=1,
+            )
+        )
+        github = github_adapter.FakeGitHub()
+        result = comment_poster.publish_review_state(
+            github,
+            REPO,
+            issue_number=208,
+            pr_number=349,
+            state=state,
+        )
+        self.assertEqual(result[0], "posted")
+        self.assertEqual(len(github.posted), 1)
+
+    def test_publish_state_cli_uses_issue_binding_and_recovery_transport(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            state = rc.initial_r1_state(
+                rc.ReviewDecision(
+                    verdict="PASS",
+                    summary="review passed",
+                    reviewed_base=BASE,
+                    reviewed_head=HEAD,
+                    reviewed_range=f"{BASE}...{HEAD}",
+                    review_mode="full",
+                    review_round=1,
+                )
+            )
+            state_path = tmp / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    rc.build_review_state(state, issue_number=208, pr_number=349),
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            github = github_adapter.FakeGitHub()
+            cli.main(
+                [
+                    "publish-state",
+                    "--repository",
+                    REPO,
+                    "--issue-number",
+                    "208",
+                    "--pr-number",
+                    "349",
+                    "--state",
+                    str(state_path),
+                ],
+                github=github,
+                lock_dir=tmp / "locks",
+            )
+            self.assertEqual(len(github.posted), 1)
+            self.assertEqual(json.loads(github.posted[0])["pr_number"], 349)
+        body = github.posted[0]
+        durable = json.loads(body)
+        self.assertEqual(durable["kind"], rc.REVIEW_STATE_KIND)
+        self.assertEqual(durable["issue_number"], 208)
+        self.assertEqual(durable["pr_number"], 349)
+        self.assertEqual(
+            comment_poster.publish_review_state(
+                github,
+                REPO,
+                issue_number=208,
+                pr_number=349,
+                state=state,
+            )[0],
+            "skipped",
+        )
+        self.assertEqual(len(github.posted), 1)
 
     def test_reconcile_post_new(self):
         receipt = make_receipt()

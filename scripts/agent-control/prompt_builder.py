@@ -246,7 +246,12 @@ def _load_review_convergence_state(
         expected_issue = int(issue_number)
     except (TypeError, ValueError) as exc:
         raise ValueError("review state unavailable: invalid_issue_number") from exc
-    if state.get("issue_number") != expected_issue or state.get("pr_number") != pr_number:
+    if (
+        type(state.get("issue_number")) is not int
+        or type(state.get("pr_number")) is not int
+        or state.get("issue_number") != expected_issue
+        or state.get("pr_number") != pr_number
+    ):
         raise ValueError("review state unavailable: binding_mismatch")
 
     import review_convergence as rc

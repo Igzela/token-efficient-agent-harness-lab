@@ -189,6 +189,20 @@ class TestLegacyMapping(unittest.TestCase):
         self.assertEqual(len(d.deferred_note_ids), 2)
         self.assertEqual(d.observed_ci_status, "model_reported_not_green")
 
+    def test_structured_findings_cannot_hide_legacy_blockers(self):
+        with self.assertRaises(rc.ConvergenceError):
+            rc.decision_from_legacy_artifact(
+                {
+                    "verdict": "PASS",
+                    "summary": "pass",
+                    "reviewed_head_sha": HEAD1,
+                    "findings": [],
+                    "blockers": ["must block"],
+                    "security_ok": True,
+                    "rollback_ok": True,
+                }
+            )
+
 
 class TestRoundTransitions(unittest.TestCase):
     def test_r1_pass_is_terminal(self):
@@ -587,8 +601,10 @@ class TestCapsuleProjection(unittest.TestCase):
         cases = (
             ({"summary": []}, "invalid_summary"),
             ({"findings": [finding(axis={"not": "text"})]}, "invalid_findings"),
+            ({"findings": [finding(origin_head="not-a-sha")]}, "invalid_findings"),
             ({"review_mode": {}}, "invalid_review_mode"),
             ({"verdict": {}}, "invalid_review_verdict"),
+            ({"version": 3.0}, "unsupported_review_state_version"),
             (
                 {"review_mode": "repair_verification"},
                 "invalid_review_mode_round_pair",
@@ -613,6 +629,8 @@ class TestDurablePersistenceFields(unittest.TestCase):
         state = rc.initial_r1_state(decision("PASS"))
         fields = state.to_persistence_fields()
         for key in (
+            "kind",
+            "version",
             "review_protocol_version",
             "review_mode",
             "review_round",
@@ -633,6 +651,21 @@ class TestDurablePersistenceFields(unittest.TestCase):
         self.assertEqual(fields["autonomous_repairs_remaining"], 1)
         self.assertEqual(fields["review_round"], 1)
         self.assertEqual(fields["verdict"], "PASS")
+
+    def test_durable_state_binds_issue_and_pr_and_round_trips_projection(self):
+        state = rc.initial_r1_state(decision("PASS"))
+        durable = rc.build_review_state(state, issue_number=208, pr_number=349)
+        self.assertEqual(durable["kind"], rc.REVIEW_STATE_KIND)
+        self.assertEqual(durable["version"], rc.REVIEW_STATE_VERSION)
+        self.assertEqual(durable["issue_number"], 208)
+        self.assertEqual(durable["pr_number"], 349)
+        self.assertEqual(
+            rc.project_capsule_fields(durable, expected_head=HEAD1)["availability"],
+            "confirmed",
+        )
+        parsed_issue, parsed_pr, parsed_state = rc.parse_review_state(durable)
+        self.assertEqual((parsed_issue, parsed_pr), (208, 349))
+        self.assertEqual(parsed_state, state)
 
 
 if __name__ == "__main__":
