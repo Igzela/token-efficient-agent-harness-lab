@@ -31,6 +31,7 @@ HEX40 = re.compile(r"^[0-9a-f]{40}$")
 OWNER_APPROVAL_MARKER = re.compile(
     r"^<!--\s*steward-owner-approval:v1\s*(\{.*\})\s*-->$", re.DOTALL
 )
+MISSION_STAGE_APPROVAL_MAX_AGE_SECONDS = 86_400
 _CONSUMED_APPROVAL_IDS: set[tuple[str, str]] = set()
 
 
@@ -650,6 +651,7 @@ class LoopController:
                     issue_number=approval_issue,
                     accepted_main_sha=accepted_main,
                     now=now,
+                    max_age_seconds=MISSION_STAGE_APPROVAL_MAX_AGE_SECONDS,
                     replay_store=getattr(steward, "journal", None),
                 )
                 approval = authenticator.read_approval(proposal_sha256)

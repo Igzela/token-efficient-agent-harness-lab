@@ -649,6 +649,36 @@ class TestMissionExecutionBridge(unittest.TestCase):
         self.assertEqual(len(continuations), 1)
         self.assertEqual(continuations[0][3]["stage_pr"]["pr_number"], 42)
 
+    def test_mission_stage_approval_expires_after_24_hours(self):
+        github = FakeGitHub()
+        github.metadata["name_with_owner"] = mission_contract.CAMPAIGN_REPOSITORY
+        proposal = shadow_steward.compile_proposal("Update docs/ARCHITECTURE_BOOK.md.")
+        approved_at = "2026-08-28T00:00:00Z"
+        github.comments = [{
+            "author": {"login": "Igzela"},
+            "body": "<!-- steward-owner-approval:v1 " + json.dumps({
+                "owner_identity": "repository-owner",
+                "proposal_sha256": proposal.proposal_sha256,
+                "approval_id": "approval-24-hour-boundary",
+                "approved_at": approved_at,
+                "accepted_main_sha": MAIN_SHA,
+            }) + " -->",
+            "createdAt": approved_at,
+        }]
+        controller = local_loop.LoopController(
+            github,
+            FakeGit(),
+            repository=mission_contract.CAMPAIGN_REPOSITORY,
+            repo_path=Path("/workspace/example"),
+        )
+        result = controller.run_mission_stage(
+            proposal,
+            approval_issue=99,
+            steward=object(),
+            now=lambda: datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result["status"], "waiting_approval")
+
     def test_production_bridge_uses_real_steward_continuation_and_fresh_facts(self):
         github = FakeGitHub()
         github.metadata["name_with_owner"] = mission_contract.CAMPAIGN_REPOSITORY
