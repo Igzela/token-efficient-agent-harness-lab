@@ -1040,7 +1040,7 @@ Unresolved objections: none
             f"\"from pathlib import Path; Path({canonical_ref!r}).write_text('x')\"], "
             "capture_output=True).returncode != 0; "
             "subprocess.run(['/usr/bin/git','add','README.md'], check=True); "
-            "subprocess.run(['/usr/bin/git','commit','-m','worker'], check=True, "
+            "subprocess.run(['/usr/bin/git','-c','user.name=Steward Test','-c','user.email=steward-test@example.invalid','commit','-m','worker'], check=True, "
             "capture_output=True); "
             "head=subprocess.run(['/usr/bin/git','rev-parse','HEAD'], check=True, "
             "capture_output=True, text=True).stdout.strip(); "
