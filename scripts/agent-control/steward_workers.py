@@ -839,9 +839,16 @@ def _sandbox_command(
         "--tmpfs",
         "/",
     ]
-    for system_path in ("/usr", "/bin", "/lib", "/lib64"):
+    for system_path in ("/usr", "/bin", "/lib", "/lib64", "/opt"):
         if Path(system_path).exists():
             args.extend(("--ro-bind", system_path, system_path))
+    exec_path = Path(sys.executable).resolve()
+    if exec_path.is_file():
+        exec_root = exec_path.parent.parent
+        exec_root_str = str(exec_root)
+        if exec_root_str not in {"/", "/usr", "/bin", "/lib", "/lib64", "/opt"}:
+            if exec_root.exists():
+                args.extend(("--ro-bind", exec_root_str, exec_root_str))
     # A child needs loader/account metadata, but must not receive a readable
     # copy of the host's complete /etc (which can contain credentials or
     # operator configuration).  Network files and package configuration stay
