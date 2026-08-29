@@ -1144,6 +1144,19 @@ def _authoritative_plan_review(
     ):
         return None
     try:
+        effective = sm.current_effective_reviews(pr_number, head_sha, repo)
+        threads = sm.review_threads_status(pr_number, head_sha, repo)
+        if (
+            not isinstance(effective, dict)
+            or effective.get("complete") is not True
+            or effective.get("requested_changes")
+            or effective.get("current_head_requested_change_review_ids")
+            or effective.get("review_decision") not in {None, "APPROVED"}
+            or not isinstance(threads, dict)
+            or threads.get("complete") is not True
+            or threads.get("unresolved_thread_ids")
+        ):
+            return None
         comments = sm.get_issue_comments(pr_number, repo)
         author_payload = pr_binding._gh_json(
             "pr", "view", str(pr_number), "--repo", repo, "--json", "author",

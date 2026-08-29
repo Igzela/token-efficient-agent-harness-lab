@@ -1204,14 +1204,20 @@ class TestLoopctl(unittest.TestCase):
             subprocess.run(
                 ["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True
             )
+            subprocess.run(
+                [
+                    "git",
+                    "switch",
+                    "-qc",
+                    "agent/pr4b-adapter-test",
+                    "a9ddd354966c9e548cf3b4236a6487e2f79a7031",
+                ],
+                cwd=repo, check=True,
+            )
             base_sha = subprocess.run(
                 ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
                 capture_output=True, text=True,
             ).stdout.strip()
-            subprocess.run(
-                ["git", "switch", "-qc", "agent/pr4b-adapter-test", base_sha],
-                cwd=repo, check=True,
-            )
             context = workers.WorkerContext(
                 mission_id="mission",
                 stage_id="stage",

@@ -225,7 +225,7 @@ def main(
             }
         print(json.dumps(wire, ensure_ascii=False, sort_keys=True))
         return 0 if wire.get("status") in {
-            "waiting_approval", "stage_pr_draft", "stage_pr_waiting", "waiting_for_merge"
+            "waiting_approval", "stage_pr_draft", "stage_pr_waiting", "waiting_for_merge", "complete"
         } else 2
     if args.command == "route-run":
         try:
