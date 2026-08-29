@@ -1232,6 +1232,37 @@ class Steward:
                             None,
                             f"worker_exception_after_admission_{integrity}",
                         )
+                    if outcome.status != "PASS":
+                        if outcome.status == "OUTCOME_UNKNOWN":
+                            self._record(
+                                event="WORKER_OUTCOME_UNKNOWN",
+                                key=_journal_key("unknown-reported", mission, stage, card, attempt),
+                                mission=mission,
+                                stage=stage,
+                                card=card,
+                                attempt=attempt,
+                                state="OUTCOME_UNKNOWN",
+                                detail="worker_reported_unknown_outcome",
+                            )
+                            return ExecutionResult(
+                                card.card_id,
+                                "OUTCOME_UNKNOWN",
+                                attempt,
+                                None,
+                                _journal_detail(outcome.detail or "worker_reported_unknown_outcome"),
+                            )
+                        result = self._failure(
+                            mission=mission,
+                            stage=stage,
+                            card=card,
+                            attempt=attempt,
+                            reason=outcome.detail or f"worker_{outcome.status.lower()}",
+                            retryable=outcome.status in RETRYABLE_WORKER_STATUSES,
+                        )
+                        if result.status == "RETRY_SCHEDULED":
+                            attempt += 1
+                            continue
+                        return result
                     try:
                         observed_head = _git_head(worktree_path)
                         workers.validate_worker_outcome(
@@ -1268,38 +1299,6 @@ class Steward:
                             detail="worker_head_unavailable_after_attempt",
                         )
                         return ExecutionResult(card.card_id, "OUTCOME_UNKNOWN", attempt, None, "worker_head_unavailable_after_attempt")
-                    if outcome.status != "PASS":
-                        if outcome.status == "OUTCOME_UNKNOWN":
-                            self._record(
-                                event="WORKER_OUTCOME_UNKNOWN",
-                                key=_journal_key("unknown-reported", mission, stage, card, attempt),
-                                mission=mission,
-                                stage=stage,
-                                card=card,
-                                attempt=attempt,
-                                state="OUTCOME_UNKNOWN",
-                                detail="worker_reported_unknown_outcome",
-                            )
-                            return ExecutionResult(
-                                card.card_id,
-                                "OUTCOME_UNKNOWN",
-                                attempt,
-                                observed_head,
-                                _journal_detail(outcome.detail or "worker_reported_unknown_outcome"),
-                            )
-                        result = self._failure(
-                            mission=mission,
-                            stage=stage,
-                            card=card,
-                            attempt=attempt,
-                            reason=outcome.detail or f"worker_{outcome.status.lower()}",
-                            retryable=outcome.status in RETRYABLE_WORKER_STATUSES,
-                            head_sha=observed_head,
-                        )
-                        if result.status == "RETRY_SCHEDULED":
-                            attempt += 1
-                            continue
-                        return result
                     if set(actual_paths) != set(outcome.changed_paths):
                         return self._failure(
                             mission=mission,

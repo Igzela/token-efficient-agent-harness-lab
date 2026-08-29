@@ -191,7 +191,7 @@ class StewardExecutionTests(unittest.TestCase):
             else mock.patch.object(steward, "_git_head", side_effect=git_heads)
         )
         actual_paths = (
-            [(), (self.card.allowed_paths[0],), (self.card.allowed_paths[0],)]
+            [(self.card.allowed_paths[0],), (self.card.allowed_paths[0],)]
             if git_heads is not None
             else [(self.card.allowed_paths[0],), (self.card.allowed_paths[0],)]
         )
@@ -203,7 +203,7 @@ class StewardExecutionTests(unittest.TestCase):
             "review_range_digest",
             return_value=hashlib.sha256(f"{BASE}...{HEAD}".encode("ascii")).hexdigest(),
         )
-        metadata_heads = [BASE, HEAD, HEAD] if git_heads is None else [BASE, BASE, BASE, HEAD, HEAD]
+        metadata_heads = [BASE, HEAD, HEAD] if git_heads is None else [BASE, BASE, HEAD, HEAD]
         metadata_patch = mock.patch.object(
             steward,
             "_git_metadata_snapshot",
@@ -767,7 +767,7 @@ class StewardExecutionTests(unittest.TestCase):
         result, _service = self.run_with_facts(
             self.process_worker(run),
             self.process_reviewer(lambda _context, _outcome: review),
-            git_heads=[BASE, HEAD, HEAD],
+            git_heads=[HEAD, HEAD],
         )
         self.assertEqual(result.status, "WAITING_FOR_MERGE")
         self.assertEqual(seen, [(1, "T1"), (2, "T2")])
