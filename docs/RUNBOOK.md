@@ -511,22 +511,15 @@ worktree and exact-head evidence for operator inspection. Only a live,
 exactly bound PR with passing CI and independent review may be projected as
 `WAITING_FOR_MERGE`; the existing manual merge owner handles the merge.
 
-### Self-hosted runner readiness
+### Runner and host readiness
 
-Use the repository-owned bounded readiness checker for the Actions runner. It verifies the local runner files by metadata only, checks the listener version, resolves exactly one systemd service layout, and uses fully paginated GitHub runner status. The default check requires the runner to be online and idle; `--allow-busy` is only for a check deliberately executed from inside the active runner job.
-
-```bash
-export AGENT_REPO=OWNER/REPO
-export AGENT_RUNNER_ROOT=/path/to/actions-runner
-export AGENT_RUNNER_NAME=Vader
-uv run --no-project python scripts/agent-control/runner_readiness.py \
-  --repo "$AGENT_REPO" \
-  --runner-root "$AGENT_RUNNER_ROOT" \
-  --runner-name "$AGENT_RUNNER_NAME"
-
-```
-
-The official GitHub Actions runner `config.sh` is an installation/registration command, not a health-check interface. `config.sh --check` is not a supported readiness check and must not be used; use `runner_readiness.py` instead. The checker never reads or prints `.credentials` or `.credentials_rsaparams` contents.
+The legacy self-hosted runner preflight surface was removed with the old
+control plane. Current canonical verification runs through the checked-in
+GitHub Actions workflows and the provider-free Steward heartbeat; there is no
+repository-owned command that installs, registers, or probes a host runner.
+Do not infer service or host readiness from a local projection. Any future host
+installation or activation requires its own accepted operational contract,
+recovery point, and one-writer proof.
 
 Every task Issue intended for implementation must also declare its permitted change scope. The finalizer rejects an artifact unless every changed path is exact or under an allowed directory prefix:
 

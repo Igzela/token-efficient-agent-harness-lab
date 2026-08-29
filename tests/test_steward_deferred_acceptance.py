@@ -11,6 +11,7 @@ Requirements verified:
 from __future__ import annotations
 
 import sys
+import subprocess
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -149,6 +150,29 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
         self.assertNotIn("INSERT INTO product_tasks", content)
         self.assertIn("subprocess", content)
         self.assertNotIn("ACP_ENABLE_PROVIDER_EXECUTION", content)
+
+    def test_deferred_acceptance_executes_store_lease_and_target_guards(self) -> None:
+        """Run the existing provider-free Rust behavior tests behind this gate."""
+        commands = (
+            ["cargo", "test", "-p", "engine", "--lib", "managed_acceptance::"],
+            ["cargo", "test", "-p", "engine", "--lib", "workflow_runs::"],
+            ["cargo", "test", "-p", "engine", "--test", "test_target_repo_output"],
+        )
+        for command in commands:
+            with self.subTest(command=" ".join(command)):
+                result = subprocess.run(
+                    command,
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    check=False,
+                )
+                self.assertEqual(
+                    result.returncode,
+                    0,
+                    (result.stdout + result.stderr)[-4_000:],
+                )
 
 
 if __name__ == "__main__":

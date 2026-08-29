@@ -8,7 +8,9 @@
 - Scope in this repository: protocol usage extraction, streaming usage aggregation,
   model-name normalization, versioned local pricing **estimates**, and provider
   endpoint/path recognition. Adapted under `engine/src/execution_usage/`.
-- See `docs/CC_SWITCH_ADAPTATION.md` for file-level mapping and non-imported surfaces.
+- File-level mapping and non-imported surfaces are documented by the source
+  comments in `engine/src/execution_usage/`; no separate active governance
+  document is required.
 
 ```
 MIT License

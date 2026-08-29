@@ -7,9 +7,9 @@ Canonical owner for:
   ReviewFinding / ReviewDecision normalization
   R1 / repair-batch / R2 transition rules
 
-Persistence remains in state_manager (GitHub Issue comments).
-Capsule/project_context only project fields from durable state; they never
-decide severity, disposition, repair, Ready, or merge.
+Persistence is caller-owned (Steward journal or accepted GitHub evidence).
+This module only validates review facts; it never decides repair, Ready, or
+merge authority.
 """
 
 from __future__ import annotations
@@ -38,7 +38,8 @@ ADMISSION_REASONS = frozenset(
 )
 
 # Control verdicts used by the repository orchestrator wire.
-# PASS is the only merge-authorizing verdict (see MERGE_AUTHORIZING in state_manager).
+# PASS is the only merge-authorizing verdict; merge authority remains with the
+# canonical GitHub exact-head gate and is never granted by this projection.
 # DECISION_REQUIRED is non-authorizing and stops autonomous advancement.
 # PASS_WITH_NOTES remains schema-valid historical / non-authorizing.
 CONTROL_VERDICTS = frozenset(

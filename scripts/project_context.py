@@ -39,6 +39,16 @@ CANONICAL_DOCUMENT_PATHS = (
     "docs/ROADMAP.md",
     "docs/RUNBOOK.md",
 )
+# A PR that deletes the old governance documents is necessarily based on an
+# accepted main that still has them.  This read-only, pre-merge bridge maps
+# only the three consolidated documents and is used only when the exact
+# accepted commit lacks the new path.  It becomes unreachable once PR6 is
+# accepted; it never reads the working tree and never grants execution.
+ACCEPTED_DOCUMENT_COMPATIBILITY = {
+    "docs/ARCHITECTURE.md": "docs/ARCHITECTURE_BOOK.md",
+    "docs/AUTONOMY.md": "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+    "docs/ROADMAP.md": "docs/FUTURE_ROUTE.md",
+}
 
 # Logical required check names. These are the canonical names used in the matrix.
 REQUIRED_CI_CHECKS = (
@@ -185,10 +195,10 @@ def parse_first_routed_packet(next_text: str) -> dict[str, str | None]:
 
 
 def parse_open_frontiers(status_text: str) -> list[dict[str, Any]]:
-    """Read the legacy status table; new capsules use live observations.
+    """Read a compatibility status table; new capsules use live observations.
 
-    Kept for backward-compatible tooling/tests while accepted branches move
-    dynamic PR state out of ``CURRENT_STATUS.md``.
+    Kept for bounded compatibility tooling/tests; the active route never reads
+    a status document and obtains dynamic PR state from live observations.
     """
     block = section(status_text, "## Open Review Surfaces")
     frontiers: list[dict[str, Any]] = []
@@ -448,9 +458,14 @@ def canonical_documents(baseline: dict[str, Any], *, offline: bool) -> dict[str,
         return unavailable
     if not ensure_commit_available(sha, offline=offline):
         return unavailable
-    documents = {
-        path: git_show_text(sha, path) for path in CANONICAL_DOCUMENT_PATHS
-    }
+    documents: dict[str, str] = {}
+    for path in CANONICAL_DOCUMENT_PATHS:
+        content = git_show_text(sha, path)
+        if not content:
+            compatibility_path = ACCEPTED_DOCUMENT_COMPATIBILITY.get(path)
+            if compatibility_path:
+                content = git_show_text(sha, compatibility_path)
+        documents[path] = content
     if any(not content for content in documents.values()):
         return unavailable
     return {

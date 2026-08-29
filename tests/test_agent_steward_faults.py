@@ -785,6 +785,44 @@ class StewardFaultTests(unittest.TestCase):
             observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
         self.assertEqual(observed["review_state"], "PENDING")
 
+    def test_review_authority_fails_closed_when_live_review_facts_are_unavailable(self):
+        with mock.patch.object(
+            steward_github,
+            "current_effective_reviews",
+            side_effect=steward_github.GitHubReadError("github_review_read_failed"),
+        ):
+            self.assertFalse(
+                steward_github._authoritative_plan_review(
+                    7, HEAD, "Igzela/token-efficient-agent-harness-lab", BASE
+                )
+            )
+
+    def test_review_authority_does_not_accept_aggregate_approval_without_current_head(self):
+        with (
+            mock.patch.object(
+                steward_github,
+                "current_effective_reviews",
+                return_value={
+                    "complete": True,
+                    "review_decision": "APPROVED",
+                    "requested_changes": [],
+                    "effective_reviews": [
+                        {"state": "APPROVED", "is_current_head": False}
+                    ],
+                },
+            ),
+            mock.patch.object(
+                steward_github,
+                "review_threads_status",
+                return_value={"complete": True, "unresolved_thread_ids": []},
+            ),
+        ):
+            self.assertFalse(
+                steward_github._authoritative_plan_review(
+                    7, HEAD, "Igzela/token-efficient-agent-harness-lab", BASE
+                )
+            )
+
     def test_github_reader_accepts_merged_state_with_exact_head_receipt(self):
         reader = steward_github.GhReadOnlyGitHub()
         payload = {

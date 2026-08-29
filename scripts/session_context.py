@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping
 from dataclasses import dataclass, fields as dataclass_fields, replace
-import fnmatch
 import hashlib
 import importlib.util
 import json
@@ -53,20 +52,10 @@ MISSION_CONTRACT_PATH = ROOT / "scripts" / "agent-control" / "mission_contract.p
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PACKET_ID = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$")
-PACKET_TOKEN = re.compile(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b")
 OPTION_ID = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 ROUTE_MARKER = re.compile(
     r"<!--\s*agent-context-routes:v1\s*(?P<payload>\{.*?\})\s*-->", re.DOTALL
 )
-WEAK_DISPATCH_MARKER = re.compile(
-    r"<!--\s*weak-agent-dispatch:v1\s*(?P<payload>\{.*?\})\s*-->", re.DOTALL
-)
-PACKET_HEADING = re.compile(
-    r"^#{2,3} Packet (?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)(?:\b.*)?$",
-    re.MULTILINE,
-)
-PACKET_STATE = re.compile(r"^\*\*State:\*\*\s*`(?P<state>[A-Z0-9_]+)`", re.MULTILINE)
-STAGE_HEADING = re.compile(r"^## Stage .+$", re.MULTILINE)
 
 ROLES = frozenset({"planning", "coding", "review", "ci-repair", "operator", "contributor"})
 WORK_STATES = frozenset({"WIP", "STABLE", "BLOCKED", "OUTCOME_UNKNOWN"})
@@ -208,6 +197,17 @@ CANONICAL_DOCUMENT_PATHS = (
     "docs/ROADMAP.md",
     "docs/RUNBOOK.md",
 )
+# Read-only pre-merge normalization for the accepted base of PR6.  The
+# accepted base still names the documents that this PR consolidates; the
+# normalized route never returns those names and never grants execution.
+ROUTE_DOCUMENT_COMPATIBILITY = {
+    "docs/CURRENT_STATUS.md": "docs/ARCHITECTURE.md",
+    "docs/NEXT_DECISION.md": "docs/AUTONOMY.md",
+    "docs/FUTURE_ROUTE.md": "docs/ROADMAP.md",
+    "docs/MODULE_MAP.md": "docs/ARCHITECTURE.md",
+    "docs/ARCHITECTURE_BOOK.md": "docs/ARCHITECTURE.md",
+    "docs/REAL_WORLD_TESTING_PLAYBOOK.md": "docs/AUTONOMY.md",
+}
 
 class SessionContextError(ValueError):
     """A bounded context or recovery contract could not be proved."""
@@ -296,29 +296,6 @@ def _dispatch_path_list(value: object, field: str) -> list[str]:
     if len(result) != len(value):
         raise SessionContextError(f"{field}_invalid")
     return result
-
-
-def _validate_legacy_mission_compatibility(
-    packet: PacketBinding, capsule: dict[str, object]
-) -> None:
-    """Double-read the new contract without creating a writer or authority."""
-
-    spec = importlib.util.spec_from_file_location(
-        "session_context_mission_contract", MISSION_CONTRACT_PATH
-    )
-    if spec is None or spec.loader is None:
-        raise SessionContextError("legacy_mission_contract_unavailable")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-        module.validate_registered_campaign()
-        module.validate_legacy_compatibility(packet.to_wire(), capsule)
-    except SessionContextError:
-        raise
-    except Exception as exc:
-        reason = getattr(exc, "reason", "legacy_mission_compatibility_invalid")
-        raise SessionContextError(str(reason)) from exc
 
 
 def _path_is_allowed(path: str, allowed_paths: list[str]) -> bool:
@@ -465,7 +442,7 @@ class PacketBinding:
             dispatch_lane=dispatch_lane,
         )
         if require_checkpoint and (
-            model.source_path != "docs/NEXT_DECISION.md"
+            model.source_path != "docs/AUTONOMY.md"
             or model.state not in EXECUTABLE_PACKET_STATES
             or not model.checkpoint_allowed
         ):
@@ -515,44 +492,6 @@ class ContextRoute:
             "execution_authorized": self.execution_authorized,
             "checkpoint_allowed": self.checkpoint_allowed,
             "bootstrap_order": list(self.bootstrap_order),
-        }
-
-
-@dataclass(frozen=True)
-class PacketExtract:
-    schema_version: str
-    authority: str
-    accepted_main_sha: str
-    source_path: str
-    document_sha256: str
-    packet_id: str
-    packet_state: str
-    packet_sha256: str
-    profile_id: str | None
-    worker_tier: str | None
-    prerequisites: tuple[str, ...]
-    execution_authorized: bool
-    stage_heading: str | None
-    global_contract: str
-    packet_text: str
-
-    def to_wire(self) -> dict[str, object]:
-        return {
-            "schema_version": self.schema_version,
-            "authority": self.authority,
-            "accepted_main_sha": self.accepted_main_sha,
-            "source_path": self.source_path,
-            "document_sha256": self.document_sha256,
-            "packet_id": self.packet_id,
-            "packet_state": self.packet_state,
-            "packet_sha256": self.packet_sha256,
-            "profile_id": self.profile_id,
-            "worker_tier": self.worker_tier,
-            "prerequisites": list(self.prerequisites),
-            "execution_authorized": self.execution_authorized,
-            "stage_heading": self.stage_heading,
-            "global_contract": self.global_contract,
-            "packet_text": self.packet_text,
         }
 
 
@@ -750,7 +689,7 @@ class SessionCheckpoint:
         packet_state = wire.get("packet_state")
         if not isinstance(packet_state, str) or packet_state not in EXECUTABLE_PACKET_STATES:
             raise SessionContextError("checkpoint_packet_state_invalid")
-        if wire.get("packet_source_path") != "docs/NEXT_DECISION.md":
+        if wire.get("packet_source_path") != "docs/AUTONOMY.md":
             raise SessionContextError("checkpoint_packet_source_invalid")
         packet_sha256 = _validate_sha(
             wire.get("packet_sha256"), "checkpoint_packet_sha256", SHA256
@@ -822,7 +761,7 @@ class SessionCheckpoint:
             projection_authority=CHECKPOINT_AUTHORITY,
             packet_id=packet_id,
             packet_state=packet_state,
-            packet_source_path="docs/NEXT_DECISION.md",
+            packet_source_path="docs/AUTONOMY.md",
             packet_sha256=packet_sha256,
             accepted_main_sha=accepted_main_sha,
             head_sha=head_sha,
@@ -1250,7 +1189,7 @@ class SessionEntry:
                 {
                     "packet_id": packet_id,
                     "state": packet_state,
-                    "source_path": "docs/NEXT_DECISION.md",
+                    "source_path": "docs/AUTONOMY.md",
                     "packet_sha256": packet_sha256,
                     "allowed_paths": list(allowed_paths),
                     "forbidden_next_actions": list(forbidden_next_actions),
@@ -1355,31 +1294,40 @@ def parse_route_contract(document: str) -> RouteContract:
             raise SessionContextError("route_contract_role_fields_invalid")
         required = route["required"]
         optional = route["optional"]
+        normalized_required = list(
+            dict.fromkeys(
+                ROUTE_DOCUMENT_COMPATIBILITY.get(path, path) for path in required
+            )
+        )
         if (
             not isinstance(required, list)
             or not required
-            or len(required) > maximum
-            or required[0] != "START_HERE.md"
-            or len(required) != len(set(required))
-            or any(path not in CANONICAL_DOCUMENTS for path in required)
+            or len(normalized_required) > maximum
+            or normalized_required[0] != "START_HERE.md"
+            or any(path not in CANONICAL_DOCUMENTS for path in normalized_required)
         ):
             raise SessionContextError("route_contract_required_invalid")
         if not isinstance(optional, dict) or len(optional) > MAX_ROUTE_DOCUMENTS:
             raise SessionContextError("route_contract_optional_invalid")
+        normalized_optional: dict[str, str] = {}
         for option, path in optional.items():
+            normalized_path = ROUTE_DOCUMENT_COMPATIBILITY.get(path, path)
             if (
                 not isinstance(option, str)
                 or not OPTION_ID.fullmatch(option)
-                or path not in CANONICAL_DOCUMENTS
-                or path in required
+                or normalized_path not in CANONICAL_DOCUMENTS
             ):
                 raise SessionContextError("route_contract_optional_invalid")
+            if normalized_path not in normalized_required:
+                if normalized_path in normalized_optional.values():
+                    raise SessionContextError("route_contract_optional_invalid")
+                normalized_optional[option] = normalized_path
         normalized_roles.append(
             (
                 role,
                 RouteRole(
-                    required=tuple(required),
-                    optional=tuple(sorted(optional.items())),
+                    required=tuple(normalized_required),
+                    optional=tuple(sorted(normalized_optional.items())),
                 ),
             )
         )
@@ -1436,419 +1384,6 @@ def build_route(
             "run session_context.py resume before touching an existing worktree",
             "stop on any DECISION_REQUIRED disposition",
         ),
-    ).to_wire()
-
-
-def _packet_blocks(document: str) -> list[tuple[str, int, int, str]]:
-    headings = list(PACKET_HEADING.finditer(document))
-    blocks: list[tuple[str, int, int, str]] = []
-    for index, heading in enumerate(headings):
-        end = headings[index + 1].start() if index + 1 < len(headings) else len(document)
-        blocks.append(
-            (
-                heading.group("packet"),
-                heading.start(),
-                end,
-                document[heading.start() : end].rstrip() + "\n",
-            )
-        )
-    return blocks
-
-
-def _one_packet_block(document: str, packet_id: str) -> tuple[int, int, str]:
-    matches = [item for item in _packet_blocks(document) if item[0] == packet_id]
-    if not matches:
-        raise SessionContextError("packet_missing")
-    if len(matches) != 1:
-        raise SessionContextError("packet_duplicated")
-    _packet, start, end, block = matches[0]
-    return start, end, block
-
-
-def _packet_state(block: str) -> str:
-    states = PACKET_STATE.findall(block)
-    if len(states) != 1:
-        raise SessionContextError("packet_state_missing_or_ambiguous")
-    return states[0]
-
-
-def extract_packet(
-    document: str,
-    *,
-    packet_id: str,
-    accepted_main_sha: str,
-    source_path: str,
-) -> dict[str, object]:
-    """Extract one packet without carrying the neighboring route portfolio."""
-
-    if not isinstance(packet_id, str) or not PACKET_ID.fullmatch(packet_id):
-        raise SessionContextError("packet_id_invalid")
-    _validate_sha(accepted_main_sha, "accepted_main_sha", SHA40)
-    if source_path not in {"docs/NEXT_DECISION.md", "docs/FUTURE_ROUTE.md"}:
-        raise SessionContextError("packet_source_invalid")
-    start, _end, block = _one_packet_block(document, packet_id)
-    state = _packet_state(block)
-    stages = [match for match in STAGE_HEADING.finditer(document, 0, start)]
-    stage_heading = stages[-1].group(0) if stages else None
-    boundaries = [match.start() for match in STAGE_HEADING.finditer(document)]
-    inventory = re.search(r"^## Portfolio Inventory Manifest$", document, re.MULTILINE)
-    if inventory:
-        boundaries.append(inventory.start())
-    global_end = min(boundaries) if boundaries else start
-    global_contract = document[:global_end].rstrip() + "\n"
-    prerequisite_line = re.search(
-        r"^\*\*Prerequisites?:\*\*\s*(?P<value>.+)$", block, re.MULTILINE
-    )
-    prerequisites = (
-        re.findall(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+", prerequisite_line.group("value"))
-        if prerequisite_line
-        else []
-    )
-    prerequisites = list(dict.fromkeys(item for item in prerequisites if item != packet_id))
-    profile = re.search(r"^\*\*Execution profile:\*\*\s*`?([^`\n]+)`?", block, re.MULTILINE)
-    tier = re.search(r"^\*\*Worker tier:\*\*\s*`?([^`\n]+)`?", block, re.MULTILINE)
-    is_future = source_path == "docs/FUTURE_ROUTE.md"
-    profile_id = profile.group(1).strip() if profile else None
-    worker_tier = tier.group(1).strip() if tier else None
-    if is_future and profile_id is None:
-        inventory = re.search(
-            r"<!--\s*future-route-inventory:v1\s*(?P<payload>\{.*?\})\s*-->",
-            document,
-            re.DOTALL,
-        )
-        if inventory:
-            try:
-                payload = json.loads(inventory.group("payload"))
-                rows = payload.get("profiles") if isinstance(payload, dict) else None
-                if isinstance(rows, list):
-                    for row in rows:
-                        if (
-                            isinstance(row, list)
-                            and len(row) >= 5
-                            and row[0] == packet_id
-                        ):
-                            profile_id = f"{packet_id}.v1"
-                            worker_tier = row[2] if isinstance(row[2], str) else None
-                            break
-            except json.JSONDecodeError:
-                pass
-    return PacketExtract(
-        schema_version="agent_packet_extract.v1",
-        authority="routing_projection_only" if is_future else "current_document_projection",
-        accepted_main_sha=accepted_main_sha,
-        source_path=source_path,
-        document_sha256=hashlib.sha256(document.encode("utf-8")).hexdigest(),
-        packet_id=packet_id,
-        packet_state=state,
-        packet_sha256=hashlib.sha256(block.encode("utf-8")).hexdigest(),
-        profile_id=profile_id,
-        worker_tier=worker_tier,
-        prerequisites=tuple(prerequisites),
-        execution_authorized=not is_future and state in EXECUTABLE_PACKET_STATES,
-        stage_heading=stage_heading,
-        global_contract=global_contract,
-        packet_text=block,
-    ).to_wire()
-
-
-def _packet_contract_binding(
-    block: str,
-    payload: Mapping[str, object],
-    status_document: str,
-) -> None:
-    """Cross-bind one executable packet to prose and accepted receipts."""
-
-    allowed_line = re.search(
-        r"^\*\*Allowed delta:\*\*\s*(?P<value>.+)$", block, re.MULTILINE
-    )
-    if allowed_line is None:
-        raise SessionContextError("packet_allowed_paths_binding_invalid")
-    allowed_text = allowed_line.group("value").split(" Do not modify", 1)[0]
-    backticked = re.findall(r"`([^`]+)`", allowed_text)
-    raw_patterns = (
-        backticked
-        if backticked
-        else [item.strip().rstrip(".") for item in allowed_text.split(",")]
-    )
-    patterns = [
-        item for item in raw_patterns
-        if item and ("/" in item or item.endswith((".md", ".py", ".yml")))
-    ]
-    try:
-        capsule_allowed = sorted(
-            {
-                _repo_path(item, "packet_allowed_path")
-                for item in _bounded_string_list(
-                    payload.get("allowed_paths"), "packet_allowed_paths"
-                )
-            }
-        )
-    except SessionContextError as exc:
-        raise SessionContextError("packet_allowed_paths_binding_invalid") from exc
-    if not patterns or any(
-        not any(
-            (pattern.endswith("/") and path.startswith(pattern))
-            or fnmatch.fnmatchcase(path, pattern)
-            for pattern in patterns
-        )
-        for path in capsule_allowed
-    ):
-        raise SessionContextError("packet_allowed_paths_binding_invalid")
-    # Reverse binding: every concrete repository file named by the prose
-    # Allowed delta must also be admitted by the machine capsule. Without
-    # this direction a packet could mandate edits to paths (for example the
-    # route tests) that the dispatch capsule would then treat as
-    # preserve-only. Glob and directory patterns stay one-directional.
-    uncovered = [
-        pattern
-        for pattern in patterns
-        if "*" not in pattern
-        and "?" not in pattern
-        and "[" not in pattern
-        and (ROOT / pattern).is_file()
-        and not any(
-            (allowed.endswith("/") and pattern.startswith(allowed))
-            or fnmatch.fnmatchcase(pattern, allowed)
-            for allowed in capsule_allowed
-        )
-    ]
-    if uncovered:
-        raise SessionContextError("packet_allowed_paths_binding_invalid")
-
-    prerequisite_line = re.search(
-        r"^\*\*Prerequisites?:\*\*\s*(?P<value>.+)$", block, re.MULTILINE
-    )
-    prose_prerequisites = (
-        list(dict.fromkeys(PACKET_TOKEN.findall(prerequisite_line.group("value"))))
-        if prerequisite_line is not None
-        else []
-    )
-    capsule_prerequisites = _bounded_string_list(
-        payload.get("prerequisites"), "packet_prerequisites", allow_empty=True
-    )
-    packet_id = payload.get("packet_id")
-    stabilization_bridge = packet_id == "PE7-ROUTE-AUTONOMY-STABILIZATION-1"
-    stabilization_prerequisite = (
-        "Accepted main `306b500c43270ca83d7cb9defd365140b525187c` contains the "
-        "accepted route, control-binding, SQLite race-repair, and route-autonomy "
-        "stabilization implementation receipts. PR #416 exact head "
-        "`9ce548f620314303b37753a18539c17b5daa6698`, canonical workflow "
-        "`31630036965`, merge `306b500c43270ca83d7cb9defd365140b525187c`, "
-        "and controller status smoke `31631388199` prove the repaired dispatch "
-        "surface. The failed attempt `ea64fd6d-fb8e-5c54-b86c-ae8f96c17550` "
-        "and route10 remain non-resumable historical evidence."
-    )
-    if (
-        (
-            stabilization_bridge
-            and (
-                prerequisite_line is None
-                or prerequisite_line.group("value") != stabilization_prerequisite
-            )
-        )
-        or (not stabilization_bridge and prose_prerequisites != capsule_prerequisites)
-        or any(PACKET_ID.fullmatch(item) is None for item in capsule_prerequisites)
-    ):
-        raise SessionContextError("packet_prerequisite_binding_invalid")
-
-    receipts = _bounded_string_list(
-        payload.get("prerequisite_receipts"),
-        "packet_prerequisite_receipts",
-        allow_empty=True,
-    )
-    receipt_section = re.search(
-        r"^## Accepted Packet Receipts$(?P<body>.*?)(?=^## |\Z)",
-        status_document,
-        re.MULTILINE | re.DOTALL,
-    )
-    if receipt_section is None:
-        raise SessionContextError("packet_prerequisite_receipt_invalid")
-    accepted_rows: dict[str, str] = {}
-    for line in receipt_section.group("body").splitlines():
-        match = re.fullmatch(
-            r"\|\s*`(?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)`\s*"
-            r"\|\s*`COMPLETE`\s*\|\s*(?P<receipt>[^|]+?)\s*\|",
-            line,
-        )
-        if match is None:
-            continue
-        packet_id = match.group("packet")
-        if packet_id in accepted_rows:
-            raise SessionContextError("packet_prerequisite_receipt_invalid")
-        accepted_rows[packet_id] = match.group("receipt").strip()
-    if stabilization_bridge:
-        expected_prerequisites = [
-            "PE7-ROUTE-AUTOMATION-1",
-            "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1",
-            "PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1",
-        ]
-        expected_receipts = [
-            "PE7-ROUTE-AUTOMATION-1 COMPLETE: PR #390 exact head "
-            "24618e52c969adc93e7bc092c51dde6b2d0ffea9; merge "
-            "5481053c736e7db8481cabd9316741f2a5cd6c7a; canonical workflow "
-            "31467821768",
-            "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1 COMPLETE: "
-            "implementation PR #408 merge "
-            "57a86c78c3f9611ce48c5bce249721af23db5532; canonical workflow "
-            "31593460813; correction workflow 31594277043",
-            "PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1 COMPLETE: PR #413 "
-            "exact head fc8c005981d2fa12f0f494a131b839d65a46a8ba; canonical workflow "
-            "31611860646; merge 9cc118fa72d9d13a24cdf968cc5fc20dbe80b28f",
-            "Route bootstrap failure: attempt "
-            "ea64fd6d-fb8e-5c54-b86c-ae8f96c17550; accepted main "
-            "aa83ac1f5eada74199e0ce28ecb91d37a48769d6; HTTP 422 for 28 "
-            "inputs over GitHub maximum 25; no workflow run or downstream mutation",
-        ]
-        expected_accepted_rows = {
-            "PE7-ROUTE-AUTOMATION-1":
-                "PR #390 exact head `24618e52c969adc93e7bc092c51dde6b2d0ffea9`; "
-                "merge `5481053c736e7db8481cabd9316741f2a5cd6c7a`; exact-head `PASS`; "
-                "canonical workflow `31467821768`",
-            "PE7-CONTROL-BINDING-INTEGRITY-REPAIR-1":
-                "Authority PRs #406/#407/#409; implementation PR #408 exact head "
-                "`4a2dcf42728ae53f7daaec73e15310e8b0d67b59`; merge "
-                "`57a86c78c3f9611ce48c5bce249721af23db5532`; exact-head `PASS` on "
-                "both review axes; canonical workflow `31593460813`; #405 "
-                "retrospective correction workflow `31594277043` and production "
-                "readback bind actual head `e68ec0b3a7b78d3ca241922bf3995c2f3ba4ecfa` "
-                "while retaining `historical_merge_compliant=false`",
-            "PE7-WORKSPACE-PREP-RECEIPT-RACE-REPAIR-1":
-                "PR #413 base `59cec5745ddd7f89ce8c099a5de2c7e3c3ec3a1e`; exact head "
-                "`fc8c005981d2fa12f0f494a131b839d65a46a8ba`; exact-head `PASS` "
-                "receipt comment `5268787985`; canonical workflow `31611860646`; "
-                "merge `9cc118fa72d9d13a24cdf968cc5fc20dbe80b28f`; deterministic "
-                "production-path concurrent-winner receipt reuse and genuine "
-                "missing-receipt rejection",
-        }
-        if capsule_prerequisites != expected_prerequisites or receipts != expected_receipts:
-            raise SessionContextError("packet_prerequisite_receipt_invalid")
-        for prerequisite_id, expected_receipt in expected_accepted_rows.items():
-            if accepted_rows.get(prerequisite_id) != expected_receipt:
-                raise SessionContextError("packet_prerequisite_receipt_invalid")
-        return
-
-    if len(receipts) != len(capsule_prerequisites):
-        raise SessionContextError("packet_prerequisite_receipt_invalid")
-    for index, prerequisite_id in enumerate(capsule_prerequisites):
-        accepted_receipt = accepted_rows.get(prerequisite_id)
-        if accepted_receipt is None:
-            raise SessionContextError("packet_prerequisite_receipt_invalid")
-        candidate = receipts[index]
-        prefix = f"{prerequisite_id} COMPLETE:"
-        if candidate.startswith(prefix):
-            candidate = candidate[len(prefix):].strip()
-        if candidate != accepted_receipt:
-            raise SessionContextError("packet_prerequisite_receipt_invalid")
-
-
-def current_packet_binding(
-    next_document: str,
-    status_document: str,
-    accepted_main_sha: str,
-) -> dict[str, object]:
-    """Bind the routed packet without interpreting prose as new authority."""
-
-    _validate_sha(accepted_main_sha, "accepted_main_sha", SHA40)
-    markers = list(WEAK_DISPATCH_MARKER.finditer(next_document))
-    if len(markers) == 1:
-        try:
-            payload = json.loads(markers[0].group("payload"))
-        except json.JSONDecodeError as exc:
-            raise SessionContextError("weak_dispatch_json_invalid") from exc
-        if not isinstance(payload, dict) or payload.get("schema_version") != "weak_agent_dispatch.v1":
-            raise SessionContextError("weak_dispatch_invalid")
-        packet_id = payload.get("packet_id")
-        if not isinstance(packet_id, str) or not PACKET_ID.fullmatch(packet_id):
-            raise SessionContextError("packet_id_invalid")
-        start, end, block = _one_packet_block(next_document, packet_id)
-        if markers[0].start() < start or markers[0].end() > end:
-            raise SessionContextError("weak_dispatch_outside_packet")
-        state = _packet_state(block)
-        active = re.search(
-            r"^## Active Routing$(?P<body>.*?)(?=^## |\Z)",
-            next_document,
-            re.MULTILINE | re.DOTALL,
-        )
-        active_body = active.group("body") if active else ""
-        numbered = re.findall(
-            r"^\s*\d+\.\s+`(?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)`",
-            active_body,
-            re.MULTILINE,
-        )
-        labelled = re.findall(
-            r"^Current packet:\s*(?P<packet>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\s*$",
-            active_body,
-            re.MULTILINE,
-        )
-        routed = list(dict.fromkeys([*numbered, *labelled]))
-        if routed != [packet_id]:
-            raise SessionContextError("packet_not_current_route")
-        _packet_contract_binding(block, payload, status_document)
-        raw_allowed = payload.get("allowed_paths")
-        if not isinstance(raw_allowed, list) or not raw_allowed:
-            raise SessionContextError("packet_allowed_paths_invalid")
-        try:
-            allowed_paths = sorted(
-                {_repo_path(item, "packet_allowed_path") for item in raw_allowed}
-            )
-        except SessionContextError as exc:
-            raise SessionContextError("packet_allowed_paths_invalid") from exc
-        forbidden = payload.get("forbidden_next_actions")
-        forbidden_next = _bounded_string_list(forbidden, "forbidden_next_actions")
-        return PacketBinding.from_wire(
-            {
-                "packet_id": packet_id,
-                "state": state,
-                "source_path": "docs/NEXT_DECISION.md",
-                "packet_sha256": hashlib.sha256(block.encode("utf-8")).hexdigest(),
-                "allowed_paths": allowed_paths,
-                "forbidden_next_actions": forbidden_next,
-                "execution_authorized": False,
-                "checkpoint_allowed": state in EXECUTABLE_PACKET_STATES,
-                "dispatch_lane": payload.get("dispatch_lane"),
-            }
-        ).to_wire()
-    if markers:
-        raise SessionContextError("weak_dispatch_duplicated")
-
-    active = re.search(
-        r"^## Active Routing$(?P<body>.*?)(?=^## |\Z)",
-        next_document,
-        re.MULTILINE | re.DOTALL,
-    )
-    routed = PACKET_TOKEN.findall(active.group("body") if active else "")
-    routed = list(dict.fromkeys(routed))
-    if len(routed) != 1:
-        try:
-            sys.path.insert(0, str(ROOT / "scripts" / "agent-control"))
-            import mission_contract as mc
-            mission = mc.campaign_mission()
-            return PacketBinding(
-                packet_id=mission.mission_id,
-                state="READY_FOR_EXECUTION",
-                source_path="docs/AUTONOMY.md",
-                packet_sha256=mission.computed_proposal_sha256,
-                allowed_paths=mission.allowed_paths,
-                forbidden_next_actions=mission.forbidden_operations,
-                execution_authorized=False,
-                checkpoint_allowed=True,
-                dispatch_lane=None,
-            ).to_wire()
-        except Exception:
-            raise SessionContextError("current_packet_missing_or_ambiguous")
-    _start, _end, block = _one_packet_block(next_document, routed[0])
-    return PacketBinding(
-        packet_id=routed[0],
-        state=_packet_state(block),
-        source_path="docs/NEXT_DECISION.md",
-        packet_sha256=hashlib.sha256(block.encode("utf-8")).hexdigest(),
-        allowed_paths=(),
-        forbidden_next_actions=(
-            "Do not execute without a machine-bound dispatch contract.",
-        ),
-        execution_authorized=False,
-        checkpoint_allowed=False,
-        dispatch_lane=None,
     ).to_wire()
 
 
@@ -1990,7 +1525,7 @@ def build_auto_checkpoint(
 
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
     packet_model = PacketBinding.from_wire(packet, require_checkpoint=True)
-    capsule = _bind_dispatch_capsule(dispatch_capsule, packet_model)
+    capsule = _canonical_dispatch_capsule(dispatch_capsule)
     if role != "coding":
         raise SessionContextError("checkpoint_auto_role_invalid")
     return _build_auto_checkpoint(
@@ -2025,7 +1560,7 @@ def build_stable_auto_checkpoint(
 
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
     packet_model = PacketBinding.from_wire(packet, require_checkpoint=True)
-    capsule = _bind_dispatch_capsule(dispatch_capsule, packet_model)
+    capsule = _canonical_dispatch_capsule(dispatch_capsule)
     if role != "coding":
         raise SessionContextError("checkpoint_auto_role_invalid")
     parsed = [_safe_verification_argv(check) for check in capsule["verification"]]
@@ -2460,55 +1995,6 @@ def _canonical_dispatch_capsule(value: object) -> dict[str, object]:
     return capsule
 
 
-def _bind_dispatch_capsule(
-    value: object, packet: PacketBinding
-) -> dict[str, object]:
-    capsule = _canonical_dispatch_capsule(value)
-    capsule_allowed = sorted(
-        {
-            _repo_path(item, "dispatch_allowed_path")
-            for item in capsule["allowed_paths"]
-        }
-    )
-    capsule_forbidden = _bounded_string_list(
-        capsule["forbidden_next_actions"],
-        "dispatch_forbidden_next_actions",
-        allow_empty=True,
-    )
-    if (
-        capsule.get("packet_id") != packet.packet_id
-        or capsule.get("dispatch_lane") != packet.dispatch_lane
-        or capsule_allowed != list(packet.allowed_paths)
-        or capsule_forbidden != list(packet.forbidden_next_actions)
-    ):
-        raise SessionContextError("dispatch_binding_invalid")
-    _validate_legacy_mission_compatibility(packet, capsule)
-    return capsule
-
-
-def current_dispatch_capsule(
-    next_document: str, packet: object
-) -> dict[str, object]:
-    """Return the sole current capsule after proving its packet boundaries."""
-
-    if not isinstance(next_document, str) or len(
-        next_document.encode("utf-8")
-    ) > MAX_ROUTE_DOCUMENT_BYTES:
-        raise SessionContextError("dispatch_document_unavailable_or_too_large")
-    packet_model = PacketBinding.from_wire(packet)
-    markers = list(WEAK_DISPATCH_MARKER.finditer(next_document))
-    if len(markers) != 1:
-        raise SessionContextError("weak_dispatch_missing_or_duplicated")
-    start, end, _block = _one_packet_block(next_document, packet_model.packet_id)
-    if markers[0].start() < start or markers[0].end() > end:
-        raise SessionContextError("weak_dispatch_outside_packet")
-    try:
-        value = json.loads(markers[0].group("payload"))
-    except json.JSONDecodeError as exc:
-        raise SessionContextError("weak_dispatch_json_invalid") from exc
-    return _bind_dispatch_capsule(value, packet_model)
-
-
 def build_session_entry(
     *,
     contract: RouteContract,
@@ -2538,7 +2024,7 @@ def build_session_entry(
     capsule = (
         None
         if dispatch_capsule is None
-        else _bind_dispatch_capsule(dispatch_capsule, packet_model)
+        else _canonical_dispatch_capsule(dispatch_capsule)
     )
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
     checkpoint_model = (
@@ -2839,7 +2325,17 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
     if source == "accepted":
         if not project_context.ensure_commit_available(sha, offline=offline):
             raise SessionContextError("accepted_main_commit_unavailable")
-        reader = lambda path: project_context.git_show_text(sha, path)
+
+        def reader(path: str) -> str:
+            content = project_context.git_show_text(sha, path)
+            compatibility = getattr(
+                project_context, "ACCEPTED_DOCUMENT_COMPATIBILITY", {}
+            )
+            compatibility_path = compatibility.get(path)
+            if not content and isinstance(compatibility_path, str):
+                content = project_context.git_show_text(sha, compatibility_path)
+            return content
+
         source_binding = sha
     elif source == "working-tree":
         reader = lambda path: (ROOT / path).read_text(encoding="utf-8")
@@ -2904,16 +2400,6 @@ def _print(value: dict[str, Any], output_format: str) -> None:
         print(json.dumps(value, indent=2, sort_keys=True))
     elif value.get("schema_version") == "agent_context_route.v1":
         print(_render_route(value), end="")
-    elif value.get("schema_version") == "agent_packet_extract.v1":
-        print(
-            f"<!-- accepted-main: {value['accepted_main_sha']} ; "
-            f"packet-sha256: {value['packet_sha256']} ; execution-authorized: false -->"
-        )
-        print(value["global_contract"], end="")
-        if value.get("stage_heading"):
-            print(value["stage_heading"])
-            print()
-        print(value["packet_text"], end="")
     else:
         print(json.dumps(value, indent=2, sort_keys=True))
 
@@ -2928,12 +2414,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     route.add_argument("--source", choices=("accepted", "working-tree"), default="accepted")
     route.add_argument("--offline", action="store_true")
     route.add_argument("--format", choices=("markdown", "json"), default="markdown")
-
-    extract = subparsers.add_parser("extract-packet", help="Extract one current/future packet.")
-    extract.add_argument("--packet", required=True)
-    extract.add_argument("--source", choices=("accepted", "working-tree"), default="accepted")
-    extract.add_argument("--offline", action="store_true")
-    extract.add_argument("--format", choices=("markdown", "json"), default="markdown")
 
     enter = subparsers.add_parser(
         "enter", help="Compose one bounded fresh-or-resume startup projection."
@@ -2983,15 +2463,8 @@ def main(argv: list[str] | None = None) -> int:
             _print(value, args.format)
             return 0
 
-        if args.command == "extract-packet":
-            raise SessionContextError("current_packet_unavailable")
-
         snapshot = capture_checkout(accepted_main_sha)
-        dispatch_capsule = (
-            None
-            if packet["state"] not in EXECUTABLE_PACKET_STATES
-            else current_dispatch_capsule(documents[packet["source_path"]], packet)
-        )
+        dispatch_capsule = None
         if args.command == "enter":
             receipt = read_checkpoint()
             value = build_session_entry(
@@ -3013,44 +2486,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "checkpoint-auto":
             if args.packet != packet["packet_id"]:
                 raise SessionContextError("checkpoint_packet_not_current")
-            capsule = current_dispatch_capsule(documents[packet["source_path"]], packet)
-            if args.work_state == "STABLE":
-                if not args.verify:
-                    raise SessionContextError("checkpoint_auto_stable_without_verification")
-                receipt = build_stable_auto_checkpoint(
-                    snapshot=snapshot,
-                    packet=packet,
-                    dispatch_capsule=capsule,
-                    role=args.role,
-                )
-            else:
-                if args.verify:
-                    raise SessionContextError("checkpoint_auto_wip_verification_invalid")
-                receipt = build_auto_checkpoint(
-                    snapshot=snapshot,
-                    packet=packet,
-                    dispatch_capsule=capsule,
-                    role=args.role,
-                )
-            if not args.no_write:
-                write_checkpoint(receipt)
-            _print(
-                {
-                    "schema_version": CHECKPOINT_SCHEMA,
-                    "checkpoint_id": receipt["checkpoint_id"],
-                    "packet_id": receipt["packet_id"],
-                    "head_sha": receipt["head_sha"],
-                    "work_state": receipt["work_state"],
-                    "owned_path_count": len(receipt["owned_paths"]),
-                    "preserve_path_count": len(receipt["preserve_paths"]),
-                    "storage": (
-                        "git_private_projection" if not args.no_write else "not_written"
-                    ),
-                    "authority": CHECKPOINT_AUTHORITY,
-                },
-                "json",
-            )
-            return 0
+            raise SessionContextError("current_packet_unavailable")
 
         if args.command == "resume":
             receipt = read_checkpoint()
