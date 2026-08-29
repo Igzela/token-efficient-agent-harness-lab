@@ -260,7 +260,7 @@ jobs:
       - name: Run orchestrator regression tests
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
-          PYTHONPATH=scripts/agent-control uv run --no-project python -m unittest \
+          PYTHONPATH=scripts/agent-control:. uv run --no-project python -m unittest \
             tests/test_agent_shadow_steward.py \
             tests/test_agent_steward.py \
             tests/test_agent_steward_faults.py \
