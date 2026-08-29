@@ -39,7 +39,7 @@ Clean-environment stranger path (disposable build + no-provider demo + exact-hea
 
 Do **not** hand-maintain “N tests pass” claims in docs. CI and release evidence report current counts.
 
-Contributors run **focused** checks for the surfaces they change. Full matrix verification is CI’s job (seven required jobs on the exact PR head).
+Contributors run **focused** checks for the surfaces they change. Full matrix verification is CI’s job (nine required jobs on the exact PR head, as listed in `docs/AUTONOMY.md`).
 
 ### Docs only
 

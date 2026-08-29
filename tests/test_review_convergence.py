@@ -583,6 +583,28 @@ class TestCapsuleProjection(unittest.TestCase):
         self.assertEqual(projection["availability"], "conflict")
         self.assertEqual(projection["unavailable_reason"], "incomplete_v3_state")
 
+    def test_v3_state_semantics_are_fail_closed(self):
+        cases = (
+            ({"summary": []}, "invalid_summary"),
+            ({"findings": [finding(axis={"not": "text"})]}, "invalid_findings"),
+            (
+                {"review_mode": "repair_verification"},
+                "invalid_review_mode_round_pair",
+            ),
+            (
+                {"review_round": 2},
+                "invalid_review_mode_round_pair",
+            ),
+            ({"reviewed_head": HEAD2}, "conflicting_review_head"),
+        )
+        for overrides, reason in cases:
+            with self.subTest(reason=reason):
+                projection = rc.project_capsule_fields(
+                    self._state(**overrides), expected_head=HEAD1
+                )
+                self.assertEqual(projection["availability"], "conflict")
+                self.assertEqual(projection["unavailable_reason"], reason)
+
 
 class TestDurablePersistenceFields(unittest.TestCase):
     def test_round_state_maps_to_v3_persistence_fields(self):

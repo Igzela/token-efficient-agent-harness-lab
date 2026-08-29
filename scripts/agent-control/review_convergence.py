@@ -179,6 +179,9 @@ def normalize_finding(raw: dict[str, Any]) -> ReviewFinding:
     unknown = sorted(set(raw) - allowed_keys)
     if unknown:
         raise ConvergenceError(f"finding has unexpected keys: {unknown}")
+    for key in ("axis", "evidence", "acceptance_condition"):
+        if not isinstance(raw[key], str):
+            raise ConvergenceError(f"finding {key} must be a string")
     if raw["severity"] not in SEVERITIES:
         raise ConvergenceError("invalid severity")
     if raw["disposition"] not in DISPOSITIONS:
@@ -841,6 +844,9 @@ def _validate_v3_review_state(state: dict[str, Any]) -> str | None:
     review_round = state.get("review_round")
     if type(review_round) is not int or not 1 <= review_round <= MAX_SUBSTANTIVE_REVIEW_ROUNDS:
         return "invalid_review_round"
+    expected_mode = "full" if review_round == 1 else "repair_verification"
+    if state["review_mode"] != expected_mode:
+        return "invalid_review_mode_round_pair"
     base_sha = state.get("base_sha")
     head_sha = state.get("head_sha")
     prior_head = state.get("prior_reviewed_head")
@@ -848,6 +854,8 @@ def _validate_v3_review_state(state: dict[str, Any]) -> str | None:
         return "invalid_review_base"
     if not isinstance(head_sha, str) or not HEX40.fullmatch(head_sha):
         return "invalid_review_head"
+    if "reviewed_head" in state and state["reviewed_head"] != head_sha:
+        return "conflicting_review_head"
     if prior_head != "" and (
         not isinstance(prior_head, str) or not HEX40.fullmatch(prior_head)
     ):
@@ -956,11 +964,11 @@ def _validate_v3_review_state(state: dict[str, Any]) -> str | None:
         type(workflow_run) is not int or workflow_run < 0
     ):
         return "invalid_review_workflow_run_id"
-    for field in ("summary", "blockers", "major_notes", "minor_notes"):
+    if not isinstance(state.get("summary"), str):
+        return "invalid_summary"
+    for field in ("blockers", "major_notes", "minor_notes"):
         value = state.get(field)
-        if not isinstance(value, (str, list)):
-            return f"invalid_{field}"
-        if isinstance(value, list) and any(not isinstance(item, str) for item in value):
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
             return f"invalid_{field}"
     return None
 
