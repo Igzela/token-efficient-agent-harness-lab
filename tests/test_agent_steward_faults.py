@@ -765,6 +765,26 @@ class StewardFaultTests(unittest.TestCase):
             observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
             self.assertEqual(observed["ci_state"], "UNKNOWN")
 
+    def test_github_reader_treats_empty_review_decision_as_pending(self):
+        reader = steward_github.GhReadOnlyGitHub()
+        payload = {
+            "state": "OPEN",
+            "isDraft": True,
+            "mergedAt": None,
+            "baseRefName": "main",
+            "headRefName": "agent/steward-card",
+            "baseRefOid": BASE,
+            "headRefOid": HEAD,
+            "statusCheckRollup": [],
+            "reviewDecision": "",
+        }
+        with mock.patch("steward_github.subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = json.dumps(payload)
+            run.return_value.stderr = ""
+            observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
+        self.assertEqual(observed["review_state"], "PENDING")
+
     def test_github_reader_rejects_aggregate_approval_without_current_head_review(self):
         reader = steward_github.GhReadOnlyGitHub()
         payload = {
