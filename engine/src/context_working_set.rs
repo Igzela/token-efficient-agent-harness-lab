@@ -1029,16 +1029,16 @@ mod tests {
         let sha = "cccccccccccccccccccccccccccccccccccccccc";
         let head = "dddddddddddddddddddddddddddddddddddddddd";
         let doc = item(
-            "docs/CURRENT_STATUS.md",
+            "docs/ARCHITECTURE.md",
             ItemKind::Authority,
             Residency::Pinned,
-            "status-body",
+            "architecture-body",
         );
         let dup = item(
-            "docs/CURRENT_STATUS.md",
+            "docs/ARCHITECTURE.md",
             ItemKind::Authority,
             Residency::Pinned,
-            "status-body",
+            "architecture-body",
         );
         let out = project_repository_session(
             sha,
@@ -1052,7 +1052,7 @@ mod tests {
         let status_hits = out
             .prefix
             .iter()
-            .filter(|item| item.identity.identity == "docs/CURRENT_STATUS.md")
+            .filter(|item| item.identity.identity == "docs/ARCHITECTURE.md")
             .count();
         assert_eq!(status_hits, 1);
         assert!(out

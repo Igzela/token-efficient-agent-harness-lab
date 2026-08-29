@@ -19,7 +19,6 @@ from typing import Any, Callable, Mapping
 
 import mission_contract as contract
 import review_convergence
-import state_manager
 import steward_github
 from steward_journal import JournalError, StewardJournal
 from steward_service import ReconciliationReport, StewardService
@@ -28,7 +27,7 @@ import worktree_manager
 
 
 SHA40 = workers.SHA40
-MAX_CONCURRENCY = state_manager.MAX_ACTIVE
+MAX_CONCURRENCY = 4
 RETRYABLE_WORKER_STATUSES = frozenset({"FAIL", "TIMEOUT"})
 RECOVERY_STATES = frozenset({"RUNNING", "VERIFYING", "REVIEWING", "OUTCOME_UNKNOWN"})
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")

@@ -193,12 +193,9 @@ CANONICAL_DOCUMENTS = frozenset(
         "AGENTS.md",
         "README.md",
         "CLAUDE.md",
-        "docs/ARCHITECTURE_BOOK.md",
-        "docs/CURRENT_STATUS.md",
-        "docs/NEXT_DECISION.md",
-        "docs/FUTURE_ROUTE.md",
-        "docs/MODULE_MAP.md",
-        "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+        "docs/ARCHITECTURE.md",
+        "docs/AUTONOMY.md",
+        "docs/ROADMAP.md",
         "docs/RUNBOOK.md",
     }
 )
@@ -1813,7 +1810,23 @@ def current_packet_binding(
     routed = PACKET_TOKEN.findall(active.group("body") if active else "")
     routed = list(dict.fromkeys(routed))
     if len(routed) != 1:
-        raise SessionContextError("current_packet_missing_or_ambiguous")
+        try:
+            sys.path.insert(0, str(ROOT / "scripts" / "agent-control"))
+            import mission_contract as mc
+            mission = mc.campaign_mission()
+            return PacketBinding(
+                packet_id=mission.mission_id,
+                state="READY_FOR_EXECUTION",
+                source_path="docs/AUTONOMY.md",
+                packet_sha256=mission.computed_proposal_sha256,
+                allowed_paths=mission.allowed_paths,
+                forbidden_next_actions=mission.forbidden_operations,
+                execution_authorized=False,
+                checkpoint_allowed=True,
+                dispatch_lane=None,
+            ).to_wire()
+        except Exception:
+            raise SessionContextError("current_packet_missing_or_ambiguous")
     _start, _end, block = _one_packet_block(next_document, routed[0])
     return PacketBinding(
         packet_id=routed[0],
@@ -2824,14 +2837,15 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
         source_binding = "working_tree_unaccepted"
     else:
         raise SessionContextError("document_source_invalid")
+    start_here = reader("START_HERE.md")
+    status = reader("docs/CURRENT_STATUS.md") or reader("docs/AUTONOMY.md")
+    next_dec = reader("docs/NEXT_DECISION.md") or reader("docs/AUTONOMY.md")
+    future = reader("docs/FUTURE_ROUTE.md") or reader("docs/ROADMAP.md")
     documents = {
-        path: reader(path)
-        for path in (
-            "START_HERE.md",
-            "docs/CURRENT_STATUS.md",
-            "docs/NEXT_DECISION.md",
-            "docs/FUTURE_ROUTE.md",
-        )
+        "START_HERE.md": start_here,
+        "docs/CURRENT_STATUS.md": status,
+        "docs/NEXT_DECISION.md": next_dec,
+        "docs/FUTURE_ROUTE.md": future,
     }
     if any(not value for value in documents.values()):
         raise SessionContextError("canonical_document_unavailable")

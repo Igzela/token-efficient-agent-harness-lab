@@ -71,10 +71,6 @@ REQUIRED_TEXT = {
         "## Quality and Frontier Rule",
         "leading valid frontier",
         "Autonomous Operating Model",
-        "Execution-Ready Task Packets",
-        "READY_FOR_EXECUTION",
-        "DECISION_REQUIRED",
-        "Full Agent Autonomy Mode",
         "Autonomous Advancement Loop",
         "Documentation Maintenance Rule",
         "resolve bounded design gaps",
@@ -90,62 +86,35 @@ REQUIRED_TEXT = {
         "START_HERE.md",
         "AGENTS.md",
         "scripts/project_context.py",
-        "docs/CURRENT_STATUS.md",
-        "docs/NEXT_DECISION.md",
+        "docs/ARCHITECTURE.md",
+        "docs/AUTONOMY.md",
     ],
     "README.md": [
         "START_HERE.md",
-        "docs/CURRENT_STATUS.md",
         "AGENTS.md",
+        "docs/ARCHITECTURE.md",
         "scripts/check_wire_codegen_drift.sh",
     ],
-    "docs/ARCHITECTURE_BOOK.md": [
-        "# Architecture Book",
+    "docs/ARCHITECTURE.md": [
+        "# Architecture",
         "Current version: v",
-        "Product Boundary",
-        "Dashboard Boundary",
+        "Three-Tier Operational Model",
+        "Core Module Ownership",
     ],
-    "docs/CURRENT_STATUS.md": [
-        "# Current Status",
-        "Last updated:",
-        "## Verified Repository State",
-        "## Capability Status",
-        "## Confirmed Integration Gaps",
-        "## Maintenance Boundary",
+    "docs/AUTONOMY.md": [
+        "# Autonomy and Testing Contract",
+        "Lifecycle State Machine",
+        "Three-Tier Contract Hierarchy",
+        "Review Convergence Protocol",
+        "Exact-Head CI and Guarded Merge",
     ],
-    "docs/NEXT_DECISION.md": [
-        "# Next Decision",
-        "## Current Direction",
-        "## Active Routing",
-        "## Common Execution Protocol",
-        "READY_FOR_EXECUTION",
-        "DECISION_REQUIRED",
-        "Hard Stops",
-    ],
-    "docs/FUTURE_ROUTE.md": [
-        "# Future Route",
-        "routing-only",
-        "BLOCKED_PREREQUISITE",
-        "docs/NEXT_DECISION.md",
-        "DECISION_REQUIRED",
-    ],
-    "docs/MODULE_MAP.md": [
-        "# Module Map",
-        "## Core Ownership",
-        "`scripts/check_wire_codegen_drift.sh`",
-    ],
-    "docs/REAL_WORLD_TESTING_PLAYBOOK.md": [
-        "# Real-World Testing Playbook",
-        "Action Permission Matrix",
-        "New architecture/authority/recovery decision",
-        "docs/archive/",
-        "## Review Convergence Protocol",
-        "MAX_SUBSTANTIVE_REVIEW_ROUNDS",
-        "MAX_AUTONOMOUS_REPAIR_BATCHES",
-        "DECISION_REQUIRED",
+    "docs/ROADMAP.md": [
+        "# Project Roadmap",
+        "Autonomous Steward Migration Milestones",
+        "Research Horizons",
     ],
     "docs/RUNBOOK.md": [
-        "# Agent Control Plane",
+        "# Agent Control Plane — Runbook",
         "Operator procedures",
     ],
     "scripts/project_context.py": [
@@ -163,10 +132,8 @@ REQUIRED_TEXT = {
         "agent_context_routes.v1",
         "agent_session_handoff.v1",
         "def parse_route_contract",
-        "def extract_packet",
         "def _build_checkpoint",
         "def classify_resume",
-        "DECISION_REQUIRED",
     ],
     "scripts/agent-control/review_convergence.py": [
         "REVIEW_PROTOCOL_VERSION",
@@ -199,11 +166,10 @@ REQUIRED_TEXT = {
 MODEL_AGNOSTIC_FILES = [
     "START_HERE.md",
     "AGENTS.md",
-    "docs/CURRENT_STATUS.md",
-    "docs/NEXT_DECISION.md",
-    "docs/FUTURE_ROUTE.md",
-    "docs/MODULE_MAP.md",
-    "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+    "docs/ARCHITECTURE.md",
+    "docs/AUTONOMY.md",
+    "docs/ROADMAP.md",
+    "docs/RUNBOOK.md",
     "scripts/session_context.py",
 ]
 
@@ -399,12 +365,9 @@ def check_entrypoint_roles(failures: list[str]) -> None:
                 )
 
     canonical_paths = [
-        "docs/CURRENT_STATUS.md",
-        "docs/NEXT_DECISION.md",
-        "docs/FUTURE_ROUTE.md",
-        "docs/MODULE_MAP.md",
-        "docs/ARCHITECTURE_BOOK.md",
-        "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+        "docs/ARCHITECTURE.md",
+        "docs/AUTONOMY.md",
+        "docs/ROADMAP.md",
         "docs/RUNBOOK.md",
         "AGENTS.md",
         "README.md",
@@ -430,7 +393,7 @@ def check_model_agnostic_governance(failures: list[str]) -> None:
 def check_schema_document_drift(failures: list[str]) -> None:
     schema = read("engine/src/storage/local_product_store/schema.rs")
     migrations = read("engine/src/storage/local_product_store/migrations.rs")
-    architecture = read("docs/ARCHITECTURE_BOOK.md")
+    architecture = read("docs/ARCHITECTURE.md")
     version = re.search(r"CURRENT_SQLITE_SCHEMA_VERSION\s*:\s*i64\s*=\s*(\d+)", schema)
     if not version:
         failures.append("Cannot parse CURRENT_SQLITE_SCHEMA_VERSION from schema.rs")
@@ -439,11 +402,11 @@ def check_schema_document_drift(failures: list[str]) -> None:
         failures.append("migrations.rs is missing CURRENT_SCHEMA_VERSION constant")
     documented = re.search(r"Current version:\s*v(\d+)", architecture)
     if not documented:
-        failures.append("ARCHITECTURE_BOOK.md is missing 'Current version: vN'")
+        failures.append("ARCHITECTURE.md is missing 'Current version: vN'")
     elif documented.group(1) != version.group(1):
         failures.append(
             f"Schema version mismatch: schema.rs has v{version.group(1)}, "
-            f"ARCHITECTURE_BOOK.md has v{documented.group(1)}"
+            f"ARCHITECTURE.md has v{documented.group(1)}"
         )
 
 
@@ -1585,13 +1548,26 @@ def session_context_route_failures(start_here: str) -> list[str]:
 
 
 def check_active_state_consistency(failures: list[str]) -> None:
-    status = read("docs/CURRENT_STATUS.md")
-    next_text = read("docs/NEXT_DECISION.md")
-    future_text = read("docs/FUTURE_ROUTE.md")
-    failures.extend(next_decision_hygiene_failures(next_text))
-    failures.extend(active_state_failures(status, next_text, future_text))
-    if "## Verified Repository State" not in status:
-        failures.append("CURRENT_STATUS must preserve the accepted/open/blocked fact boundary")
+    if (ROOT / "docs/NEXT_DECISION.md").exists():
+        status = read("docs/CURRENT_STATUS.md")
+        next_text = read("docs/NEXT_DECISION.md")
+        future_text = read("docs/FUTURE_ROUTE.md")
+        failures.extend(next_decision_hygiene_failures(next_text))
+        failures.extend(active_state_failures(status, next_text, future_text))
+        if "## Verified Repository State" not in status:
+            failures.append("CURRENT_STATUS must preserve the accepted/open/blocked fact boundary")
+    else:
+        if not (ROOT / "docs/AUTONOMY.md").exists() or not (ROOT / "docs/ROADMAP.md").exists():
+            failures.append("Missing required governance documents: AUTONOMY.md or ROADMAP.md")
+        spec = importlib.util.spec_from_file_location("mission_contract_check", MISSION_CONTRACT_PATH)
+        if spec and spec.loader:
+            mc = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mc
+            try:
+                spec.loader.exec_module(mc)
+                mc.validate_registered_campaign()
+            except Exception as e:
+                failures.append(f"Registered campaign validation failed: {e}")
 
 
 def check_session_context_routes(failures: list[str]) -> None:

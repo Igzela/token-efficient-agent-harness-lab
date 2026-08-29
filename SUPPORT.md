@@ -10,8 +10,8 @@
 | Security vulnerability | [SECURITY.md](SECURITY.md) — GitHub Security Advisory (preferred) |
 | Code of conduct / harassment | Private contact in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — **not** a public issue |
 | Setup / contributing | [CONTRIBUTING.md](CONTRIBUTING.md) and [README.md](README.md) |
-| Forward plan | [docs/NEXT_DECISION.md](docs/NEXT_DECISION.md) (single plan — no second roadmap file) |
-| Maintainer operations | [AGENTS.md](AGENTS.md), [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md), [docs/RUNBOOK.md](docs/RUNBOOK.md) |
+| Forward plan | [docs/ROADMAP.md](docs/ROADMAP.md) |
+| Maintainer operations | [AGENTS.md](AGENTS.md), [docs/AUTONOMY.md](docs/AUTONOMY.md), [docs/RUNBOOK.md](docs/RUNBOOK.md) |
 
 ## What this tracker is for
 
@@ -41,7 +41,7 @@ This is a small-maintainer research lab. There is **no SLA**.
 | Security advisory | Goals in [SECURITY.md](SECURITY.md) |
 | Conduct complaint | Private, fair review per [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
 | Bug / validation issue | Best-effort triage when capacity allows |
-| Feature request | May be closed with a pointer to scope boundaries or `docs/NEXT_DECISION.md` |
+| Feature request | May be closed with a pointer to scope boundaries or `docs/ROADMAP.md` |
 | `good first issue` PR | Review when focused checks and CI allow; docs-only PRs use the playbook exception |
 
 Silent periods do not mean rejection. Do not escalate by opening duplicate issues.

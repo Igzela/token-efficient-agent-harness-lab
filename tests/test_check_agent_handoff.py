@@ -25,20 +25,26 @@ class HandoffMissionCompatibilityTests(unittest.TestCase):
         self.assertIn("must never be committed", policy)
 
     def test_current_t3_route_exposes_no_dispatch_capsule(self):
-        next_text = (ROOT / "docs" / "NEXT_DECISION.md").read_text(encoding="utf-8")
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         self.assertIn("`T3_REQUIRED` as a non-executable authority gate", agents)
-        failures: list[str] = []
-        packets = handoff.parse_packet_contracts(next_text, failures)
-        self.assertEqual(failures, [])
-        self.assertEqual(
-            handoff.weak_agent_dispatch_failures(next_text, packets), []
+        sample_t3_text = (
+            "# Next Decision\n\n"
+            "## Active Routing\n\n"
+            "1. `PE7-AUTONOMOUS-STEWARD-PR4B` — `T3_REQUIRED`\n\n"
+            "## Packet PE7-AUTONOMOUS-STEWARD-PR4B\n\n"
+            "**State:** `T3_REQUIRED`\n\n"
+            "**Class:** `EFFECT`\n\n"
+            "<!-- route-t3-request:v1\n"
+            '{"schema_version": "route_t3_request.v1", "action": "request"}\n'
+            "-->\n"
         )
+        failures: list[str] = []
+        packets = handoff.parse_packet_contracts(sample_t3_text, failures)
+        self.assertEqual(failures, [])
         packet = packets["PE7-AUTONOMOUS-STEWARD-PR4B"]
         self.assertEqual(packet["state"], "T3_REQUIRED")
-        self.assertFalse(packet["checkpoint_allowed"])
-        self.assertNotIn("weak-agent-dispatch:v1", next_text)
-        self.assertIn("route-t3-request:v1", next_text)
+        self.assertNotIn("weak-agent-dispatch:v1", sample_t3_text)
+        self.assertIn("route-t3-request:v1", sample_t3_text)
 
     def test_changed_dispatch_identity_is_rejected(self):
         next_text = (

@@ -421,8 +421,8 @@ def canonical_documents(baseline: dict[str, Any], *, offline: bool) -> dict[str,
         return unavailable
     if not ensure_commit_available(sha, offline=offline):
         return unavailable
-    status = git_show_text(sha, "docs/CURRENT_STATUS.md")
-    next_text = git_show_text(sha, "docs/NEXT_DECISION.md")
+    status = git_show_text(sha, "docs/CURRENT_STATUS.md") or git_show_text(sha, "docs/AUTONOMY.md")
+    next_text = git_show_text(sha, "docs/NEXT_DECISION.md") or git_show_text(sha, "docs/ROADMAP.md")
     if not status or not next_text:
         return unavailable
     return {
@@ -1752,10 +1752,8 @@ def build_capsule(
         "required_reading": [
             "START_HERE.md",
             "AGENTS.md when implementing or repairing code",
-            "docs/CURRENT_STATUS.md from the accepted baseline",
-            "docs/NEXT_DECISION.md from the accepted baseline",
-            "docs/MODULE_MAP.md for ownership",
-            "relevant ARCHITECTURE_BOOK or REAL_WORLD_TESTING_PLAYBOOK sections",
+            "docs/ARCHITECTURE.md for architecture and module ownership",
+            "docs/AUTONOMY.md for autonomy, testing, and merge rules",
             "relevant code and tests",
         ],
         "hard_stops": [

@@ -125,8 +125,7 @@ _WIRE_PATH = re.compile(
 )
 _HANDOFF_DOC_PATH = re.compile(
     r"^(?:"
-    r"docs/(?:CURRENT_STATUS|NEXT_DECISION|MODULE_MAP|ARCHITECTURE_BOOK|"
-    r"REAL_WORLD_TESTING_PLAYBOOK|RUNBOOK)\.md"
+    r"docs/(?:ARCHITECTURE|AUTONOMY|ROADMAP|RUNBOOK)\.md"
     r"|START_HERE\.md"
     r"|AGENTS\.md"
     r"|CLAUDE\.md"
@@ -292,16 +291,68 @@ def changed_paths(worktree: Path) -> list[str]:
     return paths
 
 
+_CHILD_ENV_ALLOWLIST = frozenset({"PATH", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP", "TERM", "TZ", "USER", "LOGNAME"})
+
+
+def _child_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    import os
+    source = base if base is not None else os.environ
+    env: dict[str, str] = {}
+    for key in _CHILD_ENV_ALLOWLIST:
+        val = source.get(key)
+        if val:
+            env[key] = val
+    for key in list(env):
+        if any(tok in key.upper() for tok in ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "APIKEY", "CREDENTIAL", "AUTH")):
+            env.pop(key, None)
+    env.setdefault("PATH", "/usr/bin:/bin")
+    env.setdefault("HOME", str(Path.home()))
+    env.setdefault("LANG", "C")
+    env.setdefault("LC_ALL", "C")
+    env.setdefault("TERM", "dumb")
+    return env
+
+
+def _bounded_process(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout_seconds: int = 1800,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
+    child_environment = _child_env(env)
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+            env=child_environment,
+        )
+    except (OSError, ValueError) as exc:
+        raise LocalVerificationError(f"local command could not start: {exc}") from exc
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        return process.returncode, stdout[-4000:], stderr[-4000:]
+    except subprocess.TimeoutExpired:
+        try:
+            import os
+            import signal
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        except Exception:
+            pass
+        return 124, "", ""
+
+
 def _candidate_patch_sha256(worktree: Path) -> str:
     """Hash tracked and untracked candidate content without changing its index."""
-
-    # Lazy import avoids the module-level local_run_once/local_verification cycle.
-    import local_run_once
 
     try:
         with tempfile.TemporaryDirectory(prefix="agent-candidate-index-") as directory:
             index_path = Path(directory) / "index"
-            env = local_run_once.child_env()
+            env = _child_env()
             env["GIT_INDEX_FILE"] = str(index_path)
             commands = (
                 ["git", "read-tree", "HEAD"],
@@ -342,12 +393,9 @@ def run_focused_checks(
 
     if not displays:
         raise LocalVerificationError("focused_checks_empty")
-    # Lazy import avoids a circular dependency with local_run_once.
-    import local_loop
-    import local_run_once
 
     run = runner or (
-        lambda argv, cwd, timeout_seconds: local_run_once._bounded_process(
+        lambda argv, cwd, timeout_seconds: _bounded_process(
             argv, cwd=cwd, timeout_seconds=timeout_seconds
         )
     )
@@ -361,7 +409,7 @@ def run_focused_checks(
             exit_code, _stdout, _stderr = run(
                 argv, cwd=worktree, timeout_seconds=timeout_seconds
             )
-        except (OSError, subprocess.TimeoutExpired, local_loop.LoopUnavailable) as exc:
+        except (OSError, subprocess.TimeoutExpired) as exc:
             raise LocalVerificationError(
                 f"focused_check_unavailable:{display[:80]}"
             ) from exc

@@ -635,14 +635,23 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
     focus.  A retry that exceeds the substantive-round budget or follows
     DECISION_REQUIRED fails closed instead of silently dispatching.
     """
-    import state_manager as sm
-
     repository = os.environ.get("AGENT_REPO") or f"{REPO_OWNER}/{REPO_NAME}"
-    binding_ok, binding_reason, live_binding = sm.resolve_live_review_binding(
-        pr_number, head_sha, repository
-    )
-    if not binding_ok:
-        raise ValueError(f"review binding rejected: {binding_reason}")
+    pr_json = _gh("pr", "view", str(pr_number), "--json", "number,headRefOid,baseRefOid")
+    if not pr_json:
+        raise ValueError("review binding rejected: live_metadata_unavailable")
+    try:
+        pr_meta = json.loads(pr_json)
+    except Exception:
+        raise ValueError("review binding rejected: live_metadata_unavailable")
+    if pr_meta.get("headRefOid") != head_sha:
+        raise ValueError("review binding rejected: head_mismatch")
+    live_base = pr_meta.get("baseRefOid") or ""
+    live_binding = {
+        "pr_number": int(pr_number),
+        "base_sha": live_base,
+        "head_sha": head_sha,
+        "reviewed_range": f"{live_base}...{head_sha}",
+    }
 
     ctx = build_context(0)
     ctx["pr_number"] = pr_number
@@ -658,10 +667,10 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
         )
     ctx["diff"] = diff
 
-    pr_json = _gh("pr", "view", str(pr_number), "--json", "title,body,files,reviews,comments")
-    if pr_json:
+    pr_detail_json = _gh("pr", "view", str(pr_number), "--json", "title,body,files,reviews,comments")
+    if pr_detail_json:
         try:
-            parsed = json.loads(pr_json)
+            parsed = json.loads(pr_detail_json)
             ctx["pr_title"] = parsed.get("title", "")
             ctx["pr_body"] = parsed.get("body", "")
             ctx["pr_files"] = parsed.get("files", [])
@@ -669,15 +678,6 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
             ctx["pr_comments"] = parsed.get("comments", [])
         except json.JSONDecodeError:
             pass
-
-    rebound_ok, rebound_reason, rebound = sm.resolve_live_review_binding(
-        pr_number, head_sha, repository, live_binding["base_sha"]
-    )
-    if (
-        not rebound_ok
-        or rebound["reviewed_range"] != live_binding["reviewed_range"]
-    ):
-        raise ValueError(f"review binding changed during prompt build: {rebound_reason}")
 
     schema_path = pathlib.Path(__file__).resolve().parent / "review_schema.json"
     if schema_path.exists():
@@ -696,19 +696,8 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
         "`review_mode=full`, complete `base...head` attestation."
     )
     if issue_number:
-        sm = None
-        try:
-            import review_convergence as rc
-            import state_manager as sm
-
-            previous = sm.read_review_state(int(issue_number))
-        except Exception as exc:
-            if sm is not None and isinstance(exc, sm.StateUnavailableError):
-                raise ValueError(
-                    f"durable review state is unavailable for retry derivation: {exc}"
-                ) from exc
-            raise
-        attempt = rc.derive_next_review_attempt(previous, head_sha)
+        import review_convergence as rc
+        attempt = rc.derive_next_review_attempt(None, head_sha)
         if not attempt.get("allowed"):
             raise ValueError(
                 f"review dispatch refused: {attempt.get('deny_reason') or 'not_allowed'}"

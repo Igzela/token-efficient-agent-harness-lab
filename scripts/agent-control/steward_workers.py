@@ -23,7 +23,8 @@ import local_verification
 import mission_contract
 import review_convergence
 from review_loop.locking import ChatLock, LockBusy
-import state_manager
+
+MAX_ACTIVE_WORKERS = 4
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -96,10 +97,8 @@ class PathConflict(WorkerError):
 def child_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
     """Return the existing repository-owned credential-free child environment."""
 
-    import local_run_once
-
     source = None if base is None else dict(base)
-    environment = local_run_once.child_env(source)
+    environment = local_verification._child_env(source)
     for key in environment:
         if any(marker in key.upper() for marker in _CREDENTIAL_MARKERS):
             raise WorkerError("credential_shaped_child_environment")
@@ -917,8 +916,6 @@ class BoundedProcessWorker:
         self.timeout_seconds = timeout_seconds
 
     def run(self, context: WorkerContext) -> WorkerOutcome:
-        import local_run_once
-
         command = _validate_command(self.command_builder(context))
         session_id = process_session_id(context)
         git_sandbox = _sandbox_for_context(context)
@@ -929,7 +926,7 @@ class BoundedProcessWorker:
                     context.worktree,
                     context.environment,
                 )
-                exit_code, stdout, _stderr = local_run_once._bounded_process(
+                exit_code, stdout, _stderr = local_verification._bounded_process(
                     sandboxed_command,
                     cwd=context.worktree,
                     timeout_seconds=self.timeout_seconds,
@@ -947,7 +944,7 @@ class BoundedProcessWorker:
                 child_environment["GIT_WORK_TREE"] = str(context.worktree.resolve())
                 child_environment["GIT_CONFIG_NOSYSTEM"] = "1"
                 child_environment["GIT_TERMINAL_PROMPT"] = "0"
-                exit_code, stdout, _stderr = local_run_once._bounded_process(
+                exit_code, stdout, _stderr = local_verification._bounded_process(
                     sandboxed_command,
                     cwd=context.worktree,
                     timeout_seconds=self.timeout_seconds,
@@ -997,8 +994,6 @@ class BoundedProcessReviewer:
         self.timeout_seconds = timeout_seconds
 
     def review(self, context: WorkerContext, outcome: WorkerOutcome) -> ReviewOutcome:
-        import local_run_once
-
         command = _validate_command(self.command_builder(context, outcome))
         git_sandbox = _sandbox_for_context(context)
         try:
@@ -1009,7 +1004,7 @@ class BoundedProcessReviewer:
                     context.environment,
                     worktree_writable=False,
                 )
-                exit_code, stdout, _stderr = local_run_once._bounded_process(
+                exit_code, stdout, _stderr = local_verification._bounded_process(
                     sandboxed_command,
                     cwd=context.worktree,
                     timeout_seconds=self.timeout_seconds,
@@ -1028,7 +1023,7 @@ class BoundedProcessReviewer:
                 child_environment["GIT_WORK_TREE"] = str(context.worktree.resolve())
                 child_environment["GIT_CONFIG_NOSYSTEM"] = "1"
                 child_environment["GIT_TERMINAL_PROMPT"] = "0"
-                exit_code, stdout, _stderr = local_run_once._bounded_process(
+                exit_code, stdout, _stderr = local_verification._bounded_process(
                     sandboxed_command,
                     cwd=context.worktree,
                     timeout_seconds=self.timeout_seconds,
@@ -1148,7 +1143,7 @@ class CapacityLock(AbstractContextManager["CapacityLock"]):
         self._lock: ChatLock | None = None
 
     def acquire(self) -> "CapacityLock":
-        for slot in range(state_manager.MAX_ACTIVE):
+        for slot in range(MAX_ACTIVE_WORKERS):
             lock = ChatLock(self.lock_dir, f"steward-capacity:{slot}")
             try:
                 lock.acquire()

@@ -652,7 +652,7 @@ class StewardFaultTests(unittest.TestCase):
         with (
             mock.patch("steward_github.subprocess.run") as run,
             mock.patch.object(
-                steward_github.state_manager,
+                steward_github,
                 "current_effective_reviews",
                 return_value={
                     "complete": True,
@@ -664,7 +664,7 @@ class StewardFaultTests(unittest.TestCase):
                 },
             ),
             mock.patch.object(
-                steward_github.state_manager,
+                steward_github,
                 "review_threads_status",
                 return_value={
                     "complete": True,
@@ -830,7 +830,7 @@ Unresolved objections: none
         with (
             mock.patch("steward_github.subprocess.run") as run,
             mock.patch.object(
-                steward_github.dispatcher,
+                steward_github,
                 "_authoritative_plan_review",
                 return_value={
                     "base_sha": BASE,
@@ -864,7 +864,7 @@ Unresolved objections: none
         with (
             mock.patch("steward_github.subprocess.run") as run,
             mock.patch.object(
-                steward_github.state_manager,
+                steward_github,
                 "current_effective_reviews",
                 return_value={
                     "complete": True,
@@ -876,7 +876,7 @@ Unresolved objections: none
                 },
             ),
             mock.patch.object(
-                steward_github.state_manager,
+                steward_github,
                 "review_threads_status",
                 return_value={"complete": True, "unresolved_thread_ids": []},
             ),

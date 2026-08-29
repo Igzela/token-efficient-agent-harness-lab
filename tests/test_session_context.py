@@ -26,7 +26,6 @@ sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(SCRIPTS / "agent-control"))
 
 import session_context  # noqa: E402
-import route_driver  # noqa: E402
 
 
 MAIN = "a" * 40
@@ -35,66 +34,73 @@ VERIFY = "uv run --no-project python -m unittest tests.test_session_context"
 ACCEPTED_RECEIPT = "accepted receipt " + "1" * 40 + " workflow 1234567890"
 
 
-def route_document(*, payload: dict | None = None) -> str:
-    value = payload or {
-        "schema_version": "agent_context_routes.v1",
-        "max_required_documents": 6,
-        "roles": {
-            "planning": {
-                "required": [
-                    "START_HERE.md",
-                    "docs/CURRENT_STATUS.md",
-                    "docs/NEXT_DECISION.md",
-                ],
-                "optional": {
-                    "architecture": "docs/ARCHITECTURE_BOOK.md",
-                    "successor": "docs/FUTURE_ROUTE.md",
-                },
+DEFAULT_ROUTE_PAYLOAD = {
+    "schema_version": "agent_context_routes.v1",
+    "max_required_documents": 6,
+    "roles": {
+        "ci-repair": {
+            "optional": {
+                "owners": "docs/ARCHITECTURE.md",
             },
-            "coding": {
-                "required": [
-                    "START_HERE.md",
-                    "AGENTS.md",
-                    "docs/CURRENT_STATUS.md",
-                    "docs/NEXT_DECISION.md",
-                    "docs/MODULE_MAP.md",
-                ],
-                "optional": {
-                    "architecture": "docs/ARCHITECTURE_BOOK.md",
-                    "pr-work": "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
-                },
-            },
-            "review": {
-                "required": [
-                    "START_HERE.md",
-                    "docs/CURRENT_STATUS.md",
-                    "docs/NEXT_DECISION.md",
-                    "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
-                ],
-                "optional": {"architecture": "docs/ARCHITECTURE_BOOK.md"},
-            },
-            "ci-repair": {
-                "required": [
-                    "START_HERE.md",
-                    "AGENTS.md",
-                    "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
-                ],
-                "optional": {"owners": "docs/MODULE_MAP.md"},
-            },
-            "operator": {
-                "required": [
-                    "START_HERE.md",
-                    "docs/CURRENT_STATUS.md",
-                    "docs/RUNBOOK.md",
-                ],
-                "optional": {},
-            },
-            "contributor": {
-                "required": ["START_HERE.md", "README.md"],
-                "optional": {"implementation": "AGENTS.md"},
-            },
+            "required": [
+                "START_HERE.md",
+                "AGENTS.md",
+                "docs/AUTONOMY.md",
+            ],
         },
-    }
+        "coding": {
+            "optional": {
+                "roadmap": "docs/ROADMAP.md",
+            },
+            "required": [
+                "START_HERE.md",
+                "AGENTS.md",
+                "docs/ARCHITECTURE.md",
+                "docs/AUTONOMY.md",
+            ],
+        },
+        "contributor": {
+            "optional": {
+                "implementation": "AGENTS.md",
+            },
+            "required": [
+                "START_HERE.md",
+                "README.md",
+            ],
+        },
+        "operator": {
+            "optional": {},
+            "required": [
+                "START_HERE.md",
+                "docs/ARCHITECTURE.md",
+                "docs/RUNBOOK.md",
+            ],
+        },
+        "planning": {
+            "optional": {
+                "roadmap": "docs/ROADMAP.md",
+            },
+            "required": [
+                "START_HERE.md",
+                "docs/ARCHITECTURE.md",
+                "docs/AUTONOMY.md",
+            ],
+        },
+        "review": {
+            "optional": {
+                "architecture": "docs/ARCHITECTURE.md",
+            },
+            "required": [
+                "START_HERE.md",
+                "docs/AUTONOMY.md",
+            ],
+        },
+    },
+}
+
+
+def route_document(*, payload: dict | None = None) -> str:
+    value = payload or DEFAULT_ROUTE_PAYLOAD
     return (
         "# Start Here\n\n"
         "<!-- agent-context-routes:v1\n"
@@ -285,19 +291,31 @@ class RouteContractTests(unittest.TestCase):
                 self.assertFalse(route["execution_authorized"])
                 self.assertFalse(route["checkpoint_allowed"])
 
-    def test_future_route_is_loaded_only_by_explicit_successor_selection(self):
+    def test_roadmap_is_loaded_only_by_explicit_roadmap_selection(self):
         contract = session_context.parse_route_contract(route_document())
         route = session_context.build_route(
             contract,
             role="planning",
             accepted_main_sha=MAIN,
             packet=packet_binding(),
-            include=["successor"],
+            include=["roadmap"],
         )
-        self.assertEqual(route["documents"][-1], "docs/FUTURE_ROUTE.md")
+        self.assertEqual(route["documents"][-1], "docs/ROADMAP.md")
 
     def test_total_route_document_limit_includes_optional_documents(self):
-        contract = session_context.parse_route_contract(route_document())
+        payload = json.loads(json.dumps(DEFAULT_ROUTE_PAYLOAD))
+        payload["roles"]["coding"]["required"] = [
+            "START_HERE.md",
+            "AGENTS.md",
+            "README.md",
+            "docs/ARCHITECTURE.md",
+            "docs/AUTONOMY.md",
+            "docs/RUNBOOK.md",
+        ]
+        payload["roles"]["coding"]["optional"] = {
+            "extra": "docs/ROADMAP.md",
+        }
+        contract = session_context.parse_route_contract(route_document(payload=payload))
         with self.assertRaisesRegex(
             session_context.SessionContextError, "route_document_limit_exceeded"
         ):
@@ -306,7 +324,7 @@ class RouteContractTests(unittest.TestCase):
                 role="coding",
                 accepted_main_sha=MAIN,
                 packet=packet_binding(),
-                include=["architecture", "pr-work"],
+                include=["extra"],
             )
 
     def test_unknown_role_option_or_contract_field_fails_closed(self):
@@ -1171,6 +1189,9 @@ class CheckpointTests(unittest.TestCase):
             "document_source_binding": MAIN,
             "documents": {
                 "START_HERE.md": route_document(),
+                "AGENTS.md": "# Agent Instructions\n",
+                "docs/ARCHITECTURE.md": "# Architecture\n",
+                "docs/AUTONOMY.md": "# Autonomy\n",
                 "docs/CURRENT_STATUS.md": accepted_status_document(),
                 "docs/NEXT_DECISION.md": next_document_with_dispatch(),
                 "docs/FUTURE_ROUTE.md": "# Future Route\n",
@@ -1192,172 +1213,18 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
 
-    def test_current_repository_packet_exposes_t3_steward_pr4b(self):
+    def test_current_repository_steward_mission_routing(self):
         root = Path(__file__).resolve().parents[1]
         start_document = (root / "START_HERE.md").read_text(encoding="utf-8")
-        next_document = (root / "docs/NEXT_DECISION.md").read_text(encoding="utf-8")
-        status_document = (root / "docs/CURRENT_STATUS.md").read_text(encoding="utf-8")
-        future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
-        self.assertIn("current routed window is PR4B", next_document)
-        self.assertIn(
-            "| `PE7-HE-EC3-CONTRACT-1` | `COMPLETE` | PR #603 ",
-            status_document,
-        )
-        self.assertIn(
-            "| `PE7-HE-EC3-ENFORCEMENT-1` | `COMPLETE` | PR #610 ",
-            status_document,
-        )
-        self.assertIn(
-            "| Autonomous Steward Shadow Steward | `COMPLETE` | PR #631 accepted",
-            status_document,
-        )
-        self.assertIn(
-            "| Autonomous Steward autonomous executor | `COMPLETE` | PR #634 accepted",
-            status_document,
-        )
-        self.assertNotIn(
-            "no lifecycle-cost instrumentation or enforcement is accepted",
-            status_document,
-        )
-        self.assertIn("former Harness-Evolution route is parked, not erased", future_document)
-        self.assertIn("three successor packets above replace the 54-packet routing horizon", future_document)
-        self.assertIn("PE7-AUTONOMOUS-STEWARD-PR7", future_document)
-        for packet_id in (
-            "PE7-AUTONOMOUS-STEWARD-PR5",
-            "PE7-AUTONOMOUS-STEWARD-PR6",
-            "PE7-AUTONOMOUS-STEWARD-PR7",
-        ):
-            start = future_document.index(f"### Packet {packet_id}")
-            next_packet = future_document.find("### Packet ", start + 1)
-            end = next_packet if next_packet >= 0 else future_document.index(
-                "## Portfolio Inventory Manifest", start
-            )
-            self.assertIn(
-                "**State:** `BLOCKED_PREREQUISITE`",
-                future_document[start:end],
-            )
-        self.assertIn("Immediate predecessor bridge", next_document)
-        self.assertIn("PR #640 exact", next_document)
-        packet = session_context.current_packet_binding(
-            next_document, status_document, MAIN
-        )
-        self.assertEqual(packet["packet_id"], "PE7-AUTONOMOUS-STEWARD-PR4B")
-        self.assertEqual(packet["state"], "T3_REQUIRED")
-        self.assertFalse(packet["checkpoint_allowed"])
-        self.assertFalse(packet["execution_authorized"])
-        self.assertIsNone(packet["dispatch_lane"])
-
-    def test_pr4a_promotion_evidence_record_recomputes_from_accepted_main(self):
-        root = Path(__file__).resolve().parents[1]
-        historical_main = "2e812da126b563665a99a950541f17517b9a4c70"
-        next_document = subprocess.check_output(
-            ["git", "show", f"{historical_main}:docs/NEXT_DECISION.md"],
-            cwd=root,
-            text=True,
-        )
-        record_start = next_document.index("<!-- route-promotion-evidence:v2")
-        record_end = next_document.index("-->", record_start)
-        record_payload = next_document[
-            record_start + len("<!-- route-promotion-evidence:v2") : record_end
-        ].strip()
-        capsule_match = re.search(
-            r"<!-- weak-agent-dispatch:v1\s*(?P<payload>\{.*?\})\s*-->",
-            next_document,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(capsule_match)
-        record = json.loads(record_payload)
-        capsule = json.loads(capsule_match.group("payload"))
-        accepted = record["accepted_main_sha"]
-        sketch = route_driver.packet_sketches(next_document)[
-            "PE7-AUTONOMOUS-STEWARD-PR4A"
-        ]
-        successor = route_driver.EligibleSuccessor(
-            sketch.packet_id,
-            sketch,
-            (sketch.packet_id, "IMPLEMENT", "T1", "authority", "source_focused_full"),
-        )
-        recomputed = route_driver.CurrentMainEvidenceVerifier(
-            root, accepted
-        ).verify(
-            json.dumps(record["proposal"], separators=(",", ":")),
-            successor,
-            record["predecessor_receipt"],
-            closed_packet_id="PE7-AUTONOMOUS-STEWARD-PR3",
-        )
-        self.assertEqual(recomputed.state, "READY_FOR_EXECUTION")
-        self.assertEqual(recomputed.reason, "promotion_candidate_valid")
-        self.assertIsNotNone(recomputed.candidate)
-        self.assertEqual(
-            recomputed.candidate.evidence_sha256,
-            record["promotion_evidence_sha256"],
-        )
-        self.assertEqual(recomputed.candidate.manifest_sha256, record["route_manifest_sha256"])
-        self.assertEqual(recomputed.candidate.spec_digest, record["spec_digest"])
-        self.assertEqual(recomputed.candidate.contract, record["contract"])
-        self.assertEqual(recomputed.candidate.capsule, capsule)
-        status = subprocess.check_output(
-            ["git", "show", f"{accepted}:docs/CURRENT_STATUS.md"],
-            cwd=root,
-            text=True,
-        )
-        future = subprocess.check_output(
-            ["git", "show", f"{accepted}:docs/FUTURE_ROUTE.md"],
-            cwd=root,
-            text=True,
-        )
-        self.assertEqual(
-            hashlib.sha256(status.encode("utf-8")).hexdigest(),
-            record["evidence"]["status_document_sha256"],
-        )
-        self.assertEqual(
-            route_driver._json_sha256(record["evidence"]),
-            record["promotion_evidence_sha256"],
-        )
-        self.assertEqual(
-            route_driver._json_sha256(route_driver.inventory_manifest(future)),
-            record["route_manifest_sha256"],
-        )
-        self.assertEqual(record["contract"]["manifest_sha256"], record["route_manifest_sha256"])
-        self.assertEqual(
-            route_driver._json_sha256(
-                {
-                    "packet_id": record["packet_id"],
-                    "accepted_main_sha": accepted,
-                    "predecessor_receipt": record["predecessor_receipt"],
-                    "manifest_sha256": record["route_manifest_sha256"],
-                    "evidence_sha256": record["promotion_evidence_sha256"],
-                    "capsule": capsule,
-                    "contract": record["contract"],
-                }
-            ),
-            record["spec_digest"],
-        )
-        for path in record["evidence"]["read_paths"]:
-            self.assertEqual(
-                subprocess.run(
-                    ["git", "cat-file", "-e", f"{accepted}:{path}"],
-                    cwd=root,
-                    check=False,
-                ).returncode,
-                0,
-                path,
-            )
-
-    def test_future_route_profile_extraction_is_routing_projection_only(self):
-        root = Path(__file__).resolve().parents[1]
-        future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
-        extract = session_context.extract_packet(
-            future_document,
-            packet_id="PE7-AUTONOMOUS-STEWARD-PR5",
-            accepted_main_sha=MAIN,
-            source_path="docs/FUTURE_ROUTE.md",
-        )
-        self.assertFalse(extract["execution_authorized"])
-        self.assertEqual(
-            extract["profile_id"], "PE7-AUTONOMOUS-STEWARD-PR5.v1"
-        )
-        self.assertEqual(extract["worker_tier"], "T1")
+        autonomy_document = (root / "docs/AUTONOMY.md").read_text(encoding="utf-8")
+        roadmap_document = (root / "docs/ROADMAP.md").read_text(encoding="utf-8")
+        self.assertIn("Review Convergence Protocol", autonomy_document)
+        self.assertIn("Exact-Head CI and Guarded Merge", autonomy_document)
+        self.assertIn("Autonomous Steward Migration Milestones", roadmap_document)
+        contract = session_context.parse_route_contract(start_document)
+        role_names = [role_name for role_name, _ in contract.roles]
+        self.assertIn("coding", role_names)
+        self.assertIn("planning", role_names)
 
 
 
@@ -1794,8 +1661,13 @@ class AdversarialCheckpointTests(unittest.TestCase):
         self.assertEqual(result["reason"], "verification_contract_changed")
 
     def test_routing_only_profile_never_authorizes_execution(self):
-        root = Path(__file__).resolve().parents[1]
-        future_document = (root / "docs/FUTURE_ROUTE.md").read_text(encoding="utf-8")
+        future_document = (
+            "# Future Route\n\n"
+            "### Packet PE7-AUTONOMOUS-STEWARD-PR5\n\n"
+            "**State:** `BLOCKED_PREREQUISITE`\n"
+            "**Class:** `IMPLEMENT`\n"
+            "**Worker tier:** `T1`\n"
+        )
         extract = session_context.extract_packet(
             future_document,
             packet_id="PE7-AUTONOMOUS-STEWARD-PR5",

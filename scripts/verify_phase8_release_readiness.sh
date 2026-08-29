@@ -62,10 +62,11 @@ check .env.example
 
 echo ""
 echo "=== Docs ==="
-check docs/CURRENT_STATUS.md
-check docs/NEXT_DECISION.md
-check docs/archive/README.md
+check docs/ARCHITECTURE.md
+check docs/AUTONOMY.md
+check docs/ROADMAP.md
 check docs/RUNBOOK.md
+check docs/archive/README.md
 
 echo ""
 if [ "$FAIL" -eq 0 ]; then

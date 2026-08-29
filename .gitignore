@@ -39,3 +39,5 @@ site/.vercel
 /tmp/agent-orchestrator-locks/
 /tmp/agent-worktrees/
 /tmp/codex-*.log
+exact-head-proof.json
+.codegraph/
