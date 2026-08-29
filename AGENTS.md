@@ -28,7 +28,15 @@ If work needs to cross any boundary above, stop with `DECISION_REQUIRED`: report
 
 ## Execution-Ready Task Packets
 
-Packet lifecycle is owned solely by `docs/NEXT_DECISION.md`: `READY_FOR_EXECUTION`, `BLOCKED_PREREQUISITE`, `DECISION_REQUIRED`, `IN_PROGRESS`, and `COMPLETE`. Execute only the earliest eligible accepted packet and only its exact owners, allowed changes, ordered steps, verification, rollback, budgets, pause gates, and forbidden next actions. Review `PASS` satisfies one exact-head review gate; it is never packet `COMPLETE`.
+Packet lifecycle is owned solely by `docs/NEXT_DECISION.md`: the five ordinary
+states are `READY_FOR_EXECUTION`, `BLOCKED_PREREQUISITE`,
+`DECISION_REQUIRED`, `IN_PROGRESS`, and `COMPLETE`. An external-effect packet
+may additionally use `T3_REQUIRED` as a non-executable authority gate; it is
+not a lifecycle execution state and grants no checkpoint or dispatch. Execute
+only the earliest eligible accepted packet and only its exact owners, allowed
+changes, ordered steps, verification, rollback, budgets, pause gates, and
+forbidden next actions. Review `PASS` satisfies one exact-head review gate; it
+is never packet `COMPLETE`.
 
 Do not begin a later packet to fill time. During CI, tests, compilation, review, or audit, refresh evidence, inspect the bounded diff/contracts, prepare the next permitted check, or repair an in-scope prerequisite.
 

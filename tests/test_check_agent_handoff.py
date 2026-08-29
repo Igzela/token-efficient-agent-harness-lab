@@ -26,6 +26,8 @@ class HandoffMissionCompatibilityTests(unittest.TestCase):
 
     def test_current_t3_route_exposes_no_dispatch_capsule(self):
         next_text = (ROOT / "docs" / "NEXT_DECISION.md").read_text(encoding="utf-8")
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("`T3_REQUIRED` as a non-executable authority gate", agents)
         failures: list[str] = []
         packets = handoff.parse_packet_contracts(next_text, failures)
         self.assertEqual(failures, [])
