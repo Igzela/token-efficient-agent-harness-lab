@@ -85,23 +85,35 @@ The `service-start`/`service-stop` budget is therefore conditional and never a
 fallback installation path. Read-only reconciliation uses the existing
 Steward journal and GitHub facts owners.
 
-Before any writer transition, read the active `agent-controller.yml` runs and
-the open `agent-running`/claim state. If an old-controller run is present,
-`legacy-controller-stop` may cancel the identified run set once and must read
-back a terminal state; if the readback is uncertain, stop and do not retry. If
-the set is empty, retain that zero-run receipt and keep the emergency stop
-active. Only after that receipt, service identity readback, and the recovery
-point pass may `emergency-resume` and `orchestrator-enable` be performed, in
-that order, each once. Then one `coordinator-activate` operation may run the
-existing `loopctl.py mission-stage` entrypoint, which loads the registered
-Mission, validates Issue #208 approval, and calls
-`LocalRunOnce.run_mission_stage` → `LoopController.run_mission_stage` →
-`Steward.execute_stage_to_waiting_for_merge` against the approved
-Mission/Stage. This is one bounded parent invocation, not a new daemon or
-queue; it, not the reconciliation service, is the named single lifecycle
-writer. Prove no legacy run, claim, or writer is active before and during that
-invocation. No Provider, product target, release, deployment, credential, or
-destructive cleanup is included.
+Before any writer transition, read the active `agent-controller.yml` runs,
+the open `agent-running`/claim state, and the plan-ledger active-capacity
+projection. The exact stop/readback is `gh run list --workflow
+agent-controller.yml --status in_progress` plus the bounded active-claim
+read; the current audit found no in-progress controller run and no open
+`agent-running` claim. If a single old-controller run is present,
+`legacy-controller-stop` may issue exactly one authenticated `gh run cancel
+<run-id>` and must read back a terminal run state plus zero active claims. If
+more than one run is present, identity is ambiguous and the operation stops;
+if any readback is uncertain, stop and do not retry. A zero-run receipt is
+required even when no cancel mutation is needed, and the emergency stop stays
+active through this preflight. Only after that receipt, service identity
+readback, and the recovery point pass may `emergency-resume` and
+`orchestrator-enable` be performed, in that order, each once.
+
+The exact `coordinator-activate` bridge is one
+`loopctl.py mission-stage` invocation with `--approval-issue 208`, the
+refreshed accepted-main checkout, and the ledger journal/lock paths named by
+the capsule. It loads the registered Mission, validates the authenticated
+Issue approval, and calls `LocalRunOnce.run_mission_stage` →
+`LoopController.run_mission_stage` → `Steward.execute_stage_to_waiting_for_merge`
+against the approved Mission/Stage. The direct bridge does not dispatch the
+legacy Issue/plan runner; `Steward` is the sole canary writer for the bounded
+Mission/Stage branch and PR integration scope, while GitHub remains the
+durable queue/lease owner. This is one bounded parent invocation, not a new
+daemon or queue, and the reconciliation service is not writer activation.
+Prove zero legacy runs/claims and exactly one active Steward coordinator
+before and during that invocation. No Provider, product target, release,
+deployment, credential, or destructive cleanup is included.
 
 **Finite operation ledger:** Each operation identity has one forward attempt
 and one compensation attempt maximum; a successful readback ends that
