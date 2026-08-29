@@ -242,6 +242,32 @@ class DeterministicSchemaTests(unittest.TestCase):
 
 
 class RouteContractTests(unittest.TestCase):
+    def test_legacy_accepted_route_is_explicitly_compatibility_scoped(self):
+        payload = json.loads(json.dumps(DEFAULT_ROUTE_PAYLOAD))
+        payload["roles"]["review"]["required"] = [
+            "START_HERE.md",
+            "docs/CURRENT_STATUS.md",
+            "docs/NEXT_DECISION.md",
+            "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+        ]
+        document = route_document(payload=payload)
+        with self.assertRaisesRegex(
+            session_context.SessionContextError, "route_contract_required_invalid"
+        ):
+            session_context.parse_route_contract(document)
+        contract = session_context.parse_route_contract(
+            document, allow_legacy_accepted_documents=True
+        )
+        self.assertEqual(
+            contract.role_for("review").required,
+            (
+                "START_HERE.md",
+                "docs/CURRENT_STATUS.md",
+                "docs/NEXT_DECISION.md",
+                "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+            ),
+        )
+
     def test_every_role_gets_a_bounded_start_here_first_route(self):
         contract = session_context.parse_route_contract(route_document())
         for role in (

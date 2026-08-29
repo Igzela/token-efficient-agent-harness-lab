@@ -197,6 +197,18 @@ CANONICAL_DOCUMENT_PATHS = (
     "docs/ROADMAP.md",
     "docs/RUNBOOK.md",
 )
+LEGACY_ACCEPTED_ROUTE_DOCUMENTS = frozenset(
+    {
+        "docs/ARCHITECTURE_BOOK.md",
+        "docs/CURRENT_STATUS.md",
+        "docs/NEXT_DECISION.md",
+        "docs/FUTURE_ROUTE.md",
+        "docs/MODULE_MAP.md",
+        "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+    }
+)
+
+
 class SessionContextError(ValueError):
     """A bounded context or recovery contract could not be proved."""
 
@@ -1249,8 +1261,19 @@ class SessionEntry:
         return model
 
 
-def parse_route_contract(document: str) -> RouteContract:
-    """Parse the sole machine-readable role router from ``START_HERE.md``."""
+def parse_route_contract(
+    document: str, *, allow_legacy_accepted_documents: bool = False
+) -> RouteContract:
+    """Parse the sole machine-readable role router from ``START_HERE.md``.
+
+    Accepted ``main`` may briefly contain the pre-PR6 route while the
+    migration is being promoted.  That compatibility is explicit and scoped
+    to the accepted-source loader; working-tree routes remain current-only.
+    """
+
+    allowed_documents = CANONICAL_DOCUMENTS
+    if allow_legacy_accepted_documents:
+        allowed_documents = CANONICAL_DOCUMENTS | LEGACY_ACCEPTED_ROUTE_DOCUMENTS
 
     if not isinstance(document, str) or len(document.encode("utf-8")) > MAX_ROUTE_DOCUMENT_BYTES:
         raise SessionContextError("route_document_unavailable_or_too_large")
@@ -1290,7 +1313,7 @@ def parse_route_contract(document: str) -> RouteContract:
         if (
             len(normalized_required) > maximum
             or normalized_required[0] != "START_HERE.md"
-            or any(path not in CANONICAL_DOCUMENTS for path in normalized_required)
+            or any(path not in allowed_documents for path in normalized_required)
         ):
             raise SessionContextError("route_contract_required_invalid")
         if not isinstance(optional, dict) or len(optional) > MAX_ROUTE_DOCUMENTS:
@@ -1301,7 +1324,7 @@ def parse_route_contract(document: str) -> RouteContract:
             if (
                 not isinstance(option, str)
                 or not OPTION_ID.fullmatch(option)
-                or normalized_path not in CANONICAL_DOCUMENTS
+                or normalized_path not in allowed_documents
             ):
                 raise SessionContextError("route_contract_optional_invalid")
             if normalized_path not in normalized_required:
@@ -2366,6 +2389,13 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
         "accepted_main_source": baseline.get("source"),
         "document_source": source,
         "document_source_binding": source_binding,
+        "allow_legacy_accepted_documents": (
+            source == "accepted"
+            and project_context.accepted_document_compatibility_path(
+                baseline, "docs/AUTONOMY.md"
+            )
+            is not None
+        ),
         "documents": documents,
     }
 
@@ -2466,7 +2496,12 @@ def main(argv: list[str] | None = None) -> int:
         mission = _canonical_session_mission(documents)
 
         if args.command == "route":
-            contract = parse_route_contract(documents["START_HERE.md"])
+            contract = parse_route_contract(
+                documents["START_HERE.md"],
+                allow_legacy_accepted_documents=loaded.get(
+                    "allow_legacy_accepted_documents", False
+                ),
+            )
             value = build_route(
                 contract,
                 role=args.role,
@@ -2484,7 +2519,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "enter":
             receipt = read_checkpoint()
             value = build_session_entry(
-                contract=parse_route_contract(documents["START_HERE.md"]),
+                contract=parse_route_contract(
+                    documents["START_HERE.md"],
+                    allow_legacy_accepted_documents=loaded.get(
+                        "allow_legacy_accepted_documents", False
+                    ),
+                ),
                 role=args.role,
                 accepted_main_sha=accepted_main_sha,
                 document_source=loaded["document_source"],
