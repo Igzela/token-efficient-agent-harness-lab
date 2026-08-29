@@ -378,6 +378,25 @@ class StewardExecutionTests(unittest.TestCase):
         self.assertEqual(result["stage"].exact_head, HEAD)
         reconcile.assert_called_once()
 
+    def test_parent_stage_continuation_reports_merged_stage_complete(self):
+        instance = self.make_steward(None, None)
+        complete = steward.ExecutionResult(
+            self.card.card_id, "COMPLETE", 1, HEAD,
+            "pr_already_merged", None, 42,
+        )
+        with mock.patch.object(instance, "reconcile_stage_pr", return_value={
+            self.card.card_id: complete
+        }) as reconcile:
+            result = instance.continue_stage_to_waiting_for_merge(
+                self.mission,
+                self.stage,
+                (self.card,),
+                stage_pr=self.facts,
+            )
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["results"][self.card.card_id].status, "COMPLETE")
+        reconcile.assert_called_once()
+
     def test_stage_publish_refuses_local_branch_head_drift_before_push(self):
         instance = self.make_steward(None, None)
         integration = steward.StageIntegration(

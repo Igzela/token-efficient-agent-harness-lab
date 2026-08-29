@@ -474,6 +474,19 @@ class TestAuthoritativePlanReview(unittest.TestCase):
                 dispatcher.pr_binding, "_gh_json",
                 return_value={"author": {"login": author}},
             ),
+            mock.patch.object(
+                state_manager, "current_effective_reviews",
+                return_value={
+                    "complete": True,
+                    "review_decision": None,
+                    "requested_changes": [],
+                    "current_head_requested_change_review_ids": [],
+                },
+            ),
+            mock.patch.object(
+                state_manager, "review_threads_status",
+                return_value={"complete": True, "unresolved_thread_ids": []},
+            ),
         ]
 
     def test_accepts_playbook_pass_receipt_with_distinct_sessions(self):
@@ -556,7 +569,38 @@ class TestAuthoritativePlanReview(unittest.TestCase):
                 dispatcher.pr_binding, "_gh_json",
                 return_value={"author": {"login": "Igzela"}},
             ),
+            mock.patch.object(
+                state_manager, "current_effective_reviews",
+                return_value={
+                    "complete": True,
+                    "review_decision": None,
+                    "requested_changes": [],
+                    "current_head_requested_change_review_ids": [],
+                },
+            ),
+            mock.patch.object(
+                state_manager, "review_threads_status",
+                return_value={"complete": True, "unresolved_thread_ids": []},
+            ),
         ]
+        for patch in patches:
+            patch.start()
+        self.addCleanup(lambda: [patch.stop() for patch in patches])
+        self.assertIsNone(
+            dispatcher._authoritative_plan_review(PR, HEAD, "acme/repo", MAIN)
+        )
+
+    def test_rejects_receipt_when_canonical_review_requests_changes(self):
+        patches = self._patches(_playbook_receipt())
+        patches[-2] = mock.patch.object(
+            state_manager, "current_effective_reviews",
+            return_value={
+                "complete": True,
+                "review_decision": "CHANGES_REQUESTED",
+                "requested_changes": [{"id": "review-1"}],
+                "current_head_requested_change_review_ids": ["review-1"],
+            },
+        )
         for patch in patches:
             patch.start()
         self.addCleanup(lambda: [patch.stop() for patch in patches])

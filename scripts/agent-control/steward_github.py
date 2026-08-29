@@ -15,13 +15,14 @@ import subprocess
 from typing import Any, Protocol
 
 import ci_verifier
+import dispatcher
 import state_manager
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
-PR_STATES = frozenset({"OPEN", "CLOSED"})
+PR_STATES = frozenset({"OPEN", "CLOSED", "MERGED"})
 CHECK_STATES = frozenset({"PASS", "PENDING", "FAIL", "UNKNOWN"})
 
 
@@ -338,6 +339,14 @@ class GhReadOnlyGitHub:
         ):
             raise GitHubReadError("github_read_malformed")
         review_state = "PENDING" if review in (None, "", "REVIEW_REQUIRED") else "FAIL"
+        if review_state == "PENDING" and merged_at is not None:
+            review_state = (
+                "PASS"
+                if dispatcher._authoritative_plan_review(
+                    pr_number, head_sha, repository, base_sha
+                )
+                else "PENDING"
+            )
         if review == "APPROVED":
             # The REST-shaped PR projection is not an exact-head review
             # receipt.  Reuse the canonical, paginated review/thread owner so

@@ -785,6 +785,69 @@ class StewardFaultTests(unittest.TestCase):
             observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
         self.assertEqual(observed["review_state"], "PENDING")
 
+    def test_github_reader_accepts_merged_state_with_exact_head_receipt(self):
+        reader = steward_github.GhReadOnlyGitHub()
+        payload = {
+            "state": "MERGED",
+            "isDraft": False,
+            "mergedAt": "2026-08-29T03:58:36Z",
+            "baseRefName": "main",
+            "headRefName": "agent/steward-card",
+            "baseRefOid": BASE,
+            "headRefOid": HEAD,
+            "statusCheckRollup": [
+                {
+                    "name": name,
+                    "conclusion": "SUCCESS",
+                    "status": "COMPLETED",
+                }
+                for name in (
+                    "docker-build",
+                    "native-runtime",
+                    "pg-integration-tests",
+                    "python-tests",
+                    "rust-tests",
+                    "rust-typescript-cutover",
+                    "typescript-tests",
+                    "context-capsule",
+                )
+            ],
+            "reviewDecision": "",
+        }
+        receipt = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {HEAD}
+Reviewed range: {BASE}...{HEAD}
+Reviewed range SHA256: {'c' * 64}
+Reviewer session identity: 11111111-1111-4111-8111-111111111111
+Reviewer authenticated identity: Igzela
+Review transport: parent-posted-on-behalf-of-independent-session
+Implementation session identity: 22222222-2222-4222-8222-222222222222
+Observed at: 2026-08-29T03:56:58Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        with (
+            mock.patch("steward_github.subprocess.run") as run,
+            mock.patch.object(
+                steward_github.dispatcher,
+                "_authoritative_plan_review",
+                return_value={
+                    "base_sha": BASE,
+                    "reviewed_range": f"{BASE}...{HEAD}",
+                    "summary": "exact-head PASS review receipt verified from live PR",
+                },
+            ),
+        ):
+            run.return_value.returncode = 0
+            run.return_value.stdout = json.dumps(payload)
+            run.return_value.stderr = ""
+            observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
+        self.assertEqual(observed["state"], "MERGED")
+        self.assertTrue(observed["merged"])
+        self.assertEqual(observed["ci_state"], "PASS")
+        self.assertEqual(observed["review_state"], "PASS")
+
     def test_github_reader_rejects_aggregate_approval_without_current_head_review(self):
         reader = steward_github.GhReadOnlyGitHub()
         payload = {

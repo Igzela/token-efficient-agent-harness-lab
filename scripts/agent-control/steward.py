@@ -455,8 +455,10 @@ class Steward:
             mission, bound_stage, cards, stage_pr=observed
         )
         status = (
-            "waiting_for_merge"
-            if all(result.status == "WAITING_FOR_MERGE" for result in reconciled.values())
+            "complete"
+            if reconciled and all(result.status == "COMPLETE" for result in reconciled.values())
+            else "waiting_for_merge"
+            if reconciled and all(result.status == "WAITING_FOR_MERGE" for result in reconciled.values())
             else "stage_pr_waiting"
         )
         return {
@@ -502,8 +504,10 @@ class Steward:
             mission, bound_stage, cards, stage_pr=facts
         )
         status = (
-            "waiting_for_merge"
-            if all(result.status == "WAITING_FOR_MERGE" for result in reconciled.values())
+            "complete"
+            if reconciled and all(result.status == "COMPLETE" for result in reconciled.values())
+            else "waiting_for_merge"
+            if reconciled and all(result.status == "WAITING_FOR_MERGE" for result in reconciled.values())
             else "stage_pr_waiting"
         )
         return {
