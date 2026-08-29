@@ -18,6 +18,7 @@ Open PR heads, Draft/Ready state, CI, reviews, mergeability, and the next permit
 ## Approved Autonomous Steward Migration Campaign
 
 The repository owner approved the Autonomous Steward migration direction on 2026-08-27 from proposal digest `4b6eacaa4ff58337a02a6a73f458ffb0e4d3cb4e71f256c1024b3dd6205e1d39`. The campaign changes repository-maintenance governance from user-managed packets to one owner-approved Mission, Steward-managed Stages, and bounded WorkCards, while retaining exact-head CI, independent review, rollback, least privilege, and fail-closed external-effect handling. PR0 baseline recovery, PR1's provider-free Mission/Stage/WorkCard contract, PR2's provider-free read-only Shadow Steward, PR3's provider-free autonomous executor, and PR4A's provider-free integration readiness are accepted on `main`. Confirmed gaps before the canary or cutover are a fresh finite T3 authority, named Vader/systemd ownership and readback, single-writer proof, emergency-stop and rollback evidence, and guarded-merge activation evidence; the legacy controller remains the sole lifecycle writer and automatic merge remains disabled.
+- PR4B canary WorkCard `leaf-a` executed by the bounded provider-free runtime; this is an execution receipt, not final cutover acceptance.
 
 The existing controller remains the only lifecycle writer until an explicit canary cutover proves a single replacement writer. No Provider call, production action, deployment, release, target write, destructive effect, or automatic merge is authorized by this campaign decision.
 
