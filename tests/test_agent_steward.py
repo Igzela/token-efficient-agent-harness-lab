@@ -6,6 +6,7 @@ from pathlib import Path
 from dataclasses import replace
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -620,6 +621,13 @@ class StewardExecutionTests(unittest.TestCase):
                     relative = context.allowed_paths[0]
                     target = context.worktree / relative
                     target.write_text(f"real worker {context.card_id}\n", encoding="utf-8")
+                    env = {
+                        **os.environ,
+                        "GIT_AUTHOR_NAME": "Test",
+                        "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                        "GIT_COMMITTER_NAME": "Test",
+                        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+                    }
                     subprocess.run(
                         ["git", "add", "--", relative], cwd=context.worktree,
                         check=True, capture_output=True, text=True,
@@ -627,6 +635,7 @@ class StewardExecutionTests(unittest.TestCase):
                     subprocess.run(
                         ["git", "commit", "-m", f"worker {context.card_id}"],
                         cwd=context.worktree, check=True, capture_output=True, text=True,
+                        env=env,
                     )
                     head = subprocess.run(
                         ["git", "rev-parse", "HEAD"], cwd=context.worktree,

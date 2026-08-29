@@ -10,15 +10,16 @@ Requirements verified:
 
 from __future__ import annotations
 
+import sys
 import unittest
 from pathlib import Path
 import re
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts" / "agent-control"))
+
 import mission_contract as contract
 from steward import StewardService
-
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestStewardDeferredAcceptance(unittest.TestCase):
