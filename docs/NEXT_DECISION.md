@@ -90,12 +90,18 @@ the open `agent-running`/claim state. If an old-controller run is present,
 `legacy-controller-stop` may cancel the identified run set once and must read
 back a terminal state; if the readback is uncertain, stop and do not retry. If
 the set is empty, retain that zero-run receipt and keep the emergency stop
-active. Then one `coordinator-activate` operation may run the existing
-`scripts/agent-control/steward.py:Steward.execute_stage_to_waiting_for_merge`
-path against the approved Mission/Stage; it, not the reconciliation service,
-is the named single lifecycle writer. Prove no legacy run, claim, or writer is
-active before and during that bounded invocation. No Provider, product target,
-release, deployment, credential, or destructive cleanup is included.
+active. Only after that receipt, service identity readback, and the recovery
+point pass may `emergency-resume` and `orchestrator-enable` be performed, in
+that order, each once. Then one `coordinator-activate` operation may run the
+existing `loopctl.py mission-stage` entrypoint, which loads the registered
+Mission, validates Issue #208 approval, and calls
+`LocalRunOnce.run_mission_stage` → `LoopController.run_mission_stage` →
+`Steward.execute_stage_to_waiting_for_merge` against the approved
+Mission/Stage. This is one bounded parent invocation, not a new daemon or
+queue; it, not the reconciliation service, is the named single lifecycle
+writer. Prove no legacy run, claim, or writer is active before and during that
+invocation. No Provider, product target, release, deployment, credential, or
+destructive cleanup is included.
 
 **Finite operation ledger:** Each operation identity has one forward attempt
 and one compensation attempt maximum; a successful readback ends that
@@ -113,7 +119,9 @@ The capsule therefore records `max_forward_mutations=10` and
 `max_compensations=10`; no operation may be repeated under a different name.
 The default and rollback-safe state is service absent or stopped,
 `orchestrator_enabled=false`, `auto_merge_enabled=false`,
-`emergency_stop=true`, and the old writer stopped by that emergency gate.
+`emergency_stop=true`, and old-writer status unverified until the preflight
+active-run/claim readback completes. The capsule never claims that an
+emergency stop alone terminated an already-running workflow.
 
 **Approval transport:** The existing `GitHubOwnerApprovalAuthenticator` is the
 machine validation owner. After this contract is accepted, regenerate the
@@ -156,11 +164,11 @@ finite effect envelope below is separate and requires the authenticated Issue
 approval.
 
 ```json
-{"approval":{"expires_after_seconds":86400,"issue":208,"marker":"steward-owner-approval:v1","one_time":true,"transport":"authenticated_issue_comment"},"current_main_evidence_sha256":"5fecadf806fd176ce4d1300be389f84efe311e7be5b5741ccfdc4a513879d81d","default_state":{"auto_merge_enabled":false,"emergency_stop":true,"old_writer":"stopped_by_emergency_stop","orchestrator_enabled":false,"service":"absent_or_stopped"},"forbidden":["provider","product_target","release","deployment","credentials","destructive_cleanup","retry_outcome_unknown"],"max_compensations":10,"max_forward_mutations":10,"old_writer":{"controller":"scripts/agent-control/dispatcher.py","runner_is_old_writer":false,"runner_service":"actions.runner.Igzela-token-efficient-agent-harness-lab.Vader.service","state_owner":"scripts/agent-control/state_manager.py","workflow":".github/workflows/agent-controller.yml"},"operation_budget":[{"compensation":1,"forward":1,"operation_id":"service-user-provision"},{"compensation":1,"forward":1,"operation_id":"journal-directory-provision"},{"compensation":1,"forward":1,"operation_id":"systemd-unit-install"},{"compensation":1,"forward":1,"operation_id":"service-start"},{"compensation":1,"forward":1,"operation_id":"service-stop"},{"compensation":1,"forward":1,"operation_id":"legacy-controller-stop"},{"compensation":1,"forward":1,"operation_id":"coordinator-activate"},{"compensation":1,"forward":1,"operation_id":"emergency-resume"},{"compensation":1,"forward":1,"operation_id":"orchestrator-enable"},{"compensation":1,"forward":1,"operation_id":"guarded-auto-merge-enable"}],"packet_id":"PE7-AUTONOMOUS-STEWARD-PR4B","proposal_spec_sha256":"5ee7e9576923c8701c4d1526ffd6582d1a9840939c961d664f4f424b0db5ac24","rollback":"Stop the new service and coordinator, restore emergency stop and disabled controls, retain journal and all receipts; never delete the recovery evidence.","route_manifest_sha256":"b6e3185023c992cacdb5998d502997adc649b82e9a41efb69911b127bc6d1dbf","schema_version":"pr4b_effect_capsule.v1","source_accepted_main_sha":"a464bb7b4a399cf9f65fcde6c55e96d076aa3124","target":{"journal_directory":"/var/lib/agent-steward","repository":"Igzela/token-efficient-agent-harness-lab","runner":"Vader","service_root":"/opt/token-efficient-agent-harness-lab","service_unit":"steward.service","service_user":"agent-steward","template":"scripts/agent-control/steward.service"}}
+{"approval":{"expires_after_seconds":86400,"issue":208,"marker":"steward-owner-approval:v1","one_time":true,"transport":"authenticated_issue_comment"},"current_main_evidence_sha256":"5fecadf806fd176ce4d1300be389f84efe311e7be5b5741ccfdc4a513879d81d","default_state":{"auto_merge_enabled":false,"emergency_stop":true,"old_writer":"unverified_until_preflight_readback","orchestrator_enabled":false,"service":"absent_or_stopped"},"forbidden":["provider","product_target","release","deployment","credentials","destructive_cleanup","retry_outcome_unknown"],"max_compensations":10,"max_forward_mutations":10,"old_writer":{"controller":"scripts/agent-control/dispatcher.py","runner_is_old_writer":false,"runner_service":"actions.runner.Igzela-token-efficient-agent-harness-lab.Vader.service","state_owner":"scripts/agent-control/state_manager.py","workflow":".github/workflows/agent-controller.yml"},"operation_budget":[{"compensation":1,"forward":1,"operation_id":"service-user-provision"},{"compensation":1,"forward":1,"operation_id":"journal-directory-provision"},{"compensation":1,"forward":1,"operation_id":"systemd-unit-install"},{"compensation":1,"forward":1,"operation_id":"service-start"},{"compensation":1,"forward":1,"operation_id":"service-stop"},{"compensation":1,"forward":1,"operation_id":"legacy-controller-stop"},{"compensation":1,"forward":1,"operation_id":"coordinator-activate"},{"compensation":1,"forward":1,"operation_id":"emergency-resume"},{"compensation":1,"forward":1,"operation_id":"orchestrator-enable"},{"compensation":1,"forward":1,"operation_id":"guarded-auto-merge-enable"}],"packet_id":"PE7-AUTONOMOUS-STEWARD-PR4B","proposal_spec_sha256":"5ee7e9576923c8701c4d1526ffd6582d1a9840939c961d664f4f424b0db5ac24","rollback":"Stop the new service and coordinator, restore emergency stop and disabled controls, retain journal and all receipts; never delete the recovery evidence.","route_manifest_sha256":"b6e3185023c992cacdb5998d502997adc649b82e9a41efb69911b127bc6d1dbf","schema_version":"pr4b_effect_capsule.v1","source_accepted_main_sha":"a464bb7b4a399cf9f65fcde6c55e96d076aa3124","target":{"journal_directory":"/var/lib/agent-steward","repository":"Igzela/token-efficient-agent-harness-lab","runner":"Vader","service_root":"/opt/token-efficient-agent-harness-lab","service_unit":"steward.service","service_user":"agent-steward","template":"scripts/agent-control/steward.service"}}
 ```
 
 Canonical capsule SHA-256:
-`5f6cdfa07c872be0b00cf7d3a156808f1c48fa3ce457069f2977a25ffb1f0cae`.
+`6ba3ebb671c04c108604795e170448ec0c636f709a3e434a87ee51bacb190621`.
 
 <!-- route-t3-request:v1
 {"accepted_main_sha":"a464bb7b4a399cf9f65fcde6c55e96d076aa3124","action_digest":"02aace3b859c41ad74ef6375aa3ff8aad9f55b1eaeb27ab1c2ec795eabf8f201","authority_owner_digest":"e5836b3304e0e8fe86d135705596e52a0bd0fa9ae50d63d22c007b4693a90934","candidate_digest":"5ee7e9576923c8701c4d1526ffd6582d1a9840939c961d664f4f424b0db5ac24","packet_id":"PE7-AUTONOMOUS-STEWARD-PR4B","requested_action":"After the PR4B contract is accepted, run the separately authorized provider-free canary, prove emergency stop and rollback, cut over to exactly one lifecycle writer, and enable guarded maintenance merge only after exact-head review, canonical CI, ruleset, and recovery gates pass.","scope_digest":"29f7374e77d00a448917646de218bf462e2386a327c61ece4bb12ec0c987ea50","schema_version":"route_t3_request.v1"}
