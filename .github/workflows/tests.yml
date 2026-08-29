@@ -265,15 +265,24 @@ jobs:
       - name: Run orchestrator regression tests
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
+          # Canonical orchestrator regression test files:
+          # tests/test_agent_shadow_steward.py
+          # tests/test_agent_steward.py
+          # tests/test_agent_steward_faults.py
+          # tests/test_agent_steward_journal.py
+          # tests/test_mission_contract.py
+          # tests/test_review_convergence.py
+          # tests/test_review_loop.py
+          # tests/test_steward_deferred_acceptance.py
           PYTHONPATH=scripts/agent-control:. uv run --no-project python -m unittest \
-            tests/test_agent_shadow_steward.py \
-            tests/test_agent_steward.py \
-            tests/test_agent_steward_faults.py \
-            tests/test_agent_steward_journal.py \
-            tests/test_mission_contract.py \
-            tests/test_review_convergence.py \
-            tests/test_review_loop.py \
-            tests/test_steward_deferred_acceptance.py
+            tests.test_agent_shadow_steward \
+            tests.test_agent_steward \
+            tests.test_agent_steward_faults \
+            tests.test_agent_steward_journal \
+            tests.test_mission_contract \
+            tests.test_review_convergence \
+            tests.test_review_loop \
+            tests.test_steward_deferred_acceptance
       - name: Run Python SDK tests
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
