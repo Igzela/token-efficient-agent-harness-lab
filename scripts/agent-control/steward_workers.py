@@ -504,6 +504,100 @@ class ProviderFreeWorker:
         raise WorkerUnavailable("provider_free_worker_not_configured")
 
 
+PR4B_CANARY_PROPOSAL_SHA256 = (
+    "3a55ac107a2cae2a049e37804ea851036849c37aa84f95138db7d7f611db7eae"
+)
+PR4B_CANARY_APPROVAL_ISSUE = 208
+PR4B_CANARY_ALLOWED_PATHS = ("docs/CURRENT_STATUS.md",)
+
+# The WorkCard worktree is intentionally created from the accepted base.  Keep
+# the tiny provider-free canary program in the argv passed to the bounded
+# child, so a new helper file on the repair head is not an undeclared runtime
+# dependency of that exact-base worktree.
+_PR4B_CANARY_CHILD = r'''import hashlib,json,os,socket,subprocess,sys,tempfile
+from pathlib import Path
+T="docs/CURRENT_STATUS.md"; A={"leaf-a":"The repository owner approved the Autonomous Steward migration direction","leaf-b":"The existing controller remains the only lifecycle writer"}
+def g(*a,raw=0):
+ r=subprocess.run(["git",*a],capture_output=True,text=not raw)
+ if r.returncode: raise RuntimeError("git")
+ return r.stdout if raw else r.stdout.strip()
+def leaf(c):
+ s=c.rsplit(":",1)[-1]
+ if s not in A: raise ValueError("card")
+ return s
+op=sys.argv[1]; c=sys.argv[2]; s=leaf(c)
+if op=="worker":
+ if sys.argv[3]!="1": raise ValueError("attempt")
+ p=Path(T); lines=p.read_text(encoding="utf-8").splitlines(keepends=True); mark=f"- PR4B canary WorkCard `{s}` executed by the bounded provider-free runtime; this is an execution receipt, not final cutover acceptance.\n"
+ if sum(A[s] in x for x in lines)!=1 or mark in lines: raise RuntimeError("anchor")
+ i=next(i for i,x in enumerate(lines) if A[s] in x); lines.insert(i+1,mark); p.write_text("".join(lines),encoding="utf-8"); g("add",T)
+ if g("diff","--cached","--name-only").splitlines()!=[T]: raise RuntimeError("stage")
+ g("commit","-m",f"chore: record PR4B canary {s}"); h=g("rev-parse","HEAD")
+ if g("diff","--name-only","HEAD^","HEAD").splitlines()!=[T]: raise RuntimeError("commit")
+ print(json.dumps({"schema_version":"steward_worker_outcome.v1","status":"PASS","session_id":sys.argv[4],"head_sha":h,"changed_paths":[T],"detail":f"canary_receipt_{s}"},separators=(",",":")))
+else:
+ b,h,impl,rev=sys.argv[3:7]; d=g("diff","--binary","--no-ext-diff",f"{b}...{h}",raw=True); dt=d.decode("utf-8"); names=g("diff","--name-only",f"{b}...{h}").splitlines(); text=g("show",f"{h}:{T}"); bad=[]
+ if names!=[T] or g("diff","--check",f"{b}...{h}") or g("diff","--summary",f"{b}...{h}"): bad.append("footprint")
+ if g("ls-tree","-r",h,"--",T).split()[:1]!=["100644"]: bad.append("regular_file")
+ mark=f"PR4B canary WorkCard `{s}`"; ok=text.count(mark)==1 and mark in dt; ok=ok and text.count(A[s])==1
+ try:
+  Path(T).write_bytes(Path(T).read_bytes()); write_blocked=False
+ except OSError: write_blocked=True
+ try:
+  socket.create_connection(("192.0.2.1",80),.2); network_blocked=False
+ except OSError: network_blocked=True
+ credential_free=not any(any(v in k.upper() for v in ("TOKEN","SECRET","PASSWORD","API_KEY","CREDENTIAL")) for k in os.environ)
+ if not write_blocked: bad.append("reviewer_write_not_blocked")
+ if not network_blocked: bad.append("network_not_isolated")
+ if not credential_free: bad.append("credential_environment_not_clean")
+ if not ok: bad.append("receipt")
+ with tempfile.TemporaryDirectory() as z:
+  q=Path(z)/T; q.parent.mkdir(); q.write_text(text); rr=subprocess.run(["git","apply","--check","--reverse"],input=d,cwd=z,capture_output=True); rollback=rr.returncode==0
+ if not rollback: bad.append("rollback")
+ status="PASS" if not bad else "FAIL"; rows=[{"id":f"blocker-{i+1}","disposition":"block_current_head","status":"open","severity":"blocker","origin_head":h,"acceptance_condition":v} for i,v in enumerate(bad)]; ledger=hashlib.sha256(json.dumps(rows,sort_keys=True,separators=(",",":")).encode()).hexdigest(); x={"schema_version":"steward_review_outcome.v1","status":status,"reviewer_session_id":rev,"implementation_session_id":impl,"reviewed_head_sha":h,"blockers":bad,"detail":f"canary_review:write_blocked={write_blocked},network_blocked={network_blocked},credential_free={credential_free},rollback={rollback}","reviewed_base_sha":b,"reviewed_range_sha256":hashlib.sha256(d).hexdigest(),"review_axes":["standards","spec"],"review_round":1,"review_mode":"full","review_receipt_sha256":"","summary":"review","findings":None,"security_ok":write_blocked and network_blocked and credential_free,"rollback_ok":rollback,"observed_ci_status":"unknown","finding_ledger_digest":ledger}; y=dict(x); y.pop("detail"); y.pop("findings"); y.pop("summary"); y["review_receipt_sha256"]=""; x["review_receipt_sha256"]=hashlib.sha256(json.dumps(y,sort_keys=True,separators=(",",":")).encode()).hexdigest(); print(json.dumps(x,separators=(",",":")))
+'''
+
+
+def pr4b_canary_worker() -> BoundedProcessWorker:
+    """Build the fixed provider-free worker for the approved PR4B canary."""
+
+    def command(context: WorkerContext) -> list[str]:
+        if context.allowed_paths != PR4B_CANARY_ALLOWED_PATHS:
+            raise WorkerUnavailable("pr4b_canary_scope_not_supported")
+        return [
+            "/usr/bin/python3",
+            "-c",
+            _PR4B_CANARY_CHILD,
+            "worker",
+            context.card_id,
+            str(context.attempt),
+            process_session_id(context),
+        ]
+
+    return BoundedProcessWorker(command, timeout_seconds=300)
+
+
+def pr4b_canary_reviewer() -> BoundedProcessReviewer:
+    """Build the separate read-only reviewer for the approved PR4B canary."""
+
+    def command(context: WorkerContext, outcome: WorkerOutcome) -> list[str]:
+        if context.allowed_paths != PR4B_CANARY_ALLOWED_PATHS:
+            raise WorkerUnavailable("pr4b_canary_review_scope_not_supported")
+        return [
+            "/usr/bin/python3",
+            "-c",
+            _PR4B_CANARY_CHILD,
+            "review",
+            context.card_id,
+            context.base_sha,
+            outcome.head_sha,
+            outcome.session_id,
+            reviewer_session_id(context, outcome),
+        ]
+
+    return BoundedProcessReviewer(command, timeout_seconds=300)
+
+
 def _head_or_base(context: WorkerContext) -> str:
     try:
         result = subprocess.run(
@@ -1135,6 +1229,9 @@ __all__ = [
     "PathConflict",
     "PathLockSet",
     "ProviderFreeWorker",
+    "PR4B_CANARY_PROPOSAL_SHA256",
+    "pr4b_canary_reviewer",
+    "pr4b_canary_worker",
     "ReviewOutcome",
     "review_receipt_digest",
     "seal_review_outcome_wire",

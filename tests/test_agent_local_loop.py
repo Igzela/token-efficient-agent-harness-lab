@@ -1114,6 +1114,162 @@ class TestLoopctl(unittest.TestCase):
         self.assertIsNone(captured["runner_kwargs"]["stage_pr"])
         self.assertEqual(captured["steward_init"]["lock_dir"], "/tmp/steward-locks")
 
+    def test_mission_stage_cli_selects_only_the_fixed_pr4b_canary_adapters(self):
+        captured = {}
+
+        class Runner:
+            def run_mission_stage(self, proposal, **kwargs):
+                captured["proposal"] = proposal
+                captured["runner_kwargs"] = kwargs
+                return {"status": "stage_pr_draft", "mission_id": "mission"}
+
+        def runner_factory(*args, **kwargs):
+            return Runner()
+
+        def stage_steward_factory(*args, **kwargs):
+            captured["steward_init"] = kwargs
+            return object()
+
+        output = StringIO()
+        with redirect_stdout(output):
+            code = loopctl.main(
+                [
+                    "mission-stage",
+                    "--repo", mission_contract.CAMPAIGN_REPOSITORY,
+                    "--repo-path", "/workspace/example",
+                    "--approval-issue", "208",
+                    "--request", "Update docs/CURRENT_STATUS.md.",
+                    "--journal", "/tmp/steward-test.sqlite3",
+                    "--lock-dir", "/tmp/steward-locks",
+                ],
+                run_once_factory=runner_factory,
+                steward_factory=stage_steward_factory,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            type(captured["steward_init"]["worker"]).__name__,
+            "BoundedProcessWorker",
+        )
+        self.assertEqual(
+            type(captured["steward_init"]["reviewer"]).__name__,
+            "BoundedProcessReviewer",
+        )
+
+        captured.clear()
+        output = StringIO()
+        with redirect_stdout(output):
+            code = loopctl.main(
+                [
+                    "mission-stage",
+                    "--repo", mission_contract.CAMPAIGN_REPOSITORY,
+                    "--repo-path", "/workspace/example",
+                    "--approval-issue", "208",
+                    "--request", "Update docs/ARCHITECTURE_BOOK.md.",
+                    "--journal", "/tmp/steward-test.sqlite3",
+                    "--lock-dir", "/tmp/steward-locks",
+                ],
+                run_once_factory=runner_factory,
+                steward_factory=stage_steward_factory,
+            )
+        self.assertEqual(code, 0)
+        self.assertIsNone(captured["steward_init"]["worker"])
+        self.assertIsNone(captured["steward_init"]["reviewer"])
+
+        captured.clear()
+        output = StringIO()
+        with redirect_stdout(output):
+            code = loopctl.main(
+                [
+                    "mission-stage",
+                    "--repo", mission_contract.CAMPAIGN_REPOSITORY,
+                    "--repo-path", "/workspace/example",
+                    "--approval-issue", "207",
+                    "--request", "Update docs/CURRENT_STATUS.md.",
+                    "--journal", "/tmp/steward-test.sqlite3",
+                    "--lock-dir", "/tmp/steward-locks",
+                ],
+                run_once_factory=runner_factory,
+                steward_factory=stage_steward_factory,
+            )
+        self.assertEqual(code, 0)
+        self.assertIsNone(captured["steward_init"]["worker"])
+        self.assertIsNone(captured["steward_init"]["reviewer"])
+
+    def test_pr4b_canary_adapters_execute_in_an_exact_base_clone(self):
+        with tempfile.TemporaryDirectory(prefix="pr4b-adapter-") as tmp:
+            source = Path(__file__).resolve().parents[1]
+            repo = Path(tmp) / "repo"
+            subprocess.run(["git", "clone", "-q", str(source), str(repo)], check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True
+            )
+            base_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+            subprocess.run(
+                ["git", "switch", "-qc", "agent/pr4b-adapter-test", base_sha],
+                cwd=repo, check=True,
+            )
+            context = workers.WorkerContext(
+                mission_id="mission",
+                stage_id="stage",
+                card_id="mission:stage:leaf-a",
+                attempt=1,
+                model_tier="T0",
+                base_sha=base_sha,
+                worktree=repo,
+                allowed_paths=workers.PR4B_CANARY_ALLOWED_PATHS,
+                steps=(),
+                focused_tests=(),
+                negative_checks=(),
+                expected_evidence=(),
+                environment=workers.child_environment(),
+                worktree_branch="agent/pr4b-adapter-test",
+            )
+
+            outcome = workers.pr4b_canary_worker().run(context)
+            self.assertEqual(outcome.status, "PASS")
+            self.assertEqual(outcome.changed_paths, workers.PR4B_CANARY_ALLOWED_PATHS)
+            self.assertNotEqual(outcome.head_sha, base_sha)
+
+            review = workers.pr4b_canary_reviewer().review(context, outcome)
+            self.assertEqual(review.status, "PASS")
+            self.assertTrue(review.security_ok)
+            self.assertTrue(review.rollback_ok)
+            self.assertEqual(review.reviewed_base_sha, base_sha)
+            self.assertEqual(review.reviewed_head_sha, outcome.head_sha)
+            self.assertIn("write_blocked=True", review.detail)
+            self.assertIn("network_blocked=True", review.detail)
+            self.assertIn("credential_free=True", review.detail)
+
+            writable_command = workers._sandbox_command(
+                workers.pr4b_canary_reviewer().command_builder(context, outcome),
+                repo,
+                context.environment,
+                worktree_writable=True,
+            )
+            writable_probe = subprocess.run(
+                writable_command,
+                cwd=repo,
+                env=dict(context.environment),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            writable_wire = json.loads(writable_probe.stdout)
+            self.assertEqual(writable_wire["status"], "FAIL")
+            self.assertIn("reviewer_write_not_blocked", writable_wire["blockers"])
+            self.assertFalse(writable_wire["security_ok"])
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "status", "--porcelain"], cwd=repo, check=True,
+                    capture_output=True, text=True,
+                ).stdout,
+                "",
+            )
+
 
 class TestPlanDocumentDecode(unittest.TestCase):
     def test_github_base64_newlines_are_accepted(self):
