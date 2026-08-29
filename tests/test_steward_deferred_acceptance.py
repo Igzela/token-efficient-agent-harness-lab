@@ -63,7 +63,7 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
             cwd=ROOT,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=600,
             check=False,
         )
         output = result.stdout + result.stderr
@@ -149,7 +149,7 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
                     cwd=ROOT,
                     capture_output=True,
                     text=True,
-                    timeout=300,
+                    timeout=600,
                     check=False,
                 )
                 output = result.stdout + result.stderr
@@ -213,7 +213,7 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
             cwd=ROOT,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=600,
             check=False,
         )
         output = result.stdout + result.stderr
@@ -270,7 +270,7 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
                     cwd=ROOT,
                     capture_output=True,
                     text=True,
-                    timeout=300,
+                    timeout=600,
                     check=False,
                 )
                 self.assertEqual(

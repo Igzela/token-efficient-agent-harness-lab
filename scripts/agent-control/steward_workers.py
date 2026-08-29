@@ -17,7 +17,6 @@ from pathlib import Path
 import re
 import stat
 import subprocess
-import sys
 import tempfile
 from typing import Any, Callable, Mapping, Protocol
 import uuid
@@ -851,16 +850,9 @@ def _sandbox_command(
         "--tmpfs",
         "/",
     ]
-    for system_path in ("/usr", "/bin", "/lib", "/lib64", "/opt"):
+    for system_path in ("/usr", "/bin", "/lib", "/lib64"):
         if Path(system_path).exists():
             args.extend(("--ro-bind", system_path, system_path))
-    exec_path = Path(sys.executable).resolve()
-    if exec_path.is_file():
-        exec_root = exec_path.parent.parent
-        exec_root_str = str(exec_root)
-        if exec_root_str not in {"/", "/usr", "/bin", "/lib", "/lib64", "/opt"}:
-            if exec_root.exists():
-                args.extend(("--ro-bind", exec_root_str, exec_root_str))
     # A child needs loader/account metadata, but must not receive a readable
     # copy of the host's complete /etc (which can contain credentials or
     # operator configuration).  Network files and package configuration stay
@@ -1093,6 +1085,11 @@ def validate_worker_outcome(
 
     if not isinstance(outcome, WorkerOutcome):
         raise WorkerError("worker_outcome_invalid")
+    # Non-success outcomes are terminal worker reports. They are not claims
+    # of a committed head or changed-path set, so preserve their bounded
+    # reason instead of turning them into a misleading binding failure.
+    if outcome.status != "PASS":
+        return outcome
     if not SHA40.fullmatch(expected_head_sha):
         raise WorkerError("expected_head_sha_invalid")
     if not SHA40.fullmatch(outcome.head_sha):
