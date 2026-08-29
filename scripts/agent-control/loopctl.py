@@ -18,6 +18,7 @@ import route_driver
 import state_manager
 import steward
 import steward_github
+import steward_workers
 from steward_journal import StewardJournal
 
 
@@ -183,12 +184,24 @@ def main(
                 repository=args.repo, repo_path=args.repo_path
             )
             proposal = shadow_steward.compile_proposal(args.request)
+            worker = None
+            reviewer = None
+            if (
+                args.approval_issue == steward_workers.PR4B_CANARY_APPROVAL_ISSUE
+                and proposal.proposal_sha256 == steward_workers.PR4B_CANARY_PROPOSAL_SHA256
+                and proposal.requested_paths == steward_workers.PR4B_CANARY_ALLOWED_PATHS
+                and proposal.change_types == ("documentation",)
+            ):
+                worker = steward_workers.pr4b_canary_worker()
+                reviewer = steward_workers.pr4b_canary_reviewer()
             stage_steward = (steward_factory or steward.Steward)(
                 repository=args.repo,
                 repo_path=args.repo_path,
                 journal=StewardJournal(args.journal),
                 github=steward_github.GhReadOnlyGitHub(),
                 lock_dir=args.lock_dir,
+                worker=worker,
+                reviewer=reviewer,
             )
             result = runner.run_mission_stage(
                 proposal,
