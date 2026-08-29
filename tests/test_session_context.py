@@ -326,6 +326,19 @@ class RouteContractTests(unittest.TestCase):
         with self.assertRaisesRegex(session_context.SessionContextError, "route_contract_fields"):
             session_context.parse_route_contract(route_document(payload=payload))
 
+    def test_malformed_required_route_fails_closed_before_normalization(self):
+        for required in (None, [{}]):
+            with self.subTest(required=required):
+                payload = json.loads(
+                    route_document().split("agent-context-routes:v1\n", 1)[1].split("\n-->", 1)[0]
+                )
+                payload["roles"]["coding"]["required"] = required
+                with self.assertRaisesRegex(
+                    session_context.SessionContextError,
+                    "route_contract_required_invalid",
+                ):
+                    session_context.parse_route_contract(route_document(payload=payload))
+
 
 class CheckpointTests(unittest.TestCase):
     def build(self, **overrides) -> dict:

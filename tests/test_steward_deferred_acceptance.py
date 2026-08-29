@@ -192,6 +192,12 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
                 "scheduler_admitted_fixture_child_leases_and_completes",
             ],
             ["cargo", "test", "-p", "engine", "--test", "test_target_repo_output"],
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                "tests.test_agent_steward.StewardExecutionTests.test_approved_stage_reaches_waiting_for_merge_through_service_entrypoint",
+            ],
         )
         for command in commands:
             with self.subTest(command=" ".join(command)):
@@ -208,11 +214,11 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
                     0,
                     (result.stdout + result.stderr)[-4_000:],
                 )
-                self.assertIn(
-                    "test result: ok",
-                    result.stdout + result.stderr,
-                    (result.stdout + result.stderr)[-4_000:],
-                )
+                output = result.stdout + result.stderr
+                if command[0] == sys.executable:
+                    self.assertIn("OK", output[-4_000:])
+                else:
+                    self.assertIn("test result: ok", output[-4_000:])
 
 
 if __name__ == "__main__":

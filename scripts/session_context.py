@@ -1282,11 +1282,13 @@ def parse_route_contract(document: str) -> RouteContract:
             raise SessionContextError("route_contract_role_fields_invalid")
         required = route["required"]
         optional = route["optional"]
+        if not isinstance(required, list) or not required or any(
+            not isinstance(path, str) for path in required
+        ):
+            raise SessionContextError("route_contract_required_invalid")
         normalized_required = list(dict.fromkeys(required))
         if (
-            not isinstance(required, list)
-            or not required
-            or len(normalized_required) > maximum
+            len(normalized_required) > maximum
             or normalized_required[0] != "START_HERE.md"
             or any(path not in CANONICAL_DOCUMENTS for path in normalized_required)
         ):

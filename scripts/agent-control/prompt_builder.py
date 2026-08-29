@@ -56,13 +56,13 @@ def generate_fresh_capsule(
     offline: bool = False,
     required_pr_number: int | None = None,
     required_head_sha: str | None = None,
-    expected_packet: str | None = None,
+    expected_mission: str | None = None,
     require_local_checkout: bool = False,
 ) -> str:
     """Generate and validate a fresh bounded context capsule.
 
     Regenerates on every invocation. Does not blindly reuse an artifact.
-    Validates the requested PR/head/packet when provided and refuses prompt
+    Validates the requested PR/head/mission when provided and refuses prompt
     construction on mismatch.
     """
     project_root, project_context_script = _project_context_paths()
@@ -95,7 +95,7 @@ def generate_fresh_capsule(
     local_checkout = capsule.get("local_checkout")
     binding = capsule.get("binding")
     workflow_frontier = capsule.get("workflow_frontier")
-    active_packet = capsule.get("active_packet")
+    active_mission = capsule.get("active_mission")
     checkout_sha = (local_checkout if isinstance(local_checkout, dict) else {}).get("head_sha")
     pr_exact_head = (binding if isinstance(binding, dict) else {}).get("pr_exact_head")
     pr_head_sha = (pr_exact_head if isinstance(pr_exact_head, dict) else {}).get("head_sha")
@@ -104,7 +104,9 @@ def generate_fresh_capsule(
     workflow_pr_number = (
         workflow_frontier if isinstance(workflow_frontier, dict) else {}
     ).get("number")
-    canonical_packet = (active_packet if isinstance(active_packet, dict) else {}).get("packet")
+    canonical_mission = (
+        (active_mission if isinstance(active_mission, dict) else {}).get("mission_id")
+    )
 
     if required_head_sha:
         if workflow_bound_sha and workflow_bound_sha != required_head_sha:
@@ -147,10 +149,10 @@ def generate_fresh_capsule(
             raise ValueError(
                 f"Workflow PR #{workflow_pr_number} does not match required PR #{required_pr_number}"
             )
-    if expected_packet:
-        if canonical_packet and canonical_packet != expected_packet:
+    if expected_mission:
+        if canonical_mission and canonical_mission != expected_mission:
             raise ValueError(
-                f"Canonical routed packet {canonical_packet} does not match expected {expected_packet}"
+                f"Canonical routed mission {canonical_mission} does not match expected {expected_mission}"
             )
 
     with tempfile.TemporaryDirectory(prefix="context-capsule-") as temp_dir:

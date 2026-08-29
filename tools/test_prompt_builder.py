@@ -375,7 +375,7 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                 "local_checkout": {"head_sha": "a" * 40},
                 "binding": {"pr_exact_head": None},
                 "active_frontier": None,
-                "active_packet": None,
+                "active_mission": None,
             }
         )
 
@@ -411,7 +411,7 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                     "number": 371,
                     "availability": "confirmed",
                 },
-                "active_packet": {"packet": "PE7-RWE-V2-REFREEZE-1"},
+                "active_mission": {"mission_id": "PE7-RWE-V2-REFREEZE-1"},
             }
         )
 
@@ -433,7 +433,7 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                 "local_checkout": {"head_sha": sha},
                 "binding": {"pr_exact_head": None},
                 "active_frontier": None,
-                "active_packet": None,
+                "active_mission": None,
             }
         )
 
@@ -465,7 +465,7 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                 "local_checkout": {"head_sha": "b" * 40},
                 "binding": {"pr_exact_head": None},
                 "active_frontier": None,
-                "active_packet": None,
+                "active_mission": None,
             }
         )
 
@@ -493,7 +493,7 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                 "local_checkout": {"head_sha": sha},
                 "binding": {"pr_exact_head": {"head_sha": sha}},
                 "active_frontier": None,
-                "active_packet": None,
+                "active_mission": None,
             }
         )
 

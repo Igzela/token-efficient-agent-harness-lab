@@ -68,13 +68,23 @@ jobs:
       - name: Capture bounded complete diff for independent review
         run: |
           set -euo pipefail
-          gh pr diff "${PR_NUMBER}" > "$RUNNER_TEMP/review.diff"
+          base_sha=$(jq -er '.base.sha' "$RUNNER_TEMP/pr.json")
+          head_repo=$(jq -er '.head.repo.full_name' "$RUNNER_TEMP/pr.json")
+          [[ "${head_repo}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+            echo "invalid head repository identity" >&2
+            exit 1
+          }
+          git -C trusted-base fetch --no-tags --depth=1 origin "${base_sha}"
+          git -C trusted-base fetch --no-tags --depth=1 \
+            "https://github.com/${head_repo}.git" "${EXPECTED_HEAD}"
+          git -C trusted-base -c core.attributesfile=/dev/null diff \
+            --no-ext-diff --no-textconv "${base_sha}" "${EXPECTED_HEAD}" \
+            > "$RUNNER_TEMP/review.diff"
           bytes=$(wc -c < "$RUNNER_TEMP/review.diff")
-          if [ "$bytes" -gt 100000 ]; then
-            echo "complete review diff exceeds the bounded 100000-byte input limit" >&2
+          if [ "$bytes" -gt 8000000 ]; then
+            echo "complete review diff exceeds the bounded 8000000-byte input limit" >&2
             exit 1
           fi
-          base_sha=$(jq -er '.base.sha' "$RUNNER_TEMP/pr.json")
           jq -n \
             --arg repository "${GITHUB_REPOSITORY}" \
             --argjson pr_number "${PR_NUMBER}" \
