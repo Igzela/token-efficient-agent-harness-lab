@@ -587,6 +587,8 @@ class TestCapsuleProjection(unittest.TestCase):
         cases = (
             ({"summary": []}, "invalid_summary"),
             ({"findings": [finding(axis={"not": "text"})]}, "invalid_findings"),
+            ({"review_mode": {}}, "invalid_review_mode"),
+            ({"verdict": {}}, "invalid_review_verdict"),
             (
                 {"review_mode": "repair_verification"},
                 "invalid_review_mode_round_pair",

@@ -182,16 +182,24 @@ def normalize_finding(raw: dict[str, Any]) -> ReviewFinding:
     for key in ("axis", "evidence", "acceptance_condition"):
         if not isinstance(raw[key], str):
             raise ConvergenceError(f"finding {key} must be a string")
-    if raw["severity"] not in SEVERITIES:
+    if not isinstance(raw["severity"], str) or raw["severity"] not in SEVERITIES:
         raise ConvergenceError("invalid severity")
-    if raw["disposition"] not in DISPOSITIONS:
+    if (
+        not isinstance(raw["disposition"], str)
+        or raw["disposition"] not in DISPOSITIONS
+    ):
         raise ConvergenceError("invalid disposition")
-    if raw["scope_relation"] not in SCOPE_RELATIONS:
+    if (
+        not isinstance(raw["scope_relation"], str)
+        or raw["scope_relation"] not in SCOPE_RELATIONS
+    ):
         raise ConvergenceError("invalid scope_relation")
-    if raw["status"] not in FINDING_STATUSES:
+    if not isinstance(raw["status"], str) or raw["status"] not in FINDING_STATUSES:
         raise ConvergenceError("invalid status")
     admission = raw.get("admission_reason")
-    if admission is not None and admission not in ADMISSION_REASONS:
+    if admission is not None and (
+        not isinstance(admission, str) or admission not in ADMISSION_REASONS
+    ):
         raise ConvergenceError("invalid admission_reason")
     origin = raw["origin_head"]
     if not isinstance(origin, str) or not origin:
@@ -839,7 +847,7 @@ def _validate_v3_review_state(state: dict[str, Any]) -> str | None:
         return "unsupported_review_state_version"
     if state.get("review_protocol_version") != REVIEW_PROTOCOL_VERSION:
         return "invalid_review_protocol_version"
-    if state.get("review_mode") not in REVIEW_MODES:
+    if not isinstance(state.get("review_mode"), str) or state["review_mode"] not in REVIEW_MODES:
         return "invalid_review_mode"
     review_round = state.get("review_round")
     if type(review_round) is not int or not 1 <= review_round <= MAX_SUBSTANTIVE_REVIEW_ROUNDS:
@@ -862,7 +870,7 @@ def _validate_v3_review_state(state: dict[str, Any]) -> str | None:
         return "invalid_prior_reviewed_head"
     if state.get("reviewed_range") != f"{base_sha}...{head_sha}":
         return "invalid_reviewed_range"
-    if state.get("verdict") not in CONTROL_VERDICTS:
+    if not isinstance(state.get("verdict"), str) or state["verdict"] not in CONTROL_VERDICTS:
         return "invalid_review_verdict"
 
     raw_findings = state.get("findings")
