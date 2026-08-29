@@ -257,6 +257,13 @@ jobs:
       - name: Verify canonical orchestrator regression suite is wired
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: uv run --no-project python scripts/verify_orchestrator_test_suite.py
+      - name: Install bubblewrap
+        if: needs.classify-change-impact.outputs.mode == 'full'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          test -x /usr/bin/bwrap
       - name: Configure test git identity
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: |

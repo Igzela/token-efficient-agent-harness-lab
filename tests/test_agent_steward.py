@@ -604,6 +604,7 @@ class StewardExecutionTests(unittest.TestCase):
         overlap_active = 0
         overlap_maximum = 0
         active_lock = threading.Lock()
+        concurrency_barrier = threading.Barrier(2)
 
         class RealTestWorker(workers.BoundedProcessWorker):
             def __init__(self):
@@ -611,6 +612,11 @@ class StewardExecutionTests(unittest.TestCase):
 
             def run(self, context):
                 nonlocal active, maximum, overlap_active, overlap_maximum
+                if context.card_id in {"card-a", "card-b"}:
+                    try:
+                        concurrency_barrier.wait(timeout=1.0)
+                    except threading.BrokenBarrierError:
+                        pass
                 with active_lock:
                     active += 1
                     maximum = max(maximum, active)

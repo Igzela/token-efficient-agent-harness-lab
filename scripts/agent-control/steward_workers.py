@@ -14,6 +14,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 from typing import Any, Callable, Mapping, Protocol
@@ -825,7 +826,8 @@ def _sandbox_command(
 ) -> list[str]:
     """Run a bounded child with explicitly scoped worktree and Git access."""
 
-    bubblewrap = Path("/usr/bin/bwrap")
+    bwrap_path = shutil.which("bwrap") or "/usr/bin/bwrap"
+    bubblewrap = Path(bwrap_path)
     if not bubblewrap.is_file():
         raise WorkerError("sandbox_unavailable")
     args = [
