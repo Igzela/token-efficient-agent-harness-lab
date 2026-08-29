@@ -75,6 +75,19 @@ single-writer canary/cutover, guarded maintenance merge, and retained
 evidence/rollback; no new controller, queue, ledger, store, evaluator,
 workflow owner, or document owner.
 
+The single-writer claim is deliberately scoped to the bounded PR4B
+Mission/Stage branch-and-PR integration writer. It does not claim that this
+packet deletes or transfers the global GitHub Issue/Plan-Ledger lifecycle
+owner; that inactive control plane remains retained for the later PR6 removal
+packet. For PR4B, “stop the old writer” means hold the emergency stop, drain
+or cancel every nonterminal legacy-controller execution and release every
+legacy claim, then do not dispatch the legacy path during the one direct
+Steward Mission/Stage invocation. The proof is zero nonterminal legacy runs,
+zero legacy claims, no legacy dispatch from the bridge, and exactly one
+Steward coordinator for that bounded integration scope. GitHub remains the
+durable queue/lease authority, but is not a second active Mission/Stage
+integration writer.
+
 Operationally this means provisioning `agent-steward`, provisioning and
 permissioning `/var/lib/agent-steward`, and installing the accepted-main
 `steward.service` unit without enabling it by default. No repository payload is
@@ -85,20 +98,25 @@ The `service-start`/`service-stop` budget is therefore conditional and never a
 fallback installation path. Read-only reconciliation uses the existing
 Steward journal and GitHub facts owners.
 
-Before any writer transition, read the active `agent-controller.yml` runs,
-the open `agent-running`/claim state, and the plan-ledger active-capacity
-projection. The exact stop/readback is `gh run list --workflow
-agent-controller.yml --status in_progress` plus the bounded active-claim
-read; the current audit found no in-progress controller run and no open
-`agent-running` claim. If a single old-controller run is present,
-`legacy-controller-stop` may issue exactly one authenticated `gh run cancel
-<run-id>` and must read back a terminal run state plus zero active claims. If
-more than one run is present, identity is ambiguous and the operation stops;
-if any readback is uncertain, stop and do not retry. A zero-run receipt is
-required even when no cancel mutation is needed, and the emergency stop stays
-active through this preflight. Only after that receipt, service identity
-readback, and the recovery point pass may `emergency-resume` and
-`orchestrator-enable` be performed, in that order, each once.
+Before any writer transition, read every nonterminal `agent-controller.yml`
+run (`queued`, `in_progress`, `waiting`, or `pending`) with its run id, event,
+head, and timestamps; read every active Issue claim with its exact Issue,
+dispatch id, attempt, claim nonce, head, scope, and status; and read every
+active Plan-Ledger claim with its packet, attempt, claim nonce, source-main,
+scope, and status. The bounded source-of-truth reads are the workflow list,
+`GitHubAdapter.active_execution_scopes()`/`state_manager` claim read, and the
+Plan-Ledger read; a label-only read is insufficient. The current audit found
+no nonterminal controller run and no open active Issue claim. If exactly one
+nonterminal old-controller run or claim generation is present,
+`legacy-controller-stop` may issue exactly one authenticated cancellation or
+release for that exact identity and must read back terminal workflow state,
+closed claim state, and zero remaining active runs/claims. If more than one
+is present, identity is ambiguous and the operation stops; if any readback is
+uncertain, stop and do not retry. A zero-run/zero-claim receipt is required
+even when no cancel mutation is needed, and the emergency stop stays active
+through this preflight. Only after that receipt, service identity readback,
+and the recovery point pass may `emergency-resume` and `orchestrator-enable`
+be performed, in that order, each once.
 
 The exact `coordinator-activate` bridge is one
 `loopctl.py mission-stage` invocation with `--approval-issue 208`, the
