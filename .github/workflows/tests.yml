@@ -257,6 +257,11 @@ jobs:
       - name: Verify canonical orchestrator regression suite is wired
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: uv run --no-project python scripts/verify_orchestrator_test_suite.py
+      - name: Configure test git identity
+        if: needs.classify-change-impact.outputs.mode == 'full'
+        run: |
+          git config --global user.name "CI Agent"
+          git config --global user.email "ci@example.invalid"
       - name: Run orchestrator regression tests
         if: needs.classify-change-impact.outputs.mode == 'full'
         run: |
