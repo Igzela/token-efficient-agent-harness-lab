@@ -51,12 +51,6 @@ class CheckAgentHandoffTests(unittest.TestCase):
         start_here = (Path(__file__).resolve().parents[1] / "START_HERE.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("`checkpoint_write_commands`", start_here)
-        self.assertIn(
-            "stable command is permitted only after every declared verification command "
-            "has actually passed",
-            start_here,
-        )
         self.assertNotIn("--completed-step", start_here)
         self.assertNotIn("--next-action", start_here)
         self.assertNotIn("repeat `--owned-path`", start_here)

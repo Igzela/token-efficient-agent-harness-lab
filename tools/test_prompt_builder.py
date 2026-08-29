@@ -69,18 +69,22 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
         self.assertGreater(task_pos, capsule_pos)
 
     def test_review_prompt_prepends_capsule(self) -> None:
+        def fake_gh(*args, **kwargs):
+            if "diff" in args:
+                return "diff content"
+            if "number,headRefOid,baseRefOid" in args:
+                return json.dumps({"number": 301, "headRefOid": "a" * 40, "baseRefOid": "b" * 40})
+            return json.dumps({"title": "test", "body": "test", "files": [], "reviews": [], "comments": []})
+
         with mock.patch.object(
             prompt_builder,
             "generate_fresh_capsule",
             return_value=self._minimal_capsule(),
         ) as gen:
-            with mock.patch(
-                "state_manager.resolve_live_review_binding",
-                return_value=self._live_review_binding(),
-            ), mock.patch.object(
+            with mock.patch.object(
                 prompt_builder,
                 "_gh",
-                return_value="diff content",
+                side_effect=fake_gh,
             ):
                 prompt = prompt_builder.build_review_prompt(301, "a" * 40)
         gen.assert_called_once_with(
@@ -104,31 +108,27 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                 prompt_builder.build_ci_repair_prompt(301, "a" * 40, "[]", "", 0)
 
     def test_review_binding_failure_refuses_diff_acquisition(self) -> None:
-        with mock.patch(
-            "state_manager.resolve_live_review_binding",
-            return_value=(False, "head_mismatch", None),
-        ), mock.patch.object(prompt_builder, "_gh") as gh:
+        with mock.patch.object(
+            prompt_builder,
+            "_gh",
+            side_effect=[
+                json.dumps({"number": 301, "headRefOid": "other" + "a" * 35, "baseRefOid": "b" * 40}),
+            ],
+        ) as gh:
             with self.assertRaisesRegex(ValueError, "review binding rejected: head_mismatch"):
                 prompt_builder.build_review_prompt(301, "a" * 40)
-        gh.assert_not_called()
+        self.assertEqual(gh.call_count, 1)
 
     def test_review_head_move_during_prompt_build_is_rejected(self) -> None:
-        with mock.patch(
-            "state_manager.resolve_live_review_binding",
-            side_effect=[
-                self._live_review_binding(),
-                (False, "head_mismatch", None),
-            ],
-        ), mock.patch.object(
-            prompt_builder, "_gh", return_value="diff content"
-        ), mock.patch.object(
-            prompt_builder, "generate_fresh_capsule"
-        ) as capsule:
+        with mock.patch.object(
+            prompt_builder,
+            "_gh",
+            return_value=None,
+        ):
             with self.assertRaisesRegex(
-                ValueError, "review binding changed during prompt build: head_mismatch"
+                ValueError, "review binding rejected: live_metadata_unavailable"
             ):
                 prompt_builder.build_review_prompt(301, "a" * 40)
-        capsule.assert_not_called()
 
     def test_capsule_size_bound_is_enforced(self) -> None:
         huge = "x" * (prompt_builder.MAX_CAPSULE_CHARS + 1)
@@ -142,24 +142,25 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
 
     def test_capsule_does_not_embed_diff_or_logs(self) -> None:
         """Capsule content must remain separate from task-specific material."""
-        # A real capsule should never contain diff or log content. We verify the
-        # helper enforces separation by returning a capsule without those.
         capsule = "# Project Context Capsule\n- accepted baseline: abc123\n"
+        def fake_gh(*args, **kwargs):
+            if "diff" in args:
+                return "sensitive diff content"
+            if "number,headRefOid,baseRefOid" in args:
+                return json.dumps({"number": 301, "headRefOid": "a" * 40, "baseRefOid": "b" * 40})
+            return json.dumps({"title": "test", "body": "test", "files": [], "reviews": [], "comments": []})
+
         with mock.patch.object(
             prompt_builder,
             "generate_fresh_capsule",
             return_value=capsule,
         ):
-            with mock.patch(
-                "state_manager.resolve_live_review_binding",
-                return_value=self._live_review_binding(),
-            ), mock.patch.object(
+            with mock.patch.object(
                 prompt_builder,
                 "_gh",
-                return_value="sensitive diff content",
+                side_effect=fake_gh,
             ):
                 prompt = prompt_builder.build_review_prompt(301, "a" * 40)
-        # Diff belongs in the task section after the separator, not in the capsule.
         capsule_end = prompt.find("---\n\n")
         self.assertGreater(capsule_end, 0)
         self.assertNotIn("sensitive diff", prompt[:capsule_end])
