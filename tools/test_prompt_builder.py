@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,71 @@ assert SPEC and SPEC.loader
 prompt_builder = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = prompt_builder
 SPEC.loader.exec_module(prompt_builder)
+
+
+def _persisted_review_state(*, verdict: str, stop_reason: str) -> dict[str, object]:
+    head = "a" * 40
+    base = "b" * 40
+    findings: list[dict[str, str]] = []
+    open_blocker_ids: list[str] = []
+    blockers: list[str] = []
+    if verdict == "DECISION_REQUIRED":
+        findings.append(
+            {
+                "id": "B-1",
+                "axis": "correctness",
+                "evidence": "blocked",
+                "severity": "blocker",
+                "disposition": "block_current_head",
+                "scope_relation": "in_packet",
+                "origin_head": "c" * 40,
+                "acceptance_condition": "repair",
+                "status": "open",
+            }
+        )
+        open_blocker_ids = ["B-1"]
+        blockers = ["blocked"]
+    rows = [
+        {
+            "acceptance_condition": finding["acceptance_condition"],
+            "disposition": finding["disposition"],
+            "id": finding["id"],
+            "origin_head": finding["origin_head"],
+            "severity": finding["severity"],
+            "status": finding["status"],
+        }
+        for finding in sorted(findings, key=lambda item: item["id"])
+    ]
+    digest = hashlib.sha256(
+        json.dumps(rows, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    return {
+        "kind": "agent-orchestrator-review-state",
+        "version": 3,
+        "issue_number": 42,
+        "pr_number": 301,
+        "review_protocol_version": "review-convergence.v1",
+        "review_mode": "repair_verification",
+        "review_round": 2,
+        "prior_reviewed_head": "c" * 40,
+        "base_sha": base,
+        "head_sha": head,
+        "reviewed_range": f"{base}...{head}",
+        "verdict": verdict,
+        "summary": verdict.lower(),
+        "findings": findings,
+        "finding_ledger_digest": digest,
+        "open_blocker_ids": open_blocker_ids,
+        "deferred_note_ids": [],
+        "decision_required_ids": [],
+        "autonomous_repairs_remaining": 0,
+        "stop_reason": stop_reason,
+        "artifact_sha256": "",
+        "review_workflow_run_id": None,
+        "blockers": blockers,
+        "major_notes": [],
+        "minor_notes": [],
+    }
 
 
 class PromptBuilderCapsuleTests(unittest.TestCase):
@@ -99,23 +165,9 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
         self.assertGreater(task_pos, capsule_pos)
 
     def test_review_prompt_uses_persisted_r2_state(self) -> None:
-        state = {
-            "kind": "agent-orchestrator-review-state",
-            "version": 3,
-            "issue_number": 42,
-            "pr_number": 301,
-            "review_protocol_version": "review-convergence.v1",
-            "review_mode": "repair_verification",
-            "review_round": 2,
-            "prior_reviewed_head": "c" * 40,
-            "head_sha": "a" * 40,
-            "verdict": "INVALIDATED",
-            "finding_ledger_digest": "",
-            "open_blocker_ids": [],
-            "deferred_note_ids": [],
-            "autonomous_repairs_remaining": 0,
-            "stop_reason": "awaiting_r2",
-        }
+        state = _persisted_review_state(
+            verdict="INVALIDATED", stop_reason="awaiting_r2"
+        )
 
         def fake_gh(*args, **kwargs):
             if args[:2] == ("pr", "view") and "number,headRefOid,baseRefOid" in args:
@@ -143,23 +195,9 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
         self.assertIn("Round 2", prompt)
 
     def test_review_prompt_denies_exhausted_r2_state(self) -> None:
-        state = {
-            "kind": "agent-orchestrator-review-state",
-            "version": 3,
-            "issue_number": 42,
-            "pr_number": 301,
-            "review_protocol_version": "review-convergence.v1",
-            "review_mode": "repair_verification",
-            "review_round": 2,
-            "prior_reviewed_head": "c" * 40,
-            "head_sha": "a" * 40,
-            "verdict": "DECISION_REQUIRED",
-            "finding_ledger_digest": "",
-            "open_blocker_ids": ["B-1"],
-            "deferred_note_ids": [],
-            "autonomous_repairs_remaining": 0,
-            "stop_reason": "decision_required",
-        }
+        state = _persisted_review_state(
+            verdict="DECISION_REQUIRED", stop_reason="decision_required"
+        )
 
         def fake_gh(*args, **kwargs):
             if args[:2] == ("pr", "view") and "number,headRefOid,baseRefOid" in args:

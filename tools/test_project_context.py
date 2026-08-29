@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -17,6 +18,70 @@ assert SPEC and SPEC.loader
 project_context = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = project_context
 SPEC.loader.exec_module(project_context)
+
+
+def _complete_review_state(*, head: str, verdict: str) -> dict[str, object]:
+    findings: list[dict[str, str]] = []
+    open_blocker_ids: list[str] = []
+    blockers: list[str] = []
+    if verdict == "BLOCKED":
+        findings.append(
+            {
+                "id": "F-1",
+                "axis": "correctness",
+                "evidence": "defect",
+                "severity": "blocker",
+                "disposition": "block_current_head",
+                "scope_relation": "in_packet",
+                "origin_head": head,
+                "acceptance_condition": "repair",
+                "status": "open",
+            }
+        )
+        open_blocker_ids = ["F-1"]
+        blockers = ["defect"]
+    rows = [
+        {
+            "acceptance_condition": finding["acceptance_condition"],
+            "disposition": finding["disposition"],
+            "id": finding["id"],
+            "origin_head": finding["origin_head"],
+            "severity": finding["severity"],
+            "status": finding["status"],
+        }
+        for finding in sorted(findings, key=lambda item: item["id"])
+    ]
+    digest = hashlib.sha256(
+        json.dumps(rows, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    base = "b" * 40
+    return {
+        "kind": "agent-orchestrator-review-state",
+        "version": 3,
+        "issue_number": 42,
+        "pr_number": 299,
+        "head_sha": head,
+        "verdict": verdict,
+        "summary": verdict.lower(),
+        "base_sha": base,
+        "reviewed_range": f"{base}...{head}",
+        "review_mode": "full",
+        "review_round": 1,
+        "prior_reviewed_head": "",
+        "findings": findings,
+        "finding_ledger_digest": digest,
+        "open_blocker_ids": open_blocker_ids,
+        "deferred_note_ids": [],
+        "decision_required_ids": [],
+        "autonomous_repairs_remaining": 1,
+        "stop_reason": "",
+        "artifact_sha256": "",
+        "review_workflow_run_id": None,
+        "blockers": blockers,
+        "major_notes": [],
+        "minor_notes": [],
+        "review_protocol_version": "review-convergence.v1",
+    }
 
 
 class ProjectContextTests(unittest.TestCase):
@@ -357,24 +422,8 @@ Phase one was accepted through PR #302.
 
     def test_durable_projection_uses_latest_trusted_state_only(self) -> None:
         head = "a" * 40
-        older = {
-            "kind": "agent-orchestrator-review-state",
-            "version": 3,
-            "issue_number": 42,
-            "pr_number": 299,
-            "head_sha": head,
-            "verdict": "PASS",
-            "open_blocker_ids": [],
-        }
-        newer = {
-            "kind": "agent-orchestrator-review-state",
-            "version": 3,
-            "issue_number": 42,
-            "pr_number": 299,
-            "head_sha": head,
-            "verdict": "BLOCKED",
-            "open_blocker_ids": ["F-1"],
-        }
+        older = _complete_review_state(head=head, verdict="PASS")
+        newer = _complete_review_state(head=head, verdict="BLOCKED")
         observer = mock.Mock()
         observer.issue_comments.return_value = [
             {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -50,6 +51,37 @@ def durable_review_state(
     issue_number: int = 42,
     pr_number: int = 41,
 ) -> str:
+    findings = [
+        {
+            "id": blocker_id,
+            "axis": "correctness",
+            "evidence": blocker_id,
+            "severity": "blocker",
+            "disposition": "block_current_head",
+            "scope_relation": "in_packet",
+            "origin_head": head_sha,
+            "acceptance_condition": "repair",
+            "status": "open",
+        }
+        for blocker_id in (open_blocker_ids or [])
+    ]
+    rows = [
+        {
+            "acceptance_condition": finding["acceptance_condition"],
+            "disposition": finding["disposition"],
+            "id": finding["id"],
+            "origin_head": finding["origin_head"],
+            "severity": finding["severity"],
+            "status": finding["status"],
+        }
+        for finding in sorted(findings, key=lambda item: item["id"])
+    ]
+    finding_ledger_digest = hashlib.sha256(
+        json.dumps(
+            rows, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+    ).hexdigest()
+    base_sha = BASE
     return json.dumps(
         {
             "kind": "agent-orchestrator-review-state",
@@ -60,12 +92,22 @@ def durable_review_state(
             "review_mode": "repair_verification",
             "review_round": 2,
             "prior_reviewed_head": "c" * 40,
+            "base_sha": base_sha,
             "head_sha": head_sha,
-            "finding_ledger_digest": "1" * 64,
+            "reviewed_range": f"{base_sha}...{head_sha}",
+            "findings": findings,
+            "finding_ledger_digest": finding_ledger_digest,
             "open_blocker_ids": open_blocker_ids or [],
             "deferred_note_ids": [],
+            "decision_required_ids": [],
             "autonomous_repairs_remaining": 0,
             "stop_reason": "" if verdict == "PASS" else "decision_required",
+            "artifact_sha256": "",
+            "review_workflow_run_id": None,
+            "summary": verdict.lower(),
+            "blockers": [finding["evidence"] for finding in findings],
+            "major_notes": [],
+            "minor_notes": [],
             "verdict": verdict,
         },
         sort_keys=True,

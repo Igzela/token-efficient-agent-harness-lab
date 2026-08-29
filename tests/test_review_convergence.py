@@ -513,7 +513,7 @@ class TestCapsuleProjection(unittest.TestCase):
             "head_sha": HEAD1,
             "verdict": "BLOCKED",
             "summary": "blocked",
-            "blockers": ["x"],
+            "blockers": ["defect evidence"],
             "major_notes": [],
             "minor_notes": [],
             "artifact_sha256": "0" * 64,
@@ -524,7 +524,9 @@ class TestCapsuleProjection(unittest.TestCase):
             "review_round": 1,
             "prior_reviewed_head": "",
             "findings": [finding()],
-            "finding_ledger_digest": "d" * 64,
+            "finding_ledger_digest": rc.ledger_digest(
+                (rc.normalize_finding(finding()),)
+            ),
             "open_blocker_ids": ["F-1"],
             "deferred_note_ids": [],
             "decision_required_ids": [],
@@ -572,6 +574,14 @@ class TestCapsuleProjection(unittest.TestCase):
         projection = rc.project_capsule_fields(None, expected_head=HEAD1)
         self.assertEqual(projection["availability"], "unavailable")
         self.assertEqual(projection["review_state"], "unavailable")
+
+    def test_incomplete_v3_state_is_conflict(self):
+        projection = rc.project_capsule_fields(
+            {"kind": "agent-orchestrator-review-state", "version": 3, "head_sha": HEAD1},
+            expected_head=HEAD1,
+        )
+        self.assertEqual(projection["availability"], "conflict")
+        self.assertEqual(projection["unavailable_reason"], "incomplete_v3_state")
 
 
 class TestDurablePersistenceFields(unittest.TestCase):
