@@ -197,18 +197,6 @@ CANONICAL_DOCUMENT_PATHS = (
     "docs/ROADMAP.md",
     "docs/RUNBOOK.md",
 )
-LEGACY_ACCEPTED_ROUTE_DOCUMENTS = frozenset(
-    {
-        "docs/ARCHITECTURE_BOOK.md",
-        "docs/CURRENT_STATUS.md",
-        "docs/NEXT_DECISION.md",
-        "docs/FUTURE_ROUTE.md",
-        "docs/MODULE_MAP.md",
-        "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
-    }
-)
-
-
 class SessionContextError(ValueError):
     """A bounded context or recovery contract could not be proved."""
 
@@ -1262,18 +1250,16 @@ class SessionEntry:
 
 
 def parse_route_contract(
-    document: str, *, allow_legacy_accepted_documents: bool = False
+    document: str,
 ) -> RouteContract:
     """Parse the sole machine-readable role router from ``START_HERE.md``.
 
-    Accepted ``main`` may briefly contain the pre-PR6 route while the
-    migration is being promoted.  That compatibility is explicit and scoped
-    to the accepted-source loader; working-tree routes remain current-only.
+    Only the seven canonical documents are valid route members. Legacy
+    document paths are rejected so accepted-main navigation cannot drift back
+    to the removed control-plane contract.
     """
 
     allowed_documents = CANONICAL_DOCUMENTS
-    if allow_legacy_accepted_documents:
-        allowed_documents = CANONICAL_DOCUMENTS | LEGACY_ACCEPTED_ROUTE_DOCUMENTS
 
     if not isinstance(document, str) or len(document.encode("utf-8")) > MAX_ROUTE_DOCUMENT_BYTES:
         raise SessionContextError("route_document_unavailable_or_too_large")
@@ -2366,14 +2352,7 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
         if not project_context.ensure_commit_available(sha, offline=offline):
             raise SessionContextError("accepted_main_commit_unavailable")
 
-        def reader(path: str) -> str:
-            content = project_context.git_show_text(sha, path)
-            compatibility_path = project_context.accepted_document_compatibility_path(
-                baseline, path
-            )
-            if not content and isinstance(compatibility_path, str):
-                content = project_context.git_show_text(sha, compatibility_path)
-            return content
+        reader = lambda path: project_context.git_show_text(sha, path)
 
         source_binding = sha
     elif source == "working-tree":
@@ -2389,13 +2368,6 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
         "accepted_main_source": baseline.get("source"),
         "document_source": source,
         "document_source_binding": source_binding,
-        "allow_legacy_accepted_documents": (
-            source == "accepted"
-            and project_context.accepted_document_compatibility_path(
-                baseline, "docs/AUTONOMY.md"
-            )
-            is not None
-        ),
         "documents": documents,
     }
 
@@ -2498,9 +2470,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "route":
             contract = parse_route_contract(
                 documents["START_HERE.md"],
-                allow_legacy_accepted_documents=loaded.get(
-                    "allow_legacy_accepted_documents", False
-                ),
             )
             value = build_route(
                 contract,
@@ -2521,9 +2490,6 @@ def main(argv: list[str] | None = None) -> int:
             value = build_session_entry(
                 contract=parse_route_contract(
                     documents["START_HERE.md"],
-                    allow_legacy_accepted_documents=loaded.get(
-                        "allow_legacy_accepted_documents", False
-                    ),
                 ),
                 role=args.role,
                 accepted_main_sha=accepted_main_sha,
