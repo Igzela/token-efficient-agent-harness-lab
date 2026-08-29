@@ -19,6 +19,7 @@ REPO_OWNER = os.environ.get("AGENT_REPO_OWNER", "Igzela")
 REPO_NAME = os.environ.get("AGENT_REPO_NAME", "token-efficient-agent-harness-lab")
 MAX_REVIEW_DIFF_CHARS = 100_000
 MAX_CAPSULE_CHARS = 100_000
+TRUSTED_REVIEW_STATE_AUTHORS = frozenset({"github-actions", "github-actions[bot]"})
 
 
 def _project_context_paths() -> tuple[pathlib.Path, pathlib.Path]:
@@ -195,6 +196,68 @@ def _gh(*args):
         return result.stdout.strip() if result.returncode == 0 else None
     except (subprocess.TimeoutExpired, OSError):
         return None
+
+
+def _load_review_convergence_state(
+    pr_number: int, issue_number: int | str, head_sha: str
+) -> dict[str, object] | None:
+    """Load the latest trusted convergence state for an exact review head.
+
+    Missing state is the normal first-review case. A failed or malformed read
+    is different: prompt construction must fail closed instead of silently
+    resetting the R1/R2 budget.
+    """
+
+    raw = _gh("issue", "view", str(issue_number), "--json", "comments")
+    if raw is None:
+        raise ValueError("review state unavailable: live_metadata_unavailable")
+    try:
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("review state unavailable: malformed_comments") from exc
+    comments = payload.get("comments") if isinstance(payload, dict) else None
+    if not isinstance(comments, list):
+        raise ValueError("review state unavailable: malformed_comments")
+
+    trusted: list[dict[str, object]] = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        author = comment.get("author") or comment.get("user")
+        login = author.get("login") if isinstance(author, dict) else None
+        body = comment.get("body")
+        if (
+            login in TRUSTED_REVIEW_STATE_AUTHORS
+            and isinstance(body, str)
+            and "agent-orchestrator-review-state" in body
+        ):
+            trusted.append(comment)
+    if not trusted:
+        return None
+
+    try:
+        trusted.sort(key=lambda item: str(item["createdAt"]))
+        state = json.loads(str(trusted[-1]["body"]))
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("review state unavailable: malformed_latest_state") from exc
+    if not isinstance(state, dict) or state.get("kind") != "agent-orchestrator-review-state":
+        raise ValueError("review state unavailable: malformed_latest_state")
+    try:
+        expected_issue = int(issue_number)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("review state unavailable: invalid_issue_number") from exc
+    if state.get("issue_number") != expected_issue or state.get("pr_number") != pr_number:
+        raise ValueError("review state unavailable: binding_mismatch")
+
+    import review_convergence as rc
+
+    projection = rc.project_capsule_fields(state, expected_head=head_sha)
+    if projection.get("availability") != "confirmed":
+        raise ValueError(
+            "review state unavailable: "
+            f"{projection.get('unavailable_reason') or 'projection_invalid'}"
+        )
+    return projection
 
 
 def fetch_bounded_failed_logs(run_id, max_chars=50000):
@@ -676,7 +739,10 @@ def build_review_prompt(pr_number, head_sha, issue_number=None, template="review
     )
     if issue_number:
         import review_convergence as rc
-        attempt = rc.derive_next_review_attempt(None, head_sha)
+        persisted_state = _load_review_convergence_state(
+            int(pr_number), issue_number, head_sha
+        )
+        attempt = rc.derive_next_review_attempt(persisted_state, head_sha)
         if not attempt.get("allowed"):
             raise ValueError(
                 f"review dispatch refused: {attempt.get('deny_reason') or 'not_allowed'}"

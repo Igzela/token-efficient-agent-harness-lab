@@ -12,9 +12,10 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
-import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,7 @@ import review_convergence
 from review_loop.locking import ChatLock, LockBusy
 
 MAX_ACTIVE_WORKERS = 2
+BWRAP_PATH = Path("/usr/bin/bwrap")
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -827,10 +829,18 @@ def _sandbox_command(
 ) -> list[str]:
     """Run a bounded child with explicitly scoped worktree and Git access."""
 
-    bwrap_path = shutil.which("bwrap") or "/usr/bin/bwrap"
-    bubblewrap = Path(bwrap_path)
-    if not bubblewrap.is_file():
+    try:
+        metadata = os.lstat(BWRAP_PATH)
+    except OSError as exc:
+        raise WorkerError("sandbox_unavailable") from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_mode & 0o022
+        or not os.access(BWRAP_PATH, os.X_OK)
+    ):
         raise WorkerError("sandbox_unavailable")
+    bubblewrap = BWRAP_PATH
     args = [
         str(bubblewrap),
         "--die-with-parent",

@@ -217,6 +217,28 @@ Phase one was accepted through PR #302.
         self.assertEqual(result["availability"], "conflict")
         self.assertIsNone(result["active_pr_number"])
 
+    def test_live_frontier_without_canonical_packet_never_selects_open_pr(self) -> None:
+        observer = mock.Mock()
+        observer.list_open_pull_requests.return_value = [
+            {
+                "number": 649,
+                "title": "Unbound candidate",
+                "body": "",
+                "head": {"ref": "candidate", "sha": "a" * 40},
+                "draft": True,
+                "html_url": "https://example.invalid/649",
+            }
+        ]
+        result = project_context.observe_open_frontiers(
+            "owner/repo",
+            {"packet": None, "state": None, "pr_number": None},
+            offline=False,
+            observer=observer,
+        )
+        self.assertEqual(result["availability"], "unavailable")
+        self.assertEqual(result["warning"], "canonical_packet_missing")
+        self.assertIsNone(result["active_pr_number"])
+
     def test_structured_and_legacy_bindings_cannot_disagree(self) -> None:
         observer = mock.Mock()
         observer.list_open_pull_requests.return_value = [

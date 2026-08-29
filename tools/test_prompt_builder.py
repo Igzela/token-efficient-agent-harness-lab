@@ -98,6 +98,93 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
         task_pos = prompt.find("## Final Review Task")
         self.assertGreater(task_pos, capsule_pos)
 
+    def test_review_prompt_uses_persisted_r2_state(self) -> None:
+        state = {
+            "kind": "agent-orchestrator-review-state",
+            "version": 3,
+            "issue_number": 42,
+            "pr_number": 301,
+            "review_protocol_version": "review-convergence.v1",
+            "review_mode": "repair_verification",
+            "review_round": 2,
+            "prior_reviewed_head": "c" * 40,
+            "head_sha": "a" * 40,
+            "verdict": "INVALIDATED",
+            "finding_ledger_digest": "",
+            "open_blocker_ids": [],
+            "deferred_note_ids": [],
+            "autonomous_repairs_remaining": 0,
+            "stop_reason": "awaiting_r2",
+        }
+
+        def fake_gh(*args, **kwargs):
+            if args[:2] == ("pr", "view") and "number,headRefOid,baseRefOid" in args:
+                return json.dumps({"number": 301, "headRefOid": "a" * 40, "baseRefOid": "b" * 40})
+            if args[:2] == ("pr", "diff"):
+                return "diff content"
+            if args[:2] == ("issue", "view"):
+                return json.dumps({
+                    "comments": [{
+                        "author": {"login": "github-actions[bot]"},
+                        "body": json.dumps(state),
+                        "createdAt": "2026-08-29T00:00:00Z",
+                    }]
+                })
+            return json.dumps({"title": "test", "body": "test", "files": [], "reviews": [], "comments": []})
+
+        with mock.patch.object(
+            prompt_builder,
+            "generate_fresh_capsule",
+            return_value=self._minimal_capsule(),
+        ):
+            with mock.patch.object(prompt_builder, "_gh", side_effect=fake_gh):
+                prompt = prompt_builder.build_review_prompt(301, "a" * 40, issue_number=42)
+        self.assertIn("repair_verification", prompt)
+        self.assertIn("Round 2", prompt)
+
+    def test_review_prompt_denies_exhausted_r2_state(self) -> None:
+        state = {
+            "kind": "agent-orchestrator-review-state",
+            "version": 3,
+            "issue_number": 42,
+            "pr_number": 301,
+            "review_protocol_version": "review-convergence.v1",
+            "review_mode": "repair_verification",
+            "review_round": 2,
+            "prior_reviewed_head": "c" * 40,
+            "head_sha": "a" * 40,
+            "verdict": "DECISION_REQUIRED",
+            "finding_ledger_digest": "",
+            "open_blocker_ids": ["B-1"],
+            "deferred_note_ids": [],
+            "autonomous_repairs_remaining": 0,
+            "stop_reason": "decision_required",
+        }
+
+        def fake_gh(*args, **kwargs):
+            if args[:2] == ("pr", "view") and "number,headRefOid,baseRefOid" in args:
+                return json.dumps({"number": 301, "headRefOid": "a" * 40, "baseRefOid": "b" * 40})
+            if args[:2] == ("pr", "diff"):
+                return "diff content"
+            if args[:2] == ("issue", "view"):
+                return json.dumps({
+                    "comments": [{
+                        "author": {"login": "github-actions[bot]"},
+                        "body": json.dumps(state),
+                        "createdAt": "2026-08-29T00:00:00Z",
+                    }]
+                })
+            return json.dumps({"title": "test", "body": "test", "files": [], "reviews": [], "comments": []})
+
+        with mock.patch.object(
+            prompt_builder,
+            "generate_fresh_capsule",
+            return_value=self._minimal_capsule(),
+        ):
+            with mock.patch.object(prompt_builder, "_gh", side_effect=fake_gh):
+                with self.assertRaisesRegex(ValueError, "human_authority"):
+                    prompt_builder.build_review_prompt(301, "a" * 40, issue_number=42)
+
     def test_head_mismatch_refuses_prompt(self) -> None:
         with mock.patch.object(
             prompt_builder,

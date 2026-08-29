@@ -582,6 +582,7 @@ class StewardFaultTests(unittest.TestCase):
             worktree_writable=False,
         )
         worktree_index = command.index(str(self.root))
+        self.assertEqual(command[0], "/usr/bin/bwrap")
         self.assertEqual(command[worktree_index - 1], "--ro-bind")
         self.assertNotIn(("--ro-bind", "/etc", "/etc"), zip(command, command[1:], command[2:]))
 

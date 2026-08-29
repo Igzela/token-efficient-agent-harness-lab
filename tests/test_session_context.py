@@ -117,6 +117,8 @@ def packet_binding(**overrides) -> dict:
         "packet_sha256": "c" * 64,
         "allowed_paths": ["scripts/", "tests/", "docs/"],
         "execution_authorized": True,
+        "forbidden_next_actions": ["Do not start a successor packet."],
+        "dispatch_lane": "provider_free_local",
     }
     value.update(overrides)
     return value
@@ -853,6 +855,30 @@ class CheckpointTests(unittest.TestCase):
             )
         self.assertEqual(stable["verification_results"][0]["status"], "PASS")
         self.assertNotIn("shell", runner.call_args.kwargs)
+
+    def test_auto_checkpoint_requires_exact_packet_capsule_binding(self):
+        packet = packet_binding(
+            forbidden_next_actions=["Do not start a successor packet."],
+            dispatch_lane="provider_free_local",
+        )
+        cases = (
+            (dispatch_capsule(packet_id="OTHER-PACKET-1"), "dispatch_binding_invalid"),
+            (dispatch_capsule(packet_state="IN_PROGRESS"), "dispatch_binding_invalid"),
+            (dispatch_capsule(dispatch_lane="other_lane"), "dispatch_binding_invalid"),
+            (dispatch_capsule(allowed_paths=["docs/"]), "dispatch_scope_binding_invalid"),
+            (dispatch_capsule(forbidden_next_actions=[]), "dispatch_forbidden_binding_invalid"),
+        )
+        for capsule, reason in cases:
+            with self.subTest(reason=reason):
+                with self.assertRaisesRegex(
+                    session_context.SessionContextError, reason
+                ):
+                    session_context.build_auto_checkpoint(
+                        snapshot=checkout_snapshot(),
+                        packet=packet,
+                        dispatch_capsule=capsule,
+                        role="coding",
+                    )
 
     def test_non_coding_entries_never_receive_checkpoint_commands(self):
         snapshot = checkout_snapshot(

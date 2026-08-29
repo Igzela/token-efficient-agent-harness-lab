@@ -296,29 +296,11 @@ def observe_open_frontiers(
 
     packet_id = packet.get("packet")
     if not packet_id:
-        if len(frontiers) == 1:
-            return {
-                **unavailable,
-                "availability": "confirmed",
-                "source": "github_rest",
-                "active_pr_number": frontiers[0]["pr"],
-                "binding": "single_open_pr_fallback",
-                "warning": None,
-                "open_frontiers": frontiers,
-            }
-        if len(frontiers) > 1:
-            return {
-                **unavailable,
-                "availability": "conflict",
-                "source": "github_rest",
-                "warning": "multiple_open_prs_without_canonical_packet",
-                "open_frontiers": frontiers,
-            }
         return {
             **unavailable,
-            "availability": "confirmed",
+            "availability": "unavailable",
             "source": "github_rest",
-            "warning": None,
+            "warning": "canonical_packet_missing",
             "open_frontiers": frontiers,
         }
 

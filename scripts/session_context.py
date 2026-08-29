@@ -1526,6 +1526,7 @@ def build_auto_checkpoint(
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
     packet_model = PacketBinding.from_wire(packet, require_checkpoint=True)
     capsule = _canonical_dispatch_capsule(dispatch_capsule)
+    _bind_dispatch_capsule(packet_model, capsule)
     if role != "coding":
         raise SessionContextError("checkpoint_auto_role_invalid")
     return _build_auto_checkpoint(
@@ -1561,6 +1562,7 @@ def build_stable_auto_checkpoint(
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
     packet_model = PacketBinding.from_wire(packet, require_checkpoint=True)
     capsule = _canonical_dispatch_capsule(dispatch_capsule)
+    _bind_dispatch_capsule(packet_model, capsule)
     if role != "coding":
         raise SessionContextError("checkpoint_auto_role_invalid")
     parsed = [_safe_verification_argv(check) for check in capsule["verification"]]
@@ -1781,8 +1783,7 @@ def classify_resume(
             "Refresh the accepted dispatch contract before resuming any work.",
         )
     capsule = _canonical_dispatch_capsule(dispatch_capsule)
-    if capsule.get("packet_id") != packet_model.packet_id:
-        raise SessionContextError("dispatch_binding_invalid")
+    _bind_dispatch_capsule(packet_model, capsule)
     required = list(
         _bounded_string_list(capsule["verification"], "verification", max_items=50)
     )
@@ -1995,6 +1996,34 @@ def _canonical_dispatch_capsule(value: object) -> dict[str, object]:
     return capsule
 
 
+def _bind_dispatch_capsule(
+    packet: PacketBinding, capsule: dict[str, object]
+) -> None:
+    """Require an executable capsule to preserve its packet's exact scope."""
+
+    if (
+        capsule.get("packet_id") != packet.packet_id
+        or capsule.get("packet_state") != packet.state
+        or packet.dispatch_lane is None
+        or capsule.get("dispatch_lane") != packet.dispatch_lane
+    ):
+        raise SessionContextError("dispatch_binding_invalid")
+    capsule_allowed = tuple(
+        _dispatch_path_list(capsule["allowed_paths"], "dispatch_allowed_paths")
+    )
+    if capsule_allowed != packet.allowed_paths:
+        raise SessionContextError("dispatch_scope_binding_invalid")
+    capsule_forbidden = tuple(
+        _bounded_string_list(
+            capsule["forbidden_next_actions"],
+            "dispatch_forbidden_next_actions",
+            allow_empty=True,
+        )
+    )
+    if capsule_forbidden != packet.forbidden_next_actions:
+        raise SessionContextError("dispatch_forbidden_binding_invalid")
+
+
 def build_session_entry(
     *,
     contract: RouteContract,
@@ -2026,6 +2055,8 @@ def build_session_entry(
         if dispatch_capsule is None
         else _canonical_dispatch_capsule(dispatch_capsule)
     )
+    if capsule is not None and packet_model.checkpoint_allowed:
+        _bind_dispatch_capsule(packet_model, capsule)
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
     checkpoint_model = (
         SessionCheckpoint.from_wire(checkpoint) if checkpoint is not None else None
