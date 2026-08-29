@@ -76,3 +76,39 @@ Lease management strictly separates claim, execution, and settlement:
 Target repository output operations strictly disallow operating directly on the default branch:
 - Work is staged and validated in dedicated detached worktrees on isolated feature branches (`agent/*` or `acp/*`).
 - Default branch push is prohibited; changes are exported as patches or Draft PRs requiring explicit verification.
+
+## Final Change Impact Map
+
+The final migration boundary keeps five owners explicit. Calls cross these
+boundaries through typed APIs or bounded adapters; ownership does not move with
+the call.
+
+```mermaid
+flowchart LR
+    SCHED["Scheduler\nclaim / execute / settle"] -->|lease transaction| STORE["LocalProductStore\npersistence and audit"]
+    API["HTTP/API handlers"] -->|typed transaction views| STORE
+    POLICY["ToolPolicy\nregistry + policy snapshots"] -->|validated policy data| STORE
+    TASK["ProductTask\nintake + output gate"] -->|workspace-bound output| TARGET["Dedicated branch worktree"]
+    STEWARD["agent-control\nSteward outer loop"] -->|repo-maintenance PR/review/CI| GIT["GitHub repository"]
+    STEWARD -. must not own .-> STORE
+    STEWARD -. must not own .-> SCHED
+    TASK -->|effect envelope / settlement| STORE
+```
+
+| Owner | Canonical calls and dependencies | Downstream impact | Acceptance invariant and evidence |
+|---|---|---|---|
+| **Store** | `LocalProductStore::with_transaction` and domain views under `engine/src/storage/local_product_store/` | SQLite/PostgreSQL persistence, audit, idempotency, effects, ProductTask state | One persistent owner for effects and receipts; `managed_acceptance` and PostgreSQL parity tests |
+| **Scheduler** | `workflow_runs` uses `queue_lease` for claim, calls the external executor, then records settlement | Admission, concurrency, leases, retries, pause/kill, and run state | Claim transaction commits before external execution; settlement is a later transaction; scheduler/store tests |
+| **ToolPolicy** | `tool_execution_policy`, `tool_registry`, and authenticated policy handlers | Capability, allowlist, hook validation, and execution gating | Policy mutations are hash-bound and audited by Store; tool registry and API policy tests |
+| **ProductTask** | `product_tasks` transaction view, product-task handlers, and `target_repo_output` | Product intake, approval/output gates, workspace-bound patch export | Target default branch is never a workspace; target-output and golden-path recovery tests |
+| **agent-control** | `steward.py`, `steward_service.py`, `steward_journal.py`, `steward_workers.py`, `steward_github.py`, `mission_contract.py` | Repository-maintenance missions, stages, WorkCards, reviews, and PR integration | Provider-free outer loop stops at the repository PR boundary and does not import or persist ProductStore runtime state |
+
+### PR7 Acceptance Record
+
+The final non-regression check is provider-free and read-only outside the
+repository's normal test/build outputs. It verifies the five invariants above,
+the complete canonical CI matrix, exact-head review, rollback evidence, and
+single-writer evidence. A residual scan must find no second owner, unwired
+canonical path, test-only substitute promoted as runtime, dead legacy control
+plane, or duplicate governance owner. The accepted PR7 head and its CI/review
+receipts are the authoritative evidence; this map is explanatory only.

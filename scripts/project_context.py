@@ -39,34 +39,6 @@ CANONICAL_DOCUMENT_PATHS = (
     "docs/ROADMAP.md",
     "docs/RUNBOOK.md",
 )
-# PR6 is based on the last accepted tree that still has the consolidated
-# documents' predecessors.  This read-only bridge is deliberately pinned to
-# that exact base and has a hard sunset; it becomes unreachable after PR6 is
-# accepted and never reads the working tree or grants execution.
-ACCEPTED_DOCUMENT_COMPATIBILITY_BASE_SHA = "f73ad914675d4c561c64517e3b87412d5cb992a3"
-ACCEPTED_DOCUMENT_COMPATIBILITY_EXPIRES_AT = "2026-09-06T00:00:00Z"
-ACCEPTED_DOCUMENT_COMPATIBILITY = {
-    "docs/ARCHITECTURE.md": "docs/ARCHITECTURE_BOOK.md",
-    "docs/AUTONOMY.md": "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
-    "docs/ROADMAP.md": "docs/FUTURE_ROUTE.md",
-}
-
-
-def accepted_document_compatibility_path(
-    baseline: dict[str, Any], path: str
-) -> str | None:
-    if baseline.get("sha") != ACCEPTED_DOCUMENT_COMPATIBILITY_BASE_SHA:
-        return None
-    try:
-        expires_at = datetime.fromisoformat(
-            ACCEPTED_DOCUMENT_COMPATIBILITY_EXPIRES_AT.replace("Z", "+00:00")
-        )
-    except ValueError:
-        return None
-    if datetime.now(timezone.utc) >= expires_at:
-        return None
-    return ACCEPTED_DOCUMENT_COMPATIBILITY.get(path)
-
 # Logical required check names. These are the canonical names used in the matrix.
 REQUIRED_CI_CHECKS = (
     "python-tests",
@@ -478,10 +450,6 @@ def canonical_documents(baseline: dict[str, Any], *, offline: bool) -> dict[str,
     documents: dict[str, str] = {}
     for path in CANONICAL_DOCUMENT_PATHS:
         content = git_show_text(sha, path)
-        if not content:
-            compatibility_path = accepted_document_compatibility_path(baseline, path)
-            if compatibility_path:
-                content = git_show_text(sha, compatibility_path)
         documents[path] = content
     if any(not content for content in documents.values()):
         return unavailable
