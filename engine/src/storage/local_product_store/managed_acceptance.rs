@@ -5366,6 +5366,19 @@ impl LocalProductStore {
                     ],
                 )
                 .map_err(|e| e.to_string())?;
+                append_effect_audit_pg(
+                    &mut tx,
+                    &now,
+                    principal_id.as_deref().unwrap_or("system"),
+                    "managed_acceptance.decision_upsert",
+                    &decision_id,
+                    &json!({
+                        "decision_body_sha256": decision_body_sha256,
+                        "status": status,
+                        "tenant_id": tenant_id,
+                        "expires_at": expires_at,
+                    }),
+                )?;
                 let row = load_decision_pg(&mut tx, &decision_id)?;
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(row)
@@ -5905,7 +5918,6 @@ impl LocalProductStore {
                     &parent,
                     &decision,
                     principal,
-                    &now,
                 )?;
                 if evidence
                     .pointer("/evidence/child_authorization_id")
@@ -6047,7 +6059,6 @@ impl LocalProductStore {
                     &parent,
                     &decision,
                     principal,
-                    &now,
                 )?;
                 if evidence
                     .pointer("/evidence/child_authorization_id")
@@ -6468,7 +6479,17 @@ impl LocalProductStore {
                     &now,
                     "risk_authorization_revoked",
                 )?;
-                let _ = transition;
+                append_effect_audit_pg(
+                    &mut tx,
+                    &now,
+                    &principal.principal_id,
+                    "managed_acceptance.risk_auth_revoked",
+                    authorization_id,
+                    &json!({
+                        "decision_id": decision_id,
+                        "status_transition": transition,
+                    }),
+                )?;
                 let row = load_authorization_pg(&mut tx, authorization_id)?;
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(row)
@@ -8085,7 +8106,7 @@ fn accept_on_pg(
         ],
     )
     .map_err(|e| e.to_string())?;
-    let _transition = persist_transition_pg(
+    let transition = persist_transition_pg(
         tx,
         decision,
         "draft_pending_operator",
@@ -8093,6 +8114,19 @@ fn accept_on_pg(
         principal,
         now,
         "risk_acknowledgement_accepted",
+    )?;
+    append_effect_audit_pg(
+        tx,
+        now,
+        &principal.principal_id,
+        "managed_acceptance.decision_accepted",
+        &request.decision_id,
+        &json!({
+            "authorization_id": auth_id,
+            "authorization_sha256": authorization_sha256,
+            "execution_granted": false,
+            "status_transition": transition,
+        }),
     )?;
     load_authorization_pg(tx, &auth_id)
 }
@@ -9325,7 +9359,6 @@ fn validate_effect_child_for_settlement(
     parent_authorization: &Value,
     decision: &Value,
     principal: &AuthenticatedPrincipal,
-    now: &str,
 ) -> Result<(Value, EffectEnvelopeContract), String> {
     if spend.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id.as_str())
         || spend.get("principal_id").and_then(Value::as_str)
@@ -9368,8 +9401,22 @@ fn validate_effect_child_for_settlement(
     let decision_body = decision
         .get("body_json")
         .ok_or("effect parent decision body is missing")?;
-    let envelope =
-        validate_effect_envelope_body(decision_body, principal.tenant_id.as_str(), None, now)?;
+    // Settlement is terminal reconciliation for an already-derived child. It
+    // must retain a definitive or unknown outcome after the authorization
+    // window closes; expiry is enforced at parent/child derivation instead.
+    let envelope_hint: EffectEnvelopeContract = serde_json::from_value(
+        decision_body
+            .get("effect_envelope")
+            .cloned()
+            .ok_or("effect parent decision has no effect envelope")?,
+    )
+    .map_err(|error| format!("effect parent envelope is malformed: {error}"))?;
+    let envelope = validate_effect_envelope_body(
+        decision_body,
+        principal.tenant_id.as_str(),
+        None,
+        &envelope_hint.created_at,
+    )?;
     if parent_authorization
         .get("principal_id")
         .and_then(Value::as_str)
@@ -14470,7 +14517,7 @@ mod tests {
     }
 
     #[test]
-    fn effect_child_settlement_rejects_expired_envelope() {
+    fn effect_child_settlement_retains_terminal_evidence_after_expiry() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("effect-expiry.db");
         let early = LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
@@ -14501,7 +14548,19 @@ mod tests {
 
         let late = LocalProductStore::new_with_clock(&path, || "2026-07-25T14:00:00Z".to_string())
             .unwrap();
-        let error = late
+        assert!(late
+            .derive_effect_child_authorization(
+                &principal,
+                parent_id,
+                &effect_child_for(
+                    "effect-expiry-settlement-new-child",
+                    "effect-expiry-settlement-new-operation",
+                    0.01,
+                    "2026-07-25T14:30:00Z",
+                ),
+            )
+            .is_err());
+        let settled = late
             .settle_effect_child_authorization(
                 &principal,
                 "effect-expiry-settlement-child",
@@ -14509,8 +14568,9 @@ mod tests {
                 EFFECT_OUTCOME_UNKNOWN,
                 &effect_evidence("effect-expiry-settlement-child", false),
             )
-            .unwrap_err();
-        assert!(error.contains("expired"), "{error}");
+            .unwrap();
+        assert_eq!(settled["status"], EFFECT_OUTCOME_UNKNOWN);
+        assert_eq!(settled["terminal_class"], "effect_outcome_unknown");
     }
 
     #[cfg(feature = "pg-tests")]
