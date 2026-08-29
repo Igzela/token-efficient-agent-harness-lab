@@ -237,6 +237,7 @@ def reconcile_stage_pr(
 
 REQUIRED_CI_JOBS = frozenset({
     "docker-build",
+    "exact-head-check",
     "native-runtime",
     "pg-integration-tests",
     "python-tests",
@@ -245,6 +246,10 @@ REQUIRED_CI_JOBS = frozenset({
     "typescript-tests",
     "context-capsule",
 })
+CI_CHECK_ALIASES = {
+    "exact-head": "exact-head-check",
+    "exact-head-check": "exact-head-check",
+}
 
 
 MAX_GRAPHQL_PAGES = 20
@@ -531,7 +536,9 @@ class GhReadOnlyGitHub:
             }
             required_jobs = set(REQUIRED_CI_JOBS)
             observed_names = {
-                item.get("name") for item in check_items if isinstance(item.get("name"), str)
+                CI_CHECK_ALIASES.get(item["name"], item["name"])
+                for item in check_items
+                if isinstance(item.get("name"), str)
             }
             if "FAILURE" in conclusions or "CANCELLED" in conclusions:
                 ci_state = "FAIL"

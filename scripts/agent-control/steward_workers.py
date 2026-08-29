@@ -26,7 +26,7 @@ import mission_contract
 import review_convergence
 from review_loop.locking import ChatLock, LockBusy
 
-MAX_ACTIVE_WORKERS = 4
+MAX_ACTIVE_WORKERS = 2
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")

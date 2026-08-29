@@ -337,13 +337,25 @@ def _bounded_process(
         stdout, stderr = process.communicate(timeout=timeout_seconds)
         return process.returncode, stdout[-4000:], stderr[-4000:]
     except subprocess.TimeoutExpired:
+        import os
+        import signal
+
+        # A timeout is still a normal, bounded worker outcome.  Terminate the
+        # whole session, then communicate again so the child is reaped and
+        # both PIPE file handles are closed before returning to the caller.
         try:
-            import os
-            import signal
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        except Exception:
-            pass
-        return 124, "", ""
+            os.killpg(process.pid, signal.SIGTERM)
+        except OSError:
+            process.terminate()
+        try:
+            stdout, stderr = process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                process.kill()
+            stdout, stderr = process.communicate()
+        return 124, stdout[-4000:], stderr[-4000:]
 
 
 def _candidate_patch_sha256(worktree: Path) -> str:

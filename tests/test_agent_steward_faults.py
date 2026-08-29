@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 from unittest import mock
 
 
@@ -728,6 +729,7 @@ class StewardFaultTests(unittest.TestCase):
                             "rust-tests",
                             "rust-typescript-cutover",
                             "typescript-tests",
+                            "exact-head",
                             "context-capsule",
                         )
                     ],
@@ -756,6 +758,7 @@ class StewardFaultTests(unittest.TestCase):
                             "rust-tests",
                             "rust-typescript-cutover",
                             "typescript-tests",
+                            "exact-head",
                             "context-capsule",
                         )
                     ],
@@ -784,6 +787,38 @@ class StewardFaultTests(unittest.TestCase):
             run.return_value.stderr = ""
             observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
         self.assertEqual(observed["review_state"], "PENDING")
+
+    def test_github_reader_requires_exact_head_job(self):
+        reader = steward_github.GhReadOnlyGitHub()
+        payload = {
+            "state": "OPEN",
+            "isDraft": False,
+            "mergedAt": None,
+            "baseRefName": "main",
+            "headRefName": "agent/steward-card",
+            "baseRefOid": BASE,
+            "headRefOid": HEAD,
+            "statusCheckRollup": [],
+            "reviewDecision": "",
+        }
+        payload["statusCheckRollup"] = [
+            {
+                "name": name,
+                "conclusion": "SUCCESS",
+                "status": "COMPLETED",
+            }
+            for name in steward_github.REQUIRED_CI_JOBS
+            if name != "exact-head-check"
+        ]
+        payload["reviewDecision"] = ""
+        with mock.patch("steward_github.subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = json.dumps(payload)
+            run.return_value.stderr = ""
+            observed = reader.fetch_stage_pr(
+                "Igzela/token-efficient-agent-harness-lab", 7
+            )
+        self.assertEqual(observed["ci_state"], "UNKNOWN")
 
     def test_review_authority_fails_closed_when_live_review_facts_are_unavailable(self):
         with mock.patch.object(
@@ -847,6 +882,7 @@ class StewardFaultTests(unittest.TestCase):
                     "rust-tests",
                     "rust-typescript-cutover",
                     "typescript-tests",
+                    "exact-head",
                     "context-capsule",
                 )
             ],
@@ -1043,7 +1079,9 @@ Unresolved objections: none
             lambda _context: ["/usr/bin/python3", "-c", "import time; time.sleep(2)"],
             timeout_seconds=1,
         )
-        result = worker.run(context)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ResourceWarning)
+            result = worker.run(context)
         self.assertEqual(result.status, "TIMEOUT")
 
     def test_bounded_process_worker_imports_commit_from_private_git_view(self):

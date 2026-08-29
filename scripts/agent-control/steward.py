@@ -27,7 +27,7 @@ import worktree_manager
 
 
 SHA40 = workers.SHA40
-MAX_CONCURRENCY = 4
+MAX_CONCURRENCY = 2
 RETRYABLE_WORKER_STATUSES = frozenset({"FAIL", "TIMEOUT"})
 RECOVERY_STATES = frozenset({"RUNNING", "VERIFYING", "REVIEWING", "OUTCOME_UNKNOWN"})
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")

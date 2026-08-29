@@ -73,6 +73,10 @@ class StewardExecutionTests(unittest.TestCase):
             self.mock_worktree_branch,
         )
 
+    def test_outer_loop_capacity_is_canonical_k2(self):
+        self.assertEqual(steward.MAX_CONCURRENCY, 2)
+        self.assertEqual(workers.MAX_ACTIVE_WORKERS, 2)
+
     def review(
         self,
         *,
