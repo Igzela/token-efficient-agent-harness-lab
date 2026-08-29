@@ -844,6 +844,7 @@ def _sandbox_command(
     args = [
         str(bubblewrap),
         "--die-with-parent",
+        "--unshare-user",
         "--unshare-net",
         "--unshare-pid",
         "--clearenv",
