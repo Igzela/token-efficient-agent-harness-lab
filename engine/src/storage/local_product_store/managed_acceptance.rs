@@ -20,6 +20,7 @@ use uuid::Uuid;
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::infrastructure::auth::{LOCAL_BOOTSTRAP_API_KEY_ID, LOCAL_BOOTSTRAP_TENANT_ID};
 use crate::node_executor::ProcessOutcome;
+use crate::provider::redaction::contains_sensitive_patterns;
 
 /// Required scopes for managed-acceptance authority operations.
 pub const SCOPE_RISK_ACKNOWLEDGE: &str = "managed_acceptance:risk_acknowledge";
@@ -232,7 +233,202 @@ pub const DELEGATION_SCHEMA_VERSION: &str = "managed_autonomous_delegation.v1";
 pub const FINAL_MANIFEST_SCHEMA_VERSION: &str = "managed_final_execution_manifest.v1";
 pub const DELEGATED_ARTIFACT_CONFIRMATION_SCHEMA_VERSION: &str =
     "managed_delegated_artifact_confirmation.v1";
+/// Immutable parent authority for an external effect.  The parent is stored
+/// in the existing managed-acceptance decision owner; this packet adds no
+/// second effect ledger or authority store.
+pub const EFFECT_ENVELOPE_SCHEMA_VERSION: &str = "managed_effect_envelope.v1";
+/// One-use child authority derived from an accepted effect envelope.  It is
+/// persisted in the existing managed-acceptance spend owner.
+pub const EFFECT_CHILD_AUTHORIZATION_SCHEMA_VERSION: &str = "managed_effect_child_authorization.v1";
+/// A possible-send effect is terminally uncertain and never retryable.
+pub const EFFECT_OUTCOME_UNKNOWN: &str = "outcome_unknown";
+/// The parent approval phrase is fixed by the store contract, not supplied as
+/// an authority-bearing free-form scope by a caller.
+pub const EFFECT_ENVELOPE_APPROVAL_PHRASE: &str = "APPROVE_MANAGED_EFFECT_ENVELOPE_V1";
+const MAX_EFFECT_CHILD_AUTHORIZATIONS: u64 = 64;
+const MAX_EFFECT_OUTCOME_EVIDENCE_BYTES: usize = 2048;
 const DELEGATED_MANIFEST_APPROVAL_SCHEMA_VERSION: &str = "managed_delegated_manifest_approval.v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EffectEnvelopeContract {
+    pub schema_version: String,
+    pub decision_id: String,
+    pub envelope_id: String,
+    pub owner_principal_id: String,
+    pub effect_kind: String,
+    pub target_repository: String,
+    pub target_main_sha: String,
+    pub max_total_cost_usd: f64,
+    pub max_child_authorizations: u64,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+impl EffectEnvelopeContract {
+    pub fn validate(&self, now: &str) -> Result<(), String> {
+        if self.schema_version != EFFECT_ENVELOPE_SCHEMA_VERSION {
+            return Err("unsupported effect envelope schema_version".into());
+        }
+        for (name, value) in [
+            ("decision_id", self.decision_id.as_str()),
+            ("envelope_id", self.envelope_id.as_str()),
+            ("owner_principal_id", self.owner_principal_id.as_str()),
+            ("effect_kind", self.effect_kind.as_str()),
+            ("target_repository", self.target_repository.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("effect envelope {name} is required"));
+            }
+            if value.chars().count() > 256 {
+                return Err(format!("effect envelope {name} is too long"));
+            }
+        }
+        if self.effect_kind == EFFECT_OUTCOME_UNKNOWN {
+            return Err("effect envelope effect_kind cannot be outcome_unknown".into());
+        }
+        if (self.target_main_sha.len() != 40 && self.target_main_sha.len() != 64)
+            || !self.target_main_sha.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            return Err("effect envelope target_main_sha must be a 40- or 64-hex identity".into());
+        }
+        if !self.max_total_cost_usd.is_finite() || self.max_total_cost_usd < 0.0 {
+            return Err(
+                "effect envelope max_total_cost_usd must be finite and non-negative".into(),
+            );
+        }
+        if self.max_child_authorizations == 0
+            || self.max_child_authorizations > MAX_EFFECT_CHILD_AUTHORIZATIONS
+        {
+            return Err(format!(
+                "effect envelope max_child_authorizations must be between 1 and {MAX_EFFECT_CHILD_AUTHORIZATIONS}"
+            ));
+        }
+        let created_at = parse_rfc3339_utc("created_at", &self.created_at)?;
+        let created_canonical = created_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        if created_canonical != self.created_at {
+            return Err("effect envelope created_at must use canonical UTC form".into());
+        }
+        let expires_at = require_finite_expiry(Some(&self.expires_at))?;
+        if expires_at != self.expires_at {
+            return Err("effect envelope expires_at must use canonical UTC form".into());
+        }
+        let now = parse_rfc3339_utc("now", now)?;
+        if created_at > now {
+            return Err("effect envelope created_at cannot be after store time".into());
+        }
+        let expires_at_dt = parse_rfc3339_utc("expires_at", &expires_at)?;
+        if expires_at_dt <= created_at {
+            return Err("effect envelope expires_at must be after created_at".into());
+        }
+        if is_at_or_before(&expires_at, &now.format("%Y-%m-%dT%H:%M:%SZ").to_string())? {
+            return Err("effect envelope is expired".into());
+        }
+        Ok(())
+    }
+
+    pub fn body(&self) -> Value {
+        let value = serde_json::to_value(self).expect("effect envelope serializes");
+        sort_value(&value)
+    }
+
+    pub fn sha256(&self) -> Result<String, String> {
+        Ok(sha256_hex(canonical_json(&self.body())?.as_bytes()))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EffectChildAuthorizationRequest {
+    pub child_authorization_id: String,
+    pub operation_id: String,
+    pub effect_kind: String,
+    pub target_repository: String,
+    pub target_main_sha: String,
+    pub max_cost_usd: f64,
+    pub expires_at: String,
+}
+
+impl EffectChildAuthorizationRequest {
+    fn validate_against(
+        &self,
+        parent: &EffectEnvelopeContract,
+        now: &str,
+    ) -> Result<String, String> {
+        for (name, value) in [
+            (
+                "child_authorization_id",
+                self.child_authorization_id.as_str(),
+            ),
+            ("operation_id", self.operation_id.as_str()),
+            ("effect_kind", self.effect_kind.as_str()),
+            ("target_repository", self.target_repository.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("effect child {name} is required"));
+            }
+            if value.chars().count() > 256 {
+                return Err(format!("effect child {name} is too long"));
+            }
+        }
+        if self.effect_kind != parent.effect_kind {
+            return Err("effect child kind exceeds or differs from parent envelope".into());
+        }
+        if self.target_repository != parent.target_repository
+            || self.target_main_sha != parent.target_main_sha
+        {
+            return Err("effect child target does not exactly match parent envelope".into());
+        }
+        if !self.max_cost_usd.is_finite()
+            || self.max_cost_usd < 0.0
+            || self.max_cost_usd > parent.max_total_cost_usd
+        {
+            return Err("effect child cost exceeds parent envelope".into());
+        }
+        let expires_at = require_finite_expiry(Some(&self.expires_at))?;
+        let parent_expires_at = require_finite_expiry(Some(&parent.expires_at))?;
+        if expires_at > parent_expires_at {
+            return Err("effect child expiry exceeds parent envelope".into());
+        }
+        if is_at_or_before(&expires_at, now)? {
+            return Err("effect child is expired".into());
+        }
+        Ok(expires_at)
+    }
+}
+
+fn validate_effect_envelope_body(
+    body: &Value,
+    tenant_id: &str,
+    principal: Option<&AuthenticatedPrincipal>,
+    now: &str,
+) -> Result<EffectEnvelopeContract, String> {
+    if body.get("schema_version").and_then(Value::as_str) != Some(EFFECT_ENVELOPE_SCHEMA_VERSION) {
+        return Err("effect envelope body schema_version is invalid".into());
+    }
+    if body.get("status").and_then(Value::as_str) != Some("draft_pending_operator") {
+        return Err("effect envelope body must be a draft before owner acceptance".into());
+    }
+    let envelope: EffectEnvelopeContract = serde_json::from_value(
+        body.get("effect_envelope")
+            .cloned()
+            .ok_or("effect envelope body is missing effect_envelope")?,
+    )
+    .map_err(|error| format!("effect envelope body is malformed: {error}"))?;
+    envelope.validate(now)?;
+    if body.get("decision_id").and_then(Value::as_str) != Some(envelope.decision_id.as_str()) {
+        return Err("effect envelope decision_id is not bound to its decision body".into());
+    }
+    if let Some(principal) = principal {
+        if principal.tenant_id != tenant_id {
+            return Err("effect envelope principal tenant does not match decision tenant".into());
+        }
+        if principal.principal_id != envelope.owner_principal_id {
+            return Err(
+                "effect envelope owner principal does not match authenticated owner".into(),
+            );
+        }
+    }
+    Ok(envelope)
+}
 
 type DelegatedSpendSqliteRow = (
     String,
@@ -5007,16 +5203,21 @@ impl LocalProductStore {
                     .to_string(),
             );
         }
+        let now = self.now();
         // Require acknowledgement phrase embedded for store-derived accept.
         let _ = body
             .pointer("/acknowledgement/required_phrase")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .ok_or("decision body must embed acknowledgement.required_phrase")?;
-        let trial = body
-            .get("trial_envelope")
-            .ok_or("decision body must embed trial_envelope")?;
-        validate_trial_envelope_shape(trial)?;
+        if body.get("effect_envelope").is_some() {
+            validate_effect_envelope_body(&body, tenant_id, principal, &now)?;
+        } else {
+            let trial = body
+                .get("trial_envelope")
+                .ok_or("decision body must embed trial_envelope")?;
+            validate_trial_envelope_shape(trial)?;
+        }
         let invalidation_state = body
             .get("invalidation_state")
             .and_then(Value::as_str)
@@ -5044,9 +5245,17 @@ impl LocalProductStore {
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| format!("mad-{}", Uuid::new_v4()));
-        let now = self.now();
         if !is_strictly_after(&expires_at, &now)? {
             return Err("decision expires_at must be strictly after store clock now".into());
+        }
+        if let Some(effect) = body.get("effect_envelope") {
+            let effect_expires_at = effect
+                .get("expires_at")
+                .and_then(Value::as_str)
+                .ok_or("effect envelope expires_at is missing")?;
+            if require_finite_expiry(Some(effect_expires_at))? != expires_at {
+                return Err("effect envelope expiry does not match decision expiry".into());
+            }
         }
         let principal_kind = principal
             .map(|p| p.principal_kind.as_str().to_string())
@@ -5157,12 +5366,91 @@ impl LocalProductStore {
                     ],
                 )
                 .map_err(|e| e.to_string())?;
+                append_effect_audit_pg(
+                    &mut tx,
+                    &now,
+                    principal_id.as_deref().unwrap_or("system"),
+                    "managed_acceptance.decision_upsert",
+                    &decision_id,
+                    &json!({
+                        "decision_body_sha256": decision_body_sha256,
+                        "status": status,
+                        "tenant_id": tenant_id,
+                        "expires_at": expires_at,
+                    }),
+                )?;
                 let row = load_decision_pg(&mut tx, &decision_id)?;
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(row)
             }),
         }?;
         Ok(row)
+    }
+
+    /// Persist an immutable parent effect envelope as a managed-acceptance
+    /// decision draft. The caller must be the owner recorded in the envelope;
+    /// acceptance remains a separate, explicit operation below.
+    pub fn persist_effect_envelope(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        envelope: &EffectEnvelopeContract,
+        residual_finding_sha256: &str,
+    ) -> Result<Value, String> {
+        principal.require_scope(SCOPE_RISK_ACKNOWLEDGE)?;
+        principal.require_scope(SCOPE_SPEND_AUTHORIZE)?;
+        if matches!(principal.principal_kind(), PrincipalKind::FixturePrincipal) {
+            return Err("fixture principal cannot persist a production effect envelope".into());
+        }
+        if envelope.owner_principal_id != principal.principal_id {
+            return Err("effect envelope owner principal mismatch".into());
+        }
+        let now = self.now();
+        envelope.validate(&now)?;
+        let body = sort_value(&json!({
+            "schema_version": EFFECT_ENVELOPE_SCHEMA_VERSION,
+            "decision_id": envelope.decision_id,
+            "status": "draft_pending_operator",
+            "invalidation_state": "none",
+            "acknowledgement": {
+                "required_phrase": EFFECT_ENVELOPE_APPROVAL_PHRASE
+            },
+            "effect_envelope": envelope.body()
+        }));
+        self.upsert_managed_acceptance_decision(
+            principal.tenant_id.as_str(),
+            &body,
+            residual_finding_sha256,
+            "draft_pending_operator",
+            Some(principal),
+            Some(envelope.expires_at.as_str()),
+        )
+    }
+
+    /// Owner approval for a parent effect envelope. This only creates the
+    /// existing risk acknowledgement receipt; it grants no child or execution
+    /// authority until a separate child derivation call succeeds.
+    pub fn approve_effect_envelope(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        envelope: &EffectEnvelopeContract,
+        residual_finding_sha256: &str,
+    ) -> Result<Value, String> {
+        let decision =
+            self.persist_effect_envelope(principal, envelope, residual_finding_sha256)?;
+        let decision_body_sha256 = decision
+            .get("decision_body_sha256")
+            .and_then(Value::as_str)
+            .ok_or("effect envelope decision hash is missing")?;
+        self.accept_managed_acceptance_decision(
+            principal,
+            &RiskAcknowledgementRequest {
+                decision_id: envelope.decision_id.clone(),
+                expected_decision_body_sha256: decision_body_sha256.to_string(),
+                expected_residual_finding_sha256: residual_finding_sha256.to_string(),
+                submitted_phrase: EFFECT_ENVELOPE_APPROVAL_PHRASE.to_string(),
+                explicit_go: true,
+            },
+        )
     }
 
     /// Store-derived risk acceptance. Scope and expiry come from the persisted decision only.
@@ -5245,6 +5533,655 @@ impl LocalProductStore {
                 )
                 .map_err(|e| e.to_string())?;
                 let row = issue_spend_pg(&mut tx, principal, request, fixture_only, &now)?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(row)
+            }),
+        }
+    }
+
+    /// Derive one bounded, one-use child authorization from an owner-approved
+    /// parent effect envelope. This is a provider-free authority operation:
+    /// it records a child receipt but never executes the effect it describes.
+    pub fn derive_effect_child_authorization(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        parent_authorization_id: &str,
+        request: &EffectChildAuthorizationRequest,
+    ) -> Result<Value, String> {
+        principal.require_scope(SCOPE_DELEGATED_EXECUTE)?;
+        principal.require_scope(SCOPE_ATTEMPT_ADMIT)?;
+        if matches!(principal.principal_kind(), PrincipalKind::FixturePrincipal) {
+            return Err("fixture principal cannot derive a production effect child".into());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|e| e.to_string())?;
+                let parent = load_authorization_sqlite(&tx, parent_authorization_id)?;
+                let decision_id = required_str(&parent, "decision_id")?;
+                let decision = load_decision_sqlite(&tx, &decision_id)?;
+                let envelope = effect_parent_from_authority(&parent, &decision, principal, &now)?;
+                let expires_at = request.validate_against(&envelope, &now)?;
+                let body = effect_child_body(
+                    principal,
+                    &parent,
+                    &decision,
+                    &envelope,
+                    request,
+                    &expires_at,
+                    &now,
+                )?;
+                let logical_authorization_sha256 = stable_spend_authorization_identity(&body)?;
+                let mut body = body;
+                body["logical_authorization_sha256"] =
+                    json!(logical_authorization_sha256.clone());
+                let body_sha256 = sha256_hex(canonical_json(&body)?.as_bytes());
+
+                let mut statement = tx
+                    .prepare(
+                        "SELECT spend_authorization_id, status, body_json
+                         FROM managed_acceptance_spend_authorizations
+                         WHERE risk_authorization_id=?1 AND decision_id=?2",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = statement
+                    .query_map(params![parent_authorization_id, decision_id], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?;
+                drop(statement);
+                let mut child_count = 0_u64;
+                let mut reserved_cost = 0.0_f64;
+                for (existing_id, status, encoded) in rows {
+                    let existing: Value = serde_json::from_str(&encoded)
+                        .map_err(|e| format!("persisted effect child body is invalid: {e}"))?;
+                    if existing.get("schema_version").and_then(Value::as_str)
+                        != Some(EFFECT_CHILD_AUTHORIZATION_SCHEMA_VERSION)
+                    {
+                        continue;
+                    }
+                    if existing.get("parent_envelope_id").and_then(Value::as_str)
+                        != Some(envelope.envelope_id.as_str())
+                    {
+                        continue;
+                    }
+                    child_count += 1;
+                    let existing_cost = existing
+                        .get("max_cost_usd")
+                        .and_then(Value::as_f64)
+                        .ok_or("persisted effect child max_cost_usd is missing")?;
+                    if !existing_cost.is_finite() || existing_cost < 0.0 {
+                        return Err("persisted effect child cost is invalid".into());
+                    }
+                    reserved_cost += existing_cost;
+                    if existing.get("child_authorization_id").and_then(Value::as_str)
+                        == Some(request.child_authorization_id.as_str())
+                    {
+                        if effect_child_replay_identity(&existing)?
+                            != effect_child_replay_identity(&body)?
+                        {
+                            return Err("effect child id is bound to a conflicting request".into());
+                        }
+                        if status != "active" {
+                            return Err("effect child is already consumed or terminal".into());
+                        }
+                        let spend = load_spend_sqlite(&tx, &existing_id)?;
+                        let receipt = effect_child_receipt(&spend, &existing, true)?;
+                        tx.commit().map_err(|e| e.to_string())?;
+                        return Ok(receipt);
+                    }
+                }
+                let unknown: Option<String> = tx
+                    .query_row(
+                        "SELECT a.attempt_id
+                         FROM managed_acceptance_attempts a
+                         JOIN managed_acceptance_spend_authorizations s
+                           ON s.spend_authorization_id=a.spend_authorization_id
+                         WHERE s.risk_authorization_id=?1 AND a.status='outcome_unknown'
+                         LIMIT 1",
+                        params![parent_authorization_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                if let Some(attempt_id) = unknown {
+                    return Err(format!(
+                        "effect parent has outcome_unknown attempt {attempt_id}; child derivation is not retryable"
+                    ));
+                }
+                if child_count >= envelope.max_child_authorizations {
+                    return Err("effect parent child-authorization limit exhausted".into());
+                }
+                if reserved_cost + request.max_cost_usd
+                    > envelope.max_total_cost_usd + f64::EPSILON
+                {
+                    return Err("effect parent total budget would be exceeded".into());
+                }
+                let risk_authorization_sha256 = required_str(&parent, "authorization_sha256")?;
+                let decision_body_sha256 = required_str(&decision, "decision_body_sha256")?;
+                let residual_finding_sha256 = required_str(&decision, "residual_finding_sha256")?;
+                tx.execute(
+                    "INSERT INTO managed_acceptance_spend_authorizations (
+                        spend_authorization_id, decision_id, risk_authorization_id, tenant_id,
+                        principal_kind, principal_id, spend_body_sha256, risk_authorization_sha256,
+                        logical_authorization_sha256, decision_body_sha256, residual_finding_sha256,
+                        fixture_only, status, body_json, created_at, updated_at, expires_at,
+                        consumed_at, consumed_by_attempt_id, revoked_at
+                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,0,'active',?12,?13,?13,?14,NULL,NULL,NULL)",
+                    params![
+                        request.child_authorization_id,
+                        decision_id,
+                        parent_authorization_id,
+                        principal.tenant_id,
+                        principal.principal_kind.as_str(),
+                        principal.principal_id,
+                        body_sha256,
+                        risk_authorization_sha256,
+                        logical_authorization_sha256,
+                        decision_body_sha256,
+                        residual_finding_sha256,
+                        body.to_string(),
+                        now,
+                        expires_at,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    &principal.principal_id,
+                    "managed_acceptance.effect_child_derived",
+                    &request.child_authorization_id,
+                    &json!({
+                        "parent_authorization_id": parent_authorization_id,
+                        "parent_envelope_id": envelope.envelope_id,
+                        "spend_body_sha256": body_sha256,
+                        "logical_authorization_sha256": logical_authorization_sha256,
+                        "effect_kind": request.effect_kind,
+                        "target_repository": request.target_repository,
+                        "target_main_sha": request.target_main_sha,
+                        "max_cost_usd": request.max_cost_usd,
+                        "expires_at": expires_at,
+                        "outcome_unknown_retry": false,
+                    }),
+                )?;
+                let spend = load_spend_sqlite(&tx, &request.child_authorization_id)?;
+                let receipt = effect_child_receipt(&spend, &body, false)?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(receipt)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                tx.query_one(
+                    "SELECT authorization_id FROM managed_acceptance_authorizations
+                     WHERE authorization_id=$1 FOR UPDATE",
+                    &[&parent_authorization_id],
+                )
+                .map_err(|e| e.to_string())?;
+                let parent = load_authorization_pg(&mut tx, parent_authorization_id)?;
+                let decision_id = required_str(&parent, "decision_id")?;
+                let decision = load_decision_pg(&mut tx, &decision_id)?;
+                let envelope = effect_parent_from_authority(&parent, &decision, principal, &now)?;
+                let expires_at = request.validate_against(&envelope, &now)?;
+                let body = effect_child_body(
+                    principal,
+                    &parent,
+                    &decision,
+                    &envelope,
+                    request,
+                    &expires_at,
+                    &now,
+                )?;
+                let logical_authorization_sha256 = stable_spend_authorization_identity(&body)?;
+                let mut body = body;
+                body["logical_authorization_sha256"] =
+                    json!(logical_authorization_sha256.clone());
+                let body_sha256 = sha256_hex(canonical_json(&body)?.as_bytes());
+                let rows = tx
+                    .query(
+                        "SELECT spend_authorization_id, status, body_json
+                         FROM managed_acceptance_spend_authorizations
+                         WHERE risk_authorization_id=$1 AND decision_id=$2
+                         FOR UPDATE",
+                        &[&parent_authorization_id, &decision_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut child_count = 0_u64;
+                let mut reserved_cost = 0.0_f64;
+                for row in rows {
+                    let existing_id: String = row.get(0);
+                    let status: String = row.get(1);
+                    let existing: Value = serde_json::from_str(&row.get::<_, String>(2))
+                        .map_err(|e| format!("persisted effect child body is invalid: {e}"))?;
+                    if existing.get("schema_version").and_then(Value::as_str)
+                        != Some(EFFECT_CHILD_AUTHORIZATION_SCHEMA_VERSION)
+                        || existing.get("parent_envelope_id").and_then(Value::as_str)
+                            != Some(envelope.envelope_id.as_str())
+                    {
+                        continue;
+                    }
+                    child_count += 1;
+                    let existing_cost = existing
+                        .get("max_cost_usd")
+                        .and_then(Value::as_f64)
+                        .ok_or("persisted effect child max_cost_usd is missing")?;
+                    if !existing_cost.is_finite() || existing_cost < 0.0 {
+                        return Err("persisted effect child cost is invalid".into());
+                    }
+                    reserved_cost += existing_cost;
+                    if existing.get("child_authorization_id").and_then(Value::as_str)
+                        == Some(request.child_authorization_id.as_str())
+                    {
+                        if effect_child_replay_identity(&existing)?
+                            != effect_child_replay_identity(&body)?
+                        {
+                            return Err("effect child id is bound to a conflicting request".into());
+                        }
+                        if status != "active" {
+                            return Err("effect child is already consumed or terminal".into());
+                        }
+                        let spend = load_spend_pg(&mut tx, &existing_id)?;
+                        let receipt = effect_child_receipt(&spend, &existing, true)?;
+                        tx.commit().map_err(|e| e.to_string())?;
+                        return Ok(receipt);
+                    }
+                }
+                let unknown: Option<String> = tx
+                    .query_opt(
+                        "SELECT a.attempt_id
+                         FROM managed_acceptance_attempts a
+                         JOIN managed_acceptance_spend_authorizations s
+                           ON s.spend_authorization_id=a.spend_authorization_id
+                         WHERE s.risk_authorization_id=$1 AND a.status='outcome_unknown'
+                         LIMIT 1",
+                        &[&parent_authorization_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .map(|row| row.get(0));
+                if let Some(attempt_id) = unknown {
+                    return Err(format!(
+                        "effect parent has outcome_unknown attempt {attempt_id}; child derivation is not retryable"
+                    ));
+                }
+                if child_count >= envelope.max_child_authorizations {
+                    return Err("effect parent child-authorization limit exhausted".into());
+                }
+                if reserved_cost + request.max_cost_usd
+                    > envelope.max_total_cost_usd + f64::EPSILON
+                {
+                    return Err("effect parent total budget would be exceeded".into());
+                }
+                let risk_authorization_sha256 = required_str(&parent, "authorization_sha256")?;
+                let decision_body_sha256 = required_str(&decision, "decision_body_sha256")?;
+                let residual_finding_sha256 = required_str(&decision, "residual_finding_sha256")?;
+                let zero: i32 = 0;
+                let active = "active";
+                tx.execute(
+                    "INSERT INTO managed_acceptance_spend_authorizations (
+                        spend_authorization_id, decision_id, risk_authorization_id, tenant_id,
+                        principal_kind, principal_id, spend_body_sha256, risk_authorization_sha256,
+                        logical_authorization_sha256, decision_body_sha256, residual_finding_sha256,
+                        fixture_only, status, body_json, created_at, updated_at, expires_at,
+                        consumed_at, consumed_by_attempt_id, revoked_at
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16,NULL,NULL,NULL)",
+                    &[
+                        &request.child_authorization_id,
+                        &decision_id,
+                        &parent_authorization_id,
+                        &principal.tenant_id,
+                        &principal.principal_kind.as_str(),
+                        &principal.principal_id,
+                        &body_sha256,
+                        &risk_authorization_sha256,
+                        &logical_authorization_sha256,
+                        &decision_body_sha256,
+                        &residual_finding_sha256,
+                        &zero,
+                        &active,
+                        &body.to_string(),
+                        &now,
+                        &expires_at,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                append_effect_audit_pg(
+                    &mut tx,
+                    &now,
+                    &principal.principal_id,
+                    "managed_acceptance.effect_child_derived",
+                    &request.child_authorization_id,
+                    &json!({
+                        "parent_authorization_id": parent_authorization_id,
+                        "parent_envelope_id": envelope.envelope_id,
+                        "spend_body_sha256": body_sha256,
+                        "logical_authorization_sha256": logical_authorization_sha256,
+                        "effect_kind": request.effect_kind,
+                        "target_repository": request.target_repository,
+                        "target_main_sha": request.target_main_sha,
+                        "max_cost_usd": request.max_cost_usd,
+                        "expires_at": expires_at,
+                        "outcome_unknown_retry": false,
+                    }),
+                )?;
+                let spend = load_spend_pg(&mut tx, &request.child_authorization_id)?;
+                let receipt = effect_child_receipt(&spend, &body, false)?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(receipt)
+            }),
+        }
+    }
+
+    /// Persist a terminal provider-free outcome for one derived effect child.
+    /// This is an observation/settlement boundary only: it never invokes a
+    /// provider or performs the external effect.  An unknown outcome closes
+    /// the child permanently and therefore prevents all later derivation for
+    /// the parent envelope.
+    pub fn settle_effect_child_authorization(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        child_authorization_id: &str,
+        attempt_id: &str,
+        status: &str,
+        evidence: &Value,
+    ) -> Result<Value, String> {
+        principal.require_scope(SCOPE_DELEGATED_EXECUTE)?;
+        principal.require_scope(SCOPE_ATTEMPT_ADMIT)?;
+        if matches!(principal.principal_kind(), PrincipalKind::FixturePrincipal) {
+            return Err("fixture principal cannot settle a production effect child".into());
+        }
+        if !matches!(status, "succeeded" | "failed" | EFFECT_OUTCOME_UNKNOWN) {
+            return Err(
+                "effect child outcome must be succeeded, failed, or outcome_unknown".into(),
+            );
+        }
+        let evidence = validate_effect_outcome_evidence(evidence)?;
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|e| e.to_string())?;
+                let spend = load_spend_sqlite(&tx, child_authorization_id)?;
+                let risk_authorization_id = required_str(&spend, "risk_authorization_id")?;
+                let decision_id = required_str(&spend, "decision_id")?;
+                let parent = load_authorization_sqlite(&tx, &risk_authorization_id)?;
+                let decision = load_decision_sqlite(&tx, &decision_id)?;
+                let (child, _envelope) = validate_effect_child_for_settlement(
+                    &spend,
+                    &parent,
+                    &decision,
+                    principal,
+                )?;
+                if evidence
+                    .pointer("/evidence/child_authorization_id")
+                    .and_then(Value::as_str)
+                    != Some(child_authorization_id)
+                {
+                    return Err("effect outcome evidence child binding is invalid".into());
+                }
+                let receipt = effect_outcome_receipt(
+                    &spend,
+                    &child,
+                    attempt_id,
+                    status,
+                    &evidence,
+                )?;
+                let receipt_sha256 = sha256_hex(canonical_json(&receipt)?.as_bytes());
+                let terminal_class = effect_terminal_class(status);
+                let attempt_body = effect_attempt_body(
+                    &spend,
+                    &child,
+                    attempt_id,
+                    status,
+                    terminal_class,
+                    &receipt_sha256,
+                )?;
+                let attempt_body_sha256 = sha256_hex(canonical_json(&attempt_body)?.as_bytes());
+
+                if let Some((existing_status, existing_class, existing_receipt_sha, existing_spend)) =
+                    tx.query_row(
+                        "SELECT status, terminal_class, receipt_sha256, spend_authorization_id
+                         FROM managed_acceptance_attempts
+                         WHERE tenant_id=?1 AND attempt_id=?2",
+                        params![principal.tenant_id, attempt_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, Option<String>>(3)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?
+                {
+                    if existing_spend.as_deref() != Some(child_authorization_id) {
+                        return Err("attempt_id is already bound to another effect child".into());
+                    }
+                    if existing_status == status
+                        && existing_class.as_deref() == Some(terminal_class)
+                        && existing_receipt_sha.as_deref() == Some(receipt_sha256.as_str())
+                    {
+                        if spend.get("status").and_then(Value::as_str) != Some("consumed")
+                            || spend.get("consumed_by_attempt_id").and_then(Value::as_str)
+                                != Some(attempt_id)
+                        {
+                            return Err("effect child attempt replay has inconsistent spend state".into());
+                        }
+                        let mut row = load_attempt_sqlite(&tx, attempt_id)?;
+                        if let Value::Object(object) = &mut row {
+                            object.insert("idempotent_replay".into(), json!(true));
+                        }
+                        tx.commit().map_err(|e| e.to_string())?;
+                        return Ok(row);
+                    }
+                    return Err("late or conflicting effect child settlement".into());
+                }
+                if spend.get("status").and_then(Value::as_str) != Some("active") {
+                    return Err("effect child is not active and cannot be settled".into());
+                }
+                let updated = tx
+                    .execute(
+                        "UPDATE managed_acceptance_spend_authorizations
+                         SET status='consumed', consumed_at=?1, consumed_by_attempt_id=?2, updated_at=?1
+                         WHERE spend_authorization_id=?3 AND status='active'",
+                        params![now, attempt_id, child_authorization_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if updated != 1 {
+                    return Err("effect child was consumed or revoked concurrently".into());
+                }
+                let decision_id = required_str(&spend, "decision_id")?;
+                let risk_authorization_id = required_str(&spend, "risk_authorization_id")?;
+                let manifest_sha256 = required_str(&spend, "spend_body_sha256")?;
+                let operation_id = required_str(&child, "operation_id")?;
+                tx.execute(
+                    "INSERT INTO managed_acceptance_attempts (
+                        attempt_id, tenant_id, product_task_id, workflow_node_id, execution_id,
+                        decision_id, authorization_id, spend_authorization_id, manifest_sha256,
+                        attempt_body_sha256, status, terminal_class, body_json, receipt_json,
+                        receipt_sha256, lease_token, created_at, updated_at
+                     ) VALUES (?1,?2,NULL,NULL,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL,?14,?14)",
+                    params![
+                        attempt_id,
+                        principal.tenant_id,
+                        operation_id,
+                        decision_id,
+                        risk_authorization_id,
+                        child_authorization_id,
+                        manifest_sha256,
+                        attempt_body_sha256,
+                        status,
+                        terminal_class,
+                        attempt_body.to_string(),
+                        receipt.to_string(),
+                        receipt_sha256,
+                        now,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    &principal.principal_id,
+                    "managed_acceptance.effect_child_settled",
+                    child_authorization_id,
+                    &json!({
+                        "attempt_id": attempt_id,
+                        "status": status,
+                        "terminal_class": terminal_class,
+                        "receipt_sha256": receipt_sha256,
+                        "outcome_unknown_retry": false,
+                    }),
+                )?;
+                let row = load_attempt_sqlite(&tx, attempt_id)?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(row)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                let spend = load_spend_pg(&mut tx, child_authorization_id)?;
+                let risk_authorization_id = required_str(&spend, "risk_authorization_id")?;
+                let decision_id = required_str(&spend, "decision_id")?;
+                let parent = load_authorization_pg(&mut tx, &risk_authorization_id)?;
+                let decision = load_decision_pg(&mut tx, &decision_id)?;
+                let (child, _envelope) = validate_effect_child_for_settlement(
+                    &spend,
+                    &parent,
+                    &decision,
+                    principal,
+                )?;
+                if evidence
+                    .pointer("/evidence/child_authorization_id")
+                    .and_then(Value::as_str)
+                    != Some(child_authorization_id)
+                {
+                    return Err("effect outcome evidence child binding is invalid".into());
+                }
+                let receipt = effect_outcome_receipt(
+                    &spend,
+                    &child,
+                    attempt_id,
+                    status,
+                    &evidence,
+                )?;
+                let receipt_sha256 = sha256_hex(canonical_json(&receipt)?.as_bytes());
+                let terminal_class = effect_terminal_class(status);
+                let attempt_body = effect_attempt_body(
+                    &spend,
+                    &child,
+                    attempt_id,
+                    status,
+                    terminal_class,
+                    &receipt_sha256,
+                )?;
+                let attempt_body_sha256 = sha256_hex(canonical_json(&attempt_body)?.as_bytes());
+                if let Some(row) = tx
+                    .query_opt(
+                        "SELECT status, terminal_class, receipt_sha256, spend_authorization_id
+                         FROM managed_acceptance_attempts
+                         WHERE tenant_id=$1 AND attempt_id=$2 FOR UPDATE",
+                        &[&principal.tenant_id, &attempt_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                {
+                    let existing_status: String = row.get(0);
+                    let existing_class: Option<String> = row.get(1);
+                    let existing_receipt_sha: Option<String> = row.get(2);
+                    let existing_spend: Option<String> = row.get(3);
+                    if existing_spend.as_deref() != Some(child_authorization_id) {
+                        return Err("attempt_id is already bound to another effect child".into());
+                    }
+                    if existing_status == status
+                        && existing_class.as_deref() == Some(terminal_class)
+                        && existing_receipt_sha.as_deref() == Some(receipt_sha256.as_str())
+                    {
+                        if spend.get("status").and_then(Value::as_str) != Some("consumed")
+                            || spend.get("consumed_by_attempt_id").and_then(Value::as_str)
+                                != Some(attempt_id)
+                        {
+                            return Err("effect child attempt replay has inconsistent spend state".into());
+                        }
+                        let mut row = load_attempt_pg(&mut tx, attempt_id)?;
+                        if let Value::Object(object) = &mut row {
+                            object.insert("idempotent_replay".into(), json!(true));
+                        }
+                        tx.commit().map_err(|e| e.to_string())?;
+                        return Ok(row);
+                    }
+                    return Err("late or conflicting effect child settlement".into());
+                }
+                if spend.get("status").and_then(Value::as_str) != Some("active") {
+                    return Err("effect child is not active and cannot be settled".into());
+                }
+                let updated = tx
+                    .execute(
+                        "UPDATE managed_acceptance_spend_authorizations
+                         SET status='consumed', consumed_at=$1, consumed_by_attempt_id=$2, updated_at=$1
+                         WHERE spend_authorization_id=$3 AND status='active'",
+                        &[&now, &attempt_id, &child_authorization_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if updated != 1 {
+                    return Err("effect child was consumed or revoked concurrently".into());
+                }
+                let decision_id = required_str(&spend, "decision_id")?;
+                let risk_authorization_id = required_str(&spend, "risk_authorization_id")?;
+                let manifest_sha256 = required_str(&spend, "spend_body_sha256")?;
+                let operation_id = required_str(&child, "operation_id")?;
+                let status_s = status.to_string();
+                let terminal_class_s = terminal_class.to_string();
+                let body_s = attempt_body.to_string();
+                let receipt_s = receipt.to_string();
+                tx.execute(
+                    "INSERT INTO managed_acceptance_attempts (
+                        attempt_id, tenant_id, product_task_id, workflow_node_id, execution_id,
+                        decision_id, authorization_id, spend_authorization_id, manifest_sha256,
+                        attempt_body_sha256, status, terminal_class, body_json, receipt_json,
+                        receipt_sha256, lease_token, created_at, updated_at
+                     ) VALUES ($1,$2,NULL,NULL,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NULL,$14,$14)",
+                    &[
+                        &attempt_id,
+                        &principal.tenant_id,
+                        &operation_id,
+                        &decision_id,
+                        &risk_authorization_id,
+                        &child_authorization_id,
+                        &manifest_sha256,
+                        &attempt_body_sha256,
+                        &status_s,
+                        &terminal_class_s,
+                        &body_s,
+                        &receipt_s,
+                        &receipt_sha256,
+                        &now,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                append_effect_audit_pg(
+                    &mut tx,
+                    &now,
+                    &principal.principal_id,
+                    "managed_acceptance.effect_child_settled",
+                    child_authorization_id,
+                    &json!({
+                        "attempt_id": attempt_id,
+                        "status": status,
+                        "terminal_class": terminal_class,
+                        "receipt_sha256": receipt_sha256,
+                        "outcome_unknown_retry": false,
+                    }),
+                )?;
+                let row = load_attempt_pg(&mut tx, attempt_id)?;
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(row)
             }),
@@ -5542,7 +6479,17 @@ impl LocalProductStore {
                     &now,
                     "risk_authorization_revoked",
                 )?;
-                let _ = transition;
+                append_effect_audit_pg(
+                    &mut tx,
+                    &now,
+                    &principal.principal_id,
+                    "managed_acceptance.risk_auth_revoked",
+                    authorization_id,
+                    &json!({
+                        "decision_id": decision_id,
+                        "status_transition": transition,
+                    }),
+                )?;
                 let row = load_authorization_pg(&mut tx, authorization_id)?;
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(row)
@@ -6916,6 +7863,23 @@ fn validate_accept_preconditions(
     if request.submitted_phrase != required_phrase {
         return Err("operator risk-acceptance phrase mismatch".into());
     }
+    if body.get("effect_envelope").is_some() {
+        let envelope = validate_effect_envelope_body(
+            &body,
+            principal.tenant_id.as_str(),
+            Some(principal),
+            now,
+        )?;
+        if decision.get("decision_id").and_then(Value::as_str)
+            != Some(envelope.decision_id.as_str())
+        {
+            return Err("effect envelope decision owner is mismatched".into());
+        }
+        if decision.get("expires_at").and_then(Value::as_str) != Some(envelope.expires_at.as_str())
+        {
+            return Err("effect envelope decision expiry is mismatched".into());
+        }
+    }
     // Scope and max expiry derived from decision only — never invent far-future expiry.
     let expires_at = require_finite_expiry(decision.get("expires_at").and_then(Value::as_str))?;
     if is_at_or_before(&expires_at, now)? {
@@ -6924,6 +7888,7 @@ fn validate_accept_preconditions(
     let scope = json!({
         "source": "persisted_decision",
         "trial_envelope": body.get("trial_envelope").cloned().unwrap_or(Value::Null),
+        "effect_envelope": body.get("effect_envelope").cloned().unwrap_or(Value::Null),
         "decision_id": request.decision_id,
         "decision_body_sha256": request.expected_decision_body_sha256,
         "residual_finding_sha256": request.expected_residual_finding_sha256,
@@ -7141,7 +8106,7 @@ fn accept_on_pg(
         ],
     )
     .map_err(|e| e.to_string())?;
-    let _transition = persist_transition_pg(
+    let transition = persist_transition_pg(
         tx,
         decision,
         "draft_pending_operator",
@@ -7149,6 +8114,19 @@ fn accept_on_pg(
         principal,
         now,
         "risk_acknowledgement_accepted",
+    )?;
+    append_effect_audit_pg(
+        tx,
+        now,
+        &principal.principal_id,
+        "managed_acceptance.decision_accepted",
+        &request.decision_id,
+        &json!({
+            "authorization_id": auth_id,
+            "authorization_sha256": authorization_sha256,
+            "execution_granted": false,
+            "status_transition": transition,
+        }),
     )?;
     load_authorization_pg(tx, &auth_id)
 }
@@ -8235,6 +9213,418 @@ fn validate_risk_decision_owner(risk: &Value, decision: &Value) -> Result<(), St
             ));
         }
     }
+    Ok(())
+}
+
+fn effect_parent_from_authority(
+    parent_authorization: &Value,
+    decision: &Value,
+    principal: &AuthenticatedPrincipal,
+    now: &str,
+) -> Result<EffectEnvelopeContract, String> {
+    if parent_authorization.get("status").and_then(Value::as_str) != Some("active") {
+        return Err("effect parent authorization is not active".into());
+    }
+    if parent_authorization
+        .get("tenant_id")
+        .and_then(Value::as_str)
+        != Some(principal.tenant_id.as_str())
+    {
+        return Err("effect parent authorization tenant mismatch".into());
+    }
+    if parent_authorization
+        .get("principal_kind")
+        .and_then(Value::as_str)
+        != Some(PrincipalKind::OperatorApiKey.as_str())
+        || parent_authorization
+            .get("execution_granted")
+            .and_then(Value::as_bool)
+            != Some(false)
+    {
+        return Err("effect parent authorization is not an owner risk receipt".into());
+    }
+    if decision.get("status").and_then(Value::as_str) != Some("operator_accepted") {
+        return Err("effect parent decision is not owner accepted".into());
+    }
+    validate_risk_decision_owner(parent_authorization, decision)?;
+    let body = decision
+        .get("body_json")
+        .ok_or("effect parent decision body is missing")?;
+    let envelope = validate_effect_envelope_body(body, principal.tenant_id.as_str(), None, now)?;
+    if decision.get("decision_id").and_then(Value::as_str) != Some(envelope.decision_id.as_str())
+        || decision.get("principal_id").and_then(Value::as_str)
+            != Some(envelope.owner_principal_id.as_str())
+        || parent_authorization
+            .get("principal_id")
+            .and_then(Value::as_str)
+            != Some(envelope.owner_principal_id.as_str())
+        || principal.principal_id != envelope.owner_principal_id
+    {
+        return Err("effect parent owner binding is stale or mismatched".into());
+    }
+    if decision.get("expires_at").and_then(Value::as_str) != Some(envelope.expires_at.as_str()) {
+        return Err("effect parent expiry is stale or mismatched".into());
+    }
+    let scope_envelope = parent_authorization
+        .pointer("/scope/effect_envelope")
+        .ok_or("effect parent authorization scope is missing effect_envelope")?;
+    if sort_value(scope_envelope) != envelope.body() {
+        return Err("effect parent authorization scope is stale or mismatched".into());
+    }
+    Ok(envelope)
+}
+
+fn effect_child_replay_identity(body: &Value) -> Result<Value, String> {
+    let mut identity = body.clone();
+    let object = identity
+        .as_object_mut()
+        .ok_or("effect child body must be an object")?;
+    for key in [
+        "spend_authorization_id",
+        "spend_body_sha256",
+        "logical_authorization_sha256",
+        "created_at",
+    ] {
+        object.remove(key);
+    }
+    Ok(sort_value(&identity))
+}
+
+fn effect_child_body(
+    principal: &AuthenticatedPrincipal,
+    parent_authorization: &Value,
+    decision: &Value,
+    envelope: &EffectEnvelopeContract,
+    request: &EffectChildAuthorizationRequest,
+    expires_at: &str,
+    now: &str,
+) -> Result<Value, String> {
+    let risk_authorization_id = required_str(parent_authorization, "authorization_id")?;
+    let risk_authorization_sha256 = required_str(parent_authorization, "authorization_sha256")?;
+    let decision_id = required_str(decision, "decision_id")?;
+    let decision_body_sha256 = required_str(decision, "decision_body_sha256")?;
+    let residual_finding_sha256 = required_str(decision, "residual_finding_sha256")?;
+    let body = json!({
+        "schema_version": EFFECT_CHILD_AUTHORIZATION_SCHEMA_VERSION,
+        "spend_authorization_id": request.child_authorization_id,
+        "child_authorization_id": request.child_authorization_id,
+        "decision_id": decision_id,
+        "risk_authorization_id": risk_authorization_id,
+        "risk_authorization_sha256": risk_authorization_sha256,
+        "decision_body_sha256": decision_body_sha256,
+        "residual_finding_sha256": residual_finding_sha256,
+        "tenant_id": principal.tenant_id,
+        "principal_kind": principal.principal_kind.as_str(),
+        "principal_id": principal.principal_id,
+        "parent_envelope_id": envelope.envelope_id,
+        "parent_envelope_sha256": envelope.sha256()?,
+        "parent_envelope": envelope.body(),
+        "effect_kind": request.effect_kind,
+        "operation_id": request.operation_id,
+        "target_repository": request.target_repository,
+        "target_main_sha": request.target_main_sha,
+        "max_cost_usd": request.max_cost_usd,
+        "expires_at": expires_at,
+        "one_use": true,
+        "outcome_unknown_retry": false,
+        "fixture_only": false,
+        "created_at": now,
+    });
+    Ok(sort_value(&body))
+}
+
+fn effect_child_receipt(spend: &Value, body: &Value, replayed: bool) -> Result<Value, String> {
+    Ok(json!({
+        "schema_version": EFFECT_CHILD_AUTHORIZATION_SCHEMA_VERSION,
+        "child_authorization_id": body.get("child_authorization_id"),
+        "parent_envelope_id": body.get("parent_envelope_id"),
+        "parent_envelope_sha256": body.get("parent_envelope_sha256"),
+        "effect_kind": body.get("effect_kind"),
+        "operation_id": body.get("operation_id"),
+        "target_repository": body.get("target_repository"),
+        "target_main_sha": body.get("target_main_sha"),
+        "max_cost_usd": body.get("max_cost_usd"),
+        "expires_at": body.get("expires_at"),
+        "spend_authorization_id": spend.get("spend_authorization_id"),
+        "spend_body_sha256": spend.get("spend_body_sha256"),
+        "status": spend.get("status"),
+        "one_use": true,
+        "outcome_unknown_retry": false,
+        "replayed": replayed,
+    }))
+}
+
+fn validate_effect_child_for_settlement(
+    spend: &Value,
+    parent_authorization: &Value,
+    decision: &Value,
+    principal: &AuthenticatedPrincipal,
+) -> Result<(Value, EffectEnvelopeContract), String> {
+    if spend.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id.as_str())
+        || spend.get("principal_id").and_then(Value::as_str)
+            != Some(principal.principal_id.as_str())
+        || spend.get("principal_kind").and_then(Value::as_str)
+            != Some(principal.principal_kind.as_str())
+    {
+        return Err("effect child settlement principal binding is invalid".into());
+    }
+    if spend.get("fixture_only").and_then(Value::as_bool) != Some(false) {
+        return Err("effect child settlement cannot use fixture authority".into());
+    }
+    if !matches!(
+        parent_authorization.get("status").and_then(Value::as_str),
+        Some("active") | Some("revoked") | Some("expired")
+    ) {
+        return Err("effect parent authorization has an invalid terminal state".into());
+    }
+    validate_spend_risk_owner(spend, parent_authorization)?;
+    validate_risk_decision_owner(parent_authorization, decision)?;
+    let child = spend
+        .get("body_json")
+        .cloned()
+        .ok_or("effect child body is missing")?;
+    if child.get("schema_version").and_then(Value::as_str)
+        != Some(EFFECT_CHILD_AUTHORIZATION_SCHEMA_VERSION)
+    {
+        return Err("effect child body schema_version is invalid".into());
+    }
+    if child.get("child_authorization_id").and_then(Value::as_str)
+        != spend.get("spend_authorization_id").and_then(Value::as_str)
+    {
+        return Err("effect child id is not bound to its spend row".into());
+    }
+    if child.get("spend_authorization_id").and_then(Value::as_str)
+        != spend.get("spend_authorization_id").and_then(Value::as_str)
+    {
+        return Err("effect child spend id is not self-bound".into());
+    }
+    let decision_body = decision
+        .get("body_json")
+        .ok_or("effect parent decision body is missing")?;
+    // Settlement is terminal reconciliation for an already-derived child. It
+    // must retain a definitive or unknown outcome after the authorization
+    // window closes; expiry is enforced at parent/child derivation instead.
+    let envelope_hint: EffectEnvelopeContract = serde_json::from_value(
+        decision_body
+            .get("effect_envelope")
+            .cloned()
+            .ok_or("effect parent decision has no effect envelope")?,
+    )
+    .map_err(|error| format!("effect parent envelope is malformed: {error}"))?;
+    let envelope = validate_effect_envelope_body(
+        decision_body,
+        principal.tenant_id.as_str(),
+        None,
+        &envelope_hint.created_at,
+    )?;
+    if parent_authorization
+        .get("principal_id")
+        .and_then(Value::as_str)
+        != Some(envelope.owner_principal_id.as_str())
+        || decision.get("principal_id").and_then(Value::as_str)
+            != Some(envelope.owner_principal_id.as_str())
+        || principal.principal_id != envelope.owner_principal_id
+    {
+        return Err("effect parent owner binding is stale or mismatched".into());
+    }
+    if decision.get("decision_id").and_then(Value::as_str) != Some(envelope.decision_id.as_str())
+        || child.get("decision_id").and_then(Value::as_str) != Some(envelope.decision_id.as_str())
+    {
+        return Err("effect child decision binding is stale or mismatched".into());
+    }
+    if child.get("risk_authorization_id").and_then(Value::as_str)
+        != parent_authorization
+            .get("authorization_id")
+            .and_then(Value::as_str)
+    {
+        return Err("effect child parent authorization binding is stale".into());
+    }
+    let parent_envelope_sha256 = envelope.sha256()?;
+    if child.get("parent_envelope").map(sort_value) != Some(envelope.body())
+        || child.get("parent_envelope_sha256").and_then(Value::as_str)
+            != Some(parent_envelope_sha256.as_str())
+    {
+        return Err("effect child parent envelope hash binding is invalid".into());
+    }
+    if parent_authorization
+        .pointer("/scope/effect_envelope")
+        .map(sort_value)
+        != Some(envelope.body())
+    {
+        return Err("effect parent authorization scope is stale or mismatched".into());
+    }
+    for (field, expected) in [
+        ("effect_kind", envelope.effect_kind.as_str()),
+        ("target_repository", envelope.target_repository.as_str()),
+        ("target_main_sha", envelope.target_main_sha.as_str()),
+    ] {
+        if child.get(field).and_then(Value::as_str) != Some(expected) {
+            return Err(format!("effect child {field} is stale or mismatched"));
+        }
+    }
+    let max_cost = child
+        .get("max_cost_usd")
+        .and_then(Value::as_f64)
+        .ok_or("effect child max_cost_usd is missing")?;
+    if !max_cost.is_finite() || max_cost < 0.0 || max_cost > envelope.max_total_cost_usd {
+        return Err("effect child max_cost_usd exceeds parent envelope".into());
+    }
+    let child_expires_at = child
+        .get("expires_at")
+        .and_then(Value::as_str)
+        .ok_or("effect child expires_at is missing")?;
+    if require_finite_expiry(Some(child_expires_at))? > envelope.expires_at {
+        return Err("effect child expiry exceeds parent envelope".into());
+    }
+    if child.get("one_use").and_then(Value::as_bool) != Some(true)
+        || child.get("outcome_unknown_retry").and_then(Value::as_bool) != Some(false)
+        || child.get("fixture_only").and_then(Value::as_bool) != Some(false)
+    {
+        return Err("effect child one-use or no-retry binding is invalid".into());
+    }
+    if child.get("principal_id").and_then(Value::as_str) != Some(principal.principal_id.as_str())
+        || child.get("principal_kind").and_then(Value::as_str)
+            != Some(principal.principal_kind.as_str())
+    {
+        return Err("effect child owner binding is stale or mismatched".into());
+    }
+    Ok((child, envelope))
+}
+
+fn validate_effect_outcome_evidence(evidence: &Value) -> Result<Value, String> {
+    let object = evidence
+        .as_object()
+        .ok_or("effect outcome evidence must be a digest object")?;
+    if object.len() != 2
+        || !object.contains_key("evidence")
+        || !object.contains_key("evidence_sha256")
+    {
+        return Err("effect outcome evidence must contain evidence and evidence_sha256".into());
+    }
+    let payload = object
+        .get("evidence")
+        .and_then(Value::as_object)
+        .ok_or("effect outcome evidence must contain a metadata object")?;
+    if payload.len() != 3
+        || !payload.contains_key("kind")
+        || !payload.contains_key("child_authorization_id")
+        || !payload.contains_key("effect_executed")
+    {
+        return Err("effect outcome evidence metadata schema is invalid".into());
+    }
+    if payload.get("kind").and_then(Value::as_str) != Some("provider_free_canary") {
+        return Err("effect outcome evidence kind is not provider_free_canary".into());
+    }
+    let child_authorization_id = payload
+        .get("child_authorization_id")
+        .and_then(Value::as_str)
+        .ok_or("effect outcome evidence child id is missing")?;
+    if child_authorization_id.trim().is_empty()
+        || child_authorization_id.chars().count() > 256
+        || payload
+            .get("effect_executed")
+            .and_then(Value::as_bool)
+            .is_none()
+        || payload.get("effect_executed").and_then(Value::as_bool) != Some(false)
+    {
+        return Err("effect outcome evidence metadata values are invalid".into());
+    }
+    let payload = Value::Object(payload.clone());
+    let payload_json = canonical_json(&payload)?;
+    if payload_json.len() > MAX_EFFECT_OUTCOME_EVIDENCE_BYTES
+        || contains_sensitive_patterns(&payload_json)
+    {
+        return Err("effect outcome evidence metadata is oversized or sensitive".into());
+    }
+    let digest = object
+        .get("evidence_sha256")
+        .and_then(Value::as_str)
+        .ok_or("effect outcome evidence_sha256 is missing")?;
+    if digest.len() != 64 || !digest.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("effect outcome evidence_sha256 must be 64 hex chars".into());
+    }
+    let expected = sha256_hex(payload_json.as_bytes());
+    if digest != expected {
+        return Err("effect outcome evidence_sha256 does not match evidence metadata".into());
+    }
+    Ok(sort_value(evidence))
+}
+
+fn effect_terminal_class(status: &str) -> &'static str {
+    match status {
+        "succeeded" => "effect_succeeded",
+        "failed" => "effect_failed",
+        EFFECT_OUTCOME_UNKNOWN => "effect_outcome_unknown",
+        _ => "effect_invalid",
+    }
+}
+
+fn effect_outcome_receipt(
+    spend: &Value,
+    child: &Value,
+    attempt_id: &str,
+    status: &str,
+    evidence: &Value,
+) -> Result<Value, String> {
+    Ok(sort_value(&json!({
+        "schema_version": "managed_effect_outcome_receipt.v1",
+        "child_authorization_id": child.get("child_authorization_id"),
+        "spend_authorization_id": spend.get("spend_authorization_id"),
+        "parent_envelope_id": child.get("parent_envelope_id"),
+        "attempt_id": attempt_id,
+        "operation_id": child.get("operation_id"),
+        "outcome": status,
+        "evidence": evidence,
+        "outcome_unknown_retry": false,
+        "outcome_unknown_no_retry": status == EFFECT_OUTCOME_UNKNOWN,
+    })))
+}
+
+fn effect_attempt_body(
+    spend: &Value,
+    child: &Value,
+    attempt_id: &str,
+    status: &str,
+    terminal_class: &str,
+    receipt_sha256: &str,
+) -> Result<Value, String> {
+    Ok(sort_value(&json!({
+        "schema_version": "managed_effect_attempt.v1",
+        "attempt_id": attempt_id,
+        "child_authorization_id": child.get("child_authorization_id"),
+        "spend_authorization_id": spend.get("spend_authorization_id"),
+        "decision_id": spend.get("decision_id"),
+        "risk_authorization_id": spend.get("risk_authorization_id"),
+        "operation_id": child.get("operation_id"),
+        "effect_kind": child.get("effect_kind"),
+        "target_repository": child.get("target_repository"),
+        "target_main_sha": child.get("target_main_sha"),
+        "max_cost_usd": child.get("max_cost_usd"),
+        "status": status,
+        "terminal_class": terminal_class,
+        "receipt_sha256": receipt_sha256,
+        "one_use": true,
+        "outcome_unknown_retry": false,
+        "fixture_only": false,
+    })))
+}
+
+#[cfg(feature = "pg")]
+fn append_effect_audit_pg(
+    tx: &mut postgres::Transaction<'_>,
+    now: &str,
+    actor: &str,
+    action: &str,
+    resource: &str,
+    details: &Value,
+) -> Result<(), String> {
+    let details_json = details.to_string();
+    tx.execute(
+        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+         VALUES ($1, $2, $3, $4, $5)",
+        &[&now, &actor, &action, &resource, &details_json],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -12807,6 +14197,446 @@ mod tests {
             user_id: format!("user-{principal_id}"),
             role: "owner".into(),
         }
+    }
+
+    fn effect_envelope_for(
+        decision_id: &str,
+        envelope_id: &str,
+        max_total_cost_usd: f64,
+        max_child_authorizations: u64,
+        expires_at: &str,
+    ) -> EffectEnvelopeContract {
+        EffectEnvelopeContract {
+            schema_version: EFFECT_ENVELOPE_SCHEMA_VERSION.into(),
+            decision_id: decision_id.into(),
+            envelope_id: envelope_id.into(),
+            owner_principal_id: "effect-owner".into(),
+            effect_kind: "repository_maintenance".into(),
+            target_repository: "Igzela/token-efficient-agent-harness-lab".into(),
+            target_main_sha: "a".repeat(40),
+            max_total_cost_usd,
+            max_child_authorizations,
+            created_at: "2026-07-25T12:00:00Z".into(),
+            expires_at: expires_at.into(),
+        }
+    }
+
+    fn effect_child_for(
+        child_authorization_id: &str,
+        operation_id: &str,
+        max_cost_usd: f64,
+        expires_at: &str,
+    ) -> EffectChildAuthorizationRequest {
+        EffectChildAuthorizationRequest {
+            child_authorization_id: child_authorization_id.into(),
+            operation_id: operation_id.into(),
+            effect_kind: "repository_maintenance".into(),
+            target_repository: "Igzela/token-efficient-agent-harness-lab".into(),
+            target_main_sha: "a".repeat(40),
+            max_cost_usd,
+            expires_at: expires_at.into(),
+        }
+    }
+
+    fn effect_evidence(child_authorization_id: &str, effect_executed: bool) -> Value {
+        let payload = json!({
+            "kind": "provider_free_canary",
+            "child_authorization_id": child_authorization_id,
+            "effect_executed": effect_executed,
+        });
+        let evidence_sha256 = sha256_hex(canonical_json(&payload).unwrap().as_bytes());
+        json!({
+            "evidence": payload,
+            "evidence_sha256": evidence_sha256,
+        })
+    }
+
+    #[test]
+    fn effect_envelope_validation_is_immutable_and_bounded() {
+        let mut envelope = effect_envelope_for(
+            "effect-validation-decision",
+            "effect-validation-envelope",
+            0.75,
+            2,
+            "2026-07-26T12:00:00Z",
+        );
+        envelope.validate("2026-07-25T12:00:00Z").unwrap();
+
+        envelope.target_main_sha = "not-a-commit".into();
+        assert!(envelope.validate("2026-07-25T12:00:00Z").is_err());
+        envelope.target_main_sha = "a".repeat(40);
+        envelope.expires_at = "2026-07-25T11:59:59Z".into();
+        assert!(envelope.validate("2026-07-25T12:00:00Z").is_err());
+        envelope.expires_at = "2026-07-26T12:00:00Z".into();
+        envelope.max_total_cost_usd = f64::NAN;
+        assert!(envelope.validate("2026-07-25T12:00:00Z").is_err());
+    }
+
+    #[test]
+    fn effect_parent_children_are_one_use_bounded_revocable_and_unknown_is_not_retryable() {
+        let (dir, store) = store();
+        let principal = delegated_test_principal("effect-owner");
+        let residual = "b".repeat(64);
+        let envelope = effect_envelope_for(
+            "effect-parent-decision",
+            "effect-parent-envelope",
+            0.75,
+            2,
+            "2026-07-26T12:00:00Z",
+        );
+        let approved = store
+            .approve_effect_envelope(&principal, &envelope, &residual)
+            .unwrap();
+        let parent_authorization_id = approved["authorization_id"].as_str().unwrap().to_string();
+
+        let child_one = effect_child_for(
+            "effect-child-one",
+            "effect-operation-one",
+            0.50,
+            "2026-07-26T12:00:00Z",
+        );
+        let other_principal = delegated_test_principal("other-effect-owner");
+        assert!(store
+            .derive_effect_child_authorization(
+                &other_principal,
+                &parent_authorization_id,
+                &child_one,
+            )
+            .is_err());
+        let first = store
+            .derive_effect_child_authorization(&principal, &parent_authorization_id, &child_one)
+            .unwrap();
+        assert_eq!(first["status"], "active");
+        assert_eq!(first["one_use"], true);
+        let replay = store
+            .derive_effect_child_authorization(&principal, &parent_authorization_id, &child_one)
+            .unwrap();
+        assert_eq!(replay["replayed"], true);
+
+        let mut mismatched_target = child_one.clone();
+        mismatched_target.child_authorization_id = "effect-child-target-mismatch".into();
+        mismatched_target.target_repository = "another/repository".into();
+        assert!(store
+            .derive_effect_child_authorization(
+                &principal,
+                &parent_authorization_id,
+                &mismatched_target,
+            )
+            .is_err());
+        let mut late_child = child_one.clone();
+        late_child.child_authorization_id = "effect-child-late".into();
+        late_child.operation_id = "effect-operation-late".into();
+        late_child.expires_at = "2026-07-27T00:00:00Z".into();
+        assert!(store
+            .derive_effect_child_authorization(&principal, &parent_authorization_id, &late_child)
+            .is_err());
+
+        let child_two = effect_child_for(
+            "effect-child-two",
+            "effect-operation-two",
+            0.25,
+            "2026-07-26T12:00:00Z",
+        );
+        store
+            .derive_effect_child_authorization(&principal, &parent_authorization_id, &child_two)
+            .unwrap();
+        let child_three = effect_child_for(
+            "effect-child-three",
+            "effect-operation-three",
+            0.01,
+            "2026-07-26T12:00:00Z",
+        );
+        assert!(store
+            .derive_effect_child_authorization(&principal, &parent_authorization_id, &child_three,)
+            .is_err());
+
+        let revoked = store
+            .revoke_managed_acceptance_authorization(&principal, &parent_authorization_id)
+            .unwrap();
+        assert_eq!(revoked["status"], "revoked");
+        assert_eq!(
+            store
+                .get_managed_acceptance_spend_authorization("effect-child-one")
+                .unwrap()
+                .unwrap()["status"],
+            "revoked"
+        );
+        assert!(store
+            .derive_effect_child_authorization(&principal, &parent_authorization_id, &child_three)
+            .is_err());
+
+        let budget_envelope = effect_envelope_for(
+            "effect-budget-decision",
+            "effect-budget-envelope",
+            0.60,
+            3,
+            "2026-07-26T12:00:00Z",
+        );
+        let budget_approved = store
+            .approve_effect_envelope(&principal, &budget_envelope, &residual)
+            .unwrap();
+        let budget_parent = budget_approved["authorization_id"].as_str().unwrap();
+        store
+            .derive_effect_child_authorization(
+                &principal,
+                budget_parent,
+                &effect_child_for(
+                    "effect-budget-child-one",
+                    "effect-budget-operation-one",
+                    0.50,
+                    "2026-07-26T12:00:00Z",
+                ),
+            )
+            .unwrap();
+        assert!(store
+            .derive_effect_child_authorization(
+                &principal,
+                budget_parent,
+                &effect_child_for(
+                    "effect-budget-child-two",
+                    "effect-budget-operation-two",
+                    0.20,
+                    "2026-07-26T12:00:00Z",
+                ),
+            )
+            .is_err());
+
+        let unknown_envelope = effect_envelope_for(
+            "effect-unknown-decision",
+            "effect-unknown-envelope",
+            0.10,
+            2,
+            "2026-07-26T12:00:00Z",
+        );
+        let unknown_approved = store
+            .approve_effect_envelope(&principal, &unknown_envelope, &residual)
+            .unwrap();
+        let unknown_parent = unknown_approved["authorization_id"].as_str().unwrap();
+        let unknown_child = effect_child_for(
+            "effect-unknown-child",
+            "effect-unknown-operation",
+            0.10,
+            "2026-07-26T12:00:00Z",
+        );
+        store
+            .derive_effect_child_authorization(&principal, unknown_parent, &unknown_child)
+            .unwrap();
+        let evidence = effect_evidence("effect-unknown-child", false);
+        let settled = store
+            .settle_effect_child_authorization(
+                &principal,
+                "effect-unknown-child",
+                "effect-unknown-attempt",
+                EFFECT_OUTCOME_UNKNOWN,
+                &evidence,
+            )
+            .unwrap();
+        assert_eq!(settled["status"], EFFECT_OUTCOME_UNKNOWN);
+        assert_eq!(settled["terminal_class"], "effect_outcome_unknown");
+        assert_eq!(settled["receipt_json"]["outcome_unknown_no_retry"], true);
+        assert!(store
+            .derive_effect_child_authorization(
+                &principal,
+                unknown_parent,
+                &effect_child_for(
+                    "effect-unknown-child-two",
+                    "effect-unknown-operation-two",
+                    0.01,
+                    "2026-07-26T12:00:00Z",
+                ),
+            )
+            .is_err());
+        let settlement_replay = store
+            .settle_effect_child_authorization(
+                &principal,
+                "effect-unknown-child",
+                "effect-unknown-attempt",
+                EFFECT_OUTCOME_UNKNOWN,
+                &evidence,
+            )
+            .unwrap();
+        assert_eq!(settlement_replay["idempotent_replay"], true);
+        let conflicting_evidence = effect_evidence("effect-unknown-child", true);
+        assert!(store
+            .settle_effect_child_authorization(
+                &principal,
+                "effect-unknown-child",
+                "effect-unknown-attempt",
+                EFFECT_OUTCOME_UNKNOWN,
+                &conflicting_evidence,
+            )
+            .is_err());
+
+        let expiry_envelope = effect_envelope_for(
+            "effect-expiry-decision",
+            "effect-expiry-envelope",
+            0.10,
+            1,
+            "2026-07-26T12:00:00Z",
+        );
+        assert!(expiry_envelope.validate("2026-07-26T12:00:01Z").is_err());
+        drop(dir);
+    }
+
+    #[test]
+    fn effect_outcome_evidence_is_strict_bounded_and_digest_bound() {
+        let valid = effect_evidence("effect-evidence-child", false);
+        assert!(validate_effect_outcome_evidence(&valid).is_ok());
+
+        let nested = json!({
+            "evidence": {
+                "kind": "provider_free_canary",
+                "child_authorization_id": "effect-evidence-child",
+                "effect_executed": false,
+                "metadata": {"output": "must not persist"}
+            },
+            "evidence_sha256": "a".repeat(64)
+        });
+        assert!(validate_effect_outcome_evidence(&nested).is_err());
+
+        let oversized = json!({
+            "evidence": {
+                "kind": "provider_free_canary",
+                "child_authorization_id": "x".repeat(257),
+                "effect_executed": false
+            },
+            "evidence_sha256": "b".repeat(64)
+        });
+        assert!(validate_effect_outcome_evidence(&oversized).is_err());
+
+        let sensitive_child_id = ["api_", "key=secret-value"].concat();
+        let sensitive = json!({
+            "evidence": {
+                "kind": "provider_free_canary",
+                "child_authorization_id": sensitive_child_id,
+                "effect_executed": false
+            },
+            "evidence_sha256": "c".repeat(64)
+        });
+        assert!(validate_effect_outcome_evidence(&sensitive).is_err());
+    }
+
+    #[test]
+    fn effect_child_settlement_retains_terminal_evidence_after_expiry() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("effect-expiry.db");
+        let early = LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
+            .unwrap();
+        let principal = delegated_test_principal("effect-owner");
+        let envelope = effect_envelope_for(
+            "effect-expiry-settlement-decision",
+            "effect-expiry-settlement-envelope",
+            0.10,
+            1,
+            "2026-07-25T13:00:00Z",
+        );
+        let residual = "d".repeat(64);
+        let approved = early
+            .approve_effect_envelope(&principal, &envelope, &residual)
+            .unwrap();
+        let parent_id = approved["authorization_id"].as_str().unwrap();
+        let child = effect_child_for(
+            "effect-expiry-settlement-child",
+            "effect-expiry-settlement-operation",
+            0.10,
+            "2026-07-25T13:00:00Z",
+        );
+        early
+            .derive_effect_child_authorization(&principal, parent_id, &child)
+            .unwrap();
+        drop(early);
+
+        let late = LocalProductStore::new_with_clock(&path, || "2026-07-25T14:00:00Z".to_string())
+            .unwrap();
+        assert!(late
+            .derive_effect_child_authorization(
+                &principal,
+                parent_id,
+                &effect_child_for(
+                    "effect-expiry-settlement-new-child",
+                    "effect-expiry-settlement-new-operation",
+                    0.01,
+                    "2026-07-25T14:30:00Z",
+                ),
+            )
+            .is_err());
+        let settled = late
+            .settle_effect_child_authorization(
+                &principal,
+                "effect-expiry-settlement-child",
+                "effect-expiry-settlement-attempt",
+                EFFECT_OUTCOME_UNKNOWN,
+                &effect_evidence("effect-expiry-settlement-child", false),
+            )
+            .unwrap();
+        assert_eq!(settled["status"], EFFECT_OUTCOME_UNKNOWN);
+        assert_eq!(settled["terminal_class"], "effect_outcome_unknown");
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn pg_effect_parent_child_and_unknown_outcome_have_sqlite_parity() {
+        let Ok(database_url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            eprintln!("ACP_TEST_DATABASE_URL not set; skipping effect PostgreSQL parity test");
+            return;
+        };
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let store =
+            LocalProductStore::new_postgres(&database_url, || "2026-07-25T12:00:00Z".to_string())
+                .unwrap();
+        let principal = delegated_test_principal("effect-owner");
+        let envelope = effect_envelope_for(
+            &format!("pg-effect-decision-{suffix}"),
+            &format!("pg-effect-envelope-{suffix}"),
+            0.20,
+            2,
+            "2026-07-26T12:00:00Z",
+        );
+        let residual = "e".repeat(64);
+        let approved = store
+            .approve_effect_envelope(&principal, &envelope, &residual)
+            .unwrap();
+        let parent_authorization_id = approved["authorization_id"].as_str().unwrap();
+        let child_id = format!("pg-effect-child-{suffix}");
+        store
+            .derive_effect_child_authorization(
+                &principal,
+                parent_authorization_id,
+                &effect_child_for(
+                    &child_id,
+                    &format!("pg-effect-operation-{suffix}"),
+                    0.20,
+                    "2026-07-26T12:00:00Z",
+                ),
+            )
+            .unwrap();
+        let attempt_id = format!("pg-effect-attempt-{suffix}");
+        let outcome = store
+            .settle_effect_child_authorization(
+                &principal,
+                &child_id,
+                &attempt_id,
+                EFFECT_OUTCOME_UNKNOWN,
+                &effect_evidence(&child_id, false),
+            )
+            .unwrap();
+        assert_eq!(outcome["status"], EFFECT_OUTCOME_UNKNOWN);
+        assert!(store
+            .derive_effect_child_authorization(
+                &principal,
+                parent_authorization_id,
+                &effect_child_for(
+                    &format!("pg-effect-child-two-{suffix}"),
+                    &format!("pg-effect-operation-two-{suffix}"),
+                    0.01,
+                    "2026-07-26T12:00:00Z",
+                ),
+            )
+            .is_err());
     }
 
     #[test]
