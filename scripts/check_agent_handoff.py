@@ -257,7 +257,7 @@ def session_context_route_failures(start_here: str) -> list[str]:
         for schema_name in (
             "RouteContract",
             "ContextRoute",
-            "PacketBinding",
+            "MissionBinding",
             "CheckoutSnapshot",
             "VerificationResult",
             "SessionCheckpoint",
@@ -268,7 +268,7 @@ def session_context_route_failures(start_here: str) -> list[str]:
             if not dataclasses.is_dataclass(schema) or not schema.__dataclass_params__.frozen:
                 return [f"session context schema {schema_name} must be a frozen dataclass"]
         contract = module.parse_route_contract(start_here)
-        packet = module._canonical_session_packet(
+        mission = module._canonical_session_mission(
             {"docs/AUTONOMY.md": "# Autonomy contract\n"}
         )
         for role in sorted(module.ROLES):
@@ -276,7 +276,7 @@ def session_context_route_failures(start_here: str) -> list[str]:
                 contract,
                 role=role,
                 accepted_main_sha="0" * 40,
-                packet=packet,
+                mission=mission,
             )
             if route["documents"][0] != "START_HERE.md":
                 return [f"session context route for {role} does not start at START_HERE.md"]
@@ -339,7 +339,7 @@ def check_project_context(failures: list[str]) -> None:
         "accepted_baseline",
         "canonical_document_source",
         "local_checkout",
-        "active_packet",
+        "active_mission",
         "active_frontier",
         "next_permitted_action",
         "required_reading",

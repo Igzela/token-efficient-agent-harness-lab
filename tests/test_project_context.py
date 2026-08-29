@@ -13,25 +13,25 @@ SPEC.loader.exec_module(project_context)
 
 
 class TestProjectContextRouting(unittest.TestCase):
-    def test_ready_live_packet_does_not_infer_pr_from_prerequisites(self):
+    def test_ready_live_mission_does_not_infer_pr_from_prerequisites(self):
         text = """\
 ## Active Routing
 
 1. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `READY_FOR_EXECUTION`: satisfied by PRs #339/#340 and #342.
 
-## Packet PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1
+## Mission PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** Packets A and B are accepted by PR #342.
+**Prerequisite:** Missions A and B are accepted by PR #342.
 """
 
-        parsed = project_context.parse_first_routed_packet(text)
+        parsed = project_context.parse_first_routed_mission(text)
 
         self.assertEqual(
             parsed,
             {
-                "packet": "PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1",
+                "mission_id": "PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1",
                 "state": "READY_FOR_EXECUTION",
                 "pr_number": None,
             },
@@ -43,23 +43,23 @@ class TestProjectContextRouting(unittest.TestCase):
 
 1. `PE7-TEST-1` — `IN_PROGRESS`
 
-## Packet PE7-TEST-1
+## Mission PE7-TEST-1
 
 **State:** `IN_PROGRESS`
 
 **Owned PR:** #342
 """
 
-        parsed = project_context.parse_first_routed_packet(text)
+        parsed = project_context.parse_first_routed_mission(text)
 
-        self.assertEqual(parsed["packet"], "PE7-TEST-1")
+        self.assertEqual(parsed["mission_id"], "PE7-TEST-1")
         self.assertEqual(parsed["state"], "IN_PROGRESS")
         self.assertEqual(parsed["pr_number"], "342")
 
-    def test_ready_packet_without_pr_does_not_infer_implementation_pr(self):
+    def test_ready_mission_without_pr_does_not_infer_implementation_pr(self):
         action = project_context.next_permitted_action(
             {
-                "packet": "PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1",
+                "mission_id": "PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1",
                 "state": "READY_FOR_EXECUTION",
             },
             None,
@@ -74,14 +74,14 @@ class TestProjectContextRouting(unittest.TestCase):
 
 1. `PE7-TEST-1` — `IN_PROGRESS`
 
-## Packet PE7-TEST-1
+## Mission PE7-TEST-1
 
 **State:** `IN_PROGRESS`
 
 Prerequisite: PR #342 is accepted.
 """
 
-        self.assertIsNone(project_context.parse_first_routed_packet(text)["pr_number"])
+        self.assertIsNone(project_context.parse_first_routed_mission(text)["pr_number"])
 
 
 class TestReviewStateProjection(unittest.TestCase):

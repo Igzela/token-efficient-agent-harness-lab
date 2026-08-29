@@ -152,10 +152,45 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
         self.assertNotIn("ACP_ENABLE_PROVIDER_EXECUTION", content)
 
     def test_deferred_acceptance_executes_store_lease_and_target_guards(self) -> None:
-        """Run the existing provider-free Rust behavior tests behind this gate."""
+        """Run the provider-free Rust behavior tests behind this gate.
+
+        The source-shape checks above establish ownership and transaction
+        boundaries; these focused cases exercise the durable effect, lease,
+        restart, and scheduler behavior that those contracts protect.
+        """
         commands = (
-            ["cargo", "test", "-p", "engine", "--lib", "managed_acceptance::"],
-            ["cargo", "test", "-p", "engine", "--lib", "workflow_runs::"],
+            [
+                "cargo",
+                "test",
+                "-p",
+                "engine",
+                "--lib",
+                "effect_parent_children_are_one_use_bounded_revocable_and_unknown_is_not_retryable",
+            ],
+            [
+                "cargo",
+                "test",
+                "-p",
+                "engine",
+                "--lib",
+                "effect_child_settlement_retains_terminal_evidence_after_expiry",
+            ],
+            [
+                "cargo",
+                "test",
+                "-p",
+                "engine",
+                "--lib",
+                "delegated_manifest_spend_lease_and_terminal_are_restart_safe",
+            ],
+            [
+                "cargo",
+                "test",
+                "-p",
+                "engine",
+                "--lib",
+                "scheduler_admitted_fixture_child_leases_and_completes",
+            ],
             ["cargo", "test", "-p", "engine", "--test", "test_target_repo_output"],
         )
         for command in commands:
@@ -171,6 +206,11 @@ class TestStewardDeferredAcceptance(unittest.TestCase):
                 self.assertEqual(
                     result.returncode,
                     0,
+                    (result.stdout + result.stderr)[-4_000:],
+                )
+                self.assertIn(
+                    "test result: ok",
+                    result.stdout + result.stderr,
                     (result.stdout + result.stderr)[-4_000:],
                 )
 

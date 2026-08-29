@@ -12,6 +12,7 @@ import tempfile
 
 
 PROMPT_DIR = pathlib.Path(__file__).resolve().parent / "prompts"
+CONTROL_DIR = pathlib.Path(__file__).resolve().parent
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PROJECT_CONTEXT_SCRIPT = PROJECT_ROOT / "scripts" / "project_context.py"
 
@@ -20,6 +21,12 @@ REPO_NAME = os.environ.get("AGENT_REPO_NAME", "token-efficient-agent-harness-lab
 MAX_REVIEW_DIFF_CHARS = 100_000
 MAX_CAPSULE_CHARS = 100_000
 TRUSTED_REVIEW_STATE_AUTHORS = frozenset({"github-actions", "github-actions[bot]"})
+
+# This module is loaded both as a script and through importlib by the local
+# review harness.  Keep the sibling convergence module importable in either
+# mode without relying on test-order side effects.
+if str(CONTROL_DIR) not in sys.path:
+    sys.path.insert(0, str(CONTROL_DIR))
 
 
 def _project_context_paths() -> tuple[pathlib.Path, pathlib.Path]:

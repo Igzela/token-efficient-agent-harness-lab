@@ -859,6 +859,134 @@ class StewardFaultTests(unittest.TestCase):
                 )
             )
 
+    def test_review_reader_uses_latest_review_per_author_deterministically(self):
+        page = {
+            "headRefOid": HEAD,
+            "reviewDecision": "APPROVED",
+            "reviews": {
+                "nodes": [
+                    {
+                        "id": "review-old",
+                        "author": {"login": "reviewer"},
+                        "state": "CHANGES_REQUESTED",
+                        "submittedAt": "2026-08-29T03:00:00Z",
+                        "commit": {"oid": HEAD},
+                    },
+                    {
+                        "id": "review-new",
+                        "author": {"login": "reviewer"},
+                        "state": "APPROVED",
+                        "submittedAt": "2026-08-29T04:00:00Z",
+                        "commit": {"oid": HEAD},
+                    },
+                ],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+        }
+        with mock.patch.object(steward_github, "_graphql_page", return_value=page):
+            observed = steward_github.current_effective_reviews(
+                7, HEAD, "Igzela/token-efficient-agent-harness-lab"
+            )
+        self.assertEqual(observed["review_decision"], "APPROVED")
+        self.assertEqual(
+            [(item["review_id"], item["state"]) for item in observed["effective_reviews"]],
+            [("review-new", "APPROVED")],
+        )
+        self.assertEqual(observed["requested_changes"], [])
+
+    def test_review_reader_rejects_head_drift_and_malformed_pagination(self):
+        base_page = {
+            "headRefOid": HEAD,
+            "reviewDecision": "APPROVED",
+            "reviews": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+        }
+        for change, reason in (
+            ({"headRefOid": "c" * 40}, "github_review_head_changed"),
+            ({"headRefOid": "not-a-sha"}, "github_review_head_malformed"),
+            (
+                {"reviews": {"nodes": [], "pageInfo": {"hasNextPage": "false"}}},
+                "github_review_read_malformed",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                page = dict(base_page)
+                page.update(change)
+                with mock.patch.object(steward_github, "_graphql_page", return_value=page):
+                    with self.assertRaisesRegex(steward_github.GitHubReadError, reason):
+                        steward_github.current_effective_reviews(
+                            7, HEAD, "Igzela/token-efficient-agent-harness-lab"
+                        )
+
+    def test_review_reader_rejects_cross_page_decision_or_malformed_review(self):
+        first = {
+            "headRefOid": HEAD,
+            "reviewDecision": "APPROVED",
+            "reviews": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+            },
+        }
+        second = {
+            "headRefOid": HEAD,
+            "reviewDecision": "",
+            "reviews": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+        }
+        with mock.patch.object(
+            steward_github, "_graphql_page", side_effect=[first, second]
+        ):
+            with self.assertRaisesRegex(
+                steward_github.GitHubReadError,
+                "github_review_decision_changed_during_read",
+            ):
+                steward_github.current_effective_reviews(
+                    7, HEAD, "Igzela/token-efficient-agent-harness-lab"
+                )
+
+        malformed = dict(first)
+        malformed["reviews"] = {
+            "nodes": [{"id": "bad"}],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        }
+        with mock.patch.object(steward_github, "_graphql_page", return_value=malformed):
+            with self.assertRaisesRegex(
+                steward_github.GitHubReadError, "github_review_node_malformed"
+            ):
+                steward_github.current_effective_reviews(
+                    7, HEAD, "Igzela/token-efficient-agent-harness-lab"
+                )
+
+    def test_review_thread_reader_rejects_head_drift_and_malformed_pagination(self):
+        page = {
+            "headRefOid": HEAD,
+            "reviewThreads": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": "false", "endCursor": None},
+            },
+        }
+        with mock.patch.object(steward_github, "_graphql_page", return_value=page):
+            with self.assertRaisesRegex(
+                steward_github.GitHubReadError, "github_review_thread_read_malformed"
+            ):
+                steward_github.review_threads_status(
+                    7, HEAD, "Igzela/token-efficient-agent-harness-lab"
+                )
+
+        page["headRefOid"] = "c" * 40
+        page["reviewThreads"]["pageInfo"]["hasNextPage"] = False
+        with mock.patch.object(steward_github, "_graphql_page", return_value=page):
+            with self.assertRaisesRegex(
+                steward_github.GitHubReadError, "github_review_head_changed"
+            ):
+                steward_github.review_threads_status(
+                    7, HEAD, "Igzela/token-efficient-agent-harness-lab"
+                )
+
     def test_github_reader_accepts_merged_state_with_exact_head_receipt(self):
         reader = steward_github.GhReadOnlyGitHub()
         payload = {

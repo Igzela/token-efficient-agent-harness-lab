@@ -1,0 +1,97 @@
+name: agent-review
+
+# This workflow prepares a bounded, read-only review input from live GitHub
+# state.  It never approves, merges, edits labels, or executes PR checkout
+# code.  An independent reviewer and the exact-head merge gate remain the
+# authority for a review verdict.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open PR to review
+        required: true
+        type: number
+      head_sha:
+        description: Exact PR head expected by the review request
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: agent-review-${{ inputs.pr_number }}-${{ inputs.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      EXPECTED_HEAD: ${{ inputs.head_sha }}
+    steps:
+      - name: Check out trusted base action source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: main
+          path: trusted-base
+          persist-credentials: false
+
+      - name: Validate live PR identity and exact head
+        run: |
+          set -euo pipefail
+          [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || { echo "invalid PR number" >&2; exit 1; }
+          [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid head SHA" >&2; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr.json"
+          jq -e --argjson number "${PR_NUMBER}" --arg head "${EXPECTED_HEAD}" '
+            .number == $number and
+            .state == "open" and
+            .base.ref == "main" and
+            .head.sha == $head
+          ' "$RUNNER_TEMP/pr.json" >/dev/null
+
+      - name: Verify exact head with trusted action
+        uses: ./trusted-base/actions/exact-head-check
+        with:
+          github-token: ${{ github.token }}
+          pull-request: ${{ inputs.pr_number }}
+          expected-head: ${{ inputs.head_sha }}
+          allow-fork-head: "true"
+          require-review-receipt: "false"
+          proof-path: ${{ runner.temp }}/exact-head-proof.json
+
+      - name: Capture bounded complete diff for independent review
+        run: |
+          set -euo pipefail
+          gh pr diff "${PR_NUMBER}" > "$RUNNER_TEMP/review.diff"
+          bytes=$(wc -c < "$RUNNER_TEMP/review.diff")
+          if [ "$bytes" -gt 100000 ]; then
+            echo "complete review diff exceeds the bounded 100000-byte input limit" >&2
+            exit 1
+          fi
+          base_sha=$(jq -er '.base.sha' "$RUNNER_TEMP/pr.json")
+          jq -n \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --argjson pr_number "${PR_NUMBER}" \
+            --arg base_sha "$base_sha" \
+            --arg head_sha "${EXPECTED_HEAD}" \
+            --rawfile diff "$RUNNER_TEMP/review.diff" \
+            '{schema_version:"agent_review_input.v1", repository:$repository,
+              pr_number:$pr_number, base_sha:$base_sha, head_sha:$head_sha,
+              diff:$diff, verdict_authority:"independent reviewer and exact-head merge gate"}' \
+            > "$RUNNER_TEMP/review-input.json"
+
+      - name: Upload read-only review input and proof
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-review-input-${{ inputs.pr_number }}-${{ inputs.head_sha }}
+          path: |
+            ${{ runner.temp }}/review-input.json
+            ${{ runner.temp }}/exact-head-proof.json
+          retention-days: 1
+          if-no-files-found: error

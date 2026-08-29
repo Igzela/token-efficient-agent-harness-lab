@@ -8,6 +8,7 @@ and exact-head CI/review owners remain outside the Steward lifecycle.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import json
 from pathlib import Path
 import re
@@ -20,6 +21,9 @@ REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 PR_STATES = frozenset({"OPEN", "CLOSED", "MERGED"})
 CHECK_STATES = frozenset({"PASS", "PENDING", "FAIL", "UNKNOWN"})
+REVIEW_STATES = frozenset(
+    {"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"}
+)
 
 
 class GitHubFactsError(RuntimeError):
@@ -255,6 +259,39 @@ CI_CHECK_ALIASES = {
 MAX_GRAPHQL_PAGES = 20
 
 
+def _validate_review_page_head(page: dict[str, Any], head_sha: str) -> None:
+    observed_head = page.get("headRefOid")
+    if not isinstance(observed_head, str) or SHA40.fullmatch(observed_head) is None:
+        raise GitHubReadError("github_review_head_malformed")
+    if observed_head != head_sha:
+        raise GitHubReadError("github_review_head_changed")
+
+
+def _next_review_page(
+    page_info: object, *, error: str, cursor: str | None
+) -> str | None:
+    if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
+        raise GitHubReadError(error)
+    if not page_info["hasNextPage"]:
+        return None
+    next_cursor = page_info.get("endCursor")
+    if not isinstance(next_cursor, str) or not next_cursor or next_cursor == cursor:
+        raise GitHubReadError("github_review_cursor_invalid")
+    return next_cursor
+
+
+def _review_timestamp(value: object) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise GitHubReadError("github_review_timestamp_malformed")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GitHubReadError("github_review_timestamp_malformed") from exc
+    if parsed.tzinfo is None:
+        raise GitHubReadError("github_review_timestamp_malformed")
+    return parsed
+
+
 def _graphql_page(
     repository: str,
     pr_number: int,
@@ -319,9 +356,11 @@ def _review_connection_pages(
       query($owner:String!, $name:String!, $number:Int!, $after:String) {
         repository(owner:$owner, name:$name) {
           pullRequest(number:$number) {
+            headRefOid
             reviewDecision
             reviews(first:100, after:$after) {
               nodes {
+                id
                 author { login }
                 state
                 submittedAt
@@ -336,13 +375,21 @@ def _review_connection_pages(
     cursor: str | None = None
     decision: str | None = None
     nodes: list[dict[str, Any]] = []
+    decision_seen = False
     for _ in range(MAX_GRAPHQL_PAGES):
         page = _graphql_page(repository, pr_number, query, cursor=cursor)
+        _validate_review_page_head(page, head_sha)
         page_decision = page.get("reviewDecision")
-        if page_decision is not None and not isinstance(page_decision, str):
+        if page_decision is not None and (
+            not isinstance(page_decision, str)
+            or page_decision not in {"", "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"}
+        ):
             raise GitHubReadError("github_review_decision_malformed")
-        if decision is None:
+        if not decision_seen:
             decision = page_decision
+            decision_seen = True
+        elif page_decision != decision:
+            raise GitHubReadError("github_review_decision_changed_during_read")
         connection = page.get("reviews")
         if not isinstance(connection, dict):
             raise GitHubReadError("github_review_read_malformed")
@@ -351,13 +398,14 @@ def _review_connection_pages(
         if not isinstance(page_nodes, list) or not isinstance(page_info, dict):
             raise GitHubReadError("github_review_read_malformed")
         for node in page_nodes:
-            if isinstance(node, dict):
-                nodes.append(node)
-        if page_info.get("hasNextPage") is not True:
+            if not isinstance(node, dict):
+                raise GitHubReadError("github_review_read_malformed")
+            nodes.append(node)
+        next_cursor = _next_review_page(
+            page_info, error="github_review_read_malformed", cursor=cursor
+        )
+        if next_cursor is None:
             break
-        next_cursor = page_info.get("endCursor")
-        if not isinstance(next_cursor, str) or not next_cursor or next_cursor == cursor:
-            raise GitHubReadError("github_review_cursor_invalid")
         cursor = next_cursor
     else:
         raise GitHubReadError("github_review_page_limit_exceeded")
@@ -400,8 +448,13 @@ def current_effective_reviews(
     ):
         raise GitHubReadError("github_review_query_identity_invalid")
     review_decision, nodes = _review_connection_pages(pr_number, head_sha, repository)
-    effective_by_author: dict[str, dict[str, Any]] = {}
+    effective_by_author: dict[str, tuple[datetime, str, dict[str, Any]]] = {}
+    seen_ids: set[str] = set()
     for node in nodes:
+        review_id = node.get("id")
+        if not isinstance(review_id, str) or not review_id or review_id in seen_ids:
+            raise GitHubReadError("github_review_node_malformed")
+        seen_ids.add(review_id)
         author = node.get("author")
         login = author.get("login") if isinstance(author, dict) else None
         state = node.get("state")
@@ -412,16 +465,30 @@ def current_effective_reviews(
             not isinstance(login, str)
             or not login
             or not isinstance(state, str)
-            or not isinstance(submitted_at, str)
+            or state not in REVIEW_STATES
+            or not isinstance(commit_oid, str)
+            or SHA40.fullmatch(commit_oid) is None
         ):
-            continue
-        if not isinstance(commit_oid, str):
-            commit_oid = ""
-        effective_by_author[login.casefold()] = {
+            raise GitHubReadError("github_review_node_malformed")
+        submitted_time = _review_timestamp(submitted_at)
+        normalized = {
+            "review_id": review_id,
+            "login": login,
             "state": state,
+            "submitted_at": submitted_at,
             "is_current_head": commit_oid == head_sha,
         }
-    effective = list(effective_by_author.values())
+        author_key = login.casefold()
+        previous = effective_by_author.get(author_key)
+        candidate = (submitted_time, review_id, normalized)
+        if previous is None or candidate[:2] > previous[:2]:
+            effective_by_author[author_key] = candidate
+    effective = [
+        value[2]
+        for value in sorted(
+            effective_by_author.values(), key=lambda item: (item[0], item[1])
+        )
+    ]
     requested_changes = [
         item for item in effective if item.get("state") == "CHANGES_REQUESTED"
     ]
@@ -447,6 +514,7 @@ def review_threads_status(
       query($owner:String!, $name:String!, $number:Int!, $after:String) {
         repository(owner:$owner, name:$name) {
           pullRequest(number:$number) {
+            headRefOid
             reviewThreads(first:100, after:$after) {
               nodes { id isResolved }
               pageInfo { hasNextPage endCursor }
@@ -457,8 +525,10 @@ def review_threads_status(
     """
     cursor: str | None = None
     unresolved: list[str] = []
+    seen_ids: set[str] = set()
     for _ in range(MAX_GRAPHQL_PAGES):
         page = _graphql_page(repository, pr_number, query, cursor=cursor)
+        _validate_review_page_head(page, head_sha)
         connection = page.get("reviewThreads")
         if not isinstance(connection, dict):
             raise GitHubReadError("github_review_thread_read_malformed")
@@ -471,15 +541,23 @@ def review_threads_status(
                 raise GitHubReadError("github_review_thread_read_malformed")
             thread_id = node.get("id")
             resolved = node.get("isResolved")
-            if not isinstance(thread_id, str) or type(resolved) is not bool:
+            if (
+                not isinstance(thread_id, str)
+                or not thread_id
+                or thread_id in seen_ids
+                or type(resolved) is not bool
+            ):
                 raise GitHubReadError("github_review_thread_read_malformed")
+            seen_ids.add(thread_id)
             if not resolved:
                 unresolved.append(thread_id)
-        if page_info.get("hasNextPage") is not True:
+        next_cursor = _next_review_page(
+            page_info,
+            error="github_review_thread_read_malformed",
+            cursor=cursor,
+        )
+        if next_cursor is None:
             break
-        next_cursor = page_info.get("endCursor")
-        if not isinstance(next_cursor, str) or not next_cursor or next_cursor == cursor:
-            raise GitHubReadError("github_review_cursor_invalid")
         cursor = next_cursor
     else:
         raise GitHubReadError("github_review_page_limit_exceeded")

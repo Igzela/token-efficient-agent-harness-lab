@@ -1,0 +1,136 @@
+name: agent-merge
+
+# Manual, fail-closed merge boundary.  All decisions are re-read from live
+# GitHub state immediately before the one expected-head merge request.  This
+# workflow never dispatches a successor or changes orchestrator control state.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open PR eligible for guarded squash merge
+        required: true
+        type: number
+      head_sha:
+        description: Exact PR head to merge
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: write
+
+concurrency:
+  group: agent-merge-${{ inputs.pr_number }}-${{ inputs.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      EXPECTED_HEAD: ${{ inputs.head_sha }}
+    steps:
+      - name: Check out trusted base action source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: main
+          path: trusted-base
+          persist-credentials: false
+
+      - name: Validate live PR before merge checks
+        run: |
+          set -euo pipefail
+          [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || { echo "invalid PR number" >&2; exit 1; }
+          [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid head SHA" >&2; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr.json"
+          jq -e --argjson number "${PR_NUMBER}" --arg head "${EXPECTED_HEAD}" '
+            .number == $number and
+            .state == "open" and
+            .draft == false and
+            .base.ref == "main" and
+            .head.sha == $head
+          ' "$RUNNER_TEMP/pr.json" >/dev/null
+
+      - name: Verify exact head and authenticated PASS receipt
+        uses: ./trusted-base/actions/exact-head-check
+        with:
+          github-token: ${{ github.token }}
+          pull-request: ${{ inputs.pr_number }}
+          expected-head: ${{ inputs.head_sha }}
+          allow-fork-head: "true"
+          require-review-receipt: "true"
+          proof-path: ${{ runner.temp }}/exact-head-proof.json
+
+      - name: Require every canonical check on the exact head
+        run: |
+          set -euo pipefail
+          declare -A seen=()
+          declare -A failed=()
+          checks=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_HEAD}/check-runs?per_page=100" \
+            --jq '.check_runs[] | [.name, .status, (.conclusion // "")] | @tsv')
+          while IFS=$'\t' read -r name status conclusion; do
+            [ -n "$name" ] || continue
+            case "$name" in
+              exact-head|exact-head-check) logical="exact-head-check" ;;
+              rust-tests|pg-integration-tests|typescript-tests|native-runtime|docker-build|python-tests|rust-typescript-cutover|context-capsule)
+                logical="$name" ;;
+              *) continue ;;
+            esac
+            seen["$logical"]=1
+            if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+              failed["$logical"]="${status}/${conclusion}"
+            fi
+          done <<< "$checks"
+          required=(
+            exact-head-check rust-tests pg-integration-tests typescript-tests
+            native-runtime docker-build python-tests rust-typescript-cutover
+            context-capsule
+          )
+          for logical in "${required[@]}"; do
+            if [ -z "${seen[$logical]+x}" ]; then
+              echo "missing canonical check: $logical" >&2
+              exit 1
+            fi
+            if [ -n "${failed[$logical]+x}" ]; then
+              echo "canonical check is not successful: $logical=${failed[$logical]}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Merge one exact head
+        id: merge
+        run: |
+          set -euo pipefail
+          result=$(gh api --method PUT \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge" \
+            -f sha="${EXPECTED_HEAD}" -f merge_method=squash)
+          jq -e '.merged == true and (.sha | type == "string")' <<< "$result" >/dev/null
+          jq -r '.sha' <<< "$result" > "$RUNNER_TEMP/merge-commit-sha"
+
+      - name: Confirm durable merge result
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/merged-pr.json"
+          jq -e --arg head "${EXPECTED_HEAD}" '
+            .state == "closed" and
+            (.merged_at | type == "string") and
+            .head.sha == $head and
+            (.merge_commit_sha | type == "string")
+          ' "$RUNNER_TEMP/merged-pr.json" >/dev/null
+          test "$(jq -r '.merge_commit_sha' "$RUNNER_TEMP/merged-pr.json")" = "$(cat "$RUNNER_TEMP/merge-commit-sha")"
+
+      - name: Retain merge proof
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-merge-proof-${{ inputs.pr_number }}-${{ inputs.head_sha }}
+          path: |
+            ${{ runner.temp }}/exact-head-proof.json
+            ${{ runner.temp }}/merged-pr.json
+            ${{ runner.temp }}/merge-commit-sha
+          retention-days: 7
+          if-no-files-found: error

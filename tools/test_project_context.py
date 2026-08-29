@@ -85,7 +85,7 @@ def _complete_review_state(*, head: str, verdict: str) -> dict[str, object]:
 
 
 class ProjectContextTests(unittest.TestCase):
-    def test_parse_first_routed_packet_and_pr(self) -> None:
+    def test_parse_first_routed_mission_and_pr(self) -> None:
         text = """# Next Decision
 
 ## Active Routing
@@ -93,20 +93,20 @@ class ProjectContextTests(unittest.TestCase):
 1. `PE7-PRODUCT-GOLDEN-PATH-1` — `IN_PROGRESS`.
 2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
 
-## Packet PE7-PRODUCT-GOLDEN-PATH-1 — authority board
+## Mission PE7-PRODUCT-GOLDEN-PATH-1 — authority board
 
 **State:** `IN_PROGRESS`
 
 Current review surface is PR #299.
 
-## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — baseline
+## Mission PE7-REAL-WORKLOAD-EVIDENCE-1 — baseline
 
 **State:** `BLOCKED_PREREQUISITE`
 """
         self.assertEqual(
-            project_context.parse_first_routed_packet(text),
+            project_context.parse_first_routed_mission(text),
             {
-                "packet": "PE7-PRODUCT-GOLDEN-PATH-1",
+                "mission_id": "PE7-PRODUCT-GOLDEN-PATH-1",
                 "state": "IN_PROGRESS",
                 "pr_number": "299",
             },
@@ -116,12 +116,12 @@ Current review surface is PR #299.
         text = """## Active Routing
 1. `PE7-AUTHORITY-1` — `IN_PROGRESS`.
 
-## Packet PE7-AUTHORITY-1
+## Mission PE7-AUTHORITY-1
 **State:** `IN_PROGRESS`
 **Owned PR:** #302
 Issue #208 remains stopped and PR #299 is a prerequisite.
 """
-        self.assertEqual(project_context.parse_first_routed_packet(text)["pr_number"], "302")
+        self.assertEqual(project_context.parse_first_routed_mission(text)["pr_number"], "302")
 
     def test_explicit_non_numeric_owner_does_not_fallback_to_history(self) -> None:
         for owner_label in ("Owned PR", "Review surface"):
@@ -129,13 +129,13 @@ Issue #208 remains stopped and PR #299 is a prerequisite.
                 text = f"""## Active Routing
 1. `PE7-AUTHORITY-1` — `IN_PROGRESS`.
 
-## Packet PE7-AUTHORITY-1
+## Mission PE7-AUTHORITY-1
 **State:** `IN_PROGRESS`
 **{owner_label}:** TBD
 Phase one was accepted through PR #302.
 """
                 self.assertIsNone(
-                    project_context.parse_first_routed_packet(text)["pr_number"]
+                    project_context.parse_first_routed_mission(text)["pr_number"]
                 )
 
     def test_parse_open_frontiers(self) -> None:
@@ -166,13 +166,13 @@ Phase one was accepted through PR #302.
             ],
         )
 
-    def test_live_frontier_prefers_structured_packet_binding(self) -> None:
+    def test_live_frontier_prefers_structured_mission_binding(self) -> None:
         observer = mock.Mock()
         observer.list_open_pull_requests.return_value = [
             {
                 "number": 370,
                 "title": "Refreeze",
-                "body": "Packet: `PE7-RWE-V2-REFREEZE-1`",
+                "body": "Mission: `PE7-RWE-V2-REFREEZE-1`",
                 "head": {"ref": "unrelated", "sha": "a" * 40},
                 "draft": True,
                 "html_url": "https://example.invalid/370",
@@ -189,7 +189,7 @@ Phase one was accepted through PR #302.
         result = project_context.observe_open_frontiers(
             "owner/repo",
             {
-                "packet": "PE7-RWE-V2-REFREEZE-1",
+                "mission_id": "PE7-RWE-V2-REFREEZE-1",
                 "state": "READY_FOR_EXECUTION",
                 "pr_number": None,
             },
@@ -197,7 +197,7 @@ Phase one was accepted through PR #302.
             observer=observer,
         )
         self.assertEqual(result["active_pr_number"], 370)
-        self.assertEqual(result["binding"], "pr_body_packet")
+        self.assertEqual(result["binding"], "pr_body_mission")
         self.assertEqual(len(result["open_frontiers"]), 2)
 
     def test_canonical_owned_pr_must_still_be_open_against_main(self) -> None:
@@ -215,7 +215,7 @@ Phase one was accepted through PR #302.
         result = project_context.observe_open_frontiers(
             "owner/repo",
             {
-                "packet": "PE7-RWE-V2-REFREEZE-1",
+                "mission_id": "PE7-RWE-V2-REFREEZE-1",
                 "state": "IN_PROGRESS",
                 "pr_number": "370",
             },
@@ -227,7 +227,7 @@ Phase one was accepted through PR #302.
             result["warning"], "canonical_owned_pr_is_not_open_against_main"
         )
 
-    def test_live_frontier_supports_exact_legacy_packet_branch(self) -> None:
+    def test_live_frontier_supports_exact_legacy_mission_branch(self) -> None:
         observer = mock.Mock()
         observer.list_open_pull_requests.return_value = [
             {
@@ -245,7 +245,7 @@ Phase one was accepted through PR #302.
         result = project_context.observe_open_frontiers(
             "owner/repo",
             {
-                "packet": "PE7-RWE-V2-REFREEZE-1",
+                "mission_id": "PE7-RWE-V2-REFREEZE-1",
                 "state": "READY_FOR_EXECUTION",
                 "pr_number": None,
             },
@@ -253,8 +253,8 @@ Phase one was accepted through PR #302.
             observer=observer,
         )
         self.assertEqual(result["active_pr_number"], 370)
-        self.assertEqual(result["binding"], "legacy_exact_packet_branch")
-        self.assertEqual(result["warning"], "legacy_exact_packet_branch_binding")
+        self.assertEqual(result["binding"], "legacy_exact_mission_branch")
+        self.assertEqual(result["warning"], "legacy_exact_mission_branch_binding")
 
     def test_live_frontier_conflict_fails_closed(self) -> None:
         observer = mock.Mock()
@@ -262,7 +262,7 @@ Phase one was accepted through PR #302.
             {
                 "number": number,
                 "title": "Conflicting owner",
-                "body": "Packet: PE7-RWE-V2-REFREEZE-1",
+                "body": "Mission: PE7-RWE-V2-REFREEZE-1",
                 "head": {"ref": f"candidate-{number}", "sha": str(number)[0] * 40},
                 "draft": True,
                 "html_url": f"https://example.invalid/{number}",
@@ -272,7 +272,7 @@ Phase one was accepted through PR #302.
         result = project_context.observe_open_frontiers(
             "owner/repo",
             {
-                "packet": "PE7-RWE-V2-REFREEZE-1",
+                "mission_id": "PE7-RWE-V2-REFREEZE-1",
                 "state": "READY_FOR_EXECUTION",
                 "pr_number": None,
             },
@@ -282,7 +282,7 @@ Phase one was accepted through PR #302.
         self.assertEqual(result["availability"], "conflict")
         self.assertIsNone(result["active_pr_number"])
 
-    def test_live_frontier_without_canonical_packet_never_selects_open_pr(self) -> None:
+    def test_live_frontier_without_canonical_mission_never_selects_open_pr(self) -> None:
         observer = mock.Mock()
         observer.list_open_pull_requests.return_value = [
             {
@@ -296,12 +296,12 @@ Phase one was accepted through PR #302.
         ]
         result = project_context.observe_open_frontiers(
             "owner/repo",
-            {"packet": None, "state": None, "pr_number": None},
+            {"mission_id": None, "state": None, "pr_number": None},
             offline=False,
             observer=observer,
         )
         self.assertEqual(result["availability"], "unavailable")
-        self.assertEqual(result["warning"], "canonical_packet_missing")
+        self.assertEqual(result["warning"], "canonical_mission_missing")
         self.assertIsNone(result["active_pr_number"])
 
     def test_structured_and_legacy_bindings_cannot_disagree(self) -> None:
@@ -318,7 +318,7 @@ Phase one was accepted through PR #302.
             {
                 "number": 371,
                 "title": "Structured owner",
-                "body": "Packet: PE7-RWE-V2-REFREEZE-1",
+                "body": "Mission: PE7-RWE-V2-REFREEZE-1",
                 "head": {"ref": "candidate", "sha": "b" * 40},
                 "draft": True,
                 "html_url": "https://example.invalid/371",
@@ -327,7 +327,7 @@ Phase one was accepted through PR #302.
         result = project_context.observe_open_frontiers(
             "owner/repo",
             {
-                "packet": "PE7-RWE-V2-REFREEZE-1",
+                "mission_id": "PE7-RWE-V2-REFREEZE-1",
                 "state": "READY_FOR_EXECUTION",
                 "pr_number": None,
             },
@@ -337,7 +337,7 @@ Phase one was accepted through PR #302.
         self.assertEqual(result["availability"], "conflict")
         self.assertEqual(
             result["warning"],
-            "structured_and_legacy_packet_bindings_conflict",
+            "structured_and_legacy_mission_bindings_conflict",
         )
 
     def test_summarize_checks_fails_closed(self) -> None:
@@ -556,7 +556,7 @@ Phase one was accepted through PR #302.
     def test_next_action_requires_exact_head_review_after_green_ci(self) -> None:
         action = project_context.next_permitted_action(
             {
-                "packet": "PE7-PRODUCT-GOLDEN-PATH-1",
+                "mission_id": "PE7-PRODUCT-GOLDEN-PATH-1",
                 "state": "IN_PROGRESS",
                 "pr_number": "299",
             },
@@ -579,7 +579,7 @@ Phase one was accepted through PR #302.
     def test_draft_routes_to_review_before_canonical_ci(self) -> None:
         action = project_context.next_permitted_action(
             {
-                "packet": "PE7-RWE-V2-REFREEZE-1",
+                "mission_id": "PE7-RWE-V2-REFREEZE-1",
                 "state": "IN_PROGRESS",
                 "pr_number": "370",
             },
@@ -599,7 +599,7 @@ Phase one was accepted through PR #302.
     def test_confirmed_exact_head_review_reaches_merge_authority_gate(self) -> None:
         action = project_context.next_permitted_action(
             {
-                "packet": "PE7-PRODUCT-GOLDEN-PATH-1",
+                "mission_id": "PE7-PRODUCT-GOLDEN-PATH-1",
                 "state": "IN_PROGRESS",
                 "pr_number": "299",
             },
@@ -618,7 +618,7 @@ Phase one was accepted through PR #302.
         next_text = """## Active Routing
 1. `PE7-PRODUCT-GOLDEN-PATH-1` — `IN_PROGRESS`.
 
-## Packet PE7-PRODUCT-GOLDEN-PATH-1
+## Mission PE7-PRODUCT-GOLDEN-PATH-1
 **State:** `IN_PROGRESS`
 PR #299
 """
@@ -638,7 +638,7 @@ PR #299
             "availability": "local_only",
             "source_sha": "b" * 40,
             "current_status": status_text,
-            "next_decision": next_text,
+            "legacy_route": next_text,
         }
         with (
             mock.patch.object(project_context, "accepted_baseline", return_value=baseline),
@@ -692,7 +692,7 @@ PR #299
                 "dirty": False,
                 "change_count": 0,
             },
-            "active_packet": {"packet": None, "state": None, "pr_number": None},
+            "active_mission": {"mission_id": None, "state": None, "pr_number": None},
             "active_frontier": None,
             "blocked_or_other_frontiers": [],
             "next_permitted_action": "inspect",
@@ -834,7 +834,7 @@ PR #299
             "binding": {
                 "accepted_baseline": {"sha": "a" * 40},
                 "canonical_document_source": {"source_sha": "b" * 40},
-                "canonical_routed_packet": {"packet": "PE7-CONTEXT-CAPSULE-AUTOMATION-1"},
+                "canonical_routed_mission": {"mission_id": "PE7-CONTEXT-CAPSULE-AUTOMATION-1"},
                 "pr_exact_head": {"number": 306, "head_sha": "c" * 40},
                 "requested_pr_exact_head": {"number": 306, "head_sha": "c" * 40},
                 "checked_out_sha": "c" * 40,
@@ -861,7 +861,7 @@ PR #299
             "binding": {
                 "accepted_baseline": {"sha": "a" * 40},
                 "canonical_document_source": {"source_sha": "b" * 40},
-                "canonical_routed_packet": {"packet": "PE7-CONTEXT-CAPSULE-AUTOMATION-1"},
+                "canonical_routed_mission": {"mission_id": "PE7-CONTEXT-CAPSULE-AUTOMATION-1"},
                 "pr_exact_head": {"number": 306, "head_sha": "c" * 40},
                 "requested_pr_exact_head": {"number": 306, "head_sha": "c" * 40},
                 "checked_out_sha": "c" * 40,
@@ -1441,18 +1441,18 @@ Unresolved objections: none
         self.assertEqual(observation["review_receipt"]["state"], "invalid")
         self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
 
-    def test_new_repair_packet_id_routes_with_owned_pr(self) -> None:
+    def test_new_repair_mission_id_routes_with_owned_pr(self) -> None:
         text = """## Active Routing
 1. `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` — `IN_PROGRESS`.
 
-## Packet CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1
+## Mission CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1
 **State:** `IN_PROGRESS`
 **Owned PR:** #338
 """
         self.assertEqual(
-            project_context.parse_first_routed_packet(text),
+            project_context.parse_first_routed_mission(text),
             {
-                "packet": "CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1",
+                "mission_id": "CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1",
                 "state": "IN_PROGRESS",
                 "pr_number": "338",
             },
@@ -1469,12 +1469,12 @@ Unresolved objections: none
         self.assertEqual(obs["unresolved_objections_state"], "none_observed")
 
     # -----------------------------------------------------------------------
-    # Packet state routing
+    # Mission state routing
     # -----------------------------------------------------------------------
 
-    def test_complete_packet_routes_to_next_eligible(self) -> None:
+    def test_complete_mission_routes_to_next_eligible(self) -> None:
         action = project_context.next_permitted_action(
-            {"packet": "PE7-CONTEXT-CAPSULE-AUTOMATION-1", "state": "COMPLETE", "pr_number": "306"},
+            {"mission_id": "PE7-CONTEXT-CAPSULE-AUTOMATION-1", "state": "COMPLETE", "pr_number": "306"},
             None,
         )
         self.assertIn("complete", action)
@@ -1482,10 +1482,10 @@ Unresolved objections: none
 
     def test_blocked_prerequisite_action_forbids_implementation(self) -> None:
         action = project_context.next_permitted_action(
-            {"packet": "PE7-PRODUCT-GOLDEN-PATH-1", "state": "BLOCKED_PREREQUISITE", "pr_number": None},
+            {"mission_id": "PE7-PRODUCT-GOLDEN-PATH-1", "state": "BLOCKED_PREREQUISITE", "pr_number": None},
             None,
         )
-        self.assertIn("do not implement the blocked packet", action)
+        self.assertIn("do not implement the blocked mission", action)
 
     # -----------------------------------------------------------------------
     # Event-aware source matrix and provided checks
@@ -1517,14 +1517,14 @@ Unresolved objections: none
         next_text = """## Active Routing
 1. `PE7-CONTEXT-CAPSULE-AUTOMATION-1` — `IN_PROGRESS`.
 
-## Packet PE7-CONTEXT-CAPSULE-AUTOMATION-1
+## Mission PE7-CONTEXT-CAPSULE-AUTOMATION-1
 **State:** `IN_PROGRESS`
 """
         documents = {
             "availability": "local_only",
             "source_sha": "b" * 40,
             "current_status": "## Open Review Surfaces\n",
-            "next_decision": next_text,
+            "legacy_route": next_text,
         }
         checks = {
             name: {"result": "success"}
@@ -1579,9 +1579,9 @@ Unresolved objections: none
             "availability": "confirmed",
             "source_sha": main_sha,
             "current_status": "",
-            "next_decision": """## Active Routing
+            "legacy_route": """## Active Routing
 1. `PE7-RWE-V2-REFREEZE-1` — `READY_FOR_EXECUTION`.
-## Packet PE7-RWE-V2-REFREEZE-1
+## Mission PE7-RWE-V2-REFREEZE-1
 **State:** `READY_FOR_EXECUTION`
 **Owned PR:** #370
 """,
@@ -1824,7 +1824,7 @@ Unresolved objections: none
         ))
         self.assertTrue(project_context.is_requested_head_matched(capsule))
 
-    def test_workflow_pr_does_not_replace_canonical_packet_frontier(self) -> None:
+    def test_workflow_pr_does_not_replace_canonical_mission_frontier(self) -> None:
         workflow_head = "a" * 40
         baseline = {
             "branch": "main",
@@ -1836,9 +1836,9 @@ Unresolved objections: none
             "availability": "confirmed",
             "source_sha": baseline["sha"],
             "current_status": "",
-            "next_decision": """## Active Routing
+            "legacy_route": """## Active Routing
 1. `PE7-RWE-V2-REFREEZE-1` — `READY_FOR_EXECUTION`.
-## Packet PE7-RWE-V2-REFREEZE-1
+## Mission PE7-RWE-V2-REFREEZE-1
 **State:** `READY_FOR_EXECUTION`
 **Owned PR:** #370
 """,
