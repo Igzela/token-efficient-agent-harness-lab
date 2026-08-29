@@ -1519,15 +1519,9 @@ def session_context_route_failures(start_here: str) -> list[str]:
             if not dataclasses.is_dataclass(schema) or not schema.__dataclass_params__.frozen:
                 return [f"session context schema {schema_name} must be a frozen dataclass"]
         contract = module.parse_route_contract(start_here)
-        packet = {
-            "packet_id": "TOOL-ROUTE-CHECK-1",
-            "state": "READY_FOR_EXECUTION",
-            "source_path": "docs/NEXT_DECISION.md",
-            "packet_sha256": "0" * 64,
-            "allowed_paths": ["scripts/"],
-            "execution_authorized": False,
-            "checkpoint_allowed": True,
-        }
+        packet = module._canonical_session_packet(
+            {"docs/AUTONOMY.md": "# Autonomy contract\n"}
+        )
         for role in sorted(module.ROLES):
             route = module.build_route(
                 contract,
@@ -1548,26 +1542,26 @@ def session_context_route_failures(start_here: str) -> list[str]:
 
 
 def check_active_state_consistency(failures: list[str]) -> None:
-    if (ROOT / "docs/NEXT_DECISION.md").exists():
-        status = read("docs/CURRENT_STATUS.md")
-        next_text = read("docs/NEXT_DECISION.md")
-        future_text = read("docs/FUTURE_ROUTE.md")
-        failures.extend(next_decision_hygiene_failures(next_text))
-        failures.extend(active_state_failures(status, next_text, future_text))
-        if "## Verified Repository State" not in status:
-            failures.append("CURRENT_STATUS must preserve the accepted/open/blocked fact boundary")
-    else:
-        if not (ROOT / "docs/AUTONOMY.md").exists() or not (ROOT / "docs/ROADMAP.md").exists():
-            failures.append("Missing required governance documents: AUTONOMY.md or ROADMAP.md")
-        spec = importlib.util.spec_from_file_location("mission_contract_check", MISSION_CONTRACT_PATH)
-        if spec and spec.loader:
-            mc = importlib.util.module_from_spec(spec)
-            sys.modules[spec.name] = mc
-            try:
-                spec.loader.exec_module(mc)
-                mc.validate_registered_campaign()
-            except Exception as e:
-                failures.append(f"Registered campaign validation failed: {e}")
+    required = (
+        ROOT / "START_HERE.md",
+        ROOT / "AGENTS.md",
+        ROOT / "docs" / "ARCHITECTURE.md",
+        ROOT / "docs" / "AUTONOMY.md",
+        ROOT / "docs" / "ROADMAP.md",
+        ROOT / "docs" / "RUNBOOK.md",
+    )
+    missing = [path.relative_to(ROOT).as_posix() for path in required if not path.is_file()]
+    if missing:
+        failures.append(f"Missing required canonical documents: {missing}")
+    spec = importlib.util.spec_from_file_location("mission_contract_check", MISSION_CONTRACT_PATH)
+    if spec and spec.loader:
+        mc = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mc
+        try:
+            spec.loader.exec_module(mc)
+            mc.validate_registered_campaign()
+        except Exception as e:
+            failures.append(f"Registered campaign validation failed: {e}")
 
 
 def check_session_context_routes(failures: list[str]) -> None:

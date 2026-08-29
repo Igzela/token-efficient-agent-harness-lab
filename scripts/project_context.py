@@ -30,6 +30,15 @@ from github_observer import (  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPOSITORY = "Igzela/token-efficient-agent-harness-lab"
 PACKET_ID = r"(?:PE\d+|PR\d+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+"
+CANONICAL_DOCUMENT_PATHS = (
+    "START_HERE.md",
+    "AGENTS.md",
+    "README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/AUTONOMY.md",
+    "docs/ROADMAP.md",
+    "docs/RUNBOOK.md",
+)
 
 # Logical required check names. These are the canonical names used in the matrix.
 REQUIRED_CI_CHECKS = (
@@ -217,8 +226,9 @@ def observe_open_frontiers(
     """Discover bounded live PR routing without making it authoritative.
 
     Canonical ``Owned PR`` wins when present. Otherwise an exact structured
-    packet binding in the PR body is preferred. The exact normalized packet
-    branch is a temporary legacy bridge. Ambiguity fails closed.
+    packet binding in the PR body is preferred. A single unbound open PR is
+    accepted only as a bounded discovery fallback; multiple unbound PRs fail
+    closed.
     """
     unavailable = {
         "availability": "unavailable",
@@ -276,11 +286,29 @@ def observe_open_frontiers(
 
     packet_id = packet.get("packet")
     if not packet_id:
+        if len(frontiers) == 1:
+            return {
+                **unavailable,
+                "availability": "confirmed",
+                "source": "github_rest",
+                "active_pr_number": frontiers[0]["pr"],
+                "binding": "single_open_pr_fallback",
+                "warning": None,
+                "open_frontiers": frontiers,
+            }
+        if len(frontiers) > 1:
+            return {
+                **unavailable,
+                "availability": "conflict",
+                "source": "github_rest",
+                "warning": "multiple_open_prs_without_canonical_packet",
+                "open_frontiers": frontiers,
+            }
         return {
             **unavailable,
             "availability": "confirmed",
             "source": "github_rest",
-            "warning": "canonical_packet_unavailable",
+            "warning": None,
             "open_frontiers": frontiers,
         }
 
@@ -414,22 +442,21 @@ def canonical_documents(baseline: dict[str, Any], *, offline: bool) -> dict[str,
     unavailable = {
         "availability": "unavailable",
         "source_sha": sha,
-        "current_status": "",
-        "next_decision": "",
+        "documents": {},
     }
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
         return unavailable
     if not ensure_commit_available(sha, offline=offline):
         return unavailable
-    status = git_show_text(sha, "docs/CURRENT_STATUS.md") or git_show_text(sha, "docs/AUTONOMY.md")
-    next_text = git_show_text(sha, "docs/NEXT_DECISION.md") or git_show_text(sha, "docs/ROADMAP.md")
-    if not status or not next_text:
+    documents = {
+        path: git_show_text(sha, path) for path in CANONICAL_DOCUMENT_PATHS
+    }
+    if any(not content for content in documents.values()):
         return unavailable
     return {
         "availability": baseline.get("availability", "local_only"),
         "source_sha": sha,
-        "current_status": status,
-        "next_decision": next_text,
+        "documents": documents,
     }
 
 
@@ -918,7 +945,7 @@ def _build_review_observation(
 
     Exact-head acceptance is never inferred from aggregate state or prose.
     A review receipt comment (``EXACT-HEAD REVIEW RECEIPT`` marker, see
-    ``docs/REAL_WORLD_TESTING_PLAYBOOK.md``) is the only evidence that a
+    ``docs/AUTONOMY.md``) is the only evidence that a
     complete-diff review was bound to a specific head; a receipt naming a
     different head is stale, not acceptance.
     """
@@ -1522,7 +1549,12 @@ def build_capsule(
     repository = repository or repository_from_git()
     baseline = accepted_baseline(offline=offline)
     documents = canonical_documents(baseline, offline=offline)
-    next_text = documents.get("next_decision", "")
+    canonical_text = documents.get("documents") or {}
+    next_text = canonical_text.get("docs/ROADMAP.md", "")
+    if not next_text:
+        # Compatibility for test doubles and previously emitted local capsules;
+        # live canonical reads use CANONICAL_DOCUMENT_PATHS above.
+        next_text = documents.get("next_decision", "")
     packet = parse_first_routed_packet(next_text)
     observer = None if offline else GitHubObserver(
         repository, token=token_from_environment()

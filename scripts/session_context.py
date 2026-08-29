@@ -199,6 +199,15 @@ CANONICAL_DOCUMENTS = frozenset(
         "docs/RUNBOOK.md",
     }
 )
+CANONICAL_DOCUMENT_PATHS = (
+    "START_HERE.md",
+    "AGENTS.md",
+    "README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/AUTONOMY.md",
+    "docs/ROADMAP.md",
+    "docs/RUNBOOK.md",
+)
 
 class SessionContextError(ValueError):
     """A bounded context or recovery contract could not be proved."""
@@ -2837,16 +2846,7 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
         source_binding = "working_tree_unaccepted"
     else:
         raise SessionContextError("document_source_invalid")
-    start_here = reader("START_HERE.md")
-    status = reader("docs/CURRENT_STATUS.md") or reader("docs/AUTONOMY.md")
-    next_dec = reader("docs/NEXT_DECISION.md") or reader("docs/AUTONOMY.md")
-    future = reader("docs/FUTURE_ROUTE.md") or reader("docs/ROADMAP.md")
-    documents = {
-        "START_HERE.md": start_here,
-        "docs/CURRENT_STATUS.md": status,
-        "docs/NEXT_DECISION.md": next_dec,
-        "docs/FUTURE_ROUTE.md": future,
-    }
+    documents = {path: reader(path) for path in CANONICAL_DOCUMENT_PATHS}
     if any(not value for value in documents.values()):
         raise SessionContextError("canonical_document_unavailable")
     return {
@@ -2856,6 +2856,29 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
         "document_source_binding": source_binding,
         "documents": documents,
     }
+
+
+def _canonical_session_packet(documents: Mapping[str, str]) -> dict[str, object]:
+    """Represent the absence of an executable WorkCard without inventing one."""
+
+    source_path = "docs/AUTONOMY.md"
+    source = documents.get(source_path)
+    if not isinstance(source, str) or not source:
+        raise SessionContextError("canonical_document_unavailable")
+    return PacketBinding(
+        packet_id="CI-SESSION-ROUTE",
+        state="NO_ACTIVE_STAGE",
+        source_path=source_path,
+        packet_sha256=hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        allowed_paths=CANONICAL_DOCUMENT_PATHS,
+        forbidden_next_actions=(
+            "Do not infer execution authority from canonical context.",
+            "Do not continue without an accepted executable WorkCard.",
+        ),
+        execution_authorized=False,
+        checkpoint_allowed=False,
+        dispatch_lane=None,
+    ).to_wire()
 
 
 def _render_route(route: dict[str, Any]) -> str:
@@ -2944,18 +2967,7 @@ def main(argv: list[str] | None = None) -> int:
         loaded = _load_documents(source=source, offline=args.offline)
         accepted_main_sha = loaded["accepted_main_sha"]
         documents = loaded["documents"]
-        packet = current_packet_binding(
-            documents["docs/NEXT_DECISION.md"],
-            documents["docs/CURRENT_STATUS.md"],
-            accepted_main_sha,
-        )
-        if source != "accepted":
-            packet_model = PacketBinding.from_wire(packet)
-            packet = replace(
-                packet_model,
-                execution_authorized=False,
-                checkpoint_allowed=False,
-            ).to_wire()
+        packet = _canonical_session_packet(documents)
 
         if args.command == "route":
             contract = parse_route_contract(documents["START_HERE.md"])
@@ -2972,28 +2984,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "extract-packet":
-            source_path = (
-                "docs/NEXT_DECISION.md"
-                if args.packet == packet["packet_id"]
-                else "docs/FUTURE_ROUTE.md"
-            )
-            value = extract_packet(
-                documents[source_path],
-                packet_id=args.packet,
-                accepted_main_sha=accepted_main_sha,
-                source_path=source_path,
-            )
-            if source != "accepted":
-                value["execution_authorized"] = False
-                value["authority"] = "working_tree_unaccepted_projection_only"
-            _print(value, args.format)
-            return 0
+            raise SessionContextError("current_packet_unavailable")
 
         snapshot = capture_checkout(accepted_main_sha)
         dispatch_capsule = (
             None
             if packet["state"] not in EXECUTABLE_PACKET_STATES
-            else current_dispatch_capsule(documents["docs/NEXT_DECISION.md"], packet)
+            else current_dispatch_capsule(documents[packet["source_path"]], packet)
         )
         if args.command == "enter":
             receipt = read_checkpoint()
@@ -3016,7 +3013,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "checkpoint-auto":
             if args.packet != packet["packet_id"]:
                 raise SessionContextError("checkpoint_packet_not_current")
-            capsule = current_dispatch_capsule(documents["docs/NEXT_DECISION.md"], packet)
+            capsule = current_dispatch_capsule(documents[packet["source_path"]], packet)
             if args.work_state == "STABLE":
                 if not args.verify:
                     raise SessionContextError("checkpoint_auto_stable_without_verification")

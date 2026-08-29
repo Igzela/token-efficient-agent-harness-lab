@@ -106,7 +106,7 @@ STOP_CATEGORIES = {
     "SAFETY_CONFLICT": "PAUSED_FOR_OWNER",
 }
 
-LEGACY_LIFECYCLE_WRITER = "scripts/agent-control/local_loop.py"
+LIFECYCLE_COORDINATOR = "scripts/agent-control/steward.py"
 TRUSTED_OWNER_IDENTITIES = ("repository-owner",)
 CAMPAIGN_MISSION_ID = "AUTONOMOUS-STEWARD-MIGRATION-2026-08-27"
 CAMPAIGN_REPOSITORY = "Igzela/token-efficient-agent-harness-lab"
@@ -114,56 +114,18 @@ CAMPAIGN_SOURCE_REF = "autonomous-steward-migration-plan-2026-08-27"
 CAMPAIGN_SOURCE_SHA256 = "4b6eacaa4ff58337a02a6a73f458ffb0e4d3cb4e71f256c1024b3dd6205e1d39"
 CAMPAIGN_BASE_SHA = "7f0e5afd22a9441073e1ac71d981dfc74060a948"
 CAMPAIGN_ALLOWED_PATHS = (
-    "docs/ARCHITECTURE_BOOK.md",
-    "docs/CURRENT_STATUS.md",
-    "docs/FUTURE_ROUTE.md",
-    "docs/MODULE_MAP.md",
-    "docs/NEXT_DECISION.md",
-    "docs/RUNBOOK.md",
-    "scripts/agent-control/ci_handler.py",
-    "scripts/agent-control/ci_verifier.py",
-    "scripts/agent-control/control_state.py",
-    "scripts/agent-control/dispatcher.py",
-    "scripts/agent-control/local_loop.py",
-    "scripts/agent-control/local_run_once.py",
-    "scripts/agent-control/mission_contract.py",
-    "scripts/agent-control/pr_binding.py",
-    "scripts/agent-control/review_convergence.py",
-    "scripts/agent-control/review_loop/cli.py",
-    "scripts/agent-control/review_loop/comment_poster.py",
-    "scripts/agent-control/review_loop/github_adapter.py",
-    "scripts/agent-control/review_loop/journal.py",
-    "scripts/agent-control/review_loop/live_validation.py",
-    "scripts/agent-control/review_loop/locking.py",
-    "scripts/agent-control/review_loop/models.py",
-    "scripts/agent-control/review_loop/protocol.py",
-    "scripts/agent-control/review_loop/receipt_parser.py",
-    "scripts/agent-control/review_loop/state_machine.py",
-    "scripts/agent-control/review_loop/transport.py",
-    "scripts/agent-control/review_loop_cli.py",
-    "scripts/agent-control/route_driver.py",
-    "scripts/agent-control/shadow_steward.py",
-    "scripts/agent-control/state_manager.py",
-    "scripts/agent-control/steward.py",
-    "scripts/agent-control/steward.service",
-    "scripts/agent-control/steward_github.py",
-    "scripts/agent-control/steward_journal.py",
-    "scripts/agent-control/steward_service.py",
-    "scripts/agent-control/steward_workers.py",
-    "scripts/agent-control/validate_review.py",
+    "AGENTS.md",
+    "README.md",
+    "START_HERE.md",
+    "docs/",
+    "engine/src/context_working_set.rs",
+    "engine/src/storage/local_product_store/",
+    "scripts/agent-control/",
     "scripts/check_agent_handoff.py",
+    "scripts/project_context.py",
     "scripts/session_context.py",
-    "tests/test_agent_local_loop.py",
-    "tests/test_agent_orchestrator_repairs.py",
-    "tests/test_agent_shadow_steward.py",
-    "tests/test_agent_steward.py",
-    "tests/test_agent_steward_faults.py",
-    "tests/test_agent_steward_journal.py",
-    "tests/test_check_agent_handoff.py",
-    "tests/test_mission_contract.py",
-    "tests/test_review_convergence.py",
-    "tests/test_review_loop.py",
-    "tests/test_session_context.py",
+    "tests/",
+    "tools/",
 )
 LEGACY_COMPATIBILITY_PATHS = ("AGENTS.md", "docs/", "engine/", "scripts/", "tests/")
 
@@ -1369,7 +1331,7 @@ def validate_legacy_compatibility(packet: object, capsule: object) -> LegacyMiss
         False,
         False,
         0,
-        LEGACY_LIFECYCLE_WRITER,
+        LIFECYCLE_COORDINATOR,
     )
 
 
@@ -1377,6 +1339,7 @@ __all__ = [
     "Budget",
     "Grant",
     "LegacyMissionProjection",
+    "LIFECYCLE_COORDINATOR",
     "MaintenanceMission",
     "MissionContractError",
     "OwnerApproval",

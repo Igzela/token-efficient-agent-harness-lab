@@ -62,7 +62,7 @@ PROTECTED_PREFIXES = (
 PROTECTED_PATHS = {
     "AGENTS.md",
     "START_HERE.md",
-    "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+    "docs/AUTONOMY.md",
     "scripts/check_agent_handoff.py",
     "scripts/check_wire_codegen_drift.sh",
     "scripts/github_observer.py",

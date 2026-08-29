@@ -403,8 +403,7 @@ pub fn frozen_ec2_owners() -> Ec2OwnerBinding {
         verification: "engine/src/product_golden_path.rs".into(),
         replay: "engine/src/storage/local_product_store/harness_evolution.rs".into(),
         scorecard: EC2_EVALUATOR_OWNER.into(),
-        review: "scripts/agent-control/review_convergence.py+docs/REAL_WORLD_TESTING_PLAYBOOK.md"
-            .into(),
+        review: "scripts/agent-control/review_convergence.py+docs/AUTONOMY.md".into(),
         output: "engine/src/harness_evolution_pr_ready.rs".into(),
         audit: "engine/src/storage/local_product_store/harness_evolution.rs".into(),
         persistence: "engine/src/storage/local_product_store/harness_evolution.rs".into(),

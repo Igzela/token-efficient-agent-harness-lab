@@ -483,7 +483,7 @@ class LegacyCompatibilityTests(unittest.TestCase):
         self.assertFalse(projection.execution_authorized)
         self.assertFalse(projection.authority_consumption_allowed)
         self.assertEqual(projection.external_effect_limit, 0)
-        self.assertEqual(projection.lifecycle_writer, contract.LEGACY_LIFECYCLE_WRITER)
+        self.assertEqual(projection.lifecycle_writer, contract.LIFECYCLE_COORDINATOR)
         self.assertEqual(projection.mission_id, "legacy-packet:PE7-AUTONOMOUS-STEWARD-PR1")
 
     def test_projection_rejects_registered_scope_and_output_or_store_widening(self):

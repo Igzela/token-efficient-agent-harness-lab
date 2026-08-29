@@ -353,7 +353,7 @@ class RouteContractTests(unittest.TestCase):
 
 
 class PacketExtractionTests(unittest.TestCase):
-    def test_loader_reads_status_with_route_documents_from_one_accepted_head(self):
+    def test_loader_reads_canonical_documents_from_one_accepted_head(self):
         module = mock.Mock()
         module.accepted_baseline.return_value = {"sha": MAIN, "source": "test"}
         module.ensure_commit_available.return_value = True
@@ -372,9 +372,12 @@ class PacketExtractionTests(unittest.TestCase):
             set(loaded["documents"]),
             {
                 "START_HERE.md",
-                "docs/CURRENT_STATUS.md",
-                "docs/NEXT_DECISION.md",
-                "docs/FUTURE_ROUTE.md",
+                "AGENTS.md",
+                "README.md",
+                "docs/ARCHITECTURE.md",
+                "docs/AUTONOMY.md",
+                "docs/ROADMAP.md",
+                "docs/RUNBOOK.md",
             },
         )
         self.assertTrue(all(call.args[0] == MAIN for call in module.git_show_text.call_args_list))
@@ -1192,9 +1195,9 @@ class CheckpointTests(unittest.TestCase):
                 "AGENTS.md": "# Agent Instructions\n",
                 "docs/ARCHITECTURE.md": "# Architecture\n",
                 "docs/AUTONOMY.md": "# Autonomy\n",
-                "docs/CURRENT_STATUS.md": accepted_status_document(),
-                "docs/NEXT_DECISION.md": next_document_with_dispatch(),
-                "docs/FUTURE_ROUTE.md": "# Future Route\n",
+                "README.md": "# README\n",
+                "docs/ROADMAP.md": "# Roadmap\n",
+                "docs/RUNBOOK.md": "# Runbook\n",
             },
         }
         with (
@@ -1204,10 +1207,11 @@ class CheckpointTests(unittest.TestCase):
             mock.patch.object(session_context, "_print") as printer,
         ):
             result = session_context.main(["enter", "--role", "coding", "--offline"])
-        self.assertEqual(result, 0)
+        self.assertEqual(result, 3)
         entry = printer.call_args.args[0]
         self.assertEqual(entry["schema_version"], "agent_session_entry.v1")
-        self.assertEqual(entry["context_mode"], "FRESH_PACKET")
+        self.assertEqual(entry["context_mode"], "STOP")
+        self.assertEqual(entry["resume_disposition"], "DECISION_REQUIRED")
 
     def test_manual_checkpoint_cli_is_not_exposed(self):
         with self.assertRaises(SystemExit):

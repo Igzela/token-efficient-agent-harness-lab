@@ -509,7 +509,7 @@ PR4B_CANARY_PROPOSAL_SHA256 = (
     "3a55ac107a2cae2a049e37804ea851036849c37aa84f95138db7d7f611db7eae"
 )
 PR4B_CANARY_APPROVAL_ISSUE = 208
-PR4B_CANARY_ALLOWED_PATHS = ("docs/CURRENT_STATUS.md",)
+PR4B_CANARY_ALLOWED_PATHS = ("docs/ARCHITECTURE.md",)
 
 # The WorkCard worktree is intentionally created from the accepted base.  Keep
 # the tiny provider-free canary program in the argv passed to the bounded
@@ -517,7 +517,7 @@ PR4B_CANARY_ALLOWED_PATHS = ("docs/CURRENT_STATUS.md",)
 # dependency of that exact-base worktree.
 _PR4B_CANARY_CHILD = r'''import hashlib,json,os,socket,subprocess,sys,tempfile
 from pathlib import Path
-T="docs/CURRENT_STATUS.md"; A={"leaf-a":"The repository owner approved the Autonomous Steward migration direction","leaf-b":"The existing controller remains the only lifecycle writer"}
+T="docs/ARCHITECTURE.md"; A={"leaf-a":"Rust `engine/` as the sole runtime, scheduler, policy, and application-owned storage authority.","leaf-b":"Autonomous Steward as the repository-maintenance outer loop coordinating missions, stages, and workcards without creating parallel schedulers or state stores."}
 def g(*a,raw=0):
  r=subprocess.run(["git",*a],capture_output=True,text=not raw)
  if r.returncode: raise RuntimeError("git")

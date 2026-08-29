@@ -376,7 +376,7 @@ bundle = client.dispatch("Summarize docs without provider calls")
 - Adaptive Fusion supports guarded candidate selection, bounded parallel-panel fusion, safe observations, controlled experiments, auto promotion, completion routing, policy evidence, and rollback. A ready trusted-local profile may compose these gates only after readiness validation; every path remains bounded, killable, audited, and redacted.
 - The Adaptive Fusion operator surface exposes effective authority, spend/traffic/worker bounds, safe observation aggregates, redacted recent audit actions, confirmed scheduler pause/resume/kill, and existing policy rollback without exposing model content or credentials.
 - No destructive runtime filesystem behavior.
-- Accepted capabilities require the explicit gates, audit events, tests, rollback/kill paths, and current packet eligibility in `docs/NEXT_DECISION.md`.
+- Accepted capabilities require the explicit gates, audit events, tests, rollback/kill paths, and current eligibility in `docs/AUTONOMY.md`.
 
 ## Repository Structure
 

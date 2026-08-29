@@ -245,7 +245,13 @@ def build_context(issue_number):
         except json.JSONDecodeError:
             pass
 
-    for path in ["AGENTS.md", "docs/CURRENT_STATUS.md", "docs/NEXT_DECISION.md", "docs/MODULE_MAP.md"]:
+    for path in [
+        "AGENTS.md",
+        "docs/ARCHITECTURE.md",
+        "docs/AUTONOMY.md",
+        "docs/ROADMAP.md",
+        "docs/RUNBOOK.md",
+    ]:
         content = _cat(path) or _read_repo_file(path) or ""
         ctx[path.replace("/", "_").replace(".", "_")] = content
 
@@ -276,7 +282,7 @@ def _detect_task_requires_governance(issue_body):
     return any(indicator in lower for indicator in indicators)
 
 
-def _build_task_context(issue_body, agents_md, current_status, next_decision, module_map):
+def _build_task_context(issue_body, agents_md, architecture, autonomy, roadmap):
     """Select task-relevant context only. Avoid drowning small tasks in governance."""
     if _detect_task_requires_governance(issue_body):
         parts = []
@@ -287,13 +293,12 @@ def _build_task_context(issue_body, agents_md, current_status, next_decision, mo
                 + agents_md[:2500]
                 + "\n```"
             )
-        if current_status:
-            parts.append("### Accepted status excerpt\n\n```\n" + current_status[:2000] + "\n```")
-        packet_context = _active_packet_context(next_decision)
-        if packet_context:
-            parts.append("### Current packet\n\n```\n" + packet_context + "\n```")
-        if module_map:
-            parts.append("### Module ownership\n\n```\n" + module_map[:2000] + "\n```")
+        if architecture:
+            parts.append("### Architecture excerpt\n\n```\n" + architecture[:2000] + "\n```")
+        if autonomy:
+            parts.append("### Autonomy contract excerpt\n\n```\n" + autonomy[:2500] + "\n```")
+        if roadmap:
+            parts.append("### Roadmap excerpt\n\n```\n" + roadmap[:1500] + "\n```")
         return "\n\n".join(parts) if parts else "No additional context."
     lines = []
     body_lower = (issue_body or "").lower()
@@ -304,41 +309,14 @@ def _build_task_context(issue_body, agents_md, current_status, next_decision, mo
     return "No additional context required for this task."
 
 
-def _active_packet_context(next_decision, max_chars=6000):
-    """Return Active Routing plus exactly one expanded packet block."""
-    if not next_decision:
-        return ""
-    routing_start = next_decision.find("## Active Routing")
-    if routing_start < 0:
-        return ""
-    routing_end = next_decision.find("\n## ", routing_start + 3)
-    routing = next_decision[
-        routing_start : routing_end if routing_end >= 0 else len(next_decision)
-    ]
-    packet_match = re.search(
-        r"(?:PE\d+|PR\d+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+", routing
-    )
-    if not packet_match:
-        return routing[:max_chars]
-    packet = packet_match.group(0)
-    heading_match = re.search(
-        rf"^#{{2,3}} Packet {re.escape(packet)}\b.*$",
-        next_decision,
-        re.MULTILINE,
-    )
-    if not heading_match:
-        return routing[:max_chars]
-    next_heading = re.search(
-        r"^#{2,3} Packet ",
-        next_decision[heading_match.end() :],
-        re.MULTILINE,
-    )
-    end = (
-        heading_match.end() + next_heading.start()
-        if next_heading
-        else len(next_decision)
-    )
-    return (routing + "\n\n" + next_decision[heading_match.start() : end])[:max_chars]
+def _active_canonical_context(autonomy, roadmap, max_chars=6000):
+    """Return bounded current governance context without inventing a task."""
+    parts = []
+    if autonomy:
+        parts.append("## Autonomy contract\n" + autonomy)
+    if roadmap:
+        parts.append("## Roadmap\n" + roadmap)
+    return "\n\n".join(parts)[:max_chars]
 
 
 def _extract_relevant_lines(text, keywords, max_lines=20):
@@ -358,9 +336,9 @@ def build_implementation_prompt(issue_number, template="implementation.md"):
     task_context = _build_task_context(
         ctx["issue"]["body"],
         ctx.get("AGENTS_md", ""),
-        ctx.get("docs_CURRENT_STATUS_md", ""),
-        ctx.get("docs_NEXT_DECISION_md", ""),
-        ctx.get("docs_MODULE_MAP_md", ""),
+        ctx.get("docs_ARCHITECTURE_md", ""),
+        ctx.get("docs_AUTONOMY_md", ""),
+        ctx.get("docs_ROADMAP_md", ""),
     )
 
     prompt = template_text
@@ -418,9 +396,9 @@ def build_claim_bound_implementation_prompt(
     task_context = _build_task_context(
         issue_body,
         read_local("AGENTS.md") or "",
-        read_local("docs/CURRENT_STATUS.md") or "",
-        read_local("docs/NEXT_DECISION.md") or "",
-        read_local("docs/MODULE_MAP.md") or "",
+        read_local("docs/ARCHITECTURE.md") or "",
+        read_local("docs/AUTONOMY.md") or "",
+        read_local("docs/ROADMAP.md") or "",
     )
     prompt = template_text
     prompt = prompt.replace("{{ISSUE_NUMBER}}", str(issue_number))
@@ -443,8 +421,9 @@ def build_claim_bound_implementation_prompt(
         packet_id="claim-bound",
         mode="fresh",
         documents={
-            "docs/CURRENT_STATUS.md": read_local("docs/CURRENT_STATUS.md") or "",
-            "docs/NEXT_DECISION.md": read_local("docs/NEXT_DECISION.md") or "",
+            "docs/ARCHITECTURE.md": read_local("docs/ARCHITECTURE.md") or "",
+            "docs/AUTONOMY.md": read_local("docs/AUTONOMY.md") or "",
+            "docs/ROADMAP.md": read_local("docs/ROADMAP.md") or "",
         },
     )
     return prompt
@@ -545,9 +524,9 @@ def build_claim_bound_plan_implementation_prompt(
     task_context = _build_task_context(
         task_body,
         read_local("AGENTS.md") or "",
-        read_local("docs/CURRENT_STATUS.md") or "",
-        read_local("docs/NEXT_DECISION.md") or "",
-        read_local("docs/MODULE_MAP.md") or "",
+        read_local("docs/ARCHITECTURE.md") or "",
+        read_local("docs/AUTONOMY.md") or "",
+        read_local("docs/ROADMAP.md") or "",
     )
     prompt = template_text
     prompt = prompt.replace("{{ISSUE_NUMBER}}", f"plan packet {packet_id}")

@@ -5,7 +5,7 @@ You are an autonomous review agent working on {{REPO_NAME}}.
 Review PR #{{PR_NUMBER}} at head SHA `{{HEAD_SHA}}`.
 
 Apply the repository **Review Convergence Protocol** in
-`docs/REAL_WORLD_TESTING_PLAYBOOK.md`: separate severity from disposition;
+`docs/AUTONOMY.md`: separate severity from disposition;
 only hard-contract violations may block the current head; exact `PASS` may
 carry deferred non-blocking notes; do not emit a detailed patch plan.
 

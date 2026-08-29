@@ -29,7 +29,7 @@ The changed files must be a non-empty subset of the machine-readable allowed-pat
 3. Follow the code conventions, module ownership, and architecture boundaries in the repository.
 4. Run the checks that are relevant to your changes. For documentation-only changes, `git diff --check` and checking that the written file is well-formed Markdown is sufficient.
 5. Verify that every task-required file exists on disk and that every changed path is within the allowed set. Do not stage changes; the orchestrator will capture and stage the exact candidate after verification.
-6. When the orchestrator opens a PR from your staged changes, merge eligibility requires an exact-head review receipt on the stable head (exact SHA, complete diff, axes, outcome — see `docs/REAL_WORLD_TESTING_PLAYBOOK.md`); a replacement head invalidates a prior receipt, so keep the reviewed head the stable one.
+6. When the orchestrator opens a PR from your staged changes, merge eligibility requires an exact-head review receipt on the stable head (exact SHA, complete diff, axes, outcome — see `docs/AUTONOMY.md`); a replacement head invalidates a prior receipt, so keep the reviewed head the stable one.
 
 ### Investigation Escalation (`ask_sol`)
 
