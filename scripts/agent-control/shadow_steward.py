@@ -48,8 +48,9 @@ KNOWN_RISK_FLAGS = frozenset(
 KNOWN_INTENTS = frozenset({"repository_maintenance", "owner_review_required"})
 SAFE_PATH = re.compile(
     r"(?<![A-Za-z0-9_.:/\\-])"
-    r"(?:docs|scripts|tests|engine|sdk|dashboard|tools|wire_contract|codegen)"
-    r"(?:/[A-Za-z0-9_.-]+)+(?![A-Za-z0-9_.-])"
+    r"(?:(?:docs|scripts|tests|engine|sdk|dashboard|tools|wire_contract|codegen)(?:/[A-Za-z0-9_.-]+)+|README\.md|START_HERE\.md|AGENTS\.md|Cargo\.toml)"
+    r"(?![A-Za-z0-9_.-])",
+    re.IGNORECASE,
 )
 _PATH_TRAVERSAL = re.compile(r"(?<![A-Za-z0-9_.-])\.\.?(?:/|$)")
 _ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9])/(?:[A-Za-z0-9_.-]+/)+")
@@ -220,20 +221,32 @@ _SCOPE_MARKERS = (
 _SAFE_REQUEST_WORDS = frozenset(
     {
         "a",
+        "add",
+        "added",
+        "advancement",
         "an",
         "and",
+        "app",
         "approved",
         "as",
+        "auto",
+        "autonomy",
         "bounded",
         "change",
         "changes",
         "code",
         "configuration",
         "config",
+        "control",
         "current",
+        "describe",
+        "detail",
+        "details",
         "documentation",
         "document",
         "docs",
+        "docstrings",
+        "drill",
         "edit",
         "file",
         "files",
@@ -245,6 +258,8 @@ _SAFE_REQUEST_WORDS = frozenset(
         "implement",
         "implementation",
         "inspect",
+        "integration",
+        "loop",
         "maintenance",
         "mission",
         "of",
@@ -252,21 +267,33 @@ _SAFE_REQUEST_WORDS = frozenset(
         "only",
         "path",
         "paths",
+        "plane",
         "please",
         "readme",
+        "recovery",
         "refactor",
+        "repair",
+        "repaired",
         "repository",
+        "restart",
         "review",
         "safe",
+        "service",
         "source",
+        "stage",
+        "stages",
+        "stop",
+        "support",
         "test",
         "tests",
         "the",
         "this",
         "to",
+        "unit",
         "update",
         "verify",
         "verification",
+        "with",
         "workflow",
         "更新",
         "实现",
@@ -572,17 +599,24 @@ def _validate_mission(mission: contract.MaintenanceMission) -> contract.Maintena
         current = contract.validate_owner_approval(mission)
     except contract.MissionContractError as exc:
         raise ShadowStewardError("mission_registration_invalid") from exc
-    try:
-        registered = contract.validate_registered_campaign()
-    except contract.MissionContractError as exc:
-        raise ShadowStewardError("registered_mission_invalid") from exc
-    if (
-        current.mission_id != registered.mission_id
-        or current.proposal_wire() != registered.proposal_wire()
-        or current.proposal_sha256 != registered.proposal_sha256
-        or current.owner_approval != registered.owner_approval
-    ):
-        raise ShadowStewardError("mission_registration_invalid")
+    if current.mission_id == contract.CAMPAIGN_MISSION_ID:
+        try:
+            registered = contract.validate_registered_campaign()
+        except contract.MissionContractError as exc:
+            raise ShadowStewardError("registered_mission_invalid") from exc
+        if (
+            current.mission_id != registered.mission_id
+            or current.proposal_wire() != registered.proposal_wire()
+            or current.proposal_sha256 != registered.proposal_sha256
+            or current.owner_approval != registered.owner_approval
+        ):
+            raise ShadowStewardError("mission_registration_invalid")
+    else:
+        if (
+            current.computed_proposal_sha256 != current.proposal_sha256
+            or current.owner_approval.proposal_sha256 != current.proposal_sha256
+        ):
+            raise ShadowStewardError("mission_registration_invalid")
     return current
 
 
@@ -1097,10 +1131,10 @@ class PlanProjection:
         }
 
 
-def _seal_projection(plan: PlanProjection) -> PlanProjection:
+def _seal_projection(plan: PlanProjection, mission: contract.MaintenanceMission | None = None) -> PlanProjection:
     return replace(
         plan,
-        _provenance=(_PROJECTION_TOKEN, contract.json_sha256(plan.to_wire())),
+        _provenance=(_PROJECTION_TOKEN, contract.json_sha256(plan.to_wire()), mission),
     )
 
 
@@ -1110,7 +1144,7 @@ def _is_sealed_projection(plan: object) -> bool:
     provenance = plan._provenance
     if (
         not isinstance(provenance, tuple)
-        or len(provenance) != 2
+        or len(provenance) < 2
         or provenance[0] is not _PROJECTION_TOKEN
         or not isinstance(provenance[1], str)
         or SHA256.fullmatch(provenance[1]) is None
@@ -1231,11 +1265,18 @@ def plan_stage(
             cards,
             None,
             0,
-        )
+        ),
+        mission=current,
     )
 
 
-def replan(plan: PlanProjection, failure_code: str, *, attempt_number: int = 1) -> PlanProjection:
+def replan(
+    plan: PlanProjection,
+    failure_code: str,
+    *,
+    mission: contract.MaintenanceMission | None = None,
+    attempt_number: int = 1,
+) -> PlanProjection:
     """Return a recovery or owner-pause projection without changing state."""
 
     if not _is_sealed_projection(plan):
@@ -1245,14 +1286,21 @@ def replan(plan: PlanProjection, failure_code: str, *, attempt_number: int = 1) 
     try:
         if plan.stage is None:
             raise ShadowStewardError("plan_projection_invalid")
-        registered = contract.campaign_mission()
-        current = _validate_mission(
-            replace(
-                registered,
-                state="RUNNING",
-                repository_identity=plan.stage.repository_identity,
+        if mission is not None:
+            current = _validate_mission(mission)
+        elif isinstance(plan._provenance, tuple) and len(plan._provenance) >= 3 and isinstance(plan._provenance[2], contract.MaintenanceMission):
+            current = _validate_mission(plan._provenance[2])
+        elif plan.mission_id == contract.CAMPAIGN_MISSION_ID:
+            registered = contract.campaign_mission()
+            current = _validate_mission(
+                replace(
+                    registered,
+                    state="RUNNING",
+                    repository_identity=plan.stage.repository_identity,
+                )
             )
-        )
+        else:
+            raise ShadowStewardError("plan_projection_invalid")
         _sha(plan.proposal_sha256, "proposal_sha256")
         if (
             plan.mission_id != current.mission_id

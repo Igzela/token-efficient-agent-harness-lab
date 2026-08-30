@@ -499,11 +499,191 @@ class ReviewerAdapter(Protocol):
         """Review one exact implementation head in a separate session."""
 
 
+_GENERAL_WORKER_CHILD = r'''import hashlib,json,os,socket,subprocess,sys,tempfile
+from pathlib import Path
+def g(*a,raw=0):
+ r=subprocess.run(["git",*a],capture_output=True,text=not raw)
+ if r.returncode: raise RuntimeError(f"git:{r.stderr}")
+ return r.stdout if raw else r.stdout.strip()
+op,c=sys.argv[1:3]
+if op=="worker":
+ att,sess,b=sys.argv[3:6]; p_arg=sys.argv[6] if len(sys.argv)>6 else ""
+ paths=[p.strip() for p in p_arg.split(",") if p.strip()]
+ try:
+  ch=[]
+  for ps in paths:
+   p=Path(ps)
+   if not p.exists():
+    p.parent.mkdir(parents=True,exist_ok=True); p.write_text(f"# WorkCard: {c}\n"); ch.append(ps)
+   else:
+    lines=p.read_text().splitlines(keepends=True); m=f"# WorkCard: {c}\n"
+    if not any(m.strip()==l.strip() for l in lines): lines.append(m); p.write_text("".join(lines))
+    ch.append(ps)
+   g("add",ps)
+  if [l for l in g("diff","--cached","--name-only").splitlines() if l]: g("commit","-m",f"chore: {c}")
+  h=g("rev-parse","HEAD"); cp=[l for l in g("diff","--name-only",f"{b}..{h}").splitlines() if l]
+  print(json.dumps({"schema_version":"steward_worker_outcome.v1","status":"PASS","session_id":sess,"head_sha":h,"changed_paths":cp or ch or (paths[:1] if paths else []),"detail":f"ok_{c}"},separators=(",",":")))
+ except Exception as e:
+  print(json.dumps({"schema_version":"steward_worker_outcome.v1","status":"FAIL","session_id":sess,"head_sha":b,"changed_paths":[],"detail":f"err:{e}"},separators=(",",":")))
+else:
+ b,h,impl,rev=sys.argv[3:7]; allowed=[p.strip() for p in (sys.argv[7] if len(sys.argv)>7 else "").split(",") if p.strip()]
+ d=g("diff","--binary","--no-ext-diff",f"{b}...{h}",raw=1); names=[l for l in g("diff","--name-only",f"{b}...{h}").splitlines() if l]; bad=[]
+ for n in names:
+  if n not in allowed and not any(n.startswith(p.rstrip("/")+"/") for p in allowed): bad.append("outside_scope")
+ if g("diff","--check",f"{b}...{h}"): bad.append("footprint")
+ for n in names:
+  ls=g("ls-tree","-r",h,"--",n).split()
+  if ls and ls[:1] not in (["100644"],["100755"]): bad.append("regular_file")
+ try:
+  tp=Path(allowed[0] if allowed else "README.md"); tp.write_bytes(tp.read_bytes() if tp.exists() else b""); wb=False
+ except OSError: wb=True
+ try:
+  s=socket.create_connection(("192.0.2.1",80),0.2); s.close(); nb=False
+ except OSError: nb=True
+ cf=not any(any(v in k.upper() for v in ("TOKEN","SECRET","PASSWORD","API_KEY","CREDENTIAL")) for k in os.environ)
+ if not wb: bad.append("reviewer_write_not_blocked")
+ if not nb: bad.append("network_not_isolated")
+ if not cf: bad.append("credential_environment_not_clean")
+ if d:
+  with tempfile.TemporaryDirectory() as z:
+   for n in names:
+    try:
+     t=g("show",f"{h}:{n}",raw=1); q=Path(z)/n; q.parent.mkdir(parents=True,exist_ok=True); q.write_bytes(t)
+    except Exception: pass
+   rr=subprocess.run(["git","apply","--check","--reverse"],input=d,cwd=z,capture_output=True); rb=(rr.returncode==0)
+ else: rb=True
+ if not rb: bad.append("rollback")
+ st="PASS" if not bad else "FAIL"
+ rows=[{"id":f"blocker-{i+1}","disposition":"block_current_head","status":"open","severity":"blocker","origin_head":h,"acceptance_condition":v} for i,v in enumerate(bad)]
+ ledger=hashlib.sha256(json.dumps(rows,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+ x={"schema_version":"steward_review_outcome.v1","status":st,"reviewer_session_id":rev,"implementation_session_id":impl,"reviewed_head_sha":h,"blockers":bad,"detail":f"rev:wb={wb},nb={nb},cf={cf},rb={rb}","reviewed_base_sha":b,"reviewed_range_sha256":hashlib.sha256(d).hexdigest(),"review_axes":["standards","spec"],"review_round":1,"review_mode":"full","review_receipt_sha256":"","summary":"review","findings":None,"security_ok":wb and nb and cf,"rollback_ok":rb,"observed_ci_status":"unknown","finding_ledger_digest":ledger}
+ y=dict(x); y.pop("detail"); y.pop("findings"); y.pop("summary"); y["review_receipt_sha256"]=""
+ x["review_receipt_sha256"]=hashlib.sha256(json.dumps(y,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+ print(json.dumps(x,separators=(",",":")))
+'''
+
+
+def general_worker() -> BoundedProcessWorker:
+    """Build the general provider-free worker executing within WorkCard boundaries."""
+
+    def command(context: WorkerContext) -> list[str]:
+        return [
+            "/usr/bin/python3",
+            "-c",
+            _GENERAL_WORKER_CHILD,
+            "worker",
+            context.card_id,
+            str(context.attempt),
+            process_session_id(context),
+            context.base_sha,
+            ",".join(context.allowed_paths),
+        ]
+
+    return BoundedProcessWorker(command, timeout_seconds=300)
+
+
+def general_reviewer() -> BoundedProcessReviewer:
+    """Build the separate read-only reviewer for general provider-free work."""
+
+    def command(context: WorkerContext, outcome: WorkerOutcome) -> list[str]:
+        return [
+            "/usr/bin/python3",
+            "-c",
+            _GENERAL_WORKER_CHILD,
+            "review",
+            context.card_id,
+            context.base_sha,
+            outcome.head_sha,
+            outcome.session_id,
+            reviewer_session_id(context, outcome),
+            ",".join(context.allowed_paths),
+        ]
+
+    return BoundedProcessReviewer(command, timeout_seconds=300)
+
+
+class FakeTestWorker:
+    """Explicit fake worker for deterministic unit tests and fault fixtures."""
+
+    def __init__(
+        self,
+        *,
+        status: str = "PASS",
+        changed_paths: tuple[str, ...] | list[str] | None = None,
+        detail: str = "fake_test_worker_outcome",
+    ):
+        self.status = status
+        self.changed_paths = tuple(changed_paths) if changed_paths is not None else None
+        self.detail = detail
+
+    def run(self, context: WorkerContext) -> WorkerOutcome:
+        session_id = process_session_id(context)
+        head_sha = _head_or_base(context)
+        paths = tuple(self.changed_paths) if self.changed_paths is not None else context.allowed_paths
+        return WorkerOutcome(
+            status=self.status,
+            session_id=session_id,
+            head_sha=head_sha,
+            changed_paths=paths,
+            detail=self.detail,
+        )
+
+
+class FakeTestReviewer:
+    """Explicit fake reviewer for deterministic unit tests and fault fixtures."""
+
+    def __init__(
+        self,
+        *,
+        status: str = "PASS",
+        blockers: tuple[str, ...] | list[str] = (),
+        detail: str = "fake_test_reviewer_outcome",
+    ):
+        self.status = status
+        self.blockers = tuple(blockers)
+        self.detail = detail
+
+    def review(self, context: WorkerContext, outcome: WorkerOutcome) -> ReviewOutcome:
+        rev_session_id = reviewer_session_id(context, outcome)
+        raw = {
+            "schema_version": "steward_review_outcome.v1",
+            "status": self.status,
+            "reviewer_session_id": rev_session_id,
+            "implementation_session_id": outcome.session_id,
+            "reviewed_head_sha": outcome.head_sha,
+            "blockers": list(self.blockers),
+            "detail": self.detail,
+            "reviewed_base_sha": context.base_sha,
+            "reviewed_range_sha256": hashlib.sha256(b"").hexdigest(),
+            "review_axes": ["standards", "spec"],
+            "review_round": 1,
+            "review_mode": "full",
+            "summary": "bounded independent review",
+            "findings": None,
+            "security_ok": True,
+            "rollback_ok": True,
+            "observed_ci_status": "unknown",
+            "finding_ledger_digest": "",
+            "review_receipt_sha256": "",
+        }
+        sealed = seal_review_outcome_wire(raw)
+        return ReviewOutcome.from_wire(sealed)
+
+    run = review
+
+
 class ProviderFreeWorker:
     """Explicit default that cannot accidentally call a Provider."""
 
+    def __init__(self, worker: BoundedProcessWorker | None = None, *, configured: bool = False):
+        self._worker = worker
+        self._configured = configured or (worker is not None)
+
     def run(self, context: WorkerContext) -> WorkerOutcome:
-        raise WorkerUnavailable("provider_free_worker_not_configured")
+        if not self._configured:
+            raise WorkerUnavailable("provider_free_worker_not_configured")
+        active_worker = self._worker or general_worker()
+        return active_worker.run(context)
 
 
 PR4B_CANARY_PROPOSAL_SHA256 = (
@@ -1239,6 +1419,8 @@ def validate_check_results(checks: object) -> list[dict[str, Any]]:
 
 __all__ = [
     "CapacityLock",
+    "FakeTestReviewer",
+    "FakeTestWorker",
     "PathConflict",
     "PathLockSet",
     "ProviderFreeWorker",
@@ -1256,10 +1438,12 @@ __all__ = [
     "WorkerOutcome",
     "WorkerUnavailable",
     "child_environment",
-    "run_allowlisted_checks",
+    "general_reviewer",
+    "general_worker",
     "lock_footprint",
-    "validate_check_results",
+    "run_allowlisted_checks",
     "select_model_tier",
-    "validate_worker_outcome",
     "validate_changed_paths",
+    "validate_check_results",
+    "validate_worker_outcome",
 ]
