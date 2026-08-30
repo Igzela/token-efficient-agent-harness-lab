@@ -59,15 +59,17 @@ R1: Independent session, review_mode=full, complete base...head diff
                 ↓
 R2: Independent session, review_mode=repair_verification, complete base...head attestation
      ├─ no open block_current_head → exact PASS + deferred notes
-     └─ open blockers remaining → PAUSED_FOR_OWNER / DECISION_REQUIRED (no autonomous R3)
+     └─ open blockers remaining → Autonomous Stage Replan / Split / Alternative Implementation
+                                  (enters PAUSED_FOR_OWNER only if crossing hard boundaries)
 ```
 
 ### Review Rules:
-- `MAX_SUBSTANTIVE_REVIEW_ROUNDS = 2` (R1 + R2)
-- `MAX_AUTONOMOUS_REPAIR_BATCHES = 1`
+- `MAX_SUBSTANTIVE_REVIEW_ROUNDS = 2` (R1 + R2) per candidate head.
+- `MAX_AUTONOMOUS_REPAIR_BATCHES = 1` per review cycle.
 - Exact `PASS` is the sole merge-authorizing verdict.
 - Findings separate severity from disposition (`block_current_head` vs `defer`).
 - Deferred notes do not block merge eligibility.
+- If review repair batches are exhausted on a specific head, Steward does not loop review infinitely. Within active Mission authority, Steward autonomously replans the stage, splits cards, or attempts alternative implementations before pausing for owner.
 
 ## Exact-Head CI and Guarded Merge
 
@@ -82,7 +84,7 @@ R2: Independent session, review_mode=repair_verification, complete base...head a
    - `python-tests`
    - `rust-typescript-cutover`
    - `context-capsule`
-3. **Guarded Merge**: Merge occurs only when branch ruleset, exact-head CI, exact `PASS` review receipt, zero open blockers, and single PR squash-merge conditions are met.
+3. **Guarded Merge Owner Delegation**: All merges are strictly delegated to the sole canonical merge workflow (`.github/workflows/agent-merge.yml`). Direct `gh pr merge` is prohibited in repository runtime. Merge occurs only when branch ruleset, exact-head CI, exact `PASS` review receipt, zero open blockers, and single PR squash-merge conditions are met. Authoritative outcome is read back from remote GitHub `main`.
 
 ## Recovery and Rollback
 
