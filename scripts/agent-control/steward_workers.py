@@ -912,8 +912,55 @@ class OpenCodeWorkCardReviewer:
             *(f"- {path}" for path in context.allowed_paths),
             "Review Standards and Spec. Return exactly one compact JSON object:",
             '{"verdict":"PASS"|"FAIL","blockers":["bounded-id"],"summary":"bounded summary"}',
+            "Do not add prose. A single optional ```json code fence is tolerated by the transport.",
             "Use PASS only when the change is within scope, safe, reversible, and complete.",
         )) + "\n"
+
+    @staticmethod
+    def _decode_response(raw: bytes) -> Any:
+        """Decode one bounded review object, tolerating one JSON code fence.
+
+        OpenCode transports model text rather than a native structured-output
+        channel.  Models commonly preserve an otherwise exact JSON response in
+        a Markdown JSON fence or bounded narration.  Extract exactly one JSON
+        object, then leave authority to the strict schema checks below;
+        multiple objects and malformed envelopes still fail closed.
+        """
+
+        try:
+            text = raw.decode("utf-8").strip()
+        except UnicodeDecodeError as exc:
+            raise WorkerError("opencode_review_output_invalid") from exc
+        if text.startswith("```"):
+            match = re.fullmatch(
+                r"```(?:json)?[ \t]*\r?\n(?P<body>.*?)\r?\n```",
+                text,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+            if match is None:
+                raise WorkerError("opencode_review_output_invalid")
+            text = match.group("body").strip()
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        # Some providers add a short bounded sentence around the requested
+        # object.  Admit exactly one JSON object and let the strict schema
+        # validation below decide authority; ambiguity still fails closed.
+        decoder = json.JSONDecoder()
+        candidates: list[Any] = []
+        for index, character in enumerate(text):
+            if character != "{":
+                continue
+            try:
+                candidate, _end = decoder.raw_decode(text, index)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                candidates.append(candidate)
+        if len(candidates) != 1:
+            raise WorkerError("opencode_review_output_invalid")
+        return candidates[0]
 
     def review(self, context: WorkerContext, outcome: WorkerOutcome) -> ReviewOutcome:
         exit_code, response_path = self.worker._invoke(
@@ -926,10 +973,7 @@ class OpenCodeWorkCardReviewer:
             raw = response_path.read_bytes()
             if not raw or len(raw) > 16 * 1024:
                 raise WorkerError("opencode_review_output_invalid")
-            try:
-                value = json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise WorkerError("opencode_review_output_invalid") from exc
+            value = self._decode_response(raw)
             if (
                 not isinstance(value, dict)
                 or set(value) != {"verdict", "blockers", "summary"}

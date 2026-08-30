@@ -279,7 +279,10 @@ for raw_line in events_path.read_text(encoding="utf-8").splitlines():
         chunks.append(text)
 if session_ids:
     session_ids_path.write_text("\n".join(session_ids) + "\n", encoding="utf-8")
-raw = "".join(chunks).encode("utf-8")
+# OpenCode may emit intermediate assistant text before tool calls.  Only the
+# final text event is the model's completed response; concatenating every text
+# event corrupts an otherwise valid structured review with earlier narration.
+raw = (chunks[-1] if chunks else "").encode("utf-8")
 if not raw or len(raw) > max_bytes:
     raise ValueError("last message size is outside the bounded range")
 try:
