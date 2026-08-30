@@ -16,6 +16,7 @@ from steward_github import (
     FakeGitHubWriter,
     GhGitHubWriter,
     GitHubMutationError,
+    GitHubPreflightError,
     GitHubFactsError,
 )
 
@@ -92,6 +93,40 @@ class TestAutonomousStewardPRB(unittest.TestCase):
         with patch.object(writer.reader, "fetch_stage_pr", return_value=mock_facts):
             with self.assertRaisesRegex(GitHubMutationError, "exact_head_mismatch_before_mark_ready"):
                 writer.mark_ready(self.repo, 301, self.head_sha)
+
+    def test_review_receipt_binding_drift_fails_before_any_mutation(self):
+        writer = GhGitHubWriter(timeout_seconds=10)
+        facts = {
+            "repository": self.repo,
+            "pr_number": 305,
+            "state": "OPEN",
+            "draft": True,
+            "merged": False,
+            "base_sha": "c" * 40,
+            "head_sha": self.head_sha,
+            "ci_state": "PENDING",
+            "review_state": "PENDING",
+            "base_branch": "main",
+            "head_branch": "stage-branch",
+        }
+        with (
+            patch.object(writer, "fetch_stage_pr", return_value=facts),
+            patch("subprocess.run") as mutation,
+        ):
+            with self.assertRaisesRegex(
+                GitHubPreflightError, "review_receipt_exact_binding_mismatch"
+            ):
+                writer.publish_exact_head_review(
+                    self.repo,
+                    305,
+                    self.head_sha,
+                    base_sha=self.base_sha,
+                    reviewer_session_id="review-session",
+                    implementation_session_id="implementation-session",
+                    reviewed_range_sha256="d" * 64,
+                    review_receipt_sha256="e" * 64,
+                )
+        mutation.assert_not_called()
 
     def test_guarded_merge_dispatches_workflow_and_verifies_result(self):
         """Verify guarded_merge delegates strictly to agent-merge.yml and reads back merge proof."""
