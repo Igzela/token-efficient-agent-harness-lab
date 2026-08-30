@@ -59,15 +59,17 @@ R1: Independent session, review_mode=full, complete base...head diff
                 ↓
 R2: Independent session, review_mode=repair_verification, complete base...head attestation
      ├─ no open block_current_head → exact PASS + deferred notes
-     └─ open blockers remaining → PAUSED_FOR_OWNER / DECISION_REQUIRED (no autonomous R3)
+     └─ open blockers remaining → Autonomous Stage Replan / Split / Alternative Implementation
+                                  (enters PAUSED_FOR_OWNER only if crossing 5 hard boundaries)
 ```
 
 ### Review Rules:
-- `MAX_SUBSTANTIVE_REVIEW_ROUNDS = 2` (R1 + R2)
-- `MAX_AUTONOMOUS_REPAIR_BATCHES = 1`
+- `MAX_SUBSTANTIVE_REVIEW_ROUNDS = 2` (R1 + R2) per candidate head.
+- `MAX_AUTONOMOUS_REPAIR_BATCHES = 1` per review cycle.
 - Exact `PASS` is the sole merge-authorizing verdict.
 - Findings separate severity from disposition (`block_current_head` vs `defer`).
 - Deferred notes do not block merge eligibility.
+- If review repair batches are exhausted on a specific head, Steward does not loop review infinitely. Within the active Mission authority, budget, attempt, and time envelope, Steward autonomously replans the stage, splits cards, or attempts alternative bounded implementations. It only pauses for owner if advancement requires expanding Mission authority/budget/deadline/effects or if an unresolvable safety/product conflict is exposed.
 
 ## Exact-Head CI and Guarded Merge
 

@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -714,6 +714,182 @@ class GhReadOnlyGitHub:
         }
 
 
+class GitHubMutationError(GitHubFactsError):
+    """A GitHub mutation was rejected, timed out, or produced an unknown outcome."""
+
+
+@runtime_checkable
+class GitHubWriter(Protocol):
+    def create_or_update_stage_pr(
+        self,
+        stage_id: str,
+        mission_id: str,
+        branch: str,
+        expected_sha: str,
+        base_sha: str,
+        title: str,
+        body: str,
+        repository: str,
+    ) -> dict[str, Any]:
+        """Create or update a Draft PR bound to the Stage identity."""
+
+    def mark_ready(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+    ) -> bool:
+        """Promote a Draft PR to Ready for review once local checks pass."""
+
+    def guarded_merge(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+        *,
+        merge_method: str = "squash",
+    ) -> dict[str, Any]:
+        """Execute a guarded squash merge bound to the expected head SHA."""
+
+
+class GhGitHubWriter:
+    """Live GitHub mutation adapter using gh CLI."""
+
+    def __init__(self, *, timeout_seconds: int = 60):
+        if not 1 <= timeout_seconds <= 120:
+            raise ValueError("timeout_seconds is outside the bounded range")
+        self.timeout_seconds = timeout_seconds
+
+    def create_or_update_stage_pr(
+        self,
+        stage_id: str,
+        mission_id: str,
+        branch: str,
+        expected_sha: str,
+        base_sha: str,
+        title: str,
+        body: str,
+        repository: str,
+    ) -> dict[str, Any]:
+        import pr_binding
+
+        return pr_binding.create_or_update_stage_pr(
+            stage_id=stage_id,
+            mission_id=mission_id,
+            branch=branch,
+            expected_sha=expected_sha,
+            base_sha=base_sha,
+            title=title,
+            body=body,
+            repo=repository,
+        )
+
+    def mark_ready(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+    ) -> bool:
+        if REPOSITORY.fullmatch(repository) is None or pr_number < 1:
+            raise GitHubMutationError("github_mutation_identity_invalid")
+        command = [
+            "gh",
+            "pr",
+            "ready",
+            str(pr_number),
+            "--repo",
+            repository,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+            if result.returncode == 0:
+                return True
+            # If PR is already ready, gh pr ready may return an error indicating so
+            if "already ready" in result.stderr.lower() or "not a draft" in result.stderr.lower():
+                return True
+            raise GitHubMutationError(f"mark_ready_failed: {result.stderr.strip()}")
+        except subprocess.TimeoutExpired as exc:
+            raise GitHubMutationError("mark_ready_timeout") from exc
+        except OSError as exc:
+            raise GitHubMutationError("gh_cli_unavailable") from exc
+
+    def guarded_merge(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+        *,
+        merge_method: str = "squash",
+    ) -> dict[str, Any]:
+        if (
+            REPOSITORY.fullmatch(repository) is None
+            or pr_number < 1
+            or SHA40.fullmatch(expected_head_sha) is None
+        ):
+            raise GitHubMutationError("github_merge_identity_invalid")
+        command = [
+            "gh",
+            "pr",
+            "merge",
+            str(pr_number),
+            "--repo",
+            repository,
+            f"--{merge_method}",
+            "--match-head-commit",
+            expected_head_sha,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+            if result.returncode == 0:
+                return {
+                    "merged": True,
+                    "repository": repository,
+                    "pr_number": pr_number,
+                    "head_sha": expected_head_sha,
+                }
+            stderr = result.stderr.strip()
+            # If merge failed, read back live facts to verify actual status
+            reader = GhReadOnlyGitHub(timeout_seconds=self.timeout_seconds)
+            facts = reader.fetch_stage_pr(repository, pr_number)
+            if facts.get("merged") is True:
+                return {
+                    "merged": True,
+                    "repository": repository,
+                    "pr_number": pr_number,
+                    "head_sha": expected_head_sha,
+                }
+            raise GitHubMutationError(f"guarded_merge_failed: {stderr}")
+        except subprocess.TimeoutExpired as exc:
+            # On timeout, check live facts before giving up
+            try:
+                reader = GhReadOnlyGitHub(timeout_seconds=self.timeout_seconds)
+                facts = reader.fetch_stage_pr(repository, pr_number)
+                if facts.get("merged") is True:
+                    return {
+                        "merged": True,
+                        "repository": repository,
+                        "pr_number": pr_number,
+                        "head_sha": expected_head_sha,
+                    }
+            except Exception:
+                pass
+            raise GitHubMutationError("merge_outcome_unknown") from exc
+        except OSError as exc:
+            raise GitHubMutationError("gh_cli_unavailable") from exc
+
+
 class FakeGitHubReader:
     """Read-only deterministic reader for service and fault tests."""
 
@@ -732,11 +908,133 @@ class FakeGitHubReader:
         return facts
 
 
+class FakeGitHubWriter:
+    """Deterministic in-memory writer and reader for testing."""
+
+    def __init__(
+        self,
+        reader: FakeGitHubReader | None = None,
+        *,
+        initial_pr_number: int = 101,
+    ):
+        self._next_pr = initial_pr_number
+        self.prs: dict[int, dict[str, Any]] = {}
+        self.reader = reader or FakeGitHubReader()
+        self.actions: list[tuple[str, dict[str, Any]]] = []
+        self.fail_merge = False
+        self.merge_outcome_unknown = False
+
+    def fetch_stage_pr(self, repository: str, pr_number: int) -> dict[str, Any]:
+        if pr_number in self.prs:
+            pr = self.prs[pr_number]
+            self.reader.reads.append((repository, pr_number))
+            return {
+                "repository": pr["repository"],
+                "pr_number": pr["pr_number"],
+                "state": pr["state"],
+                "draft": pr["draft"],
+                "merged": pr["merged"],
+                "base_sha": pr["base_sha"],
+                "head_sha": pr["head_sha"],
+                "ci_state": pr["ci_state"],
+                "review_state": pr["review_state"],
+                "base_branch": pr["base_branch"],
+                "head_branch": pr["head_branch"],
+            }
+        return self.reader.fetch_stage_pr(repository, pr_number)
+
+    def create_or_update_stage_pr(
+        self,
+        stage_id: str,
+        mission_id: str,
+        branch: str,
+        expected_sha: str,
+        base_sha: str,
+        title: str,
+        body: str,
+        repository: str,
+    ) -> dict[str, Any]:
+        # Find if PR already exists for stage
+        for num, pr in self.prs.items():
+            if pr.get("head_branch") == branch and pr.get("repository") == repository:
+                pr["head_sha"] = expected_sha
+                pr["base_sha"] = base_sha
+                pr["title"] = title
+                pr["body"] = body
+                self.actions.append(("update_pr", {"pr_number": num, "stage_id": stage_id}))
+                return dict(pr)
+        num = self._next_pr
+        self._next_pr += 1
+        record = {
+            "repository": repository,
+            "pr_number": num,
+            "number": num,
+            "state": "OPEN",
+            "draft": True,
+            "merged": False,
+            "base_sha": base_sha,
+            "head_sha": expected_sha,
+            "ci_state": "PENDING",
+            "review_state": "PENDING",
+            "base_branch": "main",
+            "head_branch": branch,
+            "stage_id": stage_id,
+            "mission_id": mission_id,
+            "title": title,
+            "body": body,
+        }
+        self.prs[num] = record
+        self.actions.append(("create_pr", {"pr_number": num, "stage_id": stage_id}))
+        return dict(record)
+
+    def mark_ready(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+    ) -> bool:
+        self.actions.append(("mark_ready", {"pr_number": pr_number, "head_sha": expected_head_sha}))
+        if pr_number in self.prs:
+            self.prs[pr_number]["draft"] = False
+            return True
+        return True
+
+    def guarded_merge(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+        *,
+        merge_method: str = "squash",
+    ) -> dict[str, Any]:
+        self.actions.append(("merge", {"pr_number": pr_number, "head_sha": expected_head_sha}))
+        if self.fail_merge:
+            raise GitHubMutationError("guarded_merge_rejected")
+        if self.merge_outcome_unknown:
+            raise GitHubMutationError("merge_outcome_unknown")
+        if pr_number in self.prs:
+            pr = self.prs[pr_number]
+            if pr.get("head_sha") != expected_head_sha:
+                raise GitHubMutationError("head_sha_mismatch")
+            pr["merged"] = True
+            pr["state"] = "MERGED"
+        return {
+            "merged": True,
+            "repository": repository,
+            "pr_number": pr_number,
+            "head_sha": expected_head_sha,
+        }
+
+
 __all__ = [
     "FakeGitHubReader",
+    "FakeGitHubWriter",
+    "GhGitHubWriter",
     "GhReadOnlyGitHub",
     "GitHubFactsError",
+    "GitHubMutationError",
     "GitHubReadError",
+    "GitHubWriter",
     "ReadOnlyGitHub",
     "StagePRFacts",
     "StagePRStatus",
