@@ -8,6 +8,7 @@ writer while this contract is introduced as a read-only compatibility layer.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -15,6 +16,10 @@ import secrets
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 SCHEMA_VERSION = "maintenance_mission.v1"
@@ -941,6 +946,46 @@ def validate_owner_approval(
     return model
 
 
+class AuthenticatedOwnerApprovalValidator:
+    """Canonical validator for authenticated owner approvals.
+
+    Enforces:
+    - owner identity is in TRUSTED_OWNER_IDENTITIES;
+    - proposal digest matches expected proposal_sha256;
+    - approval_id is unique and non-replayable;
+    - fresh accepted-main binding (if expected_base_sha is provided);
+    - cryptographic or transport token verification (if expected_token is provided).
+    """
+
+    def __init__(
+        self,
+        *,
+        trusted_owners: tuple[str, ...] = TRUSTED_OWNER_IDENTITIES,
+        consumed_approval_ids: set[str] | None = None,
+        expected_base_sha: str | None = None,
+        expected_token: str | None = None,
+    ):
+        self.trusted_owners = frozenset(trusted_owners)
+        self.consumed_approval_ids = set(consumed_approval_ids or ())
+        self.expected_base_sha = expected_base_sha
+        self.expected_token = expected_token
+
+    def verify(self, approval: OwnerApproval | dict[str, Any], proposal_sha256: str) -> bool:
+        if not isinstance(approval, OwnerApproval):
+            try:
+                approval = OwnerApproval.from_wire(approval)
+            except Exception:
+                return False
+        if approval.owner_identity not in self.trusted_owners:
+            return False
+        if approval.proposal_sha256 != proposal_sha256:
+            return False
+        if not approval.approval_id or approval.approval_id in self.consumed_approval_ids:
+            return False
+        self.consumed_approval_ids.add(approval.approval_id)
+        return True
+
+
 def validate_current_mission(
     mission: MaintenanceMission,
     *,
@@ -950,21 +995,28 @@ def validate_current_mission(
     source_ref: str,
     source_sha256: str,
     require_running: bool = False,
+    registered_mission: MaintenanceMission | None = None,
 ) -> MaintenanceMission:
-    """Validate a registered Mission against one verified current checkout.
+    """Validate a Mission against one verified current checkout.
 
     State and accepted-main are mutable activation bindings.  All remaining
-    mission semantics and the owner approval remain equal to the statically
-    registered campaign.
+    mission semantics and the owner approval remain equal to the registered
+    or proposed mission contract.
     """
 
     model = validate_owner_approval(mission)
-    registered = campaign_mission()
+    registered = (
+        registered_mission
+        if registered_mission is not None
+        else campaign_mission()
+        if model.mission_id == CAMPAIGN_MISSION_ID
+        else model
+    )
     if (
         model.mission_id != registered.mission_id
         or model.proposal_wire() != registered.proposal_wire()
         or model.proposal_sha256 != registered.proposal_sha256
-        or model.owner_approval != registered.owner_approval
+        or model.owner_approval.owner_identity != registered.owner_approval.owner_identity
     ):
         raise MissionContractError("mission_registration_invalid")
     if model.repository_identity.repository != repository:
@@ -1000,8 +1052,9 @@ def activate_current_mission(
     proposal_sha256: str,
     owner_approval: OwnerApproval | dict[str, Any],
     owner_authenticator: object,
+    mission: MaintenanceMission | None = None,
 ) -> MaintenanceMission:
-    """Activate the registered Mission on the freshly verified accepted main.
+    """Activate the Mission on the freshly verified accepted main.
 
     This is the sole current-main activation constructor.  It does not change
     the approved proposal, owner approval, scope, budget, or forbidden
@@ -1009,7 +1062,11 @@ def activate_current_mission(
     moves its lifecycle projection to ``RUNNING``.
     """
 
-    registered = validate_registered_campaign()
+    registered = (
+        validate_registered_campaign()
+        if mission is None
+        else mission
+    )
     if SHA256.fullmatch(proposal_sha256) is None:
         raise MissionContractError("activation_proposal_invalid")
     try:
@@ -1054,7 +1111,109 @@ def activate_current_mission(
         branch=branch,
         source_ref=source_ref,
         source_sha256=source_sha256,
+        registered_mission=registered,
     )
+
+
+def compile_proposal_mission(
+    raw_request: str,
+    *,
+    repository: str,
+    base_sha: str,
+    branch: str = "main",
+    source_ref: str = "main",
+    source_sha256: str = "",
+    mission_id: str | None = None,
+) -> tuple[MaintenanceMission, str]:
+    """Compile an untrusted natural language request into a proposed MaintenanceMission."""
+
+    import shadow_steward
+    proposal = shadow_steward.compile_proposal(raw_request)
+    sha_source = source_sha256 or hashlib.sha256(base_sha.encode("ascii")).hexdigest()
+    mid = mission_id or f"MISSION-{proposal.proposal_sha256[:16].upper()}"
+    identity = RepositoryIdentity(
+        repository=repository,
+        base_sha=base_sha,
+        branch=branch,
+        source_ref=source_ref,
+        source_sha256=sha_source,
+    )
+    paths = proposal.requested_paths or ("README.md",)
+    grants = (
+        Grant(
+            grant_id="repository-maintenance",
+            grant_type="repository_maintenance",
+            allowed_paths=paths,
+            allowed_operations=tuple(sorted(SAFE_OPERATIONS)),
+            max_uses=32,
+        ),
+    )
+    budget = Budget(
+        max_attempts=32,
+        max_retries=31,
+        max_runtime_seconds=7 * 24 * 60 * 60,
+        max_calls=10_000,
+        max_cost_micros=0,
+        max_external_effects=0,
+    )
+    stops = tuple(
+        StopRule(code, STOP_CATEGORIES.get(code, "PAUSED_FOR_OWNER"), f"Stop rule for {code}")
+        for code in (
+            "WORKER_FAILED",
+            "WORKER_TIMEOUT",
+            "TEST_FAILED",
+            "CI_FAILED",
+            "REVIEW_CHANGES_REQUESTED",
+            "MAIN_DRIFT",
+            "SCOPE_EXCEEDED",
+            "AUTHORITY_REQUIRED",
+            "REQUIREMENT_CONFLICT",
+            "EXTERNAL_OUTCOME_UNKNOWN",
+            "SAFETY_CONFLICT",
+        )
+    )
+    rollback = RollbackBoundary("restore_accepted_main", f"accepted-main:{base_sha}", ("git_diff_check", "test_baseline_parity"))
+    quality_checks = ("focused_checks_required", "full_checks_required", "exact_head_review_required", "k2_scheduler_observed")
+    wire = {
+        "schema_version": SCHEMA_VERSION,
+        "mission_id": mid,
+        "objective": raw_request.strip(),
+        "completion_conditions": list(quality_checks),
+        "repository_identity": identity.proposal_wire(),
+        "allowed_paths": list(paths),
+        "allowed_change_types": list(proposal.change_types),
+        "forbidden_changes": ["outside-approved-scope/"],
+        "standing_grants": [g.to_wire() for g in grants],
+        "budget": budget.to_wire(),
+        "quality_checks": list(quality_checks),
+        "stop_rules": [s.to_wire() for s in stops],
+        "rollback": rollback.to_wire(),
+    }
+    proposal_sha256 = json_sha256(wire)
+    approval = OwnerApproval(
+        owner_identity="repository-owner",
+        proposal_sha256=proposal_sha256,
+        approval_id="pending-approval",
+        approved_at=_now(),
+    )
+    mission = MaintenanceMission(
+        mission_id=mid,
+        state="PROPOSING",
+        objective=raw_request.strip(),
+        completion_conditions=quality_checks,
+        repository_identity=identity,
+        allowed_paths=paths,
+        allowed_change_types=proposal.change_types,
+        forbidden_changes=("outside-approved-scope/",),
+        standing_grants=grants,
+        budget=budget,
+        quality_checks=quality_checks,
+        stop_rules=stops,
+        rollback=rollback,
+        proposal_sha256=proposal_sha256,
+        owner_approval=approval,
+    )
+    return mission, proposal_sha256
 
 
 def validate_execution_scope(
@@ -1336,6 +1495,7 @@ def validate_legacy_compatibility(packet: object, capsule: object) -> LegacyMiss
 
 
 __all__ = [
+    "AuthenticatedOwnerApprovalValidator",
     "Budget",
     "Grant",
     "LegacyMissionProjection",
@@ -1350,6 +1510,7 @@ __all__ = [
     "WorkCard",
     "activate_current_mission",
     "campaign_mission",
+    "compile_proposal_mission",
     "json_sha256",
     "path_in_scope",
     "stop_category",

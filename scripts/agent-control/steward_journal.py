@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import time
 from typing import Any, Iterable
 
 
@@ -42,6 +43,20 @@ CARD_STATES = frozenset(
         "OUTCOME_UNKNOWN",
     }
 )
+MISSION_STATES = frozenset(
+    {
+        "IDLE",
+        "PROPOSING",
+        "WAITING_APPROVAL",
+        "RUNNING",
+        "VERIFYING",
+        "INTEGRATING",
+        "COMPLETE",
+        "PAUSED_FOR_OWNER",
+        "BLOCKED",
+    }
+)
+ALL_STATES = CARD_STATES | MISSION_STATES | {"HEALTHY", "STOPPED"}
 # OUTCOME_UNKNOWN is deliberately recoverable: it must remain visible to the
 # read-only reconciliation loop and may never be replayed as if it succeeded.
 TERMINAL_STATES = frozenset({"COMPLETE", "BLOCKED"})
@@ -190,7 +205,7 @@ class JournalEvent:
             raise JournalCorrupt("event card_id is invalid")
         if card_id and IDENTIFIER.fullmatch(card_id) is None:
             raise JournalCorrupt("event card_id is invalid")
-        if value["state"] not in CARD_STATES and value["state"] != "HEALTHY":
+        if value["state"] not in ALL_STATES:
             raise JournalCorrupt("event state is invalid")
         if value["detail"] and IDENTIFIER.fullmatch(value["detail"]) is None:
             raise JournalCorrupt("event detail is invalid")
@@ -240,11 +255,38 @@ def _now() -> str:
 def _validate_data(data: object | None) -> dict[str, Any]:
     if data is None:
         return {}
-    if not isinstance(data, dict) or len(data) > 16:
+    if not isinstance(data, dict) or len(data) > 32:
         raise JournalError("journal_data_invalid")
     encoded = _canonical(data)
-    if len(encoded.encode("utf-8")) > 4096:
+    if len(encoded.encode("utf-8")) > 16384:
         raise JournalError("journal_data_too_large")
+
+    def _validate_item(val: Any, depth: int = 0) -> None:
+        if depth > 5:
+            raise JournalError("journal_data_too_deep")
+        if val is None or isinstance(val, (bool, int, float, str)):
+            return
+        if isinstance(val, (list, tuple)):
+            if len(val) > 128:
+                raise JournalError("journal_data_value_invalid")
+            for item in val:
+                _validate_item(item, depth + 1)
+            return
+        if isinstance(val, dict):
+            if len(val) > 32:
+                raise JournalError("journal_data_value_invalid")
+            for k, v in val.items():
+                if not isinstance(k, str) or IDENTIFIER.fullmatch(k) is None:
+                    raise JournalError("journal_data_key_invalid")
+                if any(
+                    marker in k.upper()
+                    for marker in ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "APIKEY", "CREDENTIAL", "AUTH")
+                ):
+                    raise JournalError("journal_data_key_credential_shaped")
+                _validate_item(v, depth + 1)
+            return
+        raise JournalError("journal_data_value_invalid")
+
     for key, value in data.items():
         if not isinstance(key, str) or IDENTIFIER.fullmatch(key) is None:
             raise JournalError("journal_data_key_invalid")
@@ -253,25 +295,11 @@ def _validate_data(data: object | None) -> dict[str, Any]:
             for marker in ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "APIKEY", "CREDENTIAL", "AUTH")
         ):
             raise JournalError("journal_data_key_credential_shaped")
-        if isinstance(value, str):
-            if (
-                IDENTIFIER.fullmatch(value) is None
-                and REPOSITORY.fullmatch(value) is None
-                and (BRANCH.fullmatch(value) is None or ".." in value or value.endswith("/"))
-            ):
-                raise JournalError("journal_data_value_invalid")
-        elif isinstance(value, list):
-            if len(value) > 16 or any(
-                not isinstance(item, str) or IDENTIFIER.fullmatch(item) is None
-                for item in value
-            ):
-                raise JournalError("journal_data_value_invalid")
-        elif not isinstance(value, (int, bool, type(None))):
-            raise JournalError("journal_data_value_invalid")
+        _validate_item(value, 0)
     return dict(data)
 
 
-def _semantic(event: JournalEvent) -> tuple[Any, ...]:
+def _semantic(event: JournalEvent) -> tuple[object, ...]:
     return (
         event.event,
         event.idempotency_key,
@@ -295,9 +323,15 @@ class StewardJournal:
         if self.path.is_symlink():
             raise JournalError("journal_symlink_refused")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        connection = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout=10000")
+        connection.execute("PRAGMA busy_timeout=30000")
+        if str(self.path) != ":memory:":
+            try:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA synchronous=NORMAL")
+            except sqlite3.OperationalError:
+                pass
         connection.execute(
             """CREATE TABLE IF NOT EXISTS steward_journal_events (
                 seq INTEGER PRIMARY KEY,
@@ -391,7 +425,7 @@ class StewardJournal:
             raise JournalError("journal_card_id_invalid")
         if type(attempt) is not int or attempt < 0:
             raise JournalError("journal_attempt_invalid")
-        if state not in CARD_STATES and state != "HEALTHY":
+        if state not in ALL_STATES:
             raise JournalError("journal_state_invalid")
         if (
             not isinstance(detail, str)
@@ -399,7 +433,7 @@ class StewardJournal:
             or (detail and IDENTIFIER.fullmatch(detail) is None)
         ):
             raise JournalError("journal_detail_invalid")
-        if not card_id and state != "HEALTHY":
+        if not card_id and state not in (MISSION_STATES | {"HEALTHY", "STOPPED"}):
             raise JournalError("card_state_without_card_invalid")
         if state == "HEALTHY" and card_id:
             raise JournalError("heartbeat_card_invalid")
@@ -703,9 +737,103 @@ class StewardJournal:
             "tail_sha256": events[-1].sha256 if events else "",
         }
 
+    def active_mission_record(self) -> JournalEvent | None:
+        """Return the latest active, non-terminal mission activation event."""
+        all_events = self.replay()
+        for event in reversed(all_events):
+            if event.event in {"MISSION_COMPLETED", "MISSION_STOPPED"}:
+                return None
+            if event.event == "MISSION_ACTIVATED":
+                return event
+        return None
+
+    def record_mission_proposal(
+        self,
+        mission_id: str,
+        proposal_sha256: str,
+        mission_data: dict[str, Any] | None = None,
+        *,
+        idempotency_key: str | None = None,
+    ) -> JournalEvent:
+        key = idempotency_key or f"mission-proposed:{mission_id}:{proposal_sha256[:16]}"
+        return self.append(
+            event="MISSION_PROPOSED",
+            idempotency_key=key,
+            mission_id=mission_id,
+            stage_id="mission",
+            card_id="",
+            state="PROPOSING",
+            detail="mission_proposed",
+            data=mission_data or {"proposal_sha256": proposal_sha256},
+            enforce_transition=False,
+        )
+
+    def record_mission_activation(
+        self,
+        mission_id: str,
+        proposal_sha256: str,
+        mission_data: dict[str, Any] | None = None,
+        *,
+        idempotency_key: str | None = None,
+    ) -> JournalEvent:
+        key = idempotency_key or f"mission-activated:{mission_id}:{proposal_sha256[:16]}"
+        return self.append(
+            event="MISSION_ACTIVATED",
+            idempotency_key=key,
+            mission_id=mission_id,
+            stage_id="mission",
+            card_id="",
+            state="RUNNING",
+            detail="mission_activated",
+            data=mission_data or {"proposal_sha256": proposal_sha256},
+            enforce_transition=False,
+        )
+
+    def record_mission_completion(
+        self,
+        mission_id: str,
+        summary: dict[str, Any] | None = None,
+        *,
+        idempotency_key: str | None = None,
+    ) -> JournalEvent:
+        key = idempotency_key or f"mission-completed:{mission_id}:{_now()}"
+        return self.append(
+            event="MISSION_COMPLETED",
+            idempotency_key=key,
+            mission_id=mission_id,
+            stage_id="mission",
+            card_id="",
+            state="COMPLETE",
+            detail="mission_completed",
+            data=summary or {},
+            enforce_transition=False,
+        )
+
+    def record_mission_stop(
+        self,
+        mission_id: str,
+        reason: str = "emergency_stop",
+        *,
+        idempotency_key: str | None = None,
+    ) -> JournalEvent:
+        key = idempotency_key or f"mission-stopped:{mission_id}:{_now()}"
+        return self.append(
+            event="MISSION_STOPPED",
+            idempotency_key=key,
+            mission_id=mission_id,
+            stage_id="mission",
+            card_id="",
+            state="BLOCKED",
+            detail=reason,
+            data={"reason": reason},
+            enforce_transition=False,
+        )
+
 
 __all__ = [
+    "ALL_STATES",
     "CARD_STATES",
+    "MISSION_STATES",
     "JournalCorrupt",
     "JournalError",
     "IdempotencyConflict",

@@ -1,16 +1,20 @@
-"""Heartbeat, restart recovery, and read-only reconciliation for Steward."""
+"""Autonomous Steward Service: Control plane lifecycle and autonomous loop."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import argparse
+import hashlib
+import json
 import os
 from pathlib import Path
+import sys
 import threading
 from typing import Any, Callable, Mapping
 
 import mission_contract
+import shadow_steward
 from steward_github import (
     GhReadOnlyGitHub,
     GitHubFactsError,
@@ -21,7 +25,20 @@ from steward_github import (
 )
 from steward_journal import JournalError, StewardJournal
 import steward_workers
+from steward_workers import (
+    ReviewOutcome,
+    ReviewerAdapter,
+    WorkerAdapter,
+    WorkerContext,
+    WorkerOutcome,
+    general_reviewer,
+    general_worker,
+)
 import worktree_manager
+
+
+class StewardServiceError(RuntimeError):
+    """Base exception for Steward service failures."""
 
 
 def _bounded_key(value: str) -> str:
@@ -80,50 +97,474 @@ class StewardService:
     def __init__(
         self,
         *,
-        mission_id: str,
+        mission_id: str | None = None,
         journal: StewardJournal,
         github: ReadOnlyGitHub,
         repo_path: str | os.PathLike[str] | None = None,
         mission: mission_contract.MaintenanceMission | None = None,
     ):
-        try:
-            registered = (
-                mission_contract.validate_registered_campaign()
-                if mission is None
-                else mission_contract.validate_current_mission(
-                    mission,
-                    repository=mission.repository_identity.repository,
-                    base_sha=mission.repository_identity.base_sha,
-                    branch=mission.repository_identity.branch,
-                    source_ref=mission.repository_identity.source_ref,
-                    source_sha256=mission.repository_identity.source_sha256,
-                )
-            )
-        except mission_contract.MissionContractError as exc:
-            raise ValueError("active_mission_invalid") from exc
-        if mission_id != registered.mission_id:
-            raise ValueError("mission_id_not_registered")
-        self.mission_id = mission_id
-        self.mission = registered
         self.journal = journal
         self.github = github
-        self.repo_path = Path(repo_path).resolve() if repo_path is not None else None
+        self.repo_path = Path(repo_path).resolve() if repo_path is not None else Path.cwd().resolve()
         self._wakeup = threading.Event()
+
+        registered = None
+        if mission is not None:
+            try:
+                registered = (
+                    mission_contract.validate_registered_campaign()
+                    if mission.mission_id == mission_contract.CAMPAIGN_MISSION_ID
+                    else mission_contract.validate_current_mission(
+                        mission,
+                        repository=mission.repository_identity.repository,
+                        base_sha=mission.repository_identity.base_sha,
+                        branch=mission.repository_identity.branch,
+                        source_ref=mission.repository_identity.source_ref,
+                        source_sha256=mission.repository_identity.source_sha256,
+                    )
+                )
+            except mission_contract.MissionContractError as exc:
+                raise ValueError("active_mission_invalid") from exc
+            if mission_id is not None and mission_id != registered.mission_id:
+                raise ValueError("mission_id_not_registered")
+        elif mission_id is not None:
+            if mission_id == mission_contract.CAMPAIGN_MISSION_ID:
+                try:
+                    registered = mission_contract.validate_registered_campaign()
+                except mission_contract.MissionContractError as exc:
+                    raise ValueError("active_mission_invalid") from exc
+            else:
+                rec = self.journal.active_mission_record()
+                if rec is not None and rec.mission_id == mission_id and rec.data:
+                    try:
+                        registered = mission_contract.MaintenanceMission.from_wire(rec.data)
+                    except Exception:
+                        pass
+                if registered is None:
+                    raise ValueError("mission_id_not_registered")
+        else:
+            rec = self.journal.active_mission_record()
+            if rec is not None and rec.data:
+                try:
+                    registered = mission_contract.MaintenanceMission.from_wire(rec.data)
+                except Exception:
+                    pass
+
+        self.mission = registered
+        self.mission_id = mission_id or (registered.mission_id if registered else None)
 
     def heartbeat(self, *, tick_id: str | None = None) -> dict[str, Any]:
         """Record one idempotent liveness fact without changing work state."""
 
+        mid = self.mission_id or "service"
         key = _bounded_key(tick_id or f"heartbeat:{_now()}")
         event = self.journal.heartbeat(
-            mission_id=self.mission_id,
+            mission_id=mid,
             idempotency_key=key,
         )
         return {
             "schema_version": "steward_heartbeat.v1",
-            "mission_id": self.mission_id,
+            "mission_id": mid,
             "timestamp": event.timestamp,
             "seq": event.seq,
             "tail_sha256": event.sha256,
+        }
+
+    def propose(
+        self,
+        raw_request: str,
+        *,
+        repository: str,
+        base_sha: str,
+        branch: str = "main",
+        source_ref: str = "main",
+        source_sha256: str = "",
+        mission_id: str | None = None,
+    ) -> tuple[mission_contract.MaintenanceMission, str]:
+        """Compile and record a proposed mission from natural language."""
+
+        mission, proposal_sha256 = mission_contract.compile_proposal_mission(
+            raw_request,
+            repository=repository,
+            base_sha=base_sha,
+            branch=branch,
+            source_ref=source_ref,
+            source_sha256=source_sha256,
+            mission_id=mission_id,
+        )
+        self.journal.record_mission_proposal(
+            mission_id=mission.mission_id,
+            proposal_sha256=proposal_sha256,
+            mission_data=mission.to_wire(),
+        )
+        self.mission = mission
+        self.mission_id = mission.mission_id
+        return mission, proposal_sha256
+
+    def approve(
+        self,
+        proposal_mission: mission_contract.MaintenanceMission | dict[str, Any],
+        owner_approval: mission_contract.OwnerApproval | dict[str, Any],
+        owner_authenticator: object,
+    ) -> mission_contract.MaintenanceMission:
+        """Authenticate and activate a proposed mission on accepted main."""
+
+        model = (
+            proposal_mission
+            if isinstance(proposal_mission, mission_contract.MaintenanceMission)
+            else mission_contract.MaintenanceMission.from_wire(proposal_mission)
+        )
+        approval = (
+            owner_approval
+            if isinstance(owner_approval, mission_contract.OwnerApproval)
+            else mission_contract.OwnerApproval.from_wire(owner_approval)
+        )
+
+        consumed = self.journal.consume_owner_approval(
+            repository=model.repository_identity.repository,
+            mission_id=model.mission_id,
+            approval_id=approval.approval_id,
+            proposal_sha256=model.proposal_sha256,
+            accepted_main_sha=model.repository_identity.base_sha,
+        )
+        if not consumed:
+            raise mission_contract.MissionContractError("approval_already_consumed_or_replayed")
+
+        activated = mission_contract.activate_current_mission(
+            repository=model.repository_identity.repository,
+            base_sha=model.repository_identity.base_sha,
+            branch=model.repository_identity.branch,
+            source_ref=model.repository_identity.source_ref,
+            source_sha256=model.repository_identity.source_sha256,
+            proposal_sha256=model.proposal_sha256,
+            owner_approval=approval,
+            owner_authenticator=owner_authenticator,
+            mission=model,
+        )
+        self.journal.record_mission_activation(
+            mission_id=activated.mission_id,
+            proposal_sha256=activated.proposal_sha256,
+            mission_data=activated.to_wire(),
+        )
+        self.mission = activated
+        self.mission_id = activated.mission_id
+        return activated
+
+    def plan_stages(
+        self, mission: mission_contract.MaintenanceMission | None = None
+    ) -> shadow_steward.PlanProjection:
+        """Plan stages and workcards for the active mission using authenticated approval."""
+
+        active = mission or self.mission
+        if active is None:
+            rec = self.journal.active_mission_record()
+            if rec and rec.data:
+                try:
+                    active = mission_contract.MaintenanceMission.from_wire(rec.data)
+                    self.mission = active
+                    self.mission_id = active.mission_id
+                except Exception:
+                    active = None
+        if active is None:
+            raise StewardServiceError("no_active_mission")
+
+        raw_request = active.objective
+        proposal = shadow_steward.compile_proposal(raw_request)
+        stage_approval_id = f"stage-approval:{active.owner_approval.approval_id}:{proposal.proposal_sha256[:16]}"
+        stage_approval = mission_contract.OwnerApproval(
+            owner_identity=active.owner_approval.owner_identity,
+            proposal_sha256=proposal.proposal_sha256,
+            approval_id=stage_approval_id,
+            approved_at=active.owner_approval.approved_at,
+        )
+        stage_authenticator = mission_contract.AuthenticatedOwnerApprovalValidator(
+            trusted_owners=(active.owner_approval.owner_identity,),
+        )
+        plan = shadow_steward.plan_stage(
+            proposal,
+            active,
+            owner_approval=stage_approval,
+            owner_authenticator=stage_authenticator,
+        )
+        if plan.stage:
+            self.journal.append(
+                event="STAGE_PLANNED",
+                idempotency_key=f"stage-planned:{active.mission_id}:{plan.stage.stage_id}",
+                mission_id=active.mission_id,
+                stage_id=plan.stage.stage_id,
+                card_id="",
+                state="RUNNING",
+                detail="stage_planned",
+                data=plan.to_wire(),
+                enforce_transition=False,
+            )
+            for card in plan.workcards:
+                self.journal.append(
+                    event="CARD_QUEUED",
+                    idempotency_key=f"card-queued:{active.mission_id}:{plan.stage.stage_id}:{card.card_id}",
+                    mission_id=active.mission_id,
+                    stage_id=plan.stage.stage_id,
+                    card_id=card.card_id,
+                    state="QUEUED",
+                    detail="card_queued",
+                    enforce_transition=True,
+                )
+        return plan
+
+    def replan_stage(
+        self,
+        plan: shadow_steward.PlanProjection,
+        failure_code: str,
+        *,
+        attempt_number: int = 1,
+    ) -> shadow_steward.PlanProjection:
+        """Replan a stage on failure without weakening safety boundaries."""
+
+        active = self.mission
+        if active is None:
+            rec = self.journal.active_mission_record()
+            if rec and rec.data:
+                active = mission_contract.MaintenanceMission.from_wire(rec.data)
+                self.mission = active
+        replan_proj = shadow_steward.replan(
+            plan,
+            failure_code,
+            mission=active,
+            attempt_number=attempt_number,
+        )
+        mid = active.mission_id if active else "mission"
+        stage_id = plan.stage.stage_id if plan.stage else "unknown-stage"
+        self.journal.append(
+            event="STAGE_REPLANNED",
+            idempotency_key=f"stage-replanned:{mid}:{stage_id}:{attempt_number}:{failure_code}",
+            mission_id=mid,
+            stage_id=stage_id,
+            card_id="",
+            state=replan_proj.disposition if replan_proj.disposition in ("PAUSED_FOR_OWNER", "BLOCKED") else "RUNNING",
+            detail=f"replanned:{failure_code}",
+            data=replan_proj.to_wire(),
+            enforce_transition=False,
+        )
+        return replan_proj
+
+    def step(
+        self,
+        worker: WorkerAdapter | None = None,
+        reviewer: ReviewerAdapter | None = None,
+    ) -> dict[str, Any]:
+        """Execute one autonomous cycle of the Steward service loop."""
+
+        self.heartbeat()
+        self.recover()
+        self.reconcile(stage_bindings={})
+
+        active = self.mission
+        if active is None:
+            rec = self.journal.active_mission_record()
+            if rec and rec.data:
+                try:
+                    active = mission_contract.MaintenanceMission.from_wire(rec.data)
+                    self.mission = active
+                    self.mission_id = active.mission_id
+                except Exception:
+                    active = None
+
+        if active is None or active.state != "RUNNING":
+            return {"status": "IDLE", "mission_id": active.mission_id if active else None}
+
+        plan = self.plan_stages(active)
+        if plan.disposition == "PAUSED_FOR_OWNER" or not plan.stage:
+            return {
+                "status": "PAUSED_FOR_OWNER",
+                "mission_id": active.mission_id,
+                "stop": plan.stop.to_wire() if plan.stop else None,
+            }
+
+        stage = plan.stage
+        cards = plan.workcards
+
+        proj = self.journal.projection(mission_id=active.mission_id, stage_id=stage.stage_id)
+        card_states = proj.get("card_states", {})
+
+        active_worker = worker or general_worker()
+        active_reviewer = reviewer or general_reviewer()
+
+        for card in cards:
+            state = card_states.get(card.card_id)
+            if state in ("COMPLETE", "WAITING_FOR_MERGE"):
+                continue
+
+            if state is None:
+                self.journal.append(
+                    event="CARD_QUEUED",
+                    idempotency_key=f"card-queued:{active.mission_id}:{stage.stage_id}:{card.card_id}",
+                    mission_id=active.mission_id,
+                    stage_id=stage.stage_id,
+                    card_id=card.card_id,
+                    state="QUEUED",
+                    detail="card_queued",
+                    enforce_transition=True,
+                )
+
+            self.journal.append(
+                event="WORKER_STARTED",
+                idempotency_key=f"worker-start:{stage.stage_id}:{card.card_id}:1",
+                mission_id=active.mission_id,
+                stage_id=stage.stage_id,
+                card_id=card.card_id,
+                state="RUNNING",
+                detail="worker_started",
+                enforce_transition=True,
+            )
+
+            ctx = WorkerContext(
+                mission_id=active.mission_id,
+                stage_id=stage.stage_id,
+                card_id=card.card_id,
+                attempt=1,
+                model_tier=card.model_tier if hasattr(card, "model_tier") else "T1",
+                base_sha=stage.repository_identity.base_sha,
+                worktree=self.repo_path,
+                allowed_paths=card.allowed_paths,
+                steps=card.steps if hasattr(card, "steps") else ("Apply bounded approved change.",),
+                focused_tests=card.quality_checks if hasattr(card, "quality_checks") else (),
+                negative_checks=card.forbidden_changes if hasattr(card, "forbidden_changes") else (),
+                expected_evidence=card.expected_evidence if hasattr(card, "expected_evidence") else (),
+                environment=steward_workers.child_environment(dict(os.environ)),
+                worktree_branch="main",
+            )
+
+            outcome = active_worker.run(ctx)
+            if outcome.status != "PASS":
+                self.journal.append(
+                    event="WORKER_FAILED",
+                    idempotency_key=f"worker-fail:{stage.stage_id}:{card.card_id}:1",
+                    mission_id=active.mission_id,
+                    stage_id=stage.stage_id,
+                    card_id=card.card_id,
+                    state="RETRYING",
+                    detail=outcome.detail,
+                    enforce_transition=True,
+                )
+                self.replan_stage(plan, "WORKER_FAILED", attempt_number=1)
+                return {"status": "CARD_FAILED", "card_id": card.card_id, "detail": outcome.detail}
+
+            self.journal.append(
+                event="WORKER_COMMITTED",
+                idempotency_key=f"worker-commit:{stage.stage_id}:{card.card_id}:1",
+                mission_id=active.mission_id,
+                stage_id=stage.stage_id,
+                card_id=card.card_id,
+                state="VERIFYING",
+                detail="worker_committed",
+                data=outcome.to_wire(),
+                enforce_transition=True,
+            )
+
+            self.journal.append(
+                event="REVIEW_STARTED",
+                idempotency_key=f"review-start:{stage.stage_id}:{card.card_id}:1",
+                mission_id=active.mission_id,
+                stage_id=stage.stage_id,
+                card_id=card.card_id,
+                state="REVIEWING",
+                detail="review_started",
+                enforce_transition=True,
+            )
+
+            rev_outcome = active_reviewer.review(ctx, outcome)
+            if rev_outcome.status != "PASS":
+                self.journal.append(
+                    event="REVIEW_REJECTED",
+                    idempotency_key=f"review-reject:{stage.stage_id}:{card.card_id}:1",
+                    mission_id=active.mission_id,
+                    stage_id=stage.stage_id,
+                    card_id=card.card_id,
+                    state="REVIEWING",
+                    detail=rev_outcome.detail,
+                    enforce_transition=True,
+                )
+                self.replan_stage(plan, "REVIEW_CHANGES_REQUESTED", attempt_number=1)
+                return {"status": "REVIEW_REJECTED", "card_id": card.card_id, "detail": rev_outcome.detail}
+
+            self.journal.append(
+                event="REVIEW_PASSED",
+                idempotency_key=f"review-pass:{stage.stage_id}:{card.card_id}:1",
+                mission_id=active.mission_id,
+                stage_id=stage.stage_id,
+                card_id=card.card_id,
+                state="WAITING_FOR_MERGE",
+                detail="review_passed",
+                data=rev_outcome.to_wire(),
+                enforce_transition=True,
+            )
+
+        self.journal.append(
+            event="STAGE_INTEGRATED",
+            idempotency_key=f"stage-integrated:{active.mission_id}:{stage.stage_id}",
+            mission_id=active.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="INTEGRATING",
+            detail="stage_integrated",
+            data={"stage_id": stage.stage_id, "status": "INTEGRATED"},
+            enforce_transition=False,
+        )
+
+        return {
+            "status": "STAGE_INTEGRATED",
+            "mission_id": active.mission_id,
+            "stage_id": stage.stage_id,
+        }
+
+    def run(
+        self,
+        *,
+        once: bool = False,
+        interval_seconds: int = 60,
+        worker: WorkerAdapter | None = None,
+        reviewer: ReviewerAdapter | None = None,
+    ) -> None:
+        """Run the continuous autonomous service advancement loop."""
+
+        while True:
+            self.step(worker=worker, reviewer=reviewer)
+            if once:
+                break
+            self.wait_for_wakeup(interval_seconds)
+
+    def status(self) -> dict[str, Any]:
+        """Query live projection and active mission status."""
+
+        mid = self.mission_id or "service"
+        proj = self.journal.projection(mission_id=mid)
+        active = self.mission
+        if active is None:
+            rec = self.journal.active_mission_record()
+            if rec and rec.data:
+                try:
+                    active = mission_contract.MaintenanceMission.from_wire(rec.data)
+                except Exception:
+                    pass
+        return {
+            "schema_version": "steward_status.v1",
+            "mission_id": mid,
+            "mission_state": active.state if active else "IDLE",
+            "mission_objective": active.objective if active else None,
+            "projection": proj,
+        }
+
+    def stop(self, reason: str = "emergency_stop") -> dict[str, Any]:
+        """Emergency stop active mission."""
+
+        mid = self.mission_id or "service"
+        event = self.journal.record_mission_stop(mission_id=mid, reason=reason)
+        return {
+            "schema_version": "steward_stopped.v1",
+            "mission_id": mid,
+            "timestamp": event.timestamp,
+            "status": "STOPPED",
+            "reason": reason,
         }
 
     def execute_stage(
@@ -437,43 +878,135 @@ class StewardService:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run heartbeat plus read-only recovery/reconciliation."""
+    """Unified entry point for Autonomous Steward commands."""
 
-    parser = argparse.ArgumentParser(prog="steward-service")
-    parser.add_argument("--heartbeat-loop", action="store_true")
-    parser.add_argument("--once", action="store_true")
+    parser = argparse.ArgumentParser(prog="steward-service", description="Autonomous Steward Control Plane")
     parser.add_argument(
         "--journal",
         default=os.environ.get("STEWARD_JOURNAL_PATH", "/var/lib/agent-steward/steward.sqlite3"),
     )
-    parser.add_argument(
-        "--mission-id",
-        default="AUTONOMOUS-STEWARD-MIGRATION-2026-08-27",
-    )
+    parser.add_argument("--heartbeat-loop", action="store_true")
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--mission-id", default=None)
     parser.add_argument("--interval-seconds", type=int, default=60)
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    p_prop = subparsers.add_parser("propose", help="Propose a new maintenance mission from natural language")
+    p_prop.add_argument("--request", required=True, help="Natural language request or mission objective")
+    p_prop.add_argument("--repository", default="Igzela/token-efficient-agent-harness-lab")
+    p_prop.add_argument("--base-sha", default="0" * 40)
+    p_prop.add_argument("--branch", default="main")
+    p_prop.add_argument("--mission-id", default=None)
+
+    p_appr = subparsers.add_parser("approve", help="Approve and activate a proposed mission")
+    p_appr.add_argument("--mission-id", default=None)
+    p_appr.add_argument("--proposal-sha256", required=True)
+    p_appr.add_argument("--owner-identity", default="repository-owner")
+
+    p_stat = subparsers.add_parser("status", help="Query live Steward status")
+    p_stat.add_argument("--mission-id", default=None)
+
+    p_stop = subparsers.add_parser("stop", help="Emergency stop active mission")
+    p_stop.add_argument("--mission-id", default=None)
+    p_stop.add_argument("--reason", default="emergency_stop")
+
+    p_run = subparsers.add_parser("run", help="Run steward execution loop")
+    p_run.add_argument("--once", action="store_true")
+    p_run.add_argument("--interval-seconds", type=int, default=60)
+    p_run.add_argument("--mission-id", default=None)
+
     args = parser.parse_args(argv)
-    if not args.heartbeat_loop:
-        parser.error("--heartbeat-loop is required")
-    if not args.once and not 5 <= args.interval_seconds <= 3600:
-        parser.error("--interval-seconds must be between 5 and 3600")
+
+    journal = StewardJournal(args.journal)
+    github = GhReadOnlyGitHub()
+    repo_path = Path.cwd()
+
+    if args.command == "propose":
+        service = StewardService(
+            journal=journal,
+            github=github,
+            repo_path=repo_path,
+        )
+        mission, proposal_sha256 = service.propose(
+            args.request,
+            repository=args.repository,
+            base_sha=args.base_sha,
+            branch=args.branch,
+            mission_id=args.mission_id,
+        )
+        print(json.dumps({"mission_id": mission.mission_id, "proposal_sha256": proposal_sha256, "status": "PROPOSED"}))
+        return 0
+
+    if args.command == "approve":
+        service = StewardService(
+            journal=journal,
+            github=github,
+            repo_path=repo_path,
+        )
+        events = journal.replay()
+        prop_event = next(
+            (
+                e
+                for e in reversed(events)
+                if e.event == "MISSION_PROPOSED"
+                and (args.mission_id is None or e.mission_id == args.mission_id)
+            ),
+            None,
+        )
+        if prop_event is None:
+            sys.stderr.write("No proposed mission found to approve\n")
+            return 1
+        approval_id = f"approval-{args.proposal_sha256[:16]}"
+        approval = mission_contract.OwnerApproval(
+            owner_identity=args.owner_identity,
+            proposal_sha256=args.proposal_sha256,
+            approval_id=approval_id,
+            approved_at=_now(),
+        )
+        auth = mission_contract.AuthenticatedOwnerApprovalValidator(
+            trusted_owners=mission_contract.TRUSTED_OWNER_IDENTITIES,
+        )
+        activated = service.approve(prop_event.data, approval, auth)
+        print(json.dumps({"mission_id": activated.mission_id, "proposal_sha256": activated.proposal_sha256, "status": "RUNNING"}))
+        return 0
+
+    if args.command == "status":
+        service = StewardService(
+            mission_id=args.mission_id,
+            journal=journal,
+            github=github,
+            repo_path=repo_path,
+        )
+        print(json.dumps(service.status(), indent=2))
+        return 0
+
+    if args.command == "stop":
+        service = StewardService(
+            mission_id=args.mission_id,
+            journal=journal,
+            github=github,
+            repo_path=repo_path,
+        )
+        print(json.dumps(service.stop(reason=args.reason)))
+        return 0
+
+    # Default / run / heartbeat-loop
     service = StewardService(
         mission_id=args.mission_id,
-        journal=StewardJournal(args.journal),
-        github=GhReadOnlyGitHub(),
-        repo_path=Path.cwd(),
+        journal=journal,
+        github=github,
+        repo_path=repo_path,
     )
-    tick = 0
-    while True:
-        tick += 1
-        service.heartbeat(tick_id=f"heartbeat:{tick}")
-        service.recover()
-        service.reconcile(stage_bindings={})
-        if args.once:
-            return 0
-        service.wait_for_wakeup(args.interval_seconds)
+    once = args.once or (args.command == "run" and getattr(args, "once", False))
+    interval = getattr(args, "interval_seconds", 60)
+    if not once and not 5 <= interval <= 3600:
+        parser.error("--interval-seconds must be between 5 and 3600")
+    service.run(once=once, interval_seconds=interval)
+    return 0
 
 
-__all__ = ["RecoveryItem", "ReconciliationReport", "StewardService", "main"]
+__all__ = ["RecoveryItem", "ReconciliationReport", "StewardService", "StewardServiceError", "main"]
 
 
 if __name__ == "__main__":
