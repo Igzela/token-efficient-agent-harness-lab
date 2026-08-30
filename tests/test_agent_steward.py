@@ -952,6 +952,85 @@ class StewardExecutionTests(unittest.TestCase):
         self.assertIsInstance(instance.worker, workers.OpenCodeWorkCardWorker)
         self.assertIsInstance(instance.reviewer, workers.OpenCodeWorkCardReviewer)
 
+    def test_production_reviewer_accepts_one_json_fence(self):
+        raw = b'```json\n{"verdict":"PASS","blockers":[],"summary":"bounded"}\n```\n'
+        self.assertEqual(
+            workers.OpenCodeWorkCardReviewer._decode_response(raw),
+            {"verdict": "PASS", "blockers": [], "summary": "bounded"},
+        )
+
+    def test_production_reviewer_accepts_bounded_prose_around_one_json_object(self):
+        raw = b'Review complete.\n{"verdict":"PASS","blockers":[],"summary":"bounded"}'
+        self.assertEqual(
+            workers.OpenCodeWorkCardReviewer._decode_response(raw),
+            {"verdict": "PASS", "blockers": [], "summary": "bounded"},
+        )
+
+    def test_production_reviewer_rejects_multiple_json_objects(self):
+        raw = b'{"verdict":"PASS"}\n{"blockers":[],"summary":"bounded"}'
+        with self.assertRaisesRegex(workers.WorkerError, "opencode_review_output_invalid"):
+            workers.OpenCodeWorkCardReviewer._decode_response(raw)
+
+    def test_wrapper_retains_only_final_opencode_text_message(self):
+        root = self.root / "wrapper-last-message"
+        bin_dir = root / "bin"
+        output_dir = root / "output"
+        workspace = root / "workspace"
+        bin_dir.mkdir(parents=True)
+        output_dir.mkdir()
+        workspace.mkdir()
+        prompt = root / "prompt.txt"
+        prompt.write_text("bounded review", encoding="utf-8")
+        final = '{"verdict":"PASS","blockers":[],"summary":"bounded"}'
+        fake = bin_dir / "opencode"
+        fake.write_text(
+            """#!/usr/bin/env python3
+import json
+import sys
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("1.18.25")
+elif args[:2] == ["auth", "list"]:
+    pass
+elif args[:2] == ["run", "--help"]:
+    print("--format --dir --file --model")
+elif args[:2] == ["session", "delete"]:
+    pass
+elif args and args[0] == "run":
+    print(json.dumps({"type":"text","sessionID":"ses_fixture","part":{"text":"intermediate narration"}}))
+    print(json.dumps({"type":"text","sessionID":"ses_fixture","part":{"text":%r}}))
+else:
+    raise SystemExit(2)
+""" % final,
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        environment = dict(os.environ)
+        environment.update(
+            HOME=str(root),
+            PATH=f"{bin_dir}:{environment.get('PATH', '/usr/bin:/bin')}",
+            AGENT_CODEX_TIMEOUT_SECONDS="30",
+        )
+        result = subprocess.run(
+            [
+                str(ROOT / "scripts" / "agent-control" / "codex_wrapper.sh"),
+                "review",
+                str(prompt),
+                str(output_dir),
+                str(workspace),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=environment,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (output_dir / "codex-last-message.txt").read_text(encoding="utf-8"),
+            final,
+        )
+
 
 class StewardConcurrencyTests(unittest.TestCase):
     def setUp(self) -> None:
