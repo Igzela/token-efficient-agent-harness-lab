@@ -754,6 +754,82 @@ class StewardExecutionTests(unittest.TestCase):
             "OUTCOME_UNKNOWN",
         )
 
+    def test_worker_exception_with_only_uncommitted_residue_replans(self):
+        service = self.make_steward(
+            ExplodingWorker(lambda _context: []),
+            None,
+        )
+        metadata = ({f"refs/heads/{self.mock_worktree_branch}": BASE}, "config")
+        with (
+            mock.patch.object(
+                worktree_manager,
+                "create_steward_worktree",
+                return_value=(
+                    str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
+                ),
+            ),
+            mock.patch.object(steward, "_git_head", return_value=BASE),
+            mock.patch.object(steward, "_git_changed_paths", return_value=()),
+            mock.patch.object(
+                steward,
+                "_git_worktree_clean",
+                side_effect=workers.WorkerError("worktree_dirty_after_worker"),
+            ),
+            mock.patch.object(steward, "_git_repository_identity", return_value=True),
+            mock.patch.object(steward, "_git_metadata_snapshot", return_value=metadata),
+        ):
+            result = service.dispatch_card(
+                self.mission,
+                self.stage,
+                self.card,
+                base_sha=BASE,
+                stage_pr=self.facts,
+            )
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertEqual(
+            result.reason, "worker_exception_with_local_uncommitted_residue"
+        )
+        self.assertNotIn(
+            "WORKER_OUTCOME_UNKNOWN", [event.event for event in service.journal.replay()]
+        )
+
+    def test_worker_status_observation_failure_remains_outcome_unknown(self):
+        service = self.make_steward(
+            ExplodingWorker(lambda _context: []),
+            None,
+        )
+        metadata = ({f"refs/heads/{self.mock_worktree_branch}": BASE}, "config")
+        with (
+            mock.patch.object(
+                worktree_manager,
+                "create_steward_worktree",
+                return_value=(
+                    str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
+                ),
+            ),
+            mock.patch.object(steward, "_git_head", return_value=BASE),
+            mock.patch.object(steward, "_git_changed_paths", return_value=()),
+            mock.patch.object(
+                steward,
+                "_git_worktree_clean",
+                side_effect=steward.StewardError("worktree_status_unavailable"),
+            ),
+            mock.patch.object(steward, "_git_repository_identity", return_value=True),
+            mock.patch.object(steward, "_git_metadata_snapshot", return_value=metadata),
+        ):
+            result = service.dispatch_card(
+                self.mission,
+                self.stage,
+                self.card,
+                base_sha=BASE,
+                stage_pr=self.facts,
+            )
+        self.assertEqual(result.status, "OUTCOME_UNKNOWN")
+        self.assertEqual(
+            service.journal.projection()["card_states"][self.card.card_id],
+            "OUTCOME_UNKNOWN",
+        )
+
     def test_retry_escalates_tier_and_then_waits_for_merge(self):
         seen: list[tuple[int, str]] = []
         attempts = [
@@ -824,6 +900,49 @@ class StewardExecutionTests(unittest.TestCase):
         self.assertEqual(result.status, "OUTCOME_UNKNOWN")
         self.assertEqual(result.attempt, 1)
         self.assertNotIn("ATTEMPT_RETRY_SCHEDULED", [event.event for event in service.journal.replay()])
+
+    def test_failed_worker_with_only_uncommitted_residue_replans_without_unknown(self):
+        class DirtyFailureWorker(workers.BoundedProcessWorker):
+            def __init__(self):
+                super().__init__(lambda _context: [], timeout_seconds=5)
+
+            def run(self, _context):
+                return workers.WorkerOutcome(
+                    "FAIL", "impl-failure", BASE, (), "worker execution failed"
+                )
+
+        service = self.make_steward(DirtyFailureWorker(), None)
+        metadata = ({f"refs/heads/{self.mock_worktree_branch}": BASE}, "config")
+        with (
+            mock.patch.object(
+                worktree_manager,
+                "create_steward_worktree",
+                return_value=(
+                    str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
+                ),
+            ),
+            mock.patch.object(steward, "_git_head", return_value=BASE),
+            mock.patch.object(steward, "_git_changed_paths", return_value=()),
+            mock.patch.object(
+                steward,
+                "_git_worktree_clean",
+                side_effect=workers.WorkerError("worktree_dirty_after_worker"),
+            ),
+            mock.patch.object(steward, "_git_repository_identity", return_value=True),
+            mock.patch.object(steward, "_git_metadata_snapshot", return_value=metadata),
+        ):
+            result = service.dispatch_card(
+                self.mission,
+                self.stage,
+                self.card,
+                base_sha=BASE,
+                stage_pr=self.facts,
+            )
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertEqual(result.reason, "worker_failed_with_local_uncommitted_residue")
+        self.assertNotIn(
+            "WORKER_OUTCOME_UNKNOWN", [event.event for event in service.journal.replay()]
+        )
 
     def test_self_review_is_rejected_before_execution(self):
         with self.assertRaisesRegex(workers.WorkerError, "self_review_forbidden"):

@@ -272,7 +272,7 @@ def _worker_attempt_integrity(
         clean = True
         try:
             _git_worktree_clean(worktree)
-        except (StewardError, workers.WorkerError):
+        except workers.WorkerError:
             clean = False
         observed_metadata = _git_metadata_snapshot(worktree, branch=branch)
         metadata_unchanged = observed_metadata == metadata_before
@@ -288,7 +288,22 @@ def _worker_attempt_integrity(
             and clean
             and metadata_unchanged
         )
-        return intact, "clean_unchanged" if intact else "changed_or_dirty", data
+        if intact:
+            integrity = "clean_unchanged"
+        elif (
+            observed_head == base_sha
+            and not changed_paths
+            and not clean
+            and metadata_unchanged
+        ):
+            # The bounded worker transport has returned, its branch and Git
+            # metadata are unchanged, and only uncommitted local residue
+            # remains.  That is a known failed attempt which a replacement
+            # Stage can abandon; it is not an ambiguous external mutation.
+            integrity = "local_uncommitted_only"
+        else:
+            integrity = "changed_or_dirty"
+        return intact, integrity, data
     except (StewardError, workers.WorkerError, OSError):
         return False, "unavailable", {}
 
@@ -1236,6 +1251,15 @@ class Steward:
                             branch=worktree_branch,
                             metadata_before=metadata_before,
                         )
+                        if integrity == "local_uncommitted_only":
+                            return self._failure(
+                                mission=mission,
+                                stage=stage,
+                                card=card,
+                                attempt=attempt,
+                                reason="worker_exception_with_local_uncommitted_residue",
+                                retryable=False,
+                            )
                         self._record(
                             event="WORKER_OUTCOME_UNKNOWN",
                             key=_journal_key("unknown-worker", mission, stage, card, attempt),
@@ -1261,6 +1285,15 @@ class Steward:
                             branch=worktree_branch,
                             metadata_before=metadata_before,
                         )
+                        if integrity == "local_uncommitted_only":
+                            return self._failure(
+                                mission=mission,
+                                stage=stage,
+                                card=card,
+                                attempt=attempt,
+                                reason="worker_failed_with_local_uncommitted_residue",
+                                retryable=False,
+                            )
                         if not intact:
                             self._record(
                                 event="WORKER_OUTCOME_UNKNOWN",
