@@ -25,6 +25,7 @@ from steward_github import (
     GhReadOnlyGitHub,
     GitHubFactsError,
     GitHubMutationError,
+    GitHubPreflightError,
     GitHubReadError,
     GitHubWriter,
     ReadOnlyGitHub,
@@ -1251,6 +1252,22 @@ class StewardService:
                     reviewed_range_sha256=review.reviewed_range_sha256,
                     review_receipt_sha256=review.review_receipt_sha256,
                 )
+            except GitHubPreflightError as exc:
+                # Exact PR/head/base drift is proven by read-only preflight;
+                # no comment request was sent, so this is a routine replan,
+                # never an ambiguous external mutation.
+                self.journal.append(
+                    event="STAGE_REPLAN_REQUESTED",
+                    idempotency_key=f"stage-review-preflight-replan:{mission.mission_id}:{stage.stage_id}:{integration.head_sha}",
+                    mission_id=mission.mission_id,
+                    stage_id=stage.stage_id,
+                    card_id="",
+                    state="RUNNING",
+                    detail="stage_review_receipt_preflight_replan",
+                    data={"error": str(exc)},
+                    enforce_transition=False,
+                )
+                return {"status": "REPLAN_REQUIRED", "stage_id": stage.stage_id}
             except GitHubMutationError:
                 self.journal.append(
                     event="STAGE_OUTCOME_UNKNOWN",

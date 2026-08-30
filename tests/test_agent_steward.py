@@ -971,6 +971,12 @@ class StewardExecutionTests(unittest.TestCase):
         with self.assertRaisesRegex(workers.WorkerError, "opencode_review_output_invalid"):
             workers.OpenCodeWorkCardReviewer._decode_response(raw)
 
+    def test_production_reviewer_bounds_non_authoritative_summary(self):
+        normalize = workers.OpenCodeWorkCardReviewer._bounded_summary
+        self.assertEqual(normalize("first line\n second\tline"), "first line second line")
+        self.assertEqual(normalize(" \r\n "), "structured review verdict")
+        self.assertEqual(len(normalize("x" * 700)), 512)
+
     def test_wrapper_retains_only_final_opencode_text_message(self):
         root = self.root / "wrapper-last-message"
         bin_dir = root / "bin"

@@ -330,6 +330,34 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         res = self.srv.step(worker=worker, reviewer=reviewer)
         self.assertEqual(res["status"], "REVIEW_REJECTED")
 
+    def test_review_receipt_preflight_drift_replans_without_outcome_unknown(self):
+        """SIMULATED: a before-send identity rejection is routine repair."""
+
+        mission, digest = self.srv.propose(
+            "Update README.md with bounded documentation evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-REVIEW-PREFLIGHT",
+        )
+        self._approve(mission, digest, "review-preflight")
+        self.srv.control_state = self._ControlOff()
+        with (
+            patch("steward.Steward", self._SimulatedStageExecutor),
+            patch("steward_service.production_reviewer", return_value=FakeTestReviewer(status="PASS")),
+            patch.object(
+                self.github_writer,
+                "publish_exact_head_review",
+                side_effect=steward_github.GitHubPreflightError(
+                    "review_receipt_exact_binding_mismatch"
+                ),
+            ),
+        ):
+            self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+            self.assertEqual(self.srv.step()["status"], "REPLAN_REQUIRED")
+        events = [event.event for event in self.journal.replay()]
+        self.assertIn("STAGE_REPLAN_REQUESTED", events)
+        self.assertNotIn("STAGE_OUTCOME_UNKNOWN", events)
+
     def test_exhausted_primary_candidates_shift_to_an_alternative_without_owner_prompt(self):
         """SIMULATED repair loop: candidate exhaustion changes strategy, not authority."""
 

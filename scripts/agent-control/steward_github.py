@@ -813,6 +813,10 @@ class GitHubMutationError(GitHubFactsError):
     """A GitHub mutation request failed, timed out, or had ambiguous outcome."""
 
 
+class GitHubPreflightError(GitHubMutationError):
+    """A mutation was rejected by read-only checks before any request was sent."""
+
+
 class GitHubWriter(Protocol):
     def fetch_stage_pr(self, repository: str, pr_number: int) -> dict[str, Any]:
         ...
@@ -1017,7 +1021,7 @@ class GhGitHubWriter:
             raise GitHubMutationError("review_receipt_identity_invalid")
         facts = self.fetch_stage_pr(repository, pr_number)
         if facts.get("head_sha") != expected_head_sha or facts.get("base_sha") != base_sha:
-            raise GitHubMutationError("review_receipt_exact_binding_mismatch")
+            raise GitHubPreflightError("review_receipt_exact_binding_mismatch")
         try:
             identity_result = subprocess.run(
                 ["gh", "api", "user", "--jq", ".login"],
@@ -1453,7 +1457,7 @@ class FakeGitHubWriter:
         pr = self.prs.get(pr_number)
         if pr is not None:
             if pr.get("head_sha") != expected_head_sha or pr.get("base_sha") != base_sha:
-                raise GitHubMutationError("review_receipt_exact_binding_mismatch")
+                raise GitHubPreflightError("review_receipt_exact_binding_mismatch")
             pr["review_state"] = "PASS"
         self.actions.append(("publish_review", {
             "pr_number": pr_number,

@@ -913,6 +913,7 @@ class OpenCodeWorkCardReviewer:
             "Review Standards and Spec. Return exactly one compact JSON object:",
             '{"verdict":"PASS"|"FAIL","blockers":["bounded-id"],"summary":"bounded summary"}',
             "Do not add prose. A single optional ```json code fence is tolerated by the transport.",
+            "Keep summary on one line and at most 240 characters.",
             "Use PASS only when the change is within scope, safe, reversible, and complete.",
         )) + "\n"
 
@@ -962,6 +963,15 @@ class OpenCodeWorkCardReviewer:
             raise WorkerError("opencode_review_output_invalid")
         return candidates[0]
 
+    @staticmethod
+    def _bounded_summary(value: str) -> str:
+        """Normalize non-authoritative reviewer prose for the bounded wire."""
+
+        summary = " ".join(value.split())
+        if not summary:
+            summary = "structured review verdict"
+        return summary[:512]
+
     def review(self, context: WorkerContext, outcome: WorkerOutcome) -> ReviewOutcome:
         exit_code, response_path = self.worker._invoke(
             "review", self._prompt(context, outcome), context.worktree,
@@ -1000,7 +1010,7 @@ class OpenCodeWorkCardReviewer:
                 "review_round": 1,
                 "review_mode": "full",
                 "review_receipt_sha256": "",
-                "summary": value["summary"],
+                "summary": self._bounded_summary(value["summary"]),
                 "findings": None,
                 "security_ok": value["verdict"] == "PASS",
                 "rollback_ok": value["verdict"] == "PASS",
