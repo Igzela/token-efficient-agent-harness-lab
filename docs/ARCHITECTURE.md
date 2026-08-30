@@ -113,3 +113,21 @@ The final non-regression check is provider-free and read-only outside the
 repository's normal test/build outputs. Its acceptance evidence is owned by
 the canonical PR and CI/review records described in `docs/AUTONOMY.md`; this
 architecture map records the boundaries under test and is explanatory only.
+
+## Bounded Documentation Tests
+
+Documentation-only changes to this document run the bounded documentation-test
+lane instead of the full runtime matrix:
+
+```bash
+git diff --check
+uv run --no-project python scripts/check_agent_handoff.py
+```
+
+`scripts/check_agent_handoff.py` fails closed when `docs/ARCHITECTURE.md` loses
+a required section (`# Architecture`, `Current version: vN`,
+`Three-Tier Operational Model`, `Core Module Ownership`) or when the documented
+`Current version: vN` drifts from `CURRENT_SQLITE_SCHEMA_VERSION` in
+`engine/src/storage/local_product_store/schema.rs`. Full-matrix verification
+remains CI's job on the exact reviewed PR head; see `CONTRIBUTING.md` for the
+focused verification tiers.

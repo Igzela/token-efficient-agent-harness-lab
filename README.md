@@ -211,6 +211,18 @@ cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover 
 
 Current test counts are reported by CI and release evidence, not by hard-coded badges in this README. Python SDK tests run separately under `sdk/python/` (Python 3.11+).
 
+### Documentation changes
+
+Documentation-only changes run the bounded documentation tests:
+
+```bash
+git diff --check
+uv run --no-project python scripts/check_agent_handoff.py
+uv run --no-project python tools/check_readme_public_surface.py
+```
+
+`tools/check_readme_public_surface.py` fails closed if the public README reintroduces known-bad install or hard-coded test-count claims or drops required entry links. Docs-only PRs do not require the full Rust/TypeScript matrix; see [CONTRIBUTING.md](CONTRIBUTING.md) for the focused verification tiers.
+
 ## How To Run Without Docker
 
 API only:
