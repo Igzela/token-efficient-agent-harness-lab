@@ -714,6 +714,280 @@ class GhReadOnlyGitHub:
         }
 
 
+class GitHubMutationError(GitHubFactsError):
+    """A GitHub mutation request failed, timed out, or had ambiguous outcome."""
+
+
+class GitHubWriter(Protocol):
+    def fetch_stage_pr(self, repository: str, pr_number: int) -> dict[str, Any]:
+        ...
+
+    def create_or_update_stage_pr(
+        self,
+        stage_id: str,
+        mission_id: str,
+        branch: str,
+        expected_sha: str,
+        base_sha: str,
+        title: str,
+        body: str,
+        repository: str,
+    ) -> dict[str, Any]:
+        ...
+
+    def mark_ready(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+    ) -> bool:
+        ...
+
+    def guarded_merge(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+        *,
+        merge_method: str = "squash",
+        workflow_file: str = "agent-merge.yml",
+        timeout_seconds: int = 120,
+    ) -> dict[str, Any]:
+        ...
+
+    def post_merge_readback(
+        self,
+        repository: str,
+        expected_head_sha: str,
+        *,
+        timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
+        ...
+
+
+class GhGitHubWriter:
+    """Bounded GitHub writer that delegates all merges to the canonical merge workflow."""
+
+    def __init__(self, *, timeout_seconds: int = 30):
+        if not 1 <= timeout_seconds <= 300:
+            raise ValueError("timeout_seconds is outside the bounded range")
+        self.timeout_seconds = timeout_seconds
+        self.reader = GhReadOnlyGitHub(timeout_seconds=min(timeout_seconds, 30))
+
+    def fetch_stage_pr(self, repository: str, pr_number: int) -> dict[str, Any]:
+        return self.reader.fetch_stage_pr(repository, pr_number)
+
+    def create_or_update_stage_pr(
+        self,
+        stage_id: str,
+        mission_id: str,
+        branch: str,
+        expected_sha: str,
+        base_sha: str,
+        title: str,
+        body: str,
+        repository: str,
+    ) -> dict[str, Any]:
+        if (
+            REPOSITORY.fullmatch(repository) is None
+            or BRANCH.fullmatch(branch) is None
+            or SHA40.fullmatch(expected_sha) is None
+            or SHA40.fullmatch(base_sha) is None
+        ):
+            raise GitHubMutationError("github_mutation_identity_invalid")
+
+        list_cmd = [
+            "gh", "pr", "list",
+            "--repo", repository,
+            "--head", branch,
+            "--json", "number,headRefOid,isDraft,state",
+        ]
+        try:
+            res = subprocess.run(list_cmd, capture_output=True, text=True, timeout=self.timeout_seconds, check=False)
+            if res.returncode == 0:
+                prs = json.loads(res.stdout or "[]")
+                open_prs = [p for p in prs if p.get("state") == "OPEN"]
+                if open_prs:
+                    pr_num = open_prs[0]["number"]
+                    edit_cmd = ["gh", "pr", "edit", str(pr_num), "--repo", repository, "--title", title, "--body", body]
+                    subprocess.run(edit_cmd, capture_output=True, text=True, timeout=self.timeout_seconds, check=False)
+                    return self.fetch_stage_pr(repository, pr_num)
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            pass
+
+        create_cmd = [
+            "gh", "pr", "create",
+            "--draft",
+            "--repo", repository,
+            "--head", branch,
+            "--base", "main",
+            "--title", title,
+            "--body", body,
+        ]
+        try:
+            result = subprocess.run(create_cmd, capture_output=True, text=True, timeout=self.timeout_seconds, check=False)
+            if result.returncode != 0:
+                raise GitHubMutationError(f"create_stage_pr_failed: {result.stderr.strip()}")
+            url = result.stdout.strip()
+            pr_num = int(url.rstrip("/").split("/")[-1])
+            return self.fetch_stage_pr(repository, pr_num)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubMutationError("create_stage_pr_unavailable") from exc
+
+    def mark_ready(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+    ) -> bool:
+        if (
+            REPOSITORY.fullmatch(repository) is None
+            or type(pr_number) is not int
+            or pr_number < 1
+            or SHA40.fullmatch(expected_head_sha) is None
+        ):
+            raise GitHubMutationError("github_mutation_identity_invalid")
+
+        facts = self.fetch_stage_pr(repository, pr_number)
+        if facts.get("head_sha") != expected_head_sha:
+            raise GitHubMutationError("exact_head_mismatch_before_mark_ready")
+
+        if facts.get("draft") is False:
+            return True
+
+        command = ["gh", "pr", "ready", str(pr_number), "--repo", repository]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout_seconds, check=False)
+            if result.returncode == 0:
+                return True
+            raise GitHubMutationError(f"mark_ready_failed: {result.stderr.strip()}")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubMutationError("mark_ready_unavailable") from exc
+
+    def guarded_merge(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+        *,
+        merge_method: str = "squash",
+        workflow_file: str = "agent-merge.yml",
+        timeout_seconds: int = 120,
+    ) -> dict[str, Any]:
+        """Delegate merge strictly to the canonical agent-merge.yml workflow."""
+        if (
+            REPOSITORY.fullmatch(repository) is None
+            or type(pr_number) is not int
+            or pr_number < 1
+            or SHA40.fullmatch(expected_head_sha) is None
+        ):
+            raise GitHubMutationError("github_merge_identity_invalid")
+
+        facts = self.fetch_stage_pr(repository, pr_number)
+        if facts.get("head_sha") != expected_head_sha:
+            raise GitHubMutationError("head_sha_mismatch")
+
+        if facts.get("merged") is True:
+            return {
+                "merged": True,
+                "repository": repository,
+                "pr_number": pr_number,
+                "head_sha": expected_head_sha,
+            }
+
+        dispatch_cmd = [
+            "gh", "workflow", "run", workflow_file,
+            "--repo", repository,
+            "-f", f"pr_number={pr_number}",
+            "-f", f"head_sha={expected_head_sha}",
+        ]
+        try:
+            dispatch_res = subprocess.run(
+                dispatch_cmd,
+                capture_output=True,
+                text=True,
+                timeout=min(self.timeout_seconds, 30),
+                check=False,
+            )
+            if dispatch_res.returncode != 0:
+                raise GitHubMutationError(f"merge_workflow_dispatch_failed: {dispatch_res.stderr.strip()}")
+        except subprocess.TimeoutExpired as exc:
+            try:
+                if self.fetch_stage_pr(repository, pr_number).get("merged") is True:
+                    return {"merged": True, "repository": repository, "pr_number": pr_number, "head_sha": expected_head_sha}
+            except Exception:
+                pass
+            raise GitHubMutationError("merge_outcome_unknown") from exc
+        except OSError as exc:
+            raise GitHubMutationError("gh_cli_unavailable") from exc
+
+        import time
+        start_time = time.time()
+        while time.time() - start_time < timeout_seconds:
+            try:
+                live_facts = self.fetch_stage_pr(repository, pr_number)
+                if live_facts.get("merged") is True:
+                    return {
+                        "merged": True,
+                        "repository": repository,
+                        "pr_number": pr_number,
+                        "head_sha": expected_head_sha,
+                    }
+                if live_facts.get("state") == "CLOSED" and not live_facts.get("merged"):
+                    raise GitHubMutationError("stage_pr_closed_without_merge")
+            except GitHubReadError:
+                pass
+            time.sleep(2)
+
+        try:
+            final_facts = self.fetch_stage_pr(repository, pr_number)
+            if final_facts.get("merged") is True:
+                return {
+                    "merged": True,
+                    "repository": repository,
+                    "pr_number": pr_number,
+                    "head_sha": expected_head_sha,
+                }
+        except Exception:
+            pass
+        raise GitHubMutationError("merge_outcome_unknown")
+
+    def post_merge_readback(
+        self,
+        repository: str,
+        expected_head_sha: str,
+        *,
+        timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
+        """Fetch authoritative accepted-main SHA from remote repository."""
+        if (
+            REPOSITORY.fullmatch(repository) is None
+            or SHA40.fullmatch(expected_head_sha) is None
+        ):
+            raise GitHubFactsError("github_query_identity_invalid")
+
+        cmd = [
+            "gh", "api", f"repos/{repository}/branches/main",
+            "--jq", ".commit.sha",
+        ]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds, check=False)
+            if res.returncode != 0:
+                raise GitHubFactsError(f"post_merge_readback_failed: {res.stderr.strip()}")
+            main_sha = res.stdout.strip()
+            if not SHA40.fullmatch(main_sha):
+                raise GitHubFactsError("accepted_main_sha_invalid")
+            return {
+                "schema_version": "post_merge_readback.v1",
+                "repository": repository,
+                "expected_head_sha": expected_head_sha,
+                "accepted_main_sha": main_sha,
+                "status": "VERIFIED",
+            }
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubFactsError("post_merge_readback_unavailable") from exc
+
+
 class FakeGitHubReader:
     """Read-only deterministic reader for service and fault tests."""
 
@@ -732,11 +1006,154 @@ class FakeGitHubReader:
         return facts
 
 
+class FakeGitHubWriter:
+    """Deterministic in-memory writer and reader for testing."""
+
+    def __init__(
+        self,
+        reader: FakeGitHubReader | None = None,
+        *,
+        initial_pr_number: int = 101,
+    ):
+        self._next_pr = initial_pr_number
+        self.prs: dict[int, dict[str, Any]] = {}
+        self.reader = reader or FakeGitHubReader()
+        self.actions: list[tuple[str, dict[str, Any]]] = []
+        self.fail_merge = False
+        self.merge_outcome_unknown = False
+        self.remote_main_sha = "1" * 40
+
+    def fetch_stage_pr(self, repository: str, pr_number: int) -> dict[str, Any]:
+        if pr_number in self.prs:
+            pr = self.prs[pr_number]
+            self.reader.reads.append((repository, pr_number))
+            return {
+                "repository": pr["repository"],
+                "pr_number": pr["pr_number"],
+                "state": pr["state"],
+                "draft": pr["draft"],
+                "merged": pr["merged"],
+                "base_sha": pr["base_sha"],
+                "head_sha": pr["head_sha"],
+                "ci_state": pr["ci_state"],
+                "review_state": pr["review_state"],
+                "base_branch": pr["base_branch"],
+                "head_branch": pr["head_branch"],
+            }
+        return self.reader.fetch_stage_pr(repository, pr_number)
+
+    def create_or_update_stage_pr(
+        self,
+        stage_id: str,
+        mission_id: str,
+        branch: str,
+        expected_sha: str,
+        base_sha: str,
+        title: str,
+        body: str,
+        repository: str,
+    ) -> dict[str, Any]:
+        for num, pr in self.prs.items():
+            if pr.get("head_branch") == branch and pr.get("repository") == repository:
+                pr["head_sha"] = expected_sha
+                pr["base_sha"] = base_sha
+                pr["title"] = title
+                pr["body"] = body
+                self.actions.append(("update_pr", {"pr_number": num, "stage_id": stage_id}))
+                return dict(pr)
+        num = self._next_pr
+        self._next_pr += 1
+        record = {
+            "repository": repository,
+            "pr_number": num,
+            "number": num,
+            "state": "OPEN",
+            "draft": True,
+            "merged": False,
+            "base_sha": base_sha,
+            "head_sha": expected_sha,
+            "ci_state": "PENDING",
+            "review_state": "PENDING",
+            "base_branch": "main",
+            "head_branch": branch,
+            "stage_id": stage_id,
+            "mission_id": mission_id,
+            "title": title,
+            "body": body,
+        }
+        self.prs[num] = record
+        self.actions.append(("create_pr", {"pr_number": num, "stage_id": stage_id}))
+        return dict(record)
+
+    def mark_ready(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+    ) -> bool:
+        self.actions.append(("mark_ready", {"pr_number": pr_number, "head_sha": expected_head_sha}))
+        if pr_number in self.prs:
+            pr = self.prs[pr_number]
+            if pr.get("head_sha") != expected_head_sha:
+                raise GitHubMutationError("exact_head_mismatch_before_mark_ready")
+            pr["draft"] = False
+            return True
+        return True
+
+    def guarded_merge(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+        *,
+        merge_method: str = "squash",
+        workflow_file: str = "agent-merge.yml",
+        timeout_seconds: int = 120,
+    ) -> dict[str, Any]:
+        self.actions.append(("merge", {"pr_number": pr_number, "head_sha": expected_head_sha, "workflow": workflow_file}))
+        if self.fail_merge:
+            raise GitHubMutationError("guarded_merge_rejected")
+        if self.merge_outcome_unknown:
+            raise GitHubMutationError("merge_outcome_unknown")
+        if pr_number in self.prs:
+            pr = self.prs[pr_number]
+            if pr.get("head_sha") != expected_head_sha:
+                raise GitHubMutationError("head_sha_mismatch")
+            pr["merged"] = True
+            pr["state"] = "MERGED"
+        return {
+            "merged": True,
+            "repository": repository,
+            "pr_number": pr_number,
+            "head_sha": expected_head_sha,
+        }
+
+    def post_merge_readback(
+        self,
+        repository: str,
+        expected_head_sha: str,
+        *,
+        timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
+        self.actions.append(("post_merge_readback", {"repository": repository, "head_sha": expected_head_sha}))
+        return {
+            "schema_version": "post_merge_readback.v1",
+            "repository": repository,
+            "expected_head_sha": expected_head_sha,
+            "accepted_main_sha": self.remote_main_sha,
+            "status": "VERIFIED",
+        }
+
+
 __all__ = [
     "FakeGitHubReader",
+    "FakeGitHubWriter",
+    "GhGitHubWriter",
     "GhReadOnlyGitHub",
     "GitHubFactsError",
+    "GitHubMutationError",
     "GitHubReadError",
+    "GitHubWriter",
     "ReadOnlyGitHub",
     "StagePRFacts",
     "StagePRStatus",
