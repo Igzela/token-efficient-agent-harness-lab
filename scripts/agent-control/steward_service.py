@@ -959,7 +959,27 @@ class StewardService:
         recovery artifact.
         """
 
-        retry = int(metadata.get("retry", 1)) + 1
+        replan_requests = [
+            event
+            for event in self.journal.replay()
+            if event.mission_id == mission.mission_id
+            and event.stage_id == stage.stage_id
+            and event.event == "STAGE_REPLAN_REQUESTED"
+        ]
+        has_base_drift_replan = any(
+            event.detail == "accepted_main_drift_requires_fresh_candidate"
+            for event in replan_requests
+        )
+        has_candidate_repair = any(
+            event.detail != "accepted_main_drift_requires_fresh_candidate"
+            for event in replan_requests
+        )
+        base_drift_replan = has_base_drift_replan and not has_candidate_repair
+        # Accepted-main drift invalidates the base, not the candidate's work.
+        # Replanning on the fresh authoritative base therefore keeps the same
+        # bounded attempt slot and strategy instead of exhausting a routine
+        # recovery budget or forcing an unrelated strategy shift.
+        retry = int(metadata.get("retry", 1)) + (0 if base_drift_replan else 1)
         strategy = metadata.get("strategy", "primary")
         if strategy not in {"primary", "alternative"}:
             raise StewardServiceError("stage_replan_strategy_invalid")
@@ -1082,7 +1102,20 @@ class StewardService:
             retry=retry,
             strategy=strategy,
         )
-        return {"status": "STAGE_REPLANNED", "stage_id": replacement_stage.stage_id, "retry": retry, "strategy": strategy}
+        reason = (
+            "candidate_repair_with_base_drift"
+            if has_base_drift_replan and has_candidate_repair
+            else "accepted_main_drift"
+            if base_drift_replan
+            else "candidate_repair"
+        )
+        return {
+            "status": "STAGE_REPLANNED",
+            "stage_id": replacement_stage.stage_id,
+            "retry": retry,
+            "strategy": strategy,
+            "reason": reason,
+        }
 
     def _record_stage_plan(
         self,
@@ -1613,6 +1646,112 @@ class StewardService:
             return {"status": readback["status"], "stage_id": stage.stage_id}
         return {"status": "COMPLETE" if readback["mission_state"] == "COMPLETE" else "NEXT_STAGE", "stage_id": stage.stage_id}
 
+    def _preflight_unbound_accepted_main(
+        self,
+        mission: mission_contract.MaintenanceMission,
+        stage: mission_contract.Stage | None,
+    ) -> tuple[mission_contract.MaintenanceMission, dict[str, Any] | None]:
+        """Bind unissued work to authoritative main before planning or dispatch.
+
+        A bound PR has its own mutation-intent/readback reconciliation in
+        ``_advance_bound_stage``.  Unbound work has no such external identity,
+        so it must never reach a worker or a fresh Stage plan until GitHub main
+        is readable and matches the durable Mission binding.
+        """
+
+        stage_id = stage.stage_id if stage is not None else "next-stage"
+        read_main = getattr(self.github, "fetch_accepted_main", None)
+        try:
+            if not callable(read_main):
+                raise GitHubReadError("accepted_main_read_unavailable")
+            current_main = read_main(mission.repository_identity.repository)
+            if (
+                not isinstance(current_main, str)
+                or mission_contract.SHA40.fullmatch(current_main) is None
+            ):
+                raise GitHubReadError("accepted_main_read_malformed")
+        except (GitHubReadError, GitHubFactsError, OSError):
+            self.journal.append(
+                event="ACCEPTED_MAIN_READ_UNAVAILABLE",
+                idempotency_key=(
+                    f"accepted-main-read-unavailable:{mission.mission_id}:"
+                    f"{stage_id}:{mission.repository_identity.base_sha}"
+                ),
+                mission_id=mission.mission_id,
+                stage_id=stage_id,
+                card_id="",
+                state="BLOCKED",
+                detail="authoritative_accepted_main_required_before_unbound_dispatch",
+                data={},
+                enforce_transition=False,
+            )
+            return mission, {
+                "status": "WAITING_GITHUB_READBACK",
+                "mission_id": mission.mission_id,
+                "stage_id": stage.stage_id if stage is not None else None,
+            }
+
+        rebound = mission
+        if current_main != mission.repository_identity.base_sha:
+            rebound = replace(
+                mission,
+                repository_identity=replace(
+                    mission.repository_identity,
+                    base_sha=current_main,
+                ),
+            )
+            self.journal.append(
+                event="MISSION_BASE_DRIFT_REBOUND",
+                idempotency_key=f"mission-base-drift-rebound:{mission.mission_id}:{current_main}",
+                mission_id=mission.mission_id,
+                stage_id="mission",
+                card_id="",
+                state="RUNNING",
+                detail="authoritative_accepted_main_drift_rebound",
+                data=rebound.to_wire(),
+                enforce_transition=False,
+            )
+            self.mission = rebound
+
+        if stage is None:
+            if rebound is not mission:
+                return rebound, {
+                    "status": "MISSION_BASE_REBOUND",
+                    "mission_id": mission.mission_id,
+                    "base_sha": current_main,
+                }
+            return rebound, None
+
+        if stage.repository_identity.base_sha != current_main:
+            existing_replan = self._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_REPLAN_REQUESTED"
+            )
+            if (
+                existing_replan is not None
+                and existing_replan.detail == "accepted_main_drift_requires_fresh_candidate"
+                and existing_replan.data.get("new_base_sha") == current_main
+            ):
+                # The prior iteration durably requested this exact replan.
+                # Let ``_step_once`` enter the idempotent replan transition
+                # instead of returning REPLAN_REQUIRED forever after restart.
+                return rebound, None
+            self.journal.append(
+                event="STAGE_REPLAN_REQUESTED",
+                idempotency_key=(
+                    f"stage-main-drift-replan:{mission.mission_id}:"
+                    f"{stage.stage_id}:{current_main}"
+                ),
+                mission_id=mission.mission_id,
+                stage_id=stage.stage_id,
+                card_id="",
+                state="RUNNING",
+                detail="accepted_main_drift_requires_fresh_candidate",
+                data={"new_base_sha": current_main},
+                enforce_transition=False,
+            )
+            return rebound, {"status": "REPLAN_REQUIRED", "stage_id": stage.stage_id}
+        return rebound, None
+
     @contextmanager
     def _service_lease(self):
         """Hold the one real writer lease for a production run or one step."""
@@ -1743,6 +1882,9 @@ class StewardService:
             if record[0].stage_id not in completed and record[0].stage_id not in superseded
         ]
         if not pending:
+            active, preflight = self._preflight_unbound_accepted_main(active, None)
+            if preflight is not None:
+                return preflight
             complete_indices = {
                 metadata["stage_index"]
                 for stage, _cards, metadata in records
@@ -1778,6 +1920,10 @@ class StewardService:
         # the next iterations may perform read-only remote reconciliation.
         # ``_advance_bound_stage`` sees the persisted intent and never repeats
         # a possibly-issued Ready, supersede, or merge mutation.
+        if self._latest_stage_event(active.mission_id, stage.stage_id, "STAGE_PR_BOUND") is None:
+            active, preflight = self._preflight_unbound_accepted_main(active, stage)
+            if preflight is not None:
+                return preflight
         if self._latest_stage_event(active.mission_id, stage.stage_id, "STAGE_REPLAN_REQUESTED") is not None:
             return self._replan_stage(active, stage, metadata)
         if self._latest_stage_event(active.mission_id, stage.stage_id, "STAGE_PR_BOUND") is None:

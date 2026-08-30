@@ -49,6 +49,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         self.base_sha = rev_result.stdout.strip()
 
         self.github_writer = FakeGitHubWriter(initial_pr_number=501)
+        self.github_writer.remote_main_sha = self.base_sha
         self.srv = service.StewardService(
             journal=self.journal,
             github=self.github_writer,
@@ -406,6 +407,169 @@ class TestAutonomousStewardPRC(unittest.TestCase):
                 expected_base_sha="d" * 40,
                 expected_head_sha=self.base_sha,
             )
+
+    def test_simulated_unbound_stage_rebinds_before_worker_dispatch(self):
+        """SIMULATED: accepted-main drift replans an unissued Stage before dispatch."""
+
+        mission, digest = self.srv.propose(
+            "Update README.md with bounded drift recovery evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-UNBOUND-DRIFT",
+        )
+        self._approve(mission, digest, "unbound-drift")
+        self.srv.control_state = self._ControlOff()
+        self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+        stale_stage = self.srv._stage_records(mission.mission_id)[-1][0]
+        new_main = "a" * 40
+        self.assertNotEqual(new_main, self.base_sha)
+        self.github_writer.remote_main_sha = new_main
+
+        with patch.object(self.srv, "_execute_production_stage") as dispatch:
+            result = self.srv.step()
+            dispatch.assert_not_called()
+        self.assertEqual(result["status"], "REPLAN_REQUIRED")
+        self.assertEqual(self.srv._active_mission().repository_identity.base_sha, new_main)
+
+        with patch.object(self.srv, "_execute_production_stage") as dispatch:
+            replanned = self.srv.step()
+            dispatch.assert_not_called()
+        self.assertEqual(replanned["status"], "STAGE_REPLANNED")
+        self.assertEqual(replanned["retry"], 1)
+        self.assertEqual(replanned["reason"], "accepted_main_drift")
+        replacement = self.srv._stage_records(mission.mission_id)[-1][0]
+        self.assertNotEqual(replacement.stage_id, stale_stage.stage_id)
+        self.assertEqual(replacement.repository_identity.base_sha, new_main)
+
+    def test_simulated_base_drift_does_not_exhaust_alternative_candidate_budget(self):
+        """SIMULATED: safe base recovery preserves the current attempt budget slot."""
+
+        mission, digest = self.srv.propose(
+            "Update README.md with bounded alternative drift evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-ALTERNATIVE-DRIFT",
+        )
+        active = self._approve(mission, digest, "alternative-drift")
+        self.srv.control_state = self._ControlOff()
+        retry = active.budget.max_attempts
+        planned = self.srv._next_stage_plan(
+            active, 0, retry=retry, strategy="alternative"
+        )
+        self.assertIsNotNone(planned)
+        stage, cards, total = planned
+        self.srv._record_stage_plan(
+            active,
+            stage,
+            cards,
+            stage_index=1,
+            stage_total=total,
+            retry=retry,
+            strategy="alternative",
+        )
+        new_main = "c" * 40
+        self.assertNotEqual(new_main, self.base_sha)
+        self.github_writer.remote_main_sha = new_main
+
+        self.assertEqual(self.srv.step()["status"], "REPLAN_REQUIRED")
+        result = self.srv.step()
+        self.assertEqual(result["status"], "STAGE_REPLANNED")
+        self.assertEqual(result["retry"], retry)
+        self.assertEqual(result["strategy"], "alternative")
+        self.assertEqual(result["reason"], "accepted_main_drift")
+        replacement, _cards, metadata = self.srv._stage_records(active.mission_id)[-1]
+        self.assertEqual(replacement.repository_identity.base_sha, new_main)
+        self.assertEqual(metadata["retry"], retry)
+        self.assertEqual(metadata["strategy"], "alternative")
+
+    def test_simulated_base_drift_does_not_mask_pending_candidate_repair(self):
+        """SIMULATED: overlapping drift retains the candidate-failure retry charge."""
+
+        mission, digest = self.srv.propose(
+            "Update README.md with bounded overlapping recovery evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-OVERLAPPING-DRIFT",
+        )
+        self._approve(mission, digest, "overlapping-drift")
+        self.srv.control_state = self._ControlOff()
+        self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+        stage = self.srv._stage_records(mission.mission_id)[-1][0]
+        self.journal.append(
+            event="STAGE_REPLAN_REQUESTED",
+            idempotency_key=f"test-worker-replan:{mission.mission_id}:{stage.stage_id}",
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="worker_failure_requires_fresh_candidate",
+            data={},
+            enforce_transition=False,
+        )
+        new_main = "d" * 40
+        self.assertNotEqual(new_main, self.base_sha)
+        self.github_writer.remote_main_sha = new_main
+
+        self.assertEqual(self.srv.step()["status"], "REPLAN_REQUIRED")
+        result = self.srv.step()
+        self.assertEqual(result["status"], "STAGE_REPLANNED")
+        self.assertEqual(result["retry"], 2)
+        self.assertEqual(result["reason"], "candidate_repair_with_base_drift")
+        replacement, _cards, metadata = self.srv._stage_records(mission.mission_id)[-1]
+        self.assertEqual(replacement.repository_identity.base_sha, new_main)
+        self.assertEqual(metadata["retry"], 2)
+
+    def test_simulated_unbound_stage_waits_when_main_authority_is_unavailable(self):
+        """SIMULATED: a failed accepted-main read cannot dispatch a worker."""
+
+        mission, digest = self.srv.propose(
+            "Update README.md with bounded authority failure evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-MAIN-READ-WAIT",
+        )
+        self._approve(mission, digest, "main-read-wait")
+        self.srv.control_state = self._ControlOff()
+        self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+
+        with (
+            patch.object(
+                self.github_writer,
+                "fetch_accepted_main",
+                side_effect=steward_github.GitHubReadError("accepted_main_read_failed"),
+            ),
+            patch.object(self.srv, "_execute_production_stage") as dispatch,
+        ):
+            result = self.srv.step()
+            dispatch.assert_not_called()
+        self.assertEqual(result["status"], "WAITING_GITHUB_READBACK")
+        self.assertIn(
+            "ACCEPTED_MAIN_READ_UNAVAILABLE",
+            [event.event for event in self.journal.replay()],
+        )
+
+    def test_simulated_next_stage_plan_rebinds_before_creation(self):
+        """SIMULATED: a fresh Stage plan is derived only from live accepted main."""
+
+        mission, digest = self.srv.propose(
+            "Update README.md with bounded next-stage drift evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-PLAN-DRIFT",
+        )
+        self._approve(mission, digest, "plan-drift")
+        self.srv.control_state = self._ControlOff()
+        new_main = "b" * 40
+        self.assertNotEqual(new_main, self.base_sha)
+        self.github_writer.remote_main_sha = new_main
+
+        rebound = self.srv.step()
+        self.assertEqual(rebound["status"], "MISSION_BASE_REBOUND")
+        self.assertEqual(self.srv._stage_records(mission.mission_id), [])
+        planned = self.srv.step()
+        self.assertEqual(planned["status"], "STAGE_PLANNED")
+        stage = self.srv._stage_records(mission.mission_id)[-1][0]
+        self.assertEqual(stage.repository_identity.base_sha, new_main)
 
     def test_fault_scenario_5_service_restart_recovery(self):
         """Scenario 5: Process crash and restart seamlessly reloads from WAL SQLite journal."""
