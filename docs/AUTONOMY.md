@@ -1,6 +1,6 @@
 # Autonomy and Testing Contract
 
-Last updated: 2026-08-29.
+Last updated: 2026-08-30.
 
 This document defines the autonomy governance, lifecycle state machine, review convergence protocol, exact-head CI, and guarded merge contracts for the Autonomous Steward system.
 
@@ -9,17 +9,25 @@ This document defines the autonomy governance, lifecycle state machine, review c
 The repository-maintenance outer loop is governed by a single lifecycle state machine:
 
 ```text
-IDLE → PROPOSING → WAITING_APPROVAL → RUNNING → VERIFYING → INTEGRATING → (REPLAN | COMPLETE)
-                                          │
-                                          └──► PAUSED_FOR_OWNER (on hard boundary stop)
+MISSION_RUNNING → STAGE_PLANNED → WORKCARDS_RUNNING → STAGE_INTEGRATED
+→ STAGE_PR_DRAFT → STAGE_PR_READY → WAITING_CI_REVIEW
+→ (REPAIR / REPLAN | WAITING_FOR_MERGE) → MERGE_DISPATCHED
+→ MERGE_READBACK → NEXT_STAGE | COMPLETE
 ```
+
+`steward_service.py` owns those transitions in its restart-safe journal loop.
+`steward.py` is its isolated K=2 WorkCard execution seam, not a second
+lifecycle owner.  Every production iteration holds the one service `flock`,
+reads Issue #208's `agent-emergency-stop` label before dispatch or merge, and
+records intent before a Ready, candidate-supersede, or merge-workflow mutation.
 
 ### Stop Taxonomy: Routine Recovery vs Owner Pause
 
 | Category | Trigger | Disposition |
 |---|---|---|
 | **Routine Recovery** | Worker failure, timeout, formatting error, test failure, CI check failure, review requested changes, git main drift, empty diff | Handled automatically by Steward (retry, split card, repair round, rebase) without interrupting user |
-| **Owner Pause (`PAUSED_FOR_OWNER`)** | Material mission goal change, authority/budget expansion request, unapproved production/destructive action, unresolvable safety conflict, `OUTCOME_UNKNOWN` external mutation | Execution halts; reports reason and awaits explicit owner decision |
+| **Owner Pause (`PAUSED_FOR_OWNER`)** | Material mission goal/completion/forbidden-change change, authority/budget/time/effect expansion, unapproved destructive or hard-to-rollback effect, unresolvable safety conflict | Execution halts; reports reason and awaits explicit owner decision |
+| **External uncertainty** | Lost/timeout mutation result or unavailable PR/main authority | `OUTCOME_UNKNOWN` / recovery-required; only read-only reconciliation is permitted and a possibly issued mutation is never repeated |
 
 ## Three-Tier Contract Hierarchy
 
@@ -27,7 +35,10 @@ IDLE → PROPOSING → WAITING_APPROVAL → RUNNING → VERIFYING → INTEGRATIN
 - Binds user-approved natural language goal to a proposal digest.
 - Contains explicit repository, allowed path scopes, and change categories.
 - Defines finite attempts, runtime seconds, call counts, and budget ceilings.
-- Registered owner approval is cryptographic or authenticated comment digest binding.
+- One approval is read from an authenticated GitHub Issue comment: GitHub
+  supplies the `OWNER` identity; its immutable comment ID, exact Mission ID,
+  proposal SHA-256, and current accepted-main SHA are checked before the
+  journal atomically consumes it.  The CLI cannot manufacture an approval.
 
 ### 2. Stage
 - Single verifiable integration result and PR boundary.
@@ -43,8 +54,14 @@ IDLE → PROPOSING → WAITING_APPROVAL → RUNNING → VERIFYING → INTEGRATIN
 ## Single Writer Guarantee
 
 - Only one active lifecycle writer is permitted at any time.
-- Autonomous Steward coordinates dispatch, repair, review, and integration through a rebuildable hash-chained SQLite journal (`steward_journal.py`).
-- Child worker sessions run without GitHub write credentials and without provider secrets.
+- `steward_journal.py` is the sole durable lifecycle owner; its hash-chained
+  records include lease, approval replay, stage, mutation-intent, and
+  PR/head-bound accepted-main receipts.
+- Production WorkCards use the existing authenticated local OpenCode wrapper
+  through `OpenCodeWorkCardWorker`; it consumes the WorkCard objective, scope,
+  checks, evidence, attempts, and environment constraints. Its distinct
+  read-only OpenCode reviewer is not merge-capable. Marker and PR4B adapters
+  are test-only compatibility surfaces.
 
 ## Review Convergence Protocol
 
@@ -84,10 +101,12 @@ R2: Independent session, review_mode=repair_verification, complete base...head a
    - `python-tests`
    - `rust-typescript-cutover`
    - `context-capsule`
-3. **Guarded Merge Owner Delegation**: All merges are strictly delegated to the sole canonical merge workflow (`.github/workflows/agent-merge.yml`). Direct `gh pr merge` is prohibited in repository runtime. Merge occurs only when branch ruleset, exact-head CI, exact `PASS` review receipt, zero open blockers, and single PR squash-merge conditions are met. Authoritative outcome is read back from remote GitHub `main`.
+3. **Guarded Merge Owner Delegation**: All merges are strictly delegated to the sole canonical merge workflow (`.github/workflows/agent-merge.yml`). Direct `gh pr merge` is prohibited in repository runtime. Merge occurs only when branch ruleset, exact-head CI, exact `PASS` review receipt, zero open blockers, and single PR squash-merge conditions are met. Readback must prove the merged PR number and expected head produced the exact GitHub `main` merge commit; local `HEAD` is never a fallback.
 
 ## Recovery and Rollback
 
 - Every Stage and Mission specifies an exact rollback target (e.g. `revert:<SHA>`).
 - If a Stage fails or encounters an unrecoverable conflict, the branch is reset or reverted cleanly without affecting `main`.
-- Emergency stop command restores the safe stopped state immediately, disabling orchestrator, auto-merge, and dispatch.
+- The Issue-label emergency stop halts new WorkCard, Ready, and merge dispatch
+  while retaining the active Mission and recovery evidence. Clearing it does
+  not create a second approval.

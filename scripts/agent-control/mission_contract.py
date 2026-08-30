@@ -112,7 +112,12 @@ STOP_CATEGORIES = {
 }
 
 LIFECYCLE_COORDINATOR = "scripts/agent-control/steward.py"
-TRUSTED_OWNER_IDENTITIES = ("repository-owner",)
+# ``repository-owner`` is a proposal placeholder only.  It is deliberately
+# not an authenticated identity: a RUNNING Mission must carry the identity
+# attested by the GitHub Issue-comment transport.
+PROPOSAL_OWNER_IDENTITY = "repository-owner"
+AUTHENTICATED_OWNER_IDENTITIES = ("github:Igzela",)
+TRUSTED_OWNER_IDENTITIES = (PROPOSAL_OWNER_IDENTITY, *AUTHENTICATED_OWNER_IDENTITIES)
 CAMPAIGN_MISSION_ID = "AUTONOMOUS-STEWARD-MIGRATION-2026-08-27"
 CAMPAIGN_REPOSITORY = "Igzela/token-efficient-agent-harness-lab"
 CAMPAIGN_SOURCE_REF = "autonomous-steward-migration-plan-2026-08-27"
@@ -943,32 +948,62 @@ def validate_owner_approval(
     model = MaintenanceMission.from_wire(mission.to_wire())
     if model.owner_approval.owner_identity not in TRUSTED_OWNER_IDENTITIES:
         raise MissionContractError("owner_approval_identity_untrusted")
+    if (
+        model.state in {"RUNNING", "VERIFYING", "INTEGRATING", "COMPLETE"}
+        and model.owner_approval.owner_identity not in AUTHENTICATED_OWNER_IDENTITIES
+    ):
+        raise MissionContractError("running_owner_approval_not_authenticated")
     return model
 
 
-class AuthenticatedOwnerApprovalValidator:
-    """Canonical validator for authenticated owner approvals.
+@dataclass(frozen=True)
+class OwnerApprovalEvidence:
+    """Facts authenticated by a trusted external approval transport.
 
-    Enforces:
-    - owner identity is in TRUSTED_OWNER_IDENTITIES;
-    - proposal digest matches expected proposal_sha256;
-    - approval_id is unique and non-replayable;
-    - fresh accepted-main binding (if expected_base_sha is provided);
-    - cryptographic or transport token verification (if expected_token is provided).
+    This is deliberately a value object, not an authenticator.  The transport
+    owner (currently the GitHub Issue-comment reader) must first verify the
+    actor and comment identity, then build this exact binding.  The mission
+    contract only compares the already-authenticated facts; replay protection
+    remains the journal's atomic responsibility.
     """
 
-    def __init__(
-        self,
-        *,
-        trusted_owners: tuple[str, ...] = TRUSTED_OWNER_IDENTITIES,
-        consumed_approval_ids: set[str] | None = None,
-        expected_base_sha: str | None = None,
-        expected_token: str | None = None,
-    ):
-        self.trusted_owners = frozenset(trusted_owners)
-        self.consumed_approval_ids = set(consumed_approval_ids or ())
-        self.expected_base_sha = expected_base_sha
-        self.expected_token = expected_token
+    transport: str
+    repository: str
+    mission_id: str
+    approval_id: str
+    owner_identity: str
+    proposal_sha256: str
+    accepted_main_sha: str
+    evidence_id: str
+
+    def __post_init__(self) -> None:
+        if self.transport != "github_issue_comment":
+            raise MissionContractError("approval_transport_invalid")
+        if REPOSITORY.fullmatch(self.repository) is None:
+            raise MissionContractError("approval_repository_invalid")
+        _identifier(self.mission_id, "approval_mission_id")
+        _identifier(self.approval_id, "approval_id")
+        _identifier(self.evidence_id, "approval_evidence_id")
+        if self.owner_identity not in AUTHENTICATED_OWNER_IDENTITIES:
+            raise MissionContractError("owner_approval_identity_untrusted")
+        _sha(self.proposal_sha256, "approval_proposal_sha256")
+        _sha(self.accepted_main_sha, "approval_accepted_main_sha", SHA40)
+
+
+class AuthenticatedOwnerApprovalValidator:
+    """Validate one externally authenticated approval evidence record.
+
+    Unlike the historical identity-only helper, this class cannot establish
+    authentication from a caller-provided owner string.  It accepts a concrete
+    GitHub-comment evidence binding supplied by the trusted transport.  The
+    caller cannot use this class for replay protection: the SQLite journal
+    atomically consumes the evidence identity after this pure verification.
+    """
+
+    def __init__(self, evidence: OwnerApprovalEvidence):
+        if not isinstance(evidence, OwnerApprovalEvidence):
+            raise MissionContractError("approval_evidence_required")
+        self.evidence = evidence
 
     def verify(self, approval: OwnerApproval | dict[str, Any], proposal_sha256: str) -> bool:
         if not isinstance(approval, OwnerApproval):
@@ -976,14 +1011,44 @@ class AuthenticatedOwnerApprovalValidator:
                 approval = OwnerApproval.from_wire(approval)
             except Exception:
                 return False
-        if approval.owner_identity not in self.trusted_owners:
-            return False
-        if approval.proposal_sha256 != proposal_sha256:
-            return False
-        if not approval.approval_id or approval.approval_id in self.consumed_approval_ids:
-            return False
-        self.consumed_approval_ids.add(approval.approval_id)
-        return True
+        return (
+            approval.owner_identity == self.evidence.owner_identity
+            and approval.proposal_sha256 == proposal_sha256 == self.evidence.proposal_sha256
+            and approval.approval_id == self.evidence.approval_id
+        )
+
+
+def validate_authenticated_owner_approval(
+    approval: OwnerApproval | dict[str, Any],
+    proposal_sha256: str,
+    owner_authenticator: object,
+) -> OwnerApproval:
+    """Validate externally authenticated approval facts without activating.
+
+    Keeping this operation free of runtime activation or replay mutation gives
+    the service a safe verify → journal-consume → activate ordering.
+    """
+
+    if SHA256.fullmatch(proposal_sha256) is None:
+        raise MissionContractError("activation_proposal_invalid")
+    try:
+        normalized = (
+            approval if isinstance(approval, OwnerApproval) else OwnerApproval.from_wire(approval)
+        )
+    except (TypeError, ValueError, MissionContractError) as exc:
+        raise MissionContractError("activation_approval_invalid") from exc
+    if normalized.proposal_sha256 != proposal_sha256:
+        raise MissionContractError("activation_approval_mismatch")
+    verifier = getattr(owner_authenticator, "verify", None)
+    if not callable(verifier):
+        raise MissionContractError("activation_authenticator_missing")
+    try:
+        authenticated = verifier(normalized, proposal_sha256)
+    except Exception as exc:
+        raise MissionContractError("activation_authentication_failed") from exc
+    if authenticated is not True:
+        raise MissionContractError("activation_authentication_failed")
+    return normalized
 
 
 def validate_current_mission(
@@ -1016,7 +1081,10 @@ def validate_current_mission(
         model.mission_id != registered.mission_id
         or model.proposal_wire() != registered.proposal_wire()
         or model.proposal_sha256 != registered.proposal_sha256
-        or model.owner_approval.owner_identity != registered.owner_approval.owner_identity
+    ):
+        raise MissionContractError("mission_registration_invalid")
+    if model.state not in {"RUNNING", "VERIFYING", "INTEGRATING", "COMPLETE"} and (
+        model.owner_approval != registered.owner_approval
     ):
         raise MissionContractError("mission_registration_invalid")
     if model.repository_identity.repository != repository:
@@ -1040,6 +1108,23 @@ def validate_current_mission(
     if isinstance(activation_nonce, str):
         return replace(model, _activation_nonce=activation_nonce)
     return model
+
+
+def restore_durable_activation(mission: MaintenanceMission) -> MaintenanceMission:
+    """Restore the process-local activation capability after journal replay.
+
+    The durable proof is the service-owned ``MISSION_ACTIVATED`` journal
+    event.  The service calls this helper only after it has verified that event
+    and its exact stored mission payload.  The nonce remains process-local so
+    a serialized ``state=RUNNING`` value alone never activates a Mission.
+    """
+
+    model = MaintenanceMission.from_wire(mission.to_wire())
+    if model.state != "RUNNING":
+        raise MissionContractError("mission_not_running")
+    nonce = secrets.token_hex(16)
+    _ACTIVE_ACTIVATION_NONCES.add(nonce)
+    return replace(model, _activation_nonce=nonce)
 
 
 def activate_current_mission(
@@ -1067,33 +1152,16 @@ def activate_current_mission(
         if mission is None
         else mission
     )
-    if SHA256.fullmatch(proposal_sha256) is None:
-        raise MissionContractError("activation_proposal_invalid")
-    try:
-        approval = (
-            owner_approval
-            if isinstance(owner_approval, OwnerApproval)
-            else OwnerApproval.from_wire(owner_approval)
-        )
-    except (TypeError, ValueError, MissionContractError) as exc:
-        raise MissionContractError("activation_approval_invalid") from exc
-    if approval.proposal_sha256 != proposal_sha256:
-        raise MissionContractError("activation_approval_mismatch")
-    verifier = getattr(owner_authenticator, "verify", None)
-    if not callable(verifier):
-        raise MissionContractError("activation_authenticator_missing")
-    try:
-        authenticated = verifier(approval, proposal_sha256)
-    except Exception as exc:
-        raise MissionContractError("activation_authentication_failed") from exc
-    if authenticated is not True:
-        raise MissionContractError("activation_authentication_failed")
+    approval = validate_authenticated_owner_approval(
+        owner_approval, proposal_sha256, owner_authenticator
+    )
     activation_nonce = secrets.token_hex(16)
     _ACTIVE_ACTIVATION_NONCES.add(activation_nonce)
     activated = MaintenanceMission(
         **{
             **registered.__dict__,
             "state": "RUNNING",
+            "owner_approval": approval,
             "repository_identity": RepositoryIdentity(
                 repository,
                 base_sha,
@@ -1503,6 +1571,7 @@ __all__ = [
     "MaintenanceMission",
     "MissionContractError",
     "OwnerApproval",
+    "OwnerApprovalEvidence",
     "RepositoryIdentity",
     "RollbackBoundary",
     "Stage",
@@ -1516,9 +1585,11 @@ __all__ = [
     "stop_category",
     "validate_current_mission",
     "validate_execution_scope",
+    "validate_authenticated_owner_approval",
     "validate_legacy_compatibility",
     "validate_owner_approval",
     "validate_registered_campaign",
     "validate_stage",
     "validate_workcard",
+    "restore_durable_activation",
 ]

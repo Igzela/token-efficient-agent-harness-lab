@@ -1101,7 +1101,9 @@ Unresolved objections: none
             source_ref=registered.repository_identity.source_ref,
             source_sha256=registered.repository_identity.source_sha256,
             proposal_sha256=registered.proposal_sha256,
-            owner_approval=registered.owner_approval,
+            owner_approval=contract.OwnerApproval(
+                "github:Igzela", registered.proposal_sha256, "fixture-fault-approval", "2026-08-30T00:00:00Z"
+            ),
             owner_authenticator=type("Authenticator", (), {"verify": lambda *_args: True})(),
         )
         service = StewardService(
@@ -1339,7 +1341,7 @@ Unresolved objections: none
         subprocess.run(["git", "checkout", "--", "README.md"], cwd=path, check=True, capture_output=True)
         self.assertTrue(worktree_manager.remove_steward_worktree("card-real", str(repo)))
 
-    def test_heartbeat_service_cli_is_once_only_and_persists_no_raw_content(self):
+    def test_idle_service_cli_once_records_lease_and_heartbeat_without_raw_content(self):
         journal_path = Path(self.temp.name) / "heartbeat.sqlite3"
         self.assertEqual(
             service_main(
@@ -1348,7 +1350,7 @@ Unresolved objections: none
             0,
         )
         projection = StewardJournal(journal_path).projection()
-        self.assertEqual(projection["event_count"], 1)
+        self.assertEqual(projection["event_count"], 3)
         self.assertEqual(projection["card_states"], {})
 
     def test_worker_outcome_rejects_private_and_out_of_scope_paths(self):

@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -50,6 +51,22 @@ CONTROL_VERDICTS = frozenset(
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 FINDING_ID_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,160}$")
+REVIEW_RECEIPT_MARKER = "EXACT-HEAD REVIEW RECEIPT"
+REVIEW_RECEIPT_REQUIRED_AXES = frozenset(
+    {
+        "architecture",
+        "authority",
+        "compatibility",
+        "security",
+        "audit",
+        "rollback",
+        "scope/path binding",
+    }
+)
+REVIEW_SESSION_ID_PATTERN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
 
 MAX_FINDINGS = 200
 MAX_DEFERRED_NOTES = 50
@@ -59,6 +76,191 @@ MAX_SUMMARY_LEN = 2000
 
 class ConvergenceError(ValueError):
     """Invalid finding, decision, or transition."""
+
+
+@dataclass(frozen=True)
+class ExactHeadReceiptObservation:
+    """Canonical, typed observation of one exact-head review receipt."""
+
+    state: str
+    observed_head_sha: str | None
+    complete_diff_range: str | None
+    reviewer_session_identity: str | None
+    reviewer_authenticated_identity: str | None
+    review_transport: str | None
+    implementation_session_identity: str | None
+    reviewer_author_identity: str | None
+    observation_time: str | None
+    axes: str | None
+    outcome: str | None
+    unresolved_objections: str | None
+    errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "observed_head_sha": self.observed_head_sha,
+            "complete_diff_range": self.complete_diff_range,
+            "reviewer_session_identity": self.reviewer_session_identity,
+            "reviewer_authenticated_identity": self.reviewer_authenticated_identity,
+            "review_transport": self.review_transport,
+            "implementation_session_identity": self.implementation_session_identity,
+            "reviewer_author_identity": self.reviewer_author_identity,
+            "observation_time": self.observation_time,
+            "axes": self.axes,
+            "outcome": self.outcome,
+            "unresolved_objections": self.unresolved_objections,
+            "errors": list(self.errors),
+        }
+
+
+def _receipt_field(body: str, label: str, errors: list[str]) -> str | None:
+    matches = re.findall(rf"(?im)^\s*{re.escape(label)}\s*:\s*(.*?)\s*$", body)
+    if len(matches) > 1:
+        errors.append(
+            "review_field_duplicated:"
+            + re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+        )
+    value = matches[0].strip() if len(matches) == 1 else ""
+    return value or None
+
+
+def observe_exact_head_receipt(
+    comment: dict[str, Any],
+    *,
+    expected_head_sha: str | None,
+    expected_base_sha: str | None,
+    expected_pr_author_identity: str | None,
+) -> ExactHeadReceiptObservation:
+    """Validate one GitHub receipt without relying on context-script internals."""
+
+    body = str(comment.get("body") or "")
+    author = comment.get("author") or comment.get("user") or {}
+    author_identity = author.get("login") if isinstance(author, dict) else None
+    errors: list[str] = []
+    if body.count(REVIEW_RECEIPT_MARKER) != 1:
+        errors.append("review_receipt_marker_count_invalid")
+    reviewer_identity = _receipt_field(body, "Reviewer session identity", errors)
+    authenticated_identity = _receipt_field(body, "Reviewer authenticated identity", errors)
+    transport = _receipt_field(body, "Review transport", errors)
+    implementation_identity = _receipt_field(body, "Implementation session identity", errors)
+    reviewed_sha = _receipt_field(body, "Reviewed SHA", errors)
+    reviewed_range = _receipt_field(body, "Reviewed range", errors)
+    observed_at = _receipt_field(body, "Observed at", errors)
+    axes_value = _receipt_field(body, "Axes", errors)
+    outcome = (_receipt_field(body, "Outcome", errors) or "").upper()
+    unresolved = (_receipt_field(body, "Unresolved objections", errors) or "").lower()
+
+    if not author_identity:
+        errors.append("reviewer_author_identity_missing")
+    if not authenticated_identity:
+        errors.append("reviewer_authenticated_identity_missing")
+    elif author_identity and authenticated_identity.lower() != author_identity.lower():
+        errors.append("reviewer_authenticated_identity_mismatch")
+    if not expected_pr_author_identity:
+        errors.append("pull_request_author_identity_missing")
+    if not reviewer_identity or reviewer_identity.lower() in {"self", "self-review", "implementation-agent", "unknown"}:
+        errors.append("reviewer_session_identity_missing")
+    elif transport == "parent-posted-on-behalf-of-independent-session" and not REVIEW_SESSION_ID_PATTERN.fullmatch(reviewer_identity):
+        errors.append("parent_reviewer_session_identity_is_not_a_uuid")
+    if author_identity and expected_pr_author_identity and author_identity.lower() == expected_pr_author_identity.lower():
+        if transport != "parent-posted-on-behalf-of-independent-session":
+            errors.append("same-author-review-requires-independent-transport")
+        if not implementation_identity:
+            errors.append("implementation_session_identity_missing")
+        elif implementation_identity.lower() == reviewer_identity.lower():
+            errors.append("reviewer_and_implementation_sessions_match")
+    elif transport != "direct-github-reviewer":
+        errors.append("direct-review-requires-authenticated-reviewer-transport")
+    if not expected_head_sha or not re.fullmatch(r"[0-9a-f]{40}", expected_head_sha):
+        errors.append("current_head_sha_missing_or_invalid")
+    if not reviewed_sha or not re.fullmatch(r"[0-9a-f]{40}", reviewed_sha):
+        errors.append("reviewed_sha_missing_or_invalid")
+    if reviewed_sha and reviewed_sha != expected_head_sha:
+        errors.append("reviewed_sha_does_not_match_current_head")
+    range_match = re.fullmatch(r"([0-9a-f]{40})\.\.\.([0-9a-f]{40})", reviewed_range or "")
+    if not range_match:
+        errors.append("complete_diff_range_missing_or_invalid")
+    elif expected_head_sha and range_match.group(2) != expected_head_sha:
+        errors.append("complete_diff_range_does_not_match_current_head")
+    if not expected_base_sha or not re.fullmatch(r"[0-9a-f]{40}", expected_base_sha):
+        errors.append("accepted_base_sha_missing_or_invalid")
+    elif range_match and range_match.group(1) != expected_base_sha:
+        errors.append("complete_diff_range_does_not_match_accepted_base")
+    if not observed_at:
+        errors.append("observation_time_missing")
+    else:
+        try:
+            parsed_observed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        except ValueError:
+            parsed_observed_at = None
+        if parsed_observed_at is None or parsed_observed_at.tzinfo is None:
+            errors.append("observation_time_is_not_iso8601_with_timezone")
+    axes_lower = (axes_value or "").lower()
+    negative_review = r"\b(?:not|no|missing|excluded|unreviewed|unavailable|without|never)\b"
+    negated_axes = sorted(
+        axis for axis in REVIEW_RECEIPT_REQUIRED_AXES
+        if re.search(rf"(?:{negative_review}[^,;\n]*{re.escape(axis)}|{re.escape(axis)}[^,;\n]*{negative_review})", axes_lower)
+    )
+    if negated_axes:
+        errors.append("review_axes_negated:" + ",".join(negated_axes))
+    missing_axes = sorted(
+        axis for axis in REVIEW_RECEIPT_REQUIRED_AXES
+        if not re.search(rf"(?<![a-z0-9]){re.escape(axis)}(?![a-z0-9])", axes_lower)
+    )
+    if missing_axes:
+        errors.append("review_axes_missing:" + ",".join(missing_axes))
+    if outcome != "PASS":
+        errors.append("review_outcome_is_not_exact_pass")
+    if unresolved not in {"none", "none observed"}:
+        errors.append("unresolved_objections_present_or_unspecified")
+    return ExactHeadReceiptObservation(
+        state="valid" if not errors else "invalid",
+        observed_head_sha=reviewed_sha,
+        complete_diff_range=reviewed_range,
+        reviewer_session_identity=reviewer_identity,
+        reviewer_authenticated_identity=authenticated_identity,
+        review_transport=transport,
+        implementation_session_identity=implementation_identity,
+        reviewer_author_identity=author_identity,
+        observation_time=observed_at,
+        axes=axes_value,
+        outcome=outcome or None,
+        unresolved_objections=unresolved or None,
+        errors=tuple(errors),
+    )
+
+
+def exact_head_review_confirmed(
+    comments: list[dict[str, Any]],
+    *,
+    expected_head_sha: str,
+    expected_base_sha: str,
+    expected_pr_author_identity: str,
+) -> bool:
+    """Return true only for one valid current-head receipt and no unbound receipt."""
+
+    receipt_comments = [
+        comment for comment in comments
+        if REVIEW_RECEIPT_MARKER in str(comment.get("body") or "")
+    ]
+    if not receipt_comments:
+        return False
+    observations = [
+        observe_exact_head_receipt(
+            comment,
+            expected_head_sha=expected_head_sha,
+            expected_base_sha=expected_base_sha,
+            expected_pr_author_identity=expected_pr_author_identity,
+        )
+        for comment in receipt_comments
+    ]
+    current = [item for item in observations if item.observed_head_sha == expected_head_sha]
+    unbound = [
+        item for item in observations
+        if not re.fullmatch(r"[0-9a-f]{40}", str(item.observed_head_sha or ""))
+    ]
+    return len(current) == 1 and not unbound and current[0].state == "valid" and current[0].unresolved_objections in {"none", "none observed"}
 
 
 @dataclass(frozen=True)

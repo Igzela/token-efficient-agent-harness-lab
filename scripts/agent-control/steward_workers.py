@@ -97,7 +97,9 @@ class PathConflict(WorkerError):
     """A declared WorkCard path lock is currently owned by another card."""
 
 
-def child_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
+def child_environment(
+    base: Mapping[str, str] | None = None, *, preserve_home: bool = False
+) -> dict[str, str]:
     """Return the existing repository-owned credential-free child environment."""
 
     source = None if base is None else dict(base)
@@ -113,8 +115,27 @@ def child_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
     for key in tuple(environment):
         if key.startswith(_GIT_ENVIRONMENT_PREFIX):
             environment.pop(key, None)
-    environment["HOME"] = "/nonexistent"
-    environment["PATH"] = "/usr/bin:/bin"
+    # Production OpenCode needs the already-authenticated local login selected
+    # by the operator.  The wrapper still receives only this filtered mapping
+    # and applies its own explicit allowlist; fixture/sandbox callers retain
+    # the historical credential-free /nonexistent home by default.
+    if preserve_home:
+        candidate_home = (source or {}).get("HOME") or os.environ.get("HOME")
+        if not candidate_home or Path(candidate_home).is_absolute() is False:
+            raise WorkerError("authenticated_home_invalid")
+        environment["HOME"] = candidate_home
+    else:
+        environment["HOME"] = "/nonexistent"
+    path_entries = ["/usr/bin", "/bin"]
+    if preserve_home:
+        # The accepted local OpenCode transport is installed in the operator's
+        # authenticated home, not in the system image.  Add only the known
+        # repository transport directory when its executable is present; no
+        # caller-controlled PATH entries are forwarded to the child.
+        opencode_dir = Path(environment["HOME"]) / ".opencode" / "bin"
+        if (opencode_dir / "opencode").is_file() and os.access(opencode_dir / "opencode", os.X_OK):
+            path_entries.append(str(opencode_dir))
+    environment["PATH"] = ":".join(path_entries)
     return environment
 
 
@@ -191,6 +212,9 @@ class WorkerContext:
     expected_evidence: tuple[str, ...]
     environment: Mapping[str, str]
     worktree_branch: str = ""
+    forbidden_paths: tuple[str, ...] = ()
+    max_attempts: int = 1
+    objective: str = ""
 
     def __post_init__(self) -> None:
         if not SHA40.fullmatch(self.base_sha):
@@ -204,13 +228,24 @@ class WorkerContext:
         _safe_session(self.card_id, "card_id")
         if not self.allowed_paths:
             raise WorkerError("worker_scope_empty")
+        if type(self.max_attempts) is not int or self.max_attempts < self.attempt:
+            raise WorkerError("worker_attempt_budget_invalid")
+        if not isinstance(self.objective, str) or len(self.objective) > 8 * 1024:
+            raise WorkerError("worker_objective_invalid")
+        for path in (*self.allowed_paths, *self.forbidden_paths):
+            _safe_path(path)
         if any(
             not isinstance(key, str)
             or any(marker in key.upper() for marker in _CREDENTIAL_MARKERS)
             for key in self.environment
         ):
             raise WorkerError("credential_shaped_child_environment")
-        sanitized = child_environment(dict(self.environment))
+        # Production OpenCode workers retain the operator's authenticated HOME
+        # so the existing local transport can resolve its login.  Re-apply the
+        # same filtering policy while preserving that explicitly bounded HOME;
+        # fixture/sandbox contexts continue to use /nonexistent.
+        preserve_home = self.environment.get("HOME") not in (None, "/nonexistent")
+        sanitized = child_environment(dict(self.environment), preserve_home=preserve_home)
         if dict(self.environment) != sanitized:
             raise WorkerError("child_environment_not_allowlisted")
 
@@ -564,7 +599,11 @@ else:
 
 
 def general_worker() -> BoundedProcessWorker:
-    """Build the general provider-free worker executing within WorkCard boundaries."""
+    """TEST-ONLY legacy marker worker retained for deterministic fixtures.
+
+    It is deliberately not admitted by the production ``Steward`` route.
+    Remove it when historical fixture receipts no longer need compatibility.
+    """
 
     def command(context: WorkerContext) -> list[str]:
         return [
@@ -583,7 +622,7 @@ def general_worker() -> BoundedProcessWorker:
 
 
 def general_reviewer() -> BoundedProcessReviewer:
-    """Build the separate read-only reviewer for general provider-free work."""
+    """TEST-ONLY legacy marker reviewer paired only with fixture workers."""
 
     def command(context: WorkerContext, outcome: WorkerOutcome) -> list[str]:
         return [
@@ -673,7 +712,12 @@ class FakeTestReviewer:
 
 
 class ProviderFreeWorker:
-    """Explicit default that cannot accidentally call a Provider."""
+    """TEST-ONLY compatibility adapter for historical marker fixtures.
+
+    Production construction rejects this type and uses
+    :class:`OpenCodeWorkCardWorker`; deletion is permitted once downstream
+    fixture consumers have moved to ``FakeTestWorker``.
+    """
 
     def __init__(self, worker: BoundedProcessWorker | None = None, *, configured: bool = False):
         self._worker = worker
@@ -686,16 +730,270 @@ class ProviderFreeWorker:
         return active_worker.run(context)
 
 
+class OpenCodeWorkCardWorker:
+    """Production WorkCard implementation adapter using the accepted wrapper.
+
+    The wrapper owns authenticated OpenCode invocation and its credential
+    allowlist.  This adapter owns the WorkCard prompt projection, exact
+    worktree hygiene, allowed-path enforcement, bounded timeout, and the one
+    implementation commit.  It never pushes, creates a PR, or merges.
+    """
+
+    def __init__(
+        self, *, wrapper_path: str | Path | None = None, timeout_seconds: int = 1800
+    ) -> None:
+        if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 3600:
+            raise ValueError("opencode_timeout_invalid")
+        wrapper = Path(wrapper_path) if wrapper_path is not None else Path(__file__).with_name("codex_wrapper.sh")
+        if wrapper.is_symlink() or not wrapper.is_file():
+            raise ValueError("opencode_wrapper_invalid")
+        self.wrapper_path = wrapper.resolve()
+        self.timeout_seconds = timeout_seconds
+
+    @staticmethod
+    def _git(worktree: Path, *args: str, timeout: int = 60) -> str:
+        try:
+            result = subprocess.run(
+                ["git", *args], cwd=worktree, capture_output=True, text=True,
+                timeout=timeout, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise WorkerError("opencode_git_unavailable") from exc
+        if result.returncode != 0:
+            raise WorkerError("opencode_git_failed")
+        return result.stdout.strip()
+
+    @classmethod
+    def _changed_paths(cls, context: WorkerContext) -> tuple[str, ...]:
+        tracked = cls._git(context.worktree, "diff", "--name-only", "--diff-filter=ACDMRTUXB")
+        staged = cls._git(context.worktree, "diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB")
+        untracked = cls._git(context.worktree, "ls-files", "--others", "--exclude-standard")
+        paths = tuple(sorted({*filter(None, tracked.splitlines()), *filter(None, staged.splitlines()), *filter(None, untracked.splitlines())}))
+        for path in paths:
+            _safe_path(path)
+            if any(
+                mission_contract.path_in_scope((forbidden,), path)
+                for forbidden in context.forbidden_paths
+            ) or not mission_contract.path_in_scope(context.allowed_paths, path):
+                raise WorkerError("opencode_path_outside_workcard")
+        return paths
+
+    @staticmethod
+    def _prompt(context: WorkerContext) -> str:
+        # This temporary prompt is intentionally not journaled.  It carries
+        # only the bounded WorkCard contract and is removed after the wrapper
+        # exits; raw model text is never retained as Steward evidence.
+        rows = [
+            "You are the implementation worker for one bounded repository WorkCard.",
+            "Work only in the provided repository worktree.",
+            "Do not access external directories, do not push, do not create PRs, and do not merge.",
+            "Do not edit paths outside the allowed list. Do not commit; the Steward parent validates and commits.",
+            f"Mission: {context.mission_id}",
+            f"Mission objective: {context.objective}",
+            f"Stage: {context.stage_id}",
+            f"WorkCard: {context.card_id}",
+            f"Attempt: {context.attempt}",
+            "Allowed paths:",
+            *(f"- {path}" for path in context.allowed_paths),
+            "Forbidden paths:",
+            *(f"- {path}" for path in context.forbidden_paths),
+            "Required steps:",
+            *(f"- {step}" for step in context.steps),
+            "Focused tests:",
+            *(f"- {check}" for check in context.focused_tests),
+            "Negative checks:",
+            *(f"- {check}" for check in context.negative_checks),
+            "Expected evidence:",
+            *(f"- {item}" for item in context.expected_evidence),
+            f"Maximum attempts for this WorkCard: {context.max_attempts}",
+            "Environment constraints: use only the supplied allowlisted child environment; no credential-shaped variables, Git metadata variables, or network-selector variables are available.",
+            "Allowlisted environment keys:",
+            *(f"- {key}" for key in sorted(context.environment)),
+            "Make the smallest complete change, run relevant focused tests, then stop.",
+        ]
+        return "\n".join(rows) + "\n"
+
+    def _invoke(
+        self,
+        worker_type: str,
+        prompt: str,
+        worktree: Path,
+        *,
+        environment: Mapping[str, str],
+    ) -> tuple[int, Path]:
+        with tempfile.TemporaryDirectory(prefix="steward-opencode-") as temp:
+            root = Path(temp)
+            prompt_path = root / "workcard.txt"
+            output_dir = root / "output"
+            prompt_path.write_text(prompt, encoding="utf-8")
+            child_environment = dict(environment)
+            child_environment["AGENT_CODEX_TIMEOUT_SECONDS"] = str(self.timeout_seconds)
+            try:
+                result = subprocess.run(
+                    [str(self.wrapper_path), worker_type, str(prompt_path), str(output_dir), str(worktree)],
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_seconds + 30,
+                    env=child_environment,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return 124, root / "missing"
+            # The review adapter needs the bounded response for immediate
+            # validation, but never persists it.  Copy it into a second
+            # short-lived directory controlled by the caller.
+            if worker_type == "review" and result.returncode == 0:
+                message = output_dir / "codex-last-message.txt"
+                if message.is_file() and not message.is_symlink():
+                    retained = Path(tempfile.mkdtemp(prefix="steward-opencode-review-")) / "message.txt"
+                    retained.write_bytes(message.read_bytes())
+                    return result.returncode, retained
+            return result.returncode, root / "missing"
+
+    def run(self, context: WorkerContext) -> WorkerOutcome:
+        if self._git(context.worktree, "status", "--porcelain=v1", "--untracked-files=all"):
+            raise WorkerError("opencode_worktree_not_clean")
+        before = self._git(context.worktree, "rev-parse", "--verify", "HEAD")
+        if before != context.base_sha:
+            raise WorkerError("opencode_base_head_mismatch")
+        exit_code, _unused = self._invoke(
+            "implement", self._prompt(context), context.worktree,
+            environment=context.environment,
+        )
+        after = self._git(context.worktree, "rev-parse", "--verify", "HEAD")
+        if after != before:
+            # The agent performed an unapproved Git effect.  Preserve the
+            # worktree for read-only reconciliation and never retry blindly.
+            return WorkerOutcome("OUTCOME_UNKNOWN", process_session_id(context), after, (), "opencode_unexpected_commit")
+        paths = self._changed_paths(context)
+        if exit_code == 124:
+            return WorkerOutcome("OUTCOME_UNKNOWN" if paths else "TIMEOUT", process_session_id(context), before, (), "opencode_timeout")
+        if exit_code != 0:
+            return WorkerOutcome("OUTCOME_UNKNOWN" if paths else "FAIL", process_session_id(context), before, (), "opencode_execution_failed")
+        if not paths:
+            return WorkerOutcome("FAIL", process_session_id(context), before, (), "opencode_no_change")
+        if self._git(context.worktree, "diff", "--check"):
+            raise WorkerError("opencode_diff_check_failed")
+        self._git(context.worktree, "add", "--", *paths)
+        if not self._git(context.worktree, "diff", "--cached", "--name-only"):
+            raise WorkerError("opencode_stage_empty")
+        self._git(
+            context.worktree,
+            "-c", "user.name=Autonomous Steward OpenCode",
+            "-c", "user.email=steward-opencode@localhost.invalid",
+            "commit", "-m", f"steward: {context.stage_id} {context.card_id}",
+            timeout=120,
+        )
+        head = self._git(context.worktree, "rev-parse", "--verify", "HEAD")
+        if head == before or not SHA40.fullmatch(head):
+            raise WorkerError("opencode_commit_invalid")
+        if self._git(context.worktree, "status", "--porcelain=v1", "--untracked-files=all"):
+            raise WorkerError("opencode_worktree_dirty_after_commit")
+        return WorkerOutcome("PASS", process_session_id(context), head, paths, "opencode_workcard_completed")
+
+
+class OpenCodeWorkCardReviewer:
+    """Production independent reviewer using the accepted read-only wrapper."""
+
+    def __init__(self, *, worker: OpenCodeWorkCardWorker | None = None) -> None:
+        self.worker = worker or OpenCodeWorkCardWorker()
+
+    @staticmethod
+    def _prompt(context: WorkerContext, outcome: WorkerOutcome) -> str:
+        return "\n".join((
+            "Independently review the complete exact Git range below.",
+            "You are read-only: do not edit, commit, push, create PRs, or merge.",
+            f"Mission: {context.mission_id}",
+            f"Stage: {context.stage_id}",
+            f"WorkCard: {context.card_id}",
+            f"Base SHA: {context.base_sha}",
+            f"Head SHA: {outcome.head_sha}",
+            "Allowed paths:",
+            *(f"- {path}" for path in context.allowed_paths),
+            "Review Standards and Spec. Return exactly one compact JSON object:",
+            '{"verdict":"PASS"|"FAIL","blockers":["bounded-id"],"summary":"bounded summary"}',
+            "Use PASS only when the change is within scope, safe, reversible, and complete.",
+        )) + "\n"
+
+    def review(self, context: WorkerContext, outcome: WorkerOutcome) -> ReviewOutcome:
+        exit_code, response_path = self.worker._invoke(
+            "review", self._prompt(context, outcome), context.worktree,
+            environment=context.environment,
+        )
+        try:
+            if exit_code != 0 or not response_path.is_file() or response_path.is_symlink():
+                raise WorkerError("opencode_review_execution_failed")
+            raw = response_path.read_bytes()
+            if not raw or len(raw) > 16 * 1024:
+                raise WorkerError("opencode_review_output_invalid")
+            try:
+                value = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise WorkerError("opencode_review_output_invalid") from exc
+            if (
+                not isinstance(value, dict)
+                or set(value) != {"verdict", "blockers", "summary"}
+                or value["verdict"] not in {"PASS", "FAIL"}
+                or not isinstance(value["blockers"], list)
+                or not all(isinstance(item, str) and SESSION_ID.fullmatch(item) for item in value["blockers"])
+                or not isinstance(value["summary"], str)
+            ):
+                raise WorkerError("opencode_review_output_invalid")
+            blockers = tuple(value["blockers"])
+            if (value["verdict"] == "PASS") != (not blockers):
+                raise WorkerError("opencode_review_verdict_invalid")
+            raw_wire = {
+                "schema_version": "steward_review_outcome.v1",
+                "status": value["verdict"],
+                "reviewer_session_id": reviewer_session_id(context, outcome),
+                "implementation_session_id": outcome.session_id,
+                "reviewed_head_sha": outcome.head_sha,
+                "blockers": list(blockers),
+                "detail": "opencode_independent_review",
+                "reviewed_base_sha": context.base_sha,
+                "reviewed_range_sha256": review_range_digest(context.base_sha, outcome.head_sha, worktree=context.worktree),
+                "review_axes": ["standards", "spec"],
+                "review_round": 1,
+                "review_mode": "full",
+                "review_receipt_sha256": "",
+                "summary": value["summary"],
+                "findings": None,
+                "security_ok": value["verdict"] == "PASS",
+                "rollback_ok": value["verdict"] == "PASS",
+                "observed_ci_status": "unknown",
+                "finding_ledger_digest": "",
+            }
+            return ReviewOutcome.from_wire(seal_review_outcome_wire(raw_wire))
+        finally:
+            if response_path.parent.name.startswith("steward-opencode-review-"):
+                try:
+                    response_path.unlink(missing_ok=True)
+                    response_path.parent.rmdir()
+                except OSError:
+                    pass
+
+
+def production_worker() -> OpenCodeWorkCardWorker:
+    """Return the sole production implementation adapter."""
+
+    return OpenCodeWorkCardWorker()
+
+
+def production_reviewer() -> OpenCodeWorkCardReviewer:
+    """Return the independent production reviewer adapter."""
+
+    return OpenCodeWorkCardReviewer()
+
+
 PR4B_CANARY_PROPOSAL_SHA256 = (
     "3a55ac107a2cae2a049e37804ea851036849c37aa84f95138db7d7f611db7eae"
 )
 PR4B_CANARY_APPROVAL_ISSUE = 208
 PR4B_CANARY_ALLOWED_PATHS = ("docs/ARCHITECTURE.md",)
 
-# The WorkCard worktree is intentionally created from the accepted base.  Keep
-# the tiny provider-free canary program in the argv passed to the bounded
-# child, so a new helper file on the repair head is not an undeclared runtime
-# dependency of that exact-base worktree.
+# TEST-ONLY historical PR4B canary compatibility.  It is neither selected nor
+# admitted by the production route; retain it only while old deterministic
+# receipt fixtures reference it, then delete it with those fixtures.
 _PR4B_CANARY_CHILD = r'''import hashlib,json,os,socket,subprocess,sys,tempfile
 from pathlib import Path
 T="docs/ARCHITECTURE.md"; A={"leaf-a":"Rust `engine/` as the sole runtime, scheduler, policy, and application-owned storage authority.","leaf-b":"Autonomous Steward as the repository-maintenance outer loop coordinating missions, stages, and workcards without creating parallel schedulers or state stores."}
@@ -741,7 +1039,7 @@ else:
 
 
 def pr4b_canary_worker() -> BoundedProcessWorker:
-    """Build the fixed provider-free worker for the approved PR4B canary."""
+    """Build the TEST-ONLY fixed worker for the historical PR4B canary."""
 
     def command(context: WorkerContext) -> list[str]:
         if context.allowed_paths != PR4B_CANARY_ALLOWED_PATHS:
@@ -760,7 +1058,7 @@ def pr4b_canary_worker() -> BoundedProcessWorker:
 
 
 def pr4b_canary_reviewer() -> BoundedProcessReviewer:
-    """Build the separate read-only reviewer for the approved PR4B canary."""
+    """Build the TEST-ONLY reviewer for the historical PR4B canary."""
 
     def command(context: WorkerContext, outcome: WorkerOutcome) -> list[str]:
         if context.allowed_paths != PR4B_CANARY_ALLOWED_PATHS:
@@ -1421,12 +1719,16 @@ __all__ = [
     "CapacityLock",
     "FakeTestReviewer",
     "FakeTestWorker",
+    "OpenCodeWorkCardReviewer",
+    "OpenCodeWorkCardWorker",
     "PathConflict",
     "PathLockSet",
     "ProviderFreeWorker",
     "PR4B_CANARY_PROPOSAL_SHA256",
     "pr4b_canary_reviewer",
     "pr4b_canary_worker",
+    "production_reviewer",
+    "production_worker",
     "ReviewOutcome",
     "review_receipt_digest",
     "seal_review_outcome_wire",

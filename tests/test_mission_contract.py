@@ -107,11 +107,12 @@ class MissionContractTests(unittest.TestCase):
             self.mission,
         )
 
-        activation_proposal = "d" * 64
-        activation_approval = replace(
-            self.mission.owner_approval,
+        activation_proposal = self.mission.proposal_sha256
+        activation_approval = contract.OwnerApproval(
+            owner_identity="github:Igzela",
             proposal_sha256=activation_proposal,
             approval_id="activation-test",
+            approved_at="2026-08-30T00:00:00Z",
         )
         activated = contract.activate_current_mission(
             repository=self.mission.repository_identity.repository,
@@ -126,6 +127,7 @@ class MissionContractTests(unittest.TestCase):
             )(),
         )
         self.assertEqual(activated.state, "RUNNING")
+        self.assertEqual(activated.owner_approval.owner_identity, "github:Igzela")
         self.assertEqual(activated.repository_identity.base_sha, "c" * 40)
         self.assertEqual(activated.proposal_sha256, self.mission.proposal_sha256)
         self.assertEqual(
@@ -133,10 +135,23 @@ class MissionContractTests(unittest.TestCase):
         )
         forged_running = replace(self.mission, state="RUNNING")
         with self.assertRaisesRegex(
-            contract.MissionContractError, "mission_activation_missing"
+            contract.MissionContractError, "running_owner_approval_not_authenticated"
         ):
             contract.validate_current_mission(
                 forged_running,
+                require_running=True,
+                **self.current_identity_kwargs(),
+            )
+        forged_external_identity = replace(
+            self.mission,
+            state="RUNNING",
+            owner_approval=activation_approval,
+        )
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "mission_activation_missing"
+        ):
+            contract.validate_current_mission(
+                forged_external_identity,
                 require_running=True,
                 **self.current_identity_kwargs(),
             )

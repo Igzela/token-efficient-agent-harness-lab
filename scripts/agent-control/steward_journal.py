@@ -1,4 +1,4 @@
-"""Rebuildable SQLite journal for the provider-free Steward.
+"""Rebuildable SQLite journal for the Autonomous Steward.
 
 The journal is an operator-side projection.  It records bounded transition
 facts so a service restart can reconstruct what it may inspect next; it is
@@ -54,6 +54,7 @@ MISSION_STATES = frozenset(
         "COMPLETE",
         "PAUSED_FOR_OWNER",
         "BLOCKED",
+        "OUTCOME_UNKNOWN",
     }
 )
 ALL_STATES = CARD_STATES | MISSION_STATES | {"HEALTHY", "STOPPED"}
@@ -738,12 +739,17 @@ class StewardJournal:
         }
 
     def active_mission_record(self) -> JournalEvent | None:
-        """Return the latest active, non-terminal mission activation event."""
+        """Return the latest durable active-Mission identity.
+
+        Each accepted Stage rebinds the same approved Mission to the newly
+        proved accepted-main SHA.  That rebind is a lifecycle fact in this
+        journal, not a second approval or a parallel state store.
+        """
         all_events = self.replay()
         for event in reversed(all_events):
             if event.event in {"MISSION_COMPLETED", "MISSION_STOPPED"}:
                 return None
-            if event.event == "MISSION_ACTIVATED":
+            if event.event in {"MISSION_BASE_DRIFT_REBOUND", "MISSION_BASE_ADVANCED", "MISSION_ACTIVATED"}:
                 return event
         return None
 
@@ -806,6 +812,31 @@ class StewardJournal:
             state="COMPLETE",
             detail="mission_completed",
             data=summary or {},
+            enforce_transition=False,
+        )
+
+    def record_mission_base_advance(
+        self,
+        mission_id: str,
+        mission_data: dict[str, Any],
+        *,
+        accepted_main_sha: str,
+        idempotency_key: str | None = None,
+    ) -> JournalEvent:
+        """Persist one PR-bound accepted-main rebind for restart recovery."""
+
+        if not isinstance(mission_data, dict) or re.fullmatch(r"[0-9a-f]{40}", accepted_main_sha) is None:
+            raise JournalError("mission_base_advance_invalid")
+        key = idempotency_key or f"mission-base-advanced:{mission_id}:{accepted_main_sha}"
+        return self.append(
+            event="MISSION_BASE_ADVANCED",
+            idempotency_key=key,
+            mission_id=mission_id,
+            stage_id="mission",
+            card_id="",
+            state="RUNNING",
+            detail="accepted_main_rebound",
+            data=mission_data,
             enforce_transition=False,
         )
 

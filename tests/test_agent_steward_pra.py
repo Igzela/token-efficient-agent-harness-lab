@@ -10,11 +10,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "agent-control"))
 
 import mission_contract as contract
 import shadow_steward
+import steward_github
 import steward_service as service
 from steward_journal import StewardJournal
 import steward_workers as workers
@@ -45,6 +47,39 @@ class TestAutonomousStewardPRA(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    @staticmethod
+    def _evidence(mission: contract.MaintenanceMission, proposal_sha256: str, suffix: str = "1") -> contract.OwnerApprovalEvidence:
+        """Deterministic stand-in for already-verified GitHub comment facts."""
+        return contract.OwnerApprovalEvidence(
+            transport="github_issue_comment",
+            repository=mission.repository_identity.repository,
+            mission_id=mission.mission_id,
+            approval_id=f"approval-{suffix}",
+            owner_identity="github:Igzela",
+            proposal_sha256=proposal_sha256,
+            accepted_main_sha=mission.repository_identity.base_sha,
+            evidence_id=f"github-comment-{suffix}",
+        )
+
+    class _FixtureApprovalSource:
+        """SIMULATED authenticated transport for deterministic tests only."""
+
+        __steward_test_fixture__ = True
+
+        def __init__(self, evidence: contract.OwnerApprovalEvidence):
+            self.evidence = evidence
+
+        def read(self, **_kwargs) -> contract.OwnerApprovalEvidence:
+            return self.evidence
+
+    def _approve(self, srv: service.StewardService, mission: contract.MaintenanceMission, proposal_sha256: str, suffix: str) -> contract.MaintenanceMission:
+        evidence = self._evidence(mission, proposal_sha256, suffix)
+        return srv.approve(
+            mission,
+            approval_comment_id=int(suffix) if suffix.isdigit() else 9000 + len(suffix),
+            approval_source=self._FixtureApprovalSource(evidence),
+        )
 
     def test_wal_mode_and_journal_lifecycle_events(self):
         """Verify SQLite journal operates in WAL mode and records mission lifecycle facts."""
@@ -91,6 +126,7 @@ class TestAutonomousStewardPRA(unittest.TestCase):
         srv = service.StewardService(
             journal=self.journal,
             github=service.GhReadOnlyGitHub(),
+            github_writer=steward_github.FakeGitHubWriter(),
             repo_path=self.repo_dir,
         )
         status = srv.status()
@@ -102,6 +138,7 @@ class TestAutonomousStewardPRA(unittest.TestCase):
         srv = service.StewardService(
             journal=self.journal,
             github=service.GhReadOnlyGitHub(),
+            github_writer=steward_github.FakeGitHubWriter(),
             repo_path=self.repo_dir,
         )
         mission, proposal_sha256 = srv.propose(
@@ -117,21 +154,15 @@ class TestAutonomousStewardPRA(unittest.TestCase):
 
         # Journal should now have MISSION_PROPOSED
         events = self.journal.replay()
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0].event, "MISSION_PROPOSED")
+        proposals = [event for event in events if event.event == "MISSION_PROPOSED"]
+        self.assertEqual(len(proposals), 1)
+        self.assertEqual(proposals[0].mission_id, mission.mission_id)
+        self.assertIn("SERVICE_LEASE_ACQUIRED", [event.event for event in events])
 
-        # Approve and activate using canonical AuthenticatedOwnerApprovalValidator
-        approval = contract.OwnerApproval(
-            owner_identity="repository-owner",
-            proposal_sha256=proposal_sha256,
-            approval_id="approval-issue-100",
-            approved_at="2026-08-30T00:00:00Z",
-        )
-        authenticator = contract.AuthenticatedOwnerApprovalValidator(
-            trusted_owners=contract.TRUSTED_OWNER_IDENTITIES,
-        )
-        activated = srv.approve(mission, approval, authenticator)
+        activated = self._approve(srv, mission, proposal_sha256, "100")
         self.assertEqual(activated.state, "RUNNING")
+        self.assertEqual(activated.owner_approval.owner_identity, "github:Igzela")
+        self.assertNotEqual(activated.owner_approval.approval_id, "pending-approval")
         self.assertEqual(srv.mission_id, activated.mission_id)
 
         # Status should now report RUNNING
@@ -144,6 +175,7 @@ class TestAutonomousStewardPRA(unittest.TestCase):
         srv = service.StewardService(
             journal=self.journal,
             github=service.GhReadOnlyGitHub(),
+            github_writer=steward_github.FakeGitHubWriter(),
             repo_path=self.repo_dir,
         )
         mission, proposal_sha256 = srv.propose(
@@ -153,49 +185,84 @@ class TestAutonomousStewardPRA(unittest.TestCase):
             mission_id="MISSION-NEG-1",
         )
 
-        authenticator = contract.AuthenticatedOwnerApprovalValidator(
-            trusted_owners=contract.TRUSTED_OWNER_IDENTITIES,
-        )
-
-        # 1. Untrusted owner identity
-        untrusted_approval = contract.OwnerApproval(
-            owner_identity="malicious-actor",
-            proposal_sha256=proposal_sha256,
-            approval_id="approval-untrusted-1",
-            approved_at="2026-08-30T00:00:00Z",
-        )
-        with self.assertRaises(contract.MissionContractError):
-            srv.approve(mission, untrusted_approval, authenticator)
-
-        # 2. Forged proposal sha256 mismatch
-        forged_approval = contract.OwnerApproval(
-            owner_identity="repository-owner",
-            proposal_sha256="f" * 64,
-            approval_id="approval-forged-1",
-            approved_at="2026-08-30T00:00:00Z",
+        # 1. Wrong accepted-main binding.
+        wrong_base = self._evidence(mission, proposal_sha256, "untrusted")
+        wrong_base = contract.OwnerApprovalEvidence(
+            transport=wrong_base.transport,
+            repository=wrong_base.repository,
+            mission_id=wrong_base.mission_id,
+            approval_id=wrong_base.approval_id,
+            owner_identity=wrong_base.owner_identity,
+            proposal_sha256=wrong_base.proposal_sha256,
+            accepted_main_sha="f" * 40,
+            evidence_id=wrong_base.evidence_id,
         )
         with self.assertRaises(contract.MissionContractError):
-            srv.approve(mission, forged_approval, authenticator)
+            srv.approve(mission, approval_comment_id=1, approval_source=self._FixtureApprovalSource(wrong_base))
+
+        # 2. Forged proposal digest mismatch.
+        forged = self._evidence(mission, "f" * 64, "forged")
+        with self.assertRaises(contract.MissionContractError):
+            srv.approve(mission, approval_comment_id=2, approval_source=self._FixtureApprovalSource(forged))
 
         # 3. Valid first approval succeeds
-        valid_approval = contract.OwnerApproval(
-            owner_identity="repository-owner",
-            proposal_sha256=proposal_sha256,
-            approval_id="approval-valid-1",
-            approved_at="2026-08-30T00:00:00Z",
-        )
-        activated = srv.approve(mission, valid_approval, authenticator)
+        valid_evidence = self._evidence(mission, proposal_sha256, "valid")
+        activated = srv.approve(mission, approval_comment_id=3, approval_source=self._FixtureApprovalSource(valid_evidence))
         self.assertEqual(activated.state, "RUNNING")
 
         # 4. Replay of the same approval ID must be rejected by anti-replay
         with self.assertRaises(contract.MissionContractError):
-            srv.approve(mission, valid_approval, authenticator)
+            srv.approve(mission, approval_comment_id=3, approval_source=self._FixtureApprovalSource(valid_evidence))
+
+    def test_github_owner_comment_source_binds_identity_digest_base_and_issue(self):
+        """GitHub transport, not a local owner string, supplies approval facts."""
+        source = service.GhOwnerApprovalSource()
+        mission_id = "MISSION-GH-APPROVAL"
+        digest = "a" * 64
+        marker = json.dumps({
+            "mission_id": mission_id,
+            "proposal_sha256": digest,
+            "accepted_main_sha": self.base_sha,
+            "approval_id": "owner-approval-1",
+        })
+        comment = {
+            "id": 44,
+            "issue_url": "https://api.github.com/repos/Igzela/token-efficient-agent-harness-lab/issues/208",
+            "author_association": "OWNER",
+            "user": {"login": "Igzela"},
+            "body": f"approved\n<!-- steward-owner-approval:v2 {marker} -->",
+        }
+        with patch.object(source, "_json", side_effect=[{"commit": {"sha": self.base_sha}}, comment]):
+            evidence = source.read(
+                repository="Igzela/token-efficient-agent-harness-lab",
+                issue_number=208,
+                comment_id=44,
+                mission_id=mission_id,
+                proposal_sha256=digest,
+                accepted_main_sha=self.base_sha,
+            )
+        self.assertEqual(evidence.owner_identity, "github:Igzela")
+        self.assertEqual(evidence.evidence_id, "github-comment-44")
+
+        stale_comment = dict(comment)
+        stale_comment["author_association"] = "MEMBER"
+        with patch.object(source, "_json", side_effect=[{"commit": {"sha": self.base_sha}}, stale_comment]):
+            with self.assertRaisesRegex(service.StewardServiceError, "owner_required"):
+                source.read(
+                    repository="Igzela/token-efficient-agent-harness-lab",
+                    issue_number=208,
+                    comment_id=44,
+                    mission_id=mission_id,
+                    proposal_sha256=digest,
+                    accepted_main_sha=self.base_sha,
+                )
 
     def test_plan_and_replan_dynamic_mission(self):
         """Verify plan_stages and replan_stage handle dynamic missions cleanly."""
         srv = service.StewardService(
             journal=self.journal,
             github=service.GhReadOnlyGitHub(),
+            github_writer=steward_github.FakeGitHubWriter(),
             repo_path=self.repo_dir,
         )
         mission, proposal_sha256 = srv.propose(
@@ -204,16 +271,7 @@ class TestAutonomousStewardPRA(unittest.TestCase):
             base_sha=self.base_sha,
             mission_id="MISSION-PLAN-1",
         )
-        approval = contract.OwnerApproval(
-            owner_identity="repository-owner",
-            proposal_sha256=proposal_sha256,
-            approval_id="approval-plan-101",
-            approved_at="2026-08-30T00:00:00Z",
-        )
-        authenticator = contract.AuthenticatedOwnerApprovalValidator(
-            trusted_owners=contract.TRUSTED_OWNER_IDENTITIES,
-        )
-        srv.approve(mission, approval, authenticator)
+        self._approve(srv, mission, proposal_sha256, "plan-101")
 
         # Plan stage
         plan = srv.plan_stages()
@@ -263,6 +321,7 @@ class TestAutonomousStewardPRA(unittest.TestCase):
         srv = service.StewardService(
             journal=self.journal,
             github=service.GhReadOnlyGitHub(),
+            github_writer=steward_github.FakeGitHubWriter(),
             repo_path=self.repo_dir,
         )
         mission, proposal_sha256 = srv.propose(
@@ -271,16 +330,7 @@ class TestAutonomousStewardPRA(unittest.TestCase):
             base_sha=self.base_sha,
             mission_id="MISSION-ADV-1",
         )
-        approval = contract.OwnerApproval(
-            owner_identity="repository-owner",
-            proposal_sha256=proposal_sha256,
-            approval_id="approval-adv-1",
-            approved_at="2026-08-30T00:00:00Z",
-        )
-        authenticator = contract.AuthenticatedOwnerApprovalValidator(
-            trusted_owners=contract.TRUSTED_OWNER_IDENTITIES,
-        )
-        srv.approve(mission, approval, authenticator)
+        self._approve(srv, mission, proposal_sha256, "adv-1")
 
         # Execute autonomous service loop step
         fake_worker = FakeTestWorker(status="PASS", changed_paths=("README.md",))
@@ -321,19 +371,21 @@ class TestAutonomousStewardPRA(unittest.TestCase):
 
         j = StewardJournal(j_path)
         events = j.replay()
-        self.assertEqual(len(events), 1)
-        prop_sha = events[0].data["proposal_sha256"]
+        proposals = [event for event in events if event.event == "MISSION_PROPOSED"]
+        self.assertEqual(len(proposals), 1)
+        prop_sha = proposals[0].data["proposal_sha256"]
 
-        # Approve
-        ret = service.main([
-            "--journal", j_path,
-            "approve",
-            "--mission-id", "MISSION-CLI-1",
-            "--proposal-sha256", prop_sha,
-        ])
-        self.assertEqual(ret, 0)
+        # The CLI cannot synthesize an approval.  It requires a pre-existing
+        # authenticated GitHub comment identifier.
+        with self.assertRaises(SystemExit):
+            service.main([
+                "--journal", j_path,
+                "approve",
+                "--mission-id", "MISSION-CLI-1",
+                "--proposal-sha256", prop_sha,
+            ])
 
-        # Status after approval
+        # Status remains IDLE because no locally fabricated approval was accepted.
         ret = service.main(["--journal", j_path, "status"])
         self.assertEqual(ret, 0)
 
@@ -345,7 +397,6 @@ class TestAutonomousStewardPRA(unittest.TestCase):
         ret = service.main([
             "--journal", j_path,
             "stop",
-            "--mission-id", "MISSION-CLI-1",
             "--reason", "operator_stop",
         ])
         self.assertEqual(ret, 0)
