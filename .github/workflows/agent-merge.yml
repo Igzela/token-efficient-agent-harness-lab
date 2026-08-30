@@ -72,7 +72,7 @@ jobs:
           declare -A failed=()
           checks=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_HEAD}/check-runs?per_page=100" \
-            --jq '.check_runs[] | [.name, .status, (.conclusion // "")] | @tsv')
+            --jq '.check_runs | sort_by(.id) | .[] | [.name, .status, (.conclusion // "")] | @tsv')
           while IFS=$'\t' read -r name status conclusion; do
             [ -n "$name" ] || continue
             case "$name" in
@@ -82,7 +82,9 @@ jobs:
               *) continue ;;
             esac
             seen["$logical"]=1
-            if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+            if [ "$status" = "completed" ] && [ "$conclusion" = "success" ]; then
+              unset 'failed[$logical]'
+            else
               failed["$logical"]="${status}/${conclusion}"
             fi
           done <<< "$checks"
