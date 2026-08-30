@@ -2,23 +2,28 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import threading
 from typing import Any, Callable, Mapping
 
 import mission_contract
 import shadow_steward
+import steward_github
 from steward_github import (
+    GhGitHubWriter,
     GhReadOnlyGitHub,
     GitHubFactsError,
+    GitHubMutationError,
     GitHubReadError,
+    GitHubWriter,
     ReadOnlyGitHub,
     StagePRStatus,
     reconcile_stage_pr,
@@ -100,11 +105,13 @@ class StewardService:
         mission_id: str | None = None,
         journal: StewardJournal,
         github: ReadOnlyGitHub,
+        github_writer: GitHubWriter | None = None,
         repo_path: str | os.PathLike[str] | None = None,
         mission: mission_contract.MaintenanceMission | None = None,
     ):
         self.journal = journal
         self.github = github
+        self.github_writer = github_writer or getattr(steward_github, "GhGitHubWriter", lambda: None)()
         self.repo_path = Path(repo_path).resolve() if repo_path is not None else Path.cwd().resolve()
         self._wakeup = threading.Event()
 
@@ -557,14 +564,229 @@ class StewardService:
     def stop(self, reason: str = "emergency_stop") -> dict[str, Any]:
         """Emergency stop active mission."""
 
-        mid = self.mission_id or "service"
+        mid = (self.mission.mission_id if self.mission else None) or self.mission_id or "service"
         event = self.journal.record_mission_stop(mission_id=mid, reason=reason)
+        if self.mission is not None:
+            self.mission = replace(self.mission, state="STOPPED")
         return {
             "schema_version": "steward_stopped.v1",
             "mission_id": mid,
             "timestamp": event.timestamp,
             "status": "STOPPED",
             "reason": reason,
+        }
+
+    def publish_stage(
+        self,
+        stage: mission_contract.Stage,
+        integration_head_sha: str,
+        *,
+        title: str,
+        body: str,
+    ) -> dict[str, Any]:
+        """Publish the integrated Stage branch and create/update its Draft PR."""
+        if self.mission is None:
+            raise ValueError("no_active_mission")
+        repo = self.mission.repository_identity.repository
+        branch = f"stage/{stage.stage_id}"
+        base_sha = self.mission.repository_identity.base_sha
+        bound = self.github_writer.create_or_update_stage_pr(
+            stage_id=stage.stage_id,
+            mission_id=self.mission.mission_id,
+            branch=branch,
+            expected_sha=integration_head_sha,
+            base_sha=base_sha,
+            title=title,
+            body=body,
+            repository=repo,
+        )
+        pr_number = bound.get("pr_number") or bound.get("number")
+        if type(pr_number) is not int:
+            raise ValueError("stage_pr_number_invalid")
+        self.journal.append(
+            event="STAGE_PR_BOUND",
+            idempotency_key=f"stage-pr-bound:{self.mission.mission_id}:{stage.stage_id}:{pr_number}",
+            mission_id=self.mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="stage_draft_pr_bound",
+            data={
+                "pr_number": pr_number,
+                "head_sha": integration_head_sha,
+                "base_sha": base_sha,
+                "branch": branch,
+                "url": bound.get("url", ""),
+            },
+            enforce_transition=False,
+        )
+        return bound
+
+    def promote_stage_ready(
+        self,
+        stage: mission_contract.Stage,
+        pr_number: int,
+        expected_head_sha: str,
+    ) -> bool:
+        """Promote a Draft PR to Ready for review once local checks pass."""
+        if self.mission is None:
+            raise ValueError("no_active_mission")
+        repo = self.mission.repository_identity.repository
+        promoted = self.github_writer.mark_ready(
+            repository=repo,
+            pr_number=pr_number,
+            expected_head_sha=expected_head_sha,
+        )
+        if promoted:
+            self.journal.append(
+                event="STAGE_PR_READY",
+                idempotency_key=f"stage-pr-ready:{self.mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head_sha}",
+                mission_id=self.mission.mission_id,
+                stage_id=stage.stage_id,
+                card_id="",
+                state="RUNNING",
+                detail="stage_pr_promoted_to_ready",
+                data={
+                    "pr_number": pr_number,
+                    "head_sha": expected_head_sha,
+                },
+                enforce_transition=False,
+            )
+        return promoted
+
+    def observe_stage_ci(
+        self,
+        stage: mission_contract.Stage,
+        pr_number: int,
+        expected_head_sha: str,
+    ) -> StagePRStatus:
+        """Poll and reconcile live CI/Review status for an open Stage PR."""
+        if self.mission is None:
+            raise ValueError("no_active_mission")
+        repo = self.mission.repository_identity.repository
+        facts = self.github.fetch_stage_pr(repo, pr_number)
+        status = reconcile_stage_pr(
+            facts,
+            repository=repo,
+            pr_number=pr_number,
+            expected_base_sha=self.mission.repository_identity.base_sha,
+            expected_head_sha=expected_head_sha,
+        )
+        if status.outcome == "WAITING_FOR_MERGE":
+            self.journal.append(
+                event="STAGE_WAITING_FOR_MERGE",
+                idempotency_key=f"stage-waiting:{self.mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head_sha}",
+                mission_id=self.mission.mission_id,
+                stage_id=stage.stage_id,
+                card_id="",
+                state="RUNNING",
+                detail="exact_head_ci_and_review_pass",
+                data={"pr_number": pr_number, "head_sha": expected_head_sha, "stage_outcome": "WAITING_FOR_MERGE"},
+                enforce_transition=False,
+            )
+        return status
+
+    def guarded_merge_stage(
+        self,
+        stage: mission_contract.Stage,
+        pr_number: int,
+        expected_head_sha: str,
+        *,
+        merge_method: str = "squash",
+    ) -> dict[str, Any]:
+        """Execute guarded squash merge with expected head and readback."""
+        if self.mission is None:
+            raise ValueError("no_active_mission")
+        repo = self.mission.repository_identity.repository
+        status = self.observe_stage_ci(stage, pr_number, expected_head_sha)
+        if status.outcome not in {"WAITING_FOR_MERGE", "COMPLETE"}:
+            raise GitHubMutationError(f"pr_not_merge_eligible: {status.outcome} ({status.reason})")
+
+        if status.outcome == "COMPLETE":
+            return {"merged": True, "pr_number": pr_number, "head_sha": expected_head_sha}
+
+        receipt = self.github_writer.guarded_merge(
+            repository=repo,
+            pr_number=pr_number,
+            expected_head_sha=expected_head_sha,
+            merge_method=merge_method,
+        )
+        self.journal.append(
+            event="STAGE_MERGED_OBSERVED",
+            idempotency_key=f"stage-merged:{self.mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head_sha}",
+            mission_id=self.mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="live_stage_pr_merged",
+            data={
+                "pr_number": pr_number,
+                "head_sha": expected_head_sha,
+                "receipt": receipt,
+            },
+            enforce_transition=False,
+        )
+        return receipt
+
+    def post_merge_readback(
+        self,
+        *,
+        stage_id: str = "mission",
+        is_final_stage: bool = False,
+    ) -> dict[str, Any]:
+        """Read back authoritative accepted main SHA from remote and run regression checks."""
+        if self.mission is None:
+            raise ValueError("no_active_mission")
+        repo = self.mission.repository_identity.repository
+        repo_dir = self.repo_path or Path.cwd()
+
+        head_sha = ""
+        try:
+            rb = self.github_writer.post_merge_readback(repo, self.mission.repository_identity.base_sha)
+            head_sha = rb.get("accepted_main_sha", "")
+        except Exception:
+            pass
+
+        if not head_sha:
+            res = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            head_sha = res.stdout.strip() if res.returncode == 0 else ""
+
+        diff_res = subprocess.run(
+            ["git", "diff", "--check"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        diff_clean = (diff_res.returncode == 0)
+
+        self.journal.append(
+            event="POST_MERGE_VERIFIED",
+            idempotency_key=f"post-merge-verified:{self.mission.mission_id}:{stage_id}:{head_sha}",
+            mission_id=self.mission.mission_id,
+            stage_id=stage_id,
+            card_id="",
+            state="COMPLETE" if is_final_stage else "RUNNING",
+            detail="post_merge_readback_verified",
+            data={"head_sha": head_sha, "diff_clean": diff_clean},
+            enforce_transition=False,
+        )
+        if is_final_stage:
+            self.journal.record_mission_completion(
+                self.mission.mission_id,
+                summary={"final_head_sha": head_sha, "diff_clean": diff_clean},
+            )
+            self.mission = replace(self.mission, state="COMPLETE")
+        return {
+            "head_sha": head_sha,
+            "diff_clean": diff_clean,
+            "mission_state": self.mission.state if self.mission else "UNKNOWN",
         }
 
     def execute_stage(

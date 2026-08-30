@@ -13,6 +13,7 @@ REQUIRED = (
     "tests/test_agent_steward_journal.py",
     "tests/test_agent_steward_pra.py",
     "tests/test_agent_steward_prb.py",
+    "tests/test_agent_steward_prc.py",
     "tests/test_mission_contract.py",
     "tests/test_review_convergence.py",
     "tests/test_review_loop.py",
