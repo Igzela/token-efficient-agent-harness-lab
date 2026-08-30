@@ -1149,6 +1149,24 @@ class StewardService:
                 title=f"steward: {stage.stage_id}",
                 body="Autonomously integrated bounded Steward stage.",
             )
+        except ValueError as exc:
+            if str(exc) != "recovery_required_before_dispatch":
+                raise
+            # A true in-flight ambiguity halts dispatch but must not kill the
+            # long-running owner.  Subsequent ticks remain read-only until a
+            # reconciliation or Stage supersession makes recovery terminal.
+            self.journal.append(
+                event="RECOVERY_RECONCILIATION_WAITING",
+                idempotency_key=f"recovery-waiting:{mission.mission_id}:{stage.stage_id}",
+                mission_id=mission.mission_id,
+                stage_id=stage.stage_id,
+                card_id="",
+                state="OUTCOME_UNKNOWN",
+                detail="recovery_required_dispatch_halted",
+                data={},
+                enforce_transition=False,
+            )
+            return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
         except StewardError as exc:
             message = str(exc)
             unknown = "outcome_unknown" in message or "push" in message and "unknown" in message
@@ -2217,6 +2235,12 @@ class StewardService:
 
         projection = self.journal.projection(mission_id=self.mission_id)
         events = self.journal.replay()
+        superseded_stages = {
+            event.stage_id
+            for event in events
+            if event.mission_id == self.mission_id
+            and event.event == "STAGE_SUPERSEDED"
+        }
         started: dict[tuple[str, str, str], Any] = {}
         for event in events:
             if event.mission_id == self.mission_id and event.event == "WORKER_STARTED":
@@ -2225,6 +2249,16 @@ class StewardService:
         items: list[RecoveryItem] = []
         for binding in projection["bindings"]:
             state = binding["state"]
+            if binding["stage_id"] in superseded_stages:
+                items.append(
+                    RecoveryItem(
+                        binding["card_id"],
+                        state,
+                        "SUPERSEDED",
+                        "stage_superseded",
+                    )
+                )
+                continue
             key = (binding["mission_id"], binding["stage_id"], binding["card_id"])
             worker_event = started.get(key)
             worker_data = worker_event.data if worker_event is not None else {}

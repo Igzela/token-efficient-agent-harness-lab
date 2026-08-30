@@ -825,6 +825,49 @@ class StewardExecutionTests(unittest.TestCase):
         self.assertEqual(result.attempt, 1)
         self.assertNotIn("ATTEMPT_RETRY_SCHEDULED", [event.event for event in service.journal.replay()])
 
+    def test_failed_worker_with_only_uncommitted_residue_replans_without_unknown(self):
+        class DirtyFailureWorker(workers.BoundedProcessWorker):
+            def __init__(self):
+                super().__init__(lambda _context: [], timeout_seconds=5)
+
+            def run(self, _context):
+                return workers.WorkerOutcome(
+                    "FAIL", "impl-failure", BASE, (), "worker execution failed"
+                )
+
+        service = self.make_steward(DirtyFailureWorker(), None)
+        metadata = ({f"refs/heads/{self.mock_worktree_branch}": BASE}, "config")
+        with (
+            mock.patch.object(
+                worktree_manager,
+                "create_steward_worktree",
+                return_value=(
+                    str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
+                ),
+            ),
+            mock.patch.object(steward, "_git_head", return_value=BASE),
+            mock.patch.object(steward, "_git_changed_paths", return_value=()),
+            mock.patch.object(
+                steward,
+                "_git_worktree_clean",
+                side_effect=workers.WorkerError("worktree_dirty_after_worker"),
+            ),
+            mock.patch.object(steward, "_git_repository_identity", return_value=True),
+            mock.patch.object(steward, "_git_metadata_snapshot", return_value=metadata),
+        ):
+            result = service.dispatch_card(
+                self.mission,
+                self.stage,
+                self.card,
+                base_sha=BASE,
+                stage_pr=self.facts,
+            )
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertEqual(result.reason, "worker_failed_with_local_uncommitted_residue")
+        self.assertNotIn(
+            "WORKER_OUTCOME_UNKNOWN", [event.event for event in service.journal.replay()]
+        )
+
     def test_self_review_is_rejected_before_execution(self):
         with self.assertRaisesRegex(workers.WorkerError, "self_review_forbidden"):
             workers.ReviewOutcome("PASS", "same-session", "same-session", HEAD)

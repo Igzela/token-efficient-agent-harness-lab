@@ -227,6 +227,69 @@ class StewardFaultTests(unittest.TestCase):
         self.assertEqual(report.items[0].reason, "worker_binding_missing_or_invalid")
         self.assertEqual(report.journal_projection["card_states"]["card-1"], "RUNNING")
 
+    def test_recovery_does_not_block_on_superseded_stage_outcome_unknown(self):
+        registered = contract.campaign_mission()
+        binding_digest = worktree_manager.steward_binding_digest(
+            MISSION, "stage-1", "card-1", BASE
+        )
+        _path, branch = worktree_manager.steward_worktree_location(
+            MISSION, "stage-1", "card-1", BASE
+        )
+        self.append("QUEUED", "queue:superseded")
+        self.journal.append(
+            event="WORKER_STARTED",
+            idempotency_key="worker:superseded",
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id="card-1",
+            attempt=1,
+            state="RUNNING",
+            detail="isolated_worktree_bound",
+            data={
+                "base_sha": BASE,
+                "worktree_binding_sha256": binding_digest,
+                "branch": branch,
+            },
+        )
+        self.append("OUTCOME_UNKNOWN", "unknown:superseded")
+        self.journal.append(
+            event="STAGE_SUPERSEDED",
+            idempotency_key="stage-superseded:stage-1",
+            mission_id=MISSION,
+            stage_id="stage-1",
+            card_id="",
+            state="RUNNING",
+            detail="failed_unbound_candidate_replaced",
+            enforce_transition=False,
+        )
+        service = StewardService(
+            mission=contract.activate_current_mission(
+                repository=registered.repository_identity.repository,
+                base_sha=registered.repository_identity.base_sha,
+                branch=registered.repository_identity.branch,
+                source_ref=registered.repository_identity.source_ref,
+                source_sha256=registered.repository_identity.source_sha256,
+                proposal_sha256=registered.proposal_sha256,
+                owner_approval=contract.OwnerApproval(
+                    "github:Igzela",
+                    registered.proposal_sha256,
+                    "fixture-superseded-approval",
+                    "2026-08-30T00:00:00Z",
+                ),
+                owner_authenticator=type(
+                    "Authenticator", (), {"verify": lambda *_args: True}
+                )(),
+            ),
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(),
+            repo_path=self.root,
+        )
+        report = service.recover()
+        self.assertEqual(report.items[0].outcome, "SUPERSEDED")
+        self.assertFalse(
+            any(item.outcome == "RECOVERY_REQUIRED" for item in report.items)
+        )
+
     def test_service_rejects_unregistered_mission_identity(self):
         with self.assertRaisesRegex(ValueError, "mission_id_not_registered"):
             StewardService(
@@ -1131,6 +1194,44 @@ Unresolved objections: none
         self.assertEqual(calls[0][0], mission)
         self.assertEqual(calls[0][3]["base_sha"], BASE)
         self.assertEqual(self.journal.projection()["event_count"], 1)
+
+    def test_production_stage_recovery_wait_keeps_service_loop_alive(self):
+        registered = contract.campaign_mission()
+        mission = contract.activate_current_mission(
+            repository=registered.repository_identity.repository,
+            base_sha=registered.repository_identity.base_sha,
+            branch=registered.repository_identity.branch,
+            source_ref=registered.repository_identity.source_ref,
+            source_sha256=registered.repository_identity.source_sha256,
+            proposal_sha256=registered.proposal_sha256,
+            owner_approval=contract.OwnerApproval(
+                "github:Igzela",
+                registered.proposal_sha256,
+                "fixture-recovery-wait-approval",
+                "2026-08-30T00:00:00Z",
+            ),
+            owner_authenticator=type(
+                "Authenticator", (), {"verify": lambda *_args: True}
+            )(),
+        )
+        service = StewardService(
+            mission=mission,
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(),
+            repo_path=self.root,
+        )
+        stage = mock.Mock(stage_id="stage-1")
+        with mock.patch(
+            "steward.Steward.execute_stage_to_waiting_for_merge",
+            side_effect=ValueError("recovery_required_before_dispatch"),
+        ):
+            result = service._execute_production_stage(
+                mission, stage, (), worker=None, reviewer=None
+            )
+        self.assertEqual(result["status"], "OUTCOME_UNKNOWN")
+        events = self.journal.replay()
+        self.assertEqual(events[-1].event, "RECOVERY_RECONCILIATION_WAITING")
+        self.assertEqual(events[-1].state, "OUTCOME_UNKNOWN")
 
     def test_child_environment_drops_github_and_provider_credentials(self):
         environment = workers.child_environment(
