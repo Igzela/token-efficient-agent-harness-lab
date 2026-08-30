@@ -272,7 +272,7 @@ def _worker_attempt_integrity(
         clean = True
         try:
             _git_worktree_clean(worktree)
-        except (StewardError, workers.WorkerError):
+        except workers.WorkerError:
             clean = False
         observed_metadata = _git_metadata_snapshot(worktree, branch=branch)
         metadata_unchanged = observed_metadata == metadata_before
@@ -1251,6 +1251,15 @@ class Steward:
                             branch=worktree_branch,
                             metadata_before=metadata_before,
                         )
+                        if integrity == "local_uncommitted_only":
+                            return self._failure(
+                                mission=mission,
+                                stage=stage,
+                                card=card,
+                                attempt=attempt,
+                                reason="worker_exception_with_local_uncommitted_residue",
+                                retryable=False,
+                            )
                         self._record(
                             event="WORKER_OUTCOME_UNKNOWN",
                             key=_journal_key("unknown-worker", mission, stage, card, attempt),
