@@ -66,10 +66,9 @@ class TestAutonomousStewardPRB(unittest.TestCase):
         self.assertEqual(merge_res["head_sha"], self.head_sha)
 
         # 6. Post-merge readback returns authoritative SHA
-        writer.remote_main_sha = "c" * 40
-        readback = writer.post_merge_readback(self.repo, self.head_sha)
+        readback = writer.post_merge_readback(self.repo, 201, self.head_sha)
         self.assertEqual(readback["status"], "VERIFIED")
-        self.assertEqual(readback["accepted_main_sha"], "c" * 40)
+        self.assertEqual(readback["accepted_main_sha"], self.head_sha)
 
     def test_mark_ready_exact_head_guard(self):
         """Verify GhGitHubWriter.mark_ready re-reads live head before mutating PR state."""
@@ -159,18 +158,32 @@ class TestAutonomousStewardPRB(unittest.TestCase):
         """Verify post_merge_readback queries GitHub main branch SHA and validates integrity."""
         writer = GhGitHubWriter(timeout_seconds=5)
 
+        merged_pr = {
+            "number": 304,
+            "state": "closed",
+            "merged": True,
+            "head": {"sha": self.head_sha},
+            "merge_commit_sha": "d" * 40,
+        }
+        branch = {"commit": {"sha": "d" * 40}}
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="d" * 40 + "\n", stderr="")
-            readback = writer.post_merge_readback(self.repo, self.head_sha)
-            self.assertEqual(readback["schema_version"], "post_merge_readback.v1")
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=json.dumps(merged_pr), stderr=""),
+                MagicMock(returncode=0, stdout=json.dumps(branch), stderr=""),
+            ]
+            readback = writer.post_merge_readback(self.repo, 304, self.head_sha)
+            self.assertEqual(readback["schema_version"], "post_merge_readback.v2")
             self.assertEqual(readback["accepted_main_sha"], "d" * 40)
             self.assertEqual(readback["status"], "VERIFIED")
 
-        # Reject invalid/empty SHA from remote API
+        # Reject a main tip that cannot be proved to be the PR merge commit.
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="invalid-sha\n", stderr="")
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=json.dumps(merged_pr), stderr=""),
+                MagicMock(returncode=0, stdout=json.dumps({"commit": {"sha": "e" * 40}}), stderr=""),
+            ]
             with self.assertRaises(GitHubFactsError):
-                writer.post_merge_readback(self.repo, self.head_sha)
+                writer.post_merge_readback(self.repo, 304, self.head_sha)
 
 
 if __name__ == "__main__":

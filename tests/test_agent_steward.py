@@ -49,7 +49,9 @@ class StewardExecutionTests(unittest.TestCase):
             source_ref=registered.repository_identity.source_ref,
             source_sha256=registered.repository_identity.source_sha256,
             proposal_sha256=registered.proposal_sha256,
-            owner_approval=registered.owner_approval,
+            owner_approval=contract.OwnerApproval(
+                "github:Igzela", registered.proposal_sha256, "fixture-owner-approval", "2026-08-30T00:00:00Z"
+            ),
             owner_authenticator=type("Authenticator", (), {"verify": lambda *_args: True})(),
         )
         self.stage, self.card = self.make_stage_card()
@@ -938,7 +940,7 @@ class StewardExecutionTests(unittest.TestCase):
         self.assertEqual(result.status, "BLOCKED")
         self.assertEqual(result.reason, "worker_path_outside_card")
 
-    def test_default_worker_is_explicitly_provider_free_and_unconfigured(self):
+    def test_default_worker_is_the_explicit_production_opencode_adapter(self):
         instance = steward.Steward(
             repository=contract.CAMPAIGN_REPOSITORY,
             repo_path=self.root,
@@ -947,20 +949,8 @@ class StewardExecutionTests(unittest.TestCase):
             reviewer=None,
             lock_dir=self.root / "locks",
         )
-        with mock.patch.object(
-            worktree_manager,
-            "create_steward_worktree",
-            return_value=(
-                str(self.mock_worktree_path), self.mock_worktree_branch, BASE, None
-            ),
-        ), mock.patch.object(steward, "_git_repository_identity", return_value=True), mock.patch.object(
-            steward,
-            "_git_metadata_snapshot",
-            return_value=({f"refs/heads/{self.mock_worktree_branch}": BASE}, "config"),
-        ):
-            result = instance.dispatch_card(self.mission, self.stage, self.card, base_sha=BASE)
-        self.assertEqual(result.status, "BLOCKED")
-        self.assertEqual(result.reason, "provider_free_worker_not_configured")
+        self.assertIsInstance(instance.worker, workers.OpenCodeWorkCardWorker)
+        self.assertIsInstance(instance.reviewer, workers.OpenCodeWorkCardReviewer)
 
 
 class StewardConcurrencyTests(unittest.TestCase):
@@ -976,7 +966,9 @@ class StewardConcurrencyTests(unittest.TestCase):
             source_ref=registered.repository_identity.source_ref,
             source_sha256=registered.repository_identity.source_sha256,
             proposal_sha256=registered.proposal_sha256,
-            owner_approval=registered.owner_approval,
+            owner_approval=contract.OwnerApproval(
+                "github:Igzela", registered.proposal_sha256, "fixture-concurrency-approval", "2026-08-30T00:00:00Z"
+            ),
             owner_authenticator=type("Authenticator", (), {"verify": lambda *_args: True})(),
         )
 

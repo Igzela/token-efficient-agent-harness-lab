@@ -24,6 +24,7 @@ import steward_service as service
 from steward_journal import StewardJournal
 import steward_workers as workers
 from steward_workers import FakeTestReviewer, FakeTestWorker
+from steward import StageIntegration
 
 
 class TestAutonomousStewardPRC(unittest.TestCase):
@@ -58,8 +59,142 @@ class TestAutonomousStewardPRC(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_live_e2e_two_stage_autonomous_closure(self):
-        """Full autonomous lifecycle: Propose -> Authenticate -> Stage 1 (2 cards) -> Merge -> Stage 2 (1 card) -> COMPLETE."""
+    @staticmethod
+    def _evidence(mission: contract.MaintenanceMission, proposal_sha256: str, suffix: str) -> contract.OwnerApprovalEvidence:
+        return contract.OwnerApprovalEvidence(
+            transport="github_issue_comment",
+            repository=mission.repository_identity.repository,
+            mission_id=mission.mission_id,
+            approval_id=f"approval-{suffix}",
+            owner_identity="github:Igzela",
+            proposal_sha256=proposal_sha256,
+            accepted_main_sha=mission.repository_identity.base_sha,
+            evidence_id=f"github-comment-{suffix}",
+        )
+
+    class _ControlOff:
+        def emergency_stop_active(self, *, repository: str, issue_number: int) -> bool:
+            return False
+
+    class _FixtureApprovalSource:
+        """SIMULATED authenticated transport for deterministic tests only."""
+
+        __steward_test_fixture__ = True
+
+        def __init__(self, evidence: contract.OwnerApprovalEvidence):
+            self.evidence = evidence
+
+        def read(self, **_kwargs) -> contract.OwnerApprovalEvidence:
+            return self.evidence
+
+    def _approve(self, mission: contract.MaintenanceMission, proposal_sha256: str, suffix: str) -> contract.MaintenanceMission:
+        return self.srv.approve(
+            mission,
+            approval_comment_id=8000 + len(suffix),
+            approval_source=self._FixtureApprovalSource(self._evidence(mission, proposal_sha256, suffix)),
+        )
+
+    class _SimulatedStageExecutor:
+        """SIMULATED executor seam; never used for the production live drill."""
+
+        def __init__(self, *, github, **_kwargs):
+            self.github = github
+            self.repo_path = Path(_kwargs["repo_path"])
+
+        def execute_stage_to_waiting_for_merge(self, mission, stage, cards, *, base_sha, title, body):
+            branch = f"agent/simulated-{stage.stage_id}"
+            target = self.repo_path / cards[0].allowed_paths[0]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(f"\nSimulated bounded stage {stage.stage_id}.\n")
+            subprocess.run(["git", "add", "--", str(target.relative_to(self.repo_path))], cwd=self.repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", f"simulated stage {stage.stage_id}"], cwd=self.repo_path, check=True, capture_output=True)
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo_path, check=True, capture_output=True, text=True).stdout.strip()
+            integration = StageIntegration(stage.stage_id, branch, base_sha, head, ())
+            pr = self.github.create_or_update_stage_pr(
+                stage.stage_id,
+                mission.mission_id,
+                branch,
+                head,
+                base_sha,
+                title,
+                body,
+                mission.repository_identity.repository,
+            )
+            return {"status": "stage_pr_draft", "integration": integration, "pr": pr}
+
+    def test_simulated_default_loop_advances_two_stage_pr_lifecycle_without_manual_sequence(self):
+        """SIMULATED state-machine coverage; live evidence is recorded separately."""
+        self.srv.control_state = self._ControlOff()
+        mission, digest = self.srv.propose(
+            "Update README.md, docs/ARCHITECTURE.md, and docs/RUNBOOK.md with bounded maintenance evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-SIM-LOOP",
+        )
+        self._approve(mission, digest, "sim-loop")
+        with (
+            patch("steward.Steward", self._SimulatedStageExecutor),
+            patch("steward_service.production_reviewer", return_value=FakeTestReviewer(status="PASS")),
+        ):
+            self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+            draft_one = self.srv.step()
+            self.assertEqual(draft_one["status"], "STAGE_PR_DRAFT")
+            self.assertEqual(self.srv.step()["status"], "STAGE_PR_READY")
+            first_pr = draft_one["pr_number"]
+            self.github_writer.prs[first_pr]["ci_state"] = "PASS"
+            self.github_writer.prs[first_pr]["review_state"] = "PASS"
+            self.assertEqual(self.srv.step()["status"], "MERGE_READBACK")
+            with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=self.github_writer.remote_main_sha + "\n", stderr="")):
+                self.assertEqual(self.srv.step()["status"], "NEXT_STAGE")
+            self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+            draft_two = self.srv.step()
+            self.assertEqual(draft_two["status"], "STAGE_PR_DRAFT")
+            self.assertEqual(self.srv.step()["status"], "STAGE_PR_READY")
+            second_pr = draft_two["pr_number"]
+            self.github_writer.prs[second_pr]["ci_state"] = "PASS"
+            self.github_writer.prs[second_pr]["review_state"] = "PASS"
+            self.assertEqual(self.srv.step()["status"], "MERGE_READBACK")
+            with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=self.github_writer.remote_main_sha + "\n", stderr="")):
+                self.assertEqual(self.srv.step()["status"], "COMPLETE")
+        events = [event.event for event in self.journal.replay()]
+        self.assertIn("SERVICE_LEASE_ACQUIRED", events)
+        self.assertIn("STAGE_MERGE_DISPATCH_INTENT", events)
+        self.assertEqual(self.srv.status()["mission_state"], "COMPLETE")
+
+    def test_integrated_review_attests_actual_diff_not_declared_scope(self):
+        """SIMULATED negative coverage: a reviewer receives observed paths only."""
+        mission, digest = self.srv.propose(
+            "Update README.md and docs/ARCHITECTURE.md with documentation tests.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-DIFF-EVIDENCE",
+        )
+        self._approve(mission, digest, "diff-evidence")
+        plan = self.srv.plan_stages()
+        target = self.repo_dir / "README.md"
+        target.write_text(target.read_text(encoding="utf-8") + "\nObserved only.\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "observed diff"], cwd=self.repo_dir, check=True, capture_output=True)
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo_dir, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        integration = StageIntegration(plan.stage.stage_id, "agent/diff-evidence", self.base_sha, head, ())
+        observed = {}
+
+        class CapturingReviewer:
+            def review(self, context, outcome):
+                observed["paths"] = outcome.changed_paths
+                return FakeTestReviewer(status="PASS").review(context, outcome)
+
+        self.srv._review_integrated_stage(
+            mission, plan.stage, plan.workcards, integration, CapturingReviewer()
+        )
+        self.assertEqual(observed["paths"], ("README.md",))
+
+    def test_simulated_two_stage_lifecycle_helpers(self):
+        """SIMULATED helper coverage; this is not a live GitHub acceptance."""
         # 1. Propose & Authenticate
         mission, prop_sha = self.srv.propose(
             "Please update README.md and documentation for full autonomous control loop.",
@@ -67,16 +202,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             base_sha=self.base_sha,
             mission_id="MISSION-E2E-1",
         )
-        approval = contract.OwnerApproval(
-            owner_identity="repository-owner",
-            proposal_sha256=prop_sha,
-            approval_id="approval-e2e-001",
-            approved_at="2026-08-30T00:00:00Z",
-        )
-        authenticator = contract.AuthenticatedOwnerApprovalValidator(
-            trusted_owners=contract.TRUSTED_OWNER_IDENTITIES,
-        )
-        activated = self.srv.approve(mission, approval, authenticator)
+        activated = self._approve(mission, prop_sha, "e2e-001")
         self.assertEqual(activated.state, "RUNNING")
 
         # 2. Stage 1: Execute WorkCards & Integrate Stage 1
@@ -112,7 +238,14 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         self.assertTrue(receipt1["merged"])
 
         # Post-Merge Readback Stage 1 (Intermediate)
-        readback1 = self.srv.post_merge_readback(stage_id=stage1.stage_id, is_final_stage=False)
+        with patch("subprocess.run") as git_run:
+            git_run.return_value = MagicMock(returncode=0, stdout=self.base_sha + "\n", stderr="")
+            readback1 = self.srv.post_merge_readback(
+                stage_id=stage1.stage_id,
+                pr_number=pr1_number,
+                expected_head_sha=self.base_sha,
+                is_final_stage=False,
+            )
         self.assertTrue(readback1["diff_clean"])
         self.assertEqual(readback1["mission_state"], "RUNNING")
 
@@ -141,7 +274,14 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         self.assertTrue(receipt2["merged"])
 
         # Post-Merge Readback Stage 2 (Final -> COMPLETE)
-        readback2 = self.srv.post_merge_readback(stage_id=stage2.stage_id, is_final_stage=True)
+        with patch("subprocess.run") as git_run:
+            git_run.return_value = MagicMock(returncode=0, stdout=self.base_sha + "\n", stderr="")
+            readback2 = self.srv.post_merge_readback(
+                stage_id=stage2.stage_id,
+                pr_number=pr2_number,
+                expected_head_sha=self.base_sha,
+                is_final_stage=True,
+            )
         self.assertTrue(readback2["diff_clean"])
         self.assertEqual(readback2["mission_state"], "COMPLETE")
 
@@ -152,9 +292,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
     def test_fault_scenario_1_worker_failure_and_replan(self):
         """Scenario 1: Worker failure triggers replan and retry without owner intervention."""
         mission, prop_sha = self.srv.propose("Please update README.md for worker fault drill.", repository="Igzela/token-efficient-agent-harness-lab", base_sha=self.base_sha, mission_id="MISSION-F1")
-        approval = contract.OwnerApproval(owner_identity="repository-owner", proposal_sha256=prop_sha, approval_id="appr-f1", approved_at="2026-08-30T00:00:00Z")
-        auth = contract.AuthenticatedOwnerApprovalValidator(trusted_owners=contract.TRUSTED_OWNER_IDENTITIES)
-        self.srv.approve(mission, approval, auth)
+        self._approve(mission, prop_sha, "f1")
 
         failing_worker = FakeTestWorker(status="FAIL", detail="build_check_failed")
         res = self.srv.step(worker=failing_worker)
@@ -164,9 +302,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
     def test_fault_scenario_2_ci_failure_and_autonomous_repair(self):
         """Scenario 2: CI failure triggers autonomous replan/repair (0 owner prompts)."""
         mission, prop_sha = self.srv.propose("Please update README.md for CI fault drill.", repository="Igzela/token-efficient-agent-harness-lab", base_sha=self.base_sha, mission_id="MISSION-F2")
-        approval = contract.OwnerApproval(owner_identity="repository-owner", proposal_sha256=prop_sha, approval_id="appr-f2", approved_at="2026-08-30T00:00:00Z")
-        auth = contract.AuthenticatedOwnerApprovalValidator(trusted_owners=contract.TRUSTED_OWNER_IDENTITIES)
-        self.srv.approve(mission, approval, auth)
+        self._approve(mission, prop_sha, "f2")
 
         plan = self.srv.plan_stages()
         stage = plan.stage
@@ -187,21 +323,46 @@ class TestAutonomousStewardPRC(unittest.TestCase):
     def test_fault_scenario_3_review_blocker_and_repair(self):
         """Scenario 3: Independent review blocker triggers autonomous repair."""
         mission, prop_sha = self.srv.propose("Please update README.md for review blocker drill.", repository="Igzela/token-efficient-agent-harness-lab", base_sha=self.base_sha, mission_id="MISSION-F3")
-        approval = contract.OwnerApproval(owner_identity="repository-owner", proposal_sha256=prop_sha, approval_id="appr-f3", approved_at="2026-08-30T00:00:00Z")
-        auth = contract.AuthenticatedOwnerApprovalValidator(trusted_owners=contract.TRUSTED_OWNER_IDENTITIES)
-        self.srv.approve(mission, approval, auth)
+        self._approve(mission, prop_sha, "f3")
 
         worker = FakeTestWorker(status="PASS", changed_paths=("README.md",))
         reviewer = FakeTestReviewer(status="FAIL", blockers=("unresolved_scope_issue",), detail="review_failed")
         res = self.srv.step(worker=worker, reviewer=reviewer)
         self.assertEqual(res["status"], "REVIEW_REJECTED")
 
+    def test_exhausted_primary_candidates_shift_to_an_alternative_without_owner_prompt(self):
+        """SIMULATED repair loop: candidate exhaustion changes strategy, not authority."""
+
+        mission, digest = self.srv.propose(
+            "Update README.md and docs/ARCHITECTURE.md for candidate strategy coverage.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-ALTERNATIVE",
+        )
+        active = self._approve(mission, digest, "alternative")
+        planned = self.srv._next_stage_plan(active, 0)
+        self.assertIsNotNone(planned)
+        stage, cards, total = planned
+        self.srv._record_stage_plan(
+            active, stage, cards, stage_index=1, stage_total=total
+        )
+        for _ in range(3):
+            current_stage, _current_cards, metadata = self.srv._stage_records(active.mission_id)[-1]
+            replacement = self.srv._replan_stage(active, current_stage, metadata)
+            self.assertEqual(replacement["status"], "STAGE_REPLANNED")
+        _alternative_stage, alternative_cards, metadata = self.srv._stage_records(active.mission_id)[-1]
+        self.assertEqual(metadata["strategy"], "alternative")
+        self.assertTrue(alternative_cards[0].steps[0].startswith("Use a bounded alternative"))
+        self.assertIn(
+            "STAGE_REPLAN_STRATEGY_SHIFT",
+            [event.event for event in self.journal.replay()],
+        )
+        self.assertEqual(self.srv.status()["mission_state"], "RUNNING")
+
     def test_fault_scenario_4_accepted_main_drift(self):
         """Scenario 4: Drift in accepted main base SHA is safely detected."""
         mission, prop_sha = self.srv.propose("Please update README.md for drift test.", repository="Igzela/token-efficient-agent-harness-lab", base_sha=self.base_sha, mission_id="MISSION-F4")
-        approval = contract.OwnerApproval(owner_identity="repository-owner", proposal_sha256=prop_sha, approval_id="appr-f4", approved_at="2026-08-30T00:00:00Z")
-        auth = contract.AuthenticatedOwnerApprovalValidator(trusted_owners=contract.TRUSTED_OWNER_IDENTITIES)
-        self.srv.approve(mission, approval, auth)
+        self._approve(mission, prop_sha, "f4")
 
         plan = self.srv.plan_stages()
         stage = plan.stage
@@ -221,9 +382,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
     def test_fault_scenario_5_service_restart_recovery(self):
         """Scenario 5: Process crash and restart seamlessly reloads from WAL SQLite journal."""
         mission, prop_sha = self.srv.propose("Please update README.md for restart recovery.", repository="Igzela/token-efficient-agent-harness-lab", base_sha=self.base_sha, mission_id="MISSION-F5")
-        approval = contract.OwnerApproval(owner_identity="repository-owner", proposal_sha256=prop_sha, approval_id="appr-f5", approved_at="2026-08-30T00:00:00Z")
-        auth = contract.AuthenticatedOwnerApprovalValidator(trusted_owners=contract.TRUSTED_OWNER_IDENTITIES)
-        self.srv.approve(mission, approval, auth)
+        self._approve(mission, prop_sha, "f5")
         self.srv.heartbeat(tick_id="tick:before_crash")
 
         restarted_srv = service.StewardService(
@@ -236,20 +395,79 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         self.assertEqual(status["mission_state"], "RUNNING")
         self.assertEqual(status["mission_id"], "MISSION-F5")
 
-    def test_fault_scenario_6_lease_expiry_and_heartbeat(self):
-        """Scenario 6: Heartbeat tracking produces immutable sequential liveness facts."""
-        hb1 = self.srv.heartbeat(tick_id="hb:1")
-        hb2 = self.srv.heartbeat(tick_id="hb:2")
-        self.assertEqual(hb1["schema_version"], "steward_heartbeat.v1")
-        self.assertEqual(hb2["seq"], hb1["seq"] + 1)
-        self.assertNotEqual(hb1["tail_sha256"], hb2["tail_sha256"])
+    def test_fault_scenario_6_actual_single_writer_lease_recovery(self):
+        """SIMULATED repository fixture with a real flock acquisition/loss/recovery."""
+        competing = service.StewardService(
+            journal=self.journal,
+            github=self.github_writer,
+            github_writer=self.github_writer,
+            repo_path=self.repo_dir,
+        )
+        with self.srv._service_lease():
+            with self.assertRaisesRegex(service.StewardServiceError, "service_lease_unavailable"):
+                with competing._service_lease():
+                    self.fail("competing writer must not acquire the live flock")
+        # Release is observable; a later writer can acquire the same real
+        # flock rather than treating heartbeat sequence increments as a lease.
+        with competing._service_lease():
+            self.assertTrue(competing._service_lease_held)
+        events = [event.event for event in self.journal.replay()]
+        self.assertGreaterEqual(events.count("SERVICE_LEASE_ACQUIRED"), 2)
+        self.assertGreaterEqual(events.count("SERVICE_LEASE_RELEASED"), 2)
+
+    def test_service_lease_is_scoped_to_the_journal_not_the_mission_id(self):
+        """An idle process cannot bypass an active Mission by choosing another key."""
+
+        competing = service.StewardService(
+            journal=self.journal,
+            github=self.github_writer,
+            github_writer=self.github_writer,
+            repo_path=self.repo_dir,
+        )
+        self.srv.mission_id = "MISSION-LEASE-A"
+        with self.srv._service_lease():
+            with self.assertRaisesRegex(service.StewardServiceError, "service_lease_unavailable"):
+                with competing._service_lease():
+                    self.fail("an idle writer must use the same journal lease")
+
+    def test_locally_constructed_running_mission_cannot_drive_production_step(self):
+        """A runtime Mission requires the matching durable activation record."""
+
+        proposal, digest = contract.compile_proposal_mission(
+            "Update README.md with a bounded direct-construction probe.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-DIRECT-PROBE",
+        )
+        local_approval = contract.OwnerApproval(
+            "github:Igzela", digest, "locally-constructed", "2026-08-30T00:00:00Z"
+        )
+        constructed = contract.activate_current_mission(
+            repository=proposal.repository_identity.repository,
+            base_sha=proposal.repository_identity.base_sha,
+            branch=proposal.repository_identity.branch,
+            source_ref=proposal.repository_identity.source_ref,
+            source_sha256=proposal.repository_identity.source_sha256,
+            proposal_sha256=digest,
+            owner_approval=local_approval,
+            owner_authenticator=type("FixtureAuthenticator", (), {"verify": lambda *_args: True})(),
+            mission=proposal,
+        )
+        direct = service.StewardService(
+            journal=self.journal,
+            github=self.github_writer,
+            github_writer=self.github_writer,
+            repo_path=self.repo_dir,
+            mission=constructed,
+            control_state=self._ControlOff(),
+        )
+        self.assertEqual(direct.step()["status"], "IDLE")
+        self.assertNotIn("STAGE_PLANNED", [event.event for event in self.journal.replay()])
 
     def test_fault_scenario_7_github_mutation_outcome_unknown(self):
         """Scenario 7: Indeterminate GitHub merge outcome strictly fails closed."""
         mission, prop_sha = self.srv.propose("Please update README.md for indeterminate merge test.", repository="Igzela/token-efficient-agent-harness-lab", base_sha=self.base_sha, mission_id="MISSION-F7")
-        approval = contract.OwnerApproval(owner_identity="repository-owner", proposal_sha256=prop_sha, approval_id="appr-f7", approved_at="2026-08-30T00:00:00Z")
-        auth = contract.AuthenticatedOwnerApprovalValidator(trusted_owners=contract.TRUSTED_OWNER_IDENTITIES)
-        self.srv.approve(mission, approval, auth)
+        self._approve(mission, prop_sha, "f7")
 
         plan = self.srv.plan_stages()
         stage = plan.stage
@@ -264,17 +482,20 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         with self.assertRaises(GitHubMutationError):
             self.srv.guarded_merge_stage(stage, pr_num, self.base_sha)
 
-    def test_fault_scenario_8_emergency_stop(self):
-        """Scenario 8: Emergency stop halts active mission and records STOPPED state."""
+    def test_fault_scenario_8_emergency_stop_halts_dispatch_without_erasing_mission(self):
+        """SIMULATED control source: active stop blocks dispatch and preserves recovery state."""
         mission, prop_sha = self.srv.propose("Please update README.md for stop test.", repository="Igzela/token-efficient-agent-harness-lab", base_sha=self.base_sha, mission_id="MISSION-F8")
-        approval = contract.OwnerApproval(owner_identity="repository-owner", proposal_sha256=prop_sha, approval_id="appr-f8", approved_at="2026-08-30T00:00:00Z")
-        auth = contract.AuthenticatedOwnerApprovalValidator(trusted_owners=contract.TRUSTED_OWNER_IDENTITIES)
-        self.srv.approve(mission, approval, auth)
+        self._approve(mission, prop_sha, "f8")
 
-        stop_res = self.srv.stop(reason="manual_kill_switch")
-        self.assertEqual(stop_res["status"], "STOPPED")
-        self.assertEqual(stop_res["reason"], "manual_kill_switch")
-        self.assertEqual(self.srv.status()["mission_state"], "STOPPED")
+        class StopOn:
+            def emergency_stop_active(self, *, repository: str, issue_number: int) -> bool:
+                return True
+
+        self.srv.control_state = StopOn()
+        result = self.srv.step()
+        self.assertEqual(result["status"], "EMERGENCY_STOP")
+        self.assertEqual(self.srv.status()["mission_state"], "RUNNING")
+        self.assertIn("EMERGENCY_STOP_OBSERVED", [event.event for event in self.journal.replay()])
 
     def test_fault_scenario_9_rollback_when_boundary_breached(self):
         """Scenario 9: Disallowed path mutation is blocked by worker sandboxing."""

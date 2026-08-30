@@ -1,9 +1,9 @@
-"""Provider-free autonomous Steward coordinator.
+"""Autonomous Steward's isolated WorkCard execution seam.
 
-The coordinator drives approved Mission/Stage/WorkCard projections through an
-isolated worktree, bounded verification, independent review, and read-only
-Stage PR reconciliation.  It deliberately stops at ``WAITING_FOR_MERGE``;
-manual exact-head CI/review/merge owners retain their authority.
+The coordinator drives one approved Stage through isolated WorkCards, bounded
+verification, independent review, and Draft PR integration.  It deliberately
+stops at the Stage PR boundary; ``StewardService`` owns the journaled Mission
+loop, while GitHub's canonical workflow remains the only merge owner.
 """
 
 from __future__ import annotations
@@ -337,7 +337,7 @@ def _stage_pr_facts(
 
 
 class Steward:
-    """One provider-free bounded executor and its rebuildable service shell."""
+    """One bounded WorkCard executor and its rebuildable service shell."""
 
     def __init__(
         self,
@@ -357,21 +357,26 @@ class Steward:
         if max_concurrency != MAX_CONCURRENCY:
             raise StewardError("steward_concurrency_must_be_two")
         if worker is not None and not isinstance(
-            worker, (workers.BoundedProcessWorker, workers.ProviderFreeWorker)
+            worker,
+            (
+                workers.BoundedProcessWorker,
+                workers.OpenCodeWorkCardWorker,
+            ),
         ):
-            raise StewardError("worker_adapter_must_be_bounded_process")
+            raise StewardError("worker_adapter_not_admitted")
         if reviewer is not None and not isinstance(
-            reviewer, workers.BoundedProcessReviewer
+            reviewer,
+            (workers.BoundedProcessReviewer, workers.OpenCodeWorkCardReviewer),
         ):
-            raise StewardError("reviewer_adapter_must_be_bounded_process")
+            raise StewardError("reviewer_adapter_not_admitted")
         if verifier is not None:
             raise StewardError("verifier_injection_forbidden")
         self.repository = repository
         self.repo_path = Path(repo_path).resolve()
         self.journal = journal
         self.github = github
-        self.worker = worker or workers.ProviderFreeWorker()
-        self.reviewer = reviewer
+        self.worker = worker or workers.production_worker()
+        self.reviewer = reviewer or workers.production_reviewer()
         self.verifier = workers.run_allowlisted_checks
         self.lock_dir = Path(lock_dir).resolve()
         self.max_concurrency = max_concurrency
@@ -445,7 +450,7 @@ class Steward:
         title: str,
         body: str,
     ) -> dict[str, Any]:
-        """Run the parent-owned provider-free Stage promotion path.
+        """Run the parent-owned Stage promotion path.
 
         The method stops before merge.  Child cards only produce reviewed
         commits; this parent then assembles and pushes one exact Stage branch,
@@ -1207,8 +1212,11 @@ class Steward:
                         focused_tests=card.focused_tests,
                         negative_checks=card.negative_checks,
                         expected_evidence=card.expected_evidence,
-                        environment=workers.child_environment(),
+                        environment=workers.child_environment(preserve_home=True),
                         worktree_branch=worktree_branch,
+                        forbidden_paths=card.forbidden_paths,
+                        max_attempts=card.max_attempts,
+                        objective=mission.objective,
                     )
                     try:
                         outcome = self.worker.run(context)

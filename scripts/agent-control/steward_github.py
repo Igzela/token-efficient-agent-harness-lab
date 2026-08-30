@@ -1,19 +1,21 @@
-"""Read-only GitHub facts for the provider-free Steward.
+"""Bounded GitHub facts and mutation transport for the Autonomous Steward.
 
-This adapter can prove the state of an already integrated Stage PR, but it
-cannot create, approve, merge, or otherwise mutate GitHub.  The merge owner
-and exact-head CI/review owners remain outside the Steward lifecycle.
+The read adapter is the authority for exact PR/head/CI/review facts.  The
+writer may create Draft PRs, publish idempotent review receipts, promote Ready,
+supersede failed candidates, and dispatch the canonical merge workflow; it
+never performs a direct merge.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import json
-from pathlib import Path
 import re
 import subprocess
 from typing import Any, Protocol
+
+import review_convergence
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -37,6 +39,65 @@ class GitHubReadError(GitHubFactsError):
 class ReadOnlyGitHub(Protocol):
     def fetch_stage_pr(self, repository: str, pr_number: int) -> dict[str, Any]:
         """Return bounded facts for one PR; never perform a mutation."""
+
+
+def _exact_head_review_receipt_pass(
+    repository: str,
+    pr_number: int,
+    head_sha: str,
+    base_sha: str,
+    pr_author_identity: str | None,
+    *,
+    timeout_seconds: int,
+) -> bool:
+    """Read the repository-owned exact-head receipt from live GitHub comments.
+
+    The receipt is deliberately a comment rather than an aggregate review
+    state: the canonical action validates the complete bounded diff, reviewer
+    identity, and unresolved-objection field from this same comment.  This
+    helper is read-only and returns false for absent or malformed evidence.
+    """
+    if not pr_author_identity:
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "gh", "api", "--paginate", "--slurp",
+                f"repos/{repository}/issues/{pr_number}/comments?per_page=100",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise GitHubReadError("github_review_receipt_read_unavailable") from exc
+    if result.returncode != 0:
+        raise GitHubReadError("github_review_receipt_read_failed")
+    try:
+        pages = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise GitHubReadError("github_review_receipt_read_malformed") from exc
+    if not isinstance(pages, list):
+        raise GitHubReadError("github_review_receipt_read_malformed")
+    comments: list[dict[str, Any]] = []
+    for page in pages:
+        if not isinstance(page, list):
+            raise GitHubReadError("github_review_receipt_read_malformed")
+        comments.extend(item for item in page if isinstance(item, dict))
+    marker = "EXACT-HEAD REVIEW RECEIPT"
+    receipt_comments = [item for item in comments if marker in str(item.get("body") or "")]
+    if not receipt_comments:
+        return False
+    try:
+        return review_convergence.exact_head_review_confirmed(
+            comments,
+            expected_head_sha=head_sha,
+            expected_base_sha=base_sha,
+            expected_pr_author_identity=pr_author_identity,
+        )
+    except (TypeError, ValueError, review_convergence.ConvergenceError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -572,6 +633,28 @@ class GhReadOnlyGitHub:
             raise ValueError("timeout_seconds is outside the bounded range")
         self.timeout_seconds = timeout_seconds
 
+    def fetch_accepted_main(self, repository: str) -> str:
+        """Read the authoritative accepted-main tip for Mission proposal."""
+
+        if REPOSITORY.fullmatch(repository) is None:
+            raise GitHubFactsError("github_query_identity_invalid")
+        try:
+            result = subprocess.run(
+                ["gh", "api", f"repos/{repository}/branches/main", "--jq", ".commit.sha"],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubReadError("accepted_main_read_unavailable") from exc
+        if result.returncode != 0:
+            raise GitHubReadError("accepted_main_read_failed")
+        sha = result.stdout.strip()
+        if SHA40.fullmatch(sha) is None:
+            raise GitHubReadError("accepted_main_read_malformed")
+        return sha
+
     def fetch_stage_pr(self, repository: str, pr_number: int) -> dict[str, Any]:
         if REPOSITORY.fullmatch(repository) is None or type(pr_number) is not int or pr_number < 1:
             raise GitHubFactsError("github_query_identity_invalid")
@@ -583,7 +666,7 @@ class GhReadOnlyGitHub:
             "--repo",
             repository,
             "--json",
-            "state,isDraft,mergedAt,baseRefName,headRefName,baseRefOid,headRefOid,statusCheckRollup,reviewDecision",
+            "state,isDraft,mergedAt,baseRefName,headRefName,baseRefOid,headRefOid,statusCheckRollup,reviewDecision,author",
         ]
         try:
             result = subprocess.run(
@@ -663,6 +746,18 @@ class GhReadOnlyGitHub:
         ):
             raise GitHubReadError("github_read_malformed")
         review_state = "PENDING" if review in (None, "", "REVIEW_REQUIRED") else "FAIL"
+        if review_state == "PENDING":
+            author = payload.get("author")
+            author_login = author.get("login") if isinstance(author, dict) else None
+            if isinstance(author_login, str) and _exact_head_review_receipt_pass(
+                repository,
+                pr_number,
+                head_sha,
+                base_sha,
+                author_login,
+                timeout_seconds=self.timeout_seconds,
+            ):
+                review_state = "PASS"
         if review_state == "PENDING" and merged_at is not None:
             review_state = (
                 "PASS"
@@ -743,6 +838,21 @@ class GitHubWriter(Protocol):
     ) -> bool:
         ...
 
+    def publish_exact_head_review(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+        *,
+        base_sha: str,
+        reviewer_session_id: str,
+        implementation_session_id: str,
+        reviewed_range_sha256: str,
+        review_receipt_sha256: str,
+    ) -> dict[str, Any]:
+        """Publish or reconcile one exact-head independent review receipt."""
+        ...
+
     def guarded_merge(
         self,
         repository: str,
@@ -755,9 +865,18 @@ class GitHubWriter(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def supersede_stage_pr(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+    ) -> bool:
+        ...
+
     def post_merge_readback(
         self,
         repository: str,
+        pr_number: int,
         expected_head_sha: str,
         *,
         timeout_seconds: int = 30,
@@ -864,6 +983,138 @@ class GhGitHubWriter:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise GitHubMutationError("mark_ready_unavailable") from exc
 
+    def publish_exact_head_review(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+        *,
+        base_sha: str,
+        reviewer_session_id: str,
+        implementation_session_id: str,
+        reviewed_range_sha256: str,
+        review_receipt_sha256: str,
+    ) -> dict[str, Any]:
+        """Publish a bounded receipt on the PR using the authenticated gh user.
+
+        The OpenCode reviewer is a distinct read-only session.  The parent
+        Steward posts its sealed result through the already-authenticated
+        GitHub transport, matching the repository's accepted review protocol.
+        Existing exact-head receipts are reconciled before any POST, so a
+        restart or lost response cannot duplicate the external effect.
+        """
+        if (
+            REPOSITORY.fullmatch(repository) is None
+            or type(pr_number) is not int
+            or pr_number < 1
+            or SHA40.fullmatch(expected_head_sha) is None
+            or SHA40.fullmatch(base_sha) is None
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", reviewer_session_id)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", implementation_session_id)
+            or not re.fullmatch(r"[0-9a-f]{64}", reviewed_range_sha256)
+            or not re.fullmatch(r"[0-9a-f]{64}", review_receipt_sha256)
+        ):
+            raise GitHubMutationError("review_receipt_identity_invalid")
+        facts = self.fetch_stage_pr(repository, pr_number)
+        if facts.get("head_sha") != expected_head_sha or facts.get("base_sha") != base_sha:
+            raise GitHubMutationError("review_receipt_exact_binding_mismatch")
+        try:
+            identity_result = subprocess.run(
+                ["gh", "api", "user", "--jq", ".login"],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubMutationError("review_receipt_identity_unavailable") from exc
+        if identity_result.returncode != 0:
+            raise GitHubMutationError("review_receipt_identity_unavailable")
+        authenticated_identity = identity_result.stdout.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", authenticated_identity):
+            raise GitHubMutationError("review_receipt_identity_malformed")
+
+        def read_comments() -> list[dict[str, Any]]:
+            try:
+                result = subprocess.run(
+                    [
+                        "gh", "api", "--paginate", "--slurp",
+                        f"repos/{repository}/issues/{pr_number}/comments?per_page=100",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_seconds,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise GitHubMutationError("review_receipt_read_unavailable") from exc
+            if result.returncode != 0:
+                raise GitHubMutationError("review_receipt_read_failed")
+            try:
+                pages = json.loads(result.stdout or "[]")
+            except json.JSONDecodeError as exc:
+                raise GitHubMutationError("review_receipt_read_malformed") from exc
+            if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+                raise GitHubMutationError("review_receipt_read_malformed")
+            return [item for page in pages for item in page if isinstance(item, dict)]
+
+        marker = "EXACT-HEAD REVIEW RECEIPT"
+        reviewed_marker = f"Reviewed SHA: {expected_head_sha}"
+        current = [
+            item for item in read_comments()
+            if marker in str(item.get("body") or "") and reviewed_marker in str(item.get("body") or "")
+        ]
+        if len(current) > 1:
+            raise GitHubMutationError("duplicate_exact_head_review_receipts")
+        if current:
+            return {
+                "status": "ALREADY_PRESENT",
+                "repository": repository,
+                "pr_number": pr_number,
+                "expected_head_sha": expected_head_sha,
+            }
+        observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        body = "\n".join((
+            "EXACT-HEAD REVIEW RECEIPT",
+            f"Reviewed SHA: {expected_head_sha}",
+            f"Reviewed range: {base_sha}...{expected_head_sha}",
+            f"Reviewed range SHA256: {reviewed_range_sha256}",
+            f"Reviewer session identity: {reviewer_session_id}",
+            f"Reviewer authenticated identity: {authenticated_identity}",
+            "Review transport: parent-posted-on-behalf-of-independent-session",
+            f"Implementation session identity: {implementation_session_id}",
+            f"Observed at: {observed_at}",
+            "Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding",
+            "Outcome: PASS",
+            "Unresolved objections: none",
+            f"Review receipt SHA256: {review_receipt_sha256}",
+        )) + "\n"
+        try:
+            result = subprocess.run(
+                ["gh", "api", "--method", "POST", f"repos/{repository}/issues/{pr_number}/comments", "-f", f"body={body}"],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubMutationError("review_receipt_post_outcome_unknown") from exc
+        if result.returncode != 0:
+            raise GitHubMutationError("review_receipt_post_outcome_unknown")
+        # Confirm the durable comment before reporting success.
+        confirmed = [
+            item for item in read_comments()
+            if marker in str(item.get("body") or "") and reviewed_marker in str(item.get("body") or "")
+        ]
+        if len(confirmed) != 1:
+            raise GitHubMutationError("review_receipt_post_unproven")
+        return {
+            "status": "PUBLISHED",
+            "repository": repository,
+            "pr_number": pr_number,
+            "expected_head_sha": expected_head_sha,
+        }
+
     def guarded_merge(
         self,
         repository: str,
@@ -952,38 +1203,116 @@ class GhGitHubWriter:
             pass
         raise GitHubMutationError("merge_outcome_unknown")
 
+    def supersede_stage_pr(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+    ) -> bool:
+        """Close a failed candidate without deleting its recovery branch.
+
+        This is not merge authority.  A replacement candidate gets a new
+        branch and fresh exact-head review/CI; the closed PR remains the
+        evidence trail for the failed attempt.
+        """
+        facts = self.fetch_stage_pr(repository, pr_number)
+        if facts.get("head_sha") != expected_head_sha:
+            raise GitHubMutationError("exact_head_mismatch_before_supersede")
+        if facts.get("merged") is True:
+            raise GitHubMutationError("merged_stage_cannot_be_superseded")
+        if facts.get("state") == "CLOSED":
+            return True
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "close", str(pr_number), "--repo", repository,
+                 "--comment", "Superseded by an autonomous bounded repair candidate; branch retained for recovery."],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubMutationError("supersede_stage_pr_outcome_unknown") from exc
+        if result.returncode != 0:
+            raise GitHubMutationError("supersede_stage_pr_failed")
+        observed = self.fetch_stage_pr(repository, pr_number)
+        if observed.get("state") != "CLOSED" or observed.get("merged") is True:
+            raise GitHubMutationError("supersede_stage_pr_outcome_unknown")
+        return True
+
     def post_merge_readback(
         self,
         repository: str,
+        pr_number: int,
         expected_head_sha: str,
         *,
         timeout_seconds: int = 30,
     ) -> dict[str, Any]:
-        """Fetch authoritative accepted-main SHA from remote repository."""
+        """Prove that one exact merged PR advanced accepted ``main``.
+
+        Reading a branch tip alone is not a merge receipt: another PR can
+        advance ``main`` between the mutation and this read.  GitHub's PR
+        object supplies the exact reviewed head and merge commit, and the
+        branch endpoint proves that that merge commit is the accepted tip.
+        This method deliberately has no local-Git fallback.
+        """
         if (
             REPOSITORY.fullmatch(repository) is None
+            or type(pr_number) is not int
+            or pr_number < 1
             or SHA40.fullmatch(expected_head_sha) is None
         ):
             raise GitHubFactsError("github_query_identity_invalid")
-
-        cmd = [
-            "gh", "api", f"repos/{repository}/branches/main",
-            "--jq", ".commit.sha",
-        ]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds, check=False)
-            if res.returncode != 0:
-                raise GitHubFactsError(f"post_merge_readback_failed: {res.stderr.strip()}")
-            main_sha = res.stdout.strip()
-            if not SHA40.fullmatch(main_sha):
+            pr_res = subprocess.run(
+                ["gh", "api", f"repos/{repository}/pulls/{pr_number}"],
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+            if pr_res.returncode != 0:
+                raise GitHubFactsError("post_merge_pr_read_failed")
+            pr = json.loads(pr_res.stdout)
+            if not isinstance(pr, dict):
+                raise GitHubFactsError("post_merge_pr_read_malformed")
+            pr_head = pr.get("head", {}).get("sha") if isinstance(pr.get("head"), dict) else None
+            merge_sha = pr.get("merge_commit_sha")
+            if (
+                pr.get("number") != pr_number
+                or pr.get("state") != "closed"
+                or pr.get("merged") is not True
+                or pr_head != expected_head_sha
+                or not isinstance(merge_sha, str)
+                or SHA40.fullmatch(merge_sha) is None
+            ):
+                raise GitHubFactsError("post_merge_pr_binding_invalid")
+            main_res = subprocess.run(
+                ["gh", "api", f"repos/{repository}/branches/main"],
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+            if main_res.returncode != 0:
+                raise GitHubFactsError("post_merge_main_read_failed")
+            branch = json.loads(main_res.stdout)
+            main_sha = branch.get("commit", {}).get("sha") if isinstance(branch, dict) and isinstance(branch.get("commit"), dict) else None
+            if not isinstance(main_sha, str) or SHA40.fullmatch(main_sha) is None:
                 raise GitHubFactsError("accepted_main_sha_invalid")
+            if main_sha != merge_sha:
+                raise GitHubFactsError("post_merge_main_transition_unproven")
             return {
-                "schema_version": "post_merge_readback.v1",
+                "schema_version": "post_merge_readback.v2",
                 "repository": repository,
+                "pr_number": pr_number,
                 "expected_head_sha": expected_head_sha,
+                "merge_commit_sha": merge_sha,
                 "accepted_main_sha": main_sha,
                 "status": "VERIFIED",
             }
+        except json.JSONDecodeError as exc:
+            raise GitHubFactsError("post_merge_readback_malformed") from exc
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise GitHubFactsError("post_merge_readback_unavailable") from exc
 
@@ -1004,6 +1333,12 @@ class FakeGitHubReader:
         facts.setdefault("repository", repository)
         facts.setdefault("pr_number", pr_number)
         return facts
+
+    def fetch_accepted_main(self, repository: str) -> str:
+        value = self.facts.get("accepted_main_sha", "1" * 40)
+        if not isinstance(value, str) or SHA40.fullmatch(value) is None:
+            raise GitHubReadError("accepted_main_read_malformed")
+        return value
 
 
 class FakeGitHubWriter:
@@ -1041,6 +1376,9 @@ class FakeGitHubWriter:
                 "head_branch": pr["head_branch"],
             }
         return self.reader.fetch_stage_pr(repository, pr_number)
+
+    def fetch_accepted_main(self, repository: str) -> str:
+        return self.remote_main_sha
 
     def create_or_update_stage_pr(
         self,
@@ -1100,6 +1438,35 @@ class FakeGitHubWriter:
             return True
         return True
 
+    def publish_exact_head_review(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+        *,
+        base_sha: str,
+        reviewer_session_id: str,
+        implementation_session_id: str,
+        reviewed_range_sha256: str,
+        review_receipt_sha256: str,
+    ) -> dict[str, Any]:
+        pr = self.prs.get(pr_number)
+        if pr is not None:
+            if pr.get("head_sha") != expected_head_sha or pr.get("base_sha") != base_sha:
+                raise GitHubMutationError("review_receipt_exact_binding_mismatch")
+            pr["review_state"] = "PASS"
+        self.actions.append(("publish_review", {
+            "pr_number": pr_number,
+            "head_sha": expected_head_sha,
+            "reviewer_session_id": reviewer_session_id,
+        }))
+        return {
+            "status": "PUBLISHED",
+            "repository": repository,
+            "pr_number": pr_number,
+            "expected_head_sha": expected_head_sha,
+        }
+
     def guarded_merge(
         self,
         repository: str,
@@ -1120,7 +1487,11 @@ class FakeGitHubWriter:
             if pr.get("head_sha") != expected_head_sha:
                 raise GitHubMutationError("head_sha_mismatch")
             pr["merged"] = True
-            pr["state"] = "MERGED"
+            pr["state"] = "CLOSED"
+            # A deterministic stand-in for GitHub's merge commit.  Tests may
+            # replace ``remote_main_sha`` to model unrelated main drift.
+            pr["merge_commit_sha"] = expected_head_sha
+            self.remote_main_sha = expected_head_sha
         return {
             "merged": True,
             "repository": repository,
@@ -1128,18 +1499,40 @@ class FakeGitHubWriter:
             "head_sha": expected_head_sha,
         }
 
+    def supersede_stage_pr(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+    ) -> bool:
+        self.actions.append(("supersede", {"pr_number": pr_number, "head_sha": expected_head_sha}))
+        pr = self.prs.get(pr_number)
+        if pr is None or pr.get("head_sha") != expected_head_sha:
+            raise GitHubMutationError("exact_head_mismatch_before_supersede")
+        if pr.get("merged") is True:
+            raise GitHubMutationError("merged_stage_cannot_be_superseded")
+        pr["state"] = "CLOSED"
+        return True
+
     def post_merge_readback(
         self,
         repository: str,
+        pr_number: int,
         expected_head_sha: str,
         *,
         timeout_seconds: int = 30,
     ) -> dict[str, Any]:
-        self.actions.append(("post_merge_readback", {"repository": repository, "head_sha": expected_head_sha}))
+        self.actions.append(("post_merge_readback", {"repository": repository, "pr_number": pr_number, "head_sha": expected_head_sha}))
+        pr = self.prs.get(pr_number, {})
+        merge_sha = pr.get("merge_commit_sha", self.remote_main_sha)
+        if pr.get("head_sha") not in {None, expected_head_sha} or merge_sha != self.remote_main_sha:
+            raise GitHubFactsError("post_merge_main_transition_unproven")
         return {
-            "schema_version": "post_merge_readback.v1",
+            "schema_version": "post_merge_readback.v2",
             "repository": repository,
+            "pr_number": pr_number,
             "expected_head_sha": expected_head_sha,
+            "merge_commit_sha": merge_sha,
             "accepted_main_sha": self.remote_main_sha,
             "status": "VERIFIED",
         }

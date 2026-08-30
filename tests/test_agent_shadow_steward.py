@@ -21,9 +21,8 @@ class ShadowStewardTests(unittest.TestCase):
     class Authenticator:
         def verify(self, approval, proposal_sha256):
             return (
-                approval.owner_identity == "repository-owner"
+                approval.owner_identity == "github:Igzela"
                 and approval.proposal_sha256 == proposal_sha256
-                and approval.approval_id == "shadow-approval-1"
             )
 
     def setUp(self) -> None:
@@ -34,12 +33,31 @@ class ShadowStewardTests(unittest.TestCase):
         )
         self.proposal = shadow.compile_proposal(self.request)
         self.approval = contract.OwnerApproval(
-            "repository-owner",
+            "github:Igzela",
             self.proposal.proposal_sha256,
             "shadow-approval-1",
             "2026-08-28T00:00:00Z",
         )
         self.authenticator = self.Authenticator()
+        # Stage planning derives authority from one already-activated Mission;
+        # it must never turn a second synthetic stage approval into authority.
+        activation_approval = contract.OwnerApproval(
+            "github:Igzela",
+            self.mission.proposal_sha256,
+            "shadow-mission-approval",
+            "2026-08-30T00:00:00Z",
+        )
+        self.running_mission = contract.activate_current_mission(
+            repository=self.mission.repository_identity.repository,
+            base_sha=self.mission.repository_identity.base_sha,
+            branch=self.mission.repository_identity.branch,
+            source_ref=self.mission.repository_identity.source_ref,
+            source_sha256=self.mission.repository_identity.source_sha256,
+            proposal_sha256=self.mission.proposal_sha256,
+            owner_approval=activation_approval,
+            owner_authenticator=self.authenticator,
+            mission=self.mission,
+        )
 
     def approved_plan(self):
         decision = shadow.evaluate_proposal(
@@ -50,9 +68,7 @@ class ShadowStewardTests(unittest.TestCase):
         )
         return shadow.plan_stage(
             self.proposal,
-            self.mission,
-            self.approval,
-            owner_authenticator=self.authenticator,
+            self.running_mission,
         )
 
     def test_intake_is_bounded_digested_and_does_not_retain_raw_request(self):
@@ -279,7 +295,7 @@ class ShadowStewardTests(unittest.TestCase):
             {()},
         )
         self.assertTrue(plan.projection_only)
-        contract.validate_stage(plan.stage, self.mission, plan.workcards)
+        contract.validate_stage(plan.stage, self.running_mission, plan.workcards)
         self.assertTrue(shadow.shadow_only(plan))
 
         forged_plan = replace(plan, _provenance=None)

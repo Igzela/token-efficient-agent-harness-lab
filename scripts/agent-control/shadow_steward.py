@@ -627,7 +627,10 @@ def _validate_mission(mission: contract.MaintenanceMission) -> contract.Maintena
             current.mission_id != registered.mission_id
             or current.proposal_wire() != registered.proposal_wire()
             or current.proposal_sha256 != registered.proposal_sha256
-            or current.owner_approval != registered.owner_approval
+            or (
+                current.state not in {"RUNNING", "VERIFYING", "INTEGRATING", "COMPLETE"}
+                and current.owner_approval != registered.owner_approval
+            )
         ):
             raise ShadowStewardError("mission_registration_invalid")
     else:
@@ -1219,13 +1222,12 @@ def plan_stage(
     ):
         stop = classify_stop("SCOPE_EXCEEDED")
         return _paused_projection(model.proposal_sha256, current.mission_id, stop)
-    decision = evaluate_proposal(
-        model,
-        current,
-        owner_approval,
-        owner_authenticator=owner_authenticator,
-    )
-    if decision.status != "SHADOW_RECOMMENDATION":
+    # Owner approval belongs exclusively to Mission activation.  A RUNNING
+    # Mission is already bound to that approval in the durable Steward journal;
+    # planning a Stage must not manufacture a second validator/approval pair.
+    # Retain the optional arguments for compatibility with historical callers,
+    # but they no longer grant or authenticate any authority.
+    if current.state != "RUNNING":
         return _waiting_projection(model.proposal_sha256, current.mission_id)
     stage_id = f"shadow-stage-{model.proposal_sha256[:16]}"
     requested_paths = tuple(model.requested_paths)

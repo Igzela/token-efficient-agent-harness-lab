@@ -444,18 +444,43 @@ For normal local engine operation, use the existing dashboard build, engine star
 
 ## Repository-Maintenance Steward
 
-The repository-maintenance Steward is a bounded outer loop. It may inspect the
-accepted repository, run provider-free verification, preserve recovery evidence,
-and report an exact-head PR as `WAITING_FOR_MERGE`. The Rust engine remains the
-sole runtime, scheduler, policy, and application-store authority; Steward never
-becomes a second product queue, lease, effect owner, or lifecycle writer.
+The repository-maintenance Steward is a bounded outer loop. The Rust engine
+remains the sole product runtime, scheduler, policy, and application store;
+Steward owns only its one repository-maintenance Mission journal. The journal
+is the sole durable lifecycle writer. `steward.py` is the service's K=2
+isolated WorkCard execution seam, not a queue, scheduler, or second state
+machine.
 
-Use `scripts/agent-control/steward.py` for reconciliation and
-`scripts/agent-control/steward_service.py` for the provider-free heartbeat
-smoke check. The checked-in `scripts/agent-control/steward.service` is an
-installation template and remains stopped by default. Any host installation,
-activation, or rollback must use the separately accepted operational contract,
-retain a recovery point, and prove one-writer ownership before activation.
+Production entry is `steward_service.py propose`, `approve`, and `run`:
+
+```bash
+# Proposal reads current GitHub main when --base-sha is omitted.
+uv run --no-project python scripts/agent-control/steward_service.py \
+  --journal /var/lib/agent-steward/steward.sqlite3 propose \
+  --request 'bounded repository-maintenance goal'
+
+# The comment must already exist on Issue #208 and be GitHub-authenticated.
+# Marker fields: mission_id, proposal_sha256, accepted_main_sha, approval_id.
+uv run --no-project python scripts/agent-control/steward_service.py \
+  --journal /var/lib/agent-steward/steward.sqlite3 approve \
+  --proposal-sha256 <proposal-sha256> --approval-comment-id <github-comment-id>
+
+uv run --no-project python scripts/agent-control/steward_service.py \
+  --journal /var/lib/agent-steward/steward.sqlite3 run --interval-seconds 60
+```
+
+`approve` reads the comment through GitHub, checks `OWNER` association, exact
+digest/Mission/current-main binding, then atomically consumes the immutable
+comment identity before activation. It never accepts an owner string or locally
+created approval object. Stages/replans remain inside that one approval.
+
+The checked-in `steward.service` remains an installation template. Before any
+host activation, retain the journal and accepted-main recovery point; prove no
+other writer holds the service `flock`, no active/abandoned lease conflict, no
+unresolved external `OUTCOME_UNKNOWN`, and the Issue #208 emergency-stop label
+is set. The service re-reads that label before every production transition;
+while set, it records the halt and dispatches neither WorkCards nor Ready/merge
+mutations.
 
 The normal repository path is the accepted-main route in `START_HERE.md`,
 followed by the exact-head review, canonical CI, and guarded merge rules in
@@ -465,61 +490,42 @@ uncertain; reconcile the live state before any retry.
 
 Canonical CI acquisition binds repository, trusted head repository, workflow identity/path, branch, exact head SHA, and PR. Completed supported evidence outranks active runs; the newest authoritative completed result wins, with a natural `pull_request` run breaking otherwise equal ties. Unsupported terminal runs are reselected around, and a pending natural run receives at most one bounded `workflow_dispatch` fallback. Observed, selected, superseded, unsupported, and fallback state is persisted so stale or duplicate events cannot dispatch duplicate repairs/reviews.
 
-The Codex wrapper constructs an allowlisted child environment for version, login-status, help, implementation, repair, and review calls. It preserves only the documented runtime/login variables (`HOME`, optional `CODEX_HOME`, `PATH`, locale/temp/terminal and service-user identity variables) and excludes GitHub, provider, cloud, and unknown secret-shaped variables. It does not fall back to API-key billing, mutate login files, print the environment, or retain raw failure output.
+The OpenCode wrapper constructs an allowlisted child environment for version,
+login-status, help, implementation, repair, and independent review calls. It
+preserves only its documented runtime/login variables and excludes GitHub,
+provider, cloud, and unknown secret-shaped variables. The worker gets only an
+isolated worktree and WorkCard contract; it cannot push, create PRs, or merge.
+The reviewer is a distinct read-only invocation. Raw prompts, model outputs,
+transcripts, credentials, and private paths are not journal evidence.
 
-### PR3 provider-free Steward recovery
+On restart, the service replays only the durable activation or accepted-main
+rebind and resumes the next safe phase. A lost Ready/supersede/merge result is
+`OUTCOME_UNKNOWN`: retain branch, journal, and exact-head facts and reconcile
+GitHub read-only until proved. Never repeat a possibly issued mutation. A
+failed CI/review candidate is superseded with its branch retained, then receives
+a fresh bounded candidate head; accepted-main drift causes a fresh-base replan.
+All merges remain delegated solely to `agent-merge.yml`.
 
-PR3's `steward.py` drives only an approved repository-maintenance WorkCard and
-stops at a verified `WAITING_FOR_MERGE` observation. Its SQLite file is a
-rebuildable operator projection, not the application store or a second queue,
-lease, budget, approval, output, audit, rollback, scheduler, or lifecycle
-writer. Do not place prompts, model output, transcripts, credentials, private
-paths, or unredacted repository content in its journal.
+After an observed merge, `post_merge_readback` verifies from GitHub that the
+same PR number and expected head produced the exact `main` merge commit. It
+fetches a matching local mirror only after that remote proof and runs
+`git diff-tree --check` on the named accepted commit. Remote failure or an
+unproved transition is recovery-required; local `HEAD` is never accepted as a
+fallback.
 
-The programmatic `StewardService.execute_stage` entrypoint runs heartbeat and
-restart-recovery preflight before dispatching an explicitly supplied approved
-stage. The service CLI remains reconciliation-only because loading a plan or
-creating a Stage PR would cross the PR3 authority boundary. Reviewer children
-cannot write the admitted WorkCard worktree. Their result is a bounded local
-observation only; recovery and merge eligibility use the canonical exact-head
-CI/review/thread readers rather than a child self-report or aggregate approval
-alone.
-
-Run the heartbeat smoke check against an operator-owned path before installing
-any unit:
-
-```bash
-uv run --no-project python scripts/agent-control/steward_service.py \
-  --heartbeat-loop --once --journal /var/lib/agent-steward/steward.sqlite3
-```
-
-The checked-in `scripts/agent-control/steward.service` is an installation
-template only. A later, separately accepted canary must provision the service
-user and writable journal directory, inspect the registered worktrees and
-active legacy writer, and prove one-writer ownership before activation. PR3
-does not authorize installation, enablement, Provider access, target writes,
-release, deployment, destructive cleanup, or automatic merge. Until that gate
-is accepted, keep the service stopped and use only the provider-free focused
-tests and the `--once` heartbeat smoke check.
-
-On restart, replay the journal and call the read-only reconciliation owner.
-`RUNNING`, `VERIFYING`, and `REVIEWING` cards are recovery-required and must
-not be rerun from a local self-report. `OUTCOME_UNKNOWN`, malformed journal
-records, unavailable GitHub facts, base/head drift, pending CI, or a review
-blocker remain paused; never delete the journal or blindly retry. Retain the
-worktree and exact-head evidence for operator inspection. Only a live,
-exactly bound PR with passing CI and independent review may be projected as
-`WAITING_FOR_MERGE`; the existing manual merge owner handles the merge.
+The historical macOS SQLite `database is locked` report is not closed by a
+Linux threaded-heartbeat result. Current local tests exercise Linux SQLite
+journal concurrency and real `flock` acquisition/loss/recovery only. The
+original macOS reproduction and concrete root cause remain unconfirmed until a
+macOS reproduction or matching platform evidence is captured.
 
 ### Runner and host readiness
 
 The legacy self-hosted runner preflight surface was removed with the old
-control plane. Current canonical verification runs through the checked-in
-GitHub Actions workflows and the provider-free Steward heartbeat; there is no
-repository-owned command that installs, registers, or probes a host runner.
-Do not infer service or host readiness from a local projection. Any future host
-installation or activation requires its own accepted operational contract,
-recovery point, and one-writer proof.
+control plane. Current canonical verification runs through checked-in GitHub
+Actions and the Steward service loop. Do not infer host readiness from a local
+projection; installation/activation still requires recovery and one-writer
+proof.
 
 Every task Issue intended for implementation must also declare its permitted change scope. The finalizer rejects an artifact unless every changed path is exact or under an allowed directory prefix:
 
