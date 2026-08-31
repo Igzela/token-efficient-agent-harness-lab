@@ -1162,6 +1162,53 @@ raise SystemExit(1)
         self.assertEqual(failure_reason, "authentication_failure")
         self.assertFalse(response_path.exists())
 
+    def test_production_worker_sandbox_exposes_minimal_opencode_provider_config(self):
+        """The isolated HOME must expose provider declarations without host config."""
+        bin_dir = self.root / "opencode-bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "opencode"
+        fake.write_text(
+            """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("1.0.0")
+elif args[:2] == ["auth", "list"]:
+    pass
+elif args[:2] == ["run", "--help"]:
+    print("--format --dir --file --model --title")
+elif args and args[0] == "run":
+    config = Path(os.environ["HOME"]) / ".config" / "opencode" / "opencode.json"
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    if "opencode-go" not in payload.get("provider", {}):
+        raise SystemExit(3)
+    print(json.dumps({"type":"text", "sessionID":"ses_fixture", "part":{"text":"done"}}))
+elif args[:2] == ["session", "delete"]:
+    pass
+else:
+    raise SystemExit(2)
+""",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        worker = workers.OpenCodeWorkCardWorker(timeout_seconds=5)
+        exit_code, response_path, failure_reason = worker._invoke(
+            "implement",
+            "bounded workcard",
+            self.root,
+            environment={
+                "HOME": str(self.root),
+                "PATH": f"{bin_dir}:/usr/bin:/bin",
+            },
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIsNone(failure_reason)
+        self.assertFalse(response_path.exists())
+
     def test_production_worker_enforces_workcard_contract_and_allowlisted_checks(self):
         context = type(
             "Contract",
