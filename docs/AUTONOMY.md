@@ -63,7 +63,9 @@ records intent before a Ready, candidate-supersede, or merge-workflow mutation.
   read-only OpenCode reviewer is not merge-capable. The wrapper maps T0/T1 to
   `opencode-go/deepseek-v4-flash` and T2 to `opencode-go/deepseek-v4-pro`
   through the operator's existing authenticated login; it does not persist or
-  manufacture credentials. Marker and PR4B adapters are test-only
+  manufacture credentials. The sandbox receives a generated minimal
+  `opencode.json` provider declaration plus the authenticated `auth.json`,
+  never the operator's complete config. Marker and PR4B adapters are test-only
   compatibility surfaces.
 
 ## Review Convergence Protocol

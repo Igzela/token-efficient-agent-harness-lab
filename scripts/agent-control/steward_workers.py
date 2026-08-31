@@ -894,6 +894,28 @@ class OpenCodeWorkCardWorker:
             wrapper_copy.chmod(0o700)
             home = root / "home"
             home.mkdir(parents=True)
+            # OpenCode resolves provider/model declarations from the user's
+            # config before consulting the authenticated auth.json store.  A
+            # fresh sandbox HOME has no operator config, so the production
+            # transport would report the configured opencode-go model as
+            # unavailable even though the credential itself is mounted.  Add
+            # only the provider namespace needed by this adapter; never mount
+            # the operator's complete config (which may contain unrelated
+            # MCP, endpoint, or credential-shaped settings).
+            config_destination = home / ".config" / "opencode" / "opencode.json"
+            config_destination.parent.mkdir(parents=True)
+            config_destination.write_text(
+                json.dumps(
+                    {
+                        "$schema": "https://opencode.ai/config.json",
+                        "provider": {"opencode-go": {}},
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             auth_source = (
                 Path(str(environment.get("HOME", "")))
                 / ".local"
@@ -906,6 +928,7 @@ class OpenCodeWorkCardWorker:
             readonly_paths: list[tuple[Path, Path]] = [
                 (wrapper_copy, wrapper_copy),
                 (prompt_path, prompt_path),
+                (config_destination, config_destination),
             ]
             if auth_source.is_file() and not auth_source.is_symlink():
                 readonly_paths.append((auth_source, auth_destination))

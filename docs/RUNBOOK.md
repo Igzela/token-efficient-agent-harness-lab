@@ -497,7 +497,9 @@ provider, cloud, and unknown secret-shaped variables. The worker gets only an
 isolated worktree and WorkCard contract; it cannot push, create PRs, or merge.
 Production tiers use the authenticated `opencode-go` models
 `deepseek-v4-flash` (T0/T1) and `deepseek-v4-pro` (T2). The reviewer is a
-distinct read-only invocation. Raw prompts, model outputs,
+distinct read-only invocation. Each sandbox gets only a generated minimal
+provider declaration and the mounted authenticated login; the host's full
+OpenCode config is not exposed. Raw prompts, model outputs,
 transcripts, credentials, and private paths are not journal evidence.
 
 On restart, the service replays only the durable activation or accepted-main
