@@ -1,8 +1,9 @@
 """Bounded WorkCard worker and reviewer adapters for the Steward.
 
-Workers are injected adapters: this module does not select a Provider or
-forward credentials.  The parent owns the WorkCard binding, exact-base
-identity, path validation, and review-session separation.  Child environments
+The production adapter invokes the existing authenticated local OpenCode
+transport inside a filesystem-scoped child. Provider-free and marker adapters
+remain test-only fixtures. The parent owns WorkCard binding, exact-base
+identity, path validation, and review-session separation. Child environments
 are derived from the existing fail-closed local-run owner.
 """
 
@@ -18,6 +19,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import shutil
 from typing import Any, Callable, Mapping, Protocol
 import uuid
 
@@ -38,6 +40,14 @@ SAFE_STATUSES = frozenset({"PASS", "FAIL", "TIMEOUT", "BLOCKED", "OUTCOME_UNKNOW
 REVIEW_STATUSES = frozenset({"PASS", "FAIL", "BLOCKED", "OUTCOME_UNKNOWN"})
 REVIEW_AXES = frozenset({"standards", "spec"})
 REVIEW_MODES = frozenset({"full", "repair_verification"})
+_WORKCARD_GATE_NAMES = frozenset(
+    {
+        "focused_checks_required",
+        "full_checks_required",
+        "exact_head_review_required",
+        "k2_scheduler_observed",
+    }
+)
 _CREDENTIAL_MARKERS = (
     "TOKEN",
     "SECRET",
@@ -779,6 +789,52 @@ class OpenCodeWorkCardWorker:
         return paths
 
     @staticmethod
+    def _sandbox_head(git_sandbox: _SandboxGit) -> str | None:
+        try:
+            result = subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "--git-dir",
+                    str(git_sandbox.git_dir),
+                    "rev-parse",
+                    "--verify",
+                    f"refs/heads/{git_sandbox.branch}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        head = result.stdout.strip()
+        return head if result.returncode == 0 and SHA40.fullmatch(head) else None
+
+    @staticmethod
+    def _validate_workcard_contract(context: WorkerContext) -> None:
+        """Reject declarations the production adapter cannot execute safely."""
+
+        if not context.steps or not context.focused_tests or not context.negative_checks or not context.expected_evidence:
+            raise WorkerError("opencode_workcard_contract_incomplete")
+        for check in context.focused_tests:
+            if check not in _WORKCARD_GATE_NAMES and local_verification.allowlisted_command(check) is None:
+                raise WorkerError("opencode_focused_check_not_allowlisted")
+
+    @staticmethod
+    def _run_workcard_checks(
+        context: WorkerContext, changed_paths: tuple[str, ...]
+    ) -> list[dict[str, Any]]:
+        """Execute declared allowlisted checks, retaining symbolic parent gates."""
+
+        displays = local_verification.select_issue_checks(list(changed_paths))
+        for check in context.focused_tests:
+            if check in _WORKCARD_GATE_NAMES:
+                continue
+            if check not in displays:
+                displays.append(check)
+        return local_verification.run_focused_checks(context.worktree, displays)
+
+    @staticmethod
     def _prompt(context: WorkerContext) -> str:
         # This temporary prompt is intentionally not journaled.  It carries
         # only the bounded WorkCard contract and is removed after the wrapper
@@ -820,58 +876,173 @@ class OpenCodeWorkCardWorker:
         worktree: Path,
         *,
         environment: Mapping[str, str],
-    ) -> tuple[int, Path]:
+        model_tier: str = "T1",
+        git_sandbox: _SandboxGit | None = None,
+        worktree_writable: bool = True,
+    ) -> tuple[int, Path, str | None]:
+        if worker_type not in {"implement", "ci-repair", "review"}:
+            raise WorkerError("opencode_worker_type_invalid")
+        if model_tier not in {"T0", "T1", "T2"}:
+            raise WorkerError("opencode_model_tier_invalid")
         with tempfile.TemporaryDirectory(prefix="steward-opencode-") as temp:
             root = Path(temp)
             prompt_path = root / "workcard.txt"
             output_dir = root / "output"
             prompt_path.write_text(prompt, encoding="utf-8")
+            wrapper_copy = root / "codex_wrapper.sh"
+            shutil.copyfile(self.wrapper_path, wrapper_copy)
+            wrapper_copy.chmod(0o700)
+            home = root / "home"
+            home.mkdir(parents=True)
+            auth_source = (
+                Path(str(environment.get("HOME", "")))
+                / ".local"
+                / "share"
+                / "opencode"
+                / "auth.json"
+            )
+            auth_destination = home / ".local" / "share" / "opencode" / "auth.json"
+            auth_destination.parent.mkdir(parents=True)
+            readonly_paths: list[tuple[Path, Path]] = [
+                (wrapper_copy, wrapper_copy),
+                (prompt_path, prompt_path),
+            ]
+            if auth_source.is_file() and not auth_source.is_symlink():
+                readonly_paths.append((auth_source, auth_destination))
             child_environment = dict(environment)
+            child_environment["HOME"] = str(home)
+            child_environment["AGENT_CODEX_MODEL_TIER"] = model_tier
             child_environment["AGENT_CODEX_TIMEOUT_SECONDS"] = str(self.timeout_seconds)
+            opencode_bin = shutil.which(
+                "opencode", path=child_environment.get("PATH", "")
+            )
+            if opencode_bin:
+                opencode_path = Path(opencode_bin)
+                if opencode_path.is_file() and not opencode_path.is_symlink():
+                    readonly_paths.append((opencode_path, opencode_path))
+            sandboxed_command = _sandbox_command(
+                [
+                    str(wrapper_copy),
+                    worker_type,
+                    str(prompt_path),
+                    str(output_dir),
+                    str(worktree),
+                ],
+                worktree,
+                child_environment,
+                git_sandbox=git_sandbox,
+                worktree_writable=worktree_writable,
+                writable_paths=(root,),
+                readonly_paths=tuple(readonly_paths),
+                # The real OpenCode provider transport needs egress.  Its
+                # filesystem remains namespace-isolated and the wrapper strips
+                # all proxy/network selector variables and external paths.
+                isolate_network=False,
+            )
             try:
-                result = subprocess.run(
-                    [str(self.wrapper_path), worker_type, str(prompt_path), str(output_dir), str(worktree)],
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout_seconds + 30,
+                exit_code, _stdout, _stderr = local_verification._bounded_process(
+                    sandboxed_command,
+                    cwd=worktree,
+                    timeout_seconds=self.timeout_seconds + 30,
                     env=child_environment,
-                    check=False,
                 )
-            except subprocess.TimeoutExpired:
-                return 124, root / "missing"
+            except local_verification.LocalVerificationError as exc:
+                raise WorkerError("opencode_sandbox_unavailable") from exc
+            failure_reason: str | None = None
+            if exit_code != 0:
+                failure_reason = self._bounded_failure_reason(output_dir)
             # The review adapter needs the bounded response for immediate
             # validation, but never persists it.  Copy it into a second
             # short-lived directory controlled by the caller.
-            if worker_type == "review" and result.returncode == 0:
+            if worker_type == "review" and exit_code == 0:
                 message = output_dir / "codex-last-message.txt"
                 if message.is_file() and not message.is_symlink():
                     retained = Path(tempfile.mkdtemp(prefix="steward-opencode-review-")) / "message.txt"
                     retained.write_bytes(message.read_bytes())
-                    return result.returncode, retained
-            return result.returncode, root / "missing"
+                    return exit_code, retained, None
+            return exit_code, root / "missing", failure_reason
+
+    @staticmethod
+    def _bounded_failure_reason(output_dir: Path) -> str | None:
+        """Return only a wrapper-owned failure category, never provider output."""
+
+        path = output_dir / "failure_reason.json"
+        if path.is_symlink() or not path.is_file():
+            return None
+        try:
+            raw = path.read_bytes()
+            if not raw or len(raw) > 4096:
+                return None
+            value = json.loads(raw)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        reasons = {
+            "authentication_failure",
+            "cli_missing",
+            "environment_invalid",
+            "malformed_output",
+            "model_execution_failure",
+            "model_execution_timeout",
+            "prompt_missing",
+            "timeout_invalid",
+            "timeout_unavailable",
+            "unsupported_flags",
+            "unsupported_worker_type",
+            "usage_or_credit_exhaustion",
+            "workspace_invalid",
+        }
+        if (
+            not isinstance(value, dict)
+            or value.get("kind") != "agent-orchestrator-failure"
+            or value.get("reason") not in reasons
+        ):
+            return None
+        return value["reason"]
 
     def run(self, context: WorkerContext) -> WorkerOutcome:
+        self._validate_workcard_contract(context)
         if self._git(context.worktree, "status", "--porcelain=v1", "--untracked-files=all"):
             raise WorkerError("opencode_worktree_not_clean")
         before = self._git(context.worktree, "rev-parse", "--verify", "HEAD")
         if before != context.base_sha:
             raise WorkerError("opencode_base_head_mismatch")
-        exit_code, _unused = self._invoke(
-            "implement", self._prompt(context), context.worktree,
-            environment=context.environment,
-        )
+        git_sandbox = _sandbox_for_context(context)
+        try:
+            exit_code, _unused, failure_reason = self._invoke(
+                "implement", self._prompt(context), context.worktree,
+                environment=context.environment,
+                model_tier=context.model_tier,
+                git_sandbox=git_sandbox,
+            )
+            if git_sandbox is not None:
+                child_head = self._sandbox_head(git_sandbox)
+                if child_head is not None and child_head != context.base_sha:
+                    git_sandbox.import_head(
+                        base_sha=context.base_sha,
+                        head_sha=child_head,
+                        branch=git_sandbox.branch,
+                    )
+        finally:
+            if git_sandbox is not None:
+                git_sandbox.cleanup()
         after = self._git(context.worktree, "rev-parse", "--verify", "HEAD")
         if after != before:
             # The agent performed an unapproved Git effect.  Preserve the
             # worktree for read-only reconciliation and never retry blindly.
             return WorkerOutcome("OUTCOME_UNKNOWN", process_session_id(context), after, (), "opencode_unexpected_commit")
         paths = self._changed_paths(context)
-        if exit_code == 124:
+        if exit_code == 124 or failure_reason == "model_execution_timeout":
             return WorkerOutcome("OUTCOME_UNKNOWN" if paths else "TIMEOUT", process_session_id(context), before, (), "opencode_timeout")
         if exit_code != 0:
-            return WorkerOutcome("OUTCOME_UNKNOWN" if paths else "FAIL", process_session_id(context), before, (), "opencode_execution_failed")
+            detail = f"opencode_{failure_reason or 'execution_failed'}"
+            return WorkerOutcome("OUTCOME_UNKNOWN" if paths else "FAIL", process_session_id(context), before, (), detail)
         if not paths:
             return WorkerOutcome("FAIL", process_session_id(context), before, (), "opencode_no_change")
+        try:
+            checks = self._run_workcard_checks(context, paths)
+            validate_check_results(checks)
+        except Exception:
+            return WorkerOutcome("FAIL", process_session_id(context), before, (), "opencode_focused_checks_failed")
         if self._git(context.worktree, "diff", "--check"):
             raise WorkerError("opencode_diff_check_failed")
         self._git(context.worktree, "add", "--", *paths)
@@ -973,13 +1144,22 @@ class OpenCodeWorkCardReviewer:
         return summary[:512]
 
     def review(self, context: WorkerContext, outcome: WorkerOutcome) -> ReviewOutcome:
-        exit_code, response_path = self.worker._invoke(
-            "review", self._prompt(context, outcome), context.worktree,
-            environment=context.environment,
-        )
+        git_sandbox = _sandbox_for_context(context)
+        try:
+            exit_code, response_path, failure_reason = self.worker._invoke(
+                "review", self._prompt(context, outcome), context.worktree,
+                environment=context.environment,
+                model_tier=context.model_tier,
+                git_sandbox=git_sandbox,
+                worktree_writable=False,
+            )
+        finally:
+            if git_sandbox is not None:
+                git_sandbox.cleanup()
         try:
             if exit_code != 0 or not response_path.is_file() or response_path.is_symlink():
-                raise WorkerError("opencode_review_execution_failed")
+                detail = f"opencode_review_{failure_reason or 'execution_failed'}"
+                raise WorkerError(detail)
             raw = response_path.read_bytes()
             if not raw or len(raw) > 16 * 1024:
                 raise WorkerError("opencode_review_output_invalid")
@@ -1357,6 +1537,9 @@ def _sandbox_command(
     *,
     git_sandbox: _SandboxGit | None = None,
     worktree_writable: bool = True,
+    writable_paths: tuple[Path, ...] = (),
+    readonly_paths: tuple[tuple[Path, Path], ...] = (),
+    isolate_network: bool = True,
 ) -> list[str]:
     """Run a bounded child with explicitly scoped worktree and Git access."""
 
@@ -1376,19 +1559,22 @@ def _sandbox_command(
         str(bubblewrap),
         "--die-with-parent",
         "--unshare-user",
-        "--unshare-net",
         "--unshare-pid",
         "--clearenv",
         "--tmpfs",
         "/",
     ]
+    if isolate_network:
+        args.insert(4, "--unshare-net")
     for system_path in ("/usr", "/bin", "/lib", "/lib64"):
         if Path(system_path).exists():
             args.extend(("--ro-bind", system_path, system_path))
     # A child needs loader/account metadata, but must not receive a readable
     # copy of the host's complete /etc (which can contain credentials or
     # operator configuration).  Network files and package configuration stay
-    # outside the namespace; the child has no network and GIT_CONFIG_NOSYSTEM.
+    # outside the namespace; the default child has no network and
+    # GIT_CONFIG_NOSYSTEM.  Provider-backed adapters may explicitly retain
+    # host egress while still using this filesystem namespace.
     args.extend(("--dir", "/etc"))
     for system_file in (
         "/etc/ld.so.cache",
@@ -1431,6 +1617,19 @@ def _sandbox_command(
         environment["GIT_CONFIG_NOSYSTEM"] = "1"
         environment["GIT_TERMINAL_PROMPT"] = "0"
     args.extend(("--chdir", str(worktree)))
+    for path in writable_paths:
+        source = path.resolve()
+        if not source.exists() or source.is_symlink():
+            raise WorkerError("sandbox_bind_path_invalid")
+        add_parent_dirs(source)
+        args.extend(("--bind", str(source), str(source)))
+    for source_path, destination_path in readonly_paths:
+        source = source_path.resolve()
+        destination = destination_path.resolve()
+        if not source.exists() or source.is_symlink() or (destination.exists() and destination.is_symlink()):
+            raise WorkerError("sandbox_bind_path_invalid")
+        add_parent_dirs(destination)
+        args.extend(("--ro-bind", str(source), str(destination)))
     for key, value in sorted(environment.items()):
         if "\x00" in key or "\x00" in value or "\n" in key or "\n" in value:
             raise WorkerError("sandbox_environment_invalid")
