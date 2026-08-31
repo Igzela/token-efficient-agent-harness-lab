@@ -1186,6 +1186,11 @@ elif args and args[0] == "run":
     payload = json.loads(config.read_text(encoding="utf-8"))
     if "opencode-go" not in payload.get("provider", {}):
         raise SystemExit(3)
+    resolver = Path("/etc/resolv.conf")
+    if not resolver.is_file() or "nameserver" not in resolver.read_text(encoding="utf-8"):
+        raise SystemExit(4)
+    if not Path("/etc/hosts").is_file():
+        raise SystemExit(5)
     print(json.dumps({"type":"text", "sessionID":"ses_fixture", "part":{"text":"done"}}))
 elif args[:2] == ["session", "delete"]:
     pass

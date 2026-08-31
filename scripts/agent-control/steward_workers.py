@@ -1594,10 +1594,9 @@ def _sandbox_command(
             args.extend(("--ro-bind", system_path, system_path))
     # A child needs loader/account metadata, but must not receive a readable
     # copy of the host's complete /etc (which can contain credentials or
-    # operator configuration).  Network files and package configuration stay
-    # outside the namespace; the default child has no network and
-    # GIT_CONFIG_NOSYSTEM.  Provider-backed adapters may explicitly retain
-    # host egress while still using this filesystem namespace.
+    # operator configuration).  Provider-backed adapters may explicitly
+    # retain host egress while still using this filesystem namespace, so they
+    # receive only the resolver and hosts files required for name lookup.
     args.extend(("--dir", "/etc"))
     for system_file in (
         "/etc/ld.so.cache",
@@ -1608,6 +1607,15 @@ def _sandbox_command(
     ):
         if Path(system_file).is_file():
             args.extend(("--ro-bind", system_file, system_file))
+    # Keep provider-backed workers able to resolve their authenticated
+    # endpoint without exposing the rest of the host's /etc.  resolv.conf is
+    # commonly a symlink into /run, so bind the resolved regular file to a
+    # fresh namespace path rather than mounting /run wholesale.
+    resolver_source = Path("/etc/resolv.conf").resolve()
+    if resolver_source.is_file():
+        args.extend(("--ro-bind", str(resolver_source), "/etc/resolv.conf"))
+    if Path("/etc/hosts").is_file():
+        args.extend(("--ro-bind", "/etc/hosts", "/etc/hosts"))
     args.extend(("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"))
     created_dirs: set[str] = set()
 
