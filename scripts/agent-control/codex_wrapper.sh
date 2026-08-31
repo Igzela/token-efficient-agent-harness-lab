@@ -184,7 +184,7 @@ HELP_OUTPUT="$INVOKE_TMP/opencode-run-help.txt"
 if ! run_opencode run --help >"$HELP_OUTPUT" 2>&1; then
   fail_closed "unsupported_flags" "opencode run help is unavailable"
 fi
-for flag in --format --dir --file --model; do
+for flag in --format --dir --file --model --title; do
   grep -Fq -- "$flag" "$HELP_OUTPUT" || fail_closed "unsupported_flags" "opencode run does not advertise required flags"
 done
 
@@ -198,6 +198,7 @@ set +e
 run_opencode_bounded run \
   --format json \
   --model "$OPENCODE_MODEL" \
+  --title "Autonomous Steward WorkCard" \
   --dir "$WORKSPACE" \
   "$FIXED_RUN_MESSAGE" \
   --file "$CLAIM_PROMPT" \

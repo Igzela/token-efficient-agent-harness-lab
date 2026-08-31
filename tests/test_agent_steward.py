@@ -1096,6 +1096,72 @@ class StewardExecutionTests(unittest.TestCase):
         self.assertEqual(normalize(" \r\n "), "structured review verdict")
         self.assertEqual(len(normalize("x" * 700)), 512)
 
+    def test_production_worker_retains_only_allowlisted_failure_category(self):
+        output_dir = self.root / "failure-output"
+        output_dir.mkdir()
+        (output_dir / "failure_reason.json").write_text(
+            json.dumps(
+                {
+                    "kind": "agent-orchestrator-failure",
+                    "reason": "model_execution_failure",
+                    "detail": "provider output must not reach the journal",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            workers.OpenCodeWorkCardWorker._bounded_failure_reason(output_dir),
+            "model_execution_failure",
+        )
+        (output_dir / "failure_reason.json").write_text(
+            json.dumps(
+                {
+                    "kind": "agent-orchestrator-failure",
+                    "reason": "attacker-controlled-detail",
+                    "detail": "private provider output",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertIsNone(
+            workers.OpenCodeWorkCardWorker._bounded_failure_reason(output_dir)
+        )
+
+    def test_production_worker_returns_bounded_wrapper_failure_before_temp_cleanup(self):
+        wrapper = self.root / "failing-wrapper"
+        wrapper.write_text(
+            """#!/usr/bin/env python3
+import json
+from pathlib import Path
+import sys
+output = Path(sys.argv[3])
+output.mkdir(parents=True, exist_ok=True)
+(output / "failure_reason.json").write_text(json.dumps({
+    "kind": "agent-orchestrator-failure",
+    "reason": "authentication_failure",
+    "detail": "private provider output must be discarded",
+}), encoding="utf-8")
+raise SystemExit(1)
+""",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        worker = workers.OpenCodeWorkCardWorker(
+            wrapper_path=wrapper, timeout_seconds=5
+        )
+        exit_code, response_path, failure_reason = worker._invoke(
+            "implement",
+            "bounded workcard",
+            self.root,
+            environment={
+                "HOME": str(self.root),
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            },
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(failure_reason, "authentication_failure")
+        self.assertFalse(response_path.exists())
+
     def test_wrapper_retains_only_final_opencode_text_message(self):
         root = self.root / "wrapper-last-message"
         bin_dir = root / "bin"
@@ -1118,10 +1184,12 @@ if args == ["--version"]:
 elif args[:2] == ["auth", "list"]:
     pass
 elif args[:2] == ["run", "--help"]:
-    print("--format --dir --file --model")
+    print("--format --dir --file --model --title")
 elif args[:2] == ["session", "delete"]:
     pass
 elif args and args[0] == "run":
+    if "--title" not in args or args[args.index("--title") + 1] != "Autonomous Steward WorkCard":
+        raise SystemExit(3)
     print(json.dumps({"type":"text","sessionID":"ses_fixture","part":{"text":"intermediate narration"}}))
     print(json.dumps({"type":"text","sessionID":"ses_fixture","part":{"text":%r}}))
 else:

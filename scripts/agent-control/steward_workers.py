@@ -820,7 +820,7 @@ class OpenCodeWorkCardWorker:
         worktree: Path,
         *,
         environment: Mapping[str, str],
-    ) -> tuple[int, Path]:
+    ) -> tuple[int, Path, str | None]:
         with tempfile.TemporaryDirectory(prefix="steward-opencode-") as temp:
             root = Path(temp)
             prompt_path = root / "workcard.txt"
@@ -838,7 +838,10 @@ class OpenCodeWorkCardWorker:
                     check=False,
                 )
             except subprocess.TimeoutExpired:
-                return 124, root / "missing"
+                return 124, root / "missing", "model_execution_timeout"
+            failure_reason: str | None = None
+            if result.returncode != 0:
+                failure_reason = self._bounded_failure_reason(output_dir)
             # The review adapter needs the bounded response for immediate
             # validation, but never persists it.  Copy it into a second
             # short-lived directory controlled by the caller.
@@ -847,8 +850,45 @@ class OpenCodeWorkCardWorker:
                 if message.is_file() and not message.is_symlink():
                     retained = Path(tempfile.mkdtemp(prefix="steward-opencode-review-")) / "message.txt"
                     retained.write_bytes(message.read_bytes())
-                    return result.returncode, retained
-            return result.returncode, root / "missing"
+                    return result.returncode, retained, None
+            return result.returncode, root / "missing", failure_reason
+
+    @staticmethod
+    def _bounded_failure_reason(output_dir: Path) -> str | None:
+        """Return only a wrapper-owned failure category, never provider output."""
+
+        path = output_dir / "failure_reason.json"
+        if path.is_symlink() or not path.is_file():
+            return None
+        try:
+            raw = path.read_bytes()
+            if not raw or len(raw) > 4096:
+                return None
+            value = json.loads(raw)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        reasons = {
+            "authentication_failure",
+            "cli_missing",
+            "environment_invalid",
+            "malformed_output",
+            "model_execution_failure",
+            "model_execution_timeout",
+            "prompt_missing",
+            "timeout_invalid",
+            "timeout_unavailable",
+            "unsupported_flags",
+            "unsupported_worker_type",
+            "usage_or_credit_exhaustion",
+            "workspace_invalid",
+        }
+        if (
+            not isinstance(value, dict)
+            or value.get("kind") != "agent-orchestrator-failure"
+            or value.get("reason") not in reasons
+        ):
+            return None
+        return value["reason"]
 
     def run(self, context: WorkerContext) -> WorkerOutcome:
         if self._git(context.worktree, "status", "--porcelain=v1", "--untracked-files=all"):
@@ -856,7 +896,7 @@ class OpenCodeWorkCardWorker:
         before = self._git(context.worktree, "rev-parse", "--verify", "HEAD")
         if before != context.base_sha:
             raise WorkerError("opencode_base_head_mismatch")
-        exit_code, _unused = self._invoke(
+        exit_code, _unused, failure_reason = self._invoke(
             "implement", self._prompt(context), context.worktree,
             environment=context.environment,
         )
@@ -866,10 +906,11 @@ class OpenCodeWorkCardWorker:
             # worktree for read-only reconciliation and never retry blindly.
             return WorkerOutcome("OUTCOME_UNKNOWN", process_session_id(context), after, (), "opencode_unexpected_commit")
         paths = self._changed_paths(context)
-        if exit_code == 124:
+        if exit_code == 124 or failure_reason == "model_execution_timeout":
             return WorkerOutcome("OUTCOME_UNKNOWN" if paths else "TIMEOUT", process_session_id(context), before, (), "opencode_timeout")
         if exit_code != 0:
-            return WorkerOutcome("OUTCOME_UNKNOWN" if paths else "FAIL", process_session_id(context), before, (), "opencode_execution_failed")
+            detail = f"opencode_{failure_reason or 'execution_failed'}"
+            return WorkerOutcome("OUTCOME_UNKNOWN" if paths else "FAIL", process_session_id(context), before, (), detail)
         if not paths:
             return WorkerOutcome("FAIL", process_session_id(context), before, (), "opencode_no_change")
         if self._git(context.worktree, "diff", "--check"):
@@ -973,13 +1014,14 @@ class OpenCodeWorkCardReviewer:
         return summary[:512]
 
     def review(self, context: WorkerContext, outcome: WorkerOutcome) -> ReviewOutcome:
-        exit_code, response_path = self.worker._invoke(
+        exit_code, response_path, failure_reason = self.worker._invoke(
             "review", self._prompt(context, outcome), context.worktree,
             environment=context.environment,
         )
         try:
             if exit_code != 0 or not response_path.is_file() or response_path.is_symlink():
-                raise WorkerError("opencode_review_execution_failed")
+                detail = f"opencode_review_{failure_reason or 'execution_failed'}"
+                raise WorkerError(detail)
             raw = response_path.read_bytes()
             if not raw or len(raw) > 16 * 1024:
                 raise WorkerError("opencode_review_output_invalid")
