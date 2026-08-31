@@ -72,8 +72,11 @@ The main experimental factorization is `Harness × Model × Strategy`:
    order interactions only after the lower-rung basis is comparable.
 
 Hard-gate filtering precedes efficiency and Pareto analysis. Failed, unknown,
-missing, unsupported, or `INCOMPARABLE` cells remain explicit evidence and are
-never coerced into success or silently removed from a contrast.
+missing, unsupported, or `INCOMPARABLE` cells remain explicit evidence in the
+ledger and are never coerced into success. A cell with missing or invalid
+required inputs is excluded from a numerical contrast; the affected contrast
+remains explicitly `INCOMPARABLE` rather than being silently removed from the
+evidence record.
 
 ## Accepted Capability, Parked Input, and Future Intent
 
@@ -93,10 +96,13 @@ packet execution route was superseded. The old packet route and
 ## Research Mission Gates and Next Frontier
 
 No research Mission is currently active or authorized on accepted `main`. The
-next permitted research Mission, if separately owner-approved, is an **MX1 C1
-controlled-evaluation Mission on the common RWE basis**, beginning with fresh
-descriptor, corpus/evaluator, preflight, authority, and parked-input
-reconciliation. This names a research frontier, not a live Provider or spend
+next permitted research Mission, if separately owner-approved, is the accepted
+window **`PE7-HE-MX1-PILOT-1` (`BLOCKED_PREREQUISITE`)**: a finite
+`Harness × Model × Strategy` evaluation on the common RWE basis. It begins
+with fresh descriptor, corpus/evaluator, preflight, authority, and parked-input
+reconciliation; the accepted evidence specifically requires separate finite
+effect authorization plus exact descriptor-manifest and schedule-digest
+preflight. This names a research frontier, not a live Provider or spend
 authorization. The accepted CORE does not authorize the pilot, and the
 emergency-stop control remains untouched.
 
