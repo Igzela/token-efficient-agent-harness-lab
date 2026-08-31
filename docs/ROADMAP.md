@@ -1,6 +1,6 @@
 # Project Roadmap
 
-Last updated: 2026-08-30.
+Last updated: 2026-08-31.
 
 This document owns the high-level milestones, strategic directions, and research horizons for the Token-Efficient Agent Harness Lab.
 
@@ -16,7 +16,7 @@ This document owns the high-level milestones, strategic directions, and research
 | **M5: Limited Effect Autonomy** | Managed parent effect envelopes, one-use child authorization derivation, and single effect persistence owner in Rust engine | Complete |
 | **M6: Control Plane Simplification** | Remove legacy loop/supervisor/dispatcher, delete obsolete workflows, consolidate governance docs to ≤ 7 | Complete |
 | **M7: Final Non-Regression Acceptance** | End-to-end mission verification, comprehensive fault and rollback drills, final architecture mapping, and closeout | Complete |
-| **M8: Autonomous Steward Closure** | Autonomous control loop, GitHub-authenticated non-replayable approval, single merge owner workflow delegation, and fault matrix | In progress — implementation repair is not a real-live seal; completion requires the recorded multi-stage production Mission acceptance |
+| **M8: Autonomous Steward Closure** | Autonomous control loop, GitHub-authenticated non-replayable approval, single merge owner workflow delegation, and fault matrix | Complete — sealed by production Mission MISSION-9E042A35652D3D4A with two autonomously merged Stages, canonical guarded merges, and authoritative accepted-main readback on 2026-08-31 (PRs #667 and #674; final accepted main `a9406abca1afad4e7217c59a928b19dccbc7aa4d`) |
 
 ## Research Horizons
 
