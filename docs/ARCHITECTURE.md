@@ -113,3 +113,28 @@ The final non-regression check is provider-free and read-only outside the
 repository's normal test/build outputs. Its acceptance evidence is owned by
 the canonical PR and CI/review records described in `docs/AUTONOMY.md`; this
 architecture map records the boundaries under test and is explanatory only.
+
+## Documentation Test
+
+This document carries a bounded, self-contained documentation test. It passes
+when every assertion below holds against this document and the code it
+describes at the accepted head. The focused hygiene gate is `git diff --check`;
+an independent reviewer verifies the assertions against the accepted document
+and code. This section is documentation-only and grants no new authority.
+
+1. **Single runtime authority** — the document asserts Rust `engine/` is the
+   sole runtime, scheduler, policy, and application-owned storage authority.
+2. **Single persistence authority** — the document asserts `LocalProductStore`
+   is the sole persistence and audit owner across SQLite and PostgreSQL
+   backends.
+3. **Outer-loop non-ownership** — the document asserts the Autonomous Steward
+   is a repository-maintenance outer loop that must not own the Store or
+   Scheduler.
+4. **Single-owner effect rule** — the document asserts all effect envelopes,
+   child authorizations, spend ledgers, and terminal settlement receipts are
+   owned exclusively by `LocalProductStore`.
+5. **Link, do not duplicate** — the document references `docs/AUTONOMY.md` for
+   autonomy, testing, review, and merge rules instead of restating them.
+
+Assertions 1-5 are bounded to this document and hold at the accepted head; the
+change is documentation-only and adds no new authority.
