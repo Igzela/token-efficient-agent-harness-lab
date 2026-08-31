@@ -33,8 +33,8 @@ or an authority to replace the active Harness.
 > recovery, and rollback gates.
 
 Token reduction is only one possible optimization. A lower-token result is not
-an improvement when quality, safety, evidence completeness, comparability, or
-recovery is weaker. Lifecycle cost includes provider calls and tokens,
+an improvement when quality, reliability, safety, evidence completeness,
+comparability, or recovery is weaker. Lifecycle cost includes provider calls and tokens,
 monetary cost or explicit unavailability, elapsed time, retries, review and
 repair, CI and recovery, human burden, maintenance, compatibility, and rollback.
 
@@ -46,7 +46,7 @@ The durable research direction is one feedback loop:
 accepted Harness H_n + registered Models + registered Strategies
   → common Real Workload Evidence tasks, corpus, evaluator, and budgets
   → controlled Harness × Model × Strategy cells
-  → correctness, safety, evidence, and comparability hard gates
+  → correctness, reliability, safety, evidence, and comparability hard gates
   → causal, interaction, lifecycle-cost, and Pareto analysis
   → candidate or policy decision
   → Harness Evolution and transfer/replication
@@ -58,8 +58,8 @@ accepted Harness H_n + registered Models + registered Strategies
 Real Workload Evidence (RWE) is the common comparison substrate, not a peer
 destination. A valid comparison binds task/corpus identity, evaluator and
 verification identity, provider/model identity, comparable budgets and seeds,
-quality and safety gates, complete lifecycle evidence, and missingness. Missing
-tokens, cost, latency, calls, retries, review/repair, CI, recovery, or human
+quality, reliability, and safety gates, complete lifecycle evidence, and
+missingness. Missing tokens, cost, latency, calls, retries, review/repair, CI, recovery, or human
 burden remain unavailable; no scalar efficiency score can override a failed
 hard gate.
 
@@ -82,7 +82,7 @@ evidence record.
 
 | Capability | Current truth | Role in the loop |
 |---|---|---|
-| RWE and contemporary comparison | Identity, corpus, evaluator, protocol, lifecycle-cost, and reconstructable old/new inputs are accepted. The historical contemporary replay did not produce a decision-grade baseline. | Common evidence basis; architecture changes are compared against it when the missing gates are repaired. |
+| RWE and contemporary comparison | Identity, corpus, evaluator, protocol, lifecycle-cost, and reconstructable old/new inputs are accepted. No contemporary old/new replay was executed to a decision-grade result; the run remains blocked pending its required evidence gates. | Common evidence basis; architecture changes are compared against it when the missing gates are repaired. |
 | Context Working Set (CWS) | The projection, residency, source-bound rehydration, tool-result reduction, and default-off analysis boundaries are accepted. `PINNED` authority/blocker evidence cannot be evicted by fuzzy relevance, and reduction cannot convert failure or unknown into success. Live treatment evidence was insufficient and no enablement is claimed. | An optional, registered Strategy component; it is derived/rebuildable model-visible context, never truth, memory, Store, evaluator, scheduler, or authority. |
 | MX1 / Harness Evolution CORE | The provider-free `Harness × Model × Strategy` descriptors, adapters, deterministic matrix planning, baseline/memory-only/skill-only Strategies, and `INCOMPARABLE` projections are accepted capability. | Parked input for a controlled C1 evaluation; the live pilot/effects and any winner adoption are not accepted results. |
 | Architecture Convergence | The freeze → converge → reconstruct old/new → same-corpus compare methodology is accepted historical design evidence. | Methodology, not an AC0–AC7 packet train to rerun. |
