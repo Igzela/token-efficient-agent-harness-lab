@@ -248,6 +248,32 @@ class TestAutonomousStewardPRB(unittest.TestCase):
         self.assertEqual(result["status"], "NOT_PROVEN")
         self.assertEqual(result["run_ids"], [])
 
+    def test_reconcile_merge_dispatch_does_not_match_pr_number_prefix(self):
+        """A similar PR number cannot satisfy exact dispatch binding."""
+
+        writer = GhGitHubWriter(timeout_seconds=5)
+        run_list = json.dumps(
+            [
+                {
+                    "databaseId": 782,
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "createdAt": "2026-08-31T00:00:00Z",
+                }
+            ]
+        )
+        run_log = f"PR_NUMBER: 170\nEXPECTED_HEAD: {self.head_sha}\n"
+        with patch("subprocess.run") as run:
+            run.side_effect = [
+                MagicMock(returncode=0, stdout=run_list, stderr=""),
+                MagicMock(returncode=0, stdout=run_log, stderr=""),
+            ]
+            result = writer.reconcile_merge_dispatch(
+                self.repo, 17, self.head_sha, workflow_file="agent-merge.yml"
+            )
+        self.assertEqual(result["status"], "NOT_PROVEN")
+        self.assertEqual(result["run_ids"], [])
+
     def test_reconcile_merge_dispatch_holds_when_any_in_window_run_is_active(self):
         """A live canonical run prevents supersession beside an old failure."""
 

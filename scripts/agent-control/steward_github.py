@@ -1389,10 +1389,30 @@ class GhGitHubWriter:
                     }
                 raise GitHubReadError("merge_reconcile_run_log_failed")
             log = detail.stdout
-            if (
-                f"PR_NUMBER: {pr_number}" not in log
-                or f"EXPECTED_HEAD: {expected_head_sha}" not in log
-            ):
+            # GitHub prefixes log lines with step/timestamp text, so parse the
+            # emitted fields rather than requiring a literal whole line.  The
+            # captured values themselves must be complete fields: a run for
+            # PR 170 must never bind an intent for PR 17.
+            logged_pr_numbers = {
+                int(match.group(1))
+                for line in log.splitlines()
+                if (
+                    match := re.search(
+                        r"\bPR_NUMBER:\s*(\d+)\s*$", line.strip()
+                    )
+                )
+            }
+            logged_heads = {
+                match.group(1)
+                for line in log.splitlines()
+                if (
+                    match := re.search(
+                        r"\bEXPECTED_HEAD:\s*([0-9a-f]{40})\s*$",
+                        line.strip(),
+                    )
+                )
+            }
+            if pr_number not in logged_pr_numbers or expected_head_sha not in logged_heads:
                 continue
             matches.append(
                 {
