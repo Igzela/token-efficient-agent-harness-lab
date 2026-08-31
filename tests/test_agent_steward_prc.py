@@ -540,11 +540,16 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         with patch.object(
             self.github_writer,
             "guarded_merge",
-            side_effect=steward_github.GitHubReadError("github_read_failed"),
+            side_effect=[
+                steward_github.GitHubReadError("github_read_failed"),
+                {"merged": False, "pr_number": pr_number, "head_sha": bound["head_sha"]},
+            ],
         ) as guarded_merge:
             result = self.srv.step()
-        self.assertEqual(result["status"], "WAITING_GITHUB_READBACK")
-        guarded_merge.assert_called_once()
+            self.assertEqual(result["status"], "WAITING_GITHUB_READBACK")
+            retried = self.srv.step()
+        self.assertEqual(retried["status"], "MERGE_READBACK")
+        self.assertEqual(guarded_merge.call_count, 2)
         self.assertIsNotNone(
             self.srv._latest_stage_event(
                 mission.mission_id, stage.stage_id, "STAGE_MERGE_READ_WAITING"

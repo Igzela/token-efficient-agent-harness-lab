@@ -987,11 +987,29 @@ class StewardService:
         merge_intent = self._latest_stage_event(
             mission_id, stage_id, "STAGE_MERGE_DISPATCH_INTENT"
         )
+        merge_read_waiting = self._latest_stage_event(
+            mission_id, stage_id, "STAGE_MERGE_READ_WAITING"
+        )
+        merge_dispatched = self._latest_stage_event(
+            mission_id, stage_id, "STAGE_MERGE_DISPATCHED"
+        )
         merge_terminal = self._latest_stage_event(
             mission_id, stage_id, "POST_MERGE_VERIFIED"
         ) or self._latest_stage_event(
             mission_id, stage_id, "STAGE_MERGE_DISPATCH_RECONCILED"
         )
+        # A read failure before ``guarded_merge`` could issue the workflow is
+        # a durable no-effect fact.  It must not strand the older intent as an
+        # ambiguous external mutation; a later tick may safely retry the
+        # writer preflight.  Once a subsequent dispatch fact exists, the
+        # intent is unresolved again until merge/readback reconciliation.
+        pre_dispatch_read_waiting = (
+            merge_read_waiting is not None
+            and (merge_intent is None or merge_read_waiting.seq > merge_intent.seq)
+            and (merge_dispatched is None or merge_dispatched.seq < merge_read_waiting.seq)
+        )
+        if pre_dispatch_read_waiting:
+            merge_intent = None
         if merge_intent is not None and merge_terminal is None:
             # STAGE_MERGE_DISPATCHED records that dispatch returned, not that
             # the workflow's merge effect was proven.  A terminal rejected
@@ -2053,7 +2071,23 @@ class StewardService:
                 # The only safe action after an interrupted dispatch is
                 # read-only reconciliation.  A possibly-issued merge must
                 # never be retried merely because this service restarted.
-                return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
+                merge_read_waiting = self._latest_stage_event(
+                    mission.mission_id,
+                    stage.stage_id,
+                    "STAGE_MERGE_READ_WAITING",
+                )
+                merge_dispatched = self._latest_stage_event(
+                    mission.mission_id,
+                    stage.stage_id,
+                    "STAGE_MERGE_DISPATCHED",
+                )
+                pre_dispatch_read_waiting = (
+                    merge_read_waiting is not None
+                    and merge_read_waiting.seq > merge_intent.seq
+                    and (merge_dispatched is None or merge_dispatched.seq < merge_read_waiting.seq)
+                )
+                if not pre_dispatch_read_waiting:
+                    return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
             self.journal.append(
                 event="STAGE_MERGE_DISPATCH_INTENT",
                 idempotency_key=f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}",
