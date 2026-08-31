@@ -1315,6 +1315,7 @@ class GhGitHubWriter:
             raise GitHubReadError("merge_reconcile_runs_malformed")
 
         matches: list[dict[str, Any]] = []
+        active_run_ids: list[int] = []
         for run in runs:
             run_id = run.get("databaseId")
             status = run.get("status")
@@ -1329,10 +1330,11 @@ class GhGitHubWriter:
             if not_before is not None and created_at < not_before:
                 continue
             if status in {"queued", "requested", "waiting", "in_progress"}:
-                # An active run's inputs are not exposed by ``run list``.  Do
-                # not infer that it belongs to this intent, but retain the
-                # conservative read-only result if a later log scan cannot
-                # identify a terminal run.
+                # An active run's inputs are not exposed by ``run list``.  A
+                # terminal failure found beside it cannot prove this intent
+                # is safe to supersede, so hold the reconciliation until every
+                # in-window run is terminal.
+                active_run_ids.append(run_id)
                 continue
             if conclusion not in {
                 "failure",
@@ -1389,6 +1391,14 @@ class GhGitHubWriter:
                 }
             )
 
+        if active_run_ids:
+            return {
+                "status": "PENDING",
+                "repository": repository,
+                "pr_number": pr_number,
+                "expected_head_sha": expected_head_sha,
+                "run_ids": active_run_ids + [item["run_id"] for item in matches],
+            }
         if not matches:
             return {
                 "status": "NOT_PROVEN",

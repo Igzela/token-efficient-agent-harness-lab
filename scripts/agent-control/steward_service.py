@@ -959,11 +959,6 @@ class StewardService:
         require a second lifecycle store.
         """
 
-        if self._latest_stage_event(
-            mission_id, stage_id, "STAGE_OUTCOME_UNKNOWN"
-        ) is not None:
-            return "OUTCOME_UNKNOWN"
-
         review_intent = self._latest_stage_event(
             mission_id, stage_id, "STAGE_REVIEW_DISPATCH_INTENT"
         )
@@ -1003,6 +998,15 @@ class StewardService:
             # dispatch is also a no-effect terminal fact; successful merges
             # still require post-merge readback.
             return "MERGE"
+        if self._latest_stage_event(
+            mission_id, stage_id, "STAGE_OUTCOME_UNKNOWN"
+        ) is not None:
+            # A stage-level unknown may be the marker written by the merge
+            # dispatch exception itself.  Once the merge intent has a terminal
+            # readback/rejection fact, that older marker is resolved for this
+            # stage and must not hide the bounded recovery path.
+            if merge_intent is None or merge_terminal is None:
+                return "OUTCOME_UNKNOWN"
         return None
 
     def _replan_stage(
