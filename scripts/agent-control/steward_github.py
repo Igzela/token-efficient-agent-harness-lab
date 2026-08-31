@@ -1347,7 +1347,10 @@ class GhGitHubWriter:
                 # large successful logs when reconciling an open candidate.
                 continue
             # Logs are the only durable source available for workflow_dispatch
-            # inputs.  Read them; never dispatch, cancel, or rerun here.
+            # inputs.  Read the complete terminal log, not only failed-step
+            # output: the exact PR/head binding is emitted by a successful
+            # preflight step before a later check can fail.  Never dispatch,
+            # cancel, or rerun here.
             try:
                 detail = subprocess.run(
                     [
@@ -1357,7 +1360,7 @@ class GhGitHubWriter:
                         str(run_id),
                         "--repo",
                         repository,
-                        "--log-failed",
+                        "--log",
                     ],
                     capture_output=True,
                     text=True,

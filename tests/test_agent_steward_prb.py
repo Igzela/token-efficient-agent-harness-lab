@@ -218,6 +218,8 @@ class TestAutonomousStewardPRB(unittest.TestCase):
             )
         self.assertEqual(result["status"], "REJECTED")
         self.assertEqual(result["run_ids"], [777])
+        self.assertIn("--log", run.call_args_list[1].args[0])
+        self.assertNotIn("--log-failed", run.call_args_list[1].args[0])
 
     def test_reconcile_merge_dispatch_does_not_match_other_head(self):
         """A workflow for another PR/head cannot resolve this intent."""
