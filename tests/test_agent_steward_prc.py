@@ -527,6 +527,63 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             )
         )
 
+    def test_simulated_merge_identity_read_failure_keeps_service_alive(self):
+        """SIMULATED: pre-dispatch PR read failure is retryable, not a crash."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-MERGE-READ-RECOVERY", "merge-read"
+        )
+        pr_number = bound["pr_number"]
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        with patch.object(
+            self.github_writer,
+            "guarded_merge",
+            side_effect=[
+                steward_github.GitHubReadError("github_read_failed"),
+                {"merged": False, "pr_number": pr_number, "head_sha": bound["head_sha"]},
+            ],
+        ) as guarded_merge:
+            result = self.srv.step()
+            self.assertEqual(result["status"], "WAITING_GITHUB_READBACK")
+            retried = self.srv.step()
+        self.assertEqual(retried["status"], "MERGE_READBACK")
+        self.assertEqual(guarded_merge.call_count, 2)
+        self.assertIsNotNone(
+            self.srv._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_MERGE_READ_WAITING"
+            )
+        )
+        self.assertIsNone(
+            self.srv._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_OUTCOME_UNKNOWN"
+            )
+        )
+
+    def test_simulated_retry_dispatch_unknown_never_repeats_merge(self):
+        """SIMULATED: post-dispatch uncertainty closes the retry escape hatch."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-MERGE-RETRY-UNKNOWN", "merge-retry-unknown"
+        )
+        pr_number = bound["pr_number"]
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        with patch.object(
+            self.github_writer,
+            "guarded_merge",
+            side_effect=[
+                steward_github.GitHubReadError("github_read_failed"),
+                steward_github.GitHubMutationError("merge_outcome_unknown"),
+            ],
+        ) as guarded_merge:
+            self.assertEqual(self.srv.step()["status"], "WAITING_GITHUB_READBACK")
+            self.assertEqual(self.srv.step()["status"], "OUTCOME_UNKNOWN")
+            self.assertEqual(self.srv.step()["status"], "OUTCOME_UNKNOWN")
+        self.assertEqual(guarded_merge.call_count, 2)
+
     def test_simulated_terminal_merge_rejection_unblocks_bounded_replan(self):
         """SIMULATED: read-only failed workflow proof permits safe replacement."""
 
