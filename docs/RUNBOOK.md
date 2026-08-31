@@ -620,3 +620,37 @@ Both hooks are required together. A managed service should also supply
 `--health-command` so recovery proves the restored process, not merely the
 binary's help output. Validate the packaged upgrade contract with
 `bash scripts/check_release_contract.sh` before publishing a release.
+
+## Documentation Test
+
+This document carries a bounded, self-contained documentation test. It passes
+when every assertion below holds against this document and the code it
+describes at the accepted head. An independent reviewer verifies the
+assertions directly against the accepted document and code; the focused hygiene
+gate is `git diff --check`. This section is documentation-only and grants no
+new authority.
+
+1. **Proved-procedures ownership** — the document asserts it owns only
+   operator procedures that have actually been proved, and every operator
+   session enters through the accepted router
+   (`uv run --no-project python scripts/session_context.py route --role operator`).
+2. **Symbolic credential boundary** — the document exposes only symbolic
+   environment-variable references such as `$SYMBOLIC_LOCAL_ADMIN_KEY` and
+   `SYMBOLIC_GITHUB_TOKEN_VARIABLE`, never a raw credential value.
+3. **Single runtime and scheduler authority** — the document asserts the Rust
+   scheduler remains the sole owner of admission, leases, retries, cooldown,
+   concurrency, pause/resume, and run state, and the Rust engine remains the
+   sole product runtime, scheduler, policy, and application store.
+4. **Steward non-ownership** — the document asserts Steward owns only its one
+   repository-maintenance Mission journal and is not a queue, scheduler, or
+   second state machine.
+5. **Recovery-required outcomes** — the document treats `outcome_unknown`,
+   lost Ready/supersede/merge results, and failed post-merge readback as
+   recovery-required states that retain branch, journal, and exact-head facts
+   instead of silent retry or destructive cleanup.
+6. **Explicit rollback procedures** — the document records kill-switch,
+   verified-backup, and non-empty-authority migration rollback refusals
+   (v22, v24, and v25) rather than manual destructive drops.
+
+Assertions 1-6 are bounded to this document and hold at the accepted head; the
+change is documentation-only and adds no new authority.
