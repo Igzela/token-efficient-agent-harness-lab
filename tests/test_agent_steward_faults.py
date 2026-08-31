@@ -803,6 +803,34 @@ class StewardFaultTests(unittest.TestCase):
             observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
             self.assertEqual(observed["ci_state"], "PASS")
 
+            # Historical Draft-lane failures are advisory and must not
+            # override a complete successful canonical matrix for this head.
+            payload = json.loads(run.return_value.stdout)
+            payload["statusCheckRollup"].insert(
+                0,
+                {
+                    "name": "fast-pr-checks",
+                    "conclusion": "FAILURE",
+                    "status": "COMPLETED",
+                },
+            )
+            run.return_value.stdout = json.dumps(payload)
+            observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
+            self.assertEqual(observed["ci_state"], "PASS")
+
+            # A malformed rollup entry must fail closed even when every
+            # canonical required check is successful.
+            payload["statusCheckRollup"].insert(
+                0,
+                {
+                    "conclusion": "SUCCESS",
+                    "status": "COMPLETED",
+                },
+            )
+            run.return_value.stdout = json.dumps(payload)
+            observed = reader.fetch_stage_pr("Igzela/token-efficient-agent-harness-lab", 7)
+            self.assertEqual(observed["ci_state"], "UNKNOWN")
+
             run.return_value.stdout = json.dumps(
                 {
                     "state": "OPEN",
