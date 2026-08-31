@@ -355,8 +355,10 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         ):
             self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
             self.assertEqual(self.srv.step()["status"], "REPLAN_REQUIRED")
+            self.assertEqual(self.srv.step()["status"], "STAGE_REPLANNED")
         events = [event.event for event in self.journal.replay()]
         self.assertIn("STAGE_REPLAN_REQUESTED", events)
+        self.assertIn("STAGE_REVIEW_DISPATCH_PREFLIGHT_REJECTED", events)
         self.assertNotIn("STAGE_OUTCOME_UNKNOWN", events)
 
     def test_review_receipt_read_failure_keeps_loop_alive_and_retries(self):
@@ -443,6 +445,159 @@ class TestAutonomousStewardPRC(unittest.TestCase):
                 expected_base_sha="d" * 40,
                 expected_head_sha=self.base_sha,
             )
+
+    def test_simulated_bound_stage_drift_halts_before_external_mutation(self):
+        """SIMULATED: bound Stage drift is caught before Ready or merge writes."""
+
+        mission, digest = self.srv.propose(
+            "Update README.md with bounded bound-stage drift evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-BOUND-DRIFT",
+        )
+        self._approve(mission, digest, "bound-drift")
+        self.srv.control_state = self._ControlOff()
+        self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+        stage, _cards, _metadata = self.srv._stage_records(mission.mission_id)[-1]
+        bound = self.srv.publish_stage(stage, self.base_sha, title="Stage", body="Body")
+        self.github_writer.remote_main_sha = "e" * 40
+
+        result = self.srv.step()
+
+        self.assertEqual(result["status"], "REPLAN_REQUIRED")
+        self.assertEqual(self.srv._active_mission().repository_identity.base_sha, "e" * 40)
+        self.assertEqual(
+            [name for name, _data in self.github_writer.actions if name != "create_pr"],
+            [],
+        )
+        self.assertIsNotNone(
+            self.srv._latest_stage_event(
+                mission.mission_id,
+                stage.stage_id,
+                "STAGE_REPLAN_REQUESTED",
+            )
+        )
+
+    def _bound_stage_with_pending_intent(self, mission_id: str, suffix: str):
+        mission, digest = self.srv.propose(
+            "Update README.md with bounded pending mutation recovery evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id=mission_id,
+        )
+        self._approve(mission, digest, suffix)
+        self.srv.control_state = self._ControlOff()
+        self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+        stage, _cards, _metadata = self.srv._stage_records(mission_id)[-1]
+        bound = self.srv.publish_stage(stage, self.base_sha, title="Stage", body="Body")
+        return mission, stage, bound
+
+    def test_simulated_merge_intent_and_bound_drift_stays_read_only(self):
+        """SIMULATED: merge intent blocks drift rebind and candidate supersede."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-PENDING-MERGE-DRIFT", "pending-merge"
+        )
+        pr_number = bound["pr_number"]
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key="pending-merge-intent",
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": bound["head_sha"]},
+            enforce_transition=False,
+        )
+        self.github_writer.remote_main_sha = "f" * 40
+        actions_before = list(self.github_writer.actions)
+
+        result = self.srv.step()
+
+        self.assertEqual(result["status"], "OUTCOME_UNKNOWN")
+        self.assertEqual(self.srv._active_mission().repository_identity.base_sha, self.base_sha)
+        self.assertEqual(self.github_writer.actions, actions_before)
+        self.assertIsNone(
+            self.srv._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_REPLAN_REQUESTED"
+            )
+        )
+
+    def test_simulated_ready_intent_and_bound_drift_stays_read_only(self):
+        """SIMULATED: an interrupted Ready mutation cannot trigger replan."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-PENDING-READY-DRIFT", "pending-ready"
+        )
+        pr_number = bound["pr_number"]
+        self.journal.append(
+            event="STAGE_READY_DISPATCH_INTENT",
+            idempotency_key="pending-ready-intent",
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="stage_ready_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": bound["head_sha"]},
+            enforce_transition=False,
+        )
+        self.github_writer.remote_main_sha = "f" * 40
+        actions_before = list(self.github_writer.actions)
+
+        result = self.srv.step()
+
+        self.assertEqual(result["status"], "OUTCOME_UNKNOWN")
+        self.assertEqual(self.srv._active_mission().repository_identity.base_sha, self.base_sha)
+        self.assertEqual(self.github_writer.actions, actions_before)
+        self.assertIsNone(
+            self.srv._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_REPLAN_REQUESTED"
+            )
+        )
+
+    def test_simulated_review_intent_and_bound_drift_stays_read_only(self):
+        """SIMULATED: an interrupted review receipt cannot trigger replan."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-PENDING-REVIEW-DRIFT", "pending-review"
+        )
+        pr_number = bound["pr_number"]
+        self.journal.append(
+            event="STAGE_REVIEW_DISPATCH_INTENT",
+            idempotency_key="pending-review-intent",
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="exact_head_review_receipt_publish_intent",
+            data={
+                "pr_number": pr_number,
+                "head_sha": bound["head_sha"],
+                "base_sha": self.base_sha,
+                "reviewer_session_id": "reviewer-session",
+                "implementation_session_id": "implementation-session",
+                "reviewed_range_sha256": "a" * 64,
+                "review_receipt_sha256": "b" * 64,
+            },
+            enforce_transition=False,
+        )
+        self.github_writer.remote_main_sha = "f" * 40
+        actions_before = list(self.github_writer.actions)
+
+        result = self.srv.step()
+
+        self.assertEqual(result["status"], "OUTCOME_UNKNOWN")
+        self.assertEqual(self.srv._active_mission().repository_identity.base_sha, self.base_sha)
+        self.assertEqual(self.github_writer.actions, actions_before)
+        self.assertIsNone(
+            self.srv._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_REPLAN_REQUESTED"
+            )
+        )
 
     def test_simulated_unbound_stage_rebinds_before_worker_dispatch(self):
         """SIMULATED: accepted-main drift replans an unissued Stage before dispatch."""
