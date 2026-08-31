@@ -21,7 +21,7 @@ Normal reversible repository work and already-configured local/GitHub services a
 - Cross-mission direction, architecture/authority choices, scope, prerequisites, ordering, acceptance criteria, schema or durable-contract changes, security/recovery boundaries, and GO/NO-GO decisions belong to planning and their canonical owners.
 - Task-internal implementation may reuse existing owners, choose local design details, add focused tests, repair root causes, and synchronize canonical documents. It may not broaden scope, create a parallel owner, or silently change a durable boundary.
 - Repository automation or any external/experimental harness or model may be only an admitted bounded worker or experimental subject. None may become a second runtime, scheduler, store, evaluator, budget, approval, workspace, output, audit, rollback, merge, release, or deployment owner.
-- Product/provider, managed acceptance, credential, redaction, and recovery rules are owned by `docs/ARCHITECTURE.md`; autonomy, testing, review, and merge rules by `docs/AUTONOMY.md`; high-level roadmap milestones by `docs/ROADMAP.md`.
+- Product/provider, managed acceptance, credential, redaction, and recovery rules are owned by `docs/ARCHITECTURE.md`; autonomy, testing, review, and merge rules by `docs/AUTONOMY.md`; closed-loop milestones and research programs by `docs/ROADMAP.md`.
 - Never persist or report credentials, raw prompts/outputs/transcripts, private paths, or unredacted repository content.
 
 If work needs to cross any boundary above, stop with `DECISION_REQUIRED` or `PAUSED_FOR_OWNER`: report evidence, options, consequences, and the smallest proposed owner update. A proposal is not accepted authority.
@@ -78,7 +78,7 @@ One fact has one full owner:
 - `START_HERE.md` owns navigation/context routing;
 - `docs/ARCHITECTURE.md` owns durable architecture, authority, security, recovery, and module ownership;
 - `docs/AUTONOMY.md` owns mission/stage contracts, autonomy, testing, review, and merge rules;
-- `docs/ROADMAP.md` owns high-level milestones and research horizons;
+- `docs/ROADMAP.md` owns closed-loop milestones and research programs;
 - `docs/RUNBOOK.md` owns proven operator runbooks.
 
 Other entrypoints link instead of copying. Replace stale status rather than appending history; add no document when an existing owner fits.

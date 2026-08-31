@@ -31,6 +31,14 @@ A green CI check is not enough if it belongs to an older PR head. This lab binds
 
 > **Boundary:** local / small-team research tool — not multi-tenant SaaS, not a free provider proxy, no container/VM isolation claim. Provider, managed-CLI, adaptive, and autonomous paths remain default-off and use explicit fail-closed authority, identity, budget, lease, audit, and kill controls. Governance and testing rules are owned by `docs/AUTONOMY.md`; the roadmap is in `docs/ROADMAP.md`.
 
+The research direction is a closed loop: common Real Workload Evidence feeds
+controlled `Harness × Model × Strategy` comparisons; hard gates precede
+lifecycle-cost and Pareto analysis; only replicated, explicitly adopted
+changes become the next Harness. Context Working Set, memory, and skill are
+Strategy inputs within that loop, while Autonomous Steward remains the
+repository-maintenance control plane. See [`docs/ROADMAP.md`](docs/ROADMAP.md)
+for the current gated frontier.
+
 Maintainer and Agent entry: [`START_HERE.md`](START_HERE.md) · architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · autonomy & testing: [`docs/AUTONOMY.md`](docs/AUTONOMY.md) · roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md) · implementation rules: [`AGENTS.md`](AGENTS.md) · support: [`SUPPORT.md`](SUPPORT.md).
 
 ## Quick Start
@@ -410,7 +418,7 @@ Daily agent work uses a consolidated active set of ≤ 7 governance documents:
 - [`AGENTS.md`](AGENTS.md) — implementation instructions and safety stops
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — architecture, trust boundaries, and module ownership
 - [`docs/AUTONOMY.md`](docs/AUTONOMY.md) — autonomy, testing, review, and merge rules
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — high-level milestones and research horizons
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — closed-loop milestones and research programs
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — operator procedures
 
 Historical phase plans, closeouts, validation reports, and low-frequency reference docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
