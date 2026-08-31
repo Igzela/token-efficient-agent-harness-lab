@@ -1,7 +1,7 @@
 # Architecture
 
 Current version: v38
-Last updated: 2026-08-29.
+Last updated: 2026-08-31.
 
 This is the durable architecture, module ownership, and trust boundary specification for the Token-Efficient Agent Harness Lab. It consolidates system design, module ownership, single persistence authority, and trust boundaries into one authoritative document.
 
@@ -17,6 +17,27 @@ The system is a local and deterministic agent harness and workflow control plane
 > Under non-negotiable quality, safety, traceability, compatibility, and rollback constraints, continuously increase verifiable and reusable task delivery per unit of total lifecycle cost.
 
 Lower token consumption is an optimization, not a reason to weaken verification, safety, audit, or recovery guarantees.
+
+## Authority Layers
+
+The repository separates maintenance automation from the product runtime and
+from research decisions. Each authority has one owner:
+
+| Layer | Canonical owner | Owns | Explicitly does not own |
+|---|---|---|---|
+| Repository-maintenance control plane | `scripts/agent-control/steward_service.py` | User-approved Missions, Steward Stages, bounded WorkCards, repository PR/review/CI/merge progression, and accepted-main readback | Product runtime, product scheduler, ProductStore, evaluator, research claims, Provider spend, or active-Harness replacement |
+| Product and task runtime | Rust `engine/` | Execution, leases, scheduling, policy, task state, verification, output, effects, recovery, and rollback through its existing module owners | Repository-maintenance lifecycle, experimental adoption, or persistence outside the Store |
+| Persistence and audit | `engine/src/storage/local_product_store/` | SQLite/PostgreSQL persistence, audit, idempotency, evidence/artifacts, effect envelopes, and terminal settlement | Runtime scheduling, research evaluation, or a second truth store |
+| Common RWE measurement | `engine/src/rwe/` | Frozen task/corpus/protocol/schedule identity, comparable budgets, lifecycle evidence, missingness, and provider-free/live evidence seams | A shortcut around correctness, safety, comparability, Store persistence, or effect authority |
+| Harness-Evolution evaluation | `engine/src/harness_evolution_eval.rs` | Sealed holdout, evaluator binding, hard gates, candidate/causal/Pareto evidence, and explicit `INCOMPARABLE` outcomes | Active-Harness replacement, merge, release, deployment, or adoption |
+| Experimental descriptors | `engine/src/harness_evolution.rs` | Immutable Harness, Model, and Strategy descriptors, matrix identity, adapter normalization, and explicit `INCOMPARABLE` projections | Runtime scheduling, budget/effect authority, evaluator mutation, or adoption |
+| Adoption decision | User through an owner-approved Mission/Stage decision | Evidence-backed transfer/replication review and explicit adoption of a new Harness identity | Merge, release, deployment, evaluator replacement, or self-authorized active-Harness change |
+
+RWE is therefore a shared measurement substrate, not a peer runtime or a
+separate research authority. Context Working Set, memory, and skill mechanisms
+are model-visible Strategy inputs when registered for an experiment; they do
+not become truth, memory ownership, scheduling, evaluation, or approval merely
+because they reduce context.
 
 ## Three-Tier Operational Model
 

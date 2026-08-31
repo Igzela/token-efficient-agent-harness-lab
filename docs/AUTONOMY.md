@@ -1,8 +1,28 @@
 # Autonomy and Testing Contract
 
-Last updated: 2026-08-30.
+Last updated: 2026-08-31.
 
 This document defines the autonomy governance, lifecycle state machine, review convergence protocol, exact-head CI, and guarded merge contracts for the Autonomous Steward system.
+
+## Scope of Steward Autonomy
+
+Autonomous Steward autonomy is planning, bounded execution, verification,
+recovery, and repository-maintenance delivery inside a user-approved Mission.
+It does not mean autonomous acceptance of a research claim or authority to
+change the product's experimental basis. In particular, Steward cannot:
+
+- turn a better score into an accepted Harness or adoption decision;
+- mutate the evaluator, task corpus, verification contract, or comparison
+  budget to rescue a result;
+- authorize unlimited Provider spend, resume a parked effect, or treat a
+  contract/preflight as live authorization;
+- replace the active Harness, promote Level-2 or Meta, or bypass transfer,
+  replication, human approval, or hard quality/safety/comparability gates.
+
+Research Missions may use Steward for Stage decomposition and re-planning, but
+their evidence remains owned by the existing RWE/evaluation and
+Harness-Evolution boundaries. A successful candidate returns to the common
+evidence loop before any explicitly authorized adoption.
 
 ## Lifecycle State Machine
 

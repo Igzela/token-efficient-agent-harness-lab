@@ -23,7 +23,7 @@ Conciseness is a quality-preserving optimization, never a reason to remove requi
 |---|---|
 | Who owns a module or architecture boundary? | `docs/ARCHITECTURE.md` |
 | What are the mission/stage contracts, autonomy, testing, review, and merge rules? | `docs/AUTONOMY.md` |
-| What are the high-level roadmap milestones and research horizons? | `docs/ROADMAP.md` |
+| What are the closed-loop roadmap milestones and research programs? | `docs/ROADMAP.md` |
 | What are the live observed PR heads, CI results, and review observations? | A fresh `scripts/project_context.py` capsule, verified against GitHub |
 | How does independent review converge (severity vs disposition, R1/R2 budget, exact PASS + deferred notes)? | `docs/AUTONOMY.md` → **Review Convergence Protocol** |
 | What operator procedure has actually been proved? | `docs/RUNBOOK.md` |
@@ -69,7 +69,7 @@ Every repository-maintenance session starts here, but no agent should load every
 uv run --no-project python scripts/session_context.py enter --role coding
 ```
 
-The digest-bound JSON composes the accepted current packet/mission contract, its complete bounded autonomous worker dispatch capsule, current checkout, and any Git-private checkpoint. Treat `deferred_documents` as already projected startup context: do not reread them unless the entry reports a conflict, a missing fact, or a stop condition.
+The digest-bound JSON composes the accepted current Mission/Stage/WorkCard contract, its complete bounded autonomous worker dispatch capsule, current checkout, and any Git-private checkpoint. Treat `deferred_documents` as already projected startup context: do not reread them unless the entry reports a conflict, a missing fact, or a stop condition.
 
 Planning, review, CI-repair, operator, and contributor sessions request their bounded accepted document route:
 
