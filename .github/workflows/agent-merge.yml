@@ -55,6 +55,13 @@ jobs:
             .head.sha == $head
           ' "$RUNNER_TEMP/pr.json" >/dev/null
 
+      - name: Record exact dispatch binding
+        run: |
+          set -euo pipefail
+          # These non-secret inputs make a later read-only reconciliation
+          # provably bind this workflow run to one PR and exact head.
+          printf 'PR_NUMBER: %s\nEXPECTED_HEAD: %s\n' "${PR_NUMBER}" "${EXPECTED_HEAD}"
+
       - name: Verify exact head and authenticated PASS receipt
         uses: ./trusted-base/actions/exact-head-check
         with:

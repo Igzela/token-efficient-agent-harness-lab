@@ -904,6 +904,18 @@ class GitHubWriter(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def reconcile_merge_dispatch(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+        *,
+        workflow_file: str = "agent-merge.yml",
+        not_before: str | None = None,
+    ) -> dict[str, Any]:
+        """Read-only reconciliation for an interrupted merge workflow dispatch."""
+        ...
+
     def supersede_stage_pr(
         self,
         repository: str,
@@ -1241,6 +1253,215 @@ class GhGitHubWriter:
         except Exception:
             pass
         raise GitHubMutationError("merge_outcome_unknown")
+
+    def reconcile_merge_dispatch(
+        self,
+        repository: str,
+        pr_number: int,
+        expected_head_sha: str,
+        *,
+        workflow_file: str = "agent-merge.yml",
+        not_before: str | None = None,
+    ) -> dict[str, Any]:
+        """Reconcile one interrupted workflow dispatch without writing.
+
+        ``gh workflow run`` does not return a durable run identifier.  The
+        merge intent therefore remains unresolved until a read-only scan finds
+        a run whose retained logs bind both the requested PR number and exact
+        head.  A terminal failed/cancelled run plus an independently open PR
+        proves that no merge effect occurred; running, successful, malformed,
+        or unidentifiable runs stay fail-closed.
+        """
+
+        if (
+            REPOSITORY.fullmatch(repository) is None
+            or type(pr_number) is not int
+            or pr_number < 1
+            or SHA40.fullmatch(expected_head_sha) is None
+            or re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", workflow_file) is None
+            or (not_before is not None and not isinstance(not_before, str))
+        ):
+            raise GitHubReadError("merge_reconcile_identity_invalid")
+        list_command = [
+            "gh",
+            "run",
+            "list",
+            "--workflow",
+            workflow_file,
+            "--repo",
+            repository,
+            "--limit",
+            "50",
+            "--json",
+            "databaseId,status,conclusion,createdAt",
+        ]
+        try:
+            listed = subprocess.run(
+                list_command,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubReadError("merge_reconcile_runs_unavailable") from exc
+        if listed.returncode != 0:
+            raise GitHubReadError("merge_reconcile_runs_failed")
+        try:
+            runs = json.loads(listed.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            raise GitHubReadError("merge_reconcile_runs_malformed") from exc
+        if not isinstance(runs, list) or any(not isinstance(item, dict) for item in runs):
+            raise GitHubReadError("merge_reconcile_runs_malformed")
+
+        matches: list[dict[str, Any]] = []
+        active_run_ids: list[int] = []
+        for run in runs:
+            run_id = run.get("databaseId")
+            status = run.get("status")
+            conclusion = run.get("conclusion")
+            created_at = run.get("createdAt")
+            if type(run_id) is not int or run_id < 1 or not isinstance(status, str):
+                raise GitHubReadError("merge_reconcile_run_identity_malformed")
+            if status not in {
+                "queued",
+                "requested",
+                "waiting",
+                "pending",
+                "in_progress",
+                "completed",
+            }:
+                raise GitHubReadError("merge_reconcile_run_status_malformed")
+            if not isinstance(created_at, str):
+                raise GitHubReadError("merge_reconcile_run_created_at_malformed")
+            if conclusion is not None and not isinstance(conclusion, str):
+                raise GitHubReadError("merge_reconcile_run_conclusion_malformed")
+            if not_before is not None and created_at < not_before:
+                continue
+            if status in {"queued", "requested", "waiting", "pending", "in_progress"}:
+                # An active run's inputs are not exposed by ``run list``.  A
+                # terminal failure found beside it cannot prove this intent
+                # is safe to supersede, so hold the reconciliation until every
+                # in-window run is terminal.
+                active_run_ids.append(run_id)
+                continue
+            if conclusion not in {
+                "failure",
+                "cancelled",
+                "timed_out",
+                "action_required",
+            }:
+                # Successful runs would have closed the PR; the caller reads
+                # that authoritative PR fact separately.  Avoid downloading
+                # large successful logs when reconciling an open candidate.
+                continue
+            # Logs are the only durable source available for workflow_dispatch
+            # inputs.  Read the complete terminal log, not only failed-step
+            # output: the exact PR/head binding is emitted by a successful
+            # preflight step before a later check can fail.  Never dispatch,
+            # cancel, or rerun here.
+            try:
+                detail = subprocess.run(
+                    [
+                        "gh",
+                        "run",
+                        "view",
+                        str(run_id),
+                        "--repo",
+                        repository,
+                        "--log",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=min(self.timeout_seconds, 15),
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise GitHubReadError("merge_reconcile_run_log_unavailable") from exc
+            if detail.returncode != 0:
+                if status in {"in_progress", "queued", "requested", "waiting"}:
+                    return {
+                        "status": "PENDING",
+                        "repository": repository,
+                        "pr_number": pr_number,
+                        "expected_head_sha": expected_head_sha,
+                        "run_ids": [],
+                    }
+                raise GitHubReadError("merge_reconcile_run_log_failed")
+            log = detail.stdout
+            # GitHub prefixes log lines with step/timestamp text, so parse the
+            # emitted fields rather than requiring a literal whole line.  The
+            # captured values themselves must be complete fields: a run for
+            # PR 170 must never bind an intent for PR 17.
+            logged_pr_numbers = {
+                int(match.group(1))
+                for line in log.splitlines()
+                if (
+                    match := re.search(
+                        r"\bPR_NUMBER:\s*(\d+)\s*$", line.strip()
+                    )
+                )
+            }
+            logged_heads = {
+                match.group(1)
+                for line in log.splitlines()
+                if (
+                    match := re.search(
+                        r"\bEXPECTED_HEAD:\s*([0-9a-f]{40})\s*$",
+                        line.strip(),
+                    )
+                )
+            }
+            if pr_number not in logged_pr_numbers or expected_head_sha not in logged_heads:
+                continue
+            matches.append(
+                {
+                    "run_id": run_id,
+                    "status": status,
+                    "conclusion": conclusion,
+                    "created_at": created_at,
+                }
+            )
+
+        if active_run_ids:
+            return {
+                "status": "PENDING",
+                "repository": repository,
+                "pr_number": pr_number,
+                "expected_head_sha": expected_head_sha,
+                "run_ids": active_run_ids + [item["run_id"] for item in matches],
+            }
+        if not matches:
+            return {
+                "status": "NOT_PROVEN",
+                "repository": repository,
+                "pr_number": pr_number,
+                "expected_head_sha": expected_head_sha,
+                "run_ids": [],
+            }
+        if any(item["conclusion"] == "success" for item in matches):
+            return {
+                "status": "SUCCEEDED",
+                "repository": repository,
+                "pr_number": pr_number,
+                "expected_head_sha": expected_head_sha,
+                "run_ids": [item["run_id"] for item in matches],
+            }
+        if all(item["conclusion"] in {"failure", "cancelled", "timed_out", "action_required"} for item in matches):
+            return {
+                "status": "REJECTED",
+                "repository": repository,
+                "pr_number": pr_number,
+                "expected_head_sha": expected_head_sha,
+                "run_ids": [item["run_id"] for item in matches],
+            }
+        return {
+            "status": "NOT_PROVEN",
+            "repository": repository,
+            "pr_number": pr_number,
+            "expected_head_sha": expected_head_sha,
+            "run_ids": [item["run_id"] for item in matches],
+        }
 
     def supersede_stage_pr(
         self,
