@@ -11,8 +11,21 @@ PROMPT_FILE="${2:?Missing prompt file}"
 OUTPUT_DIR="${3:?Missing output dir}"
 WORKSPACE="${4:-$PWD}"
 
+MODEL_TIER="${AGENT_CODEX_MODEL_TIER:-T1}"
+case "$MODEL_TIER" in
+  T0) OPENCODE_MODEL="deepseek/deepseek-chat" ;;
+  T1) OPENCODE_MODEL="deepseek/deepseek-v4-flash" ;;
+  T2) OPENCODE_MODEL="deepseek/deepseek-v4-pro" ;;
+  *)
+    mkdir -p "$OUTPUT_DIR"
+    printf '%s\n' '{"kind":"agent-orchestrator-failure","reason":"environment_invalid"}' > "$OUTPUT_DIR/failure_reason.json"
+    echo "FATAL: unsupported model tier" >&2
+    exit 2
+    ;;
+esac
+
 case "$WORKER_TYPE" in
-  implement|ci-repair|review) OPENCODE_MODEL="deepseek/deepseek-v4-flash" ;;
+  implement|ci-repair|review) ;;
   *)
     mkdir -p "$OUTPUT_DIR"
     printf '%s\n' '{"kind":"agent-orchestrator-failure","reason":"unsupported_worker_type"}' > "$OUTPUT_DIR/failure_reason.json"
@@ -105,6 +118,7 @@ SANITIZED_ENV=(
   "TEMP=$TEMP"
   "TERM=$TERM"
   "OPENCODE_PERMISSION=$OPENCODE_PERMISSION"
+  "AGENT_CODEX_MODEL_TIER=$MODEL_TIER"
 )
 for optional_name in \
   USER LOGNAME SHELL \

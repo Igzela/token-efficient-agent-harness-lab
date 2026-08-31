@@ -1162,6 +1162,24 @@ raise SystemExit(1)
         self.assertEqual(failure_reason, "authentication_failure")
         self.assertFalse(response_path.exists())
 
+    def test_production_worker_enforces_workcard_contract_and_allowlisted_checks(self):
+        context = type(
+            "Contract",
+            (),
+            {
+                "steps": ("implement the bounded change",),
+                "focused_tests": ("focused_checks_required", "git diff --check"),
+                "negative_checks": ("do not widen scope",),
+                "expected_evidence": ("implementation head",),
+            },
+        )()
+        workers.OpenCodeWorkCardWorker._validate_workcard_contract(context)
+
+        context.focused_tests = ("unallowlisted command",)
+        with self.assertRaises(workers.WorkerError) as raised:
+            workers.OpenCodeWorkCardWorker._validate_workcard_contract(context)
+        self.assertEqual(str(raised.exception), "opencode_focused_check_not_allowlisted")
+
     def test_wrapper_retains_only_final_opencode_text_message(self):
         root = self.root / "wrapper-last-message"
         bin_dir = root / "bin"
@@ -1190,6 +1208,8 @@ elif args[:2] == ["session", "delete"]:
 elif args and args[0] == "run":
     if "--title" not in args or args[args.index("--title") + 1] != "Autonomous Steward WorkCard":
         raise SystemExit(3)
+    if "--model" not in args or args[args.index("--model") + 1] != "deepseek/deepseek-v4-pro":
+        raise SystemExit(4)
     print(json.dumps({"type":"text","sessionID":"ses_fixture","part":{"text":"intermediate narration"}}))
     print(json.dumps({"type":"text","sessionID":"ses_fixture","part":{"text":%r}}))
 else:
@@ -1203,6 +1223,7 @@ else:
             HOME=str(root),
             PATH=f"{bin_dir}:{environment.get('PATH', '/usr/bin:/bin')}",
             AGENT_CODEX_TIMEOUT_SECONDS="30",
+            AGENT_CODEX_MODEL_TIER="T2",
         )
         result = subprocess.run(
             [
