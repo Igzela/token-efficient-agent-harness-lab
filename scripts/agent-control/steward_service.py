@@ -2069,6 +2069,25 @@ class StewardService:
                 receipt = self.github_writer.guarded_merge(
                     mission.repository_identity.repository, pr_number, expected_head
                 )
+            except GitHubReadError:
+                # The writer's initial identity preflight did not reach the
+                # dispatch boundary.  Keep the long-running service alive and
+                # retry the read on a later tick; this is not an ambiguous
+                # external mutation and must not be recorded as one.
+                read_wait_key = hashlib.sha256(
+                    f"{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}".encode()
+                ).hexdigest()[:32]
+                self.journal.append(
+                    event="STAGE_MERGE_READ_WAITING",
+                    idempotency_key=f"stage-merge-read-waiting:{read_wait_key}",
+                    mission_id=mission.mission_id,
+                    stage_id=stage.stage_id,
+                    card_id="",
+                    state="RUNNING",
+                    detail="stage_merge_identity_read_unavailable_before_dispatch",
+                    enforce_transition=False,
+                )
+                return {"status": "WAITING_GITHUB_READBACK", "stage_id": stage.stage_id}
             except GitHubMutationError:
                 self.journal.append(
                     event="STAGE_OUTCOME_UNKNOWN",
