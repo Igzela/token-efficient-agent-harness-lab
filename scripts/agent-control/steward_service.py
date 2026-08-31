@@ -993,6 +993,9 @@ class StewardService:
         merge_dispatched = self._latest_stage_event(
             mission_id, stage_id, "STAGE_MERGE_DISPATCHED"
         )
+        merge_unknown = self._latest_stage_event(
+            mission_id, stage_id, "STAGE_OUTCOME_UNKNOWN"
+        )
         merge_terminal = self._latest_stage_event(
             mission_id, stage_id, "POST_MERGE_VERIFIED"
         ) or self._latest_stage_event(
@@ -1007,6 +1010,7 @@ class StewardService:
             merge_read_waiting is not None
             and (merge_intent is None or merge_read_waiting.seq > merge_intent.seq)
             and (merge_dispatched is None or merge_dispatched.seq < merge_read_waiting.seq)
+            and (merge_unknown is None or merge_unknown.seq < merge_read_waiting.seq)
         )
         if pre_dispatch_read_waiting:
             merge_intent = None
@@ -2081,10 +2085,16 @@ class StewardService:
                     stage.stage_id,
                     "STAGE_MERGE_DISPATCHED",
                 )
+                merge_unknown = self._latest_stage_event(
+                    mission.mission_id,
+                    stage.stage_id,
+                    "STAGE_OUTCOME_UNKNOWN",
+                )
                 pre_dispatch_read_waiting = (
                     merge_read_waiting is not None
                     and merge_read_waiting.seq > merge_intent.seq
                     and (merge_dispatched is None or merge_dispatched.seq < merge_read_waiting.seq)
+                    and (merge_unknown is None or merge_unknown.seq < merge_read_waiting.seq)
                 )
                 if not pre_dispatch_read_waiting:
                     return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
