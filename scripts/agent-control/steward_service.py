@@ -970,7 +970,14 @@ class StewardService:
         review_terminal = self._latest_stage_event(
             mission_id, stage_id, "STAGE_REVIEW_RECEIPT_PUBLISHED"
         )
-        if review_intent is not None and review_terminal is None:
+        review_preflight_rejected = self._latest_stage_event(
+            mission_id, stage_id, "STAGE_REVIEW_DISPATCH_PREFLIGHT_REJECTED"
+        )
+        if (
+            review_intent is not None
+            and review_terminal is None
+            and review_preflight_rejected is None
+        ):
             return "REVIEW"
 
         ready_intent = self._latest_stage_event(
@@ -1379,6 +1386,22 @@ class StewardService:
                 # Exact PR/head/base drift is proven by read-only preflight;
                 # no comment request was sent, so this is a routine replan.
                 self.journal.append(
+                    event="STAGE_REVIEW_DISPATCH_PREFLIGHT_REJECTED",
+                    idempotency_key=(
+                        "stage-review-preflight-rejected:"
+                        + hashlib.sha256(
+                            f"{mission.mission_id}:{stage.stage_id}:{integration.head_sha}".encode()
+                        ).hexdigest()[:32]
+                    ),
+                    mission_id=mission.mission_id,
+                    stage_id=stage.stage_id,
+                    card_id="",
+                    state="RUNNING",
+                    detail="stage_review_receipt_rejected_before_post",
+                    data={"error": str(exc)},
+                    enforce_transition=False,
+                )
+                self.journal.append(
                     event="STAGE_REPLAN_REQUESTED",
                     idempotency_key=f"stage-review-preflight-replan:{mission.mission_id}:{stage.stage_id}:{integration.head_sha}",
                     mission_id=mission.mission_id,
@@ -1783,6 +1806,27 @@ class StewardService:
                     review_receipt_sha256=str(intent_data["review_receipt_sha256"]),
                 )
             except GitHubPreflightError:
+                # The writer performed its complete read-only identity
+                # preflight and rejected before issuing a POST.  Persist that
+                # terminal no-effect observation so the candidate can be
+                # safely superseded on the next tick; an unresolved network
+                # or mutation error remains OUTCOME_UNKNOWN instead.
+                self.journal.append(
+                    event="STAGE_REVIEW_DISPATCH_PREFLIGHT_REJECTED",
+                    idempotency_key=(
+                        "stage-review-preflight-rejected:"
+                        + hashlib.sha256(
+                            f"{mission.mission_id}:{stage.stage_id}:{expected_head}".encode()
+                        ).hexdigest()[:32]
+                    ),
+                    mission_id=mission.mission_id,
+                    stage_id=stage.stage_id,
+                    card_id="",
+                    state="RUNNING",
+                    detail="stage_review_receipt_rejected_before_post",
+                    data={},
+                    enforce_transition=False,
+                )
                 self.journal.append(
                     event="STAGE_REPLAN_REQUESTED",
                     idempotency_key=f"stage-review-recovery-preflight-replan:{mission.mission_id}:{stage.stage_id}:{expected_head}",

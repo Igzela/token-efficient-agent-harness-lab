@@ -355,8 +355,10 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         ):
             self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
             self.assertEqual(self.srv.step()["status"], "REPLAN_REQUIRED")
+            self.assertEqual(self.srv.step()["status"], "STAGE_REPLANNED")
         events = [event.event for event in self.journal.replay()]
         self.assertIn("STAGE_REPLAN_REQUESTED", events)
+        self.assertIn("STAGE_REVIEW_DISPATCH_PREFLIGHT_REJECTED", events)
         self.assertNotIn("STAGE_OUTCOME_UNKNOWN", events)
 
     def test_review_receipt_read_failure_keeps_loop_alive_and_retries(self):
