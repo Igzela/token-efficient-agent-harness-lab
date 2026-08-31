@@ -1280,6 +1280,8 @@ class StewardService:
         )
         if review_published is None:
             if review_intent is not None:
+                # A read failure before the authenticated POST is retryable;
+                # a mutation failure remains fail-closed as OUTCOME_UNKNOWN.
                 return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
             self.journal.append(
                 event="STAGE_REVIEW_DISPATCH_INTENT",
@@ -1289,7 +1291,15 @@ class StewardService:
                 card_id="",
                 state="RUNNING",
                 detail="exact_head_review_receipt_publish_intent",
-                data={"pr_number": pr["number"], "head_sha": integration.head_sha},
+                data={
+                    "pr_number": pr["number"],
+                    "head_sha": integration.head_sha,
+                    "base_sha": integration.base_sha,
+                    "reviewer_session_id": review.reviewer_session_id,
+                    "implementation_session_id": review.implementation_session_id,
+                    "reviewed_range_sha256": review.reviewed_range_sha256,
+                    "review_receipt_sha256": review.review_receipt_sha256,
+                },
                 enforce_transition=False,
             )
             try:
@@ -1305,8 +1315,7 @@ class StewardService:
                 )
             except GitHubPreflightError as exc:
                 # Exact PR/head/base drift is proven by read-only preflight;
-                # no comment request was sent, so this is a routine replan,
-                # never an ambiguous external mutation.
+                # no comment request was sent, so this is a routine replan.
                 self.journal.append(
                     event="STAGE_REPLAN_REQUESTED",
                     idempotency_key=f"stage-review-preflight-replan:{mission.mission_id}:{stage.stage_id}:{integration.head_sha}",
@@ -1319,6 +1328,22 @@ class StewardService:
                     enforce_transition=False,
                 )
                 return {"status": "REPLAN_REQUIRED", "stage_id": stage.stage_id}
+            except GitHubReadError:
+                # The writer's PR/head preflight precedes every POST.  A
+                # failed read therefore cannot represent an external effect;
+                # keep the durable intent and let the next tick retry.
+                self.journal.append(
+                    event="STAGE_REVIEW_READ_WAITING",
+                    idempotency_key=f"stage-review-read-waiting:{mission.mission_id}:{stage.stage_id}:{integration.head_sha}",
+                    mission_id=mission.mission_id,
+                    stage_id=stage.stage_id,
+                    card_id="",
+                    state="RUNNING",
+                    detail="stage_review_receipt_read_unavailable",
+                    data={},
+                    enforce_transition=False,
+                )
+                return {"status": "WAITING_GITHUB_READBACK", "stage_id": stage.stage_id}
             except GitHubMutationError:
                 self.journal.append(
                     event="STAGE_OUTCOME_UNKNOWN",
@@ -1439,6 +1464,7 @@ class StewardService:
         mission: mission_contract.MaintenanceMission,
         stage: mission_contract.Stage,
         metadata: Mapping[str, Any],
+        cards: tuple[mission_contract.WorkCard, ...] = (),
     ) -> dict[str, Any]:
         binding = self._latest_stage_event(mission.mission_id, stage.stage_id, "STAGE_PR_BOUND")
         if binding is None:
@@ -1509,10 +1535,104 @@ class StewardService:
             mission.mission_id, stage.stage_id, "STAGE_REVIEW_RECEIPT_PUBLISHED"
         )
         if review_intent is not None and review_published is None:
-            # A process may have died after the receipt POST.  A live PASS
-            # receipt proves the effect; otherwise remain OUTCOME_UNKNOWN and
-            # never issue a second comment mutation.
-            if facts.get("review_state") != "PASS":
+            # A mutation failure is permanently fail-closed.  A read-waiting
+            # marker, or an older intent without review fields, is safe to
+            # retry because the writer reconciles any existing receipt before
+            # issuing a POST.
+            if self._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_OUTCOME_UNKNOWN"
+            ) is not None:
+                return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
+            intent_data = review_intent.data if isinstance(review_intent.data, Mapping) else {}
+            review_fields = (
+                "base_sha",
+                "reviewer_session_id",
+                "implementation_session_id",
+                "reviewed_range_sha256",
+                "review_receipt_sha256",
+            )
+            if not all(isinstance(intent_data.get(field), str) for field in review_fields):
+                integrated_event = self._latest_stage_event(
+                    mission.mission_id, stage.stage_id, "STAGE_INTEGRATED"
+                )
+                if integrated_event is None or not isinstance(integrated_event.data, Mapping):
+                    return {"status": "WAITING_GITHUB_READBACK", "stage_id": stage.stage_id}
+                try:
+                    from steward import StageIntegration
+
+                    integration_data = integrated_event.data
+                    integration = StageIntegration(
+                        stage_id=str(integration_data["stage_id"]),
+                        branch=str(integration_data["branch"]),
+                        base_sha=str(integration_data["base_sha"]),
+                        head_sha=str(integration_data["head_sha"]),
+                        card_heads=tuple(
+                            (str(item["card_id"]), str(item["head_sha"]))
+                            for item in integration_data["card_heads"]
+                        ),
+                    )
+                    review = self._review_integrated_stage(
+                        mission, stage, cards, integration, production_reviewer()
+                    )
+                except (KeyError, TypeError, ValueError, WorkerError, StewardServiceError):
+                    return {"status": "WAITING_GITHUB_READBACK", "stage_id": stage.stage_id}
+                intent_data = {
+                    **intent_data,
+                    "base_sha": integration.base_sha,
+                    "reviewer_session_id": review.reviewer_session_id,
+                    "implementation_session_id": review.implementation_session_id,
+                    "reviewed_range_sha256": review.reviewed_range_sha256,
+                    "review_receipt_sha256": review.review_receipt_sha256,
+                }
+            try:
+                receipt = self.github_writer.publish_exact_head_review(
+                    mission.repository_identity.repository,
+                    int(intent_data["pr_number"]),
+                    expected_head,
+                    base_sha=str(intent_data["base_sha"]),
+                    reviewer_session_id=str(intent_data["reviewer_session_id"]),
+                    implementation_session_id=str(intent_data["implementation_session_id"]),
+                    reviewed_range_sha256=str(intent_data["reviewed_range_sha256"]),
+                    review_receipt_sha256=str(intent_data["review_receipt_sha256"]),
+                )
+            except GitHubPreflightError:
+                self.journal.append(
+                    event="STAGE_REPLAN_REQUESTED",
+                    idempotency_key=f"stage-review-recovery-preflight-replan:{mission.mission_id}:{stage.stage_id}:{expected_head}",
+                    mission_id=mission.mission_id,
+                    stage_id=stage.stage_id,
+                    card_id="",
+                    state="RUNNING",
+                    detail="stage_review_receipt_preflight_replan",
+                    data={},
+                    enforce_transition=False,
+                )
+                return {"status": "REPLAN_REQUIRED", "stage_id": stage.stage_id}
+            except GitHubReadError:
+                self.journal.append(
+                    event="STAGE_REVIEW_READ_WAITING",
+                    idempotency_key=f"stage-review-read-waiting:{mission.mission_id}:{stage.stage_id}:{expected_head}",
+                    mission_id=mission.mission_id,
+                    stage_id=stage.stage_id,
+                    card_id="",
+                    state="RUNNING",
+                    detail="stage_review_receipt_read_unavailable",
+                    data={},
+                    enforce_transition=False,
+                )
+                return {"status": "WAITING_GITHUB_READBACK", "stage_id": stage.stage_id}
+            except GitHubMutationError:
+                self.journal.append(
+                    event="STAGE_OUTCOME_UNKNOWN",
+                    idempotency_key=f"stage-review-recovery-outcome-unknown:{mission.mission_id}:{stage.stage_id}:{expected_head}",
+                    mission_id=mission.mission_id,
+                    stage_id=stage.stage_id,
+                    card_id="",
+                    state="OUTCOME_UNKNOWN",
+                    detail="stage_review_receipt_outcome_unknown",
+                    data={},
+                    enforce_transition=False,
+                )
                 return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
             self.journal.append(
                 event="STAGE_REVIEW_RECEIPT_PUBLISHED",
@@ -1522,7 +1642,7 @@ class StewardService:
                 card_id="",
                 state="RUNNING",
                 detail="exact_head_review_receipt_reconciled_after_restart",
-                data={"pr_number": pr_number, "head_sha": expected_head},
+                data={**intent_data, "receipt": dict(receipt)},
                 enforce_transition=False,
             )
         if facts.get("draft") is True:
@@ -1928,7 +2048,7 @@ class StewardService:
             return self._replan_stage(active, stage, metadata)
         if self._latest_stage_event(active.mission_id, stage.stage_id, "STAGE_PR_BOUND") is None:
             return self._execute_production_stage(active, stage, cards, worker=None, reviewer=None)
-        return self._advance_bound_stage(active, stage, metadata)
+        return self._advance_bound_stage(active, stage, metadata, cards)
 
     def run(
         self,

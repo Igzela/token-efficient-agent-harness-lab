@@ -359,6 +359,42 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         self.assertIn("STAGE_REPLAN_REQUESTED", events)
         self.assertNotIn("STAGE_OUTCOME_UNKNOWN", events)
 
+    def test_review_receipt_read_failure_keeps_loop_alive_and_retries(self):
+        """SIMULATED: a pre-POST GitHub read interruption is restart-safe."""
+
+        mission, digest = self.srv.propose(
+            "Update README.md with bounded documentation evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-REVIEW-READ-RETRY",
+        )
+        self._approve(mission, digest, "review-read-retry")
+        self.srv.control_state = self._ControlOff()
+        original = self.github_writer.publish_exact_head_review
+        calls = {"count": 0}
+
+        def publish_once_then_succeed(*args, **kwargs):
+            if calls["count"] == 0:
+                calls["count"] += 1
+                raise steward_github.GitHubReadError("github_review_read_failed")
+            calls["count"] += 1
+            return original(*args, **kwargs)
+
+        with (
+            patch("steward.Steward", self._SimulatedStageExecutor),
+            patch("steward_service.production_reviewer", return_value=FakeTestReviewer(status="PASS")),
+            patch.object(self.github_writer, "publish_exact_head_review", side_effect=publish_once_then_succeed),
+        ):
+            self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+            self.assertEqual(self.srv.step()["status"], "WAITING_GITHUB_READBACK")
+            self.assertEqual(self.srv.step()["status"], "STAGE_PR_READY")
+
+        events = [event.event for event in self.journal.replay()]
+        self.assertIn("STAGE_REVIEW_READ_WAITING", events)
+        self.assertIn("STAGE_REVIEW_RECEIPT_PUBLISHED", events)
+        self.assertNotIn("STAGE_OUTCOME_UNKNOWN", events)
+        self.assertEqual(calls["count"], 2)
+
     def test_exhausted_primary_candidates_shift_to_an_alternative_without_owner_prompt(self):
         """SIMULATED repair loop: candidate exhaustion changes strategy, not authority."""
 
