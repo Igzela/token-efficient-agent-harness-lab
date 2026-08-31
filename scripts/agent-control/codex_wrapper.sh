@@ -13,9 +13,14 @@ WORKSPACE="${4:-$PWD}"
 
 MODEL_TIER="${AGENT_CODEX_MODEL_TIER:-T1}"
 case "$MODEL_TIER" in
-  T0) OPENCODE_MODEL="deepseek/deepseek-chat" ;;
-  T1) OPENCODE_MODEL="deepseek/deepseek-v4-flash" ;;
-  T2) OPENCODE_MODEL="deepseek/deepseek-v4-pro" ;;
+  # The operator's existing OpenCode Go subscription is the production
+  # transport.  Direct DeepSeek credentials are retained for other lanes,
+  # but are not a reliable Steward route (the live canary returned HTTP 402
+  # Insufficient Balance).  Keep the tier distinction while selecting models
+  # that are available through the authenticated OpenCode Go provider.
+  T0) OPENCODE_MODEL="opencode-go/deepseek-v4-flash" ;;
+  T1) OPENCODE_MODEL="opencode-go/deepseek-v4-flash" ;;
+  T2) OPENCODE_MODEL="opencode-go/deepseek-v4-pro" ;;
   *)
     mkdir -p "$OUTPUT_DIR"
     printf '%s\n' '{"kind":"agent-orchestrator-failure","reason":"environment_invalid"}' > "$OUTPUT_DIR/failure_reason.json"

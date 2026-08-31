@@ -495,7 +495,9 @@ login-status, help, implementation, repair, and independent review calls. It
 preserves only its documented runtime/login variables and excludes GitHub,
 provider, cloud, and unknown secret-shaped variables. The worker gets only an
 isolated worktree and WorkCard contract; it cannot push, create PRs, or merge.
-The reviewer is a distinct read-only invocation. Raw prompts, model outputs,
+Production tiers use the authenticated `opencode-go` models
+`deepseek-v4-flash` (T0/T1) and `deepseek-v4-pro` (T2). The reviewer is a
+distinct read-only invocation. Raw prompts, model outputs,
 transcripts, credentials, and private paths are not journal evidence.
 
 On restart, the service replays only the durable activation or accepted-main

@@ -1208,7 +1208,7 @@ elif args[:2] == ["session", "delete"]:
 elif args and args[0] == "run":
     if "--title" not in args or args[args.index("--title") + 1] != "Autonomous Steward WorkCard":
         raise SystemExit(3)
-    if "--model" not in args or args[args.index("--model") + 1] != "deepseek/deepseek-v4-pro":
+    if "--model" not in args or args[args.index("--model") + 1] != "opencode-go/deepseek-v4-pro":
         raise SystemExit(4)
     print(json.dumps({"type":"text","sessionID":"ses_fixture","part":{"text":"intermediate narration"}}))
     print(json.dumps({"type":"text","sessionID":"ses_fixture","part":{"text":%r}}))
