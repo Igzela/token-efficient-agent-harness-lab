@@ -620,3 +620,34 @@ Both hooks are required together. A managed service should also supply
 `--health-command` so recovery proves the restored process, not merely the
 binary's help output. Validate the packaged upgrade contract with
 `bash scripts/check_release_contract.sh` before publishing a release.
+
+## Documentation Test
+
+This document carries a bounded, self-contained documentation test. It passes
+when every assertion below holds against this document and the code it
+describes at the accepted head. An independent reviewer verifies the
+assertions directly against the accepted document and code; the focused hygiene
+gate is `git diff --check`. This section is documentation-only and grants no
+new authority.
+
+1. **Operator entry route** — the document asserts operator sessions enter
+   through the accepted router by running
+   `scripts/session_context.py route --role operator`.
+2. **Scheduler sole authority** — the document asserts the Rust scheduler
+   remains the sole owner of admission, leases, retries, cooldown, concurrency,
+   pause/resume, and run state.
+3. **Steward as bounded outer loop** — the document asserts the
+   repository-maintenance Steward is a bounded outer loop in which the Rust
+   engine remains the sole product runtime, scheduler, policy, and application
+   store, and Steward owns only its Mission journal.
+4. **Managed CLI output-limits contract** — the document's
+   `managed_cli_output_limits.v1` matches `CLI_OUTPUT_LIMITS_SCHEMA_VERSION` in
+   `engine/src/cli/mod.rs`.
+5. **Live execution default-off** — the document asserts live execution stays
+   default-off and provider-backed runs require authentication and explicit
+   cost and enablement gates.
+6. **Link, do not duplicate** — the document references `docs/AUTONOMY.md` for
+   autonomy, review, and merge rules instead of restating them.
+
+Assertions 1-6 are bounded to this document and hold at the accepted head; the
+change is documentation-only and adds no new authority.
