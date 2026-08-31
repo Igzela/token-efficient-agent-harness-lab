@@ -527,6 +527,49 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             )
         )
 
+    def test_simulated_terminal_merge_rejection_unblocks_bounded_replan(self):
+        """SIMULATED: read-only failed workflow proof permits safe replacement."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-MERGE-REJECTED-RECOVERY", "merge-rejected"
+        )
+        pr_number = bound["pr_number"]
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key="merge-rejected-intent",
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": bound["head_sha"]},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={
+                "status": "REJECTED",
+                "repository": "Igzela/token-efficient-agent-harness-lab",
+                "pr_number": pr_number,
+                "expected_head_sha": bound["head_sha"],
+                "run_ids": [901],
+            },
+        ):
+            self.assertEqual(self.srv.step()["status"], "REPLAN_REQUIRED")
+            self.assertEqual(self.srv.step()["status"], "STAGE_REPLANNED")
+        self.assertIsNotNone(
+            self.srv._latest_stage_event(
+                mission.mission_id,
+                stage.stage_id,
+                "STAGE_MERGE_DISPATCH_RECONCILED",
+            )
+        )
+
     def test_simulated_ready_intent_and_bound_drift_stays_read_only(self):
         """SIMULATED: an interrupted Ready mutation cannot trigger replan."""
 

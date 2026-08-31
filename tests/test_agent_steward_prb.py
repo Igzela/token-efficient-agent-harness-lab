@@ -189,6 +189,62 @@ class TestAutonomousStewardPRB(unittest.TestCase):
                 with self.assertRaisesRegex(GitHubMutationError, "merge_outcome_unknown"):
                     writer.guarded_merge(self.repo, 303, self.head_sha, timeout_seconds=1)
 
+    def test_reconcile_merge_dispatch_binds_terminal_failure_to_exact_head(self):
+        """Read-only workflow logs can prove a failed dispatch without rerun."""
+
+        writer = GhGitHubWriter(timeout_seconds=5)
+        run_list = json.dumps(
+            [
+                {
+                    "databaseId": 777,
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "createdAt": "2026-08-31T00:00:00Z",
+                }
+            ]
+        )
+        run_log = (
+            "merge Validate live PR\n"
+            f"  PR_NUMBER: 17\n  EXPECTED_HEAD: {self.head_sha}\n"
+            "merge Merge one exact head\n"
+        )
+        with patch("subprocess.run") as run:
+            run.side_effect = [
+                MagicMock(returncode=0, stdout=run_list, stderr=""),
+                MagicMock(returncode=0, stdout=run_log, stderr=""),
+            ]
+            result = writer.reconcile_merge_dispatch(
+                self.repo, 17, self.head_sha, workflow_file="agent-merge.yml"
+            )
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertEqual(result["run_ids"], [777])
+
+    def test_reconcile_merge_dispatch_does_not_match_other_head(self):
+        """A workflow for another PR/head cannot resolve this intent."""
+
+        writer = GhGitHubWriter(timeout_seconds=5)
+        run_list = json.dumps(
+            [
+                {
+                    "databaseId": 778,
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "createdAt": "2026-08-31T00:00:00Z",
+                }
+            ]
+        )
+        run_log = "merge PR_NUMBER: 18\nEXPECTED_HEAD: " + ("c" * 40) + "\n"
+        with patch("subprocess.run") as run:
+            run.side_effect = [
+                MagicMock(returncode=0, stdout=run_list, stderr=""),
+                MagicMock(returncode=0, stdout=run_log, stderr=""),
+            ]
+            result = writer.reconcile_merge_dispatch(
+                self.repo, 17, self.head_sha, workflow_file="agent-merge.yml"
+            )
+        self.assertEqual(result["status"], "NOT_PROVEN")
+        self.assertEqual(result["run_ids"], [])
+
     def test_post_merge_readback_authoritative_sha(self):
         """Verify post_merge_readback queries GitHub main branch SHA and validates integrity."""
         writer = GhGitHubWriter(timeout_seconds=5)

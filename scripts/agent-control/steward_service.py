@@ -994,11 +994,14 @@ class StewardService:
         )
         merge_terminal = self._latest_stage_event(
             mission_id, stage_id, "POST_MERGE_VERIFIED"
+        ) or self._latest_stage_event(
+            mission_id, stage_id, "STAGE_MERGE_DISPATCH_RECONCILED"
         )
         if merge_intent is not None and merge_terminal is None:
             # STAGE_MERGE_DISPATCHED records that dispatch returned, not that
-            # the workflow's merge effect was proven.  Only post-merge
-            # readback terminalizes this external mutation boundary.
+            # the workflow's merge effect was proven.  A terminal rejected
+            # dispatch is also a no-effect terminal fact; successful merges
+            # still require post-merge readback.
             return "MERGE"
         return None
 
@@ -1095,13 +1098,16 @@ class StewardService:
             expected_head = data.get("head_sha")
             if type(pr_number) is not int or not isinstance(expected_head, str):
                 raise StewardServiceError("stage_binding_invalid")
+            supersede_key = hashlib.sha256(
+                f"{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}".encode()
+            ).hexdigest()[:32]
             intent = self._latest_stage_event(mission.mission_id, stage.stage_id, "STAGE_SUPERSEDE_DISPATCH_INTENT")
             if intent is not None and self._latest_stage_event(mission.mission_id, stage.stage_id, "STAGE_SUPERSEDED") is None:
                 return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
             if intent is None:
                 self.journal.append(
                     event="STAGE_SUPERSEDE_DISPATCH_INTENT",
-                    idempotency_key=f"stage-supersede-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}",
+                    idempotency_key=f"stage-supersede-intent:{supersede_key}",
                     mission_id=mission.mission_id,
                     stage_id=stage.stage_id,
                     card_id="",
@@ -1117,7 +1123,7 @@ class StewardService:
                 except GitHubMutationError:
                     self.journal.append(
                         event="STAGE_OUTCOME_UNKNOWN",
-                        idempotency_key=f"stage-supersede-outcome-unknown:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}",
+                        idempotency_key=f"stage-supersede-outcome-unknown:{supersede_key}",
                         mission_id=mission.mission_id,
                         stage_id=stage.stage_id,
                         card_id="",
@@ -1129,7 +1135,7 @@ class StewardService:
                     return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
                 self.journal.append(
                     event="STAGE_SUPERSEDED",
-                    idempotency_key=f"stage-superseded:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}",
+                    idempotency_key=f"stage-superseded:{supersede_key}",
                     mission_id=mission.mission_id,
                     stage_id=stage.stage_id,
                     card_id="",
@@ -1657,6 +1663,81 @@ class StewardService:
             pending_mutation = self._bound_stage_mutation_pending(
                 mission.mission_id, stage.stage_id
             )
+            if pending_mutation == "MERGE" and facts.get("merged") is not True:
+                reconcile_dispatch = getattr(
+                    self.github_writer, "reconcile_merge_dispatch", None
+                )
+                if callable(reconcile_dispatch):
+                    try:
+                        merge_intent = self._latest_stage_event(
+                            mission.mission_id,
+                            stage.stage_id,
+                            "STAGE_MERGE_DISPATCH_INTENT",
+                        )
+                        reconciliation = reconcile_dispatch(
+                            mission.repository_identity.repository,
+                            pr_number,
+                            expected_head,
+                            workflow_file="agent-merge.yml",
+                            not_before=(
+                                merge_intent.timestamp
+                                if merge_intent is not None
+                                else None
+                            ),
+                        )
+                    except (GitHubReadError, GitHubFactsError, OSError):
+                        reconciliation = None
+                    if isinstance(reconciliation, Mapping) and reconciliation.get(
+                        "status"
+                    ) == "REJECTED":
+                        evidence = {
+                            key: value
+                            for key, value in reconciliation.items()
+                            if key
+                            in {
+                                "status",
+                                "repository",
+                                "pr_number",
+                                "expected_head_sha",
+                                "run_ids",
+                            }
+                        }
+                        evidence_key = hashlib.sha256(
+                            f"{mission.mission_id}:{stage.stage_id}:{expected_head}".encode()
+                        ).hexdigest()[:32]
+                        self.journal.append(
+                            event="STAGE_MERGE_DISPATCH_RECONCILED",
+                            idempotency_key=f"stage-merge-reconciled:{evidence_key}",
+                            mission_id=mission.mission_id,
+                            stage_id=stage.stage_id,
+                            card_id="",
+                            state="RUNNING",
+                            detail="merge_workflow_terminal_rejection_observed",
+                            data=evidence,
+                            enforce_transition=False,
+                        )
+                        pending_mutation = None
+                        # Re-read accepted main before allowing the ordinary
+                        # replan path to supersede this candidate.  If main
+                        # moved, this call performs the normal Mission rebound;
+                        # it never races the now-proven failed dispatch.
+                        mission, bound_preflight = self._preflight_bound_stage_accepted_main(
+                            mission, stage, expected_base
+                        )
+                        if bound_preflight is not None:
+                            return bound_preflight
+                        self.journal.append(
+                            event="STAGE_REPLAN_REQUESTED",
+                            idempotency_key=f"stage-merge-rejected-replan:{evidence_key}",
+                            mission_id=mission.mission_id,
+                            stage_id=stage.stage_id,
+                            card_id="",
+                            state="RUNNING",
+                            detail="stage_merge_workflow_rejected_replan_requested",
+                            data=evidence,
+                            enforce_transition=False,
+                        )
+                        return {"status": "REPLAN_REQUIRED", "stage_id": stage.stage_id}
             # A merged PR is already in the readback phase: accepted main is
             # expected to have advanced to its merge commit, so do not treat
             # that proven transition as drift.  For every still-open PR,
@@ -1959,7 +2040,12 @@ class StewardService:
             merge_intent = self._latest_stage_event(
                 mission.mission_id, stage.stage_id, "STAGE_MERGE_DISPATCH_INTENT"
             )
-            if merge_intent is not None:
+            merge_reconciled = self._latest_stage_event(
+                mission.mission_id,
+                stage.stage_id,
+                "STAGE_MERGE_DISPATCH_RECONCILED",
+            )
+            if merge_intent is not None and merge_reconciled is None:
                 # The only safe action after an interrupted dispatch is
                 # read-only reconciliation.  A possibly-issued merge must
                 # never be retried merely because this service restarted.
