@@ -18,6 +18,7 @@ from steward_github import (
     GitHubMutationError,
     GitHubPreflightError,
     GitHubFactsError,
+    GitHubReadError,
 )
 
 
@@ -282,6 +283,27 @@ class TestAutonomousStewardPRB(unittest.TestCase):
             )
         self.assertEqual(result["status"], "PENDING")
         self.assertEqual(result["run_ids"], [779, 780])
+
+    def test_reconcile_merge_dispatch_rejects_unknown_run_status(self):
+        """Malformed provider status cannot prove a no-effect dispatch."""
+
+        writer = GhGitHubWriter(timeout_seconds=5)
+        run_list = json.dumps(
+            [
+                {
+                    "databaseId": 781,
+                    "status": "mystery",
+                    "conclusion": "failure",
+                    "createdAt": "2026-08-31T00:00:00Z",
+                }
+            ]
+        )
+        with patch(
+            "subprocess.run",
+            return_value=MagicMock(returncode=0, stdout=run_list, stderr=""),
+        ):
+            with self.assertRaisesRegex(GitHubReadError, "status_malformed"):
+                writer.reconcile_merge_dispatch(self.repo, 17, self.head_sha)
 
     def test_post_merge_readback_authoritative_sha(self):
         """Verify post_merge_readback queries GitHub main branch SHA and validates integrity."""

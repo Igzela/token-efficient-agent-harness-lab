@@ -1323,13 +1323,22 @@ class GhGitHubWriter:
             created_at = run.get("createdAt")
             if type(run_id) is not int or run_id < 1 or not isinstance(status, str):
                 raise GitHubReadError("merge_reconcile_run_identity_malformed")
+            if status not in {
+                "queued",
+                "requested",
+                "waiting",
+                "pending",
+                "in_progress",
+                "completed",
+            }:
+                raise GitHubReadError("merge_reconcile_run_status_malformed")
             if not isinstance(created_at, str):
                 raise GitHubReadError("merge_reconcile_run_created_at_malformed")
             if conclusion is not None and not isinstance(conclusion, str):
                 raise GitHubReadError("merge_reconcile_run_conclusion_malformed")
             if not_before is not None and created_at < not_before:
                 continue
-            if status in {"queued", "requested", "waiting", "in_progress"}:
+            if status in {"queued", "requested", "waiting", "pending", "in_progress"}:
                 # An active run's inputs are not exposed by ``run list``.  A
                 # terminal failure found beside it cannot prove this intent
                 # is safe to supersede, so hold the reconciliation until every
@@ -1409,19 +1418,6 @@ class GhGitHubWriter:
                 "pr_number": pr_number,
                 "expected_head_sha": expected_head_sha,
                 "run_ids": [],
-            }
-        active = [
-            item
-            for item in matches
-            if item["status"] in {"in_progress", "queued", "requested", "waiting"}
-        ]
-        if active:
-            return {
-                "status": "PENDING",
-                "repository": repository,
-                "pr_number": pr_number,
-                "expected_head_sha": expected_head_sha,
-                "run_ids": [item["run_id"] for item in matches],
             }
         if any(item["conclusion"] == "success" for item in matches):
             return {
