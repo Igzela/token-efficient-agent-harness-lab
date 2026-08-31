@@ -2,7 +2,7 @@
 
 Operator procedures for the local Agent Control Plane.
 
-Last updated: 2026-08-29.
+Last updated: 2026-08-31.
 
 ## Session Entry
 
@@ -620,3 +620,40 @@ Both hooks are required together. A managed service should also supply
 `--health-command` so recovery proves the restored process, not merely the
 binary's help output. Validate the packaged upgrade contract with
 `bash scripts/check_release_contract.sh` before publishing a release.
+
+## Documentation Test
+
+This document carries a bounded, self-contained documentation test. It passes
+when every assertion below holds against this document and the code it
+describes at the accepted head. An independent reviewer verifies the
+assertions directly against the accepted document and code; the focused hygiene
+gate is `git diff --check`. This section is documentation-only and grants no
+new authority.
+
+1. **Operator entry route and proved-procedures ownership** — the document
+   asserts operator sessions enter through the accepted router
+   (`uv run --no-project python scripts/session_context.py route --role operator`)
+   and that this file owns only procedures that have actually been proved.
+2. **Scheduler sole authority** — the document asserts the Rust scheduler
+   remains the sole owner of admission, leases, retries, cooldown, concurrency,
+   pause/resume, and run state, and the Rust engine remains the sole product
+   runtime, scheduler, policy, and application store.
+3. **Steward as bounded outer loop** — the document asserts the
+   repository-maintenance Steward is a bounded outer loop that owns only its
+   one repository-maintenance Mission journal and is not a queue, scheduler, or
+   second state machine.
+4. **Managed CLI output-limits schema agreement** — the document's
+   `managed_cli_output_limits.v1` matches `CLI_OUTPUT_LIMITS_SCHEMA_VERSION` in
+   `engine/src/cli/mod.rs`.
+5. **Symbolic credential boundary** — the document exposes only symbolic
+   environment-variable references such as `$SYMBOLIC_LOCAL_ADMIN_KEY` and
+   `SYMBOLIC_GITHUB_TOKEN_VARIABLE`, never a raw credential value.
+6. **Recovery-required outcomes** — the document treats `OUTCOME_UNKNOWN`, a
+   lost Ready/supersede/merge result, and failed `post_merge_readback` as
+   recovery-required states that retain branch, journal, and exact-head facts
+   instead of silent retry or destructive cleanup.
+7. **Link, do not duplicate** — the document references `docs/AUTONOMY.md` for
+   autonomy, review, and merge rules instead of restating them.
+
+Assertions 1-7 are bounded to this document and hold at the accepted head; the
+change is documentation-only and adds no new authority.
