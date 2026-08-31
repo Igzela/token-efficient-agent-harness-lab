@@ -1,8 +1,9 @@
 """Bounded WorkCard worker and reviewer adapters for the Steward.
 
-Workers are injected adapters: this module does not select a Provider or
-forward credentials.  The parent owns the WorkCard binding, exact-base
-identity, path validation, and review-session separation.  Child environments
+The production adapter invokes the existing authenticated local OpenCode
+transport inside a filesystem-scoped child. Provider-free and marker adapters
+remain test-only fixtures. The parent owns WorkCard binding, exact-base
+identity, path validation, and review-session separation. Child environments
 are derived from the existing fail-closed local-run owner.
 """
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Provider-free repository-maintenance Steward heartbeat
+Description=Authenticated OpenCode repository-maintenance Steward heartbeat
 After=network-online.target
 Wants=network-online.target
 
