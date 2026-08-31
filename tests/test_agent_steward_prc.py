@@ -444,6 +444,38 @@ class TestAutonomousStewardPRC(unittest.TestCase):
                 expected_head_sha=self.base_sha,
             )
 
+    def test_simulated_bound_stage_drift_halts_before_external_mutation(self):
+        """SIMULATED: bound Stage drift is caught before Ready or merge writes."""
+
+        mission, digest = self.srv.propose(
+            "Update README.md with bounded bound-stage drift evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-BOUND-DRIFT",
+        )
+        self._approve(mission, digest, "bound-drift")
+        self.srv.control_state = self._ControlOff()
+        self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+        stage, _cards, _metadata = self.srv._stage_records(mission.mission_id)[-1]
+        bound = self.srv.publish_stage(stage, self.base_sha, title="Stage", body="Body")
+        self.github_writer.remote_main_sha = "e" * 40
+
+        result = self.srv.step()
+
+        self.assertEqual(result["status"], "REPLAN_REQUIRED")
+        self.assertEqual(self.srv._active_mission().repository_identity.base_sha, "e" * 40)
+        self.assertEqual(
+            [name for name, _data in self.github_writer.actions if name != "create_pr"],
+            [],
+        )
+        self.assertIsNotNone(
+            self.srv._latest_stage_event(
+                mission.mission_id,
+                stage.stage_id,
+                "STAGE_REPLAN_REQUESTED",
+            )
+        )
+
     def test_simulated_unbound_stage_rebinds_before_worker_dispatch(self):
         """SIMULATED: accepted-main drift replans an unissued Stage before dispatch."""
 

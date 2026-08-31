@@ -1459,6 +1459,79 @@ class StewardService:
             raise StewardServiceError("integrated_stage_review_not_passed")
         return result
 
+    def _preflight_bound_stage_accepted_main(
+        self,
+        mission: mission_contract.MaintenanceMission,
+        stage: mission_contract.Stage,
+        expected_base: str,
+    ) -> tuple[mission_contract.MaintenanceMission, dict[str, Any] | None]:
+        """Require current accepted main before any bound-Stage mutation."""
+
+        read_main = getattr(self.github, "fetch_accepted_main", None)
+        try:
+            if not callable(read_main):
+                raise GitHubReadError("accepted_main_read_unavailable")
+            current_main = read_main(mission.repository_identity.repository)
+            if (
+                not isinstance(current_main, str)
+                or mission_contract.SHA40.fullmatch(current_main) is None
+            ):
+                raise GitHubReadError("accepted_main_read_malformed")
+        except (GitHubReadError, GitHubFactsError, OSError):
+            self.journal.append(
+                event="ACCEPTED_MAIN_READ_UNAVAILABLE",
+                idempotency_key=(
+                    f"accepted-main-read-unavailable:{mission.mission_id}:"
+                    f"{stage.stage_id}:{expected_base}"
+                ),
+                mission_id=mission.mission_id,
+                stage_id=stage.stage_id,
+                card_id="",
+                state="BLOCKED",
+                detail="authoritative_accepted_main_required_before_bound_mutation",
+                data={},
+                enforce_transition=False,
+            )
+            return mission, {"status": "WAITING_GITHUB_READBACK", "stage_id": stage.stage_id}
+
+        if current_main == expected_base:
+            return mission, None
+
+        rebound = replace(
+            mission,
+            repository_identity=replace(
+                mission.repository_identity,
+                base_sha=current_main,
+            ),
+        )
+        self.journal.append(
+            event="MISSION_BASE_DRIFT_REBOUND",
+            idempotency_key=f"mission-base-drift-rebound:{mission.mission_id}:{current_main}",
+            mission_id=mission.mission_id,
+            stage_id="mission",
+            card_id="",
+            state="RUNNING",
+            detail="authoritative_accepted_main_drift_rebound",
+            data=rebound.to_wire(),
+            enforce_transition=False,
+        )
+        self.mission = rebound
+        self.journal.append(
+            event="STAGE_REPLAN_REQUESTED",
+            idempotency_key=(
+                f"stage-main-drift-replan:{mission.mission_id}:"
+                f"{stage.stage_id}:{current_main}"
+            ),
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="accepted_main_drift_requires_fresh_candidate",
+            data={"new_base_sha": current_main, "old_base_sha": expected_base},
+            enforce_transition=False,
+        )
+        return rebound, {"status": "REPLAN_REQUIRED", "stage_id": stage.stage_id}
+
     def _advance_bound_stage(
         self,
         mission: mission_contract.MaintenanceMission,
@@ -1478,8 +1551,20 @@ class StewardService:
                 raise ValueError("stage_binding_invalid")
         except (KeyError, TypeError, ValueError):
             raise StewardServiceError("stage_binding_invalid")
+
         try:
             facts = self.github.fetch_stage_pr(mission.repository_identity.repository, pr_number)
+            # A merged PR is already in the readback phase: accepted main is
+            # expected to have advanced to its merge commit, so do not treat
+            # that proven transition as drift.  For every still-open PR,
+            # however, current accepted main must match the Stage base before
+            # review, Ready, or merge work can continue.
+            if facts.get("merged") is not True:
+                mission, bound_preflight = self._preflight_bound_stage_accepted_main(
+                    mission, stage, expected_base
+                )
+                if bound_preflight is not None:
+                    return bound_preflight
             if facts.get("base_sha") != expected_base:
                 read_main = getattr(self.github, "fetch_accepted_main", None)
                 if not callable(read_main):
@@ -1584,6 +1669,11 @@ class StewardService:
                     "reviewed_range_sha256": review.reviewed_range_sha256,
                     "review_receipt_sha256": review.review_receipt_sha256,
                 }
+            mission, bound_preflight = self._preflight_bound_stage_accepted_main(
+                mission, stage, expected_base
+            )
+            if bound_preflight is not None:
+                return bound_preflight
             try:
                 receipt = self.github_writer.publish_exact_head_review(
                     mission.repository_identity.repository,
@@ -1646,6 +1736,11 @@ class StewardService:
                 enforce_transition=False,
             )
         if facts.get("draft") is True:
+            mission, bound_preflight = self._preflight_bound_stage_accepted_main(
+                mission, stage, expected_base
+            )
+            if bound_preflight is not None:
+                return bound_preflight
             ready_intent = self._latest_stage_event(
                 mission.mission_id, stage.stage_id, "STAGE_READY_DISPATCH_INTENT"
             )
@@ -1707,6 +1802,11 @@ class StewardService:
                 return {"status": "REPLAN_REQUIRED", "stage_id": stage.stage_id}
             return {"status": "WAITING_CI_REVIEW", "stage_id": stage.stage_id, "pr_number": pr_number}
         if status.outcome == "WAITING_FOR_MERGE":
+            mission, bound_preflight = self._preflight_bound_stage_accepted_main(
+                mission, stage, expected_base
+            )
+            if bound_preflight is not None:
+                return bound_preflight
             merge_intent = self._latest_stage_event(
                 mission.mission_id, stage.stage_id, "STAGE_MERGE_DISPATCH_INTENT"
             )
