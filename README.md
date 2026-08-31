@@ -211,6 +211,15 @@ cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover 
 
 Current test counts are reported by CI and release evidence, not by hard-coded badges in this README. Python SDK tests run separately under `sdk/python/` (Python 3.11+).
 
+Documentation-only focused verification (see [CONTRIBUTING.md](CONTRIBUTING.md) for contributor verification tiers):
+
+```bash
+git diff --check
+uv run --no-project python tools/check_readme_public_surface.py
+```
+
+`tools/check_readme_public_surface.py` fails closed when the public README reintroduces known-bad install claims, unverified `:latest` container paths, or hard-coded test counts. Its focused unit test is `tools/test_readme_public_surface.py`.
+
 ## How To Run Without Docker
 
 API only:
