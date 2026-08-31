@@ -945,6 +945,56 @@ class StewardService:
                 return event
         return None
 
+    def _bound_stage_mutation_pending(
+        self, mission_id: str, stage_id: str
+    ) -> str | None:
+        """Return the first non-terminal bound-stage mutation intent.
+
+        Accepted-main drift is only actionable when no external mutation is
+        still unresolved.  In particular, a merge dispatch intent can
+        represent a workflow that was issued but whose result was not yet
+        observed; rebinding the Mission and superseding that PR in this state
+        could duplicate or race the merge effect.  The journal is the sole
+        source for this recovery gate, so it remains restart-safe and does not
+        require a second lifecycle store.
+        """
+
+        if self._latest_stage_event(
+            mission_id, stage_id, "STAGE_OUTCOME_UNKNOWN"
+        ) is not None:
+            return "OUTCOME_UNKNOWN"
+
+        review_intent = self._latest_stage_event(
+            mission_id, stage_id, "STAGE_REVIEW_DISPATCH_INTENT"
+        )
+        review_terminal = self._latest_stage_event(
+            mission_id, stage_id, "STAGE_REVIEW_RECEIPT_PUBLISHED"
+        )
+        if review_intent is not None and review_terminal is None:
+            return "REVIEW"
+
+        ready_intent = self._latest_stage_event(
+            mission_id, stage_id, "STAGE_READY_DISPATCH_INTENT"
+        )
+        ready_terminal = self._latest_stage_event(
+            mission_id, stage_id, "STAGE_PR_READY"
+        )
+        if ready_intent is not None and ready_terminal is None:
+            return "READY"
+
+        merge_intent = self._latest_stage_event(
+            mission_id, stage_id, "STAGE_MERGE_DISPATCH_INTENT"
+        )
+        merge_terminal = self._latest_stage_event(
+            mission_id, stage_id, "POST_MERGE_VERIFIED"
+        )
+        if merge_intent is not None and merge_terminal is None:
+            # STAGE_MERGE_DISPATCHED records that dispatch returned, not that
+            # the workflow's merge effect was proven.  Only post-merge
+            # readback terminalizes this external mutation boundary.
+            return "MERGE"
+        return None
+
     def _replan_stage(
         self,
         mission: mission_contract.MaintenanceMission,
@@ -958,6 +1008,18 @@ class StewardService:
         cannot be reused.  The failed branch is intentionally retained as a
         recovery artifact.
         """
+
+        pending_mutation = self._bound_stage_mutation_pending(
+            mission.mission_id, stage.stage_id
+        )
+        if pending_mutation is not None:
+            return {
+                "status": "OUTCOME_UNKNOWN"
+                if pending_mutation == "OUTCOME_UNKNOWN"
+                else "WAITING_GITHUB_READBACK",
+                "stage_id": stage.stage_id,
+                "pending_mutation": pending_mutation,
+            }
 
         replan_requests = [
             event
@@ -1464,8 +1526,16 @@ class StewardService:
         mission: mission_contract.MaintenanceMission,
         stage: mission_contract.Stage,
         expected_base: str,
+        *,
+        rebind_on_drift: bool = True,
     ) -> tuple[mission_contract.MaintenanceMission, dict[str, Any] | None]:
-        """Require current accepted main before any bound-Stage mutation."""
+        """Require current accepted main before any bound-Stage mutation.
+
+        Recovery of an unresolved external mutation uses the same authoritative
+        read with ``rebind_on_drift=False``.  That mode proves only whether the
+        bound base is still current; it deliberately does not append a replan
+        or change Mission identity while the mutation outcome is ambiguous.
+        """
 
         read_main = getattr(self.github, "fetch_accepted_main", None)
         try:
@@ -1496,6 +1566,13 @@ class StewardService:
 
         if current_main == expected_base:
             return mission, None
+
+        if not rebind_on_drift:
+            return mission, {
+                "status": "OUTCOME_UNKNOWN",
+                "stage_id": stage.stage_id,
+                "pending_mutation": "unresolved_bound_mutation",
+            }
 
         rebound = replace(
             mission,
@@ -1554,18 +1631,37 @@ class StewardService:
 
         try:
             facts = self.github.fetch_stage_pr(mission.repository_identity.repository, pr_number)
+            pending_mutation = self._bound_stage_mutation_pending(
+                mission.mission_id, stage.stage_id
+            )
             # A merged PR is already in the readback phase: accepted main is
             # expected to have advanced to its merge commit, so do not treat
             # that proven transition as drift.  For every still-open PR,
             # however, current accepted main must match the Stage base before
-            # review, Ready, or merge work can continue.
-            if facts.get("merged") is not True:
+            # review, Ready, or merge work can continue.  An unresolved
+            # mutation intent is checked first, though: rebinding here could
+            # cause a replan/supersede while the external effect is still
+            # ambiguous.
+            if facts.get("merged") is not True and pending_mutation is not None:
+                # Read current accepted main, but never rebind or request a
+                # replacement while a prior review/Ready/merge effect is
+                # unresolved.  This is the read-only reconciliation boundary.
+                _mission, pending_guard = self._preflight_bound_stage_accepted_main(
+                    mission,
+                    stage,
+                    expected_base,
+                    rebind_on_drift=False,
+                )
+                if pending_guard is not None:
+                    pending_guard["pending_mutation"] = pending_mutation
+                    return pending_guard
+            if facts.get("merged") is not True and pending_mutation is None:
                 mission, bound_preflight = self._preflight_bound_stage_accepted_main(
                     mission, stage, expected_base
                 )
                 if bound_preflight is not None:
                     return bound_preflight
-            if facts.get("base_sha") != expected_base:
+            if facts.get("base_sha") != expected_base and pending_mutation is None:
                 read_main = getattr(self.github, "fetch_accepted_main", None)
                 if not callable(read_main):
                     return {"status": "WAITING_GITHUB_READBACK", "stage_id": stage.stage_id}
@@ -1669,11 +1765,12 @@ class StewardService:
                     "reviewed_range_sha256": review.reviewed_range_sha256,
                     "review_receipt_sha256": review.review_receipt_sha256,
                 }
-            mission, bound_preflight = self._preflight_bound_stage_accepted_main(
-                mission, stage, expected_base
-            )
-            if bound_preflight is not None:
-                return bound_preflight
+            if pending_mutation is None:
+                mission, bound_preflight = self._preflight_bound_stage_accepted_main(
+                    mission, stage, expected_base
+                )
+                if bound_preflight is not None:
+                    return bound_preflight
             try:
                 receipt = self.github_writer.publish_exact_head_review(
                     mission.repository_identity.repository,
@@ -1736,11 +1833,15 @@ class StewardService:
                 enforce_transition=False,
             )
         if facts.get("draft") is True:
-            mission, bound_preflight = self._preflight_bound_stage_accepted_main(
-                mission, stage, expected_base
+            pending_mutation = self._bound_stage_mutation_pending(
+                mission.mission_id, stage.stage_id
             )
-            if bound_preflight is not None:
-                return bound_preflight
+            if pending_mutation is None:
+                mission, bound_preflight = self._preflight_bound_stage_accepted_main(
+                    mission, stage, expected_base
+                )
+                if bound_preflight is not None:
+                    return bound_preflight
             ready_intent = self._latest_stage_event(
                 mission.mission_id, stage.stage_id, "STAGE_READY_DISPATCH_INTENT"
             )
@@ -1802,11 +1903,15 @@ class StewardService:
                 return {"status": "REPLAN_REQUIRED", "stage_id": stage.stage_id}
             return {"status": "WAITING_CI_REVIEW", "stage_id": stage.stage_id, "pr_number": pr_number}
         if status.outcome == "WAITING_FOR_MERGE":
-            mission, bound_preflight = self._preflight_bound_stage_accepted_main(
-                mission, stage, expected_base
+            pending_mutation = self._bound_stage_mutation_pending(
+                mission.mission_id, stage.stage_id
             )
-            if bound_preflight is not None:
-                return bound_preflight
+            if pending_mutation is None:
+                mission, bound_preflight = self._preflight_bound_stage_accepted_main(
+                    mission, stage, expected_base
+                )
+                if bound_preflight is not None:
+                    return bound_preflight
             merge_intent = self._latest_stage_event(
                 mission.mission_id, stage.stage_id, "STAGE_MERGE_DISPATCH_INTENT"
             )
