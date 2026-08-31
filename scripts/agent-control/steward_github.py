@@ -690,15 +690,41 @@ class GhReadOnlyGitHub:
         ci_state = "UNKNOWN"
         if isinstance(checks, list) and checks:
             check_items = [item for item in checks if isinstance(item, dict)]
-            conclusions = [item.get("conclusion") for item in check_items]
-            statuses = {
-                item.get("status")
-                for item in check_items
-            }
             required_jobs = set(REQUIRED_CI_JOBS)
+            # A PR can retain historical advisory/Draft checks (for example a
+            # failed ``fast-pr-checks`` run) after every canonical required
+            # check succeeds.  Merge eligibility is defined by the required
+            # matrix only, so collapse duplicate required names to the newest
+            # observed run and ignore unrelated checks.
+            named_items = [
+                (CI_CHECK_ALIASES.get(item["name"], item["name"]), item, index)
+                for index, item in enumerate(check_items)
+                if isinstance(item.get("name"), str)
+            ]
+            if named_items:
+                latest: dict[str, tuple[tuple[str, str, str, int], dict[str, Any]]] = {}
+                for logical, item, index in named_items:
+                    if logical not in required_jobs:
+                        continue
+                    stamp = (
+                        str(item.get("completedAt") or ""),
+                        str(item.get("startedAt") or ""),
+                        str(item.get("databaseId") or ""),
+                        index,
+                    )
+                    previous = latest.get(logical)
+                    if previous is None or stamp >= previous[0]:
+                        latest[logical] = (stamp, item)
+                canonical_items = [item for _stamp, item in latest.values()]
+            else:
+                # Preserve the strict pending/unknown behavior for malformed
+                # legacy payloads that omit check names entirely.
+                canonical_items = check_items
+            conclusions = [item.get("conclusion") for item in canonical_items]
+            statuses = {item.get("status") for item in canonical_items}
             observed_names = {
                 CI_CHECK_ALIASES.get(item["name"], item["name"])
-                for item in check_items
+                for item in canonical_items
                 if isinstance(item.get("name"), str)
             }
             if "FAILURE" in conclusions or "CANCELLED" in conclusions:
@@ -721,7 +747,7 @@ class GhReadOnlyGitHub:
                 )
             elif not required_jobs.issubset(observed_names):
                 ci_state = "UNKNOWN"
-            elif len(conclusions) == len(checks) and all(
+            elif len(canonical_items) == len(required_jobs) and all(
                 conclusion == "SUCCESS" for conclusion in conclusions
             ):
                 ci_state = "PASS"
