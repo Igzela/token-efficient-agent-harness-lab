@@ -701,6 +701,10 @@ class GhReadOnlyGitHub:
                 for index, item in enumerate(check_items)
                 if isinstance(item.get("name"), str)
             ]
+            malformed_named_items = bool(named_items) and any(
+                not isinstance(item.get("name"), str) or not item["name"].strip()
+                for item in check_items
+            )
             if named_items:
                 latest: dict[str, tuple[tuple[str, str, str, int], dict[str, Any]]] = {}
                 for logical, item, index in named_items:
@@ -729,6 +733,11 @@ class GhReadOnlyGitHub:
             }
             if "FAILURE" in conclusions or "CANCELLED" in conclusions:
                 ci_state = "FAIL"
+            elif malformed_named_items:
+                # A named rollup that also contains an unnamed/malformed
+                # entry cannot prove that the canonical matrix is complete.
+                # Do not silently discard that entry and return PASS.
+                ci_state = "UNKNOWN"
             elif (
                 len(check_items) != len(checks)
                 or None in conclusions
