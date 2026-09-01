@@ -1,6 +1,6 @@
 # Autonomy and Testing Contract
 
-Last updated: 2026-08-31.
+Last updated: 2026-09-01.
 
 This document defines the autonomy governance, lifecycle state machine, review convergence protocol, exact-head CI, and guarded merge contracts for the Autonomous Steward system.
 
@@ -23,6 +23,35 @@ Research Missions may use Steward for Stage decomposition and re-planning, but
 their evidence remains owned by the existing RWE/evaluation and
 Harness-Evolution boundaries. A successful candidate returns to the common
 evidence loop before any explicitly authorized adoption.
+
+## Research Mission Stage Contracts
+
+The owner-approved research Mission **`MISSION-RESEARCH-20260901`** is the
+accepted bounded closed-loop research mainline: a finite, frozen set of
+canonical experiments on the common RWE basis covering the accepted
+`Harness × Model × Strategy` descriptors (RWE, MX1 C1, CWS), Harness Evolution
+L1/L2, and the Meta R4/R5/R6 replication/memory/skill adoption disposition
+questions. The Mission and its Stages own their descriptors, schedules,
+budgets, identities, protocol, seeds, lifecycle, analysis, and results in the
+same evidence-led sequence; documentation and source/test/workflow changes are
+confined to the owners listed in the Mission objective. Milestone gates are
+owned by `docs/ROADMAP.md`.
+
+Stage 1 **`steward-stage-1-3dc4142fec0b3eb0`** recorded this Mission contract
+in `docs/ROADMAP.md` and reconciled the accepted common evidence basis. The
+accepted Stage 2 **`steward-stage-2-58c5869b6126f663`** records its bounded
+stage contract in this document — the canonical owner of mission/stage
+contracts and of autonomy, testing, review, and merge rules — and confines all
+changes to the owners listed in the Mission objective.
+
+Recording a Stage contract here grants no new authority. It does not grant a
+live Provider or spend authorization and does not claim any evidence,
+execution, adoption, or disposition until each finite frozen experiment has
+produced a decision-grade result through its own required hard gates. The
+accepted CORE does not authorize any pilot, effect, transfer, replication, or
+adoption; the emergency-stop control remains untouched. Advancement follows
+the ordered hard gates, exact-head CI, and guarded-merge contract below, and
+rollback targets the accepted Mission/Stage baseline.
 
 ## Lifecycle State Machine
 
