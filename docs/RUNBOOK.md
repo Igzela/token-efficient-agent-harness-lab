@@ -2,7 +2,7 @@
 
 Operator procedures for the local Agent Control Plane.
 
-Last updated: 2026-08-31.
+Last updated: 2026-09-01.
 
 ## Session Entry
 
@@ -541,6 +541,28 @@ Before commit, the finalizer performs bounded structural validation only: it val
 
 Review terminal states are explicit. The validator accepts only schema-valid exact-head artifacts. Exact `PASS` is the only merge-authorizing review verdict under the Review Convergence Protocol in `docs/AUTONOMY.md`: it requires the complete bounded diff, no open blockers, and affirmative security and rollback gates; exact-head CI is verified independently from trusted GitHub state. Deferred non-blocking notes on `PASS` are allowed residual risk and do not force another head. `PASS_WITH_NOTES`, `BLOCKED`, `FAIL`, and `DECISION_REQUIRED` remain non-authorizing outcomes. Malformed, unavailable, oversized, or head-mismatched output is never recorded as a verdict. Merge additionally requires current review decision, effective human review, complete review-thread evidence, and all required canonical checks for the same head; unavailable or contradictory evidence fails closed.
 
+## Research Mainline Operator Runbook
+
+The owner-approved research Mission **`MISSION-RESEARCH-20260901`** is the
+accepted bounded closed-loop research mainline. Operator procedures for this
+mainline are confined to finite frozen canonical experiments on the common RWE
+basis: every run freezes its task/corpus identity, evaluator binding, immutable
+`Harness × Model × Strategy` descriptors, schedule, budgets, identities,
+protocol, seeds, and lifecycle analysis before any execution. There is no live
+or ad-hoc comparison run path.
+
+This section records the operator boundary, not a proved live execution
+procedure. The research mainline grants no provider spend, effect, merge,
+release, deployment, evaluator, or adoption authority by itself; no experiment
+has produced a decision-grade result through its required hard gates yet. An
+operator must not run provider-backed experiments from this RUNBOOK, and the
+emergency-stop control remains untouched.
+
+Milestone and research-program gates are owned by `docs/ROADMAP.md`; module and
+authority boundaries by `docs/ARCHITECTURE.md`; autonomy, testing, review, and
+merge rules by `docs/AUTONOMY.md`. This document records only the operator
+procedure boundary and does not duplicate those owners.
+
 ## Release Upgrade and Rollback
 
 Never execute a mutable branch script or an unverified pipe. Download the exact
@@ -654,6 +676,13 @@ new authority.
    instead of silent retry or destructive cleanup.
 7. **Link, do not duplicate** — the document references `docs/AUTONOMY.md` for
    autonomy, review, and merge rules instead of restating them.
+8. **Research-mainline operator boundary** — the document asserts operator
+   procedures for `MISSION-RESEARCH-20260901` are confined to finite frozen
+   canonical experiments on the common RWE basis, that no live or ad-hoc run,
+   provider spend, effect, merge, release, deployment, evaluator, or adoption
+   authority is granted, and that milestone, architecture, and autonomy gates
+   are linked to `docs/ROADMAP.md`, `docs/ARCHITECTURE.md`, and
+   `docs/AUTONOMY.md` rather than restated.
 
-Assertions 1-7 are bounded to this document and hold at the accepted head; the
+Assertions 1-8 are bounded to this document and hold at the accepted head; the
 change is documentation-only and adds no new authority.
