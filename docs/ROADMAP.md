@@ -95,16 +95,27 @@ packet execution route was superseded. The old packet route and
 
 ## Research Mission Gates and Next Frontier
 
-No research Mission is currently active or authorized on accepted `main`. The
-next permitted research Mission, if separately owner-approved, is the accepted
-window **`PE7-HE-MX1-PILOT-1` (`BLOCKED_PREREQUISITE`)**: a finite
-`Harness × Model × Strategy` evaluation on the common RWE basis. It begins
-with fresh descriptor, corpus/evaluator, preflight, authority, and parked-input
-reconciliation; the accepted evidence specifically requires separate finite
-effect authorization plus exact descriptor-manifest and schedule-digest
-preflight. This names a research frontier, not a live Provider or spend
-authorization. The accepted CORE does not authorize the pilot, and the
-emergency-stop control remains untouched.
+An owner-approved research Mission **`MISSION-RESEARCH-20260901`** is active
+with an accepted Stage **`steward-stage-1-3dc4142fec0b3eb0`**. It is the
+accepted bounded closed-loop research mainline: a finite, frozen set of
+canonical experiments on the common RWE basis covering the accepted
+`Harness × Model × Strategy` descriptors (RWE, MX1 C1, CWS), Harness Evolution
+L1/L2, and the Meta R4/R5/R6 replication/memory/skill adoption disposition
+questions. The Mission and Stage own their descriptors, schedules, budgets,
+identities, protocol, seeds, lifecycle, analysis, and results in the same
+evidence-led sequence; documentation and source/test/workflow changes are
+confined to the owners listed in the Mission objective.
+
+Stage 1 begins by recording this contract in `docs/ROADMAP.md` and
+reconciling the accepted common evidence basis. It does not grant a live
+Provider or spend authorization and does not claim any evidence, execution,
+adoption, or disposition until each finite frozen experiment has produced a
+decision-grade result through its own required hard gates. The accepted CORE
+does not authorize any pilot, effect, transfer, replication, or adoption; the
+emergency-stop control remains untouched. The earlier accepted window
+**`PE7-HE-MX1-PILOT-1` (`BLOCKED_PREREQUISITE`)** is subsumed into this
+Mission's bounded reconciliation rather than acting as a separate live
+authority.
 
 Advancement requires, in order:
 

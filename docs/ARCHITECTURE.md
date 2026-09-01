@@ -1,7 +1,7 @@
 # Architecture
 
 Current version: v38
-Last updated: 2026-08-31.
+Last updated: 2026-09-01.
 
 This is the durable architecture, module ownership, and trust boundary specification for the Token-Efficient Agent Harness Lab. It consolidates system design, module ownership, single persistence authority, and trust boundaries into one authoritative document.
 
@@ -38,6 +38,33 @@ separate research authority. Context Working Set, memory, and skill mechanisms
 are model-visible Strategy inputs when registered for an experiment; they do
 not become truth, memory ownership, scheduling, evaluation, or approval merely
 because they reduce context.
+
+## Research Mainline: Finite Frozen Canonical Experiments
+
+Research evidence on the common RWE basis is obtained only through finite
+frozen canonical experiments, never through live or ad-hoc comparison runs.
+Every experiment binds, before any run, a frozen task/corpus identity, an
+exact evaluator binding, immutable Harness, Model, and Strategy descriptors, a
+deterministic schedule, comparable budgets and identities, a protocol and
+seeds, and a lifecycle analysis with explicit results and missingness. The
+experiment mainline never grants effect, spend, merge, release, deployment,
+evaluator, or adoption authority by itself; a separate finite authorization is
+required for any live effect.
+
+| Component | Canonical owner | Owns | Explicitly does not own |
+|---|---|---|---|
+| Common evidence substrate | `engine/src/rwe/` | Frozen task/corpus/schedule identity, budgets, protocol seeds, lifecycle evidence, and missingness | Provider spend, live-effect authority, or a second evaluator |
+| Experimental descriptors | `engine/src/harness_evolution.rs` | Immutable Harness, Model, and Strategy descriptors, matrix identity, adapter normalization, and explicit `INCOMPARABLE` projections | Runtime scheduling, budget/effect authority, evaluator mutation, or adoption |
+| Evaluation and disposition | `engine/src/harness_evolution_eval.rs` | Sealed holdout, evaluator binding, hard gates, candidate/causal/Pareto evidence, and explicit `INCOMPARABLE` outcomes | Active-Harness replacement, merge, release, deployment, or adoption |
+| Persistence and audit | `engine/src/storage/local_product_store/` | Experiment evidence/artifacts, budgets, and terminal settlement receipts | Research evaluation or a second truth store |
+| Adoption decision | User through an owner-approved Mission/Stage decision | Evidence-backed transfer/replication review and explicit adoption of a new Harness identity | Merge, release, deployment, evaluator replacement, or self-authorized change |
+
+Level-1 evidence and disposition (transfer, replication, and memory+skill) and
+Level-2/Meta gates (R4/R5/R6) require complete lower-rung evidence, hard
+quality/safety/comparability gates, and explicit authorized adoption before any
+change to the active Harness. The research milestone gates are owned by
+`docs/ROADMAP.md`; autonomy, testing, review, and merge rules by
+`docs/AUTONOMY.md`.
 
 ## Three-Tier Operational Model
 
@@ -160,6 +187,16 @@ new authority.
    `engine/src/storage/local_product_store/schema.rs`.
 6. **Link, do not duplicate** — the document references `docs/AUTONOMY.md` for
    autonomy, testing, review, and merge rules instead of restating them.
+7. **Frozen-experiment gate** — the document asserts research evidence on the
+   common RWE basis is obtained only through finite frozen canonical
+   experiments whose corpus, evaluator, descriptors, schedule, budgets,
+   identities, protocol seeds, lifecycle analysis, and results are frozen
+   before any run, and that the experiment mainline grants no effect, spend,
+   merge, release, deployment, evaluator, or adoption authority by itself.
+8. **Level-1/Level-2/Meta gates** — the document asserts Level-1
+   (transfer/replication/memory+skill) and Level-2/Meta (R4/R5/R6) disposition
+   require complete lower-rung evidence, hard gates, and explicit authorized
+   adoption before any change to the active Harness.
 
-Assertions 1-6 are bounded to this document and hold at the accepted head; the
+Assertions 1-8 are bounded to this document and hold at the accepted head; the
 change is documentation-only and adds no new authority.
