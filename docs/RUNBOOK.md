@@ -2,11 +2,40 @@
 
 Operator procedures for the local Agent Control Plane.
 
-Last updated: 2026-08-31.
+Last updated: 2026-09-02.
 
 ## Session Entry
 
 Operator sessions enter through the accepted router: run `uv run --no-project python scripts/session_context.py route --role operator` (or the full entry command from `START_HERE.md`) to obtain the bounded accepted-document route before using any procedure below. This file owns only procedures that have actually been proved.
+
+## Orphaned Canonical Merge Dispatch
+
+The durable authority/evidence and safety contract is canonical in
+[`docs/ARCHITECTURE.md`](ARCHITECTURE.md#merge-dispatch-recovery-and-emergency-stop-contract).
+Use this procedure for the already-proved operator flow: read the exact
+Mission/Stage/PR/base/head/ref identity and accepted `main`, consume one
+authenticated OWNER marker, verify the stop state immediately before any
+mutation, retain the branch, and record the GitHub readback. Never retry an
+unknown dispatch or infer `NO_EFFECT_CONFIRMED` from elapsed time or a missing
+run; recovery `OUTCOME_UNKNOWN` is not research `INSUFFICIENT`.
+
+Required marker shape (replace every placeholder; post nothing until the
+identity has been independently checked):
+
+```text
+<!-- steward-orphan-dispatch-recovery:v1 {"mission_id":"...","proposal_sha256":"...","stage_id":"...","repository":"Igzela/token-efficient-agent-harness-lab","control_issue_number":208,"pr_number":...,"base_sha":"...","head_sha":"...","workflow_file":"agent-merge.yml","ref":"main","dispatch_id":"...","authorization":"ORPHAN_DISPATCH_RECOVERY","action":"QUARANTINE_EXACT_PR","authorization_id":"..."} -->
+```
+
+The authenticated GitHub author must have `OWNER` association and match the
+Mission's trusted owner identity. One exact marker is accepted; duplicate,
+malformed, stale, or partially matching markers remain fail-closed. The
+comment's GitHub `created_at` is the temporal authority; do not put
+`approved_at` or any external resolution in the marker. The marker authorizes
+only the exact quarantine. Readback yields `MERGED`, `CLOSED_UNMERGED`, or
+`OUTCOME_UNKNOWN` according to the canonical contract; the service never
+clears the stop label, retries the old dispatch, direct-merges, closes a
+different PR, deletes the retained branch, or permits concurrent old/fresh
+merge eligibility.
 
 ## Agent Runtime and Tool Policy Operations
 

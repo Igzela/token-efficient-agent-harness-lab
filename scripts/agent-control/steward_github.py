@@ -10,15 +10,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import re
 import subprocess
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 import review_convergence
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 PR_STATES = frozenset({"OPEN", "CLOSED", "MERGED"})
@@ -26,6 +30,59 @@ CHECK_STATES = frozenset({"PASS", "PENDING", "FAIL", "UNKNOWN"})
 REVIEW_STATES = frozenset(
     {"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"}
 )
+ORPHAN_DISPATCH_RECOVERY_MARKER = "steward-orphan-dispatch-recovery:v1"
+
+
+def merge_dispatch_identity(
+    repository: str,
+    pr_number: int,
+    expected_base_sha: str,
+    expected_head_sha: str,
+    *,
+    workflow_file: str = "agent-merge.yml",
+    ref: str = "main",
+    intent_key: str = "",
+) -> dict[str, Any]:
+    """Build the immutable identity for one logical workflow dispatch.
+
+    The intent key is journal-derived and therefore makes a later retry a new
+    identity even when a provider reuses the same PR/head.  The returned
+    ``dispatch_id`` is a digest, not a secret and never contains raw prompts or
+    credentials.
+    """
+    if (
+        not isinstance(repository, str)
+        or REPOSITORY.fullmatch(repository) is None
+        or type(pr_number) is not int
+        or pr_number < 1
+        or not isinstance(expected_base_sha, str)
+        or SHA40.fullmatch(expected_base_sha) is None
+        or not isinstance(expected_head_sha, str)
+        or SHA40.fullmatch(expected_head_sha) is None
+        or not isinstance(workflow_file, str)
+        or re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", workflow_file) is None
+        or not isinstance(ref, str)
+        or ref != "main"
+        or not isinstance(intent_key, str)
+        or len(intent_key) > 512
+        or "\n" in intent_key
+    ):
+        raise GitHubFactsError("merge_dispatch_identity_invalid")
+    wire = {
+        "repository": repository,
+        "pr_number": pr_number,
+        "base_sha": expected_base_sha,
+        "head_sha": expected_head_sha,
+        "workflow_file": workflow_file,
+        "ref": ref,
+        "intent_key": intent_key,
+    }
+    encoded = json.dumps(wire, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "schema_version": "merge_dispatch_identity.v1",
+        **wire,
+        "dispatch_id": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 class GitHubFactsError(RuntimeError):
@@ -39,6 +96,9 @@ class GitHubReadError(GitHubFactsError):
 class ReadOnlyGitHub(Protocol):
     def fetch_stage_pr(self, repository: str, pr_number: int) -> dict[str, Any]:
         """Return bounded facts for one PR; never perform a mutation."""
+
+    def fetch_accepted_main(self, repository: str) -> str:
+        """Return the authoritative accepted main SHA; never perform a mutation."""
 
 
 def _exact_head_review_receipt_pass(
@@ -847,6 +907,10 @@ class GhReadOnlyGitHub:
 class GitHubMutationError(GitHubFactsError):
     """A GitHub mutation request failed, timed out, or had ambiguous outcome."""
 
+    def __init__(self, message: str, *, evidence: Mapping[str, Any] | None = None):
+        super().__init__(message)
+        self.evidence = dict(evidence or {})
+
 
 class GitHubPreflightError(GitHubMutationError):
     """A mutation was rejected by read-only checks before any request was sent."""
@@ -898,6 +962,9 @@ class GitHubWriter(Protocol):
         pr_number: int,
         expected_head_sha: str,
         *,
+        expected_base_sha: str | None = None,
+        dispatch_id: str | None = None,
+        intent_key: str = "compatibility-call",
         merge_method: str = "squash",
         workflow_file: str = "agent-merge.yml",
         timeout_seconds: int = 120,
@@ -912,8 +979,40 @@ class GitHubWriter(Protocol):
         *,
         workflow_file: str = "agent-merge.yml",
         not_before: str | None = None,
+        expected_base_sha: str | None = None,
+        dispatch_id: str,
+        workflow_run_id: int | None = None,
     ) -> dict[str, Any]:
         """Read-only reconciliation for an interrupted merge workflow dispatch."""
+        ...
+
+    def read_orphan_dispatch_recovery_authorization(
+        self,
+        repository: str,
+        control_issue_number: int,
+        *,
+        mission_id: str,
+        proposal_sha256: str,
+        stage_id: str,
+        pr_number: int,
+        expected_base_sha: str,
+        expected_head_sha: str,
+        workflow_file: str,
+        dispatch_id: str,
+        owner_identity: str,
+    ) -> dict[str, Any] | None:
+        """Read one owner-authenticated recovery authorization marker."""
+        ...
+
+    def quarantine_stage_pr(
+        self,
+        repository: str,
+        pr_number: int,
+        *,
+        expected_base_sha: str,
+        expected_head_sha: str,
+    ) -> dict[str, Any]:
+        """Close one exact unmerged PR after readback-safe preflight."""
         ...
 
     def supersede_stage_pr(
@@ -946,6 +1045,9 @@ class GhGitHubWriter:
 
     def fetch_stage_pr(self, repository: str, pr_number: int) -> dict[str, Any]:
         return self.reader.fetch_stage_pr(repository, pr_number)
+
+    def fetch_accepted_main(self, repository: str) -> str:
+        return self.reader.fetch_accepted_main(repository)
 
     def create_or_update_stage_pr(
         self,
@@ -1172,15 +1274,20 @@ class GhGitHubWriter:
         pr_number: int,
         expected_head_sha: str,
         *,
+        expected_base_sha: str | None = None,
+        dispatch_id: str | None = None,
+        intent_key: str = "compatibility-call",
         merge_method: str = "squash",
         workflow_file: str = "agent-merge.yml",
         timeout_seconds: int = 120,
     ) -> dict[str, Any]:
         """Delegate merge strictly to the canonical agent-merge.yml workflow."""
         if (
-            REPOSITORY.fullmatch(repository) is None
+            not isinstance(repository, str)
+            or REPOSITORY.fullmatch(repository) is None
             or type(pr_number) is not int
             or pr_number < 1
+            or not isinstance(expected_head_sha, str)
             or SHA40.fullmatch(expected_head_sha) is None
         ):
             raise GitHubMutationError("github_merge_identity_invalid")
@@ -1188,6 +1295,22 @@ class GhGitHubWriter:
         facts = self.fetch_stage_pr(repository, pr_number)
         if facts.get("head_sha") != expected_head_sha:
             raise GitHubMutationError("head_sha_mismatch")
+        if expected_base_sha is not None and facts.get("base_sha") != expected_base_sha:
+            raise GitHubPreflightError("base_sha_mismatch")
+
+        actual_base_sha = expected_base_sha or facts.get("base_sha")
+        if not isinstance(actual_base_sha, str) or SHA40.fullmatch(actual_base_sha) is None:
+            raise GitHubMutationError("merge_base_sha_unavailable")
+        identity = merge_dispatch_identity(
+            repository,
+            pr_number,
+            actual_base_sha,
+            expected_head_sha,
+            workflow_file=workflow_file,
+            intent_key=intent_key,
+        )
+        if dispatch_id is not None and dispatch_id != identity["dispatch_id"]:
+            raise GitHubMutationError("merge_dispatch_id_mismatch")
 
         if facts.get("merged") is True:
             return {
@@ -1195,64 +1318,106 @@ class GhGitHubWriter:
                 "repository": repository,
                 "pr_number": pr_number,
                 "head_sha": expected_head_sha,
+                "dispatch_id": identity["dispatch_id"],
             }
 
         dispatch_cmd = [
-            "gh", "workflow", "run", workflow_file,
-            "--repo", repository,
-            "-f", f"pr_number={pr_number}",
-            "-f", f"head_sha={expected_head_sha}",
+            "gh", "api", "--method", "POST",
+            f"repos/{repository}/actions/workflows/{workflow_file}/dispatches",
+            "--input", "-",
         ]
+        dispatch_payload = {
+            "ref": "main",
+            "return_run_details": True,
+            "inputs": {
+                "pr_number": str(pr_number),
+                "head_sha": expected_head_sha,
+                "dispatch_id": identity["dispatch_id"],
+            },
+        }
+        dispatch_evidence = {
+            "repository": repository,
+            "pr_number": pr_number,
+            "expected_base_sha": actual_base_sha,
+            "expected_head_sha": expected_head_sha,
+            "workflow_file": workflow_file,
+            "ref": "main",
+            "dispatch_id": identity["dispatch_id"],
+        }
         try:
             dispatch_res = subprocess.run(
                 dispatch_cmd,
                 capture_output=True,
                 text=True,
+                input=json.dumps(dispatch_payload, sort_keys=True, separators=(",", ":")),
                 timeout=min(self.timeout_seconds, 30),
                 check=False,
             )
             if dispatch_res.returncode != 0:
-                raise GitHubMutationError(f"merge_workflow_dispatch_failed: {dispatch_res.stderr.strip()}")
+                raise GitHubMutationError(
+                    "merge_workflow_dispatch_failed",
+                    evidence=dispatch_evidence,
+                )
+            try:
+                dispatch_response = json.loads(dispatch_res.stdout or "")
+            except json.JSONDecodeError as exc:
+                raise GitHubMutationError(
+                    "merge_dispatch_run_id_unavailable",
+                    evidence=dispatch_evidence,
+                ) from exc
+            if not isinstance(dispatch_response, dict):
+                raise GitHubMutationError(
+                    "merge_dispatch_run_id_unavailable",
+                    evidence=dispatch_evidence,
+                )
+            run_id = dispatch_response.get("workflow_run_id")
+            run_url = dispatch_response.get("run_url")
+            html_url = dispatch_response.get("html_url")
+            if (
+                type(run_id) is not int
+                or run_id < 1
+                or not isinstance(run_url, str)
+                or not isinstance(html_url, str)
+            ):
+                raise GitHubMutationError(
+                    "merge_dispatch_run_id_unavailable",
+                    evidence=dispatch_evidence,
+                )
+            dispatch_evidence.update(
+                {
+                    "workflow_run_id": run_id,
+                    "run_url": run_url,
+                    "html_url": html_url,
+                }
+            )
         except subprocess.TimeoutExpired as exc:
             try:
                 if self.fetch_stage_pr(repository, pr_number).get("merged") is True:
-                    return {"merged": True, "repository": repository, "pr_number": pr_number, "head_sha": expected_head_sha}
-            except Exception:
-                pass
-            raise GitHubMutationError("merge_outcome_unknown") from exc
-        except OSError as exc:
-            raise GitHubMutationError("gh_cli_unavailable") from exc
-
-        import time
-        start_time = time.time()
-        while time.time() - start_time < timeout_seconds:
-            try:
-                live_facts = self.fetch_stage_pr(repository, pr_number)
-                if live_facts.get("merged") is True:
                     return {
                         "merged": True,
                         "repository": repository,
                         "pr_number": pr_number,
                         "head_sha": expected_head_sha,
+                        **dispatch_evidence,
                     }
-                if live_facts.get("state") == "CLOSED" and not live_facts.get("merged"):
-                    raise GitHubMutationError("stage_pr_closed_without_merge")
-            except GitHubReadError:
+            except Exception:
                 pass
-            time.sleep(2)
-
-        try:
-            final_facts = self.fetch_stage_pr(repository, pr_number)
-            if final_facts.get("merged") is True:
-                return {
-                    "merged": True,
-                    "repository": repository,
-                    "pr_number": pr_number,
-                    "head_sha": expected_head_sha,
-                }
-        except Exception:
-            pass
-        raise GitHubMutationError("merge_outcome_unknown")
+            raise GitHubMutationError("merge_outcome_unknown", evidence=dispatch_evidence) from exc
+        except OSError as exc:
+            raise GitHubMutationError("gh_cli_unavailable", evidence=dispatch_evidence) from exc
+        # The run identity is returned before any merge outcome is inferred.
+        # The caller must durably journal this receipt first, then use the
+        # read-only run/PR/main reconciler.  A successful dispatch is not a
+        # successful merge and this method intentionally does not poll by
+        # elapsed time.
+        return {
+            "status": "DISPATCHED",
+            "merged": False,
+            "repository": repository,
+            "pr_number": pr_number,
+            "head_sha": expected_head_sha,
+            **dispatch_evidence,
+        }
 
     def reconcile_merge_dispatch(
         self,
@@ -1262,39 +1427,79 @@ class GhGitHubWriter:
         *,
         workflow_file: str = "agent-merge.yml",
         not_before: str | None = None,
+        expected_base_sha: str | None = None,
+        dispatch_id: str,
+        workflow_run_id: int | None = None,
     ) -> dict[str, Any]:
         """Reconcile one interrupted workflow dispatch without writing.
 
-        ``gh workflow run`` does not return a durable run identifier.  The
-        merge intent therefore remains unresolved until a read-only scan finds
-        a run whose retained logs bind both the requested PR number and exact
-        head.  A terminal failed/cancelled run plus an independently open PR
-        proves that no merge effect occurred; running, successful, malformed,
-        or unidentifiable runs stay fail-closed.
+        A new dispatch records the run ID returned by the REST dispatch API.
+        An older intent may have no run ID, so the read-only fallback scans
+        exact-head workflow runs and binds terminal runs through their complete
+        PR/head/dispatch log markers. An empty scan is deliberately
+        ``NOT_PROVEN``; only an authenticated owner resolution can terminate
+        an orphan with no durable run identity.
         """
 
         if (
-            REPOSITORY.fullmatch(repository) is None
+            not isinstance(repository, str)
+            or REPOSITORY.fullmatch(repository) is None
             or type(pr_number) is not int
             or pr_number < 1
+            or not isinstance(expected_head_sha, str)
             or SHA40.fullmatch(expected_head_sha) is None
+            or not isinstance(workflow_file, str)
             or re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", workflow_file) is None
             or (not_before is not None and not isinstance(not_before, str))
+            or (
+                expected_base_sha is not None
+                and (
+                    not isinstance(expected_base_sha, str)
+                    or SHA40.fullmatch(expected_base_sha) is None
+                )
+            )
+            or not isinstance(dispatch_id, str)
+            or SHA256.fullmatch(dispatch_id) is None
+            or (workflow_run_id is not None and (type(workflow_run_id) is not int or workflow_run_id < 1))
         ):
             raise GitHubReadError("merge_reconcile_identity_invalid")
-        list_command = [
-            "gh",
-            "run",
-            "list",
-            "--workflow",
-            workflow_file,
-            "--repo",
-            repository,
-            "--limit",
-            "50",
-            "--json",
-            "databaseId,status,conclusion,createdAt",
-        ]
+        result_base: dict[str, Any] = {
+            "repository": repository,
+            "pr_number": pr_number,
+            "expected_head_sha": expected_head_sha,
+        }
+        if expected_base_sha is not None:
+            result_base["expected_base_sha"] = expected_base_sha
+        result_base["dispatch_id"] = dispatch_id
+
+        known_run = workflow_run_id is not None
+        not_before_at = None
+        if not_before is not None:
+            try:
+                not_before_at = _review_timestamp(not_before)
+            except GitHubReadError as exc:
+                raise GitHubReadError("merge_reconcile_not_before_malformed") from exc
+        if known_run:
+            list_command = [
+                "gh", "api",
+                f"repos/{repository}/actions/runs/{workflow_run_id}",
+            ]
+        else:
+            # ``workflow_dispatch`` runs are created from the selected ref.
+            # The canonical merge caller dispatches ``main`` and carries the
+            # PR head as an input, so the run list's ``head_sha`` is the
+            # selected main ref SHA, not the PR head.  Querying by the PR head
+            # would hide the very run needed to reconcile an orphan.
+            run_query = "event=workflow_dispatch&branch=main&per_page=100"
+            if not_before is not None:
+                # The API's created filter is only a narrowing hint; the
+                # precise timestamp fence is still checked below.
+                run_query += f"&created=>={not_before[:10]}"
+            list_command = [
+                "gh", "api", "--paginate", "--slurp",
+                f"repos/{repository}/actions/workflows/{workflow_file}/runs"
+                f"?{run_query}",
+            ]
         try:
             listed = subprocess.run(
                 list_command,
@@ -1308,21 +1513,52 @@ class GhGitHubWriter:
         if listed.returncode != 0:
             raise GitHubReadError("merge_reconcile_runs_failed")
         try:
-            runs = json.loads(listed.stdout or "[]")
+            payload = json.loads(listed.stdout or "")
         except json.JSONDecodeError as exc:
             raise GitHubReadError("merge_reconcile_runs_malformed") from exc
-        if not isinstance(runs, list) or any(not isinstance(item, dict) for item in runs):
-            raise GitHubReadError("merge_reconcile_runs_malformed")
+        if known_run:
+            if not isinstance(payload, dict):
+                raise GitHubReadError("merge_reconcile_run_malformed")
+            runs = [payload]
+        else:
+            if not isinstance(payload, list) or any(not isinstance(page, dict) for page in payload):
+                raise GitHubReadError("merge_reconcile_runs_malformed")
+            runs = []
+            for page in payload:
+                page_runs = page.get("workflow_runs")
+                if not isinstance(page_runs, list) or any(not isinstance(item, dict) for item in page_runs):
+                    raise GitHubReadError("merge_reconcile_runs_malformed")
+                runs.extend(page_runs)
 
         matches: list[dict[str, Any]] = []
         active_run_ids: list[int] = []
         for run in runs:
-            run_id = run.get("databaseId")
+            run_id = run.get("id")
             status = run.get("status")
             conclusion = run.get("conclusion")
-            created_at = run.get("createdAt")
-            if type(run_id) is not int or run_id < 1 or not isinstance(status, str):
+            created_at = run.get("created_at")
+            head_sha = run.get("head_sha")
+            head_branch = run.get("head_branch")
+            event = run.get("event")
+            path = run.get("path")
+            if (
+                type(run_id) is not int
+                or run_id < 1
+                or not isinstance(status, str)
+                or not isinstance(created_at, str)
+                or not isinstance(head_sha, str)
+                or not isinstance(head_branch, str)
+                or not isinstance(event, str)
+                or not isinstance(path, str)
+            ):
                 raise GitHubReadError("merge_reconcile_run_identity_malformed")
+            if known_run and run_id != workflow_run_id:
+                return {
+                    **result_base,
+                    "status": "NOT_PROVEN",
+                    "run_ids": [run_id],
+                    "binding_mismatch": True,
+                }
             if status not in {
                 "queued",
                 "requested",
@@ -1332,34 +1568,48 @@ class GhGitHubWriter:
                 "completed",
             }:
                 raise GitHubReadError("merge_reconcile_run_status_malformed")
-            if not isinstance(created_at, str):
-                raise GitHubReadError("merge_reconcile_run_created_at_malformed")
             if conclusion is not None and not isinstance(conclusion, str):
                 raise GitHubReadError("merge_reconcile_run_conclusion_malformed")
-            if not_before is not None and created_at < not_before:
+            try:
+                created_at_value = _review_timestamp(created_at)
+            except GitHubReadError as exc:
+                raise GitHubReadError("merge_reconcile_run_timestamp_malformed") from exc
+            if not_before_at is not None and created_at_value < not_before_at:
+                continue
+            workflow_path = f".github/workflows/{workflow_file}"
+            path_matches = (
+                path in {workflow_file, workflow_path}
+                or path.startswith(workflow_path + "@")
+            )
+            exact_run_binding = (
+                (expected_base_sha is None or head_sha == expected_base_sha)
+                and head_branch == "main"
+                and event == "workflow_dispatch"
+                and path_matches
+            )
+            if not exact_run_binding:
+                if known_run:
+                    return {
+                        **result_base,
+                        "status": "NOT_PROVEN",
+                        "run_ids": [run_id],
+                        "binding_mismatch": True,
+                    }
                 continue
             if status in {"queued", "requested", "waiting", "pending", "in_progress"}:
-                # An active run's inputs are not exposed by ``run list``.  A
-                # terminal failure found beside it cannot prove this intent
-                # is safe to supersede, so hold the reconciliation until every
-                # in-window run is terminal.
+                # A list response does not expose workflow_dispatch inputs. An
+                # active exact-head run could still target this PR, so keep the
+                # intent pending until it is terminal.
                 active_run_ids.append(run_id)
                 continue
-            if conclusion not in {
-                "failure",
-                "cancelled",
-                "timed_out",
-                "action_required",
-            }:
-                # Successful runs would have closed the PR; the caller reads
-                # that authoritative PR fact separately.  Avoid downloading
-                # large successful logs when reconciling an open candidate.
-                continue
             # Logs are the only durable source available for workflow_dispatch
-            # inputs.  Read the complete terminal log, not only failed-step
-            # output: the exact PR/head binding is emitted by a successful
-            # preflight step before a later check can fail.  Never dispatch,
-            # cancel, or rerun here.
+            # inputs.  This is required even for a run ID returned directly by
+            # the dispatch API: the workflow-run object does not expose the
+            # workflow_dispatch inputs, and its head is the dispatch ref
+            # (`main`), not the PR head.  Read the complete terminal log, not
+            # only failed-step output: the exact PR/head binding is emitted by
+            # a successful preflight step before a later check can fail.
+            # Never dispatch, cancel, or rerun here.
             try:
                 detail = subprocess.run(
                     [
@@ -1379,14 +1629,6 @@ class GhGitHubWriter:
             except (OSError, subprocess.TimeoutExpired) as exc:
                 raise GitHubReadError("merge_reconcile_run_log_unavailable") from exc
             if detail.returncode != 0:
-                if status in {"in_progress", "queued", "requested", "waiting"}:
-                    return {
-                        "status": "PENDING",
-                        "repository": repository,
-                        "pr_number": pr_number,
-                        "expected_head_sha": expected_head_sha,
-                        "run_ids": [],
-                    }
                 raise GitHubReadError("merge_reconcile_run_log_failed")
             log = detail.stdout
             # GitHub prefixes log lines with step/timestamp text, so parse the
@@ -1412,7 +1654,28 @@ class GhGitHubWriter:
                     )
                 )
             }
-            if pr_number not in logged_pr_numbers or expected_head_sha not in logged_heads:
+            logged_dispatch_ids = {
+                match.group(1)
+                for line in log.splitlines()
+                if (
+                    match := re.search(
+                        r"\bDISPATCH_ID:\s*([0-9a-f]{64})\s*$",
+                        line.strip(),
+                    )
+                )
+            }
+            if (
+                pr_number not in logged_pr_numbers
+                or expected_head_sha not in logged_heads
+                or dispatch_id not in logged_dispatch_ids
+            ):
+                if known_run:
+                    return {
+                        **result_base,
+                        "status": "NOT_PROVEN",
+                        "run_ids": [run_id],
+                        "binding_mismatch": True,
+                    }
                 continue
             matches.append(
                 {
@@ -1425,6 +1688,7 @@ class GhGitHubWriter:
 
         if active_run_ids:
             return {
+                **result_base,
                 "status": "PENDING",
                 "repository": repository,
                 "pr_number": pr_number,
@@ -1433,6 +1697,7 @@ class GhGitHubWriter:
             }
         if not matches:
             return {
+                **result_base,
                 "status": "NOT_PROVEN",
                 "repository": repository,
                 "pr_number": pr_number,
@@ -1441,6 +1706,7 @@ class GhGitHubWriter:
             }
         if any(item["conclusion"] == "success" for item in matches):
             return {
+                **result_base,
                 "status": "SUCCEEDED",
                 "repository": repository,
                 "pr_number": pr_number,
@@ -1449,6 +1715,7 @@ class GhGitHubWriter:
             }
         if all(item["conclusion"] in {"failure", "cancelled", "timed_out", "action_required"} for item in matches):
             return {
+                **result_base,
                 "status": "REJECTED",
                 "repository": repository,
                 "pr_number": pr_number,
@@ -1456,12 +1723,276 @@ class GhGitHubWriter:
                 "run_ids": [item["run_id"] for item in matches],
             }
         return {
+            **result_base,
             "status": "NOT_PROVEN",
             "repository": repository,
             "pr_number": pr_number,
             "expected_head_sha": expected_head_sha,
             "run_ids": [item["run_id"] for item in matches],
         }
+
+    def read_orphan_dispatch_recovery_authorization(
+        self,
+        repository: str,
+        control_issue_number: int,
+        *,
+        mission_id: str,
+        proposal_sha256: str,
+        stage_id: str,
+        pr_number: int,
+        expected_base_sha: str,
+        expected_head_sha: str,
+        workflow_file: str,
+        dispatch_id: str,
+        owner_identity: str,
+    ) -> dict[str, Any] | None:
+        """Read one owner-authenticated recovery authorization marker.
+
+        The comment author and ``created_at`` returned by GitHub are the only
+        authority and temporal evidence.  The marker is deliberately not
+        allowed to carry a factual resolution or caller-supplied timestamp.
+        """
+        if (
+            not isinstance(repository, str)
+            or REPOSITORY.fullmatch(repository) is None
+            or type(control_issue_number) is not int
+            or control_issue_number < 1
+            or not isinstance(mission_id, str)
+            or not IDENTIFIER.fullmatch(mission_id)
+            or not isinstance(proposal_sha256, str)
+            or not SHA256.fullmatch(proposal_sha256)
+            or not isinstance(stage_id, str)
+            or not IDENTIFIER.fullmatch(stage_id)
+            or type(pr_number) is not int
+            or pr_number < 1
+            or not isinstance(expected_base_sha, str)
+            or not SHA40.fullmatch(expected_base_sha)
+            or not isinstance(expected_head_sha, str)
+            or not SHA40.fullmatch(expected_head_sha)
+            or not isinstance(workflow_file, str)
+            or re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", workflow_file) is None
+            or not isinstance(dispatch_id, str)
+            or not SHA256.fullmatch(dispatch_id)
+            or owner_identity not in {"github:Igzela"}
+        ):
+            raise GitHubReadError("merge_resolution_identity_invalid")
+        try:
+            result = subprocess.run(
+                [
+                    "gh", "api", "--paginate", "--slurp",
+                    f"repos/{repository}/issues/{control_issue_number}/comments?per_page=100",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubReadError("merge_resolution_read_unavailable") from exc
+        if result.returncode != 0:
+            raise GitHubReadError("merge_resolution_read_failed")
+        try:
+            pages = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            raise GitHubReadError("merge_resolution_read_malformed") from exc
+        if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+            raise GitHubReadError("merge_resolution_read_malformed")
+
+        expected_fields = {
+            "mission_id", "proposal_sha256", "stage_id", "repository",
+            "control_issue_number", "pr_number", "base_sha", "head_sha",
+            "workflow_file", "ref", "dispatch_id", "authorization",
+            "action", "authorization_id",
+        }
+        matches: list[dict[str, Any]] = []
+        for page in pages:
+            for comment in page:
+                if not isinstance(comment, dict):
+                    continue
+                body = comment.get("body")
+                if not isinstance(body, str) or len(body) > 16 * 1024:
+                    continue
+                marker_match = re.search(
+                    rf"<!--\s*{re.escape(ORPHAN_DISPATCH_RECOVERY_MARKER)}\s+(\{{.*?\}})\s*-->",
+                    body,
+                    re.DOTALL,
+                )
+                if marker_match is None:
+                    continue
+                if str(comment.get("author_association", "")).upper() != "OWNER":
+                    continue
+                author = comment.get("user")
+                login = author.get("login") if isinstance(author, dict) else None
+                if owner_identity != f"github:{login}":
+                    continue
+                try:
+                    marker = json.loads(marker_match.group(1))
+                except json.JSONDecodeError as exc:
+                    raise GitHubFactsError("merge_resolution_marker_invalid") from exc
+                if not isinstance(marker, dict) or set(marker) != expected_fields:
+                    raise GitHubFactsError("merge_resolution_marker_invalid")
+                if (
+                    marker.get("mission_id") != mission_id
+                    or marker.get("proposal_sha256") != proposal_sha256
+                    or marker.get("stage_id") != stage_id
+                    or marker.get("repository") != repository
+                    or marker.get("control_issue_number") != control_issue_number
+                    or marker.get("pr_number") != pr_number
+                    or marker.get("base_sha") != expected_base_sha
+                    or marker.get("head_sha") != expected_head_sha
+                    or marker.get("workflow_file") != workflow_file
+                    or marker.get("ref") != "main"
+                    or marker.get("dispatch_id") != dispatch_id
+                    or marker.get("authorization") != "ORPHAN_DISPATCH_RECOVERY"
+                    or marker.get("action") != "QUARANTINE_EXACT_PR"
+                    or not isinstance(marker.get("authorization_id"), str)
+                    or not IDENTIFIER.fullmatch(marker["authorization_id"])
+                ):
+                    continue
+                comment_created_at = comment.get("created_at")
+                if (
+                    not isinstance(comment_created_at, str)
+                    or TIMESTAMP.fullmatch(comment_created_at) is None
+                ):
+                    raise GitHubFactsError("merge_resolution_comment_timestamp_invalid")
+                try:
+                    _review_timestamp(comment_created_at)
+                except GitHubReadError as exc:
+                    raise GitHubFactsError("merge_resolution_comment_timestamp_invalid") from exc
+                comment_id = comment.get("id")
+                if type(comment_id) is not int or comment_id < 1:
+                    raise GitHubFactsError("merge_resolution_comment_identity_invalid")
+                matches.append({
+                    **marker,
+                    "comment_id": comment_id,
+                    "comment_created_at": comment_created_at,
+                    "owner_identity": owner_identity,
+                })
+        if len(matches) > 1:
+            raise GitHubFactsError("duplicate_merge_resolution_markers")
+        return matches[0] if matches else None
+
+    def quarantine_stage_pr(
+        self,
+        repository: str,
+        pr_number: int,
+        *,
+        expected_base_sha: str,
+        expected_head_sha: str,
+    ) -> dict[str, Any]:
+        """Quarantine one exact legacy orphan and return GitHub facts.
+
+        This is the only recovery mutation for a legacy orphan.  It performs
+        a fresh PR/base/main preflight, issues only the exact close operation,
+        then reads PR and accepted-main again.  The result is never an owner
+        assertion: ``MERGED`` or ``CLOSED_UNMERGED`` comes only from that
+        authoritative post-mutation readback; anything else is unknown.
+        """
+        if (
+            not isinstance(repository, str)
+            or REPOSITORY.fullmatch(repository) is None
+            or type(pr_number) is not int
+            or pr_number < 1
+            or not isinstance(expected_base_sha, str)
+            or SHA40.fullmatch(expected_base_sha) is None
+            or not isinstance(expected_head_sha, str)
+            or SHA40.fullmatch(expected_head_sha) is None
+        ):
+            raise GitHubFactsError("quarantine_identity_invalid")
+
+        facts = self.fetch_stage_pr(repository, pr_number)
+        if (
+            facts.get("repository") != repository
+            or facts.get("pr_number") != pr_number
+            or facts.get("base_sha") != expected_base_sha
+            or facts.get("head_sha") != expected_head_sha
+        ):
+            raise GitHubFactsError("quarantine_pr_identity_mismatch")
+
+        current_main = self.fetch_accepted_main(repository)
+        if not isinstance(current_main, str) or SHA40.fullmatch(current_main) is None:
+            raise GitHubReadError("quarantine_accepted_main_malformed")
+        if facts.get("merged") is True:
+            return {
+                "status": "MERGED",
+                "repository": repository,
+                "pr_number": pr_number,
+                "base_sha": expected_base_sha,
+                "head_sha": expected_head_sha,
+                "accepted_main_sha": current_main,
+            }
+        if facts.get("state") == "CLOSED" and facts.get("merged") is False:
+            return {
+                "status": "CLOSED_UNMERGED",
+                "repository": repository,
+                "pr_number": pr_number,
+                "base_sha": expected_base_sha,
+                "head_sha": expected_head_sha,
+                "accepted_main_sha": current_main,
+            }
+        if facts.get("state") != "OPEN" or facts.get("merged") is not False:
+            raise GitHubFactsError("quarantine_pr_state_unproven")
+        if current_main != expected_base_sha:
+            raise GitHubFactsError("quarantine_base_main_mismatch")
+
+        evidence = {
+            "repository": repository,
+            "pr_number": pr_number,
+            "expected_base_sha": expected_base_sha,
+            "expected_head_sha": expected_head_sha,
+            "action": "QUARANTINE_EXACT_PR",
+        }
+        try:
+            result = subprocess.run(
+                [
+                    "gh", "pr", "close", str(pr_number), "--repo", repository,
+                    "--comment",
+                    "Quarantined by the owner-authorized legacy orphan-dispatch recovery; branch retained.",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubMutationError("quarantine_outcome_unknown", evidence=evidence) from exc
+
+        try:
+            observed = self.fetch_stage_pr(repository, pr_number)
+            observed_main = self.fetch_accepted_main(repository)
+        except (GitHubReadError, GitHubFactsError, OSError) as exc:
+            raise GitHubMutationError("quarantine_outcome_unknown", evidence=evidence) from exc
+        if (
+            not isinstance(observed_main, str)
+            or SHA40.fullmatch(observed_main) is None
+            or observed.get("repository") != repository
+            or observed.get("pr_number") != pr_number
+            or observed.get("base_sha") != expected_base_sha
+            or observed.get("head_sha") != expected_head_sha
+        ):
+            raise GitHubMutationError("quarantine_outcome_unknown", evidence=evidence)
+        if observed.get("merged") is True:
+            return {
+                **evidence,
+                "status": "MERGED",
+                "head_sha": expected_head_sha,
+                "accepted_main_sha": observed_main,
+            }
+        if observed.get("state") == "CLOSED" and observed.get("merged") is False:
+            return {
+                **evidence,
+                "status": "CLOSED_UNMERGED",
+                "head_sha": expected_head_sha,
+                "accepted_main_sha": observed_main,
+            }
+        if result.returncode != 0:
+            # A close request can lose a race with the old workflow and
+            # return an error for an already-merged PR.  The post-request
+            # authoritative readback above, not the CLI exit code, decides
+            # whether that race produced MERGED, CLOSED_UNMERGED, or remains
+            # unknown.
+            raise GitHubMutationError("quarantine_outcome_unknown", evidence=evidence)
+        raise GitHubMutationError("quarantine_outcome_unknown", evidence=evidence)
 
     def supersede_stage_pr(
         self,
@@ -1617,6 +2148,12 @@ class FakeGitHubWriter:
         self.fail_merge = False
         self.merge_outcome_unknown = False
         self.remote_main_sha = "1" * 40
+        self.review_receipts: set[tuple[int, str, str]] = set()
+        self.merge_dispatch_resolutions: list[dict[str, Any]] = []
+        self._next_workflow_run_id = 10_000
+        # Fault-injection seam: an already-issued old workflow can win the
+        # race between quarantine preflight and the close request.
+        self.quarantine_race_merge = False
 
     def fetch_stage_pr(self, repository: str, pr_number: int) -> dict[str, Any]:
         if pr_number in self.prs:
@@ -1715,6 +2252,7 @@ class FakeGitHubWriter:
             if pr.get("head_sha") != expected_head_sha or pr.get("base_sha") != base_sha:
                 raise GitHubPreflightError("review_receipt_exact_binding_mismatch")
             pr["review_state"] = "PASS"
+        self.review_receipts.add((pr_number, expected_head_sha, review_receipt_sha256))
         self.actions.append(("publish_review", {
             "pr_number": pr_number,
             "head_sha": expected_head_sha,
@@ -1733,30 +2271,179 @@ class FakeGitHubWriter:
         pr_number: int,
         expected_head_sha: str,
         *,
+        expected_base_sha: str | None = None,
+        dispatch_id: str | None = None,
+        intent_key: str = "compatibility-call",
         merge_method: str = "squash",
         workflow_file: str = "agent-merge.yml",
         timeout_seconds: int = 120,
     ) -> dict[str, Any]:
-        self.actions.append(("merge", {"pr_number": pr_number, "head_sha": expected_head_sha, "workflow": workflow_file}))
+        actual_base_sha = expected_base_sha
+        if actual_base_sha is None and pr_number in self.prs:
+            actual_base_sha = self.prs[pr_number].get("base_sha")
+        if not isinstance(actual_base_sha, str):
+            raise GitHubMutationError("merge_base_sha_unavailable")
+        identity = merge_dispatch_identity(
+            repository,
+            pr_number,
+            actual_base_sha,
+            expected_head_sha,
+            workflow_file=workflow_file,
+            intent_key=intent_key,
+        )
+        if dispatch_id is not None and dispatch_id != identity["dispatch_id"]:
+            raise GitHubMutationError("merge_dispatch_id_mismatch")
         if self.fail_merge:
-            raise GitHubMutationError("guarded_merge_rejected")
+            raise GitHubMutationError("guarded_merge_rejected", evidence={"dispatch_id": identity["dispatch_id"]})
         if self.merge_outcome_unknown:
-            raise GitHubMutationError("merge_outcome_unknown")
-        if pr_number in self.prs:
-            pr = self.prs[pr_number]
-            if pr.get("head_sha") != expected_head_sha:
-                raise GitHubMutationError("head_sha_mismatch")
-            pr["merged"] = True
-            pr["state"] = "CLOSED"
-            # A deterministic stand-in for GitHub's merge commit.  Tests may
-            # replace ``remote_main_sha`` to model unrelated main drift.
-            pr["merge_commit_sha"] = expected_head_sha
-            self.remote_main_sha = expected_head_sha
+            raise GitHubMutationError(
+                "merge_outcome_unknown",
+                evidence={"dispatch_id": identity["dispatch_id"]},
+            )
+        pr = self.prs.get(pr_number)
+        if pr is None or pr.get("repository") != repository:
+            raise GitHubReadError("merge_pr_read_unavailable")
+        if (
+            pr.get("head_sha") != expected_head_sha
+            or pr.get("base_sha") != actual_base_sha
+        ):
+            raise GitHubMutationError("merge_head_or_base_mismatch")
+        if pr.get("state") != "OPEN" or pr.get("merged") is not False:
+            # This models the canonical workflow's open-PR preflight.  A
+            # delayed old workflow therefore cannot merge a quarantined PR.
+            raise GitHubMutationError("merge_pr_not_open")
+        self.actions.append(("merge", {"pr_number": pr_number, "head_sha": expected_head_sha, "workflow": workflow_file}))
+        run_id = self._next_workflow_run_id
+        self._next_workflow_run_id += 1
+        pr["merged"] = True
+        pr["state"] = "CLOSED"
+        # A deterministic stand-in for GitHub's merge commit.  Tests may
+        # replace ``remote_main_sha`` to model unrelated main drift.
+        pr["merge_commit_sha"] = expected_head_sha
+        self.remote_main_sha = expected_head_sha
         return {
             "merged": True,
             "repository": repository,
             "pr_number": pr_number,
             "head_sha": expected_head_sha,
+            "dispatch_id": identity["dispatch_id"],
+            "workflow_run_id": run_id,
+        }
+
+    def read_orphan_dispatch_recovery_authorization(
+        self,
+        repository: str,
+        control_issue_number: int,
+        *,
+        mission_id: str,
+        proposal_sha256: str,
+        stage_id: str,
+        pr_number: int,
+        expected_base_sha: str,
+        expected_head_sha: str,
+        workflow_file: str,
+        dispatch_id: str,
+        owner_identity: str,
+    ) -> dict[str, Any] | None:
+        expected = {
+            "mission_id": mission_id,
+            "proposal_sha256": proposal_sha256,
+            "stage_id": stage_id,
+            "repository": repository,
+            "control_issue_number": control_issue_number,
+            "pr_number": pr_number,
+            "base_sha": expected_base_sha,
+            "head_sha": expected_head_sha,
+            "workflow_file": workflow_file,
+            "ref": "main",
+            "dispatch_id": dispatch_id,
+            "authorization": "ORPHAN_DISPATCH_RECOVERY",
+            "action": "QUARANTINE_EXACT_PR",
+            "owner_identity": owner_identity,
+        }
+        # The fake transport stores authenticated response metadata beside
+        # the payload. Keep its accepted shape strict like the real GitHub
+        # parser: outcome claims and caller-supplied timestamps must never be
+        # silently ignored by a test adapter.
+        transport_fields = {
+            *expected.keys(),
+            "authorization_id",
+            "comment_id",
+            "comment_created_at",
+        }
+        matches = [
+            item for item in self.merge_dispatch_resolutions
+            if set(item) == transport_fields
+            and isinstance(item.get("authorization_id"), str)
+            and IDENTIFIER.fullmatch(item["authorization_id"]) is not None
+            and all(item.get(key) == value for key, value in expected.items())
+        ]
+        if len(matches) > 1:
+            raise GitHubFactsError("duplicate_merge_resolution_markers")
+        return dict(matches[0]) if matches else None
+
+    def quarantine_stage_pr(
+        self,
+        repository: str,
+        pr_number: int,
+        *,
+        expected_base_sha: str,
+        expected_head_sha: str,
+    ) -> dict[str, Any]:
+        pr = self.prs.get(pr_number)
+        if pr is None:
+            raise GitHubReadError("quarantine_pr_read_unavailable")
+        if (
+            pr.get("repository") != repository
+            or pr.get("pr_number") != pr_number
+            or pr.get("base_sha") != expected_base_sha
+            or pr.get("head_sha") != expected_head_sha
+        ):
+            raise GitHubFactsError("quarantine_pr_identity_mismatch")
+        if pr.get("merged") is True:
+            return {
+                "status": "MERGED",
+                "repository": repository,
+                "pr_number": pr_number,
+                "base_sha": expected_base_sha,
+                "head_sha": expected_head_sha,
+                "accepted_main_sha": self.remote_main_sha,
+            }
+        if pr.get("state") == "CLOSED":
+            return {
+                "status": "CLOSED_UNMERGED",
+                "repository": repository,
+                "pr_number": pr_number,
+                "base_sha": expected_base_sha,
+                "head_sha": expected_head_sha,
+                "accepted_main_sha": self.remote_main_sha,
+            }
+        if pr.get("state") != "OPEN" or self.remote_main_sha != expected_base_sha:
+            raise GitHubFactsError("quarantine_preflight_not_proven")
+        self.actions.append(("quarantine", {"pr_number": pr_number, "head_sha": expected_head_sha}))
+        if self.quarantine_race_merge:
+            # Model the old workflow winning after the final read-only
+            # preflight but before the close mutation reaches GitHub.
+            pr["merged"] = True
+            pr["state"] = "CLOSED"
+            pr["merge_commit_sha"] = expected_head_sha
+            self.remote_main_sha = expected_head_sha
+            return {
+                "status": "MERGED",
+                "repository": repository,
+                "pr_number": pr_number,
+                "base_sha": expected_base_sha,
+                "head_sha": expected_head_sha,
+                "accepted_main_sha": self.remote_main_sha,
+            }
+        pr["state"] = "CLOSED"
+        return {
+            "status": "CLOSED_UNMERGED",
+            "repository": repository,
+            "pr_number": pr_number,
+            "base_sha": expected_base_sha,
+            "head_sha": expected_head_sha,
+            "accepted_main_sha": self.remote_main_sha,
         }
 
     def supersede_stage_pr(
@@ -1810,5 +2497,6 @@ __all__ = [
     "ReadOnlyGitHub",
     "StagePRFacts",
     "StagePRStatus",
+    "merge_dispatch_identity",
     "reconcile_stage_pr",
 ]

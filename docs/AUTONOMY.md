@@ -1,6 +1,6 @@
 # Autonomy and Testing Contract
 
-Last updated: 2026-08-31.
+Last updated: 2026-09-01.
 
 This document defines the autonomy governance, lifecycle state machine, review convergence protocol, exact-head CI, and guarded merge contracts for the Autonomous Steward system.
 
@@ -128,10 +128,27 @@ R2: Independent session, review_mode=repair_verification, complete base...head a
    - `context-capsule`
 3. **Guarded Merge Owner Delegation**: All merges are strictly delegated to the sole canonical merge workflow (`.github/workflows/agent-merge.yml`). Direct `gh pr merge` is prohibited in repository runtime. Merge occurs only when branch ruleset, exact-head CI, exact `PASS` review receipt, zero open blockers, and single PR squash-merge conditions are met. Readback must prove the merged PR number and expected head produced the exact GitHub `main` merge commit; local `HEAD` is never a fallback.
 
+### Merge-dispatch recovery lifecycle
+
+The durable recovery, authority/evidence split, emergency-stop boundary, and
+restart/idempotency contract are canonical in
+[`docs/ARCHITECTURE.md`](ARCHITECTURE.md#merge-dispatch-recovery-and-emergency-stop-contract).
+This autonomy contract owns only lifecycle integration: record the merge
+intent before dispatch, persist the returned run identity before settling it,
+allow only read-only reconciliation after restart, and require authoritative
+merged-PR plus accepted-main readback before advancing a Stage. A legacy
+quarantine may advance only after the architecture contract's GitHub
+`CLOSED_UNMERGED` fact is journaled; owner authority is never treated as that
+fact.
+
 ## Recovery and Rollback
 
 - Every Stage and Mission specifies an exact rollback target (e.g. `revert:<SHA>`).
 - If a Stage fails or encounters an unrecoverable conflict, the branch is reset or reverted cleanly without affecting `main`.
-- The Issue-label emergency stop halts new WorkCard, Ready, and merge dispatch
-  while retaining the active Mission and recovery evidence. Clearing it does
-  not create a second approval.
+- The Issue-label emergency stop halts new WorkCard, Ready, supersede, and
+  merge dispatch while retaining the active Mission and recovery evidence.
+  Existing unresolved merge intents may undergo read-only canonical
+  reconciliation while the stop remains active; the legacy quarantine is an
+  external effect and therefore requires the separate exact control
+  transition described above. No replan or external effect may follow while
+  the stop is active. Clearing it does not create a second Mission approval.

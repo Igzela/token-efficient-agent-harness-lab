@@ -19,7 +19,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "age
 import mission_contract as contract
 import shadow_steward
 import steward_github
-from steward_github import FakeGitHubReader, FakeGitHubWriter, GitHubMutationError
+from steward_github import (
+    FakeGitHubReader,
+    FakeGitHubWriter,
+    GitHubFactsError,
+    GitHubMutationError,
+)
 import steward_service as service
 from steward_journal import StewardJournal
 import steward_workers as workers
@@ -76,6 +81,10 @@ class TestAutonomousStewardPRC(unittest.TestCase):
     class _ControlOff:
         def emergency_stop_active(self, *, repository: str, issue_number: int) -> bool:
             return False
+
+    class _ControlOn:
+        def emergency_stop_active(self, *, repository: str, issue_number: int) -> bool:
+            return True
 
     class _FixtureApprovalSource:
         """SIMULATED authenticated transport for deterministic tests only."""
@@ -146,6 +155,14 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             self.github_writer.prs[first_pr]["ci_state"] = "PASS"
             self.github_writer.prs[first_pr]["review_state"] = "PASS"
             self.assertEqual(self.srv.step()["status"], "MERGE_READBACK")
+            dispatched = [
+                event
+                for event in self.journal.replay()
+                if event.event == "STAGE_MERGE_DISPATCHED"
+                and event.data.get("pr_number") == first_pr
+            ]
+            self.assertEqual(len(dispatched), 1)
+            self.assertIsInstance(dispatched[0].data.get("workflow_run_id"), int)
             with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=self.github_writer.remote_main_sha + "\n", stderr="")):
                 self.assertEqual(self.srv.step()["status"], "NEXT_STAGE")
             self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
@@ -492,6 +509,68 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         bound = self.srv.publish_stage(stage, self.base_sha, title="Stage", body="Body")
         return mission, stage, bound
 
+    def _install_orphan_recovery_authorization(
+        self,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+        bound: dict[str, object],
+        *,
+        authorization_id: str,
+        comment_id: int,
+    ) -> str:
+        """Install only simulated authenticated transport data for recovery tests."""
+        pr_number = int(bound["pr_number"])
+        expected_head = str(bound["head_sha"])
+        intent_key = (
+            f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:"
+            f"{pr_number}:{expected_head}"
+        )
+        identity = steward_github.merge_dispatch_identity(
+            mission.repository_identity.repository,
+            pr_number,
+            self.base_sha,
+            expected_head,
+            intent_key=intent_key,
+        )
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={
+                "pr_number": pr_number,
+                "head_sha": expected_head,
+                "base_sha": self.base_sha,
+                "workflow": "agent-merge.yml",
+                "ref": "main",
+                "dispatch_id": identity["dispatch_id"],
+            },
+            enforce_transition=False,
+        )
+        self.github_writer.merge_dispatch_resolutions.append({
+            "mission_id": mission.mission_id,
+            "proposal_sha256": mission.proposal_sha256,
+            "stage_id": stage.stage_id,
+            "repository": mission.repository_identity.repository,
+            "control_issue_number": 208,
+            "pr_number": pr_number,
+            "base_sha": self.base_sha,
+            "head_sha": expected_head,
+            "workflow_file": "agent-merge.yml",
+            "ref": "main",
+            "dispatch_id": identity["dispatch_id"],
+            "authorization": "ORPHAN_DISPATCH_RECOVERY",
+            "action": "QUARANTINE_EXACT_PR",
+            "authorization_id": authorization_id,
+            "comment_id": comment_id,
+            "comment_created_at": "2099-09-01T23:00:00Z",
+            "owner_identity": "github:Igzela",
+        })
+        return identity["dispatch_id"]
+
     def test_simulated_merge_intent_and_bound_drift_stays_read_only(self):
         """SIMULATED: merge intent blocks drift rebind and candidate supersede."""
 
@@ -510,7 +589,11 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             card_id="",
             state="RUNNING",
             detail="canonical_merge_workflow_dispatch_intent",
-            data={"pr_number": pr_number, "head_sha": bound["head_sha"]},
+            data={
+                "pr_number": pr_number,
+                "head_sha": bound["head_sha"],
+                "workflow_run_id": 901,
+            },
             enforce_transition=False,
         )
         self.github_writer.remote_main_sha = "f" * 40
@@ -626,6 +709,599 @@ class TestAutonomousStewardPRC(unittest.TestCase):
                 "STAGE_MERGE_DISPATCH_RECONCILED",
             )
         )
+
+    def test_orphan_owner_authorization_quarantines_then_replans(self):
+        """SIMULATED: owner authority permits quarantine; GitHub supplies the fact."""
+
+        self.github_writer._next_pr = 679
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-MERGE-OWNER-RESOLUTION", "merge-owner-resolution"
+        )
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        identity = steward_github.merge_dispatch_identity(
+            mission.repository_identity.repository,
+            pr_number,
+            self.base_sha,
+            expected_head,
+            intent_key=intent_key,
+        )
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={
+                "pr_number": pr_number,
+                "head_sha": expected_head,
+                "base_sha": self.base_sha,
+                "workflow": "agent-merge.yml",
+                "ref": "main",
+                "dispatch_id": identity["dispatch_id"],
+            },
+            enforce_transition=False,
+        )
+        resolution = {
+            "mission_id": mission.mission_id,
+            "proposal_sha256": mission.proposal_sha256,
+            "stage_id": stage.stage_id,
+            "repository": mission.repository_identity.repository,
+            "control_issue_number": 208,
+            "pr_number": pr_number,
+            "base_sha": self.base_sha,
+            "head_sha": expected_head,
+            "workflow_file": "agent-merge.yml",
+            "ref": "main",
+            "dispatch_id": identity["dispatch_id"],
+            "authorization": "ORPHAN_DISPATCH_RECOVERY",
+            "action": "QUARANTINE_EXACT_PR",
+            "authorization_id": "owner-resolution-1",
+            "comment_id": 999,
+            "comment_created_at": "2099-09-01T23:00:00Z",
+            "owner_identity": "github:Igzela",
+        }
+        self.github_writer.merge_dispatch_resolutions.append(resolution)
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={
+                "status": "NOT_PROVEN",
+                "repository": mission.repository_identity.repository,
+                "pr_number": pr_number,
+                "expected_head_sha": expected_head,
+                "expected_base_sha": self.base_sha,
+                "dispatch_id": identity["dispatch_id"],
+                "run_ids": [],
+            },
+        ):
+            actions_before = list(self.github_writer.actions)
+            result = self.srv.step()
+
+        self.assertEqual(result["status"], "REPLAN_REQUIRED")
+        self.assertEqual(
+            [name for name, _data in self.github_writer.actions[len(actions_before):]],
+            ["quarantine"],
+        )
+        reconciled = [
+            event for event in self.journal.replay()
+            if event.event == "STAGE_MERGE_DISPATCH_RECONCILED"
+            and event.stage_id == stage.stage_id
+        ]
+        self.assertEqual(len(reconciled), 1)
+        self.assertEqual(reconciled[0].detail, "legacy_orphan_quarantine_closed_unmerged_observed")
+        self.assertEqual(
+            self.srv._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_REPLAN_REQUESTED"
+            ).detail,
+            "legacy_orphan_closed_unmerged_replacement_authorized",
+        )
+        self.assertNotIn("merge", [name for name, _data in self.github_writer.actions])
+        replacement = self.srv.step()
+        self.assertEqual(replacement["status"], "STAGE_REPLANNED")
+        self.assertNotEqual(replacement["stage_id"], stage.stage_id)
+        self.assertEqual(self.github_writer.prs[679]["state"], "CLOSED")
+
+    def test_orphan_authorization_is_idempotent_after_restart(self):
+        """SIMULATED restart: persisted quarantine intent cannot close twice."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-MERGE-OWNER-IDEMPOTENT", "merge-owner-idempotent"
+        )
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        identity = steward_github.merge_dispatch_identity(
+            mission.repository_identity.repository,
+            pr_number,
+            self.base_sha,
+            expected_head,
+            intent_key=intent_key,
+        )
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        self.github_writer.merge_dispatch_resolutions.append({
+            "mission_id": mission.mission_id,
+            "proposal_sha256": mission.proposal_sha256,
+            "stage_id": stage.stage_id,
+            "repository": mission.repository_identity.repository,
+            "control_issue_number": 208,
+            "pr_number": pr_number,
+            "base_sha": self.base_sha,
+            "head_sha": expected_head,
+            "workflow_file": "agent-merge.yml",
+            "ref": "main",
+            "dispatch_id": identity["dispatch_id"],
+            "authorization": "ORPHAN_DISPATCH_RECOVERY",
+            "action": "QUARANTINE_EXACT_PR",
+            "authorization_id": "owner-resolution-restart",
+            "comment_id": 1000,
+            "comment_created_at": "2099-09-01T23:00:00Z",
+            "owner_identity": "github:Igzela",
+        })
+        self.journal.append(
+            event="STAGE_OUTCOME_UNKNOWN",
+            idempotency_key="merge-owner-idempotent-unknown",
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="OUTCOME_UNKNOWN",
+            detail="stage_merge_outcome_unknown",
+            data={},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            self.assertEqual(self.srv.step()["status"], "REPLAN_REQUIRED")
+            restarted = service.StewardService(
+                mission_id=mission.mission_id,
+                journal=self.journal,
+                github=self.github_writer,
+                github_writer=self.github_writer,
+                repo_path=self.repo_dir,
+                control_state=self._ControlOff(),
+            )
+            self.assertEqual(restarted.step()["status"], "STAGE_REPLANNED")
+        self.assertEqual(
+            [name for name, _data in self.github_writer.actions].count("merge"),
+            0,
+        )
+        self.assertEqual(
+            [name for name, _data in self.github_writer.actions].count("supersede"),
+            0,
+        )
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "CLOSED")
+        retained = [
+            event for event in self.journal.replay()
+            if event.event == "STAGE_SUPERSEDED"
+            and event.stage_id == stage.stage_id
+            and event.detail == "legacy_orphan_closed_unmerged_branch_retained"
+        ]
+        self.assertEqual(len(retained), 1)
+        self.assertTrue(retained[0].data["remote_branch_retained"])
+        self.assertTrue(retained[0].data["external_dispatch_replay_forbidden"])
+
+    def test_emergency_stop_allows_only_read_only_orphan_reconciliation(self):
+        """SIMULATED: stop blocks effects but does not strand merge recovery."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-MERGE-STOP-RECOVERY", "merge-stop-recovery"
+        )
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        identity = steward_github.merge_dispatch_identity(
+            mission.repository_identity.repository,
+            pr_number,
+            self.base_sha,
+            expected_head,
+            intent_key=intent_key,
+        )
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={
+                "pr_number": pr_number,
+                "head_sha": expected_head,
+                "base_sha": self.base_sha,
+                "workflow": "agent-merge.yml",
+                "ref": "main",
+                "dispatch_id": identity["dispatch_id"],
+            },
+            enforce_transition=False,
+        )
+        self.github_writer.merge_dispatch_resolutions.append({
+            "mission_id": mission.mission_id,
+            "proposal_sha256": mission.proposal_sha256,
+            "stage_id": stage.stage_id,
+            "repository": mission.repository_identity.repository,
+            "control_issue_number": 208,
+            "pr_number": pr_number,
+            "base_sha": self.base_sha,
+            "head_sha": expected_head,
+            "workflow_file": "agent-merge.yml",
+            "ref": "main",
+            "dispatch_id": identity["dispatch_id"],
+            "authorization": "ORPHAN_DISPATCH_RECOVERY",
+            "action": "QUARANTINE_EXACT_PR",
+            "authorization_id": "owner-resolution-stop",
+            "comment_id": 1001,
+            "comment_created_at": "2099-09-01T23:00:00Z",
+            "owner_identity": "github:Igzela",
+        })
+        self.srv.control_state = self._ControlOn()
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={
+                "status": "NOT_PROVEN",
+                "repository": mission.repository_identity.repository,
+                "pr_number": pr_number,
+                "expected_head_sha": expected_head,
+                "expected_base_sha": self.base_sha,
+                "dispatch_id": identity["dispatch_id"],
+                "run_ids": [],
+            },
+        ):
+            actions_before = list(self.github_writer.actions)
+            result = self.srv.step()
+
+        self.assertEqual(result["status"], "EMERGENCY_STOP")
+        self.assertEqual(result["read_only_recovery"]["status"], "WAITING_CONTROL_STATE")
+        self.assertEqual(self.github_writer.actions, actions_before)
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
+        self.assertIsNone(
+            self.srv._latest_stage_event(
+                mission.mission_id,
+                stage.stage_id,
+                "STAGE_MERGE_DISPATCH_RECONCILED",
+            )
+        )
+
+    def test_legacy_orphan_merge_race_wins_without_replacement(self):
+        """SIMULATED: an old workflow merge observed after preflight wins."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-MERGE-OWNER-RACE", "merge-owner-race"
+        )
+        pr_number = int(bound["pr_number"])
+        expected_head = str(bound["head_sha"])
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        dispatch_id = self._install_orphan_recovery_authorization(
+            mission,
+            stage,
+            bound,
+            authorization_id="owner-recovery-race",
+            comment_id=1101,
+        )
+        self.github_writer.quarantine_race_merge = True
+
+        def local_mirror_command(command, **_kwargs):
+            if command[:3] == ["git", "rev-parse", "origin/main"]:
+                return MagicMock(returncode=0, stdout=expected_head + "\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={
+                "status": "NOT_PROVEN",
+                "repository": mission.repository_identity.repository,
+                "pr_number": pr_number,
+                "expected_head_sha": expected_head,
+                "expected_base_sha": self.base_sha,
+                "dispatch_id": dispatch_id,
+                "run_ids": [],
+            },
+        ), patch("subprocess.run", side_effect=local_mirror_command):
+            result = self.srv.step()
+
+        self.assertEqual(result["status"], "COMPLETE")
+        self.assertTrue(self.github_writer.prs[pr_number]["merged"])
+        self.assertEqual(self.github_writer.remote_main_sha, expected_head)
+        actions = [name for name, _data in self.github_writer.actions]
+        self.assertIn("quarantine", actions)
+        self.assertNotIn("merge", actions)
+        self.assertNotIn("supersede", actions)
+        self.assertIsNone(
+            self.srv._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_REPLAN_REQUESTED"
+            )
+        )
+        observed = [
+            event
+            for event in self.journal.replay()
+            if event.event == "STAGE_MERGE_DISPATCH_RECONCILED"
+            and event.stage_id == stage.stage_id
+        ]
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0].detail, "legacy_orphan_merge_observed_from_github")
+
+    def test_delayed_old_workflow_cannot_merge_after_closed_unmerged_quarantine(self):
+        """SIMULATED: the repaired workflow's open-PR preflight fences late work."""
+
+        pr_number = 679
+        expected_head = "c" * 40
+        self.github_writer.prs[pr_number] = {
+            "repository": self.github_writer.reader.facts.get(
+                "repository", "Igzela/token-efficient-agent-harness-lab"
+            ),
+            "pr_number": pr_number,
+            "number": pr_number,
+            "state": "OPEN",
+            "draft": False,
+            "merged": False,
+            "base_sha": self.base_sha,
+            "head_sha": expected_head,
+            "ci_state": "PASS",
+            "review_state": "PASS",
+            "base_branch": "main",
+            "head_branch": "stage/legacy-orphan",
+        }
+        result = self.github_writer.quarantine_stage_pr(
+            "Igzela/token-efficient-agent-harness-lab",
+            pr_number,
+            expected_base_sha=self.base_sha,
+            expected_head_sha=expected_head,
+        )
+        self.assertEqual(result["status"], "CLOSED_UNMERGED")
+        actions_before = list(self.github_writer.actions)
+        with self.assertRaisesRegex(GitHubMutationError, "merge_pr_not_open"):
+            self.github_writer.guarded_merge(
+                "Igzela/token-efficient-agent-harness-lab",
+                pr_number,
+                expected_head,
+                expected_base_sha=self.base_sha,
+                dispatch_id=steward_github.merge_dispatch_identity(
+                    "Igzela/token-efficient-agent-harness-lab",
+                    pr_number,
+                    self.base_sha,
+                    expected_head,
+                    intent_key="delayed-old-workflow",
+                )["dispatch_id"],
+                intent_key="delayed-old-workflow",
+            )
+        self.assertEqual(self.github_writer.actions, actions_before)
+        self.assertFalse(self.github_writer.prs[pr_number]["merged"])
+
+    def test_restart_with_quarantine_intent_never_repeats_close_and_needs_readback(self):
+        """SIMULATED crash point: a persisted close intent fences a second close."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-QUAR-RESTART", "merge-owner-quarantine-restart"
+        )
+        pr_number = int(bound["pr_number"])
+        expected_head = str(bound["head_sha"])
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        dispatch_id = self._install_orphan_recovery_authorization(
+            mission,
+            stage,
+            bound,
+            authorization_id="owner-recovery-quarantine-restart",
+            comment_id=1102,
+        )
+        self.journal.append(
+            event="STAGE_ORPHAN_QUARANTINE_INTENT",
+            idempotency_key="orphan-quarantine-crash-point",
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="owner_authorized_exact_orphan_quarantine_intent",
+            data={
+                "owner_marker_id": "owner-recovery-quarantine-restart",
+                "owner_comment_id": 1102,
+                "owner_comment_created_at": "2099-09-01T23:00:00Z",
+                "owner_identity": "github:Igzela",
+                "owner_action": "QUARANTINE_EXACT_PR",
+                "dispatch_identity": {
+                    "dispatch_id": dispatch_id,
+                    "repository": mission.repository_identity.repository,
+                    "pr_number": pr_number,
+                    "base_sha": self.base_sha,
+                    "head_sha": expected_head,
+                    "workflow_file": "agent-merge.yml",
+                    "ref": "main",
+                },
+            },
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            result = self.srv.step()
+        self.assertEqual(result["status"], "OUTCOME_UNKNOWN")
+        self.assertNotIn(
+            "quarantine", [name for name, _data in self.github_writer.actions]
+        )
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
+    def test_emergency_stop_reconciles_persisted_quarantine_read_only(self):
+        """SIMULATED: stop does not strand a persisted quarantine intent."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-QUAR-STOP-READBACK", "merge-owner-quarantine-stop"
+        )
+        pr_number = int(bound["pr_number"])
+        expected_head = str(bound["head_sha"])
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        dispatch_id = self._install_orphan_recovery_authorization(
+            mission,
+            stage,
+            bound,
+            authorization_id="owner-recovery-quarantine-stop",
+            comment_id=1103,
+        )
+        self.journal.append(
+            event="STAGE_ORPHAN_QUARANTINE_INTENT",
+            idempotency_key="orphan-quarantine-stop-readback",
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="owner_authorized_exact_orphan_quarantine_intent",
+            data={
+                "owner_marker_id": "owner-recovery-quarantine-stop",
+                "owner_comment_id": 1103,
+                "owner_comment_created_at": "2099-09-01T23:00:00Z",
+                "owner_identity": "github:Igzela",
+                "owner_action": "QUARANTINE_EXACT_PR",
+                "dispatch_identity": {
+                    "dispatch_id": dispatch_id,
+                    "repository": mission.repository_identity.repository,
+                    "pr_number": pr_number,
+                    "base_sha": self.base_sha,
+                    "head_sha": expected_head,
+                    "workflow_file": "agent-merge.yml",
+                    "ref": "main",
+                },
+            },
+            enforce_transition=False,
+        )
+        self.srv.control_state = self._ControlOn()
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            actions_before = list(self.github_writer.actions)
+            result = self.srv.step()
+
+        self.assertEqual(result["status"], "EMERGENCY_STOP")
+        self.assertEqual(
+            result["read_only_recovery"]["status"], "OUTCOME_UNKNOWN"
+        )
+        self.assertEqual(self.github_writer.actions, actions_before)
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
+        # A factual CLOSED_UNMERGED readback during the stop is still
+        # read-only: it must not enqueue a replacement until the control is
+        # released.
+        self.github_writer.prs[pr_number]["state"] = "CLOSED"
+        self.github_writer.remote_main_sha = self.base_sha
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            result = self.srv.step()
+        self.assertEqual(result["status"], "EMERGENCY_STOP")
+        self.assertEqual(
+            result["read_only_recovery"]["status"], "CLOSED_UNMERGED"
+        )
+        self.assertIsNone(
+            self.srv._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_REPLAN_REQUESTED"
+            )
+        )
+
+    def test_emergency_stop_does_not_retry_pre_dispatch_read_waiting(self):
+        """SIMULATED: a stopped pre-dispatch read wait cannot reach merge."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-MERGE-STOP-READ-WAIT", "merge-stop-read-wait"
+        )
+        pr_number = int(bound["pr_number"])
+        expected_head = str(bound["head_sha"])
+        intent_key = (
+            f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:"
+            f"{pr_number}:{expected_head}"
+        )
+        identity = steward_github.merge_dispatch_identity(
+            mission.repository_identity.repository,
+            pr_number,
+            self.base_sha,
+            expected_head,
+            intent_key=intent_key,
+        )
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={
+                "pr_number": pr_number,
+                "head_sha": expected_head,
+                "base_sha": self.base_sha,
+                "workflow": "agent-merge.yml",
+                "ref": "main",
+                "dispatch_id": identity["dispatch_id"],
+            },
+            enforce_transition=False,
+        )
+        self.journal.append(
+            event="STAGE_MERGE_READ_WAITING",
+            idempotency_key="merge-stop-read-waiting",
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="stage_merge_identity_read_unavailable_before_dispatch",
+            enforce_transition=False,
+        )
+        self.srv.control_state = self._ControlOn()
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            actions_before = list(self.github_writer.actions)
+            result = self.srv.step()
+
+        self.assertEqual(result["status"], "EMERGENCY_STOP")
+        self.assertEqual(
+            result["read_only_recovery"]["status"], "WAITING_GITHUB_READBACK"
+        )
+        self.assertEqual(self.github_writer.actions, actions_before)
 
     def test_merge_reconciliation_precedes_older_stage_outcome_unknown(self):
         """SIMULATED: merge recovery remains reachable after restart marker."""
@@ -888,6 +1564,25 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         ):
             result = self.srv.step()
             dispatch.assert_not_called()
+        self.assertEqual(result["status"], "WAITING_GITHUB_READBACK")
+        self.assertIn(
+            "ACCEPTED_MAIN_READ_UNAVAILABLE",
+            [event.event for event in self.journal.replay()],
+        )
+
+    def test_simulated_bound_stage_read_failure_keeps_service_alive(self):
+        """SIMULATED: a bound-stage read failure records a bounded wait."""
+
+        mission, stage, _bound = self._bound_stage_with_pending_intent(
+            "MISSION-BOUND-MAIN-READ-WAIT", "bound-main-read-wait"
+        )
+        with patch.object(
+            self.github_writer,
+            "fetch_accepted_main",
+            side_effect=steward_github.GitHubReadError("accepted_main_read_failed"),
+        ):
+            result = self.srv.step()
+
         self.assertEqual(result["status"], "WAITING_GITHUB_READBACK")
         self.assertIn(
             "ACCEPTED_MAIN_READ_UNAVAILABLE",
