@@ -2448,14 +2448,25 @@ class FakeGitHubWriter:
         dispatch_id: str,
         owner_identity: str,
     ) -> dict[str, Any] | None:
-        del repository, control_issue_number, mission_id, proposal_sha256, stage_id
-        del expected_base_sha, expected_head_sha, workflow_file, owner_identity
+        expected = {
+            "mission_id": mission_id,
+            "proposal_sha256": proposal_sha256,
+            "stage_id": stage_id,
+            "repository": repository,
+            "control_issue_number": control_issue_number,
+            "pr_number": pr_number,
+            "base_sha": expected_base_sha,
+            "head_sha": expected_head_sha,
+            "workflow_file": workflow_file,
+            "ref": "main",
+            "dispatch_id": dispatch_id,
+            "authorization": "ORPHAN_DISPATCH_RECOVERY",
+            "action": "QUARANTINE_EXACT_PR",
+            "owner_identity": owner_identity,
+        }
         matches = [
             item for item in self.merge_dispatch_resolutions
-            if item.get("pr_number") == pr_number
-            and item.get("dispatch_id") == dispatch_id
-            and item.get("authorization") == "ORPHAN_DISPATCH_RECOVERY"
-            and item.get("action") == "QUARANTINE_EXACT_PR"
+            if all(item.get(key) == value for key, value in expected.items())
         ]
         if len(matches) > 1:
             raise GitHubFactsError("duplicate_merge_resolution_markers")

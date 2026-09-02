@@ -2015,6 +2015,26 @@ class StewardService:
                 stage.stage_id,
                 "STAGE_MERGE_DISPATCH_INTENT",
             )
+            workflow_run_id = next(
+                (
+                    event.data.get("workflow_run_id")
+                    for event in (
+                        merge_intent,
+                        self._latest_stage_event(
+                            mission.mission_id,
+                            stage.stage_id,
+                            "STAGE_MERGE_DISPATCHED",
+                        ),
+                        self._latest_stage_event(
+                            mission.mission_id,
+                            stage.stage_id,
+                            "STAGE_OUTCOME_UNKNOWN",
+                        ),
+                    )
+                    if event is not None and type(event.data.get("workflow_run_id")) is int
+                ),
+                None,
+            )
             reconciliation: Mapping[str, Any] | None = None
             if pending_mutation in {"MERGE", "QUARANTINE"} and facts.get("merged") is not True:
                 reconcile_dispatch = getattr(
@@ -2042,29 +2062,7 @@ class StewardService:
                             ),
                             expected_base_sha=expected_base,
                             dispatch_id=identity["dispatch_id"],
-                            workflow_run_id=(
-                                next(
-                                    (
-                                        event.data.get("workflow_run_id")
-                                        for event in (
-                                            merge_intent,
-                                            self._latest_stage_event(
-                                                mission.mission_id,
-                                                stage.stage_id,
-                                                "STAGE_MERGE_DISPATCHED",
-                                            ),
-                                            self._latest_stage_event(
-                                                mission.mission_id,
-                                                stage.stage_id,
-                                                "STAGE_OUTCOME_UNKNOWN",
-                                            ),
-                                        )
-                                        if event is not None
-                                        and type(event.data.get("workflow_run_id")) is int
-                                    ),
-                                    None,
-                                )
-                            ),
+                            workflow_run_id=workflow_run_id,
                         )
                     except (GitHubReadError, GitHubFactsError, OSError):
                         reconciliation = None
@@ -2104,6 +2102,7 @@ class StewardService:
                         isinstance(reconciliation, Mapping)
                         and reconciliation.get("status") in {"NOT_PROVEN", "REJECTED"}
                         and merge_intent is not None
+                        and workflow_run_id is None
                     ):
                         authorization_reader = getattr(
                             self.github_writer,

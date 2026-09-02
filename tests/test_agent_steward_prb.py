@@ -73,6 +73,51 @@ class TestAutonomousStewardPRB(unittest.TestCase):
         self.assertEqual(readback["status"], "VERIFIED")
         self.assertEqual(readback["accepted_main_sha"], self.head_sha)
 
+    def test_fake_recovery_authorization_requires_complete_identity(self):
+        writer = FakeGitHubWriter(initial_pr_number=202)
+        marker = {
+            "mission_id": "MISSION-ORPHAN",
+            "proposal_sha256": "c" * 64,
+            "stage_id": "stage-orphan",
+            "repository": self.repo,
+            "control_issue_number": 208,
+            "pr_number": 202,
+            "base_sha": self.base_sha,
+            "head_sha": self.head_sha,
+            "workflow_file": "agent-merge.yml",
+            "ref": "main",
+            "dispatch_id": "d" * 64,
+            "authorization": "ORPHAN_DISPATCH_RECOVERY",
+            "action": "QUARANTINE_EXACT_PR",
+            "authorization_id": "owner-recovery-fake",
+            "owner_identity": "github:Igzela",
+        }
+        writer.merge_dispatch_resolutions.append(marker)
+        common = dict(
+            repository=self.repo,
+            control_issue_number=208,
+            mission_id="MISSION-ORPHAN",
+            proposal_sha256="c" * 64,
+            stage_id="stage-orphan",
+            pr_number=202,
+            expected_base_sha=self.base_sha,
+            expected_head_sha=self.head_sha,
+            workflow_file="agent-merge.yml",
+            dispatch_id="d" * 64,
+            owner_identity="github:Igzela",
+        )
+        self.assertIsNotNone(writer.read_orphan_dispatch_recovery_authorization(**common))
+        self.assertIsNone(
+            writer.read_orphan_dispatch_recovery_authorization(
+                **{**common, "expected_head_sha": "e" * 40}
+            )
+        )
+        self.assertIsNone(
+            writer.read_orphan_dispatch_recovery_authorization(
+                **{**common, "owner_identity": "github:attacker"}
+            )
+        )
+
     def test_mark_ready_exact_head_guard(self):
         """Verify GhGitHubWriter.mark_ready re-reads live head before mutating PR state."""
         writer = GhGitHubWriter(timeout_seconds=10)

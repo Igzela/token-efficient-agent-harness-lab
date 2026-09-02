@@ -693,7 +693,11 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             card_id="",
             state="RUNNING",
             detail="canonical_merge_workflow_dispatch_intent",
-            data={"pr_number": pr_number, "head_sha": bound["head_sha"]},
+            data={
+                "pr_number": pr_number,
+                "head_sha": bound["head_sha"],
+                "workflow_run_id": 901,
+            },
             enforce_transition=False,
         )
         self.github_writer.remote_main_sha = "f" * 40

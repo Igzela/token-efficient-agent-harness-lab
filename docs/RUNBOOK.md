@@ -10,24 +10,14 @@ Operator sessions enter through the accepted router: run `uv run --no-project py
 
 ## Orphaned Canonical Merge Dispatch
 
-When a pre-existing merge intent has no matching durable workflow run, do not
-wait for a time threshold, retry the old dispatch, direct-merge, or infer
-`NO_EFFECT_CONFIRMED`. Read-only reconciliation may find a matching run;
-otherwise the service remains `OUTCOME_UNKNOWN` until a new exact owner
-recovery authorization permits the bounded legacy quarantine. A workflow run
-is considered matching only when its `main` dispatch metadata and complete
-`PR_NUMBER`/`EXPECTED_HEAD`/`DISPATCH_ID` log markers bind the exact intent; the
-run metadata alone does not expose the workflow inputs. A successful merge
-requires the merged PR and accepted-main readback; this recovery state is an
-authority/evidence boundary, not a scientific result, and must not be mapped
-to research `INSUFFICIENT`.
-
-For every new dispatch, send the unique `dispatch_id` with
-`return_run_details=true` to `workflow_dispatch`, durably record the returned
-`workflow_run_id` before settling the dispatch, and reconcile that run
-read-only after restart. A lost response never authorizes replay; it remains
-bound to the original PR/head/ref identity until GitHub supplies terminal
-evidence.
+The durable authority/evidence and safety contract is canonical in
+[`docs/ARCHITECTURE.md`](ARCHITECTURE.md#merge-dispatch-recovery-and-emergency-stop-contract).
+Use this procedure for the already-proved operator flow: read the exact
+Mission/Stage/PR/base/head/ref identity and accepted `main`, consume one
+authenticated OWNER marker, verify the stop state immediately before any
+mutation, retain the branch, and record the GitHub readback. Never retry an
+unknown dispatch or infer `NO_EFFECT_CONFIRMED` from elapsed time or a missing
+run; recovery `OUTCOME_UNKNOWN` is not research `INSUFFICIENT`.
 
 Required marker shape (replace every placeholder; post nothing until the
 identity has been independently checked):
@@ -40,20 +30,12 @@ The authenticated GitHub author must have `OWNER` association and match the
 Mission's trusted owner identity. One exact marker is accepted; duplicate,
 malformed, stale, or partially matching markers remain fail-closed. The
 comment's GitHub `created_at` is the temporal authority; do not put
-`approved_at` in the marker. The marker authorizes only the exact quarantine,
-not an external outcome. Before mutating, re-read repository, PR #679, exact
-base/head, accepted main, PR state, and the stop state. Retain the branch and
-evidence. Afterward, GitHub readback yields `MERGED` (merge/read back, no
-replacement), `CLOSED_UNMERGED` (record fact, then allow one fresh candidate),
-or `OUTCOME_UNKNOWN` (no further effect).
-
-The emergency stop is not silently weakened: while the label is present the
-service performs no quarantine. The owner must separately make the minimum
-exact control transition removing the label for this one recovery, and the
-service must read back that absence immediately before quarantine. The service
-never clears the label, retries the old dispatch, direct-merges, closes a
-different PR, deletes the retained branch, or permits an old unverified
-candidate and a fresh candidate to be merge-eligible together.
+`approved_at` or any external resolution in the marker. The marker authorizes
+only the exact quarantine. Readback yields `MERGED`, `CLOSED_UNMERGED`, or
+`OUTCOME_UNKNOWN` according to the canonical contract; the service never
+clears the stop label, retries the old dispatch, direct-merges, closes a
+different PR, deletes the retained branch, or permits concurrent old/fresh
+merge eligibility.
 
 ## Agent Runtime and Tool Policy Operations
 

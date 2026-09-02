@@ -66,6 +66,56 @@ change to the active Harness. The research milestone gates are owned by
 `docs/ROADMAP.md`; autonomy, testing, review, and merge rules by
 `docs/AUTONOMY.md`.
 
+## Merge-dispatch recovery and emergency-stop contract
+
+The merge-dispatch recovery boundary is owned here because it defines durable
+authority, external evidence, mutation safety, and restart recovery. A merge
+intent binds the repository, PR number, expected base, exact head, workflow
+file, `main` ref, and a journal-derived intent key into a unique `dispatch_id`.
+The REST `workflow_dispatch` request asks for `return_run_details=true`; its
+returned `workflow_run_id`, run URL, and exact binding are durably journaled
+before the dispatch is considered settled. A missing or malformed response is
+`OUTCOME_UNKNOWN`; it never permits a second dispatch.
+
+Reconciliation first reads the persisted run ID and verifies the workflow
+run's ID, dispatch ref (`main`), `event`, workflow path, status, conclusion,
+and time fence. Because GitHub reports the dispatch ref's `head_sha` rather
+than the workflow input's PR head, the run's complete log must also carry the
+exact `PR_NUMBER`/`EXPECTED_HEAD`/`DISPATCH_ID` markers. An old run without
+the dispatch marker cannot be attributed to the intent. An empty scan, elapsed
+time, or unrelated run cannot prove no effect. A successful run is not merge
+success: only the authoritative merged PR and accepted-main readback can prove
+success.
+
+If no durable run identity exists, the old dispatch is not converted into a
+no-effect fact by elapsed time, an empty run scan, owner assertion, or a
+missing log. The only permitted legacy recovery is a new owner-authenticated
+`steward-orphan-dispatch-recovery:v1` marker on the canonical control Issue.
+The marker is authority only: it binds the complete Mission/Stage/PR/base/head/
+workflow/ref/`dispatch_id` identity and authorizes exactly
+`ORPHAN_DISPATCH_RECOVERY` / `QUARANTINE_EXACT_PR`. It must contain no
+resolution, `NO_EFFECT_CONFIRMED`, accepted-main assertion, or caller-supplied
+`approved_at`; GitHub comment `created_at`, comment ID, and OWNER identity are
+the only marker metadata consumed.
+
+For a legacy orphan, Steward re-reads the repository, exact PR/base/head,
+accepted main, PR state, and emergency-stop state immediately before the one
+authorized quarantine mutation. The branch and evidence are retained. After
+the mutation, authoritative GitHub readback decides the fact: `MERGED` wins
+and requires merged-PR plus accepted-main readback with no replacement;
+`CLOSED_UNMERGED` permits a fresh candidate only after that fact is recorded;
+anything ambiguous or unavailable remains `OUTCOME_UNKNOWN`. A persisted
+quarantine intent fences repeats across restart, and no unverified old
+candidate and fresh candidate may be merge-eligible concurrently.
+
+Emergency stop remains a hard guard. The service re-reads it immediately
+before quarantine and never clears it itself. If the label is active, the owner
+must make a separately authenticated, exact control transition removing that
+label solely to permit this quarantine; the transition must be read back as
+absent before the mutation. A failed or ambiguous transition leaves recovery
+`OUTCOME_UNKNOWN`, and the service performs no bypass, replay, direct merge, or
+branch deletion.
+
 ## Three-Tier Operational Model
 
 ```mermaid

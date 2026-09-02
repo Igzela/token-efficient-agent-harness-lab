@@ -46,6 +46,14 @@ jobs:
           path: trusted-base
           persist-credentials: false
 
+      - name: Record exact dispatch binding
+        run: |
+          set -euo pipefail
+          # These non-secret inputs are emitted before any later preflight so
+          # every run, including an early rejected run, remains attributable
+          # to one logical dispatch, PR, and exact head.
+          printf 'PR_NUMBER: %s\nEXPECTED_HEAD: %s\nDISPATCH_ID: %s\n' "${PR_NUMBER}" "${EXPECTED_HEAD}" "${DISPATCH_ID}"
+
       - name: Validate live PR before merge checks
         run: |
           set -euo pipefail
@@ -60,14 +68,6 @@ jobs:
             .base.ref == "main" and
             .head.sha == $head
           ' "$RUNNER_TEMP/pr.json" >/dev/null
-
-      - name: Record exact dispatch binding
-        run: |
-          set -euo pipefail
-          # These non-secret inputs make a later read-only reconciliation
-          # provably bind this workflow run to one logical dispatch, PR, and
-          # exact head.
-          printf 'PR_NUMBER: %s\nEXPECTED_HEAD: %s\nDISPATCH_ID: %s\n' "${PR_NUMBER}" "${EXPECTED_HEAD}" "${DISPATCH_ID}"
 
       - name: Verify exact head and authenticated PASS receipt
         uses: ./trusted-base/actions/exact-head-check
