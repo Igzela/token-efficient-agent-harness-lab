@@ -354,6 +354,111 @@ def create_steward_worktree(
     return str(worktree_path), branch, expected_sha, previous_remote_sha
 
 
+def restore_steward_checkpoint_worktree(
+    mission_id: str,
+    stage_id: str,
+    card_id: str,
+    repo_path: str,
+    base_sha: str,
+    head_sha: str,
+) -> tuple[str, str, str] | None:
+    """Materialize one exact durable Steward checkpoint without moving refs.
+
+    Recovery is local and evidence preserving: the derived branch must already
+    point at the journaled head, the journaled base must be its ancestor, and a
+    stale registration is removed only for the absent derived path.  No fetch,
+    reset, branch movement, push, or remote mutation is permitted here.
+    """
+
+    if not all(
+        isinstance(value, str) and value and "\x00" not in value
+        for value in (mission_id, stage_id, card_id, repo_path, base_sha, head_sha)
+    ):
+        return None
+    if not re.fullmatch(r"[0-9a-f]{40}", base_sha) or not re.fullmatch(
+        r"[0-9a-f]{40}", head_sha
+    ):
+        return None
+    worktree_path, branch = steward_worktree_location(
+        mission_id, stage_id, card_id, base_sha
+    )
+    if not _is_steward_path(worktree_path):
+        return None
+    branch_head = _git(
+        "rev-parse", "--verify", f"refs/heads/{branch}", cwd=repo_path
+    )
+    if branch_head != head_sha:
+        return None
+    if _git("merge-base", "--is-ancestor", base_sha, head_sha, cwd=repo_path) is None:
+        return None
+
+    records = _worktree_records(repo_path)
+    if records is None:
+        return None
+    branch_records = [
+        record
+        for record in records
+        if record.get("branch") == f"refs/heads/{branch}"
+    ]
+    exact_record = next(
+        (
+            record
+            for record in branch_records
+            if pathlib.Path(record.get("worktree", "")).resolve()
+            == worktree_path.resolve()
+        ),
+        None,
+    )
+    if worktree_path.exists() or worktree_path.is_symlink():
+        if verify_worktree(worktree_path, branch, repo_path, head_sha):
+            return str(worktree_path), branch, base_sha
+        return None
+
+    if exact_record is not None:
+        if exact_record.get("HEAD") != head_sha or len(branch_records) != 1:
+            return None
+        # The path is already proved absent and the registration is bound to
+        # the exact derived branch/head.  Remove only that stale registration;
+        # --force cannot delete content because the path does not exist.
+        if _git(
+            "worktree", "remove", "--force", str(worktree_path), cwd=repo_path
+        ) is None:
+            return None
+        records = _worktree_records(repo_path)
+        if records is None or any(
+            pathlib.Path(record.get("worktree", "")).resolve()
+            == worktree_path.resolve()
+            for record in records
+        ):
+            return None
+    elif branch_records:
+        # The exact branch is registered at some other path.  Recovery must
+        # not disturb or alias a potentially live checkout.
+        return None
+
+    WORKTREE_BASE.mkdir(parents=True, exist_ok=True)
+    if _git("worktree", "add", str(worktree_path), branch, cwd=repo_path) is None:
+        return None
+    if not verify_worktree(worktree_path, branch, repo_path, head_sha):
+        # Only remove the registration created by this call after proving its
+        # exact derived path, branch, and checkpoint head. If that proof is
+        # unavailable, retain the checkout for manual recovery instead of
+        # deleting uncertain content.
+        record = _record_for_path(worktree_path, repo_path)
+        if (
+            record is not None
+            and record.get("branch") == f"refs/heads/{branch}"
+            and record.get("HEAD") == head_sha
+            and _git(
+                "worktree", "remove", "--force", str(worktree_path), cwd=repo_path
+            ) is not None
+            and _record_for_path(worktree_path, repo_path) is None
+        ):
+            return None
+        return None
+    return str(worktree_path), branch, base_sha
+
+
 def remove_steward_worktree(
     card_id: str,
     repo_path: str,
