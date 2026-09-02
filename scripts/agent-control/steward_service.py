@@ -1029,6 +1029,7 @@ class StewardService:
         expected_base_sha: str,
         expected_head_sha: str,
         intent_event: Any | None,
+        intent_key: str | None = None,
     ) -> dict[str, Any]:
         """Derive one stable dispatch identity from the journal intent.
 
@@ -1039,7 +1040,13 @@ class StewardService:
         intent_key = (
             intent_event.idempotency_key
             if intent_event is not None
-            else f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head_sha}"
+            else intent_key
+            or (
+                "stage-merge-intent:"
+                + hashlib.sha256(
+                    f"{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head_sha}".encode()
+                ).hexdigest()[:32]
+            )
         )
         identity = steward_github.merge_dispatch_identity(
             mission.repository_identity.repository,
@@ -2796,7 +2803,12 @@ class StewardService:
                 )
                 if not pre_dispatch_read_waiting:
                     return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
-            merge_intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+            merge_intent_key = (
+                "stage-merge-intent:"
+                + hashlib.sha256(
+                    f"{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}".encode()
+                ).hexdigest()[:32]
+            )
             merge_identity = self._merge_dispatch_identity(
                 mission,
                 stage,
@@ -2804,6 +2816,7 @@ class StewardService:
                 expected_base_sha=expected_base,
                 expected_head_sha=expected_head,
                 intent_event=None,
+                intent_key=merge_intent_key,
             )
             self.journal.append(
                 event="STAGE_MERGE_DISPATCH_INTENT",
