@@ -815,9 +815,14 @@ class TestAutonomousStewardPRB(unittest.TestCase):
             "head_sha": self.head_sha,
         }
         closed_facts = {**open_facts, "state": "CLOSED"}
+        successor_main = "c" * 40
         with (
             patch.object(writer, "fetch_stage_pr", side_effect=[open_facts, closed_facts]),
-            patch.object(writer.reader, "fetch_accepted_main", return_value=self.base_sha),
+            patch.object(
+                writer.reader,
+                "fetch_accepted_main",
+                return_value=successor_main,
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")) as run,
         ):
             result = writer.quarantine_stage_pr(
@@ -829,6 +834,8 @@ class TestAutonomousStewardPRB(unittest.TestCase):
         self.assertEqual(result["status"], "CLOSED_UNMERGED")
         self.assertEqual(result["pr_number"], 679)
         self.assertEqual(result["head_sha"], self.head_sha)
+        self.assertEqual(result["preflight_accepted_main_sha"], successor_main)
+        self.assertEqual(result["accepted_main_sha"], successor_main)
         self.assertNotIn("merge", " ".join(run.call_args.args[0]))
 
     def test_quarantine_read_unavailable_is_not_terminal(self):

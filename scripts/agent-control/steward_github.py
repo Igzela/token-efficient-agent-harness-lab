@@ -1932,14 +1932,12 @@ class GhGitHubWriter:
             }
         if facts.get("state") != "OPEN" or facts.get("merged") is not False:
             raise GitHubFactsError("quarantine_pr_state_unproven")
-        if current_main != expected_base_sha:
-            raise GitHubFactsError("quarantine_base_main_mismatch")
-
         evidence = {
             "repository": repository,
             "pr_number": pr_number,
             "expected_base_sha": expected_base_sha,
             "expected_head_sha": expected_head_sha,
+            "preflight_accepted_main_sha": current_main,
             "action": "QUARANTINE_EXACT_PR",
         }
         try:
@@ -2418,7 +2416,7 @@ class FakeGitHubWriter:
                 "head_sha": expected_head_sha,
                 "accepted_main_sha": self.remote_main_sha,
             }
-        if pr.get("state") != "OPEN" or self.remote_main_sha != expected_base_sha:
+        if pr.get("state") != "OPEN":
             raise GitHubFactsError("quarantine_preflight_not_proven")
         self.actions.append(("quarantine", {"pr_number": pr_number, "head_sha": expected_head_sha}))
         if self.quarantine_race_merge:
@@ -2443,6 +2441,7 @@ class FakeGitHubWriter:
             "pr_number": pr_number,
             "base_sha": expected_base_sha,
             "head_sha": expected_head_sha,
+            "preflight_accepted_main_sha": self.remote_main_sha,
             "accepted_main_sha": self.remote_main_sha,
         }
 

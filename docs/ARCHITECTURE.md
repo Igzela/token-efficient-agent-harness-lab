@@ -100,7 +100,10 @@ the only marker metadata consumed.
 
 For a legacy orphan, Steward re-reads the repository, exact PR/base/head,
 accepted main, PR state, and emergency-stop state immediately before the one
-authorized quarantine mutation. The branch and evidence are retained. After
+authorized quarantine mutation. The accepted-main read is recorded even when
+it has advanced beyond the orphan's expected base because the recovery action
+is an exact close-only quarantine, not a merge or a rebind. The branch and
+evidence are retained. After
 the mutation, authoritative GitHub readback decides the fact: `MERGED` wins
 and requires merged-PR plus accepted-main readback with no replacement;
 `CLOSED_UNMERGED` permits a fresh candidate only after that fact is recorded;
