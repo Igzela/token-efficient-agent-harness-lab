@@ -3650,10 +3650,6 @@ class StewardService:
             if event.mission_id == self.mission_id
             and event.event == "STAGE_SUPERSEDED"
         }
-        started: dict[tuple[str, str, str], Any] = {}
-        for event in events:
-            if event.mission_id == self.mission_id and event.event == "WORKER_STARTED":
-                started[(event.mission_id, event.stage_id, event.card_id)] = event
         registered = self.mission
         items: list[RecoveryItem] = []
         for binding in projection["bindings"]:
@@ -3668,12 +3664,132 @@ class StewardService:
                     )
                 )
                 continue
-            key = (binding["mission_id"], binding["stage_id"], binding["card_id"])
-            worker_event = started.get(key)
+            card_events = [
+                event
+                for event in events
+                if event.mission_id == binding["mission_id"]
+                and event.stage_id == binding["stage_id"]
+                and event.card_id == binding["card_id"]
+            ]
+            card_tail = card_events[-1] if card_events else None
+            attempt_events = (
+                [event for event in card_events if event.attempt == card_tail.attempt]
+                if card_tail is not None
+                else []
+            )
+            attempt_by_event = {
+                event.event: event
+                for event in attempt_events
+                if event.event
+                in {
+                    "WORKER_STARTED",
+                    "WORKER_CHECKPOINT",
+                    "FOCUSED_CHECKS_PASSED",
+                    "LOCAL_REVIEW_OBSERVED",
+                }
+            }
+            worker_event = attempt_by_event.get("WORKER_STARTED")
             worker_data = worker_event.data if worker_event is not None else {}
             expected_binding = worktree_manager.steward_binding_digest(
                 binding["mission_id"], binding["stage_id"], binding["card_id"], registered.repository_identity.base_sha
             )
+            checkpoint = attempt_by_event.get("WORKER_CHECKPOINT")
+            focused = attempt_by_event.get("FOCUSED_CHECKS_PASSED")
+            local_review = attempt_by_event.get("LOCAL_REVIEW_OBSERVED")
+            checkpoint_data = checkpoint.data if checkpoint is not None else {}
+            review_data = local_review.data if local_review is not None else {}
+            expected_head = checkpoint_data.get("head_sha")
+            checkpoint_identity = (
+                worker_event is not None
+                and checkpoint is not None
+                and worker_event.attempt == checkpoint.attempt
+                and worker_event.seq < checkpoint.seq
+                and checkpoint_data.get("base_sha") == registered.repository_identity.base_sha
+                and checkpoint_data.get("worktree_binding_sha256") == expected_binding
+                and isinstance(expected_head, str)
+                and steward_workers.SHA40.fullmatch(expected_head) is not None
+            )
+            checkpoint_only = (
+                state == "VERIFYING"
+                and card_tail is not None
+                and card_tail.event == "WORKER_CHECKPOINT"
+                and checkpoint_identity
+                and focused is None
+                and local_review is None
+            )
+            focused_checkpoint = (
+                state == "REVIEWING"
+                and card_tail is not None
+                and card_tail.event == "FOCUSED_CHECKS_PASSED"
+                and checkpoint_identity
+                and focused is not None
+                and checkpoint.attempt == focused.attempt
+                and checkpoint.seq < focused.seq
+            )
+            reviewed_checkpoint = (
+                state == "REVIEWING"
+                and card_tail is not None
+                and card_tail.event == "LOCAL_REVIEW_OBSERVED"
+                and checkpoint_identity
+                and focused is not None
+                and card_tail is not None
+                and local_review is not None
+                and worker_event.attempt == checkpoint.attempt == focused.attempt == local_review.attempt
+                and worker_event.seq < checkpoint.seq < focused.seq < local_review.seq
+                and focused.attempt == local_review.attempt
+                and focused.seq < local_review.seq
+                and review_data.get("base_sha") == registered.repository_identity.base_sha
+                and review_data.get("head_sha") == expected_head
+                and review_data.get("verdict") == "PASS"
+                and review_data.get("open_blocker_ids") == []
+                and review_data.get("security_ok") is True
+                and review_data.get("rollback_ok") is True
+            )
+            resumable_checkpoint = checkpoint_only or reviewed_checkpoint or (
+                focused_checkpoint and local_review is None
+            )
+            if resumable_checkpoint and self.repo_path is not None:
+                try:
+                    expected_path, expected_branch = worktree_manager.steward_worktree_location(
+                        binding["mission_id"],
+                        binding["stage_id"],
+                        binding["card_id"],
+                        registered.repository_identity.base_sha,
+                    )
+                    restored = (
+                        worker_data.get("base_sha") == registered.repository_identity.base_sha
+                        and worker_data.get("worktree_binding_sha256") == expected_binding
+                        and worker_data.get("branch") == expected_branch
+                        and worktree_manager.restore_steward_checkpoint_worktree(
+                            binding["mission_id"],
+                            binding["stage_id"],
+                            binding["card_id"],
+                            str(self.repo_path),
+                            registered.repository_identity.base_sha,
+                            expected_head,
+                        )
+                    )
+                    if restored and worktree_manager.verify_worktree(
+                        expected_path,
+                        expected_branch,
+                        self.repo_path,
+                        expected_head,
+                    ):
+                        items.append(
+                            RecoveryItem(
+                                binding["card_id"],
+                                state,
+                                "RESUMABLE",
+                                "reviewed_checkpoint_restored"
+                                if reviewed_checkpoint
+                                else "focused_checkpoint_restored"
+                                if focused_checkpoint
+                                else "worker_checkpoint_restored",
+                            )
+                        )
+                        continue
+                except (OSError, ValueError, TypeError):
+                    pass
             binding_valid = (
                 state not in {"RUNNING", "VERIFYING", "REVIEWING", "OUTCOME_UNKNOWN"}
                 or (

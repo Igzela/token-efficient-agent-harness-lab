@@ -539,6 +539,18 @@ failed CI/review candidate is superseded with its branch retained, then receives
 a fresh bounded candidate head; accepted-main drift causes a fresh-base replan.
 All merges remain delegated solely to `agent-merge.yml`.
 
+For an interrupted WorkCard, the service may resume only a current-tail,
+same-attempt checkpoint with exact Mission/Stage/card/base/branch/head and
+scoped-diff bindings. It may recreate a missing derived worktree only when
+the pre-existing local branch already points at the checkpoint head and the
+base is an ancestor; it never moves that branch. A verified checkpoint resumes
+focused checks or the independent reviewer without replaying implementation.
+Any missing, mixed-attempt, dirty, stale, or ambiguous checkpoint remains
+`RECOVERY_REQUIRED`; implementation and external mutations are not replayed.
+Verifier faults leave the same checkpoint in `VERIFYING` and may be retried only
+through the deterministic verifier; they never admit a new implementation
+worker attempt.
+
 After an observed merge, `post_merge_readback` verifies from GitHub that the
 same PR number and expected head produced the exact `main` merge commit. It
 fetches a matching local mirror only after that remote proof and runs

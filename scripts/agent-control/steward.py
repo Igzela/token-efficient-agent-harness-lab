@@ -1017,6 +1017,559 @@ class Steward:
             return ExecutionResult(card.card_id, "BLOCKED", latest.attempt, None, latest.detail)
         return None
 
+    def _checkpoint_projection(
+        self,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+        card: contract.WorkCard,
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Select one contiguous, current-attempt checkpoint projection."""
+
+        events = [
+            event
+            for event in self.journal.replay()
+            if event.mission_id == mission.mission_id
+            and event.stage_id == stage.stage_id
+            and event.card_id == card.card_id
+        ]
+        if not events:
+            return None
+        phase_by_event = {
+            "WORKER_CHECKPOINT": "checkpoint",
+            "FOCUSED_CHECKS_PASSED": "focused",
+            "LOCAL_REVIEW_OBSERVED": "reviewed",
+        }
+        tail = events[-1]
+        phase = phase_by_event.get(tail.event)
+        if phase is None:
+            return None
+        attempt_events = [event for event in events if event.attempt == tail.attempt]
+        by_event: dict[str, Any] = {}
+        for event in attempt_events:
+            if event.event in {
+                "WORKER_STARTED",
+                "WORKER_CHECKPOINT",
+                "FOCUSED_CHECKS_PASSED",
+                "LOCAL_REVIEW_OBSERVED",
+            }:
+                by_event[event.event] = event
+        required = {
+            "checkpoint": ("WORKER_STARTED", "WORKER_CHECKPOINT"),
+            "focused": (
+                "WORKER_STARTED",
+                "WORKER_CHECKPOINT",
+                "FOCUSED_CHECKS_PASSED",
+            ),
+            "reviewed": (
+                "WORKER_STARTED",
+                "WORKER_CHECKPOINT",
+                "FOCUSED_CHECKS_PASSED",
+                "LOCAL_REVIEW_OBSERVED",
+            ),
+        }[phase]
+        if any(name not in by_event for name in required):
+            return None
+        ordered = [by_event[name].seq for name in required]
+        if ordered != sorted(ordered) or by_event[tail.event] != tail:
+            return None
+        return phase, by_event
+
+    def _reviewed_checkpoint_result(
+        self,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+        card: contract.WorkCard,
+        *,
+        base_sha: str,
+    ) -> ExecutionResult | None:
+        """Reuse one exact durable local-review checkpoint after restart.
+
+        The journal is accepted only together with the immutable local branch,
+        exact commit graph, scoped diff, clean reconstructed worktree, and
+        complete review bindings.  Any missing or mismatched fact falls back to
+        the ordinary fail-closed recovery result.
+        """
+
+        projection = self._checkpoint_projection(mission, stage, card)
+        if projection is None or projection[0] != "reviewed":
+            return None
+        _phase, latest_by_event = projection
+        started = latest_by_event["WORKER_STARTED"]
+        checkpoint = latest_by_event["WORKER_CHECKPOINT"]
+        focused = latest_by_event["FOCUSED_CHECKS_PASSED"]
+        review = latest_by_event["LOCAL_REVIEW_OBSERVED"]
+        if not (
+            started.attempt == checkpoint.attempt == focused.attempt == review.attempt
+            and started.seq < checkpoint.seq < focused.seq < review.seq
+        ):
+            return None
+        expected_binding = worktree_manager.steward_binding_digest(
+            mission.mission_id, stage.stage_id, card.card_id, base_sha
+        )
+        checkpoint_data = checkpoint.data
+        review_data = review.data
+        head_sha = checkpoint_data.get("head_sha")
+        implementation_session = checkpoint_data.get("implementation_session_id")
+        reviewer_session = review_data.get("reviewer_session_id")
+        try:
+            _expected_path, expected_branch = worktree_manager.steward_worktree_location(
+                mission.mission_id, stage.stage_id, card.card_id, base_sha
+            )
+        except (TypeError, ValueError, OSError):
+            return None
+        if not (
+            started.data.get("base_sha") == base_sha
+            and started.data.get("worktree_binding_sha256") == expected_binding
+            and started.data.get("branch") == expected_branch
+            and checkpoint_data.get("base_sha") == base_sha
+            and checkpoint_data.get("worktree_binding_sha256") == expected_binding
+            and isinstance(head_sha, str)
+            and SHA40.fullmatch(head_sha) is not None
+            and isinstance(implementation_session, str)
+            and _SAFE_IDENTIFIER.fullmatch(implementation_session) is not None
+            and review_data.get("base_sha") == base_sha
+            and review_data.get("head_sha") == head_sha
+            and review_data.get("implementation_session_id") == implementation_session
+            and isinstance(reviewer_session, str)
+            and _SAFE_IDENTIFIER.fullmatch(reviewer_session) is not None
+            and reviewer_session != implementation_session
+            and review_data.get("verdict") == "PASS"
+            and review_data.get("open_blocker_ids") == []
+            and review_data.get("security_ok") is True
+            and review_data.get("rollback_ok") is True
+            and review_data.get("review_axes") == ["standards", "spec"]
+            and type(review_data.get("review_round")) is int
+            and review_data["review_round"] in {1, 2}
+            and review_data.get("review_mode") in {"full", "repair_verification"}
+            and isinstance(review_data.get("finding_ledger_digest"), str)
+            and workers.SHA256.fullmatch(review_data["finding_ledger_digest"]) is not None
+            and isinstance(review_data.get("review_receipt_sha256"), str)
+            and workers.SHA256.fullmatch(review_data["review_receipt_sha256"]) is not None
+        ):
+            return None
+        restored = worktree_manager.restore_steward_checkpoint_worktree(
+            mission.mission_id,
+            stage.stage_id,
+            card.card_id,
+            str(self.repo_path),
+            base_sha,
+            head_sha,
+        )
+        if not restored:
+            return None
+        worktree_path = Path(restored[0])
+        try:
+            observed_head = _git_head(worktree_path)
+            actual_paths = _git_changed_paths(worktree_path, base_sha, observed_head)
+            workers.validate_changed_paths(card, actual_paths)
+            _git_worktree_clean(worktree_path)
+            reviewed_range = workers.review_range_digest(
+                base_sha, observed_head, worktree=worktree_path
+            )
+        except (StewardError, workers.WorkerError, OSError):
+            return None
+        if not (
+            observed_head == head_sha
+            and actual_paths
+            and checkpoint_data.get("changed_paths_digest")
+            == _digest("\x00".join(actual_paths))
+            and review_data.get("reviewed_range_sha256") == reviewed_range
+        ):
+            return None
+        return ExecutionResult(
+            card.card_id,
+            "WAITING_FOR_PR",
+            checkpoint.attempt,
+            head_sha,
+            "durable_local_review_reused",
+            reviewer_session,
+        )
+
+    def _focused_checkpoint_review_result(
+        self,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+        card: contract.WorkCard,
+        *,
+        base_sha: str,
+    ) -> ExecutionResult | None:
+        """Resume exactly at independent review after durable focused checks."""
+
+        projection = self._checkpoint_projection(mission, stage, card)
+        if projection is None or projection[0] != "focused":
+            return None
+        _phase, latest_by_event = projection
+        started = latest_by_event["WORKER_STARTED"]
+        checkpoint = latest_by_event["WORKER_CHECKPOINT"]
+        focused = latest_by_event["FOCUSED_CHECKS_PASSED"]
+        if not (
+            started.attempt == checkpoint.attempt == focused.attempt
+            and started.seq < checkpoint.seq < focused.seq
+        ):
+            return None
+        expected_binding = worktree_manager.steward_binding_digest(
+            mission.mission_id, stage.stage_id, card.card_id, base_sha
+        )
+        checkpoint_data = checkpoint.data
+        head_sha = checkpoint_data.get("head_sha")
+        implementation_session = checkpoint_data.get("implementation_session_id")
+        try:
+            _expected_path, expected_branch = worktree_manager.steward_worktree_location(
+                mission.mission_id, stage.stage_id, card.card_id, base_sha
+            )
+        except (TypeError, ValueError, OSError):
+            return None
+        if not (
+            started.data.get("base_sha") == base_sha
+            and started.data.get("worktree_binding_sha256") == expected_binding
+            and started.data.get("branch") == expected_branch
+            and checkpoint_data.get("base_sha") == base_sha
+            and checkpoint_data.get("worktree_binding_sha256") == expected_binding
+            and isinstance(head_sha, str)
+            and SHA40.fullmatch(head_sha) is not None
+            and isinstance(implementation_session, str)
+            and _SAFE_IDENTIFIER.fullmatch(implementation_session) is not None
+        ):
+            return None
+        restored = worktree_manager.restore_steward_checkpoint_worktree(
+            mission.mission_id,
+            stage.stage_id,
+            card.card_id,
+            str(self.repo_path),
+            base_sha,
+            head_sha,
+        )
+        if not restored:
+            return None
+        worktree_path = Path(restored[0])
+        try:
+            observed_head = _git_head(worktree_path)
+            actual_paths = _git_changed_paths(worktree_path, base_sha, observed_head)
+            workers.validate_changed_paths(card, actual_paths)
+            _git_worktree_clean(worktree_path)
+            metadata_before = _git_metadata_snapshot(
+                worktree_path, branch=expected_branch
+            )
+        except (StewardError, workers.WorkerError, OSError):
+            return None
+        if not (
+            observed_head == head_sha
+            and actual_paths
+            and checkpoint_data.get("changed_paths_digest")
+            == _digest("\x00".join(actual_paths))
+        ):
+            return None
+        if self.reviewer is None:
+            return self._failure(
+                mission=mission,
+                stage=stage,
+                card=card,
+                attempt=checkpoint.attempt,
+                reason="independent_reviewer_unavailable",
+                retryable=False,
+                head_sha=head_sha,
+            )
+        context = workers.WorkerContext(
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id=card.card_id,
+            attempt=checkpoint.attempt,
+            model_tier=workers.select_model_tier(
+                card.model_tier, checkpoint.attempt
+            ),
+            base_sha=base_sha,
+            worktree=worktree_path,
+            allowed_paths=card.allowed_paths,
+            steps=card.steps,
+            focused_tests=card.focused_tests,
+            negative_checks=card.negative_checks,
+            expected_evidence=card.expected_evidence,
+            environment=workers.child_environment(preserve_home=True),
+            worktree_branch=expected_branch,
+            forbidden_paths=card.forbidden_paths,
+            max_attempts=card.max_attempts,
+            objective=mission.objective,
+        )
+        outcome = workers.WorkerOutcome(
+            "PASS", implementation_session, head_sha, actual_paths
+        )
+        try:
+            review_attempt = self._review_attempt(mission, card, head_sha)
+            if not review_attempt.get("allowed"):
+                raise workers.WorkerError(
+                    str(
+                        review_attempt.get(
+                            "deny_reason", "checkpoint_review_state_invalid"
+                        )
+                    )
+                )
+            repair_state = None
+            if review_attempt["review_round"] == 2:
+                previous_data = review_attempt.get("_previous_review_data")
+                if not isinstance(previous_data, Mapping):
+                    raise workers.WorkerError("R2 prior review state is missing")
+                repair_state = review_convergence.after_repair_batch_consumed(
+                    self._prior_review_state(previous_data),
+                    new_head_sha=head_sha,
+                )
+                persisted_repair = repair_state.to_persistence_fields()
+                persisted_repair.pop("findings", None)
+                self._record(
+                    event="REVIEW_REPAIR_BATCH_CONSUMED",
+                    key=_journal_key(
+                        "repair-consumed",
+                        mission,
+                        stage,
+                        card,
+                        checkpoint.attempt,
+                        head_sha,
+                    ),
+                    mission=mission,
+                    stage=stage,
+                    card=card,
+                    attempt=checkpoint.attempt,
+                    state="REVIEWING",
+                    detail="review_repair_batch_consumed",
+                    data=persisted_repair,
+                )
+            elif review_attempt["review_round"] != 1:
+                raise workers.WorkerError("checkpoint_review_state_invalid")
+            review = self.reviewer.review(context, outcome)
+            if not isinstance(review, workers.ReviewOutcome):
+                raise workers.WorkerError("review_adapter_return_invalid")
+            if review.implementation_session_id != implementation_session:
+                raise workers.WorkerError("review_implementation_session_mismatch")
+            review_decision = workers.canonical_review_decision(review)
+            if (
+                review.reviewed_head_sha != head_sha
+                or review.review_round != review_attempt["review_round"]
+                or review.review_mode != review_attempt["review_mode"]
+            ):
+                raise workers.WorkerError("review_checkpoint_binding_mismatch")
+            reviewed_head = _git_head(worktree_path)
+            reviewed_paths = _git_changed_paths(
+                worktree_path, base_sha, reviewed_head
+            )
+            workers.validate_changed_paths(card, reviewed_paths)
+            _git_worktree_clean(worktree_path)
+            if _git_metadata_snapshot(
+                worktree_path, branch=expected_branch
+            ) != metadata_before:
+                raise workers.WorkerError("review_git_metadata_changed")
+            expected_review_range = workers.review_range_digest(
+                base_sha, head_sha, worktree=worktree_path
+            )
+            if (
+                reviewed_head != head_sha
+                or reviewed_paths != actual_paths
+                or review.reviewed_base_sha != base_sha
+                or review.reviewed_range_sha256 != expected_review_range
+            ):
+                raise workers.WorkerError("review_range_binding_mismatch")
+            if review_attempt["review_round"] == 1:
+                convergence_state = review_convergence.initial_r1_state(
+                    review_decision
+                )
+            else:
+                if repair_state is None:
+                    raise review_convergence.ConvergenceError(
+                        "R2 repair transition is missing"
+                    )
+                convergence_state = review_convergence.apply_r2_decision(
+                    repair_state, review_decision
+                )
+        except (StewardError, workers.WorkerError, review_convergence.ConvergenceError) as exc:
+            return self._failure(
+                mission=mission,
+                stage=stage,
+                card=card,
+                attempt=checkpoint.attempt,
+                reason=str(exc)[:200] or "independent_review_failed",
+                retryable=False,
+                head_sha=head_sha,
+            )
+        if review.status != "PASS":
+            convergence_data = self._review_convergence_data(
+                review_decision, base_sha=base_sha, head_sha=head_sha
+            )
+            convergence_data.update(
+                {
+                    "verdict": convergence_state.verdict,
+                    "stop_reason": convergence_state.stop_reason,
+                    "autonomous_repairs_remaining": convergence_state.autonomous_repairs_remaining,
+                }
+            )
+            self._record(
+                event="REVIEW_FAILED",
+                key=_journal_key(
+                    "review-failed", mission, stage, card, checkpoint.attempt, head_sha
+                ),
+                mission=mission,
+                stage=stage,
+                card=card,
+                attempt=checkpoint.attempt,
+                state="REVIEWING",
+                detail="independent_review_not_passed",
+                data=convergence_data,
+            )
+            return self._failure(
+                mission=mission,
+                stage=stage,
+                card=card,
+                attempt=checkpoint.attempt,
+                reason=review.detail or "independent_review_not_passed",
+                retryable=False,
+                head_sha=head_sha,
+            )
+        convergence_data = self._review_convergence_data(
+            review_decision, base_sha=base_sha, head_sha=head_sha
+        )
+        convergence_data.pop("decision_required_ids", None)
+        convergence_data.update(
+            {
+                "implementation_session_id": implementation_session,
+                "reviewer_session_id": review.reviewer_session_id,
+                "reviewed_range_sha256": review.reviewed_range_sha256,
+                "review_axes": list(review.review_axes),
+                "review_receipt_sha256": review.review_receipt_sha256,
+            }
+        )
+        self._record(
+            event="LOCAL_REVIEW_OBSERVED",
+            key=_journal_key(
+                "review",
+                mission,
+                stage,
+                card,
+                checkpoint.attempt,
+                head_sha,
+                _digest(review.reviewer_session_id),
+            ),
+            mission=mission,
+            stage=stage,
+            card=card,
+            attempt=checkpoint.attempt,
+            state="REVIEWING",
+            detail="local_review_observation_only",
+            data=convergence_data,
+        )
+        return ExecutionResult(
+            card.card_id,
+            "WAITING_FOR_PR",
+            checkpoint.attempt,
+            head_sha,
+            "checkpoint_review_pass",
+            review.reviewer_session_id,
+        )
+
+    def _worker_checkpoint_verify_result(
+        self,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+        card: contract.WorkCard,
+        *,
+        base_sha: str,
+    ) -> ExecutionResult | None:
+        """Resume deterministic verification from an exact worker checkpoint."""
+
+        projection = self._checkpoint_projection(mission, stage, card)
+        if projection is None or projection[0] != "checkpoint":
+            return None
+        _phase, latest_by_event = projection
+        started = latest_by_event["WORKER_STARTED"]
+        checkpoint = latest_by_event["WORKER_CHECKPOINT"]
+        if not (
+            started.attempt == checkpoint.attempt
+            and started.seq < checkpoint.seq
+        ):
+            return None
+        expected_binding = worktree_manager.steward_binding_digest(
+            mission.mission_id, stage.stage_id, card.card_id, base_sha
+        )
+        checkpoint_data = checkpoint.data
+        head_sha = checkpoint_data.get("head_sha")
+        implementation_session = checkpoint_data.get("implementation_session_id")
+        try:
+            _expected_path, expected_branch = worktree_manager.steward_worktree_location(
+                mission.mission_id, stage.stage_id, card.card_id, base_sha
+            )
+        except (TypeError, ValueError, OSError):
+            return None
+        if not (
+            started.data.get("base_sha") == base_sha
+            and started.data.get("worktree_binding_sha256") == expected_binding
+            and started.data.get("branch") == expected_branch
+            and checkpoint_data.get("base_sha") == base_sha
+            and checkpoint_data.get("worktree_binding_sha256") == expected_binding
+            and isinstance(head_sha, str)
+            and SHA40.fullmatch(head_sha) is not None
+            and isinstance(implementation_session, str)
+            and _SAFE_IDENTIFIER.fullmatch(implementation_session) is not None
+        ):
+            return None
+        restored = worktree_manager.restore_steward_checkpoint_worktree(
+            mission.mission_id,
+            stage.stage_id,
+            card.card_id,
+            str(self.repo_path),
+            base_sha,
+            head_sha,
+        )
+        if not restored:
+            return None
+        worktree_path = Path(restored[0])
+        try:
+            observed_head = _git_head(worktree_path)
+            actual_paths = _git_changed_paths(worktree_path, base_sha, observed_head)
+            workers.validate_changed_paths(card, actual_paths)
+            _git_worktree_clean(worktree_path)
+        except (StewardError, workers.WorkerError, OSError):
+            return None
+        if not (
+            observed_head == head_sha
+            and actual_paths
+            and checkpoint_data.get("changed_paths_digest")
+            == _digest("\x00".join(actual_paths))
+        ):
+            return None
+        try:
+            checks = self.verifier(worktree_path, list(actual_paths))
+            checks = workers.validate_check_results(checks)
+        except Exception as exc:
+            # This is a resumed implementation attempt. Do not turn a
+            # verifier fault into RETRYING: that state would admit a new
+            # implementation attempt and replay the worker. Leave the
+            # checkpoint as VERIFYING so a later invocation can retry only
+            # this deterministic verifier.
+            return ExecutionResult(
+                card.card_id,
+                "RECOVERY_REQUIRED",
+                checkpoint.attempt,
+                head_sha,
+                _journal_detail(str(exc)[:200] or "focused_checks_failed"),
+            )
+        self._record(
+            event="FOCUSED_CHECKS_PASSED",
+            key=_journal_key(
+                "checks-passed",
+                mission,
+                stage,
+                card,
+                checkpoint.attempt,
+                head_sha,
+            ),
+            mission=mission,
+            stage=stage,
+            card=card,
+            attempt=checkpoint.attempt,
+            state="REVIEWING",
+            detail="repository_owned_checks_passed",
+            data={"check_count": len(checks)},
+        )
+        return self._focused_checkpoint_review_result(
+            mission, stage, card, base_sha=base_sha
+        )
+
     def _review_attempt(self, mission: contract.MaintenanceMission, card: contract.WorkCard, head_sha: str) -> dict[str, Any]:
         previous: dict[str, Any] | None = None
         for event in reversed(self.journal.replay()):
@@ -1125,17 +1678,38 @@ class Steward:
             raise StewardError("mission_or_stage_or_card_invalid") from exc
         if not _git_repository_identity(self.repo_path, self.repository):
             raise StewardError("repository_identity_unavailable")
-        existing = self._existing_result(
-            card,
-            self.journal.latest_for_card(
-                card.card_id, mission_id=mission.mission_id, stage_id=stage.stage_id
-            ),
-        )
-        if existing is not None:
-            return existing
         latest = self.journal.latest_for_card(
             card.card_id, mission_id=mission.mission_id, stage_id=stage.stage_id
         )
+        if (
+            latest is not None
+            and latest.state in {"VERIFYING", "REVIEWING"}
+            and stage_pr is None
+        ):
+            # Resumption can materialize a worktree and can invoke the
+            # independent reviewer.  It therefore uses the same capacity and
+            # path locks as a fresh attempt; restart must not create a second
+            # concurrent recovery owner.
+            with workers.CapacityLock(self.lock_dir), workers.PathLockSet(
+                self.lock_dir, card.path_locks
+            ):
+                if latest.state == "VERIFYING":
+                    resumed = self._worker_checkpoint_verify_result(
+                        mission, stage, card, base_sha=base_sha
+                    )
+                else:
+                    resumed = self._reviewed_checkpoint_result(
+                        mission, stage, card, base_sha=base_sha
+                    )
+                    if resumed is None:
+                        resumed = self._focused_checkpoint_review_result(
+                            mission, stage, card, base_sha=base_sha
+                        )
+            if resumed is not None:
+                return resumed
+        existing = self._existing_result(card, latest)
+        if existing is not None:
+            return existing
         attempt = 1 if latest is None else latest.attempt + (1 if latest.state == "RETRYING" else 0)
         stage_facts = _stage_pr_facts(stage_pr)
         if (

@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 import ast
+import hashlib
 from pathlib import Path
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +20,11 @@ sys.path.insert(0, str(CONTROL))
 
 import mission_contract as contract  # noqa: E402
 import shadow_steward as shadow  # noqa: E402
+import steward  # noqa: E402
+import steward_github  # noqa: E402
+from steward_journal import StewardJournal  # noqa: E402
+import steward_workers as workers  # noqa: E402
+import worktree_manager  # noqa: E402
 
 
 class ShadowStewardTests(unittest.TestCase):
@@ -499,6 +509,702 @@ class ShadowStewardTests(unittest.TestCase):
             set(),
         )
         self.assertNotIn("GitHubReader", source)
+
+
+class StewardCheckpointRestartTests(unittest.TestCase):
+    """Public-lifecycle regressions for durable WorkCard checkpoint recovery."""
+
+    class Authenticator:
+        def verify(self, approval, proposal_sha256):
+            return (
+                approval.owner_identity == "github:Igzela"
+                and approval.proposal_sha256 == proposal_sha256
+            )
+
+    def git(self, *args: str, cwd: Path | None = None) -> str:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd or self.repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.git("init", "-b", "main")
+        self.git("config", "user.name", "Checkpoint Fixture")
+        self.git("config", "user.email", "checkpoint@example.invalid")
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "AUTONOMY.md").write_text("accepted\n", encoding="utf-8")
+        self.git("add", "docs/AUTONOMY.md")
+        self.git("commit", "-m", "accepted baseline")
+        self.git(
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/Igzela/token-efficient-agent-harness-lab.git",
+        )
+        self.base = self.git("rev-parse", "HEAD")
+
+        proposed, proposal_sha = contract.compile_proposal_mission(
+            "Update docs/AUTONOMY.md.",
+            repository=contract.CAMPAIGN_REPOSITORY,
+            base_sha=self.base,
+            mission_id="MISSION-CHECKPOINT-RESTART",
+        )
+        approval = contract.OwnerApproval(
+            "github:Igzela",
+            proposal_sha,
+            "checkpoint-restart-approval",
+            "2026-09-03T00:00:00Z",
+        )
+        self.mission = contract.activate_current_mission(
+            repository=proposed.repository_identity.repository,
+            base_sha=self.base,
+            branch=proposed.repository_identity.branch,
+            source_ref=proposed.repository_identity.source_ref,
+            source_sha256=proposed.repository_identity.source_sha256,
+            proposal_sha256=proposal_sha,
+            owner_approval=approval,
+            owner_authenticator=self.Authenticator(),
+            mission=proposed,
+        )
+        self.card = contract.WorkCard(
+            "stage-restart:card-1",
+            "stage-restart",
+            ("docs/AUTONOMY.md",),
+            ("outside-approved/",),
+            ("Apply one bounded change.",),
+            ("focused_checks_required",),
+            ("reject scope expansion",),
+            ("durable checkpoint",),
+            (),
+            ("docs/AUTONOMY.md",),
+            2,
+            "T1",
+            self.mission.rollback,
+            "PENDING",
+        )
+        self.stage = contract.Stage(
+            "stage-restart",
+            self.mission.mission_id,
+            "Recover one exact reviewed WorkCard checkpoint.",
+            self.mission.repository_identity,
+            ("focused", "independent review"),
+            ("no external effects",),
+            (self.card.card_id,),
+            self.mission.rollback,
+            None,
+            None,
+        )
+        self.journal = StewardJournal(self.root / "steward.sqlite3")
+        self.worktree_base_patch = mock.patch.object(
+            worktree_manager, "WORKTREE_BASE", self.root / "worktrees"
+        )
+        self.worktree_base_patch.start()
+        self.addCleanup(self.worktree_base_patch.stop)
+
+    def append(self, event: str, state: str, *, data=None, attempt: int = 1) -> None:
+        self.journal.append(
+            event=event,
+            idempotency_key=f"fixture:{event.lower()}:{attempt}",
+            mission_id=self.mission.mission_id,
+            stage_id=self.stage.stage_id,
+            card_id=self.card.card_id,
+            attempt=attempt,
+            state=state,
+            detail="fixture",
+            data=data,
+        )
+
+    def create_reviewed_checkpoint(
+        self, *, include_focused: bool = True, include_review: bool = True
+    ) -> tuple[Path, str, str, workers.ReviewOutcome]:
+        worktree, branch = worktree_manager.steward_worktree_location(
+            self.mission.mission_id,
+            self.stage.stage_id,
+            self.card.card_id,
+            self.base,
+        )
+        worktree.parent.mkdir(parents=True)
+        self.git("branch", branch, self.base)
+        self.git("worktree", "add", str(worktree), branch)
+        (worktree / "docs" / "AUTONOMY.md").write_text(
+            "accepted\nreviewed checkpoint\n", encoding="utf-8"
+        )
+        self.git("add", "docs/AUTONOMY.md", cwd=worktree)
+        self.git("commit", "-m", "bounded checkpoint", cwd=worktree)
+        head = self.git("rev-parse", "HEAD", cwd=worktree)
+        implementation_session = "steward-process:stage-restart:card-1:1"
+        reviewer_session = "review-process:stage-restart:card-1:1"
+        binding = worktree_manager.steward_binding_digest(
+            self.mission.mission_id,
+            self.stage.stage_id,
+            self.card.card_id,
+            self.base,
+        )
+        changed_paths_digest = hashlib.sha256(
+            b"docs/AUTONOMY.md"
+        ).hexdigest()[:24]
+        reviewed_range = workers.review_range_digest(
+            self.base, head, worktree=worktree
+        )
+        review = workers.ReviewOutcome.from_wire(
+            workers.seal_review_outcome_wire(
+                {
+                    "schema_version": "steward_review_outcome.v1",
+                    "status": "PASS",
+                    "reviewer_session_id": reviewer_session,
+                    "implementation_session_id": implementation_session,
+                    "reviewed_head_sha": head,
+                    "blockers": [],
+                    "detail": "",
+                    "reviewed_base_sha": self.base,
+                    "reviewed_range_sha256": reviewed_range,
+                    "review_axes": ["standards", "spec"],
+                    "review_round": 1,
+                    "review_mode": "full",
+                    "review_receipt_sha256": "",
+                    "summary": "bounded independent review",
+                    "findings": None,
+                    "security_ok": True,
+                    "rollback_ok": True,
+                    "observed_ci_status": "unknown",
+                    "finding_ledger_digest": "",
+                }
+            )
+        )
+        decision = workers.canonical_review_decision(review)
+        self.append("CARD_QUEUED", "QUEUED")
+        self.append(
+            "WORKER_STARTED",
+            "RUNNING",
+            data={
+                "base_sha": self.base,
+                "worktree_binding_sha256": binding,
+                "branch": branch,
+            },
+        )
+        self.append(
+            "WORKER_CHECKPOINT",
+            "VERIFYING",
+            data={
+                "base_sha": self.base,
+                "head_sha": head,
+                "changed_paths_digest": changed_paths_digest,
+                "worktree_binding_sha256": binding,
+                "implementation_session_id": implementation_session,
+            },
+        )
+        if include_focused:
+            self.append(
+                "FOCUSED_CHECKS_PASSED",
+                "REVIEWING",
+                data={"check_count": 1},
+            )
+        if include_review:
+            self.assertTrue(include_focused)
+            self.append(
+                "LOCAL_REVIEW_OBSERVED",
+                "REVIEWING",
+                data={
+                    "base_sha": self.base,
+                    "head_sha": head,
+                    "review_round": 1,
+                    "review_mode": "full",
+                    "verdict": "PASS",
+                    "open_blocker_ids": [],
+                    "deferred_note_ids": [],
+                    "finding_ledger_digest": decision.finding_ledger_digest,
+                    "security_ok": True,
+                    "rollback_ok": True,
+                    "observed_ci_status": "unknown",
+                    "implementation_session_id": implementation_session,
+                    "reviewer_session_id": reviewer_session,
+                    "reviewed_range_sha256": reviewed_range,
+                    "review_axes": ["standards", "spec"],
+                    "review_receipt_sha256": review.review_receipt_sha256,
+                },
+            )
+        return worktree, branch, head, review
+
+    def test_restart_restores_reviewed_checkpoint_without_replaying_children(self):
+        worktree, branch, head, _review = self.create_reviewed_checkpoint()
+        shutil.rmtree(worktree)
+        worker = workers.BoundedProcessWorker(
+            lambda _context: ["/usr/bin/python3", "-c", "raise SystemExit(99)"]
+        )
+        reviewer = workers.BoundedProcessReviewer(
+            lambda _context, _outcome: [
+                "/usr/bin/python3",
+                "-c",
+                "raise SystemExit(99)",
+            ]
+        )
+        instance = steward.Steward(
+            repository=contract.CAMPAIGN_REPOSITORY,
+            repo_path=self.repo,
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(),
+            worker=worker,
+            reviewer=reviewer,
+            lock_dir=self.root / "locks",
+        )
+        with (
+            mock.patch.object(
+                worker, "run", side_effect=AssertionError("worker replayed")
+            ) as worker_run,
+            mock.patch.object(
+                reviewer, "review", side_effect=AssertionError("reviewer replayed")
+            ) as reviewer_run,
+        ):
+            results = instance.execute_stage(
+                self.mission,
+                self.stage,
+                (self.card,),
+                base_sha=self.base,
+            )
+            repeated = instance.execute_stage(
+                self.mission,
+                self.stage,
+                (self.card,),
+                base_sha=self.base,
+            )
+
+        result = results[self.card.card_id]
+        repeated_result = repeated[self.card.card_id]
+        self.assertEqual(result.status, "WAITING_FOR_PR")
+        self.assertEqual(repeated_result.status, "WAITING_FOR_PR")
+        self.assertEqual(result.head_sha, head)
+        self.assertEqual(repeated_result.head_sha, head)
+        self.assertTrue(
+            worktree_manager.verify_worktree(
+                worktree, branch, self.repo, expected_sha=head
+            )
+        )
+        worker_run.assert_not_called()
+        reviewer_run.assert_not_called()
+
+    def test_restart_reviews_focused_checkpoint_once_without_replaying_worker(self):
+        worktree, branch, head, review = self.create_reviewed_checkpoint(
+            include_review=False
+        )
+        shutil.rmtree(worktree)
+        worker = workers.BoundedProcessWorker(
+            lambda _context: ["/usr/bin/python3", "-c", "raise SystemExit(99)"]
+        )
+        reviewer = workers.BoundedProcessReviewer(
+            lambda _context, _outcome: [
+                "/usr/bin/python3",
+                "-c",
+                "raise SystemExit(99)",
+            ]
+        )
+        instance = steward.Steward(
+            repository=contract.CAMPAIGN_REPOSITORY,
+            repo_path=self.repo,
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(),
+            worker=worker,
+            reviewer=reviewer,
+            lock_dir=self.root / "locks",
+        )
+        with (
+            mock.patch.object(
+                worker, "run", side_effect=AssertionError("worker replayed")
+            ) as worker_run,
+            mock.patch.object(reviewer, "review", return_value=review) as reviewer_run,
+        ):
+            results = instance.execute_stage(
+                self.mission,
+                self.stage,
+                (self.card,),
+                base_sha=self.base,
+            )
+
+        result = results[self.card.card_id]
+        self.assertEqual(result.status, "WAITING_FOR_PR")
+        self.assertEqual(result.head_sha, head)
+        self.assertTrue(
+            worktree_manager.verify_worktree(
+                worktree, branch, self.repo, expected_sha=head
+            )
+        )
+        worker_run.assert_not_called()
+        reviewer_run.assert_called_once()
+        self.assertEqual(
+            [event.event for event in self.journal.replay()].count(
+                "LOCAL_REVIEW_OBSERVED"
+            ),
+            1,
+        )
+
+    def test_restart_verifies_checkpoint_once_without_replaying_worker(self):
+        worktree, branch, head, review = self.create_reviewed_checkpoint(
+            include_focused=False,
+            include_review=False,
+        )
+        shutil.rmtree(worktree)
+        worker = workers.BoundedProcessWorker(
+            lambda _context: ["/usr/bin/python3", "-c", "raise SystemExit(99)"]
+        )
+        reviewer = workers.BoundedProcessReviewer(
+            lambda _context, _outcome: [
+                "/usr/bin/python3",
+                "-c",
+                "raise SystemExit(99)",
+            ]
+        )
+        with mock.patch.object(
+            workers,
+            "run_allowlisted_checks",
+            return_value=[{"command": "git diff --check", "exit_code": 0}],
+        ) as verifier_run:
+            instance = steward.Steward(
+                repository=contract.CAMPAIGN_REPOSITORY,
+                repo_path=self.repo,
+                journal=self.journal,
+                github=steward_github.FakeGitHubReader(),
+                worker=worker,
+                reviewer=reviewer,
+                lock_dir=self.root / "locks",
+            )
+            with (
+                mock.patch.object(
+                    worker, "run", side_effect=AssertionError("worker replayed")
+                ) as worker_run,
+                mock.patch.object(
+                    reviewer, "review", return_value=review
+                ) as reviewer_run,
+            ):
+                results = instance.execute_stage(
+                    self.mission,
+                    self.stage,
+                    (self.card,),
+                    base_sha=self.base,
+                )
+                repeated = instance.execute_stage(
+                    self.mission,
+                    self.stage,
+                    (self.card,),
+                    base_sha=self.base,
+                )
+
+        result = results[self.card.card_id]
+        repeated_result = repeated[self.card.card_id]
+        self.assertEqual(result.status, "WAITING_FOR_PR")
+        self.assertEqual(repeated_result.status, "WAITING_FOR_PR")
+        self.assertEqual(result.head_sha, head)
+        self.assertEqual(repeated_result.head_sha, head)
+        self.assertTrue(
+            worktree_manager.verify_worktree(
+                worktree, branch, self.repo, expected_sha=head
+            )
+        )
+        worker_run.assert_not_called()
+        verifier_run.assert_called_once()
+        reviewer_run.assert_called_once()
+        events = [event.event for event in self.journal.replay()]
+        self.assertEqual(events.count("FOCUSED_CHECKS_PASSED"), 1)
+        self.assertEqual(events.count("LOCAL_REVIEW_OBSERVED"), 1)
+
+    def test_checkpoint_verifier_fault_does_not_admit_worker_retry(self):
+        worktree, _branch, _head, _review = self.create_reviewed_checkpoint(
+            include_focused=False,
+            include_review=False,
+        )
+        shutil.rmtree(worktree)
+        worker = workers.BoundedProcessWorker(
+            lambda _context: ["/usr/bin/python3", "-c", "raise SystemExit(99)"]
+        )
+        reviewer = workers.BoundedProcessReviewer(
+            lambda _context, _outcome: ["/usr/bin/python3", "-c", "raise SystemExit(99)"]
+        )
+        with mock.patch.object(
+            workers,
+            "run_allowlisted_checks",
+            side_effect=RuntimeError("fixture verifier fault"),
+        ) as verifier_run:
+            instance = steward.Steward(
+                repository=contract.CAMPAIGN_REPOSITORY,
+                repo_path=self.repo,
+                journal=self.journal,
+                github=steward_github.FakeGitHubReader(),
+                worker=worker,
+                reviewer=reviewer,
+                lock_dir=self.root / "locks",
+            )
+            with mock.patch.object(
+                worker, "run", side_effect=AssertionError("worker replayed")
+            ) as worker_run:
+                first = instance.execute_stage(
+                    self.mission,
+                    self.stage,
+                    (self.card,),
+                    base_sha=self.base,
+                )
+                second = instance.execute_stage(
+                    self.mission,
+                    self.stage,
+                    (self.card,),
+                    base_sha=self.base,
+                )
+
+        self.assertEqual(first[self.card.card_id].status, "RECOVERY_REQUIRED")
+        self.assertEqual(second[self.card.card_id].status, "RECOVERY_REQUIRED")
+        self.assertEqual(verifier_run.call_count, 2)
+        worker_run.assert_not_called()
+
+    def test_checkpoint_restore_cleans_only_verified_new_registration(self):
+        worktree, branch = worktree_manager.steward_worktree_location(
+            self.mission.mission_id,
+            self.stage.stage_id,
+            self.card.card_id,
+            self.base,
+        )
+        self.git("branch", branch, self.base)
+        with mock.patch.object(worktree_manager, "verify_worktree", return_value=False):
+            restored = worktree_manager.restore_steward_checkpoint_worktree(
+                self.mission.mission_id,
+                self.stage.stage_id,
+                self.card.card_id,
+                str(self.repo),
+                self.base,
+                self.base,
+            )
+
+        self.assertIsNone(restored)
+        records = self.git("worktree", "list", "--porcelain")
+        self.assertNotIn(branch, records)
+        self.assertFalse(worktree.exists())
+        self.assertEqual(self.git("rev-parse", branch), self.base)
+
+    def test_focused_checkpoint_recovery_preserves_r2_review_convergence(self):
+        worktree, branch, head1, _review1 = self.create_reviewed_checkpoint(
+            include_focused=False,
+            include_review=False,
+        )
+        prior = {
+            "base_sha": self.base,
+            "head_sha": head1,
+            "review_round": 1,
+            "review_mode": "full",
+            "verdict": "FAIL",
+            "open_blocker_ids": ["finding-1"],
+            "deferred_note_ids": [],
+            "decision_required_ids": [],
+            "finding_ledger_digest": "2" * 64,
+            "security_ok": True,
+            "rollback_ok": True,
+            "autonomous_repairs_remaining": 1,
+            "stop_reason": "",
+        }
+        self.append("REVIEW_FAILED", "REVIEWING", data=prior)
+        self.append("RETRYING", "RETRYING")
+        self.append("CARD_QUEUED", "QUEUED", attempt=2)
+        (worktree / "docs" / "AUTONOMY.md").write_text(
+            "accepted\nreviewed checkpoint\nR2 checkpoint\n", encoding="utf-8"
+        )
+        self.git("add", "docs/AUTONOMY.md", cwd=worktree)
+        self.git("commit", "-m", "bounded R2 checkpoint", cwd=worktree)
+        head2 = self.git("rev-parse", "HEAD", cwd=worktree)
+        binding = worktree_manager.steward_binding_digest(
+            self.mission.mission_id,
+            self.stage.stage_id,
+            self.card.card_id,
+            self.base,
+        )
+        self.append(
+            "WORKER_STARTED",
+            "RUNNING",
+            attempt=2,
+            data={
+                "base_sha": self.base,
+                "worktree_binding_sha256": binding,
+                "branch": branch,
+            },
+        )
+        self.append(
+            "WORKER_CHECKPOINT",
+            "VERIFYING",
+            attempt=2,
+            data={
+                "base_sha": self.base,
+                "head_sha": head2,
+                "changed_paths_digest": hashlib.sha256(b"docs/AUTONOMY.md").hexdigest()[:24],
+                "worktree_binding_sha256": binding,
+                "implementation_session_id": "steward-process:stage-restart:card-1:2",
+            },
+        )
+        reviewed_range = workers.review_range_digest(self.base, head2, worktree=worktree)
+        shutil.rmtree(worktree)
+        review2 = workers.ReviewOutcome.from_wire(
+            workers.seal_review_outcome_wire(
+                {
+                    "schema_version": "steward_review_outcome.v1",
+                    "status": "PASS",
+                    "reviewer_session_id": "review-process:stage-restart:card-1:2",
+                    "implementation_session_id": "steward-process:stage-restart:card-1:2",
+                    "reviewed_head_sha": head2,
+                    "blockers": [],
+                    "detail": "",
+                    "reviewed_base_sha": self.base,
+                    "reviewed_range_sha256": reviewed_range,
+                    "review_axes": ["standards", "spec"],
+                    "review_round": 2,
+                    "review_mode": "repair_verification",
+                    "review_receipt_sha256": "",
+                    "summary": "bounded R2 independent review",
+                    "findings": None,
+                    "security_ok": True,
+                    "rollback_ok": True,
+                    "observed_ci_status": "unknown",
+                    "finding_ledger_digest": "",
+                }
+            )
+        )
+        worker = workers.BoundedProcessWorker(
+            lambda _context: ["/usr/bin/python3", "-c", "raise SystemExit(99)"]
+        )
+        reviewer = workers.BoundedProcessReviewer(
+            lambda _context, _outcome: ["/usr/bin/python3", "-c", "raise SystemExit(99)"]
+        )
+        with (
+            mock.patch.object(
+                workers,
+                "run_allowlisted_checks",
+                return_value=[{"command": "git diff --check", "exit_code": 0}],
+            ) as verifier_run,
+        ):
+            instance = steward.Steward(
+                repository=contract.CAMPAIGN_REPOSITORY,
+                repo_path=self.repo,
+                journal=self.journal,
+                github=steward_github.FakeGitHubReader(),
+                worker=worker,
+                reviewer=reviewer,
+                lock_dir=self.root / "locks",
+            )
+            with (
+                mock.patch.object(worker, "run", side_effect=AssertionError("worker replayed")) as worker_run,
+                mock.patch.object(reviewer, "review", return_value=review2) as reviewer_run,
+            ):
+                result = instance.execute_stage(
+                    self.mission,
+                    self.stage,
+                    (self.card,),
+                    base_sha=self.base,
+                )
+
+        self.assertEqual(
+            result[self.card.card_id].status,
+            "WAITING_FOR_PR",
+            result[self.card.card_id].reason,
+        )
+        self.assertEqual(result[self.card.card_id].head_sha, head2)
+        reviewer_run.assert_called_once()
+        verifier_run.assert_called_once()
+        worker_run.assert_not_called()
+        self.assertEqual(
+            [event.event for event in self.journal.replay()].count(
+                "REVIEW_REPAIR_BATCH_CONSUMED"
+            ),
+            1,
+        )
+
+    def test_restart_refuses_checkpoint_when_derived_branch_head_drifted(self):
+        worktree, branch, _head, _review = self.create_reviewed_checkpoint()
+        shutil.rmtree(worktree)
+        self.git("worktree", "remove", "--force", str(worktree))
+        self.git("branch", "-f", branch, self.base)
+        worker = workers.BoundedProcessWorker(
+            lambda _context: ["/usr/bin/python3", "-c", "raise SystemExit(99)"]
+        )
+        reviewer = workers.BoundedProcessReviewer(
+            lambda _context, _outcome: [
+                "/usr/bin/python3",
+                "-c",
+                "raise SystemExit(99)",
+            ]
+        )
+        instance = steward.Steward(
+            repository=contract.CAMPAIGN_REPOSITORY,
+            repo_path=self.repo,
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(),
+            worker=worker,
+            reviewer=reviewer,
+            lock_dir=self.root / "locks",
+        )
+        with (
+            mock.patch.object(
+                worker, "run", side_effect=AssertionError("worker replayed")
+            ) as worker_run,
+            mock.patch.object(
+                reviewer, "review", side_effect=AssertionError("reviewer replayed")
+            ) as reviewer_run,
+        ):
+            results = instance.execute_stage(
+                self.mission,
+                self.stage,
+                (self.card,),
+                base_sha=self.base,
+            )
+
+        self.assertEqual(results[self.card.card_id].status, "RECOVERY_REQUIRED")
+        self.assertFalse(worktree.exists())
+        self.assertEqual(self.git("rev-parse", branch), self.base)
+        worker_run.assert_not_called()
+        reviewer_run.assert_not_called()
+
+    def test_restart_refuses_stale_checkpoint_when_a_later_tail_fact_exists(self):
+        worktree, _branch, _head, _review = self.create_reviewed_checkpoint()
+        self.append("REVIEW_REPAIR_BATCH_CONSUMED", "REVIEWING")
+        worker = workers.BoundedProcessWorker(
+            lambda _context: ["/usr/bin/python3", "-c", "raise SystemExit(99)"]
+        )
+        reviewer = workers.BoundedProcessReviewer(
+            lambda _context, _outcome: [
+                "/usr/bin/python3",
+                "-c",
+                "raise SystemExit(99)",
+            ]
+        )
+        instance = steward.Steward(
+            repository=contract.CAMPAIGN_REPOSITORY,
+            repo_path=self.repo,
+            journal=self.journal,
+            github=steward_github.FakeGitHubReader(),
+            worker=worker,
+            reviewer=reviewer,
+            lock_dir=self.root / "locks",
+        )
+        with (
+            mock.patch.object(
+                worker, "run", side_effect=AssertionError("worker replayed")
+            ) as worker_run,
+            mock.patch.object(
+                reviewer, "review", side_effect=AssertionError("reviewer replayed")
+            ) as reviewer_run,
+        ):
+            results = instance.execute_stage(
+                self.mission,
+                self.stage,
+                (self.card,),
+                base_sha=self.base,
+            )
+
+        self.assertEqual(results[self.card.card_id].status, "RECOVERY_REQUIRED")
+        self.assertTrue(worktree.exists())
+        worker_run.assert_not_called()
+        reviewer_run.assert_not_called()
 
 
 if __name__ == "__main__":

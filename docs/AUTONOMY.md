@@ -135,11 +135,26 @@ restart/idempotency contract are canonical in
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md#merge-dispatch-recovery-and-emergency-stop-contract).
 This autonomy contract owns only lifecycle integration: record the merge
 intent before dispatch, persist the returned run identity before settling it,
-allow only read-only reconciliation after restart, and require authoritative
-merged-PR plus accepted-main readback before advancing a Stage. A legacy
+allow only read-only remote reconciliation after restart (with bounded local
+checkpoint worktree materialization), and require authoritative merged-PR plus
+accepted-main readback before advancing a Stage. A legacy
 quarantine may advance only after the architecture contract's GitHub
 `CLOSED_UNMERGED` fact is journaled; owner authority is never treated as that
 fact.
+
+For a WorkCard interrupted after its implementation checkpoint, restart
+recovery selects only the current journal tail and one ordered attempt whose
+`WORKER_STARTED`, `WORKER_CHECKPOINT`, and subsequent verification facts bind
+the Mission, Stage, card, base, derived branch, exact head, scoped diff, and
+implementation session. The existing local branch must already point at the
+checkpoint head and the base must be its ancestor; a missing derived worktree
+may then be re-materialized without moving the branch. Recovery resumes at
+deterministic verification or independent review, and never invokes the
+implementation worker again. Missing, stale, mixed-attempt, dirty, or
+identity-mismatched checkpoint evidence remains `RECOVERY_REQUIRED`.
+If resumed deterministic verification itself fails, the checkpoint remains
+`VERIFYING` and the invocation returns `RECOVERY_REQUIRED`; a later attempt may
+retry only that verifier, never a new implementation attempt.
 
 ## Recovery and Rollback
 
