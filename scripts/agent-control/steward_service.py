@@ -897,9 +897,13 @@ class StewardService:
                 mission.mission_id, stage.stage_id, "STAGE_PR_BOUND"
             ) is None:
                 continue
-            if self._bound_stage_mutation_pending(
+            pending = self._bound_stage_mutation_pending(
                 mission.mission_id, stage.stage_id
-            ) not in {"MERGE", "QUARANTINE"}:
+            )
+            merge_read_waiting = self._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_MERGE_READ_WAITING"
+            )
+            if pending not in {"MERGE", "QUARANTINE"} and merge_read_waiting is None:
                 continue
             return self._advance_bound_stage(
                 mission, stage, metadata, cards, read_only_recovery=True
@@ -1873,6 +1877,26 @@ class StewardService:
             pending_mutation = self._bound_stage_mutation_pending(
                 mission.mission_id, stage.stage_id
             )
+            merge_read_waiting = self._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_MERGE_READ_WAITING"
+            )
+            if read_only_recovery and merge_read_waiting is not None:
+                merge_intent_for_read_waiting = self._latest_stage_event(
+                    mission.mission_id,
+                    stage.stage_id,
+                    "STAGE_MERGE_DISPATCH_INTENT",
+                )
+                if (
+                    merge_intent_for_read_waiting is None
+                    or merge_read_waiting.seq > merge_intent_for_read_waiting.seq
+                ) and pending_mutation is None:
+                    # A pre-dispatch identity read failed.  In particular,
+                    # never fall through to WAITING_FOR_MERGE and issue a
+                    # workflow while emergency-stop recovery is read-only.
+                    return {
+                        "status": "WAITING_GITHUB_READBACK",
+                        "stage_id": stage.stage_id,
+                    }
             merge_intent = self._latest_stage_event(
                 mission.mission_id,
                 stage.stage_id,

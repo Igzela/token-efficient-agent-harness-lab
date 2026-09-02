@@ -1240,6 +1240,69 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             )
         )
 
+    def test_emergency_stop_does_not_retry_pre_dispatch_read_waiting(self):
+        """SIMULATED: a stopped pre-dispatch read wait cannot reach merge."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-MERGE-STOP-READ-WAIT", "merge-stop-read-wait"
+        )
+        pr_number = int(bound["pr_number"])
+        expected_head = str(bound["head_sha"])
+        intent_key = (
+            f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:"
+            f"{pr_number}:{expected_head}"
+        )
+        identity = steward_github.merge_dispatch_identity(
+            mission.repository_identity.repository,
+            pr_number,
+            self.base_sha,
+            expected_head,
+            intent_key=intent_key,
+        )
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={
+                "pr_number": pr_number,
+                "head_sha": expected_head,
+                "base_sha": self.base_sha,
+                "workflow": "agent-merge.yml",
+                "ref": "main",
+                "dispatch_id": identity["dispatch_id"],
+            },
+            enforce_transition=False,
+        )
+        self.journal.append(
+            event="STAGE_MERGE_READ_WAITING",
+            idempotency_key="merge-stop-read-waiting",
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="stage_merge_identity_read_unavailable_before_dispatch",
+            enforce_transition=False,
+        )
+        self.srv.control_state = self._ControlOn()
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            actions_before = list(self.github_writer.actions)
+            result = self.srv.step()
+
+        self.assertEqual(result["status"], "EMERGENCY_STOP")
+        self.assertEqual(
+            result["read_only_recovery"]["status"], "WAITING_GITHUB_READBACK"
+        )
+        self.assertEqual(self.github_writer.actions, actions_before)
+
     def test_merge_reconciliation_precedes_older_stage_outcome_unknown(self):
         """SIMULATED: merge recovery remains reachable after restart marker."""
 
