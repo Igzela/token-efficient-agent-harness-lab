@@ -956,18 +956,6 @@ class GitHubWriter(Protocol):
         """Publish or reconcile one exact-head independent review receipt."""
         ...
 
-    def reconcile_exact_head_review(
-        self,
-        repository: str,
-        pr_number: int,
-        expected_head_sha: str,
-        *,
-        base_sha: str,
-        review_receipt_sha256: str,
-    ) -> dict[str, Any]:
-        """Read-only reconciliation for an interrupted review-receipt POST."""
-        ...
-
     def guarded_merge(
         self,
         repository: str,
@@ -1275,71 +1263,6 @@ class GhGitHubWriter:
             raise GitHubMutationError("review_receipt_post_unproven")
         return {
             "status": "PUBLISHED",
-            "repository": repository,
-            "pr_number": pr_number,
-            "expected_head_sha": expected_head_sha,
-        }
-
-    def reconcile_exact_head_review(
-        self,
-        repository: str,
-        pr_number: int,
-        expected_head_sha: str,
-        *,
-        base_sha: str,
-        review_receipt_sha256: str,
-    ) -> dict[str, Any]:
-        """Reconcile an interrupted review POST without issuing a mutation."""
-        if (
-            REPOSITORY.fullmatch(repository) is None
-            or type(pr_number) is not int
-            or pr_number < 1
-            or SHA40.fullmatch(expected_head_sha) is None
-            or SHA40.fullmatch(base_sha) is None
-            or not re.fullmatch(r"[0-9a-f]{64}", review_receipt_sha256)
-        ):
-            raise GitHubFactsError("review_receipt_reconciliation_identity_invalid")
-        facts = self.fetch_stage_pr(repository, pr_number)
-        if facts.get("head_sha") != expected_head_sha or facts.get("base_sha") != base_sha:
-            raise GitHubPreflightError("review_receipt_exact_binding_mismatch")
-        try:
-            result = subprocess.run(
-                [
-                    "gh", "api", "--paginate", "--slurp",
-                    f"repos/{repository}/issues/{pr_number}/comments?per_page=100",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise GitHubReadError("review_receipt_reconciliation_read_unavailable") from exc
-        if result.returncode != 0:
-            raise GitHubReadError("review_receipt_reconciliation_read_failed")
-        try:
-            pages = json.loads(result.stdout or "[]")
-        except json.JSONDecodeError as exc:
-            raise GitHubReadError("review_receipt_reconciliation_read_malformed") from exc
-        if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
-            raise GitHubReadError("review_receipt_reconciliation_read_malformed")
-        comments = [item for page in pages for item in page if isinstance(item, dict)]
-        marker = "EXACT-HEAD REVIEW RECEIPT"
-        reviewed_head = f"Reviewed SHA: {expected_head_sha}"
-        reviewed_range = f"Reviewed range: {base_sha}...{expected_head_sha}"
-        receipt_digest = f"Review receipt SHA256: {review_receipt_sha256}"
-        matches = [
-            item
-            for item in comments
-            if marker in str(item.get("body") or "")
-            and reviewed_head in str(item.get("body") or "")
-            and reviewed_range in str(item.get("body") or "")
-            and receipt_digest in str(item.get("body") or "")
-        ]
-        if len(matches) > 1:
-            raise GitHubFactsError("duplicate_exact_head_review_receipts")
-        return {
-            "status": "PRESENT" if matches else "ABSENT",
             "repository": repository,
             "pr_number": pr_number,
             "expected_head_sha": expected_head_sha,
@@ -2337,32 +2260,6 @@ class FakeGitHubWriter:
         }))
         return {
             "status": "PUBLISHED",
-            "repository": repository,
-            "pr_number": pr_number,
-            "expected_head_sha": expected_head_sha,
-        }
-
-    def reconcile_exact_head_review(
-        self,
-        repository: str,
-        pr_number: int,
-        expected_head_sha: str,
-        *,
-        base_sha: str,
-        review_receipt_sha256: str,
-    ) -> dict[str, Any]:
-        pr = self.prs.get(pr_number)
-        if pr is not None:
-            if pr.get("head_sha") != expected_head_sha or pr.get("base_sha") != base_sha:
-                raise GitHubPreflightError("review_receipt_exact_binding_mismatch")
-        self.actions.append(("reconcile_review", {
-            "pr_number": pr_number,
-            "head_sha": expected_head_sha,
-        }))
-        return {
-            "status": "PRESENT"
-            if (pr_number, expected_head_sha, review_receipt_sha256) in self.review_receipts
-            else "ABSENT",
             "repository": repository,
             "pr_number": pr_number,
             "expected_head_sha": expected_head_sha,
