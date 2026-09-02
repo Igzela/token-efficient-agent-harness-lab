@@ -582,6 +582,22 @@ Before commit, the finalizer performs bounded structural validation only: it val
 
 Review terminal states are explicit. The validator accepts only schema-valid exact-head artifacts. Exact `PASS` is the only merge-authorizing review verdict under the Review Convergence Protocol in `docs/AUTONOMY.md`: it requires the complete bounded diff, no open blockers, and affirmative security and rollback gates; exact-head CI is verified independently from trusted GitHub state. Deferred non-blocking notes on `PASS` are allowed residual risk and do not force another head. `PASS_WITH_NOTES`, `BLOCKED`, `FAIL`, and `DECISION_REQUIRED` remain non-authorizing outcomes. Malformed, unavailable, oversized, or head-mismatched output is never recorded as a verdict. Merge additionally requires current review decision, effective human review, complete review-thread evidence, and all required canonical checks for the same head; unavailable or contradictory evidence fails closed.
 
+## Research Mainline Operator Boundary
+
+The owner-approved research Mission **`MISSION-RESEARCH-20260901`** and its
+accepted Stages run under the standard Steward lifecycle, testing, review, and
+merge rules in `docs/AUTONOMY.md`. This RUNBOOK owns only operator procedures
+that have actually been proved, and there is no proved live operator procedure
+for the research mainline here: operator runs are confined to finite frozen
+canonical experiments on the common RWE basis, and an operator must not run
+provider-backed experiments from this RUNBOOK.
+
+The research mainline grants no provider spend, effect, target write, release,
+deployment, evaluator, or adoption authority by itself, and the emergency-stop
+control remains untouched. Milestone and advancement gates are owned by
+`docs/ROADMAP.md`, module and authority boundaries by `docs/ARCHITECTURE.md`,
+and autonomy, testing, review, and merge rules by `docs/AUTONOMY.md`.
+
 ## Release Upgrade and Rollback
 
 Never execute a mutable branch script or an unverified pipe. Download the exact
@@ -696,5 +712,14 @@ new authority.
 7. **Link, do not duplicate** — the document references `docs/AUTONOMY.md` for
    autonomy, review, and merge rules instead of restating them.
 
-Assertions 1-7 are bounded to this document and hold at the accepted head; the
+8. **Research-mainline operator boundary** — the document records the
+   operator-procedure boundary for `MISSION-RESEARCH-20260901`: it asserts this
+   RUNBOOK owns only procedures that have actually been proved, that there is
+   no proved live operator procedure for the research mainline here, that
+   operator runs are confined to finite frozen canonical experiments on the
+   common RWE basis, that no provider-backed experiment is run from this
+   RUNBOOK, and that the mainline grants no provider spend, effect, target
+   write, release, deployment, evaluator, or adoption authority by itself.
+
+Assertions 1-8 are bounded to this document and hold at the accepted head; the
 change is documentation-only and adds no new authority.

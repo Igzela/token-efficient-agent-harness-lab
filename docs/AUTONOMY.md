@@ -24,6 +24,29 @@ their evidence remains owned by the existing RWE/evaluation and
 Harness-Evolution boundaries. A successful candidate returns to the common
 evidence loop before any explicitly authorized adoption.
 
+### Research Mainline: Testing, Review, and Merge Rules
+
+The bounded closed-loop research mainline (`MISSION-RESEARCH-20260901` and its
+accepted Stages such as `steward-stage-1-3dc4142fec0b3eb0`) is governed by the
+standard Steward lifecycle, testing, review, and merge rules in this document.
+Research Stages and WorkCards:
+
+- are confined to their owner-approved allowed paths and change categories and
+  obtain evidence only through finite frozen canonical experiments on the
+  common RWE basis; they grant no live Provider effect, spend, merge, release,
+  deployment, evaluator, or adoption authority by themselves;
+- are tested, reviewed, and merged only under the exact-head CI matrix and
+  exact `PASS` independent-review gates defined above, on one coherent
+  base...head diff; and
+- may not mutate the evaluator, task corpus, verification contract, comparison
+  budget, or experiment identity to rescue a result.
+
+Level-1 (transfer/replication/memory+skill) and Level-2/Meta (R4/R5/R6)
+disposition require complete lower-rung evidence, hard quality/safety/
+comparability gates, and explicitly authorized adoption before any change to
+the active Harness. The exact advancement gates are owned by
+`docs/ROADMAP.md`; module and authority ownership by `docs/ARCHITECTURE.md`.
+
 ## Lifecycle State Machine
 
 The repository-maintenance outer loop is governed by a single lifecycle state machine:
