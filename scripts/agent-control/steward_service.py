@@ -897,7 +897,9 @@ class StewardService:
                 mission.mission_id, stage.stage_id, "STAGE_PR_BOUND"
             ) is None:
                 continue
-            if self._bound_stage_mutation_pending(mission.mission_id, stage.stage_id) != "MERGE":
+            if self._bound_stage_mutation_pending(
+                mission.mission_id, stage.stage_id
+            ) not in {"MERGE", "QUARANTINE"}:
                 continue
             return self._advance_bound_stage(mission, stage, metadata, cards)
         return None

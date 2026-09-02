@@ -2361,9 +2361,22 @@ class FakeGitHubWriter:
             "action": "QUARANTINE_EXACT_PR",
             "owner_identity": owner_identity,
         }
+        # The fake transport stores authenticated response metadata beside
+        # the payload. Keep its accepted shape strict like the real GitHub
+        # parser: outcome claims and caller-supplied timestamps must never be
+        # silently ignored by a test adapter.
+        transport_fields = {
+            *expected.keys(),
+            "authorization_id",
+            "comment_id",
+            "comment_created_at",
+        }
         matches = [
             item for item in self.merge_dispatch_resolutions
-            if all(item.get(key) == value for key, value in expected.items())
+            if set(item) == transport_fields
+            and isinstance(item.get("authorization_id"), str)
+            and IDENTIFIER.fullmatch(item["authorization_id"]) is not None
+            and all(item.get(key) == value for key, value in expected.items())
         ]
         if len(matches) > 1:
             raise GitHubFactsError("duplicate_merge_resolution_markers")

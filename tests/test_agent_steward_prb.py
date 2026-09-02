@@ -90,6 +90,8 @@ class TestAutonomousStewardPRB(unittest.TestCase):
             "authorization": "ORPHAN_DISPATCH_RECOVERY",
             "action": "QUARANTINE_EXACT_PR",
             "authorization_id": "owner-recovery-fake",
+            "comment_id": 1001,
+            "comment_created_at": "2099-09-01T23:00:00Z",
             "owner_identity": "github:Igzela",
         }
         writer.merge_dispatch_resolutions.append(marker)
@@ -116,6 +118,10 @@ class TestAutonomousStewardPRB(unittest.TestCase):
             writer.read_orphan_dispatch_recovery_authorization(
                 **{**common, "owner_identity": "github:attacker"}
             )
+        )
+        marker["resolution"] = "NO_EFFECT_CONFIRMED"
+        self.assertIsNone(
+            writer.read_orphan_dispatch_recovery_authorization(**common)
         )
 
     def test_mark_ready_exact_head_guard(self):

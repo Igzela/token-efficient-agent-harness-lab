@@ -1156,6 +1156,67 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         )
         self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
 
+    def test_emergency_stop_reconciles_persisted_quarantine_read_only(self):
+        """SIMULATED: stop does not strand a persisted quarantine intent."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-QUAR-STOP-READBACK", "merge-owner-quarantine-stop"
+        )
+        pr_number = int(bound["pr_number"])
+        expected_head = str(bound["head_sha"])
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        dispatch_id = self._install_orphan_recovery_authorization(
+            mission,
+            stage,
+            bound,
+            authorization_id="owner-recovery-quarantine-stop",
+            comment_id=1103,
+        )
+        self.journal.append(
+            event="STAGE_ORPHAN_QUARANTINE_INTENT",
+            idempotency_key="orphan-quarantine-stop-readback",
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="owner_authorized_exact_orphan_quarantine_intent",
+            data={
+                "owner_marker_id": "owner-recovery-quarantine-stop",
+                "owner_comment_id": 1103,
+                "owner_comment_created_at": "2099-09-01T23:00:00Z",
+                "owner_identity": "github:Igzela",
+                "owner_action": "QUARANTINE_EXACT_PR",
+                "dispatch_identity": {
+                    "dispatch_id": dispatch_id,
+                    "repository": mission.repository_identity.repository,
+                    "pr_number": pr_number,
+                    "base_sha": self.base_sha,
+                    "head_sha": expected_head,
+                    "workflow_file": "agent-merge.yml",
+                    "ref": "main",
+                },
+            },
+            enforce_transition=False,
+        )
+        self.srv.control_state = self._ControlOn()
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            actions_before = list(self.github_writer.actions)
+            result = self.srv.step()
+
+        self.assertEqual(result["status"], "EMERGENCY_STOP")
+        self.assertEqual(
+            result["read_only_recovery"]["status"], "OUTCOME_UNKNOWN"
+        )
+        self.assertEqual(self.github_writer.actions, actions_before)
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
     def test_merge_reconciliation_precedes_older_stage_outcome_unknown(self):
         """SIMULATED: merge recovery remains reachable after restart marker."""
 
