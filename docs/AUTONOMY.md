@@ -1,6 +1,6 @@
 # Autonomy and Testing Contract
 
-Last updated: 2026-08-31.
+Last updated: 2026-09-01.
 
 This document defines the autonomy governance, lifecycle state machine, review convergence protocol, exact-head CI, and guarded merge contracts for the Autonomous Steward system.
 
@@ -128,10 +128,63 @@ R2: Independent session, review_mode=repair_verification, complete base...head a
    - `context-capsule`
 3. **Guarded Merge Owner Delegation**: All merges are strictly delegated to the sole canonical merge workflow (`.github/workflows/agent-merge.yml`). Direct `gh pr merge` is prohibited in repository runtime. Merge occurs only when branch ruleset, exact-head CI, exact `PASS` review receipt, zero open blockers, and single PR squash-merge conditions are met. Readback must prove the merged PR number and expected head produced the exact GitHub `main` merge commit; local `HEAD` is never a fallback.
 
+### Merge-dispatch recovery contract
+
+The merge intent is written before the one canonical workflow dispatch and binds
+the repository, PR number, expected base, exact head, workflow file, `main`
+ref, and a journal-derived intent key into a unique `dispatch_id`. The REST
+`workflow_dispatch` request asks for `return_run_details=true`; its returned
+`workflow_run_id`, run URL, and exact binding are durably journaled before the
+dispatch is considered settled. A missing or malformed response is still
+`OUTCOME_UNKNOWN`; it never permits a second dispatch.
+
+Reconciliation first reads the persisted run ID and verifies the workflow run's
+ID, dispatch ref (`main`), `event`, workflow path, status, conclusion, and time
+fence. Because GitHub reports the dispatch ref's `head_sha` rather than the
+workflow input's PR head, the run's complete log must also carry the exact
+`PR_NUMBER`/`EXPECTED_HEAD`/`DISPATCH_ID` markers; this applies to both returned
+run IDs and legacy scans. An old run without the dispatch marker cannot be
+attributed to the intent. An empty scan, elapsed time, or an unrelated run
+cannot prove no effect. A successful run is not merge success: only the
+authoritative merged PR and accepted-main readback can prove success.
+
+If no durable run identity exists, the old dispatch is not converted into a
+no-effect fact by elapsed time, an empty run scan, owner assertion, or a
+missing log. The one permitted legacy recovery is a new owner-authenticated
+`steward-orphan-dispatch-recovery:v1` marker on the canonical control Issue.
+The marker is authority only: it binds the complete Mission/Stage/PR/base/head/
+workflow/ref/`dispatch_id` identity and authorizes exactly
+`ORPHAN_DISPATCH_RECOVERY` / `QUARANTINE_EXACT_PR`. It must contain no
+resolution, no `NO_EFFECT_CONFIRMED`, no accepted-main assertion, and no
+caller-supplied `approved_at`; GitHub comment `created_at`, comment ID, and
+OWNER identity are the only marker metadata consumed.
+
+For legacy #679, Steward re-reads the repository, exact PR number/base/head,
+accepted main, PR state, and emergency-stop state immediately before the one
+authorized quarantine mutation. The branch and evidence are retained. After
+the mutation, authoritative GitHub readback decides the fact: `MERGED` wins
+and requires merged-PR plus accepted-main readback with no replacement;
+`CLOSED_UNMERGED` permits a fresh candidate only after that fact is recorded;
+anything ambiguous or unavailable remains `OUTCOME_UNKNOWN`. A persisted
+quarantine intent fences repeats across restart, and no unverified old
+candidate and fresh candidate may be merge-eligible concurrently.
+
+Emergency stop remains a hard guard. The service re-reads it immediately
+before quarantine and never clears it itself. If the label is active, the
+owner must make a separately authenticated, exact control transition removing
+that label solely to permit this quarantine; the transition must be read back
+as absent before the mutation. A failed or ambiguous transition leaves the
+recovery `OUTCOME_UNKNOWN`, and the service performs no bypass, replay, direct
+merge, or branch deletion.
+
 ## Recovery and Rollback
 
 - Every Stage and Mission specifies an exact rollback target (e.g. `revert:<SHA>`).
 - If a Stage fails or encounters an unrecoverable conflict, the branch is reset or reverted cleanly without affecting `main`.
-- The Issue-label emergency stop halts new WorkCard, Ready, and merge dispatch
-  while retaining the active Mission and recovery evidence. Clearing it does
-  not create a second approval.
+- The Issue-label emergency stop halts new WorkCard, Ready, supersede, and
+  merge dispatch while retaining the active Mission and recovery evidence.
+  Existing unresolved merge intents may undergo read-only canonical
+  reconciliation while the stop remains active; the legacy quarantine is an
+  external effect and therefore requires the separate exact control
+  transition described above. No replan or external effect may follow while
+  the stop is active. Clearing it does not create a second Mission approval.

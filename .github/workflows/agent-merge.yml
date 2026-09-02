@@ -15,6 +15,10 @@ on:
         description: Exact PR head to merge
         required: true
         type: string
+      dispatch_id:
+        description: Exact Steward logical dispatch identity
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -33,6 +37,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ inputs.pr_number }}
       EXPECTED_HEAD: ${{ inputs.head_sha }}
+      DISPATCH_ID: ${{ inputs.dispatch_id }}
     steps:
       - name: Check out trusted base action source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -46,6 +51,7 @@ jobs:
           set -euo pipefail
           [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || { echo "invalid PR number" >&2; exit 1; }
           [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid head SHA" >&2; exit 1; }
+          [[ "${DISPATCH_ID}" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid dispatch ID" >&2; exit 1; }
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr.json"
           jq -e --argjson number "${PR_NUMBER}" --arg head "${EXPECTED_HEAD}" '
             .number == $number and
@@ -59,8 +65,9 @@ jobs:
         run: |
           set -euo pipefail
           # These non-secret inputs make a later read-only reconciliation
-          # provably bind this workflow run to one PR and exact head.
-          printf 'PR_NUMBER: %s\nEXPECTED_HEAD: %s\n' "${PR_NUMBER}" "${EXPECTED_HEAD}"
+          # provably bind this workflow run to one logical dispatch, PR, and
+          # exact head.
+          printf 'PR_NUMBER: %s\nEXPECTED_HEAD: %s\nDISPATCH_ID: %s\n' "${PR_NUMBER}" "${EXPECTED_HEAD}" "${DISPATCH_ID}"
 
       - name: Verify exact head and authenticated PASS receipt
         uses: ./trusted-base/actions/exact-head-check

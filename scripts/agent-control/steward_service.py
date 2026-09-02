@@ -241,6 +241,50 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def _parse_utc_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or mission_contract.TIMESTAMP.fullmatch(value) is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _owner_recovery_journal_data(
+    marker: Mapping[str, Any],
+    dispatch_identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return redacted, journal-safe metadata for an owner recovery marker.
+
+    The append-only journal rejects credential-shaped keys, including keys
+    containing ``AUTH``.  More importantly, retaining the complete comment
+    payload would blur owner authority with external outcome evidence.  Keep
+    only the authenticated comment metadata and exact non-secret binding.
+    """
+    return {
+        "owner_marker_id": marker["authorization_id"],
+        "owner_comment_id": marker["comment_id"],
+        "owner_comment_created_at": marker["comment_created_at"],
+        "owner_identity": marker["owner_identity"],
+        "owner_action": marker["action"],
+        "dispatch_identity": {
+            key: dispatch_identity[key]
+            for key in (
+                "schema_version",
+                "repository",
+                "pr_number",
+                "base_sha",
+                "head_sha",
+                "workflow_file",
+                "ref",
+                "intent_key",
+                "dispatch_id",
+            )
+        },
+    }
+
+
 @dataclass(frozen=True)
 class RecoveryItem:
     card_id: str
@@ -835,6 +879,29 @@ class StewardService:
         self.mission_id = active.mission_id
         return active
 
+    def _recover_merge_dispatch_while_stopped(
+        self, mission: mission_contract.MaintenanceMission
+    ) -> dict[str, Any] | None:
+        """Run only read-only merge reconciliation while the stop is active.
+
+        Emergency-stop blocks every new work, Ready, supersede, and merge
+        effect, but it must not strand an already-persisted external outcome
+        forever.  This helper selects only a bound Stage with an unresolved
+        merge intent and delegates to the canonical reconciler.  A returned
+        replan request is reported to the caller but is never executed on
+        this stopped path.
+        """
+
+        for stage, cards, metadata in self._stage_records(mission.mission_id):
+            if self._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_PR_BOUND"
+            ) is None:
+                continue
+            if self._bound_stage_mutation_pending(mission.mission_id, stage.stage_id) != "MERGE":
+                continue
+            return self._advance_bound_stage(mission, stage, metadata, cards)
+        return None
+
     @staticmethod
     def _stage_groups(mission: mission_contract.MaintenanceMission) -> tuple[tuple[str, ...], ...]:
         """Deterministically split an approved Mission into bounded stages."""
@@ -945,6 +1012,41 @@ class StewardService:
                 return event
         return None
 
+    def _merge_dispatch_identity(
+        self,
+        mission: mission_contract.MaintenanceMission,
+        stage: mission_contract.Stage,
+        *,
+        pr_number: int,
+        expected_base_sha: str,
+        expected_head_sha: str,
+        intent_event: Any | None,
+    ) -> dict[str, Any]:
+        """Derive one stable dispatch identity from the journal intent.
+
+        Older intents did not persist a run ID or dispatch digest. Their
+        idempotency key is still a durable logical-intent nonce, so it can be
+        deterministically upgraded without replaying the external request.
+        """
+        intent_key = (
+            intent_event.idempotency_key
+            if intent_event is not None
+            else f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head_sha}"
+        )
+        identity = steward_github.merge_dispatch_identity(
+            mission.repository_identity.repository,
+            pr_number,
+            expected_base_sha,
+            expected_head_sha,
+            workflow_file="agent-merge.yml",
+            intent_key=intent_key,
+        )
+        if intent_event is not None:
+            recorded = intent_event.data.get("dispatch_id")
+            if recorded is not None and recorded != identity["dispatch_id"]:
+                raise StewardServiceError("merge_dispatch_identity_drift")
+        return identity
+
     def _bound_stage_mutation_pending(
         self, mission_id: str, stage_id: str
     ) -> str | None:
@@ -965,12 +1067,16 @@ class StewardService:
         review_terminal = self._latest_stage_event(
             mission_id, stage_id, "STAGE_REVIEW_RECEIPT_PUBLISHED"
         )
+        review_reconciled = self._latest_stage_event(
+            mission_id, stage_id, "STAGE_REVIEW_DISPATCH_RECONCILED"
+        )
         review_preflight_rejected = self._latest_stage_event(
             mission_id, stage_id, "STAGE_REVIEW_DISPATCH_PREFLIGHT_REJECTED"
         )
         if (
             review_intent is not None
             and review_terminal is None
+            and review_reconciled is None
             and review_preflight_rejected is None
         ):
             return "REVIEW"
@@ -996,10 +1102,18 @@ class StewardService:
         merge_unknown = self._latest_stage_event(
             mission_id, stage_id, "STAGE_OUTCOME_UNKNOWN"
         )
+        if (
+            merge_unknown is not None
+            and merge_unknown.detail == "stage_review_receipt_outcome_unknown"
+        ):
+            merge_unknown = None
         merge_terminal = self._latest_stage_event(
             mission_id, stage_id, "POST_MERGE_VERIFIED"
         ) or self._latest_stage_event(
             mission_id, stage_id, "STAGE_MERGE_DISPATCH_RECONCILED"
+        )
+        quarantine_intent = self._latest_stage_event(
+            mission_id, stage_id, "STAGE_ORPHAN_QUARANTINE_INTENT"
         )
         # A read failure before ``guarded_merge`` could issue the workflow is
         # a durable no-effect fact.  It must not strand the older intent as an
@@ -1014,15 +1128,29 @@ class StewardService:
         )
         if pre_dispatch_read_waiting:
             merge_intent = None
+        if quarantine_intent is not None and merge_terminal is None:
+            # A restart after the quarantine request must reconcile the
+            # exact PR/main facts, never issue the close mutation twice.
+            return "QUARANTINE"
         if merge_intent is not None and merge_terminal is None:
             # STAGE_MERGE_DISPATCHED records that dispatch returned, not that
             # the workflow's merge effect was proven.  A terminal rejected
             # dispatch is also a no-effect terminal fact; successful merges
             # still require post-merge readback.
             return "MERGE"
-        if self._latest_stage_event(
+        stage_unknown = self._latest_stage_event(
             mission_id, stage_id, "STAGE_OUTCOME_UNKNOWN"
-        ) is not None:
+        )
+        review_unknown_resolved = (
+            stage_unknown is not None
+            and stage_unknown.detail == "stage_review_receipt_outcome_unknown"
+            and (
+                review_terminal is not None
+                or review_reconciled is not None
+                or review_preflight_rejected is not None
+            )
+        )
+        if stage_unknown is not None and not review_unknown_resolved:
             # A stage-level unknown may be the marker written by the merge
             # dispatch exception itself.  Once the merge intent has a terminal
             # readback/rejection fact, that older marker is resolved for this
@@ -1073,6 +1201,10 @@ class StewardService:
             for event in replan_requests
         )
         base_drift_replan = has_base_drift_replan and not has_candidate_repair
+        owner_authorized_quarantine = any(
+            event.detail == "legacy_orphan_closed_unmerged_replacement_authorized"
+            for event in replan_requests
+        )
         # Accepted-main drift invalidates the base, not the candidate's work.
         # Replanning on the fresh authoritative base therefore keeps the same
         # bounded attempt slot and strategy instead of exhausting a routine
@@ -1127,49 +1259,71 @@ class StewardService:
             supersede_key = hashlib.sha256(
                 f"{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}".encode()
             ).hexdigest()[:32]
-            intent = self._latest_stage_event(mission.mission_id, stage.stage_id, "STAGE_SUPERSEDE_DISPATCH_INTENT")
-            if intent is not None and self._latest_stage_event(mission.mission_id, stage.stage_id, "STAGE_SUPERSEDED") is None:
-                return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
-            if intent is None:
+            if owner_authorized_quarantine:
+                # The exact owner authorization has already been consumed by
+                # quarantine_stage_pr. Retire only this journal candidate and
+                # retain its remote branch as an auditable recovery artifact;
+                # never issue the ordinary supersede mutation a second time.
                 self.journal.append(
-                    event="STAGE_SUPERSEDE_DISPATCH_INTENT",
-                    idempotency_key=f"stage-supersede-intent:{supersede_key}",
+                    event="STAGE_SUPERSEDED",
+                    idempotency_key=f"stage-superseded-orphan-quarantined:{supersede_key}",
                     mission_id=mission.mission_id,
                     stage_id=stage.stage_id,
                     card_id="",
                     state="RUNNING",
-                    detail="failed_candidate_supersede_intent",
-                    data={"pr_number": pr_number, "head_sha": expected_head},
+                    detail="legacy_orphan_closed_unmerged_branch_retained",
+                    data={
+                        "pr_number": pr_number,
+                        "head_sha": expected_head,
+                        "remote_branch_retained": True,
+                        "external_dispatch_replay_forbidden": True,
+                    },
                     enforce_transition=False,
                 )
-                try:
-                    self.github_writer.supersede_stage_pr(
-                        mission.repository_identity.repository, pr_number, expected_head
-                    )
-                except GitHubMutationError:
+            else:
+                intent = self._latest_stage_event(mission.mission_id, stage.stage_id, "STAGE_SUPERSEDE_DISPATCH_INTENT")
+                if intent is not None and self._latest_stage_event(mission.mission_id, stage.stage_id, "STAGE_SUPERSEDED") is None:
+                    return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
+                if intent is None:
                     self.journal.append(
-                        event="STAGE_OUTCOME_UNKNOWN",
-                        idempotency_key=f"stage-supersede-outcome-unknown:{supersede_key}",
+                        event="STAGE_SUPERSEDE_DISPATCH_INTENT",
+                        idempotency_key=f"stage-supersede-intent:{supersede_key}",
                         mission_id=mission.mission_id,
                         stage_id=stage.stage_id,
                         card_id="",
-                        state="OUTCOME_UNKNOWN",
-                        detail="failed_candidate_supersede_outcome_unknown",
-                        data={},
+                        state="RUNNING",
+                        detail="failed_candidate_supersede_intent",
+                        data={"pr_number": pr_number, "head_sha": expected_head},
                         enforce_transition=False,
                     )
-                    return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
-                self.journal.append(
-                    event="STAGE_SUPERSEDED",
-                    idempotency_key=f"stage-superseded:{supersede_key}",
-                    mission_id=mission.mission_id,
-                    stage_id=stage.stage_id,
-                    card_id="",
-                    state="RUNNING",
-                    detail="failed_candidate_closed_branch_retained",
-                    data={"pr_number": pr_number, "head_sha": expected_head},
-                    enforce_transition=False,
-                )
+                    try:
+                        self.github_writer.supersede_stage_pr(
+                            mission.repository_identity.repository, pr_number, expected_head
+                        )
+                    except GitHubMutationError:
+                        self.journal.append(
+                            event="STAGE_OUTCOME_UNKNOWN",
+                            idempotency_key=f"stage-supersede-outcome-unknown:{supersede_key}",
+                            mission_id=mission.mission_id,
+                            stage_id=stage.stage_id,
+                            card_id="",
+                            state="OUTCOME_UNKNOWN",
+                            detail="failed_candidate_supersede_outcome_unknown",
+                            data={},
+                            enforce_transition=False,
+                        )
+                        return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
+                    self.journal.append(
+                        event="STAGE_SUPERSEDED",
+                        idempotency_key=f"stage-superseded:{supersede_key}",
+                        mission_id=mission.mission_id,
+                        stage_id=stage.stage_id,
+                        card_id="",
+                        state="RUNNING",
+                        detail="failed_candidate_closed_branch_retained",
+                        data={"pr_number": pr_number, "head_sha": expected_head},
+                        enforce_transition=False,
+                    )
         else:
             # A worker failure can happen before a Draft PR exists.  Mark the
             # failed journal candidate superseded as well, otherwise every
@@ -1363,7 +1517,12 @@ class StewardService:
         except (WorkerError, StewardServiceError) as exc:
             self.journal.append(
                 event="STAGE_REPLAN_REQUESTED",
-                idempotency_key=f"stage-integrated-review-failed:{mission.mission_id}:{stage.stage_id}:{integration.head_sha}",
+                idempotency_key=(
+                    "stage-integrated-review-failed:"
+                    + hashlib.sha256(
+                        f"{mission.mission_id}:{stage.stage_id}:{integration.head_sha}".encode()
+                    ).hexdigest()[:32]
+                ),
                 mission_id=mission.mission_id,
                 stage_id=stage.stage_id,
                 card_id="",
@@ -1435,7 +1594,12 @@ class StewardService:
                 )
                 self.journal.append(
                     event="STAGE_REPLAN_REQUESTED",
-                    idempotency_key=f"stage-review-preflight-replan:{mission.mission_id}:{stage.stage_id}:{integration.head_sha}",
+                    idempotency_key=(
+                        "stage-review-preflight-replan:"
+                        + hashlib.sha256(
+                            f"{mission.mission_id}:{stage.stage_id}:{integration.head_sha}".encode()
+                        ).hexdigest()[:32]
+                    ),
                     mission_id=mission.mission_id,
                     stage_id=stage.stage_id,
                     card_id="",
@@ -1451,7 +1615,12 @@ class StewardService:
                 # keep the durable intent and let the next tick retry.
                 self.journal.append(
                     event="STAGE_REVIEW_READ_WAITING",
-                    idempotency_key=f"stage-review-read-waiting:{mission.mission_id}:{stage.stage_id}:{integration.head_sha}",
+                    idempotency_key=(
+                        "stage-review-read-waiting:"
+                        + hashlib.sha256(
+                            f"{mission.mission_id}:{stage.stage_id}:{integration.head_sha}".encode()
+                        ).hexdigest()[:32]
+                    ),
                     mission_id=mission.mission_id,
                     stage_id=stage.stage_id,
                     card_id="",
@@ -1464,7 +1633,12 @@ class StewardService:
             except GitHubMutationError:
                 self.journal.append(
                     event="STAGE_OUTCOME_UNKNOWN",
-                    idempotency_key=f"stage-review-outcome-unknown:{mission.mission_id}:{stage.stage_id}:{integration.head_sha}",
+                    idempotency_key=(
+                        "stage-review-outcome-unknown:"
+                        + hashlib.sha256(
+                            f"{mission.mission_id}:{stage.stage_id}:{integration.head_sha}".encode()
+                        ).hexdigest()[:32]
+                    ),
                     mission_id=mission.mission_id,
                     stage_id=stage.stage_id,
                     card_id="",
@@ -1606,8 +1780,10 @@ class StewardService:
             self.journal.append(
                 event="ACCEPTED_MAIN_READ_UNAVAILABLE",
                 idempotency_key=(
-                    f"accepted-main-read-unavailable:{mission.mission_id}:"
-                    f"{stage.stage_id}:{expected_base}"
+                    "accepted-main-read-unavailable:"
+                    + hashlib.sha256(
+                        f"{mission.mission_id}:{stage.stage_id}:{expected_base}".encode()
+                    ).hexdigest()[:32]
                 ),
                 mission_id=mission.mission_id,
                 stage_id=stage.stage_id,
@@ -1651,8 +1827,10 @@ class StewardService:
         self.journal.append(
             event="STAGE_REPLAN_REQUESTED",
             idempotency_key=(
-                f"stage-main-drift-replan:{mission.mission_id}:"
-                f"{stage.stage_id}:{current_main}"
+                "stage-main-drift-replan:"
+                + hashlib.sha256(
+                    f"{mission.mission_id}:{stage.stage_id}:{current_main}".encode()
+                ).hexdigest()[:32]
             ),
             mission_id=mission.mission_id,
             stage_id=stage.stage_id,
@@ -1663,6 +1841,149 @@ class StewardService:
             enforce_transition=False,
         )
         return rebound, {"status": "REPLAN_REQUIRED", "stage_id": stage.stage_id}
+
+    def _reconcile_unknown_review_receipt(
+        self,
+        mission: mission_contract.MaintenanceMission,
+        stage: mission_contract.Stage,
+    ) -> str | None:
+        """Reconcile a possibly-issued review receipt using readback only."""
+
+        review_intent = self._latest_stage_event(
+            mission.mission_id, stage.stage_id, "STAGE_REVIEW_DISPATCH_INTENT"
+        )
+        review_published = self._latest_stage_event(
+            mission.mission_id, stage.stage_id, "STAGE_REVIEW_RECEIPT_PUBLISHED"
+        )
+        unknown_review = next(
+            (
+                event
+                for event in reversed(self.journal.replay())
+                if event.mission_id == mission.mission_id
+                and event.stage_id == stage.stage_id
+                and event.event == "STAGE_OUTCOME_UNKNOWN"
+                and event.detail == "stage_review_receipt_outcome_unknown"
+            ),
+            None,
+        )
+        if review_published is not None or review_intent is None or unknown_review is None:
+            return None
+
+        intent_data = review_intent.data if isinstance(review_intent.data, Mapping) else {}
+        if type(intent_data.get("pr_number")) is not int or not all(
+            isinstance(intent_data.get(field), str)
+            for field in ("base_sha", "head_sha", "review_receipt_sha256")
+        ):
+            return "OUTCOME_UNKNOWN"
+        review_reconciler = getattr(
+            self.github_writer, "reconcile_exact_head_review", None
+        )
+        if not callable(review_reconciler):
+            return "OUTCOME_UNKNOWN"
+        try:
+            reconciliation = review_reconciler(
+                mission.repository_identity.repository,
+                intent_data["pr_number"],
+                intent_data["head_sha"],
+                base_sha=intent_data["base_sha"],
+                review_receipt_sha256=intent_data["review_receipt_sha256"],
+            )
+        except GitHubPreflightError:
+            evidence_key = hashlib.sha256(
+                f"{mission.mission_id}:{stage.stage_id}:{intent_data['head_sha']}".encode()
+            ).hexdigest()[:32]
+            self.journal.append(
+                event="STAGE_REVIEW_DISPATCH_PREFLIGHT_REJECTED",
+                idempotency_key=f"stage-review-recovery-preflight-rejected:{evidence_key}",
+                mission_id=mission.mission_id,
+                stage_id=stage.stage_id,
+                card_id="",
+                state="RUNNING",
+                detail="stage_review_receipt_rejected_before_post",
+                data={},
+                enforce_transition=False,
+            )
+            self.journal.append(
+                event="STAGE_REPLAN_REQUESTED",
+                idempotency_key=f"stage-review-recovery-preflight-replan:{evidence_key}",
+                mission_id=mission.mission_id,
+                stage_id=stage.stage_id,
+                card_id="",
+                state="RUNNING",
+                detail="stage_review_receipt_preflight_replan",
+                data={},
+                enforce_transition=False,
+            )
+            return "REPLAN_REQUIRED"
+        except GitHubReadError:
+            self.journal.append(
+                event="STAGE_REVIEW_READ_WAITING",
+                idempotency_key=(
+                    "stage-review-recovery-read-waiting:"
+                    + hashlib.sha256(
+                        f"{mission.mission_id}:{stage.stage_id}:{intent_data['head_sha']}".encode()
+                    ).hexdigest()[:32]
+                ),
+                mission_id=mission.mission_id,
+                stage_id=stage.stage_id,
+                card_id="",
+                state="RUNNING",
+                detail="stage_review_receipt_read_unavailable",
+                data={},
+                enforce_transition=False,
+            )
+            return "WAITING_GITHUB_READBACK"
+        except GitHubFactsError:
+            return "OUTCOME_UNKNOWN"
+        if not isinstance(reconciliation, Mapping):
+            return "OUTCOME_UNKNOWN"
+
+        reconciliation_status = reconciliation.get("status")
+        if reconciliation_status == "ABSENT":
+            data = dict(reconciliation)
+            evidence_key = hashlib.sha256(
+                f"{mission.mission_id}:{stage.stage_id}:{intent_data['head_sha']}".encode()
+            ).hexdigest()[:32]
+            self.journal.append(
+                event="STAGE_REVIEW_DISPATCH_RECONCILED",
+                idempotency_key=f"stage-review-reconciled-absent:{evidence_key}",
+                mission_id=mission.mission_id,
+                stage_id=stage.stage_id,
+                card_id="",
+                state="RUNNING",
+                detail="review_receipt_absence_confirmed_read_only",
+                data=data,
+                enforce_transition=False,
+            )
+            self.journal.append(
+                event="STAGE_REPLAN_REQUESTED",
+                idempotency_key=f"stage-review-reconciled-absent-replan:{evidence_key}",
+                mission_id=mission.mission_id,
+                stage_id=stage.stage_id,
+                card_id="",
+                state="RUNNING",
+                detail="review_receipt_absence_requires_candidate_replan",
+                data=data,
+                enforce_transition=False,
+            )
+            return "REPLAN_REQUIRED"
+        if reconciliation_status == "PRESENT":
+            evidence_key = hashlib.sha256(
+                f"{mission.mission_id}:{stage.stage_id}:{intent_data['head_sha']}".encode()
+            ).hexdigest()[:32]
+            self.journal.append(
+                event="STAGE_REVIEW_RECEIPT_PUBLISHED",
+                idempotency_key=f"stage-review-reconciled-present:{evidence_key}",
+                mission_id=mission.mission_id,
+                stage_id=stage.stage_id,
+                card_id="",
+                state="RUNNING",
+                detail="exact_head_review_receipt_reconciled_after_unknown",
+                data={**intent_data, "receipt": dict(reconciliation)},
+                enforce_transition=False,
+            )
+            return "PRESENT"
+        return "OUTCOME_UNKNOWN"
 
     def _advance_bound_stage(
         self,
@@ -1689,16 +2010,25 @@ class StewardService:
             pending_mutation = self._bound_stage_mutation_pending(
                 mission.mission_id, stage.stage_id
             )
-            if pending_mutation == "MERGE" and facts.get("merged") is not True:
+            merge_intent = self._latest_stage_event(
+                mission.mission_id,
+                stage.stage_id,
+                "STAGE_MERGE_DISPATCH_INTENT",
+            )
+            reconciliation: Mapping[str, Any] | None = None
+            if pending_mutation in {"MERGE", "QUARANTINE"} and facts.get("merged") is not True:
                 reconcile_dispatch = getattr(
                     self.github_writer, "reconcile_merge_dispatch", None
                 )
                 if callable(reconcile_dispatch):
                     try:
-                        merge_intent = self._latest_stage_event(
-                            mission.mission_id,
-                            stage.stage_id,
-                            "STAGE_MERGE_DISPATCH_INTENT",
+                        identity = self._merge_dispatch_identity(
+                            mission,
+                            stage,
+                            pr_number=pr_number,
+                            expected_base_sha=expected_base,
+                            expected_head_sha=expected_head,
+                            intent_event=merge_intent,
                         )
                         reconciliation = reconcile_dispatch(
                             mission.repository_identity.repository,
@@ -1710,9 +2040,406 @@ class StewardService:
                                 if merge_intent is not None
                                 else None
                             ),
+                            expected_base_sha=expected_base,
+                            dispatch_id=identity["dispatch_id"],
+                            workflow_run_id=(
+                                next(
+                                    (
+                                        event.data.get("workflow_run_id")
+                                        for event in (
+                                            merge_intent,
+                                            self._latest_stage_event(
+                                                mission.mission_id,
+                                                stage.stage_id,
+                                                "STAGE_MERGE_DISPATCHED",
+                                            ),
+                                            self._latest_stage_event(
+                                                mission.mission_id,
+                                                stage.stage_id,
+                                                "STAGE_OUTCOME_UNKNOWN",
+                                            ),
+                                        )
+                                        if event is not None
+                                        and type(event.data.get("workflow_run_id")) is int
+                                    ),
+                                    None,
+                                )
+                            ),
                         )
                     except (GitHubReadError, GitHubFactsError, OSError):
                         reconciliation = None
+                    if (
+                        isinstance(reconciliation, Mapping)
+                        and reconciliation.get("status") == "SUCCEEDED"
+                    ):
+                        try:
+                            current_facts = self.github.fetch_stage_pr(
+                                mission.repository_identity.repository, pr_number
+                            )
+                        except (GitHubReadError, GitHubFactsError, OSError):
+                            return {
+                                "status": "WAITING_GITHUB_READBACK",
+                                "stage_id": stage.stage_id,
+                            }
+                        if current_facts.get("merged") is not True:
+                            self.journal.append(
+                                event="STAGE_OUTCOME_UNKNOWN",
+                                idempotency_key=(
+                                    "stage-merge-success-without-merged-pr:"
+                                    + hashlib.sha256(
+                                        f"{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}".encode()
+                                    ).hexdigest()[:32]
+                                ),
+                                mission_id=mission.mission_id,
+                                stage_id=stage.stage_id,
+                                card_id="",
+                                state="OUTCOME_UNKNOWN",
+                                detail="merge_run_success_without_authoritative_merged_pr",
+                                data=dict(reconciliation),
+                                enforce_transition=False,
+                            )
+                            return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
+                        facts = current_facts
+                    if (
+                        isinstance(reconciliation, Mapping)
+                        and reconciliation.get("status") in {"NOT_PROVEN", "REJECTED"}
+                        and merge_intent is not None
+                    ):
+                        authorization_reader = getattr(
+                            self.github_writer,
+                            "read_orphan_dispatch_recovery_authorization",
+                            None,
+                        )
+                        if callable(authorization_reader):
+                            try:
+                                authorization = authorization_reader(
+                                    mission.repository_identity.repository,
+                                    self.control_issue_number,
+                                    mission_id=mission.mission_id,
+                                    proposal_sha256=mission.proposal_sha256,
+                                    stage_id=stage.stage_id,
+                                    pr_number=pr_number,
+                                    expected_base_sha=expected_base,
+                                    expected_head_sha=expected_head,
+                                    workflow_file="agent-merge.yml",
+                                    dispatch_id=identity["dispatch_id"],
+                                    owner_identity=mission.owner_approval.owner_identity,
+                                )
+                            except (GitHubReadError, GitHubFactsError, OSError):
+                                authorization = None
+                            authorization_binding = {
+                                "mission_id": mission.mission_id,
+                                "proposal_sha256": mission.proposal_sha256,
+                                "stage_id": stage.stage_id,
+                                "repository": mission.repository_identity.repository,
+                                "control_issue_number": self.control_issue_number,
+                                "pr_number": pr_number,
+                                "base_sha": expected_base,
+                                "head_sha": expected_head,
+                                "workflow_file": "agent-merge.yml",
+                                "ref": "main",
+                                "dispatch_id": identity["dispatch_id"],
+                                "authorization": "ORPHAN_DISPATCH_RECOVERY",
+                                "action": "QUARANTINE_EXACT_PR",
+                            }
+                            authorization_temporally_fresh = False
+                            if isinstance(authorization, Mapping):
+                                intent_at = _parse_utc_timestamp(merge_intent.timestamp)
+                                comment_at = _parse_utc_timestamp(
+                                    authorization.get("comment_created_at")
+                                )
+                                authorization_temporally_fresh = (
+                                    intent_at is not None
+                                    and comment_at is not None
+                                    and comment_at > intent_at
+                                    and authorization.get("owner_identity")
+                                    == mission.owner_approval.owner_identity
+                                    and type(authorization.get("comment_id")) is int
+                                    and authorization.get("comment_id") > 0
+                                    and isinstance(authorization.get("authorization_id"), str)
+                                    and mission_contract.IDENTIFIER.fullmatch(
+                                        authorization["authorization_id"]
+                                    ) is not None
+                                )
+                            if (
+                                isinstance(authorization, Mapping)
+                                and authorization_temporally_fresh
+                                and all(
+                                    authorization.get(key) == value
+                                    for key, value in authorization_binding.items()
+                                )
+                            ):
+                                quarantine_intent = self._latest_stage_event(
+                                    mission.mission_id,
+                                    stage.stage_id,
+                                    "STAGE_ORPHAN_QUARANTINE_INTENT",
+                                )
+                                quarantine_result: Mapping[str, Any] | None = None
+                                if quarantine_intent is None:
+                                    try:
+                                        stop_active = self.control_state.emergency_stop_active(
+                                            repository=mission.repository_identity.repository,
+                                            issue_number=self.control_issue_number,
+                                        )
+                                    except StewardServiceError:
+                                        return {
+                                            "status": "WAITING_CONTROL_STATE",
+                                            "stage_id": stage.stage_id,
+                                        }
+                                    if stop_active:
+                                        return {
+                                            "status": "WAITING_CONTROL_STATE",
+                                            "stage_id": stage.stage_id,
+                                            "reason": "emergency_stop_active_for_quarantine",
+                                        }
+                                    try:
+                                        current_facts = self.github.fetch_stage_pr(
+                                            mission.repository_identity.repository, pr_number
+                                        )
+                                        read_main = getattr(self.github, "fetch_accepted_main", None)
+                                        if not callable(read_main):
+                                            raise GitHubReadError("accepted_main_read_unavailable")
+                                        current_main = read_main(
+                                            mission.repository_identity.repository
+                                        )
+                                    except (GitHubReadError, GitHubFactsError, OSError):
+                                        return {
+                                            "status": "WAITING_GITHUB_READBACK",
+                                            "stage_id": stage.stage_id,
+                                        }
+                                    if (
+                                        current_facts.get("repository")
+                                        != mission.repository_identity.repository
+                                        or current_facts.get("pr_number") != pr_number
+                                        or current_facts.get("base_sha") != expected_base
+                                        or current_facts.get("head_sha") != expected_head
+                                        or not isinstance(current_main, str)
+                                        or current_main != expected_base
+                                        or current_facts.get("state") != "OPEN"
+                                        or current_facts.get("merged") is not False
+                                    ):
+                                        return {
+                                            "status": "OUTCOME_UNKNOWN",
+                                            "stage_id": stage.stage_id,
+                                            "reason": "legacy_orphan_preflight_not_exact",
+                                        }
+                                    # Re-read the stop control after the
+                                    # exact PR/main preflight and immediately
+                                    # before recording the mutation intent.
+                                    # The service never clears this control;
+                                    # an owner must make and read back the
+                                    # narrowly-scoped transition separately.
+                                    try:
+                                        if self.control_state.emergency_stop_active(
+                                            repository=mission.repository_identity.repository,
+                                            issue_number=self.control_issue_number,
+                                        ):
+                                            return {
+                                                "status": "WAITING_CONTROL_STATE",
+                                                "stage_id": stage.stage_id,
+                                                "reason": "emergency_stop_active_for_quarantine",
+                                            }
+                                    except StewardServiceError:
+                                        return {
+                                            "status": "WAITING_CONTROL_STATE",
+                                            "stage_id": stage.stage_id,
+                                        }
+                                    quarantine_key = hashlib.sha256(
+                                        f"{mission.mission_id}:{stage.stage_id}:{identity['dispatch_id']}:{authorization['comment_id']}".encode()
+                                    ).hexdigest()[:32]
+                                    self.journal.append(
+                                        event="STAGE_ORPHAN_QUARANTINE_INTENT",
+                                        idempotency_key=f"stage-orphan-quarantine-intent:{quarantine_key}",
+                                        mission_id=mission.mission_id,
+                                        stage_id=stage.stage_id,
+                                        card_id="",
+                                        state="RUNNING",
+                                        detail="owner_authorized_exact_orphan_quarantine_intent",
+                                        data={
+                                            **_owner_recovery_journal_data(
+                                                authorization, identity
+                                            ),
+                                            "preflight_pr": dict(current_facts),
+                                            "preflight_accepted_main_sha": current_main,
+                                        },
+                                        enforce_transition=False,
+                                    )
+                                    try:
+                                        if self.control_state.emergency_stop_active(
+                                            repository=mission.repository_identity.repository,
+                                            issue_number=self.control_issue_number,
+                                        ):
+                                            return {
+                                                "status": "WAITING_CONTROL_STATE",
+                                                "stage_id": stage.stage_id,
+                                                "reason": "emergency_stop_active_for_quarantine",
+                                            }
+                                    except StewardServiceError:
+                                        return {
+                                            "status": "WAITING_CONTROL_STATE",
+                                            "stage_id": stage.stage_id,
+                                        }
+                                    try:
+                                        quarantine_result = self.github_writer.quarantine_stage_pr(
+                                            mission.repository_identity.repository,
+                                            pr_number,
+                                            expected_base_sha=expected_base,
+                                            expected_head_sha=expected_head,
+                                        )
+                                    except GitHubReadError:
+                                        return {
+                                            "status": "WAITING_GITHUB_READBACK",
+                                            "stage_id": stage.stage_id,
+                                        }
+                                    except GitHubFactsError as exc:
+                                        self.journal.append(
+                                            event="STAGE_OUTCOME_UNKNOWN",
+                                            idempotency_key=(
+                                                "stage-orphan-quarantine-preflight-unknown:"
+                                                + hashlib.sha256(
+                                                    f"{mission.mission_id}:{stage.stage_id}:{identity['dispatch_id']}".encode()
+                                                ).hexdigest()[:32]
+                                            ),
+                                            mission_id=mission.mission_id,
+                                            stage_id=stage.stage_id,
+                                            card_id="",
+                                            state="OUTCOME_UNKNOWN",
+                                            detail="legacy_orphan_quarantine_preflight_unproven",
+                                            data={"error_class": type(exc).__name__},
+                                            enforce_transition=False,
+                                        )
+                                        return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
+                                    except GitHubMutationError as exc:
+                                        self.journal.append(
+                                            event="STAGE_OUTCOME_UNKNOWN",
+                                            idempotency_key=(
+                                                "stage-orphan-quarantine-unknown:"
+                                                + hashlib.sha256(
+                                                    f"{mission.mission_id}:{stage.stage_id}:{identity['dispatch_id']}".encode()
+                                                ).hexdigest()[:32]
+                                            ),
+                                            mission_id=mission.mission_id,
+                                            stage_id=stage.stage_id,
+                                            card_id="",
+                                            state="OUTCOME_UNKNOWN",
+                                            detail="legacy_orphan_quarantine_outcome_unknown",
+                                            data=dict(getattr(exc, "evidence", {}) or {}),
+                                            enforce_transition=False,
+                                        )
+                                        return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
+                                else:
+                                    # A persisted quarantine intent fences the
+                                    # close mutation across restart.  Only an
+                                    # authoritative PR/main readback may settle
+                                    # it; an OPEN candidate stays unknown.
+                                    try:
+                                        current_facts = self.github.fetch_stage_pr(
+                                            mission.repository_identity.repository, pr_number
+                                        )
+                                        read_main = getattr(self.github, "fetch_accepted_main", None)
+                                        if not callable(read_main):
+                                            raise GitHubReadError("accepted_main_read_unavailable")
+                                        current_main = read_main(
+                                            mission.repository_identity.repository
+                                        )
+                                    except (GitHubReadError, GitHubFactsError, OSError):
+                                        return {
+                                            "status": "WAITING_GITHUB_READBACK",
+                                            "stage_id": stage.stage_id,
+                                        }
+                                    if current_facts.get("merged") is True:
+                                        quarantine_result = {
+                                            "status": "MERGED",
+                                            "repository": mission.repository_identity.repository,
+                                            "pr_number": pr_number,
+                                            "base_sha": expected_base,
+                                            "head_sha": expected_head,
+                                            "accepted_main_sha": current_main,
+                                        }
+                                    elif (
+                                        current_facts.get("state") == "CLOSED"
+                                        and current_facts.get("merged") is False
+                                    ):
+                                        quarantine_result = {
+                                            "status": "CLOSED_UNMERGED",
+                                            "repository": mission.repository_identity.repository,
+                                            "pr_number": pr_number,
+                                            "base_sha": expected_base,
+                                            "head_sha": expected_head,
+                                            "accepted_main_sha": current_main,
+                                        }
+                                    else:
+                                        return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
+
+                                if quarantine_result.get("status") == "MERGED":
+                                    try:
+                                        current_facts = self.github.fetch_stage_pr(
+                                            mission.repository_identity.repository, pr_number
+                                        )
+                                    except (GitHubReadError, GitHubFactsError, OSError):
+                                        return {
+                                            "status": "WAITING_GITHUB_READBACK",
+                                            "stage_id": stage.stage_id,
+                                        }
+                                    if current_facts.get("merged") is not True:
+                                        return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
+                                    evidence = {
+                                        "reconciliation": dict(reconciliation),
+                                        **_owner_recovery_journal_data(
+                                            authorization, identity
+                                        ),
+                                        "quarantine": dict(quarantine_result),
+                                        "current_pr": dict(current_facts),
+                                    }
+                                    evidence_key = hashlib.sha256(
+                                        f"{mission.mission_id}:{stage.stage_id}:{identity['dispatch_id']}".encode()
+                                    ).hexdigest()[:32]
+                                    self.journal.append(
+                                        event="STAGE_MERGE_DISPATCH_RECONCILED",
+                                        idempotency_key=f"stage-legacy-orphan-merged:{evidence_key}",
+                                        mission_id=mission.mission_id,
+                                        stage_id=stage.stage_id,
+                                        card_id="",
+                                        state="RUNNING",
+                                        detail="legacy_orphan_merge_observed_from_github",
+                                        data=evidence,
+                                        enforce_transition=False,
+                                    )
+                                    facts = current_facts
+                                elif quarantine_result.get("status") == "CLOSED_UNMERGED":
+                                    evidence = {
+                                        "reconciliation": dict(reconciliation),
+                                        **_owner_recovery_journal_data(
+                                            authorization, identity
+                                        ),
+                                        "quarantine": dict(quarantine_result),
+                                    }
+                                    evidence_key = hashlib.sha256(
+                                        f"{mission.mission_id}:{stage.stage_id}:{identity['dispatch_id']}".encode()
+                                    ).hexdigest()[:32]
+                                    self.journal.append(
+                                        event="STAGE_MERGE_DISPATCH_RECONCILED",
+                                        idempotency_key=f"stage-legacy-orphan-closed:{evidence_key}",
+                                        mission_id=mission.mission_id,
+                                        stage_id=stage.stage_id,
+                                        card_id="",
+                                        state="RUNNING",
+                                        detail="legacy_orphan_quarantine_closed_unmerged_observed",
+                                        data=evidence,
+                                        enforce_transition=False,
+                                    )
+                                    self.journal.append(
+                                        event="STAGE_REPLAN_REQUESTED",
+                                        idempotency_key=f"stage-legacy-orphan-replan:{evidence_key}",
+                                        mission_id=mission.mission_id,
+                                        stage_id=stage.stage_id,
+                                        card_id="",
+                                        state="RUNNING",
+                                        detail="legacy_orphan_closed_unmerged_replacement_authorized",
+                                        data=evidence,
+                                        enforce_transition=False,
+                                    )
+                                    return {"status": "REPLAN_REQUIRED", "stage_id": stage.stage_id}
                     if isinstance(reconciliation, Mapping) and reconciliation.get(
                         "status"
                     ) == "REJECTED":
@@ -1818,7 +2545,12 @@ class StewardService:
                 self.mission = rebound
                 self.journal.append(
                     event="STAGE_REPLAN_REQUESTED",
-                    idempotency_key=f"stage-main-drift-replan:{mission.mission_id}:{stage.stage_id}:{current_main}",
+                    idempotency_key=(
+                        "stage-main-drift-replan:"
+                        + hashlib.sha256(
+                            f"{mission.mission_id}:{stage.stage_id}:{current_main}".encode()
+                        ).hexdigest()[:32]
+                    ),
                     mission_id=mission.mission_id,
                     stage_id=stage.stage_id,
                     card_id="",
@@ -1845,6 +2577,17 @@ class StewardService:
         review_published = self._latest_stage_event(
             mission.mission_id, stage.stage_id, "STAGE_REVIEW_RECEIPT_PUBLISHED"
         )
+        review_recovery = self._reconcile_unknown_review_receipt(mission, stage)
+        if review_recovery in {
+            "OUTCOME_UNKNOWN",
+            "REPLAN_REQUIRED",
+            "WAITING_GITHUB_READBACK",
+        }:
+            return {"status": review_recovery, "stage_id": stage.stage_id}
+        if review_recovery == "PRESENT":
+            review_published = self._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_REVIEW_RECEIPT_PUBLISHED"
+            )
         if review_intent is not None and review_published is None:
             # A mutation failure is permanently fail-closed.  A read-waiting
             # marker, or an older intent without review fields, is safe to
@@ -1936,7 +2679,12 @@ class StewardService:
                 )
                 self.journal.append(
                     event="STAGE_REPLAN_REQUESTED",
-                    idempotency_key=f"stage-review-recovery-preflight-replan:{mission.mission_id}:{stage.stage_id}:{expected_head}",
+                    idempotency_key=(
+                        "stage-review-recovery-preflight-replan:"
+                        + hashlib.sha256(
+                            f"{mission.mission_id}:{stage.stage_id}:{expected_head}".encode()
+                        ).hexdigest()[:32]
+                    ),
                     mission_id=mission.mission_id,
                     stage_id=stage.stage_id,
                     card_id="",
@@ -1949,7 +2697,12 @@ class StewardService:
             except GitHubReadError:
                 self.journal.append(
                     event="STAGE_REVIEW_READ_WAITING",
-                    idempotency_key=f"stage-review-read-waiting:{mission.mission_id}:{stage.stage_id}:{expected_head}",
+                    idempotency_key=(
+                        "stage-review-read-waiting:"
+                        + hashlib.sha256(
+                            f"{mission.mission_id}:{stage.stage_id}:{expected_head}".encode()
+                        ).hexdigest()[:32]
+                    ),
                     mission_id=mission.mission_id,
                     stage_id=stage.stage_id,
                     card_id="",
@@ -1962,7 +2715,12 @@ class StewardService:
             except GitHubMutationError:
                 self.journal.append(
                     event="STAGE_OUTCOME_UNKNOWN",
-                    idempotency_key=f"stage-review-recovery-outcome-unknown:{mission.mission_id}:{stage.stage_id}:{expected_head}",
+                    idempotency_key=(
+                        "stage-review-recovery-outcome-unknown:"
+                        + hashlib.sha256(
+                            f"{mission.mission_id}:{stage.stage_id}:{expected_head}".encode()
+                        ).hexdigest()[:32]
+                    ),
                     mission_id=mission.mission_id,
                     stage_id=stage.stage_id,
                     card_id="",
@@ -1974,7 +2732,12 @@ class StewardService:
                 return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
             self.journal.append(
                 event="STAGE_REVIEW_RECEIPT_PUBLISHED",
-                idempotency_key=f"stage-review-reconciled:{mission.mission_id}:{stage.stage_id}:{expected_head}",
+                idempotency_key=(
+                    "stage-review-reconciled:"
+                    + hashlib.sha256(
+                        f"{mission.mission_id}:{stage.stage_id}:{expected_head}".encode()
+                    ).hexdigest()[:32]
+                ),
                 mission_id=mission.mission_id,
                 stage_id=stage.stage_id,
                 card_id="",
@@ -2098,20 +2861,41 @@ class StewardService:
                 )
                 if not pre_dispatch_read_waiting:
                     return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
+            merge_intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+            merge_identity = self._merge_dispatch_identity(
+                mission,
+                stage,
+                pr_number=pr_number,
+                expected_base_sha=expected_base,
+                expected_head_sha=expected_head,
+                intent_event=None,
+            )
             self.journal.append(
                 event="STAGE_MERGE_DISPATCH_INTENT",
-                idempotency_key=f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}",
+                idempotency_key=merge_intent_key,
                 mission_id=mission.mission_id,
                 stage_id=stage.stage_id,
                 card_id="",
                 state="RUNNING",
                 detail="canonical_merge_workflow_dispatch_intent",
-                data={"pr_number": pr_number, "head_sha": expected_head, "workflow": "agent-merge.yml"},
+                data={
+                    "pr_number": pr_number,
+                    "head_sha": expected_head,
+                    "base_sha": expected_base,
+                    "workflow": "agent-merge.yml",
+                    "ref": "main",
+                    "dispatch_id": merge_identity["dispatch_id"],
+                },
                 enforce_transition=False,
             )
             try:
                 receipt = self.github_writer.guarded_merge(
-                    mission.repository_identity.repository, pr_number, expected_head
+                    mission.repository_identity.repository,
+                    pr_number,
+                    expected_head,
+                    expected_base_sha=expected_base,
+                    dispatch_id=merge_identity["dispatch_id"],
+                    intent_key=merge_intent_key,
                 )
             except GitHubReadError:
                 # The writer's initial identity preflight did not reach the
@@ -2132,15 +2916,22 @@ class StewardService:
                     enforce_transition=False,
                 )
                 return {"status": "WAITING_GITHUB_READBACK", "stage_id": stage.stage_id}
-            except GitHubMutationError:
+            except GitHubMutationError as exc:
+                unknown_data = dict(getattr(exc, "evidence", {}) or {})
                 self.journal.append(
                     event="STAGE_OUTCOME_UNKNOWN",
-                    idempotency_key=f"stage-merge-unknown:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}",
+                    idempotency_key=(
+                        "stage-merge-unknown:"
+                        + hashlib.sha256(
+                            f"{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}".encode()
+                        ).hexdigest()[:32]
+                    ),
                     mission_id=mission.mission_id,
                     stage_id=stage.stage_id,
                     card_id="",
                     state="OUTCOME_UNKNOWN",
                     detail="stage_merge_outcome_unknown",
+                    data=unknown_data,
                     enforce_transition=False,
                 )
                 return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
@@ -2196,8 +2987,10 @@ class StewardService:
             self.journal.append(
                 event="ACCEPTED_MAIN_READ_UNAVAILABLE",
                 idempotency_key=(
-                    f"accepted-main-read-unavailable:{mission.mission_id}:"
-                    f"{stage_id}:{mission.repository_identity.base_sha}"
+                    "accepted-main-read-unavailable:"
+                    + hashlib.sha256(
+                        f"{mission.mission_id}:{stage_id}:{mission.repository_identity.base_sha}".encode()
+                    ).hexdigest()[:32]
                 ),
                 mission_id=mission.mission_id,
                 stage_id=stage_id,
@@ -2387,7 +3180,15 @@ class StewardService:
                 data={"control_issue": self.control_issue_number},
                 enforce_transition=False,
             )
-            return {"status": "EMERGENCY_STOP", "mission_id": active.mission_id}
+            try:
+                recovery = self._recover_merge_dispatch_while_stopped(active)
+            except (GitHubReadError, GitHubFactsError, OSError):
+                recovery = {"status": "WAITING_GITHUB_READBACK"}
+            return {
+                "status": "EMERGENCY_STOP",
+                "mission_id": active.mission_id,
+                "read_only_recovery": recovery,
+            }
         records = self._stage_records(active.mission_id)
         completed = {
             stage.stage_id
@@ -2736,7 +3537,12 @@ class StewardService:
         if fetch.returncode != 0:
             self.journal.append(
                 event="POST_MERGE_LOCAL_MIRROR_UNAVAILABLE",
-                idempotency_key=f"post-merge-local-mirror-unavailable:{self.mission.mission_id}:{stage_id}:{accepted_main_sha}",
+                idempotency_key=(
+                    "post-merge-local-mirror-unavailable:"
+                    + hashlib.sha256(
+                        f"{self.mission.mission_id}:{stage_id}:{accepted_main_sha}".encode()
+                    ).hexdigest()[:32]
+                ),
                 mission_id=self.mission.mission_id,
                 stage_id=stage_id,
                 card_id="",
