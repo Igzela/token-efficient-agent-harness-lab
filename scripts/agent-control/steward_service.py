@@ -1209,9 +1209,18 @@ class StewardService:
             for event in replan_requests
         )
         base_drift_replan = has_base_drift_replan and not has_candidate_repair
+        quarantine_reconciled = self._latest_stage_event(
+            mission.mission_id,
+            stage.stage_id,
+            "STAGE_MERGE_DISPATCH_RECONCILED",
+        )
         owner_authorized_quarantine = any(
             event.detail == "legacy_orphan_closed_unmerged_replacement_authorized"
             for event in replan_requests
+        ) or (
+            quarantine_reconciled is not None
+            and quarantine_reconciled.detail
+            == "legacy_orphan_quarantine_closed_unmerged_observed"
         )
         # Accepted-main drift invalidates the base, not the candidate's work.
         # Replanning on the fresh authoritative base therefore keeps the same
@@ -2100,7 +2109,8 @@ class StewardService:
                                         or current_facts.get("base_sha") != expected_base
                                         or current_facts.get("head_sha") != expected_head
                                         or not isinstance(current_main, str)
-                                        or current_main != expected_base
+                                        or mission_contract.SHA40.fullmatch(current_main)
+                                        is None
                                         or current_facts.get("state") != "OPEN"
                                         or current_facts.get("merged") is not False
                                     ):
@@ -2293,6 +2303,20 @@ class StewardService:
                                     )
                                     facts = current_facts
                                 elif quarantine_result.get("status") == "CLOSED_UNMERGED":
+                                    accepted_main_sha = quarantine_result.get(
+                                        "accepted_main_sha"
+                                    )
+                                    if (
+                                        not isinstance(accepted_main_sha, str)
+                                        or mission_contract.SHA40.fullmatch(
+                                            accepted_main_sha
+                                        )
+                                        is None
+                                    ):
+                                        return {
+                                            "status": "OUTCOME_UNKNOWN",
+                                            "stage_id": stage.stage_id,
+                                        }
                                     evidence = {
                                         "reconciliation": dict(reconciliation),
                                         **_owner_recovery_journal_data(
@@ -2303,6 +2327,32 @@ class StewardService:
                                     evidence_key = hashlib.sha256(
                                         f"{mission.mission_id}:{stage.stage_id}:{identity['dispatch_id']}".encode()
                                     ).hexdigest()[:32]
+                                    if (
+                                        accepted_main_sha
+                                        != mission.repository_identity.base_sha
+                                    ):
+                                        rebound = replace(
+                                            mission,
+                                            repository_identity=replace(
+                                                mission.repository_identity,
+                                                base_sha=accepted_main_sha,
+                                            ),
+                                        )
+                                        self.journal.append(
+                                            event="MISSION_BASE_DRIFT_REBOUND",
+                                            idempotency_key=(
+                                                "mission-base-drift-rebound:"
+                                                f"{mission.mission_id}:{accepted_main_sha}"
+                                            ),
+                                            mission_id=mission.mission_id,
+                                            stage_id="mission",
+                                            card_id="",
+                                            state="RUNNING",
+                                            detail="authoritative_accepted_main_drift_rebound",
+                                            data=rebound.to_wire(),
+                                            enforce_transition=False,
+                                        )
+                                        self.mission = rebound
                                     self.journal.append(
                                         event="STAGE_MERGE_DISPATCH_RECONCILED",
                                         idempotency_key=f"stage-legacy-orphan-closed:{evidence_key}",
