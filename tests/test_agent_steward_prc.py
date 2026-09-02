@@ -982,6 +982,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         self.assertEqual(result["read_only_recovery"]["status"], "WAITING_CONTROL_STATE")
         self.assertEqual(self.github_writer.actions, actions_before)
         self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
         self.assertIsNone(
             self.srv._latest_stage_event(
                 mission.mission_id,
@@ -1216,6 +1217,28 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         )
         self.assertEqual(self.github_writer.actions, actions_before)
         self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
+        # A factual CLOSED_UNMERGED readback during the stop is still
+        # read-only: it must not enqueue a replacement until the control is
+        # released.
+        self.github_writer.prs[pr_number]["state"] = "CLOSED"
+        self.github_writer.remote_main_sha = self.base_sha
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            result = self.srv.step()
+        self.assertEqual(result["status"], "EMERGENCY_STOP")
+        self.assertEqual(
+            result["read_only_recovery"]["status"], "CLOSED_UNMERGED"
+        )
+        self.assertIsNone(
+            self.srv._latest_stage_event(
+                mission.mission_id, stage.stage_id, "STAGE_REPLAN_REQUESTED"
+            )
+        )
 
     def test_merge_reconciliation_precedes_older_stage_outcome_unknown(self):
         """SIMULATED: merge recovery remains reachable after restart marker."""

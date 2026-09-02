@@ -901,7 +901,9 @@ class StewardService:
                 mission.mission_id, stage.stage_id
             ) not in {"MERGE", "QUARANTINE"}:
                 continue
-            return self._advance_bound_stage(mission, stage, metadata, cards)
+            return self._advance_bound_stage(
+                mission, stage, metadata, cards, read_only_recovery=True
+            )
         return None
 
     @staticmethod
@@ -1850,6 +1852,8 @@ class StewardService:
         stage: mission_contract.Stage,
         metadata: Mapping[str, Any],
         cards: tuple[mission_contract.WorkCard, ...] = (),
+        *,
+        read_only_recovery: bool = False,
     ) -> dict[str, Any]:
         binding = self._latest_stage_event(mission.mission_id, stage.stage_id, "STAGE_PR_BOUND")
         if binding is None:
@@ -2286,6 +2290,11 @@ class StewardService:
                                         data=evidence,
                                         enforce_transition=False,
                                     )
+                                    if read_only_recovery:
+                                        return {
+                                            "status": "CLOSED_UNMERGED",
+                                            "stage_id": stage.stage_id,
+                                        }
                                     self.journal.append(
                                         event="STAGE_REPLAN_REQUESTED",
                                         idempotency_key=f"stage-legacy-orphan-replan:{evidence_key}",
@@ -2327,6 +2336,11 @@ class StewardService:
                             data=evidence,
                             enforce_transition=False,
                         )
+                        if read_only_recovery:
+                            return {
+                                "status": "REJECTED",
+                                "stage_id": stage.stage_id,
+                            }
                         pending_mutation = None
                         # Re-read accepted main before allowing the ordinary
                         # replan path to supersede this candidate.  If main
