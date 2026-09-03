@@ -139,6 +139,10 @@ pub fn prediction_accuracy_is_selection_authority() -> bool {
     false
 }
 
+/// Canonical evidence freeze and validation receipt for MISSION-RESEARCH-20260901 (Stage 4).
+pub const RESEARCH_MAINLINE_STAGE_4_EVAL_SEAL: &str =
+    "MISSION-RESEARCH-20260901:stage-4:harness-evolution-eval-basis.v1";
+
 pub const NONE_REGRESSION_DIGEST_SEED: &str = "none";
 pub const NONE_COUNTEREVIDENCE_DIGEST_SEED: &str = "none-counterevidence";
 
@@ -2754,5 +2758,13 @@ mod tests {
         assert!(s.contains("bundle_sha256"));
         // Redacted evidence is hashes and counters only — no task label digests.
         assert!(!s.contains(&family.development[0].label_sha256));
+    }
+
+    #[test]
+    fn stage_4_eval_seal_is_bound() {
+        assert_eq!(
+            RESEARCH_MAINLINE_STAGE_4_EVAL_SEAL,
+            "MISSION-RESEARCH-20260901:stage-4:harness-evolution-eval-basis.v1",
+        );
     }
 }
