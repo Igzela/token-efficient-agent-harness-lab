@@ -1296,6 +1296,8 @@ elif args and args[0] == "exec":
     if "--model" in args and args[args.index("--model") + 1] != "gpt-5.3-codex":
         raise SystemExit(4)
     output = Path(args[args.index("--output-last-message") + 1])
+    if output.parent.name == "output-default" and "--model" in args:
+        raise SystemExit(9)
     output.write_text(%r, encoding="utf-8")
     print(json.dumps({"type":"turn.completed"}))
 else:
