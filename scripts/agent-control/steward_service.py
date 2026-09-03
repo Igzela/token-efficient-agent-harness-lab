@@ -2140,10 +2140,13 @@ class StewardService:
                             )
 
                         standing_recovery_grant = None
-                        for grant in mission.standing_grants:
-                            if grant.grant_type == "repository_maintenance":
-                                standing_recovery_grant = grant
-                                break
+                        try:
+                            standing_recovery_grant = mission_contract.validate_standing_recovery_grant(
+                                mission,
+                                repository=mission.repository_identity.repository,
+                            )
+                        except mission_contract.MissionContractError:
+                            standing_recovery_grant = None
 
                         recorded_mission = merge_intent.data.get("mission_id")
                         recorded_stage = merge_intent.data.get("stage_id")
