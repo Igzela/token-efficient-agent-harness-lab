@@ -289,6 +289,8 @@ def _standing_recovery_journal_data(
     mission: mission_contract.MaintenanceMission,
     grant: mission_contract.Grant,
     dispatch_identity: Mapping[str, Any],
+    *,
+    use_number: int,
 ) -> dict[str, Any]:
     """Return redacted, journal-safe metadata for standing Mission recovery authority.
 
@@ -300,6 +302,8 @@ def _standing_recovery_journal_data(
         "grant_kind": "MISSION_STANDING_RECOVERY",
         "grant_id": grant.grant_id,
         "grant_type": grant.grant_type,
+        "mission_grant_use": use_number,
+        "mission_grant_max_uses": grant.max_uses,
         "recovery_action": "QUARANTINE_EXACT_PR",
         "action": "QUARANTINE_EXACT_PR",
         "mission_id": mission.mission_id,
@@ -2191,6 +2195,49 @@ class StewardService:
                             "STAGE_ORPHAN_QUARANTINE_INTENT",
                         )
 
+                        standing_recovery_uses = 0
+                        if standing_recovery_grant is not None:
+                            standing_recovery_uses = sum(
+                                1
+                                for event in self.journal.replay()
+                                if event.mission_id == mission.mission_id
+                                and event.event == "STAGE_ORPHAN_QUARANTINE_INTENT"
+                                and event.data.get("recovery_source")
+                                == "MISSION_STANDING_RECOVERY"
+                                and event.data.get("grant_id")
+                                == standing_recovery_grant.grant_id
+                            )
+                            if (
+                                not legacy_authorized
+                                and quarantine_intent is None
+                                and standing_recovery_uses
+                                >= standing_recovery_grant.max_uses
+                            ):
+                                self.journal.append(
+                                    event="STAGE_RECOVERY_CEILING_EXHAUSTED",
+                                    idempotency_key=(
+                                        "stage-standing-recovery-ceiling:"
+                                        f"{mission.mission_id}:{standing_recovery_grant.grant_id}"
+                                    ),
+                                    mission_id=mission.mission_id,
+                                    stage_id=stage.stage_id,
+                                    card_id="",
+                                    state="PAUSED_FOR_OWNER",
+                                    detail="standing_recovery_use_ceiling_exhausted",
+                                    data={
+                                        "grant_id": standing_recovery_grant.grant_id,
+                                        "dispatch_id": identity["dispatch_id"],
+                                        "consumed_uses": standing_recovery_uses,
+                                        "max_uses": standing_recovery_grant.max_uses,
+                                    },
+                                    enforce_transition=False,
+                                )
+                                return {
+                                    "status": "PAUSED_FOR_OWNER",
+                                    "stage_id": stage.stage_id,
+                                    "reason": "standing_recovery_use_ceiling_exhausted",
+                                }
+
                         is_authorized = False
                         recovery_data: dict[str, Any] = {}
                         quarantine_key: str = ""
@@ -2221,7 +2268,14 @@ class StewardService:
                             recovery_data = {
                                 "recovery_source": "MISSION_STANDING_RECOVERY",
                                 **_standing_recovery_journal_data(
-                                    mission, standing_recovery_grant, identity
+                                    mission,
+                                    standing_recovery_grant,
+                                    identity,
+                                    use_number=(
+                                        standing_recovery_uses
+                                        if quarantine_intent is not None
+                                        else standing_recovery_uses + 1
+                                    ),
                                 ),
                             }
                             approval_marker = (

@@ -65,8 +65,9 @@ fail_closed() {
 
 mkdir -p "$OUTPUT_DIR"
 
-CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
-[ -n "$CODEX_BIN" ] || fail_closed "cli_missing" "Codex CLI not found in PATH"
+WRAPPER_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+CODEX_BIN="$WRAPPER_DIR/codex"
+[ ! -L "$CODEX_BIN" ] || fail_closed "cli_missing" "Codex CLI path must not be a symlink"
 [ -x "$CODEX_BIN" ] || fail_closed "cli_missing" "Codex CLI is not executable"
 [ -n "${CODEX_HOME:-}" ] || fail_closed "authentication_failure" "Codex isolated authentication home is unavailable"
 [ -d "$WORKSPACE" ] || fail_closed "workspace_invalid" "workspace directory not found"
@@ -93,9 +94,9 @@ trap cleanup_invoke EXIT
 CLAIM_PROMPT="$INVOKE_TMP/claim-prompt.txt"
 cp -f -- "$PROMPT_ABS" "$CLAIM_PROMPT"
 
-# Construct the child environment from an explicit allowlist. CODEX_HOME and
-# CODEX_BIN are supplied by the parent as isolated paths; no host config or
-# credential-shaped variable is forwarded.
+# Construct the child environment from an explicit allowlist. CODEX_HOME is
+# supplied by the parent; the executable is the fixed read-only sibling above.
+# No host config or credential-shaped variable is forwarded.
 PATH="${PATH:-/usr/bin:/bin}"
 LANG="${LANG:-C}"
 LC_ALL="${LC_ALL:-C}"
@@ -115,7 +116,6 @@ SANITIZED_ENV=(
   "TEMP=$TEMP"
   "TERM=$TERM"
   "CODEX_HOME=$CODEX_HOME"
-  "CODEX_BIN=$CODEX_BIN"
   "AGENT_CODEX_MODEL_TIER=$MODEL_TIER"
 )
 for optional_name in USER LOGNAME SHELL HTTP_PROXY HTTPS_PROXY ALL_PROXY; do

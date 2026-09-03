@@ -105,13 +105,11 @@ records intent before a Ready, candidate-supersede, or merge-workflow mutation.
   evidence, attempts, and environment constraints. Its distinct read-only
   Codex reviewer is not merge-capable. The wrapper uses the account-selected
   Codex default model within the bounded T0-T2 policy; an explicit
-  `AGENT_CODEX_MODEL` override is optional and operator-controlled. It does not
-  persist or manufacture credentials. An interactive invocation receives only
-  the active account registry and selected runtime `auth.json`; the managed
-  service instead receives the single encrypted systemd credential
-  `codex-auth` and fixed service binary, never an operator HOME. A declared but
-  invalid service credential fails closed without interactive fallback. Marker
-  and PR4B adapters are test-only compatibility surfaces.
+  `AGENT_CODEX_MODEL` override is optional and operator-controlled. The full
+  managed executable, credential, filesystem, and fail-closed boundary is
+  canonical in
+  [`docs/ARCHITECTURE.md`](ARCHITECTURE.md#managed-codex-credential-boundary).
+  Marker and PR4B adapters are test-only compatibility surfaces.
 
 ## Review Convergence Protocol
 

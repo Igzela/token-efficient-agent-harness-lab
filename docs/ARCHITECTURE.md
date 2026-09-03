@@ -55,6 +55,13 @@ an operator HOME. The credential is never created, copied, journaled, logged,
 or granted by a Mission; provisioning or rotating it remains a separately
 authorized operator action.
 
+`ProtectSystem=strict` remains enabled. The managed service may write only its
+journal root, the exact checked-out repository (including Git metadata), and
+the repository-specific integration-worktree root; card worktrees remain in
+its private `/tmp`. The checked-in unit names those three exact write roots.
+This is repository-maintenance authority, not permission to write another
+repository, an operator home, or an arbitrary host path.
+
 ## Research Mainline: Finite Frozen Canonical Experiments
 
 Research evidence on the common RWE basis is obtained only through finite
@@ -114,6 +121,13 @@ Historical or manual `steward-orphan-dispatch-recovery:v1` markers on the canoni
 control Issue remain fully supported for backwards compatibility and out-of-band
 operator intervention, but are not required for routine orphan recovery under an
 approved Mission.
+
+Each newly persisted standing-recovery quarantine intent consumes one use of
+the Mission grant's canonical `max_uses` ceiling. Restart and read-only
+reconciliation of that same intent consume no additional use. If the ceiling
+is exhausted before a new intent, Steward records the deterministic exhaustion
+fact, performs no mutation, and pauses for a genuinely new owner ceiling; an
+elapsed timeout or missing workflow run never changes that accounting.
 
 Before executing autonomous quarantine, Steward re-reads the repository, exact PR/base/head,
 accepted main, PR state, and emergency-stop state immediately before the one

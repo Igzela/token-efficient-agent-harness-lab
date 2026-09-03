@@ -527,17 +527,11 @@ is set. The service re-reads that label before every production transition;
 while set, it records the halt and dispatches neither WorkCards nor Ready/merge
 mutations.
 
-Managed Codex execution also requires two separately provisioned, host-owned
-inputs: a verified regular executable at
-`/usr/local/libexec/agent-steward/codex`, mode `0755` or stricter and not
-group/world-writable, plus an encrypted systemd credential named `codex-auth`
-at `/etc/credstore.encrypted/agent-steward.codex-auth`. Provision or rotate the
-credential only under explicit credential authority; the Mission does not
-grant that action. `LoadCredentialEncrypted` materializes only a private
-runtime copy, and the adapter mounts only that copy as
-`CODEX_HOME/auth.json`. A missing, symlinked, malformed, or over-permissive
-runtime credential fails closed and never falls back to an interactive HOME.
-Do not copy an operator's complete `.codex` directory into the service.
+Before activating the managed service, satisfy and verify the canonical
+[managed Codex credential boundary](ARCHITECTURE.md#managed-codex-credential-boundary)
+and every exact path named by `steward.service`. Provisioning or rotating its
+credential remains a separately authorized operator action; this procedure
+does not create, copy, or rotate one.
 
 The normal repository path is the accepted-main route in `START_HERE.md`,
 followed by the exact-head review, canonical CI, and guarded merge rules in
@@ -555,10 +549,8 @@ isolated worktree and WorkCard contract; it cannot push, create PRs, or merge.
 Production tiers use the authenticated Codex CLI's account-selected default
 within the bounded T0-T2 policy; an explicit `AGENT_CODEX_MODEL` override is
 optional and operator-controlled. The reviewer is a distinct read-only
-invocation. Interactive runs receive only the active account registry and
-selected runtime authentication file; managed runs receive only the private
-systemd `codex-auth` copy and fixed service executable. The host's full Codex
-config is not exposed.
+invocation. Its complete managed-runtime security boundary is owned by
+`docs/ARCHITECTURE.md` rather than repeated here.
 Raw prompts, model outputs, transcripts, credentials, and private paths are
 not journal evidence.
 
