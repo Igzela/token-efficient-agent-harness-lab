@@ -912,27 +912,6 @@ class CodexWorkCardWorker:
             *(f"- {key}" for key in sorted(context.environment)),
             "Make the smallest complete change, run relevant focused tests, then stop.",
         ]
-        allowed = context.allowed_paths
-        if any(path == "scripts/agent-control" or path.startswith("scripts/agent-control/") for path in allowed):
-            rows.insert(
-                5,
-                "Production transport directive: use Codex only; remove legacy OpenCode production transport references while retaining historical test fixtures unless the WorkCard explicitly scopes them.",
-            )
-        if any(path == "engine/src/rwe" or path.startswith("engine/src/rwe/") for path in allowed):
-            rows.insert(
-                5,
-                "RWE directive: preserve the store-owned live gate and never call a provider in this WorkCard; add or harden the concrete missing-expiry/unknown-status live-gate regression invariant if it is not already covered, otherwise choose one equally concrete uncovered fail-closed invariant within this module.",
-            )
-        if any(path == "engine/src/harness_evolution.rs" for path in allowed):
-            rows.insert(
-                5,
-                "Harness Evolution directive: preserve frozen MX1 identities, evaluator, budget, authority, and adoption boundaries; add or harden one concrete invariant or regression test within this file.",
-            )
-        if any(path.startswith("docs/") for path in allowed):
-            rows.insert(
-                5,
-                "Canonical documentation directive: describe the authenticated Codex production route and preserve the existing authority, recovery, and evidence boundaries.",
-            )
         return "\n".join(rows) + "\n"
 
     def _invoke(
@@ -1035,7 +1014,6 @@ class CodexWorkCardWorker:
                     if codex_target.is_file() and not codex_target.is_symlink():
                         codex_destination = root / "codex"
                         readonly_paths.append((codex_target, codex_destination))
-                        child_environment["CODEX_BIN"] = str(codex_destination)
             sandboxed_command = _sandbox_command(
                 [
                     str(wrapper_copy),

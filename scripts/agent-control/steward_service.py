@@ -246,6 +246,8 @@ def _standing_recovery_journal_data(
     stage: mission_contract.Stage,
     cards: tuple[mission_contract.WorkCard, ...],
     dispatch_identity: Mapping[str, Any],
+    *,
+    consumed_uses: int,
 ) -> dict[str, Any]:
     """Validate and record the Mission's standing exact-PR recovery grant.
 
@@ -258,10 +260,13 @@ def _standing_recovery_journal_data(
         stage,
         cards,
         action="QUARANTINE_EXACT_PR",
+        consumed_uses=consumed_uses,
     )
     return {
         "mission_grant_id": grant.grant_id,
         "mission_grant_type": grant.grant_type,
+        "mission_grant_use": consumed_uses + 1,
+        "mission_grant_max_uses": grant.max_uses,
         "mission_proposal_sha256": mission.proposal_sha256,
         "mission_owner": mission.owner_approval.owner_identity,
         "mission_granted_at": mission.owner_approval.approved_at,
@@ -1945,6 +1950,42 @@ class StewardService:
                 ),
                 None,
             )
+            closed_orphan = self._latest_stage_event(
+                mission.mission_id,
+                stage.stage_id,
+                "STAGE_MERGE_DISPATCH_RECONCILED",
+            )
+            existing_replan = self._latest_stage_event(
+                mission.mission_id,
+                stage.stage_id,
+                "STAGE_REPLAN_REQUESTED",
+            )
+            if (
+                closed_orphan is not None
+                and closed_orphan.detail
+                in {
+                    "mission_orphan_quarantine_closed_unmerged_observed",
+                    "legacy_orphan_quarantine_closed_unmerged_observed",
+                }
+                and existing_replan is None
+            ):
+                if read_only_recovery:
+                    return {"status": "CLOSED_UNMERGED", "stage_id": stage.stage_id}
+                evidence_key = hashlib.sha256(
+                    f"{mission.mission_id}:{stage.stage_id}:{expected_head}".encode()
+                ).hexdigest()[:32]
+                self.journal.append(
+                    event="STAGE_REPLAN_REQUESTED",
+                    idempotency_key=f"stage-mission-orphan-replan:{evidence_key}",
+                    mission_id=mission.mission_id,
+                    stage_id=stage.stage_id,
+                    card_id="",
+                    state="RUNNING",
+                    detail="mission_orphan_closed_unmerged_replacement_planned",
+                    data=dict(closed_orphan.data),
+                    enforce_transition=False,
+                )
+                return {"status": "REPLAN_REQUIRED", "stage_id": stage.stage_id}
             reconciliation: Mapping[str, Any] | None = None
             if pending_mutation in {"MERGE", "QUARANTINE"} and facts.get("merged") is not True:
                 reconcile_dispatch = getattr(
@@ -2014,11 +2055,58 @@ class StewardService:
                         and merge_intent is not None
                         and workflow_run_id is None
                     ):
+                        quarantine_intent = self._latest_stage_event(
+                            mission.mission_id,
+                            stage.stage_id,
+                            "STAGE_ORPHAN_QUARANTINE_INTENT",
+                        )
+                        consumed_recovery_uses = sum(
+                            1
+                            for event in self.journal.replay()
+                            if event.mission_id == mission.mission_id
+                            and event.event == "STAGE_ORPHAN_QUARANTINE_INTENT"
+                        )
+                        if quarantine_intent is not None:
+                            # Reconciliation of an already-consumed intent is
+                            # read-only and cannot consume a second grant use.
+                            consumed_recovery_uses = max(
+                                0, consumed_recovery_uses - 1
+                            )
                         try:
                             standing_recovery = _standing_recovery_journal_data(
-                                mission, stage, cards, identity
+                                mission,
+                                stage,
+                                cards,
+                                identity,
+                                consumed_uses=consumed_recovery_uses,
                             )
-                        except mission_contract.MissionContractError:
+                        except mission_contract.MissionContractError as exc:
+                            if (
+                                exc.reason
+                                == "standing_recovery_use_ceiling_exhausted"
+                            ):
+                                evidence_key = hashlib.sha256(
+                                    f"{mission.mission_id}:{stage.stage_id}:{identity['dispatch_id']}".encode()
+                                ).hexdigest()[:32]
+                                self.journal.append(
+                                    event="STAGE_RECOVERY_CEILING_EXHAUSTED",
+                                    idempotency_key=f"stage-recovery-ceiling:{evidence_key}",
+                                    mission_id=mission.mission_id,
+                                    stage_id=stage.stage_id,
+                                    card_id="",
+                                    state="BLOCKED",
+                                    detail=exc.reason,
+                                    data={
+                                        "dispatch_id": identity["dispatch_id"],
+                                        "consumed_uses": consumed_recovery_uses,
+                                    },
+                                    enforce_transition=False,
+                                )
+                                return {
+                                    "status": "PAUSED_FOR_OWNER",
+                                    "stage_id": stage.stage_id,
+                                    "reason": exc.reason,
+                                }
                             standing_recovery = None
                         if standing_recovery is not None:
                             recovery_binding = {
@@ -2058,11 +2146,6 @@ class StewardService:
                                     )
                                 )
                             ):
-                                quarantine_intent = self._latest_stage_event(
-                                    mission.mission_id,
-                                    stage.stage_id,
-                                    "STAGE_ORPHAN_QUARANTINE_INTENT",
-                                )
                                 quarantine_result: Mapping[str, Any] | None = None
                                 if quarantine_intent is None:
                                     try:

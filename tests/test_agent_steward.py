@@ -7,6 +7,7 @@ from dataclasses import replace
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1265,18 +1266,50 @@ else:
             workers.CodexWorkCardWorker._validate_workcard_contract(context)
         self.assertEqual(str(raised.exception), "codex_focused_check_not_allowlisted")
 
+    def test_production_prompt_contains_only_the_workcard_contract(self):
+        context = workers.WorkerContext(
+            "mission-prompt",
+            "stage-prompt",
+            "card-prompt",
+            1,
+            "T1",
+            BASE,
+            self.root,
+            (
+                "scripts/agent-control/steward_service.py",
+                "engine/src/rwe/mod.rs",
+                "docs/AUTONOMY.md",
+            ),
+            ("Apply the exact requested change.",),
+            ("git diff --check",),
+            ("Do not widen scope.",),
+            ("Exact diff evidence.",),
+            workers.child_environment(),
+            objective="Bounded Mission objective.",
+        )
+        prompt = workers.CodexWorkCardWorker._prompt(context)
+        self.assertIn("Apply the exact requested change.", prompt)
+        self.assertNotIn("Production transport directive", prompt)
+        self.assertNotIn("RWE directive", prompt)
+        self.assertNotIn("Harness Evolution directive", prompt)
+        self.assertNotIn("Canonical documentation directive", prompt)
+
     def test_wrapper_retains_codex_last_message(self):
         root = self.root / "wrapper-last-message"
-        bin_dir = root / "bin"
         output_dir = root / "output"
         workspace = root / "workspace"
-        bin_dir.mkdir(parents=True)
+        root.mkdir(parents=True)
         output_dir.mkdir()
         workspace.mkdir()
         prompt = root / "prompt.txt"
         prompt.write_text("bounded review", encoding="utf-8")
         final = '{"verdict":"PASS","blockers":[],"summary":"bounded"}'
-        fake = bin_dir / "codex"
+        wrapper = root / "codex_wrapper.sh"
+        shutil.copyfile(
+            ROOT / "scripts" / "agent-control" / "codex_wrapper.sh", wrapper
+        )
+        wrapper.chmod(0o755)
+        fake = root / "codex"
         fake.write_text(
             """#!/usr/bin/env python3
 import json
@@ -1306,19 +1339,22 @@ else:
             encoding="utf-8",
         )
         fake.chmod(0o755)
+        malicious = root / "malicious-codex"
+        malicious.write_text("#!/usr/bin/env sh\nexit 42\n", encoding="utf-8")
+        malicious.chmod(0o755)
         environment = dict(os.environ)
         environment.update(
             HOME=str(root),
-            PATH=f"{bin_dir}:{environment.get('PATH', '/usr/bin:/bin')}",
+            PATH=f"{root}:{environment.get('PATH', '/usr/bin:/bin')}",
             AGENT_CODEX_TIMEOUT_SECONDS="30",
             AGENT_CODEX_MODEL_TIER="T2",
             AGENT_CODEX_MODEL="gpt-5.3-codex",
             CODEX_HOME=str(root / "isolated-codex-home"),
-            CODEX_BIN=str(fake),
+            CODEX_BIN=str(malicious),
         )
         result = subprocess.run(
             [
-                str(ROOT / "scripts" / "agent-control" / "codex_wrapper.sh"),
+                str(wrapper),
                 "review",
                 str(prompt),
                 str(output_dir),
@@ -1340,7 +1376,7 @@ else:
         default_output.mkdir()
         default_result = subprocess.run(
             [
-                str(ROOT / "scripts" / "agent-control" / "codex_wrapper.sh"),
+                str(wrapper),
                 "review",
                 str(prompt),
                 str(default_output),
@@ -1361,7 +1397,7 @@ else:
         implementation_output.mkdir()
         implementation_result = subprocess.run(
             [
-                str(ROOT / "scripts" / "agent-control" / "codex_wrapper.sh"),
+                str(wrapper),
                 "implement",
                 str(prompt),
                 str(implementation_output),

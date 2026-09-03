@@ -97,7 +97,10 @@ journal identity. The quarantine intent records repository, Mission proposal,
 Stage (the canonical scope for a journal-bound maintenance operation), PR,
 expected base, exact head, workflow/ref, and `dispatch_id` before any mutation.
 It grants no provider spend, arbitrary PR closure, merge replay, branch
-deletion, or external factual assertion.
+deletion, or external factual assertion. Each persisted quarantine intent
+consumes one of the repository-maintenance grant's finite `max_uses`; restart
+readback of that same intent consumes no additional use. Exhaustion performs
+no mutation and requires a genuinely new Mission authority ceiling.
 
 Steward re-reads the repository, exact PR/base/head, accepted main, PR state,
 and emergency-stop state immediately before the one close-only quarantine.

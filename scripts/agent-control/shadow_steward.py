@@ -1088,6 +1088,15 @@ def classify_stop(code: str) -> StopRecommendation:
     if not isinstance(code, str):
         code = "SAFETY_CONFLICT"
     normalized = code.strip().upper()
+    if normalized == "MERGE_TRANSPORT_ORPHAN":
+        return StopRecommendation(
+            SCHEMA_VERSION,
+            normalized,
+            "ROUTINE_RECOVERY",
+            False,
+            False,
+            "read_only_external_reconciliation_required",
+        )
     if normalized in ROUTINE_FAILURES:
         return StopRecommendation(
             SCHEMA_VERSION,
@@ -1112,7 +1121,6 @@ def classify_stop(code: str) -> StopRecommendation:
             "AUTHORITY_REQUIRED": "authority_or_external_effect_requested",
             "SCOPE_EXCEEDED": "requested_scope_is_not_bounded",
             "REQUIREMENT_CONFLICT": "requirements_cannot_be_reconciled",
-            "EXTERNAL_OUTCOME_UNKNOWN": "unknown_external_outcome_must_be_reconciled",
             "SAFETY_CONFLICT": "safety_or_input_uncertainty_requires_owner",
         }.get(known_code, "unrecognized_failure_requires_owner")
         return StopRecommendation(
@@ -1337,6 +1345,21 @@ def replan(
         raise ShadowStewardError("plan_projection_invalid") from exc
     stop = classify_stop(failure_code)
     max_retries = current.budget.max_retries
+    if not stop.pause_owner and not stop.retry_allowed:
+        cards = tuple(
+            replace(card, result_state="OUTCOME_UNKNOWN")
+            for card in plan.workcards
+        )
+        contract.validate_stage(plan.stage, current, cards)
+        return _seal_projection(
+            replace(
+                plan,
+                disposition="RECOVERY_RECOMMENDED",
+                workcards=cards,
+                stop=stop,
+                replan_count=plan.replan_count + 1,
+            )
+        )
     if stop.pause_owner or attempt_number > max_retries:
         if attempt_number > max_retries and not stop.pause_owner:
             stop = classify_stop("BUDGET_EXCEEDED")

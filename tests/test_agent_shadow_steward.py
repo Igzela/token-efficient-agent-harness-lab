@@ -320,7 +320,7 @@ class ShadowStewardTests(unittest.TestCase):
         with self.assertRaisesRegex(shadow.ShadowStewardError, "mission_registration_invalid"):
             shadow.plan_stage(self.proposal, stale)
 
-    def test_routine_replan_does_not_pause_but_unknown_outcome_does(self):
+    def test_routine_replan_and_merge_orphan_reconciliation_do_not_pause_owner(self):
         plan = self.approved_plan()
         recovered = shadow.replan(plan, "CI_FAILED")
         self.assertEqual(recovered.disposition, "RECOVERY_RECOMMENDED")
@@ -328,11 +328,18 @@ class ShadowStewardTests(unittest.TestCase):
         self.assertTrue(recovered.stop.retry_allowed)
         self.assertEqual(recovered.workcards[0].result_state, "REPLAN_REQUIRED")
 
-        unknown = shadow.replan(plan, "EXTERNAL_OUTCOME_UNKNOWN")
-        self.assertEqual(unknown.disposition, "PAUSED_FOR_OWNER")
-        self.assertTrue(unknown.stop.pause_owner)
+        unknown = shadow.replan(plan, "MERGE_TRANSPORT_ORPHAN")
+        self.assertEqual(unknown.disposition, "RECOVERY_RECOMMENDED")
+        self.assertFalse(unknown.stop.pause_owner)
         self.assertFalse(unknown.stop.retry_allowed)
-        self.assertEqual(unknown.workcards, ())
+        self.assertTrue(
+            all(card.result_state == "OUTCOME_UNKNOWN" for card in unknown.workcards)
+        )
+
+        unclassified_unknown = shadow.replan(plan, "EXTERNAL_OUTCOME_UNKNOWN")
+        self.assertEqual(unclassified_unknown.disposition, "PAUSED_FOR_OWNER")
+        self.assertTrue(unclassified_unknown.stop.pause_owner)
+        self.assertFalse(unclassified_unknown.stop.retry_allowed)
 
         budget = shadow.replan(
             plan,

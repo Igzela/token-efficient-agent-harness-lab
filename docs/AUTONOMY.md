@@ -164,7 +164,9 @@ plus accepted-main readback before advancing a Stage. Quarantine intent is
 persisted before its one exact close attempt; restart then permits only
 read-only remote reconciliation (plus bounded checkpoint materialization).
 Automatic replacement may begin only after GitHub's `CLOSED_UNMERGED` fact is
-journaled. Mission authority is never treated as that external fact.
+journaled. Each new quarantine intent consumes one finite standing-grant use;
+read-only restart reconciliation does not. Mission authority is never treated
+as that external fact.
 
 For a WorkCard interrupted after its implementation checkpoint, restart
 recovery selects only the current journal tail and one ordered attempt whose

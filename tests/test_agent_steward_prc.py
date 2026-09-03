@@ -826,12 +826,56 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         self.assertTrue(
             all(event.data["mission_grant_id"] == "repository-maintenance" for event in intents)
         )
+        self.assertEqual(
+            [event.data["mission_grant_use"] for event in intents], [1, 2, 3]
+        )
+        self.assertTrue(
+            all(event.data["mission_grant_max_uses"] == 32 for event in intents)
+        )
         self.assertTrue(
             all(
                 not any("owner_comment" in key or "owner_marker" in key for key in event.data)
                 for event in intents
             )
         )
+
+    def test_standing_recovery_ceiling_exhaustion_pauses_without_mutation(self):
+        """SIMULATED: a new recovery ceiling is an OWNER boundary, not an extra close."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-RECOVERY-CEILING", "recovery-ceiling"
+        )
+        grant = mission.standing_grants[0]
+        for used in range(grant.max_uses):
+            self.journal.append(
+                event="STAGE_ORPHAN_QUARANTINE_INTENT",
+                idempotency_key=f"prior-recovery-use:{used}",
+                mission_id=mission.mission_id,
+                stage_id=f"prior-stage-{used}",
+                card_id="",
+                state="RUNNING",
+                detail="mission_standing_exact_orphan_quarantine_intent",
+                data={"mission_grant_id": grant.grant_id, "mission_grant_use": used + 1},
+                enforce_transition=False,
+            )
+        pr_number = int(bound["pr_number"])
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        self._install_orphan_dispatch_intent(mission, stage, bound)
+
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            result = self.srv.step()
+
+        self.assertEqual(result["status"], "PAUSED_FOR_OWNER")
+        self.assertEqual(result["reason"], "standing_recovery_use_ceiling_exhausted")
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+        self.assertNotIn("quarantine", [name for name, _data in self.github_writer.actions])
 
     def test_mission_orphan_recovery_is_idempotent_after_restart(self):
         """SIMULATED restart: persisted quarantine intent cannot close twice."""
@@ -1311,6 +1355,10 @@ class TestAutonomousStewardPRC(unittest.TestCase):
                 mission.mission_id, stage.stage_id, "STAGE_REPLAN_REQUESTED"
             )
         )
+
+        self.srv.control_state = self._ControlOff()
+        self.assertEqual(self.srv.step()["status"], "REPLAN_REQUIRED")
+        self.assertEqual(self.srv.step()["status"], "STAGE_REPLANNED")
 
     def test_emergency_stop_does_not_retry_pre_dispatch_read_waiting(self):
         """SIMULATED: a stopped pre-dispatch read wait cannot reach merge."""

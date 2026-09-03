@@ -244,6 +244,9 @@ class MissionContractTests(unittest.TestCase):
             contract.stop_category("TEST_FAILED"), "ROUTINE_RECOVERY"
         )
         self.assertEqual(
+            contract.stop_category("MERGE_TRANSPORT_ORPHAN"), "ROUTINE_RECOVERY"
+        )
+        self.assertEqual(
             contract.stop_category("EXTERNAL_OUTCOME_UNKNOWN"), "PAUSED_FOR_OWNER"
         )
         with self.assertRaisesRegex(contract.MissionContractError, "stop_code_unknown"):
@@ -324,6 +327,7 @@ class MissionContractTests(unittest.TestCase):
             stage,
             (card,),
             action="QUARANTINE_EXACT_PR",
+            consumed_uses=0,
         )
         self.assertEqual(recovery_grant.grant_type, "repository_maintenance")
         with self.assertRaisesRegex(
@@ -334,6 +338,17 @@ class MissionContractTests(unittest.TestCase):
                 stage,
                 (card,),
                 action="CLOSE_ARBITRARY_PR",
+                consumed_uses=0,
+            )
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "standing_recovery_use_ceiling_exhausted"
+        ):
+            contract.validate_repository_recovery_scope(
+                self.mission,
+                stage,
+                (card,),
+                action="QUARANTINE_EXACT_PR",
+                consumed_uses=recovery_grant.max_uses,
             )
 
         with self.assertRaisesRegex(

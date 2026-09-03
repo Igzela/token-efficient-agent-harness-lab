@@ -108,6 +108,7 @@ STOP_CATEGORIES = {
     "SCOPE_EXCEEDED": "PAUSED_FOR_OWNER",
     "AUTHORITY_REQUIRED": "PAUSED_FOR_OWNER",
     "REQUIREMENT_CONFLICT": "PAUSED_FOR_OWNER",
+    "MERGE_TRANSPORT_ORPHAN": "ROUTINE_RECOVERY",
     "EXTERNAL_OUTCOME_UNKNOWN": "PAUSED_FOR_OWNER",
     "SAFETY_CONFLICT": "PAUSED_FOR_OWNER",
 }
@@ -1234,6 +1235,7 @@ def compile_proposal_mission(
             "CI_FAILED",
             "REVIEW_CHANGES_REQUESTED",
             "MAIN_DRIFT",
+            "MERGE_TRANSPORT_ORPHAN",
             "SCOPE_EXCEEDED",
             "AUTHORITY_REQUIRED",
             "REQUIREMENT_CONFLICT",
@@ -1285,6 +1287,17 @@ def compile_proposal_mission(
     return mission, proposal_sha256
 
 
+def _repository_maintenance_grant(model: MaintenanceMission) -> Grant:
+    grants = [
+        grant
+        for grant in model.standing_grants
+        if grant.grant_type == "repository_maintenance"
+    ]
+    if len(grants) != 1:
+        raise MissionContractError("repository_maintenance_grant_missing")
+    return grants[0]
+
+
 def validate_execution_scope(
     mission: MaintenanceMission,
     paths: tuple[str, ...] | list[str],
@@ -1295,14 +1308,7 @@ def validate_execution_scope(
     model = MaintenanceMission.from_wire(mission.to_wire())
     requested_paths = _paths(list(paths), "execution_paths")
     requested_operations = _strings(list(operations), "execution_operations")
-    grants = [
-        grant
-        for grant in model.standing_grants
-        if grant.grant_type == "repository_maintenance"
-    ]
-    if len(grants) != 1:
-        raise MissionContractError("repository_maintenance_grant_missing")
-    grant = grants[0]
+    grant = _repository_maintenance_grant(model)
     if any(operation not in grant.allowed_operations for operation in requested_operations):
         raise MissionContractError("execution_operation_outside_grant")
     if any(
@@ -1318,6 +1324,7 @@ def validate_repository_recovery_scope(
     cards: tuple[WorkCard, ...],
     *,
     action: str,
+    consumed_uses: int,
 ) -> Grant:
     """Require standing Mission authority for one exact lifecycle recovery.
 
@@ -1330,14 +1337,11 @@ def validate_repository_recovery_scope(
     validate_stage(stage, model, cards)
     if action not in STANDING_REPOSITORY_RECOVERY_ACTIONS:
         raise MissionContractError("repository_recovery_action_forbidden")
-    grants = tuple(
-        grant
-        for grant in model.standing_grants
-        if grant.grant_type == "repository_maintenance"
-    )
-    if len(grants) != 1:
-        raise MissionContractError("repository_maintenance_grant_missing")
-    grant = grants[0]
+    if type(consumed_uses) is not int or consumed_uses < 0:
+        raise MissionContractError("standing_recovery_use_count_invalid")
+    grant = _repository_maintenance_grant(model)
+    if consumed_uses >= grant.max_uses:
+        raise MissionContractError("standing_recovery_use_ceiling_exhausted")
     if any(
         not any(path_in_scope((scope,), path) for scope in grant.allowed_paths)
         for card in cards
@@ -1405,10 +1409,11 @@ def campaign_mission() -> MaintenanceMission:
             ("CI_FAILED", "Repair a failed canonical check while the exact head remains bound."),
             ("REVIEW_CHANGES_REQUESTED", "Apply bounded independent-review repairs before acceptance."),
             ("MAIN_DRIFT", "Reconcile accepted main drift before continuing the current work."),
+            ("MERGE_TRANSPORT_ORPHAN", "Reconcile and quarantine one exact Mission-bound merge transport orphan without replay."),
             ("SCOPE_EXCEEDED", "Pause for owner approval when requested work exceeds Mission scope."),
             ("AUTHORITY_REQUIRED", "Pause when a new authority, budget, or external target is required."),
             ("REQUIREMENT_CONFLICT", "Pause when acceptance criteria cannot resolve incompatible directions."),
-            ("EXTERNAL_OUTCOME_UNKNOWN", "Pause and reconcile any unknown external-operation result."),
+            ("EXTERNAL_OUTCOME_UNKNOWN", "Pause when an unclassified external outcome creates an unresolved safety conflict."),
             ("SAFETY_CONFLICT", "Pause when evidence or safety boundaries contradict one another."),
         )
     )
