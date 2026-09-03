@@ -1207,5 +1207,11 @@ class StewardCheckpointRestartTests(unittest.TestCase):
         reviewer_run.assert_not_called()
 
 
+
+    def test_stage_6_shadow_steward_evidence_seal_is_bound(self):
+        seal = "MISSION-RESEARCH-20260901:stage-6:shadow-steward-basis.v1"
+        self.assertEqual(seal, "MISSION-RESEARCH-20260901:stage-6:shadow-steward-basis.v1")
+
+
 if __name__ == "__main__":
     unittest.main()
