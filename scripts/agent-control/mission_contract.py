@@ -73,7 +73,16 @@ WORKCARD_RESULTS = frozenset(
 
 SAFE_GRANT_TYPES = frozenset({"read_only", "repository_maintenance"})
 SAFE_OPERATIONS = frozenset(
-    {"read", "write", "test", "branch", "draft_pr", "review", "ci_repair"}
+    {
+        "read",
+        "write",
+        "test",
+        "branch",
+        "draft_pr",
+        "review",
+        "ci_repair",
+        "quarantine_exact_owned_candidate",
+    }
 )
 SAFE_CHANGE_TYPES = frozenset(
     {"documentation", "source", "tests", "configuration", "workflow"}
@@ -1311,6 +1320,33 @@ def validate_execution_scope(
         raise MissionContractError("execution_path_outside_grant")
 
 
+def validate_standing_recovery_grant(
+    mission: MaintenanceMission,
+    *,
+    repository: str,
+) -> Grant:
+    """Validate that the active mission possesses standing repository-maintenance recovery authority."""
+
+    model = MaintenanceMission.from_wire(mission.to_wire())
+    if model.repository_identity.repository != repository:
+        raise MissionContractError("recovery_grant_repository_mismatch")
+    grants = [
+        grant
+        for grant in model.standing_grants
+        if grant.grant_type == "repository_maintenance"
+    ]
+    if not grants:
+        raise MissionContractError("repository_maintenance_grant_missing")
+    grant = grants[0]
+    if (
+        "quarantine_exact_owned_candidate" not in grant.allowed_operations
+        and "ci_repair" not in grant.allowed_operations
+        and "write" not in grant.allowed_operations
+    ):
+        raise MissionContractError("recovery_operation_outside_grant")
+    return grant
+
+
 def validate_registered_campaign() -> MaintenanceMission:
     """Validate the one statically registered campaign against trusted inputs."""
 
@@ -1592,4 +1628,5 @@ __all__ = [
     "validate_stage",
     "validate_workcard",
     "restore_durable_activation",
+    "validate_standing_recovery_grant",
 ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -1903,6 +1904,769 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         self.assertEqual(len(errors), 0, f"Concurrent journal errors: {errors}")
         events = self.journal.replay()
         self.assertGreaterEqual(len(events), 60)
+
+
+class TestAutonomousStewardOrphanRecovery22(TestAutonomousStewardPRC):
+    """Prove the 22 required autonomous orphan recovery scenarios under Mission authority."""
+
+    def test_case_1_normal_dispatch_returns_durable_workflow_run_id(self):
+        """Case 1: normal dispatch returns durable workflow_run_id."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T1", "t1")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        result = self.srv.step()
+        self.assertEqual(result["status"], "MERGE_READBACK")
+        dispatched = [
+            e for e in self.journal.replay()
+            if e.event == "STAGE_MERGE_DISPATCHED" and e.data.get("pr_number") == pr_number
+        ]
+        self.assertEqual(len(dispatched), 1)
+        self.assertIsInstance(dispatched[0].data.get("workflow_run_id"), int)
+        self.assertGreater(dispatched[0].data["workflow_run_id"], 0)
+
+    def test_case_2_dispatch_response_lost_no_run_id_triggers_autonomous_quarantine(self):
+        """Case 2: server accepts dispatch but client loses response (no run ID)."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T2", "t2")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            result = self.srv.step()
+            self.assertEqual(result["status"], "REPLAN_REQUIRED")
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "CLOSED")
+        reconciled = [
+            e for e in self.journal.replay()
+            if e.event == "STAGE_MERGE_DISPATCH_RECONCILED" and e.stage_id == stage.stage_id
+        ]
+        self.assertEqual(len(reconciled), 1)
+        self.assertEqual(reconciled[0].detail, "standing_recovery_quarantine_closed_unmerged_observed")
+        self.assertEqual(reconciled[0].data.get("recovery_source"), "MISSION_STANDING_RECOVERY")
+
+    def test_case_3_restart_with_known_run_id_reconciles_that_run(self):
+        """Case 3: restart with known run ID reconciles that exact run."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T3", "t3")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS", "merged": False})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head, "workflow_run_id": 5555},
+            enforce_transition=False,
+        )
+        def fake_reconcile(*args, **kwargs):
+            self.github_writer.prs[pr_number]["merged"] = True
+            return {"status": "SUCCEEDED", "workflow_run_id": 5555}
+
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            side_effect=fake_reconcile,
+        ) as mock_reconcile:
+            result = self.srv.step()
+            self.assertIn(result["status"], {"WAITING_READBACK", "MERGE_READBACK", "NEXT_STAGE"})
+        mock_reconcile.assert_called_once()
+        self.assertEqual(mock_reconcile.call_args.kwargs.get("workflow_run_id"), 5555)
+
+    def test_case_4_restart_with_dispatch_id_unavailable_run_identity(self):
+        """Case 4: restart with dispatch_id but unavailable run identity."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T4", "t4")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        identity = steward_github.merge_dispatch_identity(
+            mission.repository_identity.repository, pr_number, self.base_sha, expected_head, intent_key=intent_key
+        )
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head, "dispatch_id": identity["dispatch_id"]},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            restarted = service.StewardService(
+                mission_id=mission.mission_id,
+                journal=self.journal,
+                github=self.github_writer,
+                github_writer=self.github_writer,
+                repo_path=self.repo_dir,
+                control_state=self._ControlOff(),
+            )
+            result = restarted.step()
+            self.assertEqual(result["status"], "REPLAN_REQUIRED")
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "CLOSED")
+
+    def test_case_5_exact_autonomous_quarantine_without_owner_comment(self):
+        """Case 5: exact autonomous quarantine without new OWNER comment."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T5", "t5")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        self.assertEqual(len(self.github_writer.merge_dispatch_resolutions), 0)
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            res = self.srv.step()
+            self.assertEqual(res["status"], "REPLAN_REQUIRED")
+        intent_events = [e for e in self.journal.replay() if e.event == "STAGE_ORPHAN_QUARANTINE_INTENT"]
+        self.assertEqual(len(intent_events), 1)
+        self.assertEqual(intent_events[0].data.get("recovery_source"), "MISSION_STANDING_RECOVERY")
+        self.assertEqual(intent_events[0].data.get("grant_kind"), "MISSION_STANDING_RECOVERY")
+
+    def test_case_6_orphan_closed_unmerged_creates_automatic_fresh_candidate(self):
+        """Case 6: orphan PR -> CLOSED_UNMERGED -> automatic fresh candidate."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T6", "t6")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            self.assertEqual(self.srv.step()["status"], "REPLAN_REQUIRED")
+            replan_res = self.srv.step()
+            self.assertEqual(replan_res["status"], "STAGE_REPLANNED")
+        records = self.srv._stage_records(mission.mission_id)
+        self.assertGreater(len(records), 1)
+        new_stage, _cards, meta = records[-1]
+        self.assertEqual(meta["retry"], 2)
+        superseded = [e for e in self.journal.replay() if e.event == "STAGE_SUPERSEDED"]
+        self.assertEqual(len(superseded), 1)
+        self.assertTrue(superseded[0].data["remote_branch_retained"])
+
+    def test_case_7_old_dispatch_wins_race_merged_no_replacement(self):
+        """Case 7: old dispatch wins race -> MERGED -> no replacement."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T7", "t7")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        self.github_writer.quarantine_race_merge = True
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            res = self.srv.step()
+            self.assertIn(res["status"], {"WAITING_READBACK", "MERGE_READBACK", "NEXT_STAGE"})
+        reconciled = [e for e in self.journal.replay() if e.event == "STAGE_MERGE_DISPATCH_RECONCILED"]
+        self.assertEqual(len(reconciled), 1)
+        self.assertEqual(reconciled[0].detail, "standing_recovery_orphan_merge_observed_from_github")
+        replans = [e for e in self.journal.replay() if e.event == "STAGE_REPLAN_REQUESTED"]
+        self.assertEqual(len(replans), 0)
+
+    def test_case_8_delayed_old_workflow_after_quarantine_cannot_merge(self):
+        """Case 8: delayed old workflow after quarantine cannot merge."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T8", "t8")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number]["state"] = "CLOSED"
+        with self.assertRaises(steward_github.GitHubMutationError) as cm:
+            self.github_writer.guarded_merge(
+                mission.repository_identity.repository,
+                pr_number,
+                expected_head,
+                expected_base_sha=self.base_sha,
+                intent_key="intent-delayed-8",
+            )
+        self.assertIn("merge_pr_not_open", str(cm.exception))
+
+    def test_case_9_github_read_unavailable_remains_outcome_unknown(self):
+        """Case 9: GitHub read unavailable -> remains OUTCOME_UNKNOWN."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T9", "t9")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            with patch.object(
+                self.github_writer,
+                "fetch_stage_pr",
+                side_effect=steward_github.GitHubReadError("github_unreachable"),
+            ):
+                res = self.srv.step()
+                self.assertEqual(res["status"], "WAITING_GITHUB_READBACK")
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
+    def test_case_10_mutation_response_lost_and_restart(self):
+        """Case 10: mutation response lost and restart."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T10", "t10")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        identity = steward_github.merge_dispatch_identity(
+            mission.repository_identity.repository, pr_number, self.base_sha, expected_head, intent_key=intent_key
+        )
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        quarantine_key = hashlib.sha256(
+            f"{mission.mission_id}:{stage.stage_id}:{identity['dispatch_id']}:{mission.owner_approval.approval_id}".encode()
+        ).hexdigest()[:32]
+        self.journal.append(
+            event="STAGE_ORPHAN_QUARANTINE_INTENT",
+            idempotency_key=f"stage-orphan-quarantine-intent:{quarantine_key}",
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="standing_recovery_exact_orphan_quarantine_intent",
+            data={
+                "recovery_source": "MISSION_STANDING_RECOVERY",
+                "dispatch_identity": identity,
+            },
+            enforce_transition=False,
+        )
+        self.github_writer.prs[pr_number]["state"] = "CLOSED"
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            restarted = service.StewardService(
+                mission_id=mission.mission_id,
+                journal=self.journal,
+                github=self.github_writer,
+                github_writer=self.github_writer,
+                repo_path=self.repo_dir,
+                control_state=self._ControlOff(),
+            )
+            res = restarted.step()
+            self.assertEqual(res["status"], "REPLAN_REQUIRED")
+        quarantine_actions = [a for a in self.github_writer.actions if a[0] == "quarantine"]
+        self.assertEqual(len(quarantine_actions), 0)
+
+    def test_case_11_repeated_reconciliation_is_idempotent(self):
+        """Case 11: repeated reconciliation is idempotent."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T11", "t11")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            self.assertEqual(self.srv.step()["status"], "REPLAN_REQUIRED")
+            self.assertEqual(self.srv.step()["status"], "STAGE_REPLANNED")
+        events_count = len(self.journal.replay())
+        status = self.srv.status()
+        self.assertEqual(status["mission_id"], mission.mission_id)
+        self.assertEqual(len(self.journal.replay()), events_count)
+
+    def test_case_12_mismatched_mission_fails_closed(self):
+        """Case 12: mismatched Mission fails closed."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T12", "t12")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "repository": "other-org/other-repo", "run_ids": []},
+        ):
+            res = self.srv.step()
+            self.assertEqual(res["status"], "OUTCOME_UNKNOWN")
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
+    def test_case_13_mismatched_stage_fails_closed(self):
+        """Case 13: mismatched Stage fails closed."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T13", "t13")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head, "stage_id": "mismatched-stage-999"},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            res = self.srv.step()
+            self.assertEqual(res["status"], "OUTCOME_UNKNOWN")
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
+    def test_case_14_mismatched_pr_number_fails_closed(self):
+        """Case 14: mismatched PR number fails closed."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T14", "t14")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number + 999, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            res = self.srv.step()
+            self.assertEqual(res["status"], "OUTCOME_UNKNOWN")
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
+    def test_case_15_mismatched_base_fails_closed(self):
+        """Case 15: mismatched base fails closed."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T15", "t15")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        self.github_writer.prs[pr_number]["base_sha"] = "0" * 40
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            res = self.srv.step()
+            self.assertEqual(res["status"], "OUTCOME_UNKNOWN")
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
+    def test_case_16_mismatched_head_fails_closed(self):
+        """Case 16: mismatched head fails closed."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T16", "t16")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        self.github_writer.prs[pr_number]["head_sha"] = "1" * 40
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            res = self.srv.step()
+            self.assertEqual(res["status"], "OUTCOME_UNKNOWN")
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
+    def test_case_17_mismatched_dispatch_id_fails_closed(self):
+        """Case 17: mismatched dispatch_id fails closed."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T17", "t17")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head, "dispatch_id": "9" * 64},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            with self.assertRaises(service.StewardServiceError):
+                self.srv.step()
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
+    def test_case_18_unrelated_manual_pr_cannot_be_quarantined(self):
+        """Case 18: unrelated/manual PR can never be quarantined."""
+        self.github_writer.prs[888] = {
+            "repository": "Igzela/token-efficient-agent-harness-lab",
+            "pr_number": 888,
+            "base_sha": self.base_sha,
+            "head_sha": "a" * 40,
+            "state": "OPEN",
+            "merged": False,
+        }
+        with self.assertRaises(steward_github.GitHubFactsError):
+            self.github_writer.quarantine_stage_pr(
+                "Igzela/token-efficient-agent-harness-lab",
+                888,
+                expected_base_sha="b" * 40,
+                expected_head_sha="c" * 40,
+            )
+        self.assertEqual(self.github_writer.prs[888]["state"], "OPEN")
+
+    def test_case_19_pr_from_another_mission_cannot_be_quarantined(self):
+        """Case 19: PR from another Mission can never be quarantined."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T19", "t19")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head, "mission_id": "MISSION-OTHER"},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            res = self.srv.step()
+            self.assertEqual(res["status"], "OUTCOME_UNKNOWN")
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+
+    def test_case_20_genuine_emergency_stop_blocks_quarantine_mutation(self):
+        """Case 20: genuine emergency-stop blocks mutation."""
+        mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T20", "t20")
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
+        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        self.srv.control_state = self._ControlOn()
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            res = self.srv.step()
+            self.assertEqual(res["status"], "EMERGENCY_STOP")
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+        intents = [e for e in self.journal.replay() if e.event == "STAGE_ORPHAN_QUARANTINE_INTENT"]
+        self.assertEqual(len(intents), 0)
+
+    def test_case_21_repeated_orphan_dispatches_consecutive_prs_recover_autonomously(self):
+        """Case 21: repeated orphan dispatches on consecutive Steward PRs recover without OWNER comment."""
+        self.srv.control_state = self._ControlOff()
+        mission, digest = self.srv.propose(
+            "Update README.md with consecutive orphan recovery evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-T21",
+        )
+        self._approve(mission, digest, "t21")
+        with (
+            patch("steward.Steward", self._SimulatedStageExecutor),
+            patch("steward_service.production_reviewer", return_value=FakeTestReviewer(status="PASS")),
+        ):
+            self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+            draft1 = self.srv.step()
+            pr1 = draft1["pr_number"]
+            self.assertEqual(self.srv.step()["status"], "STAGE_PR_READY")
+            self.github_writer.prs[pr1]["ci_state"] = "PASS"
+            self.github_writer.prs[pr1]["review_state"] = "PASS"
+            with patch.object(
+                self.github_writer,
+                "reconcile_merge_dispatch",
+                create=True,
+                return_value={"status": "NOT_PROVEN", "run_ids": []},
+            ):
+                with patch.object(
+                    self.github_writer,
+                    "guarded_merge",
+                    return_value={"merged": False, "dispatch_id": "d1" * 32, "workflow_run_id": None},
+                ):
+                    disp1 = self.srv.step()
+                    self.assertEqual(disp1["status"], "MERGE_READBACK")
+                    res1 = self.srv.step()
+                    self.assertEqual(res1["status"], "REPLAN_REQUIRED")
+            self.assertEqual(self.github_writer.prs[pr1]["state"], "CLOSED")
+            self.assertEqual(self.srv.step()["status"], "STAGE_REPLANNED")
+            draft2 = self.srv.step()
+            pr2 = draft2["pr_number"]
+            self.assertNotEqual(pr1, pr2)
+            self.assertEqual(self.srv.step()["status"], "STAGE_PR_READY")
+            self.github_writer.prs[pr2]["ci_state"] = "PASS"
+            self.github_writer.prs[pr2]["review_state"] = "PASS"
+            with patch.object(
+                self.github_writer,
+                "reconcile_merge_dispatch",
+                create=True,
+                return_value={"status": "NOT_PROVEN", "run_ids": []},
+            ):
+                with patch.object(
+                    self.github_writer,
+                    "guarded_merge",
+                    return_value={"merged": False, "dispatch_id": "d2" * 32, "workflow_run_id": None},
+                ):
+                    disp2 = self.srv.step()
+                    self.assertEqual(disp2["status"], "MERGE_READBACK")
+                    res2 = self.srv.step()
+                    self.assertEqual(res2["status"], "REPLAN_REQUIRED")
+            self.assertEqual(self.github_writer.prs[pr2]["state"], "CLOSED")
+            self.assertEqual(self.srv.step()["status"], "STAGE_REPLANNED")
+            draft3 = self.srv.step()
+            pr3 = draft3["pr_number"]
+            self.assertNotIn(pr3, {pr1, pr2})
+            self.assertEqual(self.srv.step()["status"], "STAGE_PR_READY")
+            self.github_writer.prs[pr3]["ci_state"] = "PASS"
+            self.github_writer.prs[pr3]["review_state"] = "PASS"
+            self.assertEqual(self.srv.step()["status"], "MERGE_READBACK")
+            self.assertEqual(self.github_writer.prs[pr3]["merged"], True)
+
+    def test_case_22_full_mission_lifecycle_continues_after_repeated_orphan_recoveries(self):
+        """Case 22: full Mission lifecycle continues after repeated orphan failures."""
+        self.srv.control_state = self._ControlOff()
+        mission, digest = self.srv.propose(
+            "Update README.md, docs/ARCHITECTURE.md, and docs/RUNBOOK.md with recovery evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-T22",
+        )
+        self._approve(mission, digest, "t22")
+        with (
+            patch("steward.Steward", self._SimulatedStageExecutor),
+            patch("steward_service.production_reviewer", return_value=FakeTestReviewer(status="PASS")),
+        ):
+            # Stage 1
+            self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+            s1_d1 = self.srv.step()
+            s1_pr1 = s1_d1["pr_number"]
+            self.assertEqual(self.srv.step()["status"], "STAGE_PR_READY")
+            self.github_writer.prs[s1_pr1]["ci_state"] = "PASS"
+            self.github_writer.prs[s1_pr1]["review_state"] = "PASS"
+            with patch.object(
+                self.github_writer,
+                "reconcile_merge_dispatch",
+                create=True,
+                return_value={"status": "NOT_PROVEN", "run_ids": []},
+            ):
+                with patch.object(
+                    self.github_writer,
+                    "guarded_merge",
+                    return_value={"merged": False, "dispatch_id": "s1_d" * 16, "workflow_run_id": None},
+                ):
+                    disp1 = self.srv.step()
+                    self.assertEqual(disp1["status"], "MERGE_READBACK")
+                    res1 = self.srv.step()
+                    self.assertEqual(res1["status"], "REPLAN_REQUIRED")
+            self.assertEqual(self.github_writer.prs[s1_pr1]["state"], "CLOSED")
+            self.assertEqual(self.srv.step()["status"], "STAGE_REPLANNED")
+            s1_d2 = self.srv.step()
+            s1_pr2 = s1_d2["pr_number"]
+            self.assertEqual(self.srv.step()["status"], "STAGE_PR_READY")
+            self.github_writer.prs[s1_pr2]["ci_state"] = "PASS"
+            self.github_writer.prs[s1_pr2]["review_state"] = "PASS"
+            self.assertEqual(self.srv.step()["status"], "MERGE_READBACK")
+            with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=self.github_writer.remote_main_sha + "\n", stderr="")):
+                self.assertEqual(self.srv.step()["status"], "NEXT_STAGE")
+
+            # Stage 2
+            self.assertEqual(self.srv.step()["status"], "STAGE_PLANNED")
+            s2_d1 = self.srv.step()
+            s2_pr1 = s2_d1["pr_number"]
+            self.assertEqual(self.srv.step()["status"], "STAGE_PR_READY")
+            self.github_writer.prs[s2_pr1]["ci_state"] = "PASS"
+            self.github_writer.prs[s2_pr1]["review_state"] = "PASS"
+            with patch.object(
+                self.github_writer,
+                "reconcile_merge_dispatch",
+                create=True,
+                return_value={"status": "NOT_PROVEN", "run_ids": []},
+            ):
+                with patch.object(
+                    self.github_writer,
+                    "guarded_merge",
+                    return_value={"merged": False, "dispatch_id": "s2_d" * 16, "workflow_run_id": None},
+                ):
+                    disp2 = self.srv.step()
+                    self.assertEqual(disp2["status"], "MERGE_READBACK")
+                    res2 = self.srv.step()
+                    self.assertEqual(res2["status"], "REPLAN_REQUIRED")
+            self.assertEqual(self.github_writer.prs[s2_pr1]["state"], "CLOSED")
+            self.assertEqual(self.srv.step()["status"], "STAGE_REPLANNED")
+            s2_d2 = self.srv.step()
+            s2_pr2 = s2_d2["pr_number"]
+            self.assertEqual(self.srv.step()["status"], "STAGE_PR_READY")
+            self.github_writer.prs[s2_pr2]["ci_state"] = "PASS"
+            self.github_writer.prs[s2_pr2]["review_state"] = "PASS"
+            self.assertEqual(self.srv.step()["status"], "MERGE_READBACK")
+            with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=self.github_writer.remote_main_sha + "\n", stderr="")):
+                self.assertEqual(self.srv.step()["status"], "COMPLETE")
+        self.assertEqual(self.srv.status()["mission_state"], "COMPLETE")
 
 
 if __name__ == "__main__":

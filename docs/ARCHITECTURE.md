@@ -89,35 +89,44 @@ success.
 
 If no durable run identity exists, the old dispatch is not converted into a
 no-effect fact by elapsed time, an empty run scan, owner assertion, or a
-missing log. The only permitted legacy recovery is a new owner-authenticated
-`steward-orphan-dispatch-recovery:v1` marker on the canonical control Issue.
-The marker is authority only: it binds the complete Mission/Stage/PR/base/head/
-workflow/ref/`dispatch_id` identity and authorizes exactly
-`ORPHAN_DISPATCH_RECOVERY` / `QUARANTINE_EXACT_PR`. It must contain no
-resolution, `NO_EFFECT_CONFIRMED`, accepted-main assertion, or caller-supplied
-`approved_at`; GitHub comment `created_at`, comment ID, and OWNER identity are
-the only marker metadata consumed.
+missing log. The approved Mission itself provides the standing, bounded authority
+for routine repository-maintenance recovery (`repository_maintenance` grant with
+`quarantine_exact_owned_candidate`). Within that standing Mission authority, Steward
+autonomously executes `QUARANTINE_EXACT_PR` on the exact bound candidate when all
+binding invariants match, without requiring a new per-orphan GitHub OWNER comment.
+Historical or manual `steward-orphan-dispatch-recovery:v1` markers on the canonical
+control Issue remain fully supported for backwards compatibility and out-of-band
+operator intervention, but are not required for routine orphan recovery under an
+approved Mission.
 
-For a legacy orphan, Steward re-reads the repository, exact PR/base/head,
+Before executing autonomous quarantine, Steward re-reads the repository, exact PR/base/head,
 accepted main, PR state, and emergency-stop state immediately before the one
 authorized quarantine mutation. The accepted-main read is recorded even when
 it has advanced beyond the orphan's expected base because the recovery action
 is an exact close-only quarantine, not a merge or a rebind. The branch and
-evidence are retained. After
-the mutation, authoritative GitHub readback decides the fact: `MERGED` wins
-and requires merged-PR plus accepted-main readback with no replacement;
-`CLOSED_UNMERGED` permits a fresh candidate only after that fact is recorded;
-anything ambiguous or unavailable remains `OUTCOME_UNKNOWN`. A persisted
-quarantine intent fences repeats across restart, and no unverified old
-candidate and fresh candidate may be merge-eligible concurrently.
+evidence are retained.
 
-Emergency stop remains a hard guard. The service re-reads it immediately
-before quarantine and never clears it itself. If the label is active, the owner
-must make a separately authenticated, exact control transition removing that
-label solely to permit this quarantine; the transition must be read back as
-absent before the mutation. A failed or ambiguous transition leaves recovery
-`OUTCOME_UNKNOWN`, and the service performs no bypass, replay, direct merge, or
-branch deletion.
+Exact-candidate quarantine is the fail-closed race-safe mechanism:
+`.github/workflows/agent-merge.yml` enforces an open-PR preflight check
+(`merge_pr_not_open`), ensuring a delayed old workflow cannot merge a PR that has
+been closed by quarantine. After the quarantine mutation, authoritative GitHub
+readback decides the external outcome:
+- `MERGED`: the old workflow won the race and merged before quarantine. The merge is
+  accepted, requiring merged-PR plus accepted-main readback with no replacement candidate;
+- `CLOSED_UNMERGED`: quarantine succeeded in closing the PR before merge. A fresh
+  replacement candidate is authorized and replanned under the existing Mission approval;
+- Anything ambiguous or unavailable remains `OUTCOME_UNKNOWN` / read-only waiting.
+
+A persisted quarantine intent fences repeats across restarts, ensuring idempotent
+readback without duplicate close mutations, and no unverified old candidate and fresh
+candidate may be merge-eligible concurrently.
+
+Emergency stop remains a hard guard. The service re-reads `agent-emergency-stop`
+immediately before quarantine intent logging and before the quarantine mutation,
+and never clears it itself. If emergency stop is active, quarantine mutation is
+inhibited and execution halts in `EMERGENCY_STOP` while preserving permitted
+read-only reconciliation. Routine orphan recovery does not trigger emergency stop;
+only genuine emergency stop transitions halt recovery.
 
 ## Three-Tier Operational Model
 

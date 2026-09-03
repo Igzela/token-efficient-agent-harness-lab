@@ -555,5 +555,49 @@ class LegacyCompatibilityTests(unittest.TestCase):
             contract.validate_legacy_compatibility(packet, capsule)
 
 
+class StandingRecoveryGrantTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.mission = contract.campaign_mission()
+        self.repo = self.mission.repository_identity.repository
+
+    def _mission_with_grants(self, grants):
+        wire = self.mission.to_wire()
+        wire["standing_grants"] = [g.to_wire() for g in grants]
+        prop = self.mission.proposal_wire()
+        prop["standing_grants"] = wire["standing_grants"]
+        digest = contract.json_sha256(prop)
+        wire["proposal_sha256"] = digest
+        wire["owner_approval"]["proposal_sha256"] = digest
+        return contract.MaintenanceMission.from_wire(wire)
+
+    def test_valid_standing_recovery_grant_success(self):
+        grant = contract.validate_standing_recovery_grant(self.mission, repository=self.repo)
+        self.assertEqual(grant.grant_type, "repository_maintenance")
+        self.assertIn("quarantine_exact_owned_candidate", grant.allowed_operations)
+
+    def test_recovery_grant_repository_mismatch(self):
+        with self.assertRaisesRegex(contract.MissionContractError, "recovery_grant_repository_mismatch"):
+            contract.validate_standing_recovery_grant(self.mission, repository="other-org/other-repo")
+
+    def test_repository_maintenance_grant_missing(self):
+        g = contract.Grant("read-1", "read_only", ("scripts/agent-control/",), ("read",), 10)
+        m = self._mission_with_grants([g])
+        with self.assertRaisesRegex(contract.MissionContractError, "repository_maintenance_grant_missing"):
+            contract.validate_standing_recovery_grant(m, repository=self.repo)
+
+    def test_recovery_operation_outside_grant(self):
+        g = contract.Grant("maint-1", "repository_maintenance", ("scripts/agent-control/",), ("read",), 10)
+        m = self._mission_with_grants([g])
+        with self.assertRaisesRegex(contract.MissionContractError, "recovery_operation_outside_grant"):
+            contract.validate_standing_recovery_grant(m, repository=self.repo)
+
+    def test_alternative_allowed_operations_accepted(self):
+        for op in ("ci_repair", "write"):
+            g = contract.Grant("maint-1", "repository_maintenance", ("scripts/agent-control/",), (op,), 10)
+            m = self._mission_with_grants([g])
+            grant = contract.validate_standing_recovery_grant(m, repository=self.repo)
+            self.assertEqual(grant.grant_type, "repository_maintenance")
+
+
 if __name__ == "__main__":
     unittest.main()

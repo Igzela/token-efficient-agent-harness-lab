@@ -68,9 +68,9 @@ records intent before a Ready, candidate-supersede, or merge-workflow mutation.
 
 | Category | Trigger | Disposition |
 |---|---|---|
-| **Routine Recovery** | Worker failure, timeout, formatting error, test failure, CI check failure, review requested changes, git main drift, empty diff | Handled automatically by Steward (retry, split card, repair round, rebase) without interrupting user |
-| **Owner Pause (`PAUSED_FOR_OWNER`)** | Material mission goal/completion/forbidden-change change, authority/budget/time/effect expansion, unapproved destructive or hard-to-rollback effect, unresolvable safety conflict | Execution halts; reports reason and awaits explicit owner decision |
-| **External uncertainty** | Lost/timeout mutation result or unavailable PR/main authority | `OUTCOME_UNKNOWN` / recovery-required; only read-only reconciliation is permitted and a possibly issued mutation is never repeated |
+| **Routine Recovery** | Worker failure, timeout, formatting error, test failure, CI check failure, review requested changes, git main drift, empty diff, missing workflow run ID, orphan merge dispatch | Handled automatically by Steward (retry, split card, repair round, rebase, exact-candidate quarantine, replacement replan) under standing Mission approval without interrupting user |
+| **Owner Pause (`PAUSED_FOR_OWNER`)** | Material mission goal/completion/forbidden-change change, authority/budget/time/effect expansion, unapproved destructive or hard-to-rollback effect, unresolvable safety conflict, genuine emergency stop | Execution halts; reports reason and awaits explicit owner decision |
+| **External uncertainty** | Lost/timeout mutation result or unavailable PR/main authority without standing recovery authority | `OUTCOME_UNKNOWN` / recovery-required; only read-only reconciliation is permitted and a possibly issued mutation is never repeated |
 
 ## Three-Tier Contract Hierarchy
 
