@@ -1353,3 +1353,20 @@ impl<'b, 'a, 'c> RweTx<'b, 'a, 'c> {
         self.tx.append_audit(actor, action, resource, details)
     }
 }
+
+/// Canonical evidence freeze and validation receipt for MISSION-RESEARCH-20260901 (Stage 4).
+pub const RESEARCH_MAINLINE_STAGE_4_STORE_SEAL: &str =
+    "MISSION-RESEARCH-20260901:stage-4:local-product-store-basis.v1";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stage_4_store_seal_is_bound() {
+        assert_eq!(
+            RESEARCH_MAINLINE_STAGE_4_STORE_SEAL,
+            "MISSION-RESEARCH-20260901:stage-4:local-product-store-basis.v1",
+        );
+    }
+}
