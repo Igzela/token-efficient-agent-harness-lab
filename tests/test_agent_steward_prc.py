@@ -572,6 +572,55 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         })
         return identity["dispatch_id"]
 
+    def _install_simulated_orphan_intent(
+        self,
+        mission: contract.MaintenanceMission,
+        stage: contract.Stage,
+        bound: dict[str, object],
+        *,
+        intent_key: str | None = None,
+        data_override: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        pr_number = int(bound["pr_number"])
+        expected_head = str(bound["head_sha"])
+        if intent_key is None:
+            intent_key = (
+                f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:"
+                f"{pr_number}:{expected_head}"
+            )
+        identity = steward_github.merge_dispatch_identity(
+            mission.repository_identity.repository,
+            pr_number,
+            self.base_sha,
+            expected_head,
+            intent_key=intent_key,
+        )
+        data: dict[str, Any] = {
+            "repository": mission.repository_identity.repository,
+            "mission_id": mission.mission_id,
+            "stage_id": stage.stage_id,
+            "pr_number": pr_number,
+            "head_sha": expected_head,
+            "base_sha": self.base_sha,
+            "workflow": "agent-merge.yml",
+            "ref": "main",
+            "dispatch_id": identity["dispatch_id"],
+        }
+        if data_override is not None:
+            data.update(data_override)
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data=data,
+            enforce_transition=False,
+        )
+        return intent_key, identity
+
     def test_simulated_merge_intent_and_bound_drift_stays_read_only(self):
         """SIMULATED: merge intent blocks drift rebind and candidate supersede."""
 
@@ -846,7 +895,17 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             card_id="",
             state="RUNNING",
             detail="canonical_merge_workflow_dispatch_intent",
-            data={"pr_number": pr_number, "head_sha": expected_head},
+            data={
+                "repository": mission.repository_identity.repository,
+                "mission_id": mission.mission_id,
+                "stage_id": stage.stage_id,
+                "pr_number": pr_number,
+                "head_sha": expected_head,
+                "base_sha": self.base_sha,
+                "workflow": "agent-merge.yml",
+                "ref": "main",
+                "dispatch_id": identity["dispatch_id"],
+            },
             enforce_transition=False,
         )
         self.github_writer.merge_dispatch_resolutions.append({
@@ -1931,18 +1990,7 @@ class TestAutonomousStewardOrphanRecovery22(TestAutonomousStewardPRC):
         pr_number = bound["pr_number"]
         expected_head = bound["head_sha"]
         self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
-        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
-        self.journal.append(
-            event="STAGE_MERGE_DISPATCH_INTENT",
-            idempotency_key=intent_key,
-            mission_id=mission.mission_id,
-            stage_id=stage.stage_id,
-            card_id="",
-            state="RUNNING",
-            detail="canonical_merge_workflow_dispatch_intent",
-            data={"pr_number": pr_number, "head_sha": expected_head},
-            enforce_transition=False,
-        )
+        self._install_simulated_orphan_intent(mission, stage, bound)
         with patch.object(
             self.github_writer,
             "reconcile_merge_dispatch",
@@ -1999,21 +2047,7 @@ class TestAutonomousStewardOrphanRecovery22(TestAutonomousStewardPRC):
         pr_number = bound["pr_number"]
         expected_head = bound["head_sha"]
         self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
-        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
-        identity = steward_github.merge_dispatch_identity(
-            mission.repository_identity.repository, pr_number, self.base_sha, expected_head, intent_key=intent_key
-        )
-        self.journal.append(
-            event="STAGE_MERGE_DISPATCH_INTENT",
-            idempotency_key=intent_key,
-            mission_id=mission.mission_id,
-            stage_id=stage.stage_id,
-            card_id="",
-            state="RUNNING",
-            detail="canonical_merge_workflow_dispatch_intent",
-            data={"pr_number": pr_number, "head_sha": expected_head, "dispatch_id": identity["dispatch_id"]},
-            enforce_transition=False,
-        )
+        intent_key, identity = self._install_simulated_orphan_intent(mission, stage, bound)
         with patch.object(
             self.github_writer,
             "reconcile_merge_dispatch",
@@ -2038,18 +2072,7 @@ class TestAutonomousStewardOrphanRecovery22(TestAutonomousStewardPRC):
         pr_number = bound["pr_number"]
         expected_head = bound["head_sha"]
         self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
-        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
-        self.journal.append(
-            event="STAGE_MERGE_DISPATCH_INTENT",
-            idempotency_key=intent_key,
-            mission_id=mission.mission_id,
-            stage_id=stage.stage_id,
-            card_id="",
-            state="RUNNING",
-            detail="canonical_merge_workflow_dispatch_intent",
-            data={"pr_number": pr_number, "head_sha": expected_head},
-            enforce_transition=False,
-        )
+        self._install_simulated_orphan_intent(mission, stage, bound)
         self.assertEqual(len(self.github_writer.merge_dispatch_resolutions), 0)
         with patch.object(
             self.github_writer,
@@ -2070,18 +2093,7 @@ class TestAutonomousStewardOrphanRecovery22(TestAutonomousStewardPRC):
         pr_number = bound["pr_number"]
         expected_head = bound["head_sha"]
         self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
-        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
-        self.journal.append(
-            event="STAGE_MERGE_DISPATCH_INTENT",
-            idempotency_key=intent_key,
-            mission_id=mission.mission_id,
-            stage_id=stage.stage_id,
-            card_id="",
-            state="RUNNING",
-            detail="canonical_merge_workflow_dispatch_intent",
-            data={"pr_number": pr_number, "head_sha": expected_head},
-            enforce_transition=False,
-        )
+        self._install_simulated_orphan_intent(mission, stage, bound)
         with patch.object(
             self.github_writer,
             "reconcile_merge_dispatch",
@@ -2105,18 +2117,7 @@ class TestAutonomousStewardOrphanRecovery22(TestAutonomousStewardPRC):
         pr_number = bound["pr_number"]
         expected_head = bound["head_sha"]
         self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
-        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
-        self.journal.append(
-            event="STAGE_MERGE_DISPATCH_INTENT",
-            idempotency_key=intent_key,
-            mission_id=mission.mission_id,
-            stage_id=stage.stage_id,
-            card_id="",
-            state="RUNNING",
-            detail="canonical_merge_workflow_dispatch_intent",
-            data={"pr_number": pr_number, "head_sha": expected_head},
-            enforce_transition=False,
-        )
+        self._install_simulated_orphan_intent(mission, stage, bound)
         self.github_writer.quarantine_race_merge = True
         with patch.object(
             self.github_writer,
@@ -2187,24 +2188,10 @@ class TestAutonomousStewardOrphanRecovery22(TestAutonomousStewardPRC):
         pr_number = bound["pr_number"]
         expected_head = bound["head_sha"]
         self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
-        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
-        identity = steward_github.merge_dispatch_identity(
-            mission.repository_identity.repository, pr_number, self.base_sha, expected_head, intent_key=intent_key
-        )
         grant = contract.validate_standing_recovery_grant(
             mission, repository=mission.repository_identity.repository
         )
-        self.journal.append(
-            event="STAGE_MERGE_DISPATCH_INTENT",
-            idempotency_key=intent_key,
-            mission_id=mission.mission_id,
-            stage_id=stage.stage_id,
-            card_id="",
-            state="RUNNING",
-            detail="canonical_merge_workflow_dispatch_intent",
-            data={"pr_number": pr_number, "head_sha": expected_head},
-            enforce_transition=False,
-        )
+        intent_key, identity = self._install_simulated_orphan_intent(mission, stage, bound)
         quarantine_key = hashlib.sha256(
             f"{mission.mission_id}:{stage.stage_id}:{identity['dispatch_id']}:{mission.owner_approval.approval_id}".encode()
         ).hexdigest()[:32]
@@ -2259,18 +2246,7 @@ class TestAutonomousStewardOrphanRecovery22(TestAutonomousStewardPRC):
         pr_number = bound["pr_number"]
         expected_head = bound["head_sha"]
         self.github_writer.prs[pr_number].update({"draft": False, "ci_state": "PASS", "review_state": "PASS"})
-        intent_key = f"stage-merge-intent:{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}"
-        self.journal.append(
-            event="STAGE_MERGE_DISPATCH_INTENT",
-            idempotency_key=intent_key,
-            mission_id=mission.mission_id,
-            stage_id=stage.stage_id,
-            card_id="",
-            state="RUNNING",
-            detail="canonical_merge_workflow_dispatch_intent",
-            data={"pr_number": pr_number, "head_sha": expected_head},
-            enforce_transition=False,
-        )
+        self._install_simulated_orphan_intent(mission, stage, bound)
         with patch.object(
             self.github_writer,
             "reconcile_merge_dispatch",
@@ -2473,6 +2449,44 @@ class TestAutonomousStewardOrphanRecovery22(TestAutonomousStewardPRC):
             )
         self.assertEqual(self.github_writer.prs[888]["state"], "OPEN")
 
+    def test_incomplete_merge_intent_identity_cannot_use_standing_recovery(self):
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-INCOMPLETE-IDENTITY", "incomplete-identity"
+        )
+        pr_number = bound["pr_number"]
+        expected_head = bound["head_sha"]
+        self.github_writer.prs[pr_number].update(
+            {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+        )
+        intent_key = (
+            f"stage-merge-intent:{mission.mission_id}:"
+            f"{stage.stage_id}:{pr_number}:{expected_head}"
+        )
+        self.journal.append(
+            event="STAGE_MERGE_DISPATCH_INTENT",
+            idempotency_key=intent_key,
+            mission_id=mission.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="canonical_merge_workflow_dispatch_intent",
+            data={"pr_number": pr_number, "head_sha": expected_head},
+            enforce_transition=False,
+        )
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            result = self.srv.step()
+        self.assertEqual(result["status"], "OUTCOME_UNKNOWN")
+        self.assertEqual(result["reason"], "orphan_binding_mismatch")
+        self.assertEqual(self.github_writer.prs[pr_number]["state"], "OPEN")
+        self.assertNotIn(
+            "quarantine", [name for name, _data in self.github_writer.actions]
+        )
+
     def test_case_19_pr_from_another_mission_cannot_be_quarantined(self):
         """Case 19: PR from another Mission can never be quarantined."""
         mission, stage, bound = self._bound_stage_with_pending_intent("MISSION-T19", "t19")
@@ -2644,21 +2658,7 @@ class TestAutonomousStewardOrphanRecovery22(TestAutonomousStewardPRC):
         self.github_writer.prs[pr_number].update(
             {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
         )
-        intent_key = (
-            f"stage-merge-intent:{mission.mission_id}:"
-            f"{stage.stage_id}:{pr_number}:{expected_head}"
-        )
-        self.journal.append(
-            event="STAGE_MERGE_DISPATCH_INTENT",
-            idempotency_key=intent_key,
-            mission_id=mission.mission_id,
-            stage_id=stage.stage_id,
-            card_id="",
-            state="RUNNING",
-            detail="canonical_merge_workflow_dispatch_intent",
-            data={"pr_number": pr_number, "head_sha": expected_head},
-            enforce_transition=False,
-        )
+        self._install_simulated_orphan_intent(mission, stage, bound)
 
         with patch.object(
             self.github_writer,

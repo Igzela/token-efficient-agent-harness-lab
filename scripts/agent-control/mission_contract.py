@@ -1338,11 +1338,7 @@ def validate_standing_recovery_grant(
     if not grants:
         raise MissionContractError("repository_maintenance_grant_missing")
     grant = grants[0]
-    if (
-        "quarantine_exact_owned_candidate" not in grant.allowed_operations
-        and "ci_repair" not in grant.allowed_operations
-        and "write" not in grant.allowed_operations
-    ):
+    if "quarantine_exact_owned_candidate" not in grant.allowed_operations:
         raise MissionContractError("recovery_operation_outside_grant")
     return grant
 

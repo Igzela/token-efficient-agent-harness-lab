@@ -2152,35 +2152,44 @@ class StewardService:
                         except mission_contract.MissionContractError:
                             standing_recovery_grant = None
 
-                        recorded_mission = merge_intent.data.get("mission_id")
-                        recorded_stage = merge_intent.data.get("stage_id")
+                        recorded_mission = (
+                            merge_intent.mission_id
+                            or merge_intent.data.get("mission_id")
+                        )
+                        recorded_stage = (
+                            merge_intent.stage_id
+                            or merge_intent.data.get("stage_id")
+                        )
                         recorded_dispatch = merge_intent.data.get("dispatch_id")
                         recorded_pr = merge_intent.data.get("pr_number")
                         recorded_head = merge_intent.data.get("head_sha")
                         recorded_base = merge_intent.data.get("base_sha")
                         recorded_workflow = merge_intent.data.get("workflow")
                         recorded_ref = merge_intent.data.get("ref")
+                        recorded_repo = merge_intent.data.get("repository")
 
                         bindings_match = (
                             mission.mission_id == self.mission.mission_id
-                            and (recorded_mission is None or recorded_mission == mission.mission_id)
-                            and (recorded_stage is None or recorded_stage == stage.stage_id)
+                            and recorded_mission == mission.mission_id
+                            and recorded_stage == stage.stage_id
+                            and (
+                                recorded_repo is None
+                                or recorded_repo == mission.repository_identity.repository
+                            )
                             and mission.repository_identity.repository
                             == reconciliation.get(
                                 "repository", mission.repository_identity.repository
                             )
-                            and (
-                                recorded_dispatch is None
-                                or recorded_dispatch == identity["dispatch_id"]
-                            )
-                            and (recorded_pr is None or recorded_pr == pr_number)
-                            and (recorded_head is None or recorded_head == expected_head)
-                            and (recorded_base is None or recorded_base == expected_base)
-                            and (
-                                recorded_workflow is None
-                                or recorded_workflow == "agent-merge.yml"
-                            )
-                            and (recorded_ref is None or recorded_ref == "main")
+                            and recorded_dispatch is not None
+                            and recorded_dispatch == identity["dispatch_id"]
+                            and recorded_pr is not None
+                            and recorded_pr == pr_number
+                            and recorded_head is not None
+                            and recorded_head == expected_head
+                            and recorded_base is not None
+                            and recorded_base == expected_base
+                            and recorded_workflow == "agent-merge.yml"
+                            and recorded_ref == "main"
                         )
                         if not bindings_match:
                             return {
@@ -3054,6 +3063,9 @@ class StewardService:
                 state="RUNNING",
                 detail="canonical_merge_workflow_dispatch_intent",
                 data={
+                    "repository": mission.repository_identity.repository,
+                    "mission_id": mission.mission_id,
+                    "stage_id": stage.stage_id,
                     "pr_number": pr_number,
                     "head_sha": expected_head,
                     "base_sha": expected_base,

@@ -1253,7 +1253,16 @@ else:
         credential_dir = self.root / "systemd-credentials"
         credential_dir.mkdir(mode=0o700)
         auth = credential_dir / "codex-auth"
-        auth.write_text("service-runtime-auth", encoding="utf-8")
+        auth.write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "OPENAI_API_KEY": None,
+                    "tokens": {"access_token": "test-access-token"},
+                }
+            ),
+            encoding="utf-8",
+        )
         auth.chmod(0o400)
         service_codex = self.root / "service-codex"
         service_codex.write_text(
@@ -1270,7 +1279,8 @@ elif args[:2] == ["exec", "--help"]:
     print("--json --ephemeral --ignore-user-config --skip-git-repo-check --sandbox --model --cd --output-last-message")
 elif args and args[0] == "exec":
     auth = Path(os.environ["CODEX_HOME"]) / "auth.json"
-    if auth.read_text(encoding="utf-8") != "service-runtime-auth":
+    payload = json.loads(auth.read_text(encoding="utf-8"))
+    if payload.get("tokens", {}).get("access_token") != "test-access-token":
         raise SystemExit(7)
     output = Path(args[args.index("--output-last-message") + 1])
     output.write_text('{"verdict":"PASS","blockers":[],"summary":"bounded"}', encoding="utf-8")
@@ -1312,6 +1322,61 @@ else:
         self.assertEqual(exit_code, 0, failure_reason)
         self.assertIsNone(failure_reason)
         self.assertIn('"verdict":"PASS"', response_path.read_text(encoding="utf-8"))
+
+    def test_malformed_systemd_credential_fails_before_codex_execution(self):
+        credential_dir = self.root / "malformed-systemd-credentials"
+        credential_dir.mkdir(mode=0o700)
+        auth = credential_dir / "codex-auth"
+        auth.write_text("{}", encoding="utf-8")
+        auth.chmod(0o400)
+        service_codex = self.root / "must-not-run-codex"
+        service_codex.write_text("#!/usr/bin/env sh\nexit 99\n", encoding="utf-8")
+        service_codex.chmod(0o755)
+        worker = workers.CodexWorkCardWorker(timeout_seconds=5)
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"CREDENTIALS_DIRECTORY": str(credential_dir)},
+                clear=False,
+            ),
+            mock.patch.object(
+                workers, "SERVICE_CODEX_BINARY", service_codex, create=True
+            ),
+        ):
+            exit_code, response_path, failure_reason = worker._invoke(
+                "review",
+                "bounded review",
+                self.root,
+                environment={"HOME": str(self.root), "PATH": f"{self.root}:/usr/bin:/bin"},
+            )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(failure_reason, "authentication_failure")
+        self.assertFalse(response_path.exists())
+
+    def test_interactive_codex_symlink_is_rejected(self):
+        bin_dir = self.root / "symlink-codex-bin"
+        bin_dir.mkdir()
+        real_codex = self.root / "real-codex"
+        real_codex.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
+        real_codex.chmod(0o755)
+        (bin_dir / "codex").symlink_to(real_codex)
+        auth_dir = self.root / ".codex"
+        auth_dir.mkdir()
+        (auth_dir / "auth.json").write_text("interactive-auth", encoding="utf-8")
+        worker = workers.CodexWorkCardWorker(timeout_seconds=5)
+        with mock.patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": ""}, clear=False):
+            exit_code, response_path, failure_reason = worker._invoke(
+                "review",
+                "bounded review",
+                self.root,
+                environment={
+                    "HOME": str(self.root),
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                },
+            )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(failure_reason, "cli_missing")
+        self.assertFalse(response_path.exists())
 
     def test_managed_service_declares_bounded_codex_runtime_sources(self):
         unit = (ROOT / "scripts" / "agent-control" / "steward.service").read_text(

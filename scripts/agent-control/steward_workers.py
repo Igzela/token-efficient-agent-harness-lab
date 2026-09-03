@@ -219,6 +219,24 @@ def _systemd_codex_auth_source() -> Path | None:
     if (
         not stat.S_ISREG(source_metadata.st_mode)
         or source_metadata.st_mode & 0o077
+        or source_metadata.st_size < 2
+        or source_metadata.st_size > 64 * 1024
+    ):
+        return None
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    api_key = payload.get("OPENAI_API_KEY")
+    tokens = payload.get("tokens")
+    access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
+    if not (
+        isinstance(api_key, str)
+        and bool(api_key.strip())
+        or isinstance(access_token, str)
+        and bool(access_token.strip())
     ):
         return None
     return source
@@ -1059,7 +1077,17 @@ class CodexWorkCardWorker:
                     "codex", path=child_environment.get("PATH", "")
                 )
                 if codex_bin:
-                    codex_path = Path(codex_bin).resolve()
+                    candidate = Path(codex_bin)
+                    try:
+                        candidate_metadata = os.lstat(candidate)
+                    except OSError:
+                        candidate_metadata = None
+                    if (
+                        candidate.is_absolute()
+                        and candidate_metadata is not None
+                        and stat.S_ISREG(candidate_metadata.st_mode)
+                    ):
+                        codex_path = candidate
             if codex_path is not None and codex_path.is_file():
                 codex_metadata = os.lstat(codex_path)
                 if (
