@@ -373,4 +373,12 @@ mod tests {
             sha256_hex(b"rwe-fixture-task-v1:bounded-source-edit")
         );
     }
+
+    #[test]
+    fn stage_3_rwe_seal_is_bound() {
+        assert_eq!(
+            crate::rwe::RESEARCH_MAINLINE_STAGE_3_RWE_SEAL,
+            "MISSION-RESEARCH-20260901:stage-3:rwe-evidence-basis.v1",
+        );
+    }
 }

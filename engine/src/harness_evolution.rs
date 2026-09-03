@@ -57,6 +57,10 @@ pub const MX1_SKILL_ONLY_STRATEGY_ID: &str = "single-pass-plan-implement-review:
 const MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT: &str = "https://api.deepseek.com/chat/completions";
 const MX1_DEEPSEEK_CREDENTIAL_REFERENCE: &str = "DEEPSEEK_API_KEY";
 
+/// Canonical evidence freeze and validation receipt for MISSION-RESEARCH-20260901 (Stage 3).
+pub const RESEARCH_MAINLINE_STAGE_3_HARNESS_EVOLUTION_SEAL: &str =
+    "MISSION-RESEARCH-20260901:stage-3:harness-evolution-basis.v1";
+
 /// CWS analysis bound this SHA as the default-off active Harness. EC1 freezes it;
 /// it is not a live ENABLE and does not authorize candidate generation.
 pub const EC1_FROZEN_ACTIVE_HARNESS_SHA: &str =
@@ -7044,5 +7048,13 @@ mod tests {
                     if reason == "unsupported_cross_product_cell"
             )
         }));
+    }
+
+    #[test]
+    fn stage_3_harness_evolution_seal_is_bound() {
+        assert_eq!(
+            RESEARCH_MAINLINE_STAGE_3_HARNESS_EVOLUTION_SEAL,
+            "MISSION-RESEARCH-20260901:stage-3:harness-evolution-basis.v1",
+        );
     }
 }
