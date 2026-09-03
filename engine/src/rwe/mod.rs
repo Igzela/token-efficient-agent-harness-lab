@@ -41,3 +41,7 @@ pub use runner::{
     persist_rwe_run_authorization_v2, provider_free_rwe_readiness_dossier, run_provider_free_rwe,
     RweLiveGateResult, RweRunAuthorizationBody, RWE_RUN_AUTH_SCHEMA, RWE_RUN_AUTH_V2_SCHEMA,
 };
+
+/// Canonical evidence freeze and validation receipt for MISSION-RESEARCH-20260901 (Stage 3).
+pub const RESEARCH_MAINLINE_STAGE_3_RWE_SEAL: &str =
+    "MISSION-RESEARCH-20260901:stage-3:rwe-evidence-basis.v1";
