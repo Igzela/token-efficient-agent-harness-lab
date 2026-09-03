@@ -375,13 +375,13 @@ class Steward:
             worker,
             (
                 workers.BoundedProcessWorker,
-                workers.OpenCodeWorkCardWorker,
+                workers.CodexWorkCardWorker,
             ),
         ):
             raise StewardError("worker_adapter_not_admitted")
         if reviewer is not None and not isinstance(
             reviewer,
-            (workers.BoundedProcessReviewer, workers.OpenCodeWorkCardReviewer),
+            (workers.BoundedProcessReviewer, workers.CodexWorkCardReviewer),
         ):
             raise StewardError("reviewer_adapter_not_admitted")
         if verifier is not None:
