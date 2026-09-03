@@ -1879,14 +1879,17 @@ class GhGitHubWriter:
         *,
         expected_base_sha: str,
         expected_head_sha: str,
+        comment: str | None = None,
     ) -> dict[str, Any]:
-        """Quarantine one exact legacy orphan and return GitHub facts.
+        """Quarantine one exact orphan candidate and return GitHub facts.
 
-        This is the only recovery mutation for a legacy orphan.  It performs
-        a fresh PR/base/main preflight, issues only the exact close operation,
-        then reads PR and accepted-main again.  The result is never an owner
-        assertion: ``MERGED`` or ``CLOSED_UNMERGED`` comes only from that
-        authoritative post-mutation readback; anything else is unknown.
+        This is the recovery mutation for an unresolved merge candidate under
+        standing Mission repository-maintenance recovery authority (or legacy
+        owner authorization).  It performs a fresh PR/base/main preflight,
+        issues only the exact close operation, then reads PR and accepted-main
+        again.  The result is never an assumption: ``MERGED`` or
+        ``CLOSED_UNMERGED`` comes only from that authoritative post-mutation
+        readback; anything else is unknown.
         """
         if (
             not isinstance(repository, str)
@@ -1940,12 +1943,17 @@ class GhGitHubWriter:
             "preflight_accepted_main_sha": current_main,
             "action": "QUARANTINE_EXACT_PR",
         }
+        close_comment = (
+            comment
+            if comment is not None
+            else "Quarantined under Mission repository-maintenance recovery authority; branch retained."
+        )
         try:
             result = subprocess.run(
                 [
                     "gh", "pr", "close", str(pr_number), "--repo", repository,
                     "--comment",
-                    "Quarantined by the owner-authorized legacy orphan-dispatch recovery; branch retained.",
+                    close_comment,
                 ],
                 capture_output=True,
                 text=True,
@@ -2387,6 +2395,7 @@ class FakeGitHubWriter:
         *,
         expected_base_sha: str,
         expected_head_sha: str,
+        comment: str | None = None,
     ) -> dict[str, Any]:
         pr = self.prs.get(pr_number)
         if pr is None:

@@ -12,15 +12,31 @@ Operator sessions enter through the accepted router: run `uv run --no-project py
 
 The durable authority/evidence and safety contract is canonical in
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md#merge-dispatch-recovery-and-emergency-stop-contract).
-Use this procedure for the already-proved operator flow: read the exact
-Mission/Stage/PR/base/head/ref identity and accepted `main`, consume one
-authenticated OWNER marker, verify the stop state immediately before any
-mutation, retain the branch, and record the GitHub readback. Never retry an
-unknown dispatch or infer `NO_EFFECT_CONFIRMED` from elapsed time or a missing
-run; recovery `OUTCOME_UNKNOWN` is not research `INSUFFICIENT`.
 
-Required marker shape (replace every placeholder; post nothing until the
-identity has been independently checked):
+### Autonomous Routine Recovery
+
+For routine repository-maintenance merge dispatch failures where the workflow run
+ID is lost or unavailable (e.g. transport timeout or dropped API response after
+dispatch acceptance), Steward **recovers autonomously** under the approved Mission's
+standing `repository_maintenance` authority:
+1. Steward identifies the unresolved dispatch intent without durable run identity;
+2. Verifies binding invariants (`mission_id`, `repository`, `stage_id`, `pr_number`,
+   `base_sha`, `head_sha`, `workflow_file`, `ref`, and `dispatch_id`);
+3. Evaluates that emergency stop is inactive;
+4. Records `STAGE_ORPHAN_QUARANTINE_INTENT` under standing Mission authority;
+5. Quarantines the exact candidate PR by closing it (`state: CLOSED`) while retaining
+   the remote branch and evidence;
+6. Performs authoritative readback from GitHub:
+   - If `MERGED` (old workflow won the race): reconciles merge and advances without replacement;
+   - If `CLOSED_UNMERGED`: reconciles the orphan and requests replanning of a fresh replacement candidate under the existing Mission approval;
+   - If ambiguous/unavailable: remains in read-only waiting until GitHub state is provable.
+
+No manual OWNER comment or intervention is required for this routine recovery.
+
+### Out-of-Band / Manual Legacy Recovery
+
+Manual intervention via an Issue #208 OWNER marker is reserved for out-of-band,
+emergency, or non-routine cases, or when the autonomous loop is explicitly paused:
 
 ```text
 <!-- steward-orphan-dispatch-recovery:v1 {"mission_id":"...","proposal_sha256":"...","stage_id":"...","repository":"Igzela/token-efficient-agent-harness-lab","control_issue_number":208,"pr_number":...,"base_sha":"...","head_sha":"...","workflow_file":"agent-merge.yml","ref":"main","dispatch_id":"...","authorization":"ORPHAN_DISPATCH_RECOVERY","action":"QUARANTINE_EXACT_PR","authorization_id":"..."} -->
