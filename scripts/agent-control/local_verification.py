@@ -92,6 +92,7 @@ _AGENT_PYTHON_PATH = re.compile(
     r"^(?:"
     r"scripts/agent-control/.+\.py"
     r"|tests/test_agent_[^/]+\.py"
+    r"|tests/test_mission_contract\.py"
     r"|tools/check_security_baseline\.py"
     r"|tools/test_[^/]+\.py"
     r")$"

@@ -266,10 +266,14 @@ def _bounded_int(value: object, field: str, *, minimum: int, maximum: int) -> in
 
 
 def _contains(scope: str, candidate: str) -> bool:
-    return scope == candidate or (
-        scope.endswith("/")
-        and (candidate == scope[:-1] or candidate.startswith(scope))
-    )
+    if scope == candidate:
+        return True
+    if scope.endswith("/"):
+        return candidate == scope[:-1] or candidate.startswith(scope)
+    basename = scope.rsplit("/", 1)[-1]
+    if "." not in basename:
+        return candidate.startswith(f"{scope}/")
+    return False
 
 
 def path_in_scope(scope: tuple[str, ...], candidate: str) -> bool:
