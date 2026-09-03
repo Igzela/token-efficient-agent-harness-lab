@@ -240,6 +240,15 @@ class MissionContractTests(unittest.TestCase):
     def test_paths_stops_and_rollbacks_are_bounded(self):
         with self.assertRaisesRegex(contract.MissionContractError, "candidate_path_invalid"):
             contract.path_in_scope(("scripts/",), "../secret")
+        self.assertTrue(
+            contract.path_in_scope(("engine/src/rwe",), "engine/src/rwe/mod.rs")
+        )
+        self.assertTrue(
+            contract.path_in_scope(("scripts/agent-control",), "scripts/agent-control/mission_contract.py")
+        )
+        self.assertFalse(
+            contract.path_in_scope(("engine/src/harness_evolution.rs",), "engine/src/harness_evolution.rs/extra")
+        )
         self.assertEqual(
             contract.stop_category("TEST_FAILED"), "ROUTINE_RECOVERY"
         )
