@@ -503,6 +503,18 @@ is set. The service re-reads that label before every production transition;
 while set, it records the halt and dispatches neither WorkCards nor Ready/merge
 mutations.
 
+Managed Codex execution also requires two separately provisioned, host-owned
+inputs: a verified regular executable at
+`/usr/local/libexec/agent-steward/codex`, mode `0755` or stricter and not
+group/world-writable, plus an encrypted systemd credential named `codex-auth`
+at `/etc/credstore.encrypted/agent-steward.codex-auth`. Provision or rotate the
+credential only under explicit credential authority; the Mission does not
+grant that action. `LoadCredentialEncrypted` materializes only a private
+runtime copy, and the adapter mounts only that copy as
+`CODEX_HOME/auth.json`. A missing, symlinked, malformed, or over-permissive
+runtime credential fails closed and never falls back to an interactive HOME.
+Do not copy an operator's complete `.codex` directory into the service.
+
 The normal repository path is the accepted-main route in `START_HERE.md`,
 followed by the exact-head review, canonical CI, and guarded merge rules in
 `docs/AUTONOMY.md`. Do not use a local projection, worker report, or stale
@@ -512,15 +524,17 @@ uncertain; reconcile the live state before any retry.
 Canonical CI acquisition binds repository, trusted head repository, workflow identity/path, branch, exact head SHA, and PR. Completed supported evidence outranks active runs; the newest authoritative completed result wins, with a natural `pull_request` run breaking otherwise equal ties. Unsupported terminal runs are reselected around, and a pending natural run receives at most one bounded `workflow_dispatch` fallback. Observed, selected, superseded, unsupported, and fallback state is persisted so stale or duplicate events cannot dispatch duplicate repairs/reviews.
 
 The Codex wrapper constructs an allowlisted child environment for version,
-login-status, help, implementation, repair, and independent review calls. It
+help, implementation, repair, and independent review calls. It
 preserves only its documented runtime/login variables and excludes GitHub,
 provider, cloud, and unknown secret-shaped variables. The worker gets only an
 isolated worktree and WorkCard contract; it cannot push, create PRs, or merge.
 Production tiers use the authenticated Codex CLI's account-selected default
 within the bounded T0-T2 policy; an explicit `AGENT_CODEX_MODEL` override is
 optional and operator-controlled. The reviewer is a distinct read-only
-invocation. Each sandbox gets only the active account registry and selected
-runtime authentication file; the host's full Codex config is not exposed.
+invocation. Interactive runs receive only the active account registry and
+selected runtime authentication file; managed runs receive only the private
+systemd `codex-auth` copy and fixed service executable. The host's full Codex
+config is not exposed.
 Raw prompts, model outputs, transcripts, credentials, and private paths are
 not journal evidence.
 

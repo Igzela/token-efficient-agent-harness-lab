@@ -31,6 +31,8 @@ from review_loop.locking import ChatLock, LockBusy
 
 MAX_ACTIVE_WORKERS = 2
 BWRAP_PATH = Path("/usr/bin/bwrap")
+SERVICE_CODEX_BINARY = Path("/usr/local/libexec/agent-steward/codex")
+SYSTEMD_CODEX_CREDENTIAL_NAME = "codex-auth"
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -189,6 +191,37 @@ def child_environment(
             path_entries.append(str(codex_dir))
     environment["PATH"] = ":".join(path_entries)
     return environment
+
+
+def _systemd_codex_auth_source() -> Path | None:
+    """Resolve the manager-provided auth credential without forwarding its path."""
+
+    raw_directory = os.environ.get("CREDENTIALS_DIRECTORY", "")
+    if not raw_directory:
+        return None
+    directory = Path(raw_directory)
+    if not directory.is_absolute():
+        return None
+    try:
+        directory_metadata = os.lstat(directory)
+    except OSError:
+        return None
+    if (
+        not stat.S_ISDIR(directory_metadata.st_mode)
+        or directory_metadata.st_mode & 0o022
+    ):
+        return None
+    source = directory / SYSTEMD_CODEX_CREDENTIAL_NAME
+    try:
+        source_metadata = os.lstat(source)
+    except OSError:
+        return None
+    if (
+        not stat.S_ISREG(source_metadata.st_mode)
+        or source_metadata.st_mode & 0o077
+    ):
+        return None
+    return source
 
 
 def select_model_tier(base_tier: str, attempt: int) -> str:
@@ -951,7 +984,17 @@ class CodexWorkCardWorker:
             # identity/reconciliation, but also mount the operator-selected
             # runtime auth file at the path the CLI actually consumes.  Both
             # mounts are read-only and no other ~/.codex state is exposed.
-            runtime_auth_source = source_home / ".codex" / "auth.json"
+            service_credential_declared = bool(
+                os.environ.get("CREDENTIALS_DIRECTORY", "")
+            )
+            service_auth_source = _systemd_codex_auth_source()
+            if service_credential_declared and service_auth_source is None:
+                return 1, root / "missing", "authentication_failure"
+            runtime_auth_source = (
+                service_auth_source
+                if service_auth_source is not None
+                else source_home / ".codex" / "auth.json"
+            )
             if (
                 runtime_auth_source.is_file()
                 and not runtime_auth_source.is_symlink()
@@ -1006,14 +1049,26 @@ class CodexWorkCardWorker:
             child_environment["CODEX_HOME"] = str(codex_home)
             child_environment["AGENT_CODEX_MODEL_TIER"] = model_tier
             child_environment["AGENT_CODEX_TIMEOUT_SECONDS"] = str(self.timeout_seconds)
-            codex_bin = shutil.which("codex", path=child_environment.get("PATH", ""))
-            if codex_bin:
-                codex_path = Path(codex_bin)
-                if codex_path.is_file():
-                    codex_target = codex_path.resolve()
-                    if codex_target.is_file() and not codex_target.is_symlink():
-                        codex_destination = root / "codex"
-                        readonly_paths.append((codex_target, codex_destination))
+            codex_path: Path | None = None
+            if service_auth_source is not None:
+                codex_path = SERVICE_CODEX_BINARY
+                if codex_path.is_symlink():
+                    codex_path = None
+            else:
+                codex_bin = shutil.which(
+                    "codex", path=child_environment.get("PATH", "")
+                )
+                if codex_bin:
+                    codex_path = Path(codex_bin).resolve()
+            if codex_path is not None and codex_path.is_file():
+                codex_metadata = os.lstat(codex_path)
+                if (
+                    stat.S_ISREG(codex_metadata.st_mode)
+                    and not codex_metadata.st_mode & 0o022
+                    and os.access(codex_path, os.X_OK)
+                ):
+                    codex_destination = root / "codex"
+                    readonly_paths.append((codex_path, codex_destination))
             sandboxed_command = _sandbox_command(
                 [
                     str(wrapper_copy),

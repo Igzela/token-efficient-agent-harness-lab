@@ -15,6 +15,8 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/agent-steward
+ReadOnlyPaths=/usr/local/libexec/agent-steward/codex
+LoadCredentialEncrypted=codex-auth:/etc/credstore.encrypted/agent-steward.codex-auth
 Environment=STEWARD_JOURNAL_PATH=/var/lib/agent-steward/steward.sqlite3
 
 [Install]
