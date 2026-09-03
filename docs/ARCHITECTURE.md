@@ -1,7 +1,7 @@
 # Architecture
 
 Current version: v38
-Last updated: 2026-09-01.
+Last updated: 2026-09-03.
 
 This is the durable architecture, module ownership, and trust boundary specification for the Token-Efficient Agent Harness Lab. It consolidates system design, module ownership, single persistence authority, and trust boundaries into one authoritative document.
 
@@ -38,6 +38,22 @@ separate research authority. Context Working Set, memory, and skill mechanisms
 are model-visible Strategy inputs when registered for an experiment; they do
 not become truth, memory ownership, scheduling, evaluation, or approval merely
 because they reduce context.
+
+### Managed Codex credential boundary
+
+The managed `agent-steward` service never depends on an interactive user's
+home. Its production Codex executable is the fixed, non-symlink,
+non-group/world-writable
+`/usr/local/libexec/agent-steward/codex`; systemd exposes only the encrypted
+credential named `codex-auth` through its private `CREDENTIALS_DIRECTORY`.
+The parent validates that directory and credential as private regular
+filesystem objects, mounts only that file as the isolated child's
+`CODEX_HOME/auth.json`, and does not forward the source path. If the manager
+declares a missing, malformed, symlinked, or over-permissive credential, the
+adapter fails with a bounded authentication category and never falls back to
+an operator HOME. The credential is never created, copied, journaled, logged,
+or granted by a Mission; provisioning or rotating it remains a separately
+authorized operator action.
 
 ## Research Mainline: Finite Frozen Canonical Experiments
 

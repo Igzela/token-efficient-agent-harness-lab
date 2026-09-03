@@ -1247,6 +1247,128 @@ else:
         self.assertIsNone(failure_reason)
         self.assertFalse(response_path.exists())
 
+    def test_production_worker_uses_systemd_credential_and_fixed_service_binary(self):
+        """The managed service must not depend on an interactive user's HOME."""
+        credential_dir = self.root / "systemd-credentials"
+        credential_dir.mkdir(mode=0o700)
+        auth = credential_dir / "codex-auth"
+        auth.write_text("service-runtime-auth", encoding="utf-8")
+        auth.chmod(0o400)
+        service_codex = self.root / "service-codex"
+        service_codex.write_text(
+            """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("1.0.0")
+elif args[:2] == ["exec", "--help"]:
+    print("--json --ephemeral --ignore-user-config --skip-git-repo-check --sandbox --model --cd --output-last-message")
+elif args and args[0] == "exec":
+    auth = Path(os.environ["CODEX_HOME"]) / "auth.json"
+    if auth.read_text(encoding="utf-8") != "service-runtime-auth":
+        raise SystemExit(7)
+    output = Path(args[args.index("--output-last-message") + 1])
+    output.write_text('{"verdict":"PASS","blockers":[],"summary":"bounded"}', encoding="utf-8")
+    print(json.dumps({"type": "turn.completed"}))
+else:
+    raise SystemExit(2)
+""",
+            encoding="utf-8",
+        )
+        service_codex.chmod(0o755)
+        worker = workers.CodexWorkCardWorker(timeout_seconds=5)
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"CREDENTIALS_DIRECTORY": str(credential_dir)},
+                clear=False,
+            ),
+            mock.patch.object(
+                workers, "SERVICE_CODEX_BINARY", service_codex, create=True
+            ),
+        ):
+            exit_code, response_path, failure_reason = worker._invoke(
+                "review",
+                "bounded review",
+                self.root,
+                environment={"HOME": "/nonexistent", "PATH": "/usr/bin:/bin"},
+            )
+        self.addCleanup(
+            lambda: response_path.parent.rmdir()
+            if response_path.parent.exists()
+            and response_path.parent.name.startswith("steward-codex-review-")
+            else None
+        )
+        self.addCleanup(
+            lambda: response_path.unlink(missing_ok=True)
+            if response_path.exists()
+            else None
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIsNone(failure_reason)
+        self.assertIn('"verdict":"PASS"', response_path.read_text(encoding="utf-8"))
+
+    def test_managed_service_declares_bounded_codex_runtime_sources(self):
+        unit = (ROOT / "scripts" / "agent-control" / "steward.service").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "LoadCredentialEncrypted=codex-auth:/etc/credstore.encrypted/agent-steward.codex-auth",
+            unit,
+        )
+        self.assertIn(
+            "ReadOnlyPaths=/usr/local/libexec/agent-steward/codex", unit
+        )
+
+    def test_declared_systemd_credential_never_falls_back_to_interactive_home(self):
+        credential_dir = self.root / "insecure-systemd-credentials"
+        credential_dir.mkdir(mode=0o700)
+        insecure_auth = credential_dir / "codex-auth"
+        insecure_auth.write_text("insecure", encoding="utf-8")
+        insecure_auth.chmod(0o644)
+        interactive_auth = self.root / ".codex" / "auth.json"
+        interactive_auth.parent.mkdir()
+        interactive_auth.write_text("interactive-auth", encoding="utf-8")
+        codex = self.root / "codex"
+        codex.write_text(
+            """#!/usr/bin/env python3
+from pathlib import Path
+import sys
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("1.0.0")
+elif args[:2] == ["exec", "--help"]:
+    print("--json --ephemeral --ignore-user-config --skip-git-repo-check --sandbox --model --cd --output-last-message")
+elif args and args[0] == "exec":
+    Path(args[args.index("--output-last-message") + 1]).write_text('{"verdict":"PASS","blockers":[],"summary":"bounded"}', encoding="utf-8")
+else:
+    raise SystemExit(2)
+""",
+            encoding="utf-8",
+        )
+        codex.chmod(0o755)
+        worker = workers.CodexWorkCardWorker(timeout_seconds=5)
+        with mock.patch.dict(
+            os.environ,
+            {"CREDENTIALS_DIRECTORY": str(credential_dir)},
+            clear=False,
+        ):
+            exit_code, _response_path, failure_reason = worker._invoke(
+                "review",
+                "bounded review",
+                self.root,
+                environment={
+                    "HOME": str(self.root),
+                    "PATH": f"{self.root}:/usr/bin:/bin",
+                },
+            )
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(failure_reason, "authentication_failure")
+
     def test_production_worker_enforces_workcard_contract_and_allowlisted_checks(self):
         context = type(
             "Contract",
