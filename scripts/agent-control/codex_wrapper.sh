@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Never commits, pushes, merges, or creates PRs. The surrounding workflow owns
-# every GitHub and Git write and performs its own runtime stop checks.
-# Transport is local OpenCode only. There is no Codex fallback.
+# This wrapper is the only provider-backed transport for production WorkCards.
+# It never commits, pushes, merges, or creates PRs; the parent Steward owns all
+# repository and GitHub effects. Provider output is transient and is never
+# copied into journal evidence.
 WORKER_TIMEOUT_SECONDS="${AGENT_CODEX_TIMEOUT_SECONDS:-1800}"
 
 WORKER_TYPE="${1:?Usage: codex_wrapper.sh <worker-type> <prompt-file> <output-dir> [workspace]}"
@@ -13,14 +14,11 @@ WORKSPACE="${4:-$PWD}"
 
 MODEL_TIER="${AGENT_CODEX_MODEL_TIER:-T1}"
 case "$MODEL_TIER" in
-  # The operator's existing OpenCode Go subscription is the production
-  # transport.  Direct DeepSeek credentials are retained for other lanes,
-  # but are not a reliable Steward route (the live canary returned HTTP 402
-  # Insufficient Balance).  Keep the tier distinction while selecting models
-  # that are available through the authenticated OpenCode Go provider.
-  T0) OPENCODE_MODEL="opencode-go/deepseek-v4-flash" ;;
-  T1) OPENCODE_MODEL="opencode-go/deepseek-v4-flash" ;;
-  T2) OPENCODE_MODEL="opencode-go/deepseek-v4-pro" ;;
+  # The authenticated Codex CLI owns the account-appropriate default model.
+  # An explicit model is accepted only as an operator-provided override; the
+  # production path deliberately does not force an API model id that may not
+  # be exposed by the ChatGPT-backed CLI account.
+  T0|T1|T2) CODEX_MODEL="${AGENT_CODEX_MODEL:-}" ;;
   *)
     mkdir -p "$OUTPUT_DIR"
     printf '%s\n' '{"kind":"agent-orchestrator-failure","reason":"environment_invalid"}' > "$OUTPUT_DIR/failure_reason.json"
@@ -43,7 +41,7 @@ record_failure() {
   local reason="$1"
   local detail="${2:-}"
   mkdir -p "$OUTPUT_DIR"
-  python3 - "$OUTPUT_DIR/failure_reason.json" "$reason" "$detail" <<'PY'
+  /usr/bin/python3 - "$OUTPUT_DIR/failure_reason.json" "$reason" "$detail" <<'PY'
 import json
 import sys
 path, reason, detail = sys.argv[1:]
@@ -67,13 +65,15 @@ fail_closed() {
 
 mkdir -p "$OUTPUT_DIR"
 
-OPENCODE_BIN="$(command -v opencode || true)"
-[ -n "$OPENCODE_BIN" ] || fail_closed "cli_missing" "opencode CLI not found in PATH"
-[ -n "${HOME:-}" ] || fail_closed "environment_invalid" "HOME is not set"
+WRAPPER_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+CODEX_BIN="$WRAPPER_DIR/codex"
+[ ! -L "$CODEX_BIN" ] || fail_closed "cli_missing" "Codex CLI path must not be a symlink"
+[ -x "$CODEX_BIN" ] || fail_closed "cli_missing" "Codex CLI is not executable"
+[ -n "${CODEX_HOME:-}" ] || fail_closed "authentication_failure" "Codex isolated authentication home is unavailable"
 [ -d "$WORKSPACE" ] || fail_closed "workspace_invalid" "workspace directory not found"
 command -v timeout >/dev/null 2>&1 || fail_closed "timeout_unavailable" "bounded execution utility is unavailable"
 if ! [[ "$WORKER_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || [ "$WORKER_TIMEOUT_SECONDS" -lt 1 ] || [ "$WORKER_TIMEOUT_SECONDS" -gt 3600 ]; then
-  fail_closed "timeout_invalid" "OpenCode execution timeout is outside the bounded range"
+  fail_closed "timeout_invalid" "Codex execution timeout is outside the bounded range"
 fi
 if [ -L "$PROMPT_FILE" ] || [ ! -f "$PROMPT_FILE" ]; then
   fail_closed "prompt_missing" "prompt file not found"
@@ -86,19 +86,17 @@ case "$PROMPT_ABS" in
   *) fail_closed "prompt_missing" "prompt file not found" ;;
 esac
 
-INVOKE_TMP="$(mktemp -d "${PARENT_TMPDIR%/}/agent-opencode.XXXXXX")" || fail_closed "environment_invalid" "invocation temp root is unavailable"
+INVOKE_TMP="$(mktemp -d "${PARENT_TMPDIR%/}/agent-codex.XXXXXX")" || fail_closed "environment_invalid" "invocation temp root is unavailable"
 cleanup_invoke() {
   rm -rf -- "$INVOKE_TMP"
 }
 trap cleanup_invoke EXIT
 CLAIM_PROMPT="$INVOKE_TMP/claim-prompt.txt"
 cp -f -- "$PROMPT_ABS" "$CLAIM_PROMPT"
-FIXED_RUN_MESSAGE="Execute the attached claim-bound task."
 
-# Construct the child environment from an explicit allowlist.  In particular,
-# do not rely on a denylist: runner images and provider CLIs add new secret-
-# shaped variables over time.  The cached interactive login remains available
-# through HOME.  The controller never reads, copies, or forwards credentials.
+# Construct the child environment from an explicit allowlist. CODEX_HOME is
+# supplied by the parent; the executable is the fixed read-only sibling above.
+# No host config or credential-shaped variable is forwarded.
 PATH="${PATH:-/usr/bin:/bin}"
 LANG="${LANG:-C}"
 LC_ALL="${LC_ALL:-C}"
@@ -107,13 +105,8 @@ TMPDIR="$INVOKE_TMP"
 TMP="$INVOKE_TMP"
 TEMP="$INVOKE_TMP"
 TERM="${TERM:-dumb}"
-if [ "$WORKER_TYPE" = "review" ]; then
-  OPENCODE_PERMISSION='{"external_directory":"deny","doom_loop":"deny","edit":"deny"}'
-else
-  OPENCODE_PERMISSION='{"external_directory":"deny","doom_loop":"deny"}'
-fi
 SANITIZED_ENV=(
-  "HOME=$HOME"
+  "HOME=${HOME:-/nonexistent}"
   "PATH=$PATH"
   "LANG=$LANG"
   "LC_ALL=$LC_ALL"
@@ -122,111 +115,72 @@ SANITIZED_ENV=(
   "TMP=$TMP"
   "TEMP=$TEMP"
   "TERM=$TERM"
-  "OPENCODE_PERMISSION=$OPENCODE_PERMISSION"
+  "CODEX_HOME=$CODEX_HOME"
   "AGENT_CODEX_MODEL_TIER=$MODEL_TIER"
 )
-for optional_name in \
-  USER LOGNAME SHELL \
-  HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
-  http_proxy https_proxy all_proxy no_proxy \
-  SSL_CERT_FILE SSL_CERT_DIR REQUESTS_CA_BUNDLE CURL_CA_BUNDLE \
-  XDG_CONFIG_HOME XDG_CACHE_HOME XDG_RUNTIME_DIR
-do
+for optional_name in USER LOGNAME SHELL HTTP_PROXY HTTPS_PROXY ALL_PROXY; do
   if [[ -v "$optional_name" && -n "${!optional_name}" ]]; then
     SANITIZED_ENV+=("$optional_name=${!optional_name}")
   fi
 done
 
-run_opencode() {
-  env -i "${SANITIZED_ENV[@]}" "$OPENCODE_BIN" "$@"
+run_codex() {
+  env -i "${SANITIZED_ENV[@]}" "$CODEX_BIN" "$@"
 }
 
-run_opencode_bounded() {
+run_codex_bounded() {
   timeout --signal=TERM --kill-after=5s "$WORKER_TIMEOUT_SECONDS" \
-    env -i "${SANITIZED_ENV[@]}" "$OPENCODE_BIN" "$@"
+    env -i "${SANITIZED_ENV[@]}" "$CODEX_BIN" "$@"
 }
 
-delete_observed_sessions() {
-  local events="$1"
-  local ids="$INVOKE_TMP/session-ids.txt"
-  rm -f -- "$ids"
-  [ -f "$events" ] || return 0
-  python3 - "$events" "$ids" <<'PY' || true
-import json
-import pathlib
-import sys
+if ! CODEX_VERSION=$(run_codex --version 2>/dev/null); then
+  fail_closed "cli_missing" "Codex version query failed"
+fi
+echo "codex_version=$CODEX_VERSION"
 
-events_path = pathlib.Path(sys.argv[1])
-ids_path = pathlib.Path(sys.argv[2])
-if events_path.is_symlink() or not events_path.is_file():
-    raise SystemExit(0)
-session_ids = []
-try:
-    lines = events_path.read_text(encoding="utf-8").splitlines()
-except (OSError, UnicodeDecodeError):
-    raise SystemExit(0)
-for raw_line in lines:
-    if not raw_line.strip():
-        continue
-    try:
-        payload = json.loads(raw_line)
-    except json.JSONDecodeError:
-        continue
-    if not isinstance(payload, dict):
-        continue
-    session_id = payload.get("sessionID")
-    if (
-        isinstance(session_id, str)
-        and session_id.startswith("ses_")
-        and session_id not in session_ids
-    ):
-        session_ids.append(session_id)
-if session_ids:
-    ids_path.write_text("\n".join(session_ids) + "\n", encoding="utf-8")
-PY
-  [ -f "$ids" ] || return 0
-  while IFS= read -r session_id; do
-    [ -n "$session_id" ] || continue
-    run_opencode session delete "$session_id" >/dev/null 2>&1 || true
-  done < "$ids"
-  rm -f -- "$ids"
-}
-
-if ! OPENCODE_VERSION=$(run_opencode --version 2>/dev/null); then
-  fail_closed "cli_missing" "opencode version query failed"
+HELP_OUTPUT="$INVOKE_TMP/codex-exec-help.txt"
+if ! run_codex exec --help >"$HELP_OUTPUT" 2>&1; then
+  fail_closed "unsupported_flags" "Codex exec help is unavailable"
 fi
-echo "opencode_version=$OPENCODE_VERSION"
-if ! run_opencode auth list >/dev/null 2>&1; then
-  fail_closed "authentication_failure" "opencode authentication is unavailable"
-fi
-HELP_OUTPUT="$INVOKE_TMP/opencode-run-help.txt"
-if ! run_opencode run --help >"$HELP_OUTPUT" 2>&1; then
-  fail_closed "unsupported_flags" "opencode run help is unavailable"
-fi
-for flag in --format --dir --file --model --title; do
-  grep -Fq -- "$flag" "$HELP_OUTPUT" || fail_closed "unsupported_flags" "opencode run does not advertise required flags"
+for flag in --json --ephemeral --ignore-user-config --skip-git-repo-check --sandbox --model --cd --output-last-message; do
+  grep -Fq -- "$flag" "$HELP_OUTPUT" || fail_closed "unsupported_flags" "Codex exec does not advertise required flags"
 done
 
-JSONL_OUTPUT="$INVOKE_TMP/opencode-events.jsonl"
-STDERR_OUTPUT="$INVOKE_TMP/opencode-stderr.txt"
+JSONL_OUTPUT="$INVOKE_TMP/codex-events.jsonl"
+STDERR_OUTPUT="$INVOKE_TMP/codex-stderr.txt"
 LAST_MESSAGE_OUTPUT="$OUTPUT_DIR/codex-last-message.txt"
 LAST_MESSAGE_METADATA="$OUTPUT_DIR/codex-last-message.metadata.json"
 EXIT_CODE_OUTPUT="$OUTPUT_DIR/codex-exit-code.txt"
+SANDBOX_MODE="read-only"
+APPROVAL_ARGS=()
+if [ "$WORKER_TYPE" != "review" ]; then
+  # Codex rejects --sandbox together with --approve-for-me. The approval flag
+  # itself selects the bounded workspace-write policy for implementation and
+  # repair calls; reviews explicitly select read-only below.
+  APPROVAL_ARGS=(--approve-for-me)
+fi
+CODEX_EXEC_ARGS=(
+  --json
+  --ephemeral
+  --ignore-user-config
+  --skip-git-repo-check
+  "${APPROVAL_ARGS[@]}"
+)
+if [ "$WORKER_TYPE" = "review" ]; then
+  CODEX_EXEC_ARGS+=(--sandbox "$SANDBOX_MODE")
+fi
+if [ -n "$CODEX_MODEL" ]; then
+  CODEX_EXEC_ARGS+=(--model "$CODEX_MODEL")
+fi
+CODEX_EXEC_ARGS+=(--cd "$WORKSPACE" --output-last-message "$LAST_MESSAGE_OUTPUT" -)
 
 set +e
-run_opencode_bounded run \
-  --format json \
-  --model "$OPENCODE_MODEL" \
-  --title "Autonomous Steward WorkCard" \
-  --dir "$WORKSPACE" \
-  "$FIXED_RUN_MESSAGE" \
-  --file "$CLAIM_PROMPT" \
-  > "$JSONL_OUTPUT" 2> "$STDERR_OUTPUT"
-OPENCODE_EXIT=$?
+run_codex_bounded exec "${CODEX_EXEC_ARGS[@]}" < "$CLAIM_PROMPT" > "$JSONL_OUTPUT" 2> "$STDERR_OUTPUT"
+CODEX_EXIT=$?
 set -e
-echo "$OPENCODE_EXIT" > "$EXIT_CODE_OUTPUT"
+echo "$CODEX_EXIT" > "$EXIT_CODE_OUTPUT"
 
-if [ "$OPENCODE_EXIT" -eq 0 ] && [ "$WORKER_TYPE" != "review" ]; then
+if [ "$CODEX_EXIT" -eq 0 ] && [ "$WORKER_TYPE" != "review" ]; then
   if [ -z "$(git -C "$WORKSPACE" status --porcelain 2>/dev/null)" ]; then
     printf '%s\n' '{"key":"no_workspace_changes","detail":"worker executed successfully but produced no file changes"}' \
       > "$OUTPUT_DIR/workspace_empty.json"
@@ -235,81 +189,74 @@ if [ "$OPENCODE_EXIT" -eq 0 ] && [ "$WORKER_TYPE" != "review" ]; then
   fi
 fi
 
-if [ "$OPENCODE_EXIT" -ne 0 ]; then
-  LOWER_OUTPUT=$(
-    {
-      tail -40 "$STDERR_OUTPUT" 2>/dev/null || true
-      tail -40 "$JSONL_OUTPUT" 2>/dev/null || true
-    } | tr '[:upper:]' '[:lower:]' | head -c 16384 || true
-  )
-  delete_observed_sessions "$JSONL_OUTPUT"
-  : > "$JSONL_OUTPUT"
-  : > "$STDERR_OUTPUT"
-  if [ "$OPENCODE_EXIT" -eq 124 ] || [ "$OPENCODE_EXIT" -eq 137 ]; then
-    fail_closed "model_execution_timeout" "OpenCode execution exceeded its bounded timeout"
-  fi
-  if grep -Eq 'credit|usage|quota|rate limit' <<<"$LOWER_OUTPUT"; then
-    fail_closed "usage_or_credit_exhaustion" "OpenCode usage or credit limit rejected execution"
-  fi
-  if grep -Eq 'auth|login|unauthorized|forbidden' <<<"$LOWER_OUTPUT"; then
-    fail_closed "authentication_failure" "OpenCode authentication rejected execution"
-  fi
-  fail_closed "model_execution_failure" "OpenCode execution failed"
-fi
-
-SESSION_IDS="$INVOKE_TMP/session-ids.txt"
-if ! python3 - "$JSONL_OUTPUT" "$LAST_MESSAGE_OUTPUT" "$LAST_MESSAGE_METADATA" "$WORKER_TYPE" "$SESSION_IDS" <<'PY'
-import hashlib
+if [ "$CODEX_EXIT" -ne 0 ]; then
+  FAILURE_CLASS=$(/usr/bin/python3 - "$STDERR_OUTPUT" "$JSONL_OUTPUT" <<'PY'
 import json
-import pathlib
+import re
+from pathlib import Path
 import sys
 
-events_path = pathlib.Path(sys.argv[1])
-last_message_path = pathlib.Path(sys.argv[2])
-metadata_path = pathlib.Path(sys.argv[3])
-worker_type = sys.argv[4]
-session_ids_path = pathlib.Path(sys.argv[5])
-max_bytes = 64 * 1024
+texts = []
+def collect(value):
+    if isinstance(value, dict):
+        for item in value.values():
+            collect(item)
+    elif isinstance(value, list):
+        for item in value:
+            collect(item)
+    elif isinstance(value, str):
+        texts.append(value.lower())
 
-if events_path.is_symlink() or not events_path.is_file():
-    raise ValueError("events are not a regular file")
-chunks: list[str] = []
-session_ids: list[str] = []
-for raw_line in events_path.read_text(encoding="utf-8").splitlines():
-    if not raw_line.strip():
-        continue
-    try:
-        payload = json.loads(raw_line)
-    except json.JSONDecodeError as error:
-        raise ValueError("events are not JSONL") from error
-    if not isinstance(payload, dict):
-        continue
-    session_id = payload.get("sessionID")
-    if (
-        isinstance(session_id, str)
-        and session_id.startswith("ses_")
-        and session_id not in session_ids
-    ):
-        session_ids.append(session_id)
-    if payload.get("type") != "text":
-        continue
-    part = payload.get("part")
-    text = part.get("text") if isinstance(part, dict) else None
-    if isinstance(text, str) and text:
-        chunks.append(text)
-if session_ids:
-    session_ids_path.write_text("\n".join(session_ids) + "\n", encoding="utf-8")
-# OpenCode may emit intermediate assistant text before tool calls.  Only the
-# final text event is the model's completed response; concatenating every text
-# event corrupts an otherwise valid structured review with earlier narration.
-raw = (chunks[-1] if chunks else "").encode("utf-8")
+stderr_path = Path(sys.argv[1])
+events_path = Path(sys.argv[2])
+if stderr_path.is_file():
+    texts.append(stderr_path.read_text(encoding="utf-8", errors="replace").lower())
+if events_path.is_file():
+    for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]:
+        try:
+            collect(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+joined = "\n".join(texts)
+if re.search(r"credit|quota|rate[ -]?limit|usage[ -]?limit|insufficient balance|billing", joined):
+    print("usage_or_credit_exhaustion")
+elif re.search(r"auth|login|unauthorized|forbidden", joined):
+    print("authentication_failure")
+else:
+    print("model_execution_failure")
+PY
+  )
+  : > "$JSONL_OUTPUT"
+  : > "$STDERR_OUTPUT"
+  if [ "$CODEX_EXIT" -eq 124 ] || [ "$CODEX_EXIT" -eq 137 ]; then
+    fail_closed "model_execution_timeout" "Codex execution exceeded its bounded timeout"
+  fi
+  case "$FAILURE_CLASS" in
+    usage_or_credit_exhaustion)
+      fail_closed "usage_or_credit_exhaustion" "Codex usage or credit limit rejected execution" ;;
+    authentication_failure)
+      fail_closed "authentication_failure" "Codex authentication rejected execution" ;;
+    *)
+      fail_closed "model_execution_failure" "Codex execution failed" ;;
+  esac
+fi
+
+if ! /usr/bin/python3 - "$LAST_MESSAGE_OUTPUT" "$LAST_MESSAGE_METADATA" "$WORKER_TYPE" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+message_path = Path(sys.argv[1])
+metadata_path = Path(sys.argv[2])
+worker_type = sys.argv[3]
+max_bytes = 64 * 1024
+if message_path.is_symlink() or not message_path.is_file():
+    raise SystemExit("last message is not a regular file")
+raw = message_path.read_bytes()
 if not raw or len(raw) > max_bytes:
-    raise ValueError("last message size is outside the bounded range")
-try:
-    raw.decode("utf-8")
-except UnicodeDecodeError as error:
-    raise ValueError("last message is not UTF-8") from error
-last_message_path.write_bytes(raw)
+    raise SystemExit("last message size is outside the bounded range")
+raw.decode("utf-8")
 metadata = {
     "worker_type": worker_type,
     "format": "text",
@@ -323,12 +270,10 @@ with temporary.open("w", encoding="utf-8") as handle:
 temporary.replace(metadata_path)
 PY
 then
-  delete_observed_sessions "$JSONL_OUTPUT"
-  fail_closed "malformed_output" "OpenCode produced an invalid bounded UTF-8 last message"
+  fail_closed "malformed_output" "Codex produced an invalid bounded UTF-8 last message"
 fi
 
-delete_observed_sessions "$JSONL_OUTPUT"
-rm -f -- "$JSONL_OUTPUT" "$STDERR_OUTPUT" "$SESSION_IDS"
+rm -f -- "$JSONL_OUTPUT" "$STDERR_OUTPUT"
 if [ "$WORKER_TYPE" != "review" ]; then
   rm -f -- "$LAST_MESSAGE_OUTPUT"
 else

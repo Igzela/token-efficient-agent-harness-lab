@@ -591,12 +591,14 @@ class StandingRecoveryGrantTests(unittest.TestCase):
         with self.assertRaisesRegex(contract.MissionContractError, "recovery_operation_outside_grant"):
             contract.validate_standing_recovery_grant(m, repository=self.repo)
 
-    def test_alternative_allowed_operations_accepted(self):
+    def test_broad_operations_do_not_substitute_for_exact_quarantine(self):
         for op in ("ci_repair", "write"):
             g = contract.Grant("maint-1", "repository_maintenance", ("scripts/agent-control/",), (op,), 10)
             m = self._mission_with_grants([g])
-            grant = contract.validate_standing_recovery_grant(m, repository=self.repo)
-            self.assertEqual(grant.grant_type, "repository_maintenance")
+            with self.assertRaisesRegex(
+                contract.MissionContractError, "recovery_operation_outside_grant"
+            ):
+                contract.validate_standing_recovery_grant(m, repository=self.repo)
 
 
 if __name__ == "__main__":

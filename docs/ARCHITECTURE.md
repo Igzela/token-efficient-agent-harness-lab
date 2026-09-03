@@ -1,7 +1,7 @@
 # Architecture
 
 Current version: v38
-Last updated: 2026-09-01.
+Last updated: 2026-09-03.
 
 This is the durable architecture, module ownership, and trust boundary specification for the Token-Efficient Agent Harness Lab. It consolidates system design, module ownership, single persistence authority, and trust boundaries into one authoritative document.
 
@@ -38,6 +38,29 @@ separate research authority. Context Working Set, memory, and skill mechanisms
 are model-visible Strategy inputs when registered for an experiment; they do
 not become truth, memory ownership, scheduling, evaluation, or approval merely
 because they reduce context.
+
+### Managed Codex credential boundary
+
+The managed `agent-steward` service never depends on an interactive user's
+home. Its production Codex executable is the fixed, non-symlink,
+non-group/world-writable
+`/usr/local/libexec/agent-steward/codex`; systemd exposes only the encrypted
+credential named `codex-auth` through its private `CREDENTIALS_DIRECTORY`.
+The parent validates that directory and credential as private regular
+filesystem objects, mounts only that file as the isolated child's
+`CODEX_HOME/auth.json`, and does not forward the source path. If the manager
+declares a missing, malformed, symlinked, or over-permissive credential, the
+adapter fails with a bounded authentication category and never falls back to
+an operator HOME. The credential is never created, copied, journaled, logged,
+or granted by a Mission; provisioning or rotating it remains a separately
+authorized operator action.
+
+`ProtectSystem=strict` remains enabled. The managed service may write only its
+journal root, the exact checked-out repository (including Git metadata), and
+the repository-specific integration-worktree root; card worktrees remain in
+its private `/tmp`. The checked-in unit names those three exact write roots.
+This is repository-maintenance authority, not permission to write another
+repository, an operator home, or an arbitrary host path.
 
 ## Research Mainline: Finite Frozen Canonical Experiments
 
@@ -98,6 +121,13 @@ Historical or manual `steward-orphan-dispatch-recovery:v1` markers on the canoni
 control Issue remain fully supported for backwards compatibility and out-of-band
 operator intervention, but are not required for routine orphan recovery under an
 approved Mission.
+
+Each newly persisted standing-recovery quarantine intent consumes one use of
+the Mission grant's canonical `max_uses` ceiling. Restart and read-only
+reconciliation of that same intent consume no additional use. If the ceiling
+is exhausted before a new intent, Steward records the deterministic exhaustion
+fact, performs no mutation, and pauses for a genuinely new owner ceiling; an
+elapsed timeout or missing workflow run never changes that accounting.
 
 Before executing autonomous quarantine, Steward re-reads the repository, exact PR/base/head,
 accepted main, PR state, and emergency-stop state immediately before the one
@@ -215,7 +245,7 @@ flowchart LR
 | **Scheduler** | `workflow_runs` uses `queue_lease` for claim, calls the external executor, then records settlement | Admission, concurrency, leases, retries, pause/kill, and run state | Claim transaction commits before external execution; settlement is a later transaction; scheduler/store tests |
 | **ToolPolicy** | `tool_execution_policy`, `tool_registry`, and authenticated policy handlers | Capability, allowlist, hook validation, and execution gating | Policy mutations are hash-bound and audited by Store; tool registry and API policy tests |
 | **ProductTask** | `product_tasks` transaction view, product-task handlers, and `target_repo_output` | Product intake, approval/output gates, workspace-bound patch export | Target default branch is never a workspace; target-output and golden-path recovery tests |
-| **agent-control** | `steward_service.py`, `steward.py`, `steward_journal.py`, `steward_workers.py`, `steward_github.py`, `mission_contract.py` | Repository-maintenance missions, stages, WorkCards, reviews, PR integration, and guarded merge dispatch | One journal-backed lifecycle writer; authenticated Issue-comment approval; OpenCode worker/reviewer transport; GitHub remains merge and accepted-main authority; no ProductStore runtime state |
+| **agent-control** | `steward_service.py`, `steward.py`, `steward_journal.py`, `steward_workers.py`, `steward_github.py`, `mission_contract.py` | Repository-maintenance missions, stages, WorkCards, reviews, PR integration, and guarded merge dispatch | One journal-backed lifecycle writer; authenticated Issue-comment approval; Codex CLI worker/reviewer transport; GitHub remains merge and accepted-main authority; no ProductStore runtime state |
 
 ### PR7 Acceptance Scope
 

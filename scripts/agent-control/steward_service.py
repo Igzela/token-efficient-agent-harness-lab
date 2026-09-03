@@ -289,6 +289,8 @@ def _standing_recovery_journal_data(
     mission: mission_contract.MaintenanceMission,
     grant: mission_contract.Grant,
     dispatch_identity: Mapping[str, Any],
+    *,
+    use_number: int,
 ) -> dict[str, Any]:
     """Return redacted, journal-safe metadata for standing Mission recovery authority.
 
@@ -300,6 +302,8 @@ def _standing_recovery_journal_data(
         "grant_kind": "MISSION_STANDING_RECOVERY",
         "grant_id": grant.grant_id,
         "grant_type": grant.grant_type,
+        "mission_grant_use": use_number,
+        "mission_grant_max_uses": grant.max_uses,
         "recovery_action": "QUARANTINE_EXACT_PR",
         "action": "QUARANTINE_EXACT_PR",
         "mission_id": mission.mission_id,
@@ -2148,35 +2152,44 @@ class StewardService:
                         except mission_contract.MissionContractError:
                             standing_recovery_grant = None
 
-                        recorded_mission = merge_intent.data.get("mission_id")
-                        recorded_stage = merge_intent.data.get("stage_id")
+                        recorded_mission = (
+                            merge_intent.mission_id
+                            or merge_intent.data.get("mission_id")
+                        )
+                        recorded_stage = (
+                            merge_intent.stage_id
+                            or merge_intent.data.get("stage_id")
+                        )
                         recorded_dispatch = merge_intent.data.get("dispatch_id")
                         recorded_pr = merge_intent.data.get("pr_number")
                         recorded_head = merge_intent.data.get("head_sha")
                         recorded_base = merge_intent.data.get("base_sha")
                         recorded_workflow = merge_intent.data.get("workflow")
                         recorded_ref = merge_intent.data.get("ref")
+                        recorded_repo = merge_intent.data.get("repository")
 
                         bindings_match = (
                             mission.mission_id == self.mission.mission_id
-                            and (recorded_mission is None or recorded_mission == mission.mission_id)
-                            and (recorded_stage is None or recorded_stage == stage.stage_id)
+                            and recorded_mission == mission.mission_id
+                            and recorded_stage == stage.stage_id
+                            and (
+                                recorded_repo is None
+                                or recorded_repo == mission.repository_identity.repository
+                            )
                             and mission.repository_identity.repository
                             == reconciliation.get(
                                 "repository", mission.repository_identity.repository
                             )
-                            and (
-                                recorded_dispatch is None
-                                or recorded_dispatch == identity["dispatch_id"]
-                            )
-                            and (recorded_pr is None or recorded_pr == pr_number)
-                            and (recorded_head is None or recorded_head == expected_head)
-                            and (recorded_base is None or recorded_base == expected_base)
-                            and (
-                                recorded_workflow is None
-                                or recorded_workflow == "agent-merge.yml"
-                            )
-                            and (recorded_ref is None or recorded_ref == "main")
+                            and recorded_dispatch is not None
+                            and recorded_dispatch == identity["dispatch_id"]
+                            and recorded_pr is not None
+                            and recorded_pr == pr_number
+                            and recorded_head is not None
+                            and recorded_head == expected_head
+                            and recorded_base is not None
+                            and recorded_base == expected_base
+                            and recorded_workflow == "agent-merge.yml"
+                            and recorded_ref == "main"
                         )
                         if not bindings_match:
                             return {
@@ -2190,6 +2203,49 @@ class StewardService:
                             stage.stage_id,
                             "STAGE_ORPHAN_QUARANTINE_INTENT",
                         )
+
+                        standing_recovery_uses = 0
+                        if standing_recovery_grant is not None:
+                            standing_recovery_uses = sum(
+                                1
+                                for event in self.journal.replay()
+                                if event.mission_id == mission.mission_id
+                                and event.event == "STAGE_ORPHAN_QUARANTINE_INTENT"
+                                and event.data.get("recovery_source")
+                                == "MISSION_STANDING_RECOVERY"
+                                and event.data.get("grant_id")
+                                == standing_recovery_grant.grant_id
+                            )
+                            if (
+                                not legacy_authorized
+                                and quarantine_intent is None
+                                and standing_recovery_uses
+                                >= standing_recovery_grant.max_uses
+                            ):
+                                self.journal.append(
+                                    event="STAGE_RECOVERY_CEILING_EXHAUSTED",
+                                    idempotency_key=(
+                                        "stage-standing-recovery-ceiling:"
+                                        f"{mission.mission_id}:{standing_recovery_grant.grant_id}"
+                                    ),
+                                    mission_id=mission.mission_id,
+                                    stage_id=stage.stage_id,
+                                    card_id="",
+                                    state="PAUSED_FOR_OWNER",
+                                    detail="standing_recovery_use_ceiling_exhausted",
+                                    data={
+                                        "grant_id": standing_recovery_grant.grant_id,
+                                        "dispatch_id": identity["dispatch_id"],
+                                        "consumed_uses": standing_recovery_uses,
+                                        "max_uses": standing_recovery_grant.max_uses,
+                                    },
+                                    enforce_transition=False,
+                                )
+                                return {
+                                    "status": "PAUSED_FOR_OWNER",
+                                    "stage_id": stage.stage_id,
+                                    "reason": "standing_recovery_use_ceiling_exhausted",
+                                }
 
                         is_authorized = False
                         recovery_data: dict[str, Any] = {}
@@ -2221,7 +2277,14 @@ class StewardService:
                             recovery_data = {
                                 "recovery_source": "MISSION_STANDING_RECOVERY",
                                 **_standing_recovery_journal_data(
-                                    mission, standing_recovery_grant, identity
+                                    mission,
+                                    standing_recovery_grant,
+                                    identity,
+                                    use_number=(
+                                        standing_recovery_uses
+                                        if quarantine_intent is not None
+                                        else standing_recovery_uses + 1
+                                    ),
                                 ),
                             }
                             approval_marker = (
@@ -3000,6 +3063,9 @@ class StewardService:
                 state="RUNNING",
                 detail="canonical_merge_workflow_dispatch_intent",
                 data={
+                    "repository": mission.repository_identity.repository,
+                    "mission_id": mission.mission_id,
+                    "stage_id": stage.stage_id,
                     "pr_number": pr_number,
                     "head_sha": expected_head,
                     "base_sha": expected_base,

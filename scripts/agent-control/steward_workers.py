@@ -1,7 +1,7 @@
 """Bounded WorkCard worker and reviewer adapters for the Steward.
 
-The production adapter invokes the existing authenticated local OpenCode
-transport inside a filesystem-scoped child. Provider-free and marker adapters
+The production adapter invokes the authenticated local Codex CLI inside a
+filesystem-scoped child. Provider-free and marker adapters
 remain test-only fixtures. The parent owns WorkCard binding, exact-base
 identity, path validation, and review-session separation. Child environments
 are derived from the existing fail-closed local-run owner.
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+import base64
 import hashlib
 import json
 import os
@@ -30,10 +31,13 @@ from review_loop.locking import ChatLock, LockBusy
 
 MAX_ACTIVE_WORKERS = 2
 BWRAP_PATH = Path("/usr/bin/bwrap")
+SERVICE_CODEX_BINARY = Path("/usr/local/libexec/agent-steward/codex")
+SYSTEMD_CODEX_CREDENTIAL_NAME = "codex-auth"
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+CODEX_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 MAX_REVIEW_DIFF_BYTES = 8 * 1024 * 1024
 SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 SAFE_STATUSES = frozenset({"PASS", "FAIL", "TIMEOUT", "BLOCKED", "OUTCOME_UNKNOWN"})
@@ -107,6 +111,27 @@ class PathConflict(WorkerError):
     """A declared WorkCard path lock is currently owned by another card."""
 
 
+_LOOPBACK_PROXY = re.compile(
+    r"^(?P<scheme>https?|socks5h?)://"
+    r"(?P<host>127(?:\.\d{1,3}){3}|\[::1\]):(?P<port>\d{1,5})/?$"
+)
+
+
+def _safe_loopback_proxy(value: str) -> bool:
+    """Accept only an unauthenticated proxy on a literal loopback address."""
+
+    if not isinstance(value, str) or len(value) > 256:
+        return False
+    match = _LOOPBACK_PROXY.fullmatch(value)
+    if match is None:
+        return False
+    host = match.group("host")
+    if host != "[::1]" and any(int(octet) > 255 for octet in host.split(".")):
+        return False
+    port = int(match.group("port"))
+    return 1 <= port <= 65535
+
+
 def child_environment(
     base: Mapping[str, str] | None = None, *, preserve_home: bool = False
 ) -> dict[str, str]:
@@ -125,8 +150,8 @@ def child_environment(
     for key in tuple(environment):
         if key.startswith(_GIT_ENVIRONMENT_PREFIX):
             environment.pop(key, None)
-    # Production OpenCode needs the already-authenticated local login selected
-    # by the operator.  The wrapper still receives only this filtered mapping
+    # Production Codex needs the already-authenticated local login selected by
+    # the operator. The wrapper still receives only this filtered mapping
     # and applies its own explicit allowlist; fixture/sandbox callers retain
     # the historical credential-free /nonexistent home by default.
     if preserve_home:
@@ -136,17 +161,85 @@ def child_environment(
         environment["HOME"] = candidate_home
     else:
         environment["HOME"] = "/nonexistent"
+    if preserve_home:
+        # Model selection is an optional operator setting, never a free-form
+        # command fragment. Invalid values are rejected before they reach the
+        # provider CLI; an absent value deliberately selects Codex's account
+        # default.
+        model = (source or {}).get("AGENT_CODEX_MODEL")
+        if model is not None:
+            if not isinstance(model, str) or CODEX_MODEL_ID.fullmatch(model) is None:
+                raise WorkerError("codex_model_invalid")
+            environment["AGENT_CODEX_MODEL"] = model
+    if preserve_home:
+        # Codex uses the host's local egress proxy in this environment. Permit
+        # only literal-loopback, unauthenticated proxy endpoints; never pass
+        # a remote proxy or a value containing embedded credentials.
+        proxy_source = source or dict(os.environ)
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+            value = proxy_source.get(key)
+            if _safe_loopback_proxy(value):
+                environment[key] = value
     path_entries = ["/usr/bin", "/bin"]
     if preserve_home:
-        # The accepted local OpenCode transport is installed in the operator's
-        # authenticated home, not in the system image.  Add only the known
-        # repository transport directory when its executable is present; no
-        # caller-controlled PATH entries are forwarded to the child.
-        opencode_dir = Path(environment["HOME"]) / ".opencode" / "bin"
-        if (opencode_dir / "opencode").is_file() and os.access(opencode_dir / "opencode", os.X_OK):
-            path_entries.append(str(opencode_dir))
+        # The accepted local Codex CLI is installed in the operator's
+        # authenticated home, not in the system image. Add only its known
+        # installation directory; no caller-controlled PATH entries are
+        # forwarded to the child.
+        codex_dir = Path(environment["HOME"]) / ".local" / "bin"
+        if (codex_dir / "codex").is_file() and os.access(codex_dir / "codex", os.X_OK):
+            path_entries.append(str(codex_dir))
     environment["PATH"] = ":".join(path_entries)
     return environment
+
+
+def _systemd_codex_auth_source() -> Path | None:
+    """Resolve the manager-provided auth credential without forwarding its path."""
+
+    raw_directory = os.environ.get("CREDENTIALS_DIRECTORY", "")
+    if not raw_directory:
+        return None
+    directory = Path(raw_directory)
+    if not directory.is_absolute():
+        return None
+    try:
+        directory_metadata = os.lstat(directory)
+    except OSError:
+        return None
+    if (
+        not stat.S_ISDIR(directory_metadata.st_mode)
+        or directory_metadata.st_mode & 0o022
+    ):
+        return None
+    source = directory / SYSTEMD_CODEX_CREDENTIAL_NAME
+    try:
+        source_metadata = os.lstat(source)
+    except OSError:
+        return None
+    if (
+        not stat.S_ISREG(source_metadata.st_mode)
+        or source_metadata.st_mode & 0o077
+        or source_metadata.st_size < 2
+        or source_metadata.st_size > 64 * 1024
+    ):
+        return None
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    api_key = payload.get("OPENAI_API_KEY")
+    tokens = payload.get("tokens")
+    access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
+    if not (
+        isinstance(api_key, str)
+        and bool(api_key.strip())
+        or isinstance(access_token, str)
+        and bool(access_token.strip())
+    ):
+        return None
+    return source
 
 
 def select_model_tier(base_tier: str, attempt: int) -> str:
@@ -250,8 +343,8 @@ class WorkerContext:
             for key in self.environment
         ):
             raise WorkerError("credential_shaped_child_environment")
-        # Production OpenCode workers retain the operator's authenticated HOME
-        # so the existing local transport can resolve its login.  Re-apply the
+        # Production Codex workers retain the operator's authenticated HOME so
+        # the local CLI can resolve its login. Re-apply the
         # same filtering policy while preserving that explicitly bounded HOME;
         # fixture/sandbox contexts continue to use /nonexistent.
         preserve_home = self.environment.get("HOME") not in (None, "/nonexistent")
@@ -725,7 +818,7 @@ class ProviderFreeWorker:
     """TEST-ONLY compatibility adapter for historical marker fixtures.
 
     Production construction rejects this type and uses
-    :class:`OpenCodeWorkCardWorker`; deletion is permitted once downstream
+    :class:`CodexWorkCardWorker`; deletion is permitted once downstream
     fixture consumers have moved to ``FakeTestWorker``.
     """
 
@@ -740,10 +833,10 @@ class ProviderFreeWorker:
         return active_worker.run(context)
 
 
-class OpenCodeWorkCardWorker:
+class CodexWorkCardWorker:
     """Production WorkCard implementation adapter using the accepted wrapper.
 
-    The wrapper owns authenticated OpenCode invocation and its credential
+    The wrapper owns authenticated Codex invocation and its credential
     allowlist.  This adapter owns the WorkCard prompt projection, exact
     worktree hygiene, allowed-path enforcement, bounded timeout, and the one
     implementation commit.  It never pushes, creates a PR, or merges.
@@ -753,10 +846,10 @@ class OpenCodeWorkCardWorker:
         self, *, wrapper_path: str | Path | None = None, timeout_seconds: int = 1800
     ) -> None:
         if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 3600:
-            raise ValueError("opencode_timeout_invalid")
+            raise ValueError("codex_timeout_invalid")
         wrapper = Path(wrapper_path) if wrapper_path is not None else Path(__file__).with_name("codex_wrapper.sh")
         if wrapper.is_symlink() or not wrapper.is_file():
-            raise ValueError("opencode_wrapper_invalid")
+            raise ValueError("codex_wrapper_invalid")
         self.wrapper_path = wrapper.resolve()
         self.timeout_seconds = timeout_seconds
 
@@ -768,9 +861,9 @@ class OpenCodeWorkCardWorker:
                 timeout=timeout, check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise WorkerError("opencode_git_unavailable") from exc
+            raise WorkerError("codex_git_unavailable") from exc
         if result.returncode != 0:
-            raise WorkerError("opencode_git_failed")
+            raise WorkerError("codex_git_failed")
         return result.stdout.strip()
 
     @classmethod
@@ -785,7 +878,7 @@ class OpenCodeWorkCardWorker:
                 mission_contract.path_in_scope((forbidden,), path)
                 for forbidden in context.forbidden_paths
             ) or not mission_contract.path_in_scope(context.allowed_paths, path):
-                raise WorkerError("opencode_path_outside_workcard")
+                raise WorkerError("codex_path_outside_workcard")
         return paths
 
     @staticmethod
@@ -815,10 +908,10 @@ class OpenCodeWorkCardWorker:
         """Reject declarations the production adapter cannot execute safely."""
 
         if not context.steps or not context.focused_tests or not context.negative_checks or not context.expected_evidence:
-            raise WorkerError("opencode_workcard_contract_incomplete")
+            raise WorkerError("codex_workcard_contract_incomplete")
         for check in context.focused_tests:
             if check not in _WORKCARD_GATE_NAMES and local_verification.allowlisted_command(check) is None:
-                raise WorkerError("opencode_focused_check_not_allowlisted")
+                raise WorkerError("codex_focused_check_not_allowlisted")
 
     @staticmethod
     def _run_workcard_checks(
@@ -844,6 +937,9 @@ class OpenCodeWorkCardWorker:
             "Work only in the provided repository worktree.",
             "Do not access external directories, do not push, do not create PRs, and do not merge.",
             "Do not edit paths outside the allowed list. Do not commit; the Steward parent validates and commits.",
+            "Produce one concrete, testable diff within the allowed scope; a prose-only response or no-op is not a completed WorkCard.",
+            "Inspect the existing implementation first. If the requested capability is already present, address a concrete uncovered invariant or add a focused regression test within the allowed scope; do not make cosmetic or speculative changes.",
+            "Never claim, synthesize, or infer live provider evidence, spend authorization, adoption authority, or scientific results from a repository diff.",
             f"Mission: {context.mission_id}",
             f"Mission objective: {context.objective}",
             f"Stage: {context.stage_id}",
@@ -862,7 +958,7 @@ class OpenCodeWorkCardWorker:
             "Expected evidence:",
             *(f"- {item}" for item in context.expected_evidence),
             f"Maximum attempts for this WorkCard: {context.max_attempts}",
-            "Environment constraints: use only the supplied allowlisted child environment; no credential-shaped variables, Git metadata variables, or network-selector variables are available.",
+            "Environment constraints: use only the supplied allowlisted child environment; no credential-shaped variables or Git metadata variables are available. Any proxy is a parent-validated unauthenticated literal-loopback endpoint.",
             "Allowlisted environment keys:",
             *(f"- {key}" for key in sorted(context.environment)),
             "Make the smallest complete change, run relevant focused tests, then stop.",
@@ -881,10 +977,10 @@ class OpenCodeWorkCardWorker:
         worktree_writable: bool = True,
     ) -> tuple[int, Path, str | None]:
         if worker_type not in {"implement", "ci-repair", "review"}:
-            raise WorkerError("opencode_worker_type_invalid")
+            raise WorkerError("codex_worker_type_invalid")
         if model_tier not in {"T0", "T1", "T2"}:
-            raise WorkerError("opencode_model_tier_invalid")
-        with tempfile.TemporaryDirectory(prefix="steward-opencode-") as temp:
+            raise WorkerError("codex_model_tier_invalid")
+        with tempfile.TemporaryDirectory(prefix="steward-codex-") as temp:
             root = Path(temp)
             prompt_path = root / "workcard.txt"
             output_dir = root / "output"
@@ -894,55 +990,113 @@ class OpenCodeWorkCardWorker:
             wrapper_copy.chmod(0o700)
             home = root / "home"
             home.mkdir(parents=True)
-            # OpenCode resolves provider/model declarations from the user's
-            # config before consulting the authenticated auth.json store.  A
-            # fresh sandbox HOME has no operator config, so the production
-            # transport would report the configured opencode-go model as
-            # unavailable even though the credential itself is mounted.  Add
-            # only the provider namespace needed by this adapter; never mount
-            # the operator's complete config (which may contain unrelated
-            # MCP, endpoint, or credential-shaped settings).
-            config_destination = home / ".config" / "opencode" / "opencode.json"
-            config_destination.parent.mkdir(parents=True)
-            config_destination.write_text(
-                json.dumps(
-                    {
-                        "$schema": "https://opencode.ai/config.json",
-                        "provider": {"opencode-go": {}},
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            auth_source = (
-                Path(str(environment.get("HOME", "")))
-                / ".local"
-                / "share"
-                / "opencode"
-                / "auth.json"
-            )
-            auth_destination = home / ".local" / "share" / "opencode" / "auth.json"
-            auth_destination.parent.mkdir(parents=True)
+            codex_home = home / ".codex"
+            codex_home.mkdir(parents=True)
+            source_home = Path(str(environment.get("HOME", "")))
             readonly_paths: list[tuple[Path, Path]] = [
                 (wrapper_copy, wrapper_copy),
                 (prompt_path, prompt_path),
-                (config_destination, config_destination),
             ]
-            if auth_source.is_file() and not auth_source.is_symlink():
-                readonly_paths.append((auth_source, auth_destination))
+            # The Codex CLI reads its selected login from CODEX_HOME/auth.json
+            # at runtime.  Keep the account-pool metadata below for account
+            # identity/reconciliation, but also mount the operator-selected
+            # runtime auth file at the path the CLI actually consumes.  Both
+            # mounts are read-only and no other ~/.codex state is exposed.
+            service_credential_declared = bool(
+                os.environ.get("CREDENTIALS_DIRECTORY", "")
+            )
+            service_auth_source = _systemd_codex_auth_source()
+            if service_credential_declared and service_auth_source is None:
+                return 1, root / "missing", "authentication_failure"
+            runtime_auth_source = (
+                service_auth_source
+                if service_auth_source is not None
+                else source_home / ".codex" / "auth.json"
+            )
+            if (
+                runtime_auth_source.is_file()
+                and not runtime_auth_source.is_symlink()
+            ):
+                readonly_paths.append(
+                    (runtime_auth_source, codex_home / "auth.json")
+                )
+            # Mount only the active Codex account registry and the auth file
+            # selected by its authenticated active_account_key. Never mount
+            # the operator's complete ~/.codex tree, which contains sessions,
+            # rollout data, and unrelated private state.
+            registry_source = source_home / ".codex" / "accounts" / "registry.json"
+            if registry_source.is_file() and not registry_source.is_symlink():
+                try:
+                    registry = json.loads(registry_source.read_text(encoding="utf-8"))
+                    active_key = registry.get("active_account_key")
+                    accounts = registry.get("accounts")
+                    known = (
+                        isinstance(active_key, str)
+                        and isinstance(accounts, list)
+                        and any(
+                            isinstance(account, dict)
+                            and account.get("account_key") == active_key
+                            for account in accounts
+                        )
+                    )
+                    encoded = (
+                        base64.urlsafe_b64encode(active_key.encode("utf-8"))
+                        .decode("ascii")
+                        .rstrip("=")
+                        if known
+                        else ""
+                    )
+                    auth_source = source_home / ".codex" / "accounts" / f"{encoded}.auth.json"
+                    if (
+                        known
+                        and auth_source.is_file()
+                        and not auth_source.is_symlink()
+                    ):
+                        registry_destination = codex_home / "accounts" / "registry.json"
+                        auth_destination = codex_home / "accounts" / auth_source.name
+                        readonly_paths.extend(
+                            (
+                                (registry_source, registry_destination),
+                                (auth_source, auth_destination),
+                            )
+                        )
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    pass
             child_environment = dict(environment)
             child_environment["HOME"] = str(home)
+            child_environment["CODEX_HOME"] = str(codex_home)
             child_environment["AGENT_CODEX_MODEL_TIER"] = model_tier
             child_environment["AGENT_CODEX_TIMEOUT_SECONDS"] = str(self.timeout_seconds)
-            opencode_bin = shutil.which(
-                "opencode", path=child_environment.get("PATH", "")
-            )
-            if opencode_bin:
-                opencode_path = Path(opencode_bin)
-                if opencode_path.is_file() and not opencode_path.is_symlink():
-                    readonly_paths.append((opencode_path, opencode_path))
+            codex_path: Path | None = None
+            if service_auth_source is not None:
+                codex_path = SERVICE_CODEX_BINARY
+                if codex_path.is_symlink():
+                    codex_path = None
+            else:
+                codex_bin = shutil.which(
+                    "codex", path=child_environment.get("PATH", "")
+                )
+                if codex_bin:
+                    candidate = Path(codex_bin)
+                    try:
+                        candidate_metadata = os.lstat(candidate)
+                    except OSError:
+                        candidate_metadata = None
+                    if (
+                        candidate.is_absolute()
+                        and candidate_metadata is not None
+                        and stat.S_ISREG(candidate_metadata.st_mode)
+                    ):
+                        codex_path = candidate
+            if codex_path is not None and codex_path.is_file():
+                codex_metadata = os.lstat(codex_path)
+                if (
+                    stat.S_ISREG(codex_metadata.st_mode)
+                    and not codex_metadata.st_mode & 0o022
+                    and os.access(codex_path, os.X_OK)
+                ):
+                    codex_destination = root / "codex"
+                    readonly_paths.append((codex_path, codex_destination))
             sandboxed_command = _sandbox_command(
                 [
                     str(wrapper_copy),
@@ -957,9 +1111,9 @@ class OpenCodeWorkCardWorker:
                 worktree_writable=worktree_writable,
                 writable_paths=(root,),
                 readonly_paths=tuple(readonly_paths),
-                # The real OpenCode provider transport needs egress.  Its
-                # filesystem remains namespace-isolated and the wrapper strips
-                # all proxy/network selector variables and external paths.
+                # The Codex provider transport needs egress. Its filesystem
+                # remains namespace-isolated and the wrapper strips all
+                # proxy/network selector variables and external paths.
                 isolate_network=False,
             )
             try:
@@ -970,7 +1124,7 @@ class OpenCodeWorkCardWorker:
                     env=child_environment,
                 )
             except local_verification.LocalVerificationError as exc:
-                raise WorkerError("opencode_sandbox_unavailable") from exc
+                raise WorkerError("codex_sandbox_unavailable") from exc
             failure_reason: str | None = None
             if exit_code != 0:
                 failure_reason = self._bounded_failure_reason(output_dir)
@@ -980,7 +1134,7 @@ class OpenCodeWorkCardWorker:
             if worker_type == "review" and exit_code == 0:
                 message = output_dir / "codex-last-message.txt"
                 if message.is_file() and not message.is_symlink():
-                    retained = Path(tempfile.mkdtemp(prefix="steward-opencode-review-")) / "message.txt"
+                    retained = Path(tempfile.mkdtemp(prefix="steward-codex-review-")) / "message.txt"
                     retained.write_bytes(message.read_bytes())
                     return exit_code, retained, None
             return exit_code, root / "missing", failure_reason
@@ -1025,10 +1179,10 @@ class OpenCodeWorkCardWorker:
     def run(self, context: WorkerContext) -> WorkerOutcome:
         self._validate_workcard_contract(context)
         if self._git(context.worktree, "status", "--porcelain=v1", "--untracked-files=all"):
-            raise WorkerError("opencode_worktree_not_clean")
+            raise WorkerError("codex_worktree_not_clean")
         before = self._git(context.worktree, "rev-parse", "--verify", "HEAD")
         if before != context.base_sha:
-            raise WorkerError("opencode_base_head_mismatch")
+            raise WorkerError("codex_base_head_mismatch")
         git_sandbox = _sandbox_for_context(context)
         try:
             exit_code, _unused, failure_reason = self._invoke(
@@ -1052,45 +1206,45 @@ class OpenCodeWorkCardWorker:
         if after != before:
             # The agent performed an unapproved Git effect.  Preserve the
             # worktree for read-only reconciliation and never retry blindly.
-            return WorkerOutcome("OUTCOME_UNKNOWN", process_session_id(context), after, (), "opencode_unexpected_commit")
+            return WorkerOutcome("OUTCOME_UNKNOWN", process_session_id(context), after, (), "codex_unexpected_commit")
         paths = self._changed_paths(context)
         if exit_code == 124 or failure_reason == "model_execution_timeout":
-            return WorkerOutcome("OUTCOME_UNKNOWN" if paths else "TIMEOUT", process_session_id(context), before, (), "opencode_timeout")
+            return WorkerOutcome("OUTCOME_UNKNOWN" if paths else "TIMEOUT", process_session_id(context), before, (), "codex_timeout")
         if exit_code != 0:
-            detail = f"opencode_{failure_reason or 'execution_failed'}"
+            detail = f"codex_{failure_reason or 'execution_failed'}"
             return WorkerOutcome("OUTCOME_UNKNOWN" if paths else "FAIL", process_session_id(context), before, (), detail)
         if not paths:
-            return WorkerOutcome("FAIL", process_session_id(context), before, (), "opencode_no_change")
+            return WorkerOutcome("FAIL", process_session_id(context), before, (), "codex_no_change")
         try:
             checks = self._run_workcard_checks(context, paths)
             validate_check_results(checks)
         except Exception:
-            return WorkerOutcome("FAIL", process_session_id(context), before, (), "opencode_focused_checks_failed")
+            return WorkerOutcome("FAIL", process_session_id(context), before, (), "codex_focused_checks_failed")
         if self._git(context.worktree, "diff", "--check"):
-            raise WorkerError("opencode_diff_check_failed")
+            raise WorkerError("codex_diff_check_failed")
         self._git(context.worktree, "add", "--", *paths)
         if not self._git(context.worktree, "diff", "--cached", "--name-only"):
-            raise WorkerError("opencode_stage_empty")
+            raise WorkerError("codex_stage_empty")
         self._git(
             context.worktree,
-            "-c", "user.name=Autonomous Steward OpenCode",
-            "-c", "user.email=steward-opencode@localhost.invalid",
+            "-c", "user.name=Autonomous Steward Codex",
+            "-c", "user.email=steward-codex@localhost.invalid",
             "commit", "-m", f"steward: {context.stage_id} {context.card_id}",
             timeout=120,
         )
         head = self._git(context.worktree, "rev-parse", "--verify", "HEAD")
         if head == before or not SHA40.fullmatch(head):
-            raise WorkerError("opencode_commit_invalid")
+            raise WorkerError("codex_commit_invalid")
         if self._git(context.worktree, "status", "--porcelain=v1", "--untracked-files=all"):
-            raise WorkerError("opencode_worktree_dirty_after_commit")
-        return WorkerOutcome("PASS", process_session_id(context), head, paths, "opencode_workcard_completed")
+            raise WorkerError("codex_worktree_dirty_after_commit")
+        return WorkerOutcome("PASS", process_session_id(context), head, paths, "codex_workcard_completed")
 
 
-class OpenCodeWorkCardReviewer:
+class CodexWorkCardReviewer:
     """Production independent reviewer using the accepted read-only wrapper."""
 
-    def __init__(self, *, worker: OpenCodeWorkCardWorker | None = None) -> None:
-        self.worker = worker or OpenCodeWorkCardWorker()
+    def __init__(self, *, worker: CodexWorkCardWorker | None = None) -> None:
+        self.worker = worker or CodexWorkCardWorker()
 
     @staticmethod
     def _prompt(context: WorkerContext, outcome: WorkerOutcome) -> str:
@@ -1100,8 +1254,11 @@ class OpenCodeWorkCardReviewer:
             f"Mission: {context.mission_id}",
             f"Stage: {context.stage_id}",
             f"WorkCard: {context.card_id}",
+            f"Review objective: {context.objective}",
             f"Base SHA: {context.base_sha}",
             f"Head SHA: {outcome.head_sha}",
+            "The repository checkout and exact Git range are available for read-only inspection.",
+            "Inspect the complete base-to-head range with Git before deciding; provider availability is not a review finding.",
             "Allowed paths:",
             *(f"- {path}" for path in context.allowed_paths),
             "Review Standards and Spec. Return exactly one compact JSON object:",
@@ -1115,7 +1272,7 @@ class OpenCodeWorkCardReviewer:
     def _decode_response(raw: bytes) -> Any:
         """Decode one bounded review object, tolerating one JSON code fence.
 
-        OpenCode transports model text rather than a native structured-output
+        Codex transports model text rather than a native structured-output
         channel.  Models commonly preserve an otherwise exact JSON response in
         a Markdown JSON fence or bounded narration.  Extract exactly one JSON
         object, then leave authority to the strict schema checks below;
@@ -1125,7 +1282,7 @@ class OpenCodeWorkCardReviewer:
         try:
             text = raw.decode("utf-8").strip()
         except UnicodeDecodeError as exc:
-            raise WorkerError("opencode_review_output_invalid") from exc
+            raise WorkerError("codex_review_output_invalid") from exc
         if text.startswith("```"):
             match = re.fullmatch(
                 r"```(?:json)?[ \t]*\r?\n(?P<body>.*?)\r?\n```",
@@ -1133,7 +1290,7 @@ class OpenCodeWorkCardReviewer:
                 flags=re.DOTALL | re.IGNORECASE,
             )
             if match is None:
-                raise WorkerError("opencode_review_output_invalid")
+                raise WorkerError("codex_review_output_invalid")
             text = match.group("body").strip()
         try:
             return json.loads(text)
@@ -1154,7 +1311,7 @@ class OpenCodeWorkCardReviewer:
             if isinstance(candidate, dict):
                 candidates.append(candidate)
         if len(candidates) != 1:
-            raise WorkerError("opencode_review_output_invalid")
+            raise WorkerError("codex_review_output_invalid")
         return candidates[0]
 
     @staticmethod
@@ -1181,11 +1338,11 @@ class OpenCodeWorkCardReviewer:
                 git_sandbox.cleanup()
         try:
             if exit_code != 0 or not response_path.is_file() or response_path.is_symlink():
-                detail = f"opencode_review_{failure_reason or 'execution_failed'}"
+                detail = f"codex_review_{failure_reason or 'execution_failed'}"
                 raise WorkerError(detail)
             raw = response_path.read_bytes()
             if not raw or len(raw) > 16 * 1024:
-                raise WorkerError("opencode_review_output_invalid")
+                raise WorkerError("codex_review_output_invalid")
             value = self._decode_response(raw)
             if (
                 not isinstance(value, dict)
@@ -1195,10 +1352,10 @@ class OpenCodeWorkCardReviewer:
                 or not all(isinstance(item, str) and SESSION_ID.fullmatch(item) for item in value["blockers"])
                 or not isinstance(value["summary"], str)
             ):
-                raise WorkerError("opencode_review_output_invalid")
+                raise WorkerError("codex_review_output_invalid")
             blockers = tuple(value["blockers"])
             if (value["verdict"] == "PASS") != (not blockers):
-                raise WorkerError("opencode_review_verdict_invalid")
+                raise WorkerError("codex_review_verdict_invalid")
             raw_wire = {
                 "schema_version": "steward_review_outcome.v1",
                 "status": value["verdict"],
@@ -1206,7 +1363,7 @@ class OpenCodeWorkCardReviewer:
                 "implementation_session_id": outcome.session_id,
                 "reviewed_head_sha": outcome.head_sha,
                 "blockers": list(blockers),
-                "detail": "opencode_independent_review",
+                "detail": "codex_independent_review",
                 "reviewed_base_sha": context.base_sha,
                 "reviewed_range_sha256": review_range_digest(context.base_sha, outcome.head_sha, worktree=context.worktree),
                 "review_axes": ["standards", "spec"],
@@ -1222,7 +1379,7 @@ class OpenCodeWorkCardReviewer:
             }
             return ReviewOutcome.from_wire(seal_review_outcome_wire(raw_wire))
         finally:
-            if response_path.parent.name.startswith("steward-opencode-review-"):
+            if response_path.parent.name.startswith("steward-codex-review-"):
                 try:
                     response_path.unlink(missing_ok=True)
                     response_path.parent.rmdir()
@@ -1230,16 +1387,16 @@ class OpenCodeWorkCardReviewer:
                     pass
 
 
-def production_worker() -> OpenCodeWorkCardWorker:
+def production_worker() -> CodexWorkCardWorker:
     """Return the sole production implementation adapter."""
 
-    return OpenCodeWorkCardWorker()
+    return CodexWorkCardWorker()
 
 
-def production_reviewer() -> OpenCodeWorkCardReviewer:
+def production_reviewer() -> CodexWorkCardReviewer:
     """Return the independent production reviewer adapter."""
 
-    return OpenCodeWorkCardReviewer()
+    return CodexWorkCardReviewer()
 
 
 PR4B_CANARY_PROPOSAL_SHA256 = (
@@ -1604,6 +1761,7 @@ def _sandbox_command(
         "/etc/passwd",
         "/etc/group",
         "/etc/localtime",
+        "/etc/ssl/certs/ca-certificates.crt",
     ):
         if Path(system_file).is_file():
             args.extend(("--ro-bind", system_file, system_file))
@@ -2003,8 +2161,8 @@ __all__ = [
     "CapacityLock",
     "FakeTestReviewer",
     "FakeTestWorker",
-    "OpenCodeWorkCardReviewer",
-    "OpenCodeWorkCardWorker",
+    "CodexWorkCardReviewer",
+    "CodexWorkCardWorker",
     "PathConflict",
     "PathLockSet",
     "ProviderFreeWorker",

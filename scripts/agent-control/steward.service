@@ -1,5 +1,5 @@
 [Unit]
-Description=Authenticated OpenCode repository-maintenance Steward heartbeat
+Description=Authenticated Codex repository-maintenance Steward heartbeat
 After=network-online.target
 Wants=network-online.target
 
@@ -14,7 +14,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/agent-steward
+ReadWritePaths=/var/lib/agent-steward /opt/token-efficient-agent-harness-lab /opt/.worktrees/token-efficient-agent-harness-lab
+ReadOnlyPaths=/usr/local/libexec/agent-steward/codex
+LoadCredentialEncrypted=codex-auth:/etc/credstore.encrypted/agent-steward.codex-auth
 Environment=STEWARD_JOURNAL_PATH=/var/lib/agent-steward/steward.sqlite3
 
 [Install]
