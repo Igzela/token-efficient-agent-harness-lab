@@ -535,17 +535,18 @@ uncertain; reconcile the live state before any retry.
 
 Canonical CI acquisition binds repository, trusted head repository, workflow identity/path, branch, exact head SHA, and PR. Completed supported evidence outranks active runs; the newest authoritative completed result wins, with a natural `pull_request` run breaking otherwise equal ties. Unsupported terminal runs are reselected around, and a pending natural run receives at most one bounded `workflow_dispatch` fallback. Observed, selected, superseded, unsupported, and fallback state is persisted so stale or duplicate events cannot dispatch duplicate repairs/reviews.
 
-The OpenCode wrapper constructs an allowlisted child environment for version,
+The Codex wrapper constructs an allowlisted child environment for version,
 login-status, help, implementation, repair, and independent review calls. It
 preserves only its documented runtime/login variables and excludes GitHub,
 provider, cloud, and unknown secret-shaped variables. The worker gets only an
 isolated worktree and WorkCard contract; it cannot push, create PRs, or merge.
-Production tiers use the authenticated `opencode-go` models
-`deepseek-v4-flash` (T0/T1) and `deepseek-v4-pro` (T2). The reviewer is a
-distinct read-only invocation. Each sandbox gets only a generated minimal
-provider declaration and the mounted authenticated login; the host's full
-OpenCode config is not exposed. Raw prompts, model outputs,
-transcripts, credentials, and private paths are not journal evidence.
+Production tiers use the authenticated Codex CLI's account-selected default
+within the bounded T0-T2 policy; an explicit `AGENT_CODEX_MODEL` override is
+optional and operator-controlled. The reviewer is a distinct read-only
+invocation. Each sandbox gets only the active account registry and selected
+runtime authentication file; the host's full Codex config is not exposed.
+Raw prompts, model outputs, transcripts, credentials, and private paths are
+not journal evidence.
 
 On restart, the service replays only the durable activation or accepted-main
 rebind and resumes the next safe phase. A lost Ready/supersede/merge result is

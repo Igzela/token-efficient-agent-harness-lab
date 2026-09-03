@@ -1059,7 +1059,7 @@ class StewardExecutionTests(unittest.TestCase):
         self.assertEqual(result.status, "BLOCKED")
         self.assertEqual(result.reason, "worker_path_outside_card")
 
-    def test_default_worker_is_the_explicit_production_opencode_adapter(self):
+    def test_default_worker_is_the_explicit_production_codex_adapter(self):
         instance = steward.Steward(
             repository=contract.CAMPAIGN_REPOSITORY,
             repo_path=self.root,
@@ -1068,30 +1068,57 @@ class StewardExecutionTests(unittest.TestCase):
             reviewer=None,
             lock_dir=self.root / "locks",
         )
-        self.assertIsInstance(instance.worker, workers.OpenCodeWorkCardWorker)
-        self.assertIsInstance(instance.reviewer, workers.OpenCodeWorkCardReviewer)
+        self.assertIsInstance(instance.worker, workers.CodexWorkCardWorker)
+        self.assertIsInstance(instance.reviewer, workers.CodexWorkCardReviewer)
+
+    def test_production_child_environment_allows_only_literal_loopback_proxy(self):
+        environment = workers.child_environment(
+            {
+                "HOME": str(self.root),
+                "PATH": "/caller-controlled-path",
+                "HTTPS_PROXY": "http://127.0.0.1:7897",
+                "HTTP_PROXY": "http://user:password@127.0.0.1:7897",
+                "ALL_PROXY": "https://[::1]:7897/",
+            },
+            preserve_home=True,
+        )
+        self.assertEqual(environment["HTTPS_PROXY"], "http://127.0.0.1:7897")
+        self.assertEqual(environment["ALL_PROXY"], "https://[::1]:7897/")
+        self.assertNotIn("HTTP_PROXY", environment)
+
+    def test_production_child_environment_bounds_optional_codex_model(self):
+        environment = workers.child_environment(
+            {"HOME": str(self.root), "AGENT_CODEX_MODEL": "gpt-5.2-codex"},
+            preserve_home=True,
+        )
+        self.assertEqual(environment["AGENT_CODEX_MODEL"], "gpt-5.2-codex")
+        with self.assertRaisesRegex(workers.WorkerError, "codex_model_invalid"):
+            workers.child_environment(
+                {"HOME": str(self.root), "AGENT_CODEX_MODEL": "--model=bad value"},
+                preserve_home=True,
+            )
 
     def test_production_reviewer_accepts_one_json_fence(self):
         raw = b'```json\n{"verdict":"PASS","blockers":[],"summary":"bounded"}\n```\n'
         self.assertEqual(
-            workers.OpenCodeWorkCardReviewer._decode_response(raw),
+            workers.CodexWorkCardReviewer._decode_response(raw),
             {"verdict": "PASS", "blockers": [], "summary": "bounded"},
         )
 
     def test_production_reviewer_accepts_bounded_prose_around_one_json_object(self):
         raw = b'Review complete.\n{"verdict":"PASS","blockers":[],"summary":"bounded"}'
         self.assertEqual(
-            workers.OpenCodeWorkCardReviewer._decode_response(raw),
+            workers.CodexWorkCardReviewer._decode_response(raw),
             {"verdict": "PASS", "blockers": [], "summary": "bounded"},
         )
 
     def test_production_reviewer_rejects_multiple_json_objects(self):
         raw = b'{"verdict":"PASS"}\n{"blockers":[],"summary":"bounded"}'
-        with self.assertRaisesRegex(workers.WorkerError, "opencode_review_output_invalid"):
-            workers.OpenCodeWorkCardReviewer._decode_response(raw)
+        with self.assertRaisesRegex(workers.WorkerError, "codex_review_output_invalid"):
+            workers.CodexWorkCardReviewer._decode_response(raw)
 
     def test_production_reviewer_bounds_non_authoritative_summary(self):
-        normalize = workers.OpenCodeWorkCardReviewer._bounded_summary
+        normalize = workers.CodexWorkCardReviewer._bounded_summary
         self.assertEqual(normalize("first line\n second\tline"), "first line second line")
         self.assertEqual(normalize(" \r\n "), "structured review verdict")
         self.assertEqual(len(normalize("x" * 700)), 512)
@@ -1110,7 +1137,7 @@ class StewardExecutionTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertEqual(
-            workers.OpenCodeWorkCardWorker._bounded_failure_reason(output_dir),
+            workers.CodexWorkCardWorker._bounded_failure_reason(output_dir),
             "model_execution_failure",
         )
         (output_dir / "failure_reason.json").write_text(
@@ -1124,7 +1151,7 @@ class StewardExecutionTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertIsNone(
-            workers.OpenCodeWorkCardWorker._bounded_failure_reason(output_dir)
+            workers.CodexWorkCardWorker._bounded_failure_reason(output_dir)
         )
 
     def test_production_worker_returns_bounded_wrapper_failure_before_temp_cleanup(self):
@@ -1146,7 +1173,7 @@ raise SystemExit(1)
             encoding="utf-8",
         )
         wrapper.chmod(0o755)
-        worker = workers.OpenCodeWorkCardWorker(
+        worker = workers.CodexWorkCardWorker(
             wrapper_path=wrapper, timeout_seconds=5
         )
         exit_code, response_path, failure_reason = worker._invoke(
@@ -1162,11 +1189,11 @@ raise SystemExit(1)
         self.assertEqual(failure_reason, "authentication_failure")
         self.assertFalse(response_path.exists())
 
-    def test_production_worker_sandbox_exposes_minimal_opencode_provider_config(self):
-        """The isolated HOME must expose provider declarations without host config."""
-        bin_dir = self.root / "opencode-bin"
+    def test_production_worker_sandbox_exposes_minimal_codex_home(self):
+        """The isolated HOME must not expose the host Codex tree."""
+        bin_dir = self.root / "codex-bin"
         bin_dir.mkdir()
-        fake = bin_dir / "opencode"
+        fake = bin_dir / "codex"
         fake.write_text(
             """#!/usr/bin/env python3
 import json
@@ -1177,30 +1204,36 @@ import sys
 args = sys.argv[1:]
 if args == ["--version"]:
     print("1.0.0")
-elif args[:2] == ["auth", "list"]:
-    pass
-elif args[:2] == ["run", "--help"]:
-    print("--format --dir --file --model --title")
-elif args and args[0] == "run":
-    config = Path(os.environ["HOME"]) / ".config" / "opencode" / "opencode.json"
-    payload = json.loads(config.read_text(encoding="utf-8"))
-    if "opencode-go" not in payload.get("provider", {}):
+elif args[:2] == ["exec", "--help"]:
+    print("--json --ephemeral --ignore-user-config --skip-git-repo-check --sandbox --model --cd --output-last-message")
+elif args and args[0] == "exec":
+    codex_home = Path(os.environ["CODEX_HOME"])
+    if codex_home != Path(os.environ["HOME"]) / ".codex":
         raise SystemExit(3)
+    auth = codex_home / "auth.json"
+    if auth.is_file() and auth.read_text(encoding="utf-8") != "runtime-auth":
+        raise SystemExit(7)
+    if (Path(os.environ["HOME"]) / ".codex" / "accounts").exists():
+        raise SystemExit(4)
     resolver = Path("/etc/resolv.conf")
     if not resolver.is_file() or "nameserver" not in resolver.read_text(encoding="utf-8"):
-        raise SystemExit(4)
-    if not Path("/etc/hosts").is_file():
         raise SystemExit(5)
-    print(json.dumps({"type":"text", "sessionID":"ses_fixture", "part":{"text":"done"}}))
-elif args[:2] == ["session", "delete"]:
-    pass
+    if not Path("/etc/hosts").is_file():
+        raise SystemExit(6)
+    output = Path(args[args.index("--output-last-message") + 1])
+    output.write_text("done", encoding="utf-8")
+    print(json.dumps({"type":"turn.completed"}))
 else:
     raise SystemExit(2)
 """,
             encoding="utf-8",
         )
         fake.chmod(0o755)
-        worker = workers.OpenCodeWorkCardWorker(timeout_seconds=5)
+        (self.root / ".codex").mkdir()
+        (self.root / ".codex" / "auth.json").write_text(
+            "runtime-auth", encoding="utf-8"
+        )
+        worker = workers.CodexWorkCardWorker(timeout_seconds=5)
         exit_code, response_path, failure_reason = worker._invoke(
             "implement",
             "bounded workcard",
@@ -1225,14 +1258,14 @@ else:
                 "expected_evidence": ("implementation head",),
             },
         )()
-        workers.OpenCodeWorkCardWorker._validate_workcard_contract(context)
+        workers.CodexWorkCardWorker._validate_workcard_contract(context)
 
         context.focused_tests = ("unallowlisted command",)
         with self.assertRaises(workers.WorkerError) as raised:
-            workers.OpenCodeWorkCardWorker._validate_workcard_contract(context)
-        self.assertEqual(str(raised.exception), "opencode_focused_check_not_allowlisted")
+            workers.CodexWorkCardWorker._validate_workcard_contract(context)
+        self.assertEqual(str(raised.exception), "codex_focused_check_not_allowlisted")
 
-    def test_wrapper_retains_only_final_opencode_text_message(self):
+    def test_wrapper_retains_codex_last_message(self):
         root = self.root / "wrapper-last-message"
         bin_dir = root / "bin"
         output_dir = root / "output"
@@ -1243,27 +1276,28 @@ else:
         prompt = root / "prompt.txt"
         prompt.write_text("bounded review", encoding="utf-8")
         final = '{"verdict":"PASS","blockers":[],"summary":"bounded"}'
-        fake = bin_dir / "opencode"
+        fake = bin_dir / "codex"
         fake.write_text(
             """#!/usr/bin/env python3
 import json
+from pathlib import Path
 import sys
 args = sys.argv[1:]
 if args == ["--version"]:
     print("1.18.25")
-elif args[:2] == ["auth", "list"]:
-    pass
-elif args[:2] == ["run", "--help"]:
-    print("--format --dir --file --model --title")
-elif args[:2] == ["session", "delete"]:
-    pass
-elif args and args[0] == "run":
-    if "--title" not in args or args[args.index("--title") + 1] != "Autonomous Steward WorkCard":
+elif args[:2] == ["exec", "--help"]:
+    print("--json --ephemeral --ignore-user-config --skip-git-repo-check --sandbox --model --cd --output-last-message")
+elif args and args[0] == "exec":
+    if "--approve-for-me" in args:
+        if "--sandbox" in args:
+            raise SystemExit(8)
+    elif "--sandbox" not in args or args[args.index("--sandbox") + 1] != "read-only":
         raise SystemExit(3)
-    if "--model" not in args or args[args.index("--model") + 1] != "opencode-go/deepseek-v4-pro":
+    if "--model" in args and args[args.index("--model") + 1] != "gpt-5.3-codex":
         raise SystemExit(4)
-    print(json.dumps({"type":"text","sessionID":"ses_fixture","part":{"text":"intermediate narration"}}))
-    print(json.dumps({"type":"text","sessionID":"ses_fixture","part":{"text":%r}}))
+    output = Path(args[args.index("--output-last-message") + 1])
+    output.write_text(%r, encoding="utf-8")
+    print(json.dumps({"type":"turn.completed"}))
 else:
     raise SystemExit(2)
 """ % final,
@@ -1276,6 +1310,9 @@ else:
             PATH=f"{bin_dir}:{environment.get('PATH', '/usr/bin:/bin')}",
             AGENT_CODEX_TIMEOUT_SECONDS="30",
             AGENT_CODEX_MODEL_TIER="T2",
+            AGENT_CODEX_MODEL="gpt-5.3-codex",
+            CODEX_HOME=str(root / "isolated-codex-home"),
+            CODEX_BIN=str(fake),
         )
         result = subprocess.run(
             [
@@ -1295,6 +1332,47 @@ else:
         self.assertEqual(
             (output_dir / "codex-last-message.txt").read_text(encoding="utf-8"),
             final,
+        )
+        environment.pop("AGENT_CODEX_MODEL")
+        default_output = root / "output-default"
+        default_output.mkdir()
+        default_result = subprocess.run(
+            [
+                str(ROOT / "scripts" / "agent-control" / "codex_wrapper.sh"),
+                "review",
+                str(prompt),
+                str(default_output),
+                str(workspace),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=environment,
+            check=False,
+        )
+        self.assertEqual(default_result.returncode, 0, default_result.stderr)
+        self.assertEqual(
+            (default_output / "codex-last-message.txt").read_text(encoding="utf-8"),
+            final,
+        )
+        implementation_output = root / "output-implementation"
+        implementation_output.mkdir()
+        implementation_result = subprocess.run(
+            [
+                str(ROOT / "scripts" / "agent-control" / "codex_wrapper.sh"),
+                "implement",
+                str(prompt),
+                str(implementation_output),
+                str(workspace),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=environment,
+            check=False,
+        )
+        self.assertEqual(
+            implementation_result.returncode, 0, implementation_result.stderr
         )
 
 

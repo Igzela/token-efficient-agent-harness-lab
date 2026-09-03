@@ -1150,7 +1150,7 @@ class GhGitHubWriter:
     ) -> dict[str, Any]:
         """Publish a bounded receipt on the PR using the authenticated gh user.
 
-        The OpenCode reviewer is a distinct read-only session.  The parent
+        The Codex reviewer is a distinct read-only session.  The parent
         Steward posts its sealed result through the already-authenticated
         GitHub transport, matching the repository's accepted review protocol.
         Existing exact-head receipts are reconciled before any POST, so a

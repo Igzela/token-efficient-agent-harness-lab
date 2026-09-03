@@ -100,15 +100,15 @@ records intent before a Ready, candidate-supersede, or merge-workflow mutation.
 - `steward_journal.py` is the sole durable lifecycle owner; its hash-chained
   records include lease, approval replay, stage, mutation-intent, and
   PR/head-bound accepted-main receipts.
-- Production WorkCards use the existing authenticated local OpenCode wrapper
-  through `OpenCodeWorkCardWorker`; it consumes the WorkCard objective, scope,
-  checks, evidence, attempts, and environment constraints. Its distinct
-  read-only OpenCode reviewer is not merge-capable. The wrapper maps T0/T1 to
-  `opencode-go/deepseek-v4-flash` and T2 to `opencode-go/deepseek-v4-pro`
-  through the operator's existing authenticated login; it does not persist or
-  manufacture credentials. The sandbox receives a generated minimal
-  `opencode.json` provider declaration plus the authenticated `auth.json`,
-  never the operator's complete config. Marker and PR4B adapters are test-only
+- Production WorkCards use the authenticated local Codex CLI through
+  `CodexWorkCardWorker`; it consumes the WorkCard objective, scope, checks,
+  evidence, attempts, and environment constraints. Its distinct read-only
+  Codex reviewer is not merge-capable. The wrapper uses the account-selected
+  Codex default model within the bounded T0-T2 policy; an explicit
+  `AGENT_CODEX_MODEL` override is optional and operator-controlled. It does not
+  persist or manufacture credentials. Each sandbox receives only the active
+  account registry and the selected runtime `auth.json`, never the operator's
+  complete Codex configuration. Marker and PR4B adapters are test-only
   compatibility surfaces.
 
 ## Review Convergence Protocol
