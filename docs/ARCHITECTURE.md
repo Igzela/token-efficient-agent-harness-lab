@@ -89,35 +89,37 @@ success.
 
 If no durable run identity exists, the old dispatch is not converted into a
 no-effect fact by elapsed time, an empty run scan, owner assertion, or a
-missing log. The only permitted legacy recovery is a new owner-authenticated
-`steward-orphan-dispatch-recovery:v1` marker on the canonical control Issue.
-The marker is authority only: it binds the complete Mission/Stage/PR/base/head/
-workflow/ref/`dispatch_id` identity and authorizes exactly
-`ORPHAN_DISPATCH_RECOVERY` / `QUARANTINE_EXACT_PR`. It must contain no
-resolution, `NO_EFFECT_CONFIRMED`, accepted-main assertion, or caller-supplied
-`approved_at`; GitHub comment `created_at`, comment ID, and OWNER identity are
-the only marker metadata consumed.
+missing log. The approved Mission's bounded `repository_maintenance` grant is
+the standing authority for `QUARANTINE_EXACT_PR`; no per-PR OWNER marker is
+required. This lifecycle recovery capability applies only to the exact
+repository-maintenance candidate already bound to that Mission's hash-chained
+journal identity. The quarantine intent records repository, Mission proposal,
+Stage (the canonical scope for a journal-bound maintenance operation), PR,
+expected base, exact head, workflow/ref, and `dispatch_id` before any mutation.
+It grants no provider spend, arbitrary PR closure, merge replay, branch
+deletion, or external factual assertion.
 
-For a legacy orphan, Steward re-reads the repository, exact PR/base/head,
-accepted main, PR state, and emergency-stop state immediately before the one
-authorized quarantine mutation. The accepted-main read is recorded even when
-it has advanced beyond the orphan's expected base because the recovery action
-is an exact close-only quarantine, not a merge or a rebind. The branch and
-evidence are retained. After
-the mutation, authoritative GitHub readback decides the fact: `MERGED` wins
-and requires merged-PR plus accepted-main readback with no replacement;
-`CLOSED_UNMERGED` permits a fresh candidate only after that fact is recorded;
-anything ambiguous or unavailable remains `OUTCOME_UNKNOWN`. A persisted
-quarantine intent fences repeats across restart, and no unverified old
-candidate and fresh candidate may be merge-eligible concurrently.
+Steward re-reads the repository, exact PR/base/head, accepted main, PR state,
+and emergency-stop state immediately before the one close-only quarantine.
+The accepted-main read is recorded even when it has advanced beyond the
+orphan's expected base. The branch and evidence are retained. After the
+mutation, authoritative GitHub readback decides the fact: `MERGED` wins and
+requires merged-PR plus accepted-main readback with no replacement;
+`CLOSED_UNMERGED` permits an automatic fresh candidate only after that fact is
+recorded; anything ambiguous or unavailable remains `OUTCOME_UNKNOWN` and is
+reconciled read-only. A persisted quarantine intent fences repeat close
+attempts across restart, and no unverified old candidate and fresh candidate
+may be merge-eligible concurrently. A missing, malformed, or lost run-ID
+response is routine recovery and does not activate emergency stop.
 
 Emergency stop remains a hard guard. The service re-reads it immediately
-before quarantine and never clears it itself. If the label is active, the owner
-must make a separately authenticated, exact control transition removing that
-label solely to permit this quarantine; the transition must be read back as
-absent before the mutation. A failed or ambiguous transition leaves recovery
-`OUTCOME_UNKNOWN`, and the service performs no bypass, replay, direct merge, or
-branch deletion.
+before quarantine and never sets or clears it as orphan handling. If a stop is
+independently active for another safety reason, quarantine, replan, and other
+mutations wait while read-only reconciliation continues. OWNER interruption is
+reserved for a genuinely new Mission goal/scope, spend/effect ceiling,
+destructive or hard-to-rollback external action, unresolved safety conflict,
+or active-Harness/adoption decision. The service performs no bypass, replay,
+direct merge, or branch deletion.
 
 ## Three-Tier Operational Model
 

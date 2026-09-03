@@ -68,9 +68,9 @@ records intent before a Ready, candidate-supersede, or merge-workflow mutation.
 
 | Category | Trigger | Disposition |
 |---|---|---|
-| **Routine Recovery** | Worker failure, timeout, formatting error, test failure, CI check failure, review requested changes, git main drift, empty diff | Handled automatically by Steward (retry, split card, repair round, rebase) without interrupting user |
-| **Owner Pause (`PAUSED_FOR_OWNER`)** | Material mission goal/completion/forbidden-change change, authority/budget/time/effect expansion, unapproved destructive or hard-to-rollback effect, unresolvable safety conflict | Execution halts; reports reason and awaits explicit owner decision |
-| **External uncertainty** | Lost/timeout mutation result or unavailable PR/main authority | `OUTCOME_UNKNOWN` / recovery-required; only read-only reconciliation is permitted and a possibly issued mutation is never repeated |
+| **Routine Recovery** | Worker failure, timeout, formatting error, test/CI/review failure, main drift, empty diff, or missing/malformed/lost merge `workflow_run_id` | Handled automatically by Steward (retry, split, repair, rebase, exact-candidate quarantine, replan) inside the approved Mission without another OWNER comment |
+| **Owner Pause (`PAUSED_FOR_OWNER`)** | New Mission goal/scope, spend/effect ceiling, destructive or hard-to-rollback external action, unresolved safety conflict, or active-Harness/adoption decision | Execution halts; reports reason and awaits explicit owner decision |
+| **External uncertainty** | A persisted mutation has ambiguous PR/main authority | Remains `OUTCOME_UNKNOWN`; reconciliation is read-only, the mutation is never replayed, and a replacement remains fenced until authoritative terminal readback |
 
 ## Three-Tier Contract Hierarchy
 
@@ -158,12 +158,13 @@ restart/idempotency contract are canonical in
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md#merge-dispatch-recovery-and-emergency-stop-contract).
 This autonomy contract owns only lifecycle integration: record the merge
 intent before dispatch, persist the returned run identity before settling it,
-allow only read-only remote reconciliation after restart (with bounded local
-checkpoint worktree materialization), and require authoritative merged-PR plus
-accepted-main readback before advancing a Stage. A legacy
-quarantine may advance only after the architecture contract's GitHub
-`CLOSED_UNMERGED` fact is journaled; owner authority is never treated as that
-fact.
+use a Mission's standing repository-maintenance grant to recover an orphaned
+dispatch without a per-PR OWNER marker, and require authoritative merged-PR
+plus accepted-main readback before advancing a Stage. Quarantine intent is
+persisted before its one exact close attempt; restart then permits only
+read-only remote reconciliation (plus bounded checkpoint materialization).
+Automatic replacement may begin only after GitHub's `CLOSED_UNMERGED` fact is
+journaled. Mission authority is never treated as that external fact.
 
 For a WorkCard interrupted after its implementation checkpoint, restart
 recovery selects only the current journal tail and one ordered attempt whose
@@ -185,8 +186,8 @@ retry only that verifier, never a new implementation attempt.
 - If a Stage fails or encounters an unrecoverable conflict, the branch is reset or reverted cleanly without affecting `main`.
 - The Issue-label emergency stop halts new WorkCard, Ready, supersede, and
   merge dispatch while retaining the active Mission and recovery evidence.
-  Existing unresolved merge intents may undergo read-only canonical
-  reconciliation while the stop remains active; the legacy quarantine is an
-  external effect and therefore requires the separate exact control
-  transition described above. No replan or external effect may follow while
-  the stop is active. Clearing it does not create a second Mission approval.
+  Existing unresolved merge and quarantine intents may undergo read-only
+  canonical reconciliation while the stop remains active. No quarantine,
+  replan, or other mutation may follow while it is active. Orphan handling
+  neither sets nor clears the stop, and clearing an independently justified
+  stop does not create a second Mission approval.

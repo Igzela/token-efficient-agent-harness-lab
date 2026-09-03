@@ -30,7 +30,6 @@ CHECK_STATES = frozenset({"PASS", "PENDING", "FAIL", "UNKNOWN"})
 REVIEW_STATES = frozenset(
     {"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"}
 )
-ORPHAN_DISPATCH_RECOVERY_MARKER = "steward-orphan-dispatch-recovery:v1"
 
 
 def merge_dispatch_identity(
@@ -986,24 +985,6 @@ class GitHubWriter(Protocol):
         """Read-only reconciliation for an interrupted merge workflow dispatch."""
         ...
 
-    def read_orphan_dispatch_recovery_authorization(
-        self,
-        repository: str,
-        control_issue_number: int,
-        *,
-        mission_id: str,
-        proposal_sha256: str,
-        stage_id: str,
-        pr_number: int,
-        expected_base_sha: str,
-        expected_head_sha: str,
-        workflow_file: str,
-        dispatch_id: str,
-        owner_identity: str,
-    ) -> dict[str, Any] | None:
-        """Read one owner-authenticated recovery authorization marker."""
-        ...
-
     def quarantine_stage_pr(
         self,
         repository: str,
@@ -1437,8 +1418,8 @@ class GhGitHubWriter:
         An older intent may have no run ID, so the read-only fallback scans
         exact-head workflow runs and binds terminal runs through their complete
         PR/head/dispatch log markers. An empty scan is deliberately
-        ``NOT_PROVEN``; only an authenticated owner resolution can terminate
-        an orphan with no durable run identity.
+        ``NOT_PROVEN``; the service may then use only its Mission-bound,
+        intent-fenced exact-PR quarantine path to obtain a terminal fact.
         """
 
         if (
@@ -1731,147 +1712,6 @@ class GhGitHubWriter:
             "run_ids": [item["run_id"] for item in matches],
         }
 
-    def read_orphan_dispatch_recovery_authorization(
-        self,
-        repository: str,
-        control_issue_number: int,
-        *,
-        mission_id: str,
-        proposal_sha256: str,
-        stage_id: str,
-        pr_number: int,
-        expected_base_sha: str,
-        expected_head_sha: str,
-        workflow_file: str,
-        dispatch_id: str,
-        owner_identity: str,
-    ) -> dict[str, Any] | None:
-        """Read one owner-authenticated recovery authorization marker.
-
-        The comment author and ``created_at`` returned by GitHub are the only
-        authority and temporal evidence.  The marker is deliberately not
-        allowed to carry a factual resolution or caller-supplied timestamp.
-        """
-        if (
-            not isinstance(repository, str)
-            or REPOSITORY.fullmatch(repository) is None
-            or type(control_issue_number) is not int
-            or control_issue_number < 1
-            or not isinstance(mission_id, str)
-            or not IDENTIFIER.fullmatch(mission_id)
-            or not isinstance(proposal_sha256, str)
-            or not SHA256.fullmatch(proposal_sha256)
-            or not isinstance(stage_id, str)
-            or not IDENTIFIER.fullmatch(stage_id)
-            or type(pr_number) is not int
-            or pr_number < 1
-            or not isinstance(expected_base_sha, str)
-            or not SHA40.fullmatch(expected_base_sha)
-            or not isinstance(expected_head_sha, str)
-            or not SHA40.fullmatch(expected_head_sha)
-            or not isinstance(workflow_file, str)
-            or re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", workflow_file) is None
-            or not isinstance(dispatch_id, str)
-            or not SHA256.fullmatch(dispatch_id)
-            or owner_identity not in {"github:Igzela"}
-        ):
-            raise GitHubReadError("merge_resolution_identity_invalid")
-        try:
-            result = subprocess.run(
-                [
-                    "gh", "api", "--paginate", "--slurp",
-                    f"repos/{repository}/issues/{control_issue_number}/comments?per_page=100",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise GitHubReadError("merge_resolution_read_unavailable") from exc
-        if result.returncode != 0:
-            raise GitHubReadError("merge_resolution_read_failed")
-        try:
-            pages = json.loads(result.stdout or "[]")
-        except json.JSONDecodeError as exc:
-            raise GitHubReadError("merge_resolution_read_malformed") from exc
-        if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
-            raise GitHubReadError("merge_resolution_read_malformed")
-
-        expected_fields = {
-            "mission_id", "proposal_sha256", "stage_id", "repository",
-            "control_issue_number", "pr_number", "base_sha", "head_sha",
-            "workflow_file", "ref", "dispatch_id", "authorization",
-            "action", "authorization_id",
-        }
-        matches: list[dict[str, Any]] = []
-        for page in pages:
-            for comment in page:
-                if not isinstance(comment, dict):
-                    continue
-                body = comment.get("body")
-                if not isinstance(body, str) or len(body) > 16 * 1024:
-                    continue
-                marker_match = re.search(
-                    rf"<!--\s*{re.escape(ORPHAN_DISPATCH_RECOVERY_MARKER)}\s+(\{{.*?\}})\s*-->",
-                    body,
-                    re.DOTALL,
-                )
-                if marker_match is None:
-                    continue
-                if str(comment.get("author_association", "")).upper() != "OWNER":
-                    continue
-                author = comment.get("user")
-                login = author.get("login") if isinstance(author, dict) else None
-                if owner_identity != f"github:{login}":
-                    continue
-                try:
-                    marker = json.loads(marker_match.group(1))
-                except json.JSONDecodeError as exc:
-                    raise GitHubFactsError("merge_resolution_marker_invalid") from exc
-                if not isinstance(marker, dict) or set(marker) != expected_fields:
-                    raise GitHubFactsError("merge_resolution_marker_invalid")
-                if (
-                    marker.get("mission_id") != mission_id
-                    or marker.get("proposal_sha256") != proposal_sha256
-                    or marker.get("stage_id") != stage_id
-                    or marker.get("repository") != repository
-                    or marker.get("control_issue_number") != control_issue_number
-                    or marker.get("pr_number") != pr_number
-                    or marker.get("base_sha") != expected_base_sha
-                    or marker.get("head_sha") != expected_head_sha
-                    or marker.get("workflow_file") != workflow_file
-                    or marker.get("ref") != "main"
-                    or marker.get("dispatch_id") != dispatch_id
-                    or marker.get("authorization") != "ORPHAN_DISPATCH_RECOVERY"
-                    or marker.get("action") != "QUARANTINE_EXACT_PR"
-                    or not isinstance(marker.get("authorization_id"), str)
-                    or not IDENTIFIER.fullmatch(marker["authorization_id"])
-                ):
-                    continue
-                comment_created_at = comment.get("created_at")
-                if (
-                    not isinstance(comment_created_at, str)
-                    or TIMESTAMP.fullmatch(comment_created_at) is None
-                ):
-                    raise GitHubFactsError("merge_resolution_comment_timestamp_invalid")
-                try:
-                    _review_timestamp(comment_created_at)
-                except GitHubReadError as exc:
-                    raise GitHubFactsError("merge_resolution_comment_timestamp_invalid") from exc
-                comment_id = comment.get("id")
-                if type(comment_id) is not int or comment_id < 1:
-                    raise GitHubFactsError("merge_resolution_comment_identity_invalid")
-                matches.append({
-                    **marker,
-                    "comment_id": comment_id,
-                    "comment_created_at": comment_created_at,
-                    "owner_identity": owner_identity,
-                })
-        if len(matches) > 1:
-            raise GitHubFactsError("duplicate_merge_resolution_markers")
-        return matches[0] if matches else None
-
     def quarantine_stage_pr(
         self,
         repository: str,
@@ -1880,9 +1720,9 @@ class GhGitHubWriter:
         expected_base_sha: str,
         expected_head_sha: str,
     ) -> dict[str, Any]:
-        """Quarantine one exact legacy orphan and return GitHub facts.
+        """Quarantine one exact Mission-bound orphan and return GitHub facts.
 
-        This is the only recovery mutation for a legacy orphan.  It performs
+        This is the only recovery mutation for a dispatch orphan. It performs
         a fresh PR/base/main preflight, issues only the exact close operation,
         then reads PR and accepted-main again.  The result is never an owner
         assertion: ``MERGED`` or ``CLOSED_UNMERGED`` comes only from that
@@ -1945,7 +1785,7 @@ class GhGitHubWriter:
                 [
                     "gh", "pr", "close", str(pr_number), "--repo", repository,
                     "--comment",
-                    "Quarantined by the owner-authorized legacy orphan-dispatch recovery; branch retained.",
+                    "Quarantined by the Mission-approved orphan-dispatch recovery; branch retained.",
                 ],
                 capture_output=True,
                 text=True,
@@ -2147,7 +1987,6 @@ class FakeGitHubWriter:
         self.merge_outcome_unknown = False
         self.remote_main_sha = "1" * 40
         self.review_receipts: set[tuple[int, str, str]] = set()
-        self.merge_dispatch_resolutions: list[dict[str, Any]] = []
         self._next_workflow_run_id = 10_000
         # Fault-injection seam: an already-issued old workflow can win the
         # race between quarantine preflight and the close request.
@@ -2327,58 +2166,6 @@ class FakeGitHubWriter:
             "dispatch_id": identity["dispatch_id"],
             "workflow_run_id": run_id,
         }
-
-    def read_orphan_dispatch_recovery_authorization(
-        self,
-        repository: str,
-        control_issue_number: int,
-        *,
-        mission_id: str,
-        proposal_sha256: str,
-        stage_id: str,
-        pr_number: int,
-        expected_base_sha: str,
-        expected_head_sha: str,
-        workflow_file: str,
-        dispatch_id: str,
-        owner_identity: str,
-    ) -> dict[str, Any] | None:
-        expected = {
-            "mission_id": mission_id,
-            "proposal_sha256": proposal_sha256,
-            "stage_id": stage_id,
-            "repository": repository,
-            "control_issue_number": control_issue_number,
-            "pr_number": pr_number,
-            "base_sha": expected_base_sha,
-            "head_sha": expected_head_sha,
-            "workflow_file": workflow_file,
-            "ref": "main",
-            "dispatch_id": dispatch_id,
-            "authorization": "ORPHAN_DISPATCH_RECOVERY",
-            "action": "QUARANTINE_EXACT_PR",
-            "owner_identity": owner_identity,
-        }
-        # The fake transport stores authenticated response metadata beside
-        # the payload. Keep its accepted shape strict like the real GitHub
-        # parser: outcome claims and caller-supplied timestamps must never be
-        # silently ignored by a test adapter.
-        transport_fields = {
-            *expected.keys(),
-            "authorization_id",
-            "comment_id",
-            "comment_created_at",
-        }
-        matches = [
-            item for item in self.merge_dispatch_resolutions
-            if set(item) == transport_fields
-            and isinstance(item.get("authorization_id"), str)
-            and IDENTIFIER.fullmatch(item["authorization_id"]) is not None
-            and all(item.get(key) == value for key, value in expected.items())
-        ]
-        if len(matches) > 1:
-            raise GitHubFactsError("duplicate_merge_resolution_markers")
-        return dict(matches[0]) if matches else None
 
     def quarantine_stage_pr(
         self,

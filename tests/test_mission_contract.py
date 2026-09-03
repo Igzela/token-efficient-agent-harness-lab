@@ -319,6 +319,22 @@ class MissionContractTests(unittest.TestCase):
         )
         self.assertEqual(contract.validate_stage(stage, self.mission, (card,)), stage)
         self.assertEqual(contract.validate_workcard(card, stage, self.mission), card)
+        recovery_grant = contract.validate_repository_recovery_scope(
+            self.mission,
+            stage,
+            (card,),
+            action="QUARANTINE_EXACT_PR",
+        )
+        self.assertEqual(recovery_grant.grant_type, "repository_maintenance")
+        with self.assertRaisesRegex(
+            contract.MissionContractError, "repository_recovery_action_forbidden"
+        ):
+            contract.validate_repository_recovery_scope(
+                self.mission,
+                stage,
+                (card,),
+                action="CLOSE_ARBITRARY_PR",
+            )
 
         with self.assertRaisesRegex(
             contract.MissionContractError, "stage_workcard_graph_incomplete"

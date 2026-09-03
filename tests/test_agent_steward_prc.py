@@ -509,16 +509,13 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         bound = self.srv.publish_stage(stage, self.base_sha, title="Stage", body="Body")
         return mission, stage, bound
 
-    def _install_orphan_recovery_authorization(
+    def _install_orphan_dispatch_intent(
         self,
         mission: contract.MaintenanceMission,
         stage: contract.Stage,
         bound: dict[str, object],
-        *,
-        authorization_id: str,
-        comment_id: int,
     ) -> str:
-        """Install only simulated authenticated transport data for recovery tests."""
+        """Persist an exact simulated dispatch identity without a returned run ID."""
         pr_number = int(bound["pr_number"])
         expected_head = str(bound["head_sha"])
         intent_key = (
@@ -550,25 +547,6 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             },
             enforce_transition=False,
         )
-        self.github_writer.merge_dispatch_resolutions.append({
-            "mission_id": mission.mission_id,
-            "proposal_sha256": mission.proposal_sha256,
-            "stage_id": stage.stage_id,
-            "repository": mission.repository_identity.repository,
-            "control_issue_number": 208,
-            "pr_number": pr_number,
-            "base_sha": self.base_sha,
-            "head_sha": expected_head,
-            "workflow_file": "agent-merge.yml",
-            "ref": "main",
-            "dispatch_id": identity["dispatch_id"],
-            "authorization": "ORPHAN_DISPATCH_RECOVERY",
-            "action": "QUARANTINE_EXACT_PR",
-            "authorization_id": authorization_id,
-            "comment_id": comment_id,
-            "comment_created_at": "2099-09-01T23:00:00Z",
-            "owner_identity": "github:Igzela",
-        })
         return identity["dispatch_id"]
 
     def test_simulated_merge_intent_and_bound_drift_stays_read_only(self):
@@ -710,8 +688,8 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             )
         )
 
-    def test_orphan_owner_authorization_quarantines_then_replans(self):
-        """SIMULATED: owner authority permits quarantine; GitHub supplies the fact."""
+    def test_mission_standing_recovery_quarantines_then_replans_without_owner_marker(self):
+        """SIMULATED: Mission authority permits quarantine; GitHub supplies the fact."""
 
         self.github_writer._next_pr = 679
         mission, stage, bound = self._bound_stage_with_pending_intent(
@@ -750,26 +728,6 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             },
             enforce_transition=False,
         )
-        resolution = {
-            "mission_id": mission.mission_id,
-            "proposal_sha256": mission.proposal_sha256,
-            "stage_id": stage.stage_id,
-            "repository": mission.repository_identity.repository,
-            "control_issue_number": 208,
-            "pr_number": pr_number,
-            "base_sha": self.base_sha,
-            "head_sha": expected_head,
-            "workflow_file": "agent-merge.yml",
-            "ref": "main",
-            "dispatch_id": identity["dispatch_id"],
-            "authorization": "ORPHAN_DISPATCH_RECOVERY",
-            "action": "QUARANTINE_EXACT_PR",
-            "authorization_id": "owner-resolution-1",
-            "comment_id": 999,
-            "comment_created_at": "2099-09-01T23:00:00Z",
-            "owner_identity": "github:Igzela",
-        }
-        self.github_writer.merge_dispatch_resolutions.append(resolution)
         with patch.object(
             self.github_writer,
             "reconcile_merge_dispatch",
@@ -798,12 +756,12 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             and event.stage_id == stage.stage_id
         ]
         self.assertEqual(len(reconciled), 1)
-        self.assertEqual(reconciled[0].detail, "legacy_orphan_quarantine_closed_unmerged_observed")
+        self.assertEqual(reconciled[0].detail, "mission_orphan_quarantine_closed_unmerged_observed")
         self.assertEqual(
             self.srv._latest_stage_event(
                 mission.mission_id, stage.stage_id, "STAGE_REPLAN_REQUESTED"
             ).detail,
-            "legacy_orphan_closed_unmerged_replacement_authorized",
+            "mission_orphan_closed_unmerged_replacement_planned",
         )
         rebound = self.srv._latest_stage_event(
             mission.mission_id, "mission", "MISSION_BASE_DRIFT_REBOUND"
@@ -818,7 +776,64 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         self.assertEqual(replacement_stage.repository_identity.base_sha, successor_main)
         self.assertEqual(self.github_writer.prs[679]["state"], "CLOSED")
 
-    def test_orphan_authorization_is_idempotent_after_restart(self):
+    def test_one_mission_recovers_three_consecutive_orphans_without_owner_comments(self):
+        """SIMULATED: repeated transport orphans consume only standing Mission authority."""
+
+        mission, stage, bound = self._bound_stage_with_pending_intent(
+            "MISSION-THREE-ORPHANS", "three-orphans"
+        )
+        quarantined_prs: list[int] = []
+        with patch.object(
+            self.github_writer,
+            "reconcile_merge_dispatch",
+            create=True,
+            return_value={"status": "NOT_PROVEN", "run_ids": []},
+        ):
+            for attempt in range(3):
+                pr_number = int(bound["pr_number"])
+                self.github_writer.prs[pr_number].update(
+                    {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
+                )
+                self._install_orphan_dispatch_intent(mission, stage, bound)
+
+                self.assertEqual(self.srv.step()["status"], "REPLAN_REQUIRED")
+                self.assertEqual(self.github_writer.prs[pr_number]["state"], "CLOSED")
+                quarantined_prs.append(pr_number)
+                self.assertEqual(self.srv.step()["status"], "STAGE_REPLANNED")
+
+                stage, _cards, _metadata = self.srv._stage_records(
+                    mission.mission_id
+                )[-1]
+                if attempt < 2:
+                    bound = self.srv.publish_stage(
+                        stage,
+                        self.base_sha,
+                        title=f"Recovery candidate {attempt + 2}",
+                        body="Mission-bounded replacement",
+                    )
+
+        action_names = [name for name, _data in self.github_writer.actions]
+        self.assertEqual(action_names.count("quarantine"), 3)
+        self.assertEqual(action_names.count("merge"), 0)
+        self.assertEqual(action_names.count("supersede"), 0)
+        self.assertEqual(len(set(quarantined_prs)), 3)
+        intents = [
+            event
+            for event in self.journal.replay()
+            if event.event == "STAGE_ORPHAN_QUARANTINE_INTENT"
+        ]
+        self.assertEqual(len(intents), 3)
+        self.assertTrue(
+            all(event.data["mission_grant_id"] == "repository-maintenance" for event in intents)
+        )
+        self.assertTrue(
+            all(
+                not any("owner_comment" in key or "owner_marker" in key for key in event.data)
+                for event in intents
+            )
+        )
+
+    def test_mission_orphan_recovery_is_idempotent_after_restart(self):
         """SIMULATED restart: persisted quarantine intent cannot close twice."""
 
         mission, stage, bound = self._bound_stage_with_pending_intent(
@@ -848,25 +863,6 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             data={"pr_number": pr_number, "head_sha": expected_head},
             enforce_transition=False,
         )
-        self.github_writer.merge_dispatch_resolutions.append({
-            "mission_id": mission.mission_id,
-            "proposal_sha256": mission.proposal_sha256,
-            "stage_id": stage.stage_id,
-            "repository": mission.repository_identity.repository,
-            "control_issue_number": 208,
-            "pr_number": pr_number,
-            "base_sha": self.base_sha,
-            "head_sha": expected_head,
-            "workflow_file": "agent-merge.yml",
-            "ref": "main",
-            "dispatch_id": identity["dispatch_id"],
-            "authorization": "ORPHAN_DISPATCH_RECOVERY",
-            "action": "QUARANTINE_EXACT_PR",
-            "authorization_id": "owner-resolution-restart",
-            "comment_id": 1000,
-            "comment_created_at": "2099-09-01T23:00:00Z",
-            "owner_identity": "github:Igzela",
-        })
         self.journal.append(
             event="STAGE_OUTCOME_UNKNOWN",
             idempotency_key="merge-owner-idempotent-unknown",
@@ -907,7 +903,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             event for event in self.journal.replay()
             if event.event == "STAGE_SUPERSEDED"
             and event.stage_id == stage.stage_id
-            and event.detail == "legacy_orphan_closed_unmerged_branch_retained"
+            and event.detail == "mission_orphan_closed_unmerged_branch_retained"
         ]
         self.assertEqual(len(retained), 1)
         self.assertTrue(retained[0].data["remote_branch_retained"])
@@ -955,25 +951,6 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             },
             enforce_transition=False,
         )
-        self.github_writer.merge_dispatch_resolutions.append({
-            "mission_id": mission.mission_id,
-            "proposal_sha256": mission.proposal_sha256,
-            "stage_id": stage.stage_id,
-            "repository": mission.repository_identity.repository,
-            "control_issue_number": 208,
-            "pr_number": pr_number,
-            "base_sha": self.base_sha,
-            "head_sha": expected_head,
-            "workflow_file": "agent-merge.yml",
-            "ref": "main",
-            "dispatch_id": identity["dispatch_id"],
-            "authorization": "ORPHAN_DISPATCH_RECOVERY",
-            "action": "QUARANTINE_EXACT_PR",
-            "authorization_id": "owner-resolution-closed-restart",
-            "comment_id": 1001,
-            "comment_created_at": "2099-09-01T23:00:00Z",
-            "owner_identity": "github:Igzela",
-        })
 
         append = self.journal.append
 
@@ -981,7 +958,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             if (
                 kwargs.get("event") == "STAGE_REPLAN_REQUESTED"
                 and kwargs.get("detail")
-                == "legacy_orphan_closed_unmerged_replacement_authorized"
+                == "mission_orphan_closed_unmerged_replacement_planned"
             ):
                 raise RuntimeError("injected_crash_after_closed_reconciliation")
             return append(**kwargs)
@@ -1005,7 +982,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             mission.mission_id, stage.stage_id, "STAGE_MERGE_DISPATCH_RECONCILED"
         )
         self.assertEqual(
-            reconciled.detail, "legacy_orphan_quarantine_closed_unmerged_observed"
+            reconciled.detail, "mission_orphan_quarantine_closed_unmerged_observed"
         )
         self.assertIsNone(
             self.srv._latest_stage_event(
@@ -1067,25 +1044,6 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             },
             enforce_transition=False,
         )
-        self.github_writer.merge_dispatch_resolutions.append({
-            "mission_id": mission.mission_id,
-            "proposal_sha256": mission.proposal_sha256,
-            "stage_id": stage.stage_id,
-            "repository": mission.repository_identity.repository,
-            "control_issue_number": 208,
-            "pr_number": pr_number,
-            "base_sha": self.base_sha,
-            "head_sha": expected_head,
-            "workflow_file": "agent-merge.yml",
-            "ref": "main",
-            "dispatch_id": identity["dispatch_id"],
-            "authorization": "ORPHAN_DISPATCH_RECOVERY",
-            "action": "QUARANTINE_EXACT_PR",
-            "authorization_id": "owner-resolution-stop",
-            "comment_id": 1001,
-            "comment_created_at": "2099-09-01T23:00:00Z",
-            "owner_identity": "github:Igzela",
-        })
         self.srv.control_state = self._ControlOn()
         with patch.object(
             self.github_writer,
@@ -1117,7 +1075,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             )
         )
 
-    def test_legacy_orphan_merge_race_wins_without_replacement(self):
+    def test_mission_orphan_merge_race_wins_without_replacement(self):
         """SIMULATED: an old workflow merge observed after preflight wins."""
 
         mission, stage, bound = self._bound_stage_with_pending_intent(
@@ -1128,13 +1086,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         self.github_writer.prs[pr_number].update(
             {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
         )
-        dispatch_id = self._install_orphan_recovery_authorization(
-            mission,
-            stage,
-            bound,
-            authorization_id="owner-recovery-race",
-            comment_id=1101,
-        )
+        dispatch_id = self._install_orphan_dispatch_intent(mission, stage, bound)
         self.github_writer.quarantine_race_merge = True
 
         def local_mirror_command(command, **_kwargs):
@@ -1177,7 +1129,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             and event.stage_id == stage.stage_id
         ]
         self.assertEqual(len(observed), 1)
-        self.assertEqual(observed[0].detail, "legacy_orphan_merge_observed_from_github")
+        self.assertEqual(observed[0].detail, "mission_orphan_merge_observed_from_github")
 
     def test_delayed_old_workflow_cannot_merge_after_closed_unmerged_quarantine(self):
         """SIMULATED: the repaired workflow's open-PR preflight fences late work."""
@@ -1237,13 +1189,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         self.github_writer.prs[pr_number].update(
             {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
         )
-        dispatch_id = self._install_orphan_recovery_authorization(
-            mission,
-            stage,
-            bound,
-            authorization_id="owner-recovery-quarantine-restart",
-            comment_id=1102,
-        )
+        dispatch_id = self._install_orphan_dispatch_intent(mission, stage, bound)
         self.journal.append(
             event="STAGE_ORPHAN_QUARANTINE_INTENT",
             idempotency_key="orphan-quarantine-crash-point",
@@ -1251,13 +1197,16 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             stage_id=stage.stage_id,
             card_id="",
             state="RUNNING",
-            detail="owner_authorized_exact_orphan_quarantine_intent",
+            detail="mission_standing_exact_orphan_quarantine_intent",
             data={
-                "owner_marker_id": "owner-recovery-quarantine-restart",
-                "owner_comment_id": 1102,
-                "owner_comment_created_at": "2099-09-01T23:00:00Z",
-                "owner_identity": "github:Igzela",
-                "owner_action": "QUARANTINE_EXACT_PR",
+                "mission_grant_id": "repository-maintenance",
+                "mission_grant_type": "repository_maintenance",
+                "mission_proposal_sha256": mission.proposal_sha256,
+                "mission_owner": mission.owner_approval.owner_identity,
+                "mission_granted_at": mission.owner_approval.approved_at,
+                "recovery_action": "QUARANTINE_EXACT_PR",
+                "recovery_scope_kind": "STAGE",
+                "recovery_scope_id": stage.stage_id,
                 "dispatch_identity": {
                     "dispatch_id": dispatch_id,
                     "repository": mission.repository_identity.repository,
@@ -1294,13 +1243,7 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         self.github_writer.prs[pr_number].update(
             {"draft": False, "ci_state": "PASS", "review_state": "PASS"}
         )
-        dispatch_id = self._install_orphan_recovery_authorization(
-            mission,
-            stage,
-            bound,
-            authorization_id="owner-recovery-quarantine-stop",
-            comment_id=1103,
-        )
+        dispatch_id = self._install_orphan_dispatch_intent(mission, stage, bound)
         self.journal.append(
             event="STAGE_ORPHAN_QUARANTINE_INTENT",
             idempotency_key="orphan-quarantine-stop-readback",
@@ -1308,13 +1251,16 @@ class TestAutonomousStewardPRC(unittest.TestCase):
             stage_id=stage.stage_id,
             card_id="",
             state="RUNNING",
-            detail="owner_authorized_exact_orphan_quarantine_intent",
+            detail="mission_standing_exact_orphan_quarantine_intent",
             data={
-                "owner_marker_id": "owner-recovery-quarantine-stop",
-                "owner_comment_id": 1103,
-                "owner_comment_created_at": "2099-09-01T23:00:00Z",
-                "owner_identity": "github:Igzela",
-                "owner_action": "QUARANTINE_EXACT_PR",
+                "mission_grant_id": "repository-maintenance",
+                "mission_grant_type": "repository_maintenance",
+                "mission_proposal_sha256": mission.proposal_sha256,
+                "mission_owner": mission.owner_approval.owner_identity,
+                "mission_granted_at": mission.owner_approval.approved_at,
+                "recovery_action": "QUARANTINE_EXACT_PR",
+                "recovery_scope_kind": "STAGE",
+                "recovery_scope_id": stage.stage_id,
                 "dispatch_identity": {
                     "dispatch_id": dispatch_id,
                     "repository": mission.repository_identity.repository,

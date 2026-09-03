@@ -73,57 +73,6 @@ class TestAutonomousStewardPRB(unittest.TestCase):
         self.assertEqual(readback["status"], "VERIFIED")
         self.assertEqual(readback["accepted_main_sha"], self.head_sha)
 
-    def test_fake_recovery_authorization_requires_complete_identity(self):
-        writer = FakeGitHubWriter(initial_pr_number=202)
-        marker = {
-            "mission_id": "MISSION-ORPHAN",
-            "proposal_sha256": "c" * 64,
-            "stage_id": "stage-orphan",
-            "repository": self.repo,
-            "control_issue_number": 208,
-            "pr_number": 202,
-            "base_sha": self.base_sha,
-            "head_sha": self.head_sha,
-            "workflow_file": "agent-merge.yml",
-            "ref": "main",
-            "dispatch_id": "d" * 64,
-            "authorization": "ORPHAN_DISPATCH_RECOVERY",
-            "action": "QUARANTINE_EXACT_PR",
-            "authorization_id": "owner-recovery-fake",
-            "comment_id": 1001,
-            "comment_created_at": "2099-09-01T23:00:00Z",
-            "owner_identity": "github:Igzela",
-        }
-        writer.merge_dispatch_resolutions.append(marker)
-        common = dict(
-            repository=self.repo,
-            control_issue_number=208,
-            mission_id="MISSION-ORPHAN",
-            proposal_sha256="c" * 64,
-            stage_id="stage-orphan",
-            pr_number=202,
-            expected_base_sha=self.base_sha,
-            expected_head_sha=self.head_sha,
-            workflow_file="agent-merge.yml",
-            dispatch_id="d" * 64,
-            owner_identity="github:Igzela",
-        )
-        self.assertIsNotNone(writer.read_orphan_dispatch_recovery_authorization(**common))
-        self.assertIsNone(
-            writer.read_orphan_dispatch_recovery_authorization(
-                **{**common, "expected_head_sha": "e" * 40}
-            )
-        )
-        self.assertIsNone(
-            writer.read_orphan_dispatch_recovery_authorization(
-                **{**common, "owner_identity": "github:attacker"}
-            )
-        )
-        marker["resolution"] = "NO_EFFECT_CONFIRMED"
-        self.assertIsNone(
-            writer.read_orphan_dispatch_recovery_authorization(**common)
-        )
-
     def test_mark_ready_exact_head_guard(self):
         """Verify GhGitHubWriter.mark_ready re-reads live head before mutating PR state."""
         writer = GhGitHubWriter(timeout_seconds=10)
@@ -269,6 +218,39 @@ class TestAutonomousStewardPRB(unittest.TestCase):
                 with self.assertRaisesRegex(GitHubMutationError, "merge_outcome_unknown"):
                     writer.guarded_merge(self.repo, 303, self.head_sha, timeout_seconds=1)
         self.assertEqual(command.call_count, 1)
+
+    def test_guarded_merge_fail_closed_on_missing_or_malformed_run_identity(self):
+        """A successful POST without a durable run identity is an orphan, not success."""
+
+        writer = GhGitHubWriter(timeout_seconds=1)
+        facts = {
+            "repository": self.repo,
+            "pr_number": 304,
+            "state": "OPEN",
+            "draft": False,
+            "merged": False,
+            "base_sha": self.base_sha,
+            "head_sha": self.head_sha,
+            "ci_state": "PASS",
+            "review_state": "PASS",
+            "base_branch": "main",
+            "head_branch": "stage-branch",
+        }
+        for stdout in (
+            "",
+            "[]",
+            "{}",
+            json.dumps({"workflow_run_id": "304", "run_url": "u", "html_url": "h"}),
+        ):
+            with self.subTest(stdout=stdout), patch(
+                "subprocess.run",
+                return_value=MagicMock(returncode=0, stdout=stdout, stderr=""),
+            ) as command, patch.object(writer, "fetch_stage_pr", return_value=facts):
+                with self.assertRaisesRegex(
+                    GitHubMutationError, "merge_dispatch_run_id_unavailable"
+                ):
+                    writer.guarded_merge(self.repo, 304, self.head_sha)
+                self.assertEqual(command.call_count, 1)
 
     def test_canonical_merge_workflow_records_dispatch_identity(self):
         """The workflow must retain the third exact binding for reconciliation."""
@@ -588,219 +570,6 @@ class TestAutonomousStewardPRB(unittest.TestCase):
         request = command.call_args.args[0][-1]
         self.assertIn("branch=main", request)
         self.assertIn("created=>=2026-09-01", request)
-
-    def test_recovery_authorization_cannot_claim_outcome_or_supply_time(self):
-        """Owner authority permits recovery but cannot fabricate GitHub facts."""
-
-        writer = GhGitHubWriter(timeout_seconds=5)
-        identity = gh.merge_dispatch_identity(
-            self.repo,
-            679,
-            self.base_sha,
-            self.head_sha,
-            intent_key="merge-intent-orphan",
-        )
-        marker = {
-            "mission_id": "MISSION-ORPHAN",
-            "proposal_sha256": "a" * 64,
-            "stage_id": "stage-orphan",
-            "repository": self.repo,
-            "control_issue_number": 208,
-            "pr_number": 679,
-            "base_sha": self.base_sha,
-            "head_sha": self.head_sha,
-            "workflow_file": "agent-merge.yml",
-            "ref": "main",
-            "dispatch_id": identity["dispatch_id"],
-            "authorization": "ORPHAN_DISPATCH_RECOVERY",
-            "action": "QUARANTINE_EXACT_PR",
-            "authorization_id": "owner-recovery-1",
-        }
-        comment = {
-            "id": 999,
-            "created_at": "2026-09-01T12:00:01Z",
-            "author_association": "OWNER",
-            "user": {"login": "Igzela"},
-            "body": (
-                "owner authorization\n<!-- steward-orphan-dispatch-recovery:v1 "
-                + json.dumps(marker, sort_keys=True)
-                + " -->"
-            ),
-        }
-        with patch(
-            "subprocess.run",
-            return_value=MagicMock(
-                returncode=0,
-                stdout=json.dumps([[comment]]),
-                stderr="",
-            ),
-        ):
-            result = writer.read_orphan_dispatch_recovery_authorization(
-                self.repo,
-                208,
-                mission_id="MISSION-ORPHAN",
-                proposal_sha256="a" * 64,
-                stage_id="stage-orphan",
-                pr_number=679,
-                expected_base_sha=self.base_sha,
-                expected_head_sha=self.head_sha,
-                workflow_file="agent-merge.yml",
-                dispatch_id=identity["dispatch_id"],
-                owner_identity="github:Igzela",
-            )
-        self.assertIsNotNone(result)
-        self.assertEqual(result["comment_id"], 999)
-        self.assertEqual(result["owner_identity"], "github:Igzela")
-        self.assertEqual(result["comment_created_at"], "2026-09-01T12:00:01Z")
-        self.assertNotIn("approved_at", result)
-
-        forbidden = {**marker, "approved_at": "2000-01-01T00:00:00Z"}
-        forbidden_comment = {
-            **comment,
-            "body": "<!-- steward-orphan-dispatch-recovery:v1 "
-            + json.dumps(forbidden, sort_keys=True)
-            + " -->",
-        }
-        with patch(
-            "subprocess.run",
-            return_value=MagicMock(
-                returncode=0,
-                stdout=json.dumps([[forbidden_comment]]),
-                stderr="",
-            ),
-        ):
-            with self.assertRaisesRegex(GitHubFactsError, "marker_invalid"):
-                writer.read_orphan_dispatch_recovery_authorization(
-                    self.repo,
-                    208,
-                    mission_id="MISSION-ORPHAN",
-                    proposal_sha256="a" * 64,
-                    stage_id="stage-orphan",
-                    pr_number=679,
-                    expected_base_sha=self.base_sha,
-                    expected_head_sha=self.head_sha,
-                    workflow_file="agent-merge.yml",
-                    dispatch_id=identity["dispatch_id"],
-                    owner_identity="github:Igzela",
-                )
-
-    def test_duplicate_or_replayed_recovery_marker_is_rejected(self):
-        """Two exact owner markers cannot create two recovery effects."""
-
-        writer = GhGitHubWriter(timeout_seconds=5)
-        identity = gh.merge_dispatch_identity(
-            self.repo,
-            679,
-            self.base_sha,
-            self.head_sha,
-            intent_key="merge-intent-orphan",
-        )
-        marker = {
-            "mission_id": "MISSION-ORPHAN",
-            "proposal_sha256": "a" * 64,
-            "stage_id": "stage-orphan",
-            "repository": self.repo,
-            "control_issue_number": 208,
-            "pr_number": 679,
-            "base_sha": self.base_sha,
-            "head_sha": self.head_sha,
-            "workflow_file": "agent-merge.yml",
-            "ref": "main",
-            "dispatch_id": identity["dispatch_id"],
-            "authorization": "ORPHAN_DISPATCH_RECOVERY",
-            "action": "QUARANTINE_EXACT_PR",
-            "authorization_id": "owner-recovery-replay",
-        }
-
-        def comment(comment_id: int) -> dict[str, object]:
-            return {
-                "id": comment_id,
-                "created_at": "2026-09-01T12:00:01Z",
-                "author_association": "OWNER",
-                "user": {"login": "Igzela"},
-                "body": "<!-- steward-orphan-dispatch-recovery:v1 "
-                + json.dumps(marker, sort_keys=True)
-                + " -->",
-            }
-
-        with patch(
-            "subprocess.run",
-            return_value=MagicMock(
-                returncode=0,
-                stdout=json.dumps([[comment(1001), comment(1002)]]),
-                stderr="",
-            ),
-        ):
-            with self.assertRaisesRegex(GitHubFactsError, "duplicate"):
-                writer.read_orphan_dispatch_recovery_authorization(
-                    self.repo,
-                    208,
-                    mission_id="MISSION-ORPHAN",
-                    proposal_sha256="a" * 64,
-                    stage_id="stage-orphan",
-                    pr_number=679,
-                    expected_base_sha=self.base_sha,
-                    expected_head_sha=self.head_sha,
-                    workflow_file="agent-merge.yml",
-                    dispatch_id=identity["dispatch_id"],
-                    owner_identity="github:Igzela",
-                )
-
-    def test_legacy_outcome_marker_is_not_recovery_authority(self):
-        """The previously proposed factual marker is ignored by the new reader."""
-
-        writer = GhGitHubWriter(timeout_seconds=5)
-        identity = gh.merge_dispatch_identity(
-            self.repo,
-            679,
-            self.base_sha,
-            self.head_sha,
-            intent_key="merge-intent-orphan",
-        )
-        legacy = {
-            "mission_id": "MISSION-ORPHAN",
-            "proposal_sha256": "a" * 64,
-            "stage_id": "stage-orphan",
-            "repository": self.repo,
-            "control_issue_number": 208,
-            "pr_number": 679,
-            "base_sha": self.base_sha,
-            "head_sha": self.head_sha,
-            "workflow_file": "agent-merge.yml",
-            "ref": "main",
-            "dispatch_id": identity["dispatch_id"],
-            "resolution": "NO_EFFECT_CONFIRMED",
-            "resolution_id": "owner-resolution-legacy",
-            "accepted_main_sha": self.base_sha,
-            "approved_at": "2026-09-01T12:00:00Z",
-        }
-        comment = {
-            "id": 1000,
-            "created_at": "2026-09-01T12:00:01Z",
-            "author_association": "OWNER",
-            "user": {"login": "Igzela"},
-            "body": "<!-- steward-merge-dispatch-resolution:v1 "
-            + json.dumps(legacy, sort_keys=True)
-            + " -->",
-        }
-        with patch(
-            "subprocess.run",
-            return_value=MagicMock(returncode=0, stdout=json.dumps([[comment]]), stderr=""),
-        ):
-            result = writer.read_orphan_dispatch_recovery_authorization(
-                self.repo,
-                208,
-                mission_id="MISSION-ORPHAN",
-                proposal_sha256="a" * 64,
-                stage_id="stage-orphan",
-                pr_number=679,
-                expected_base_sha=self.base_sha,
-                expected_head_sha=self.head_sha,
-                workflow_file="agent-merge.yml",
-                dispatch_id=identity["dispatch_id"],
-                owner_identity="github:Igzela",
-            )
-        self.assertIsNone(result)
 
     def test_quarantine_requires_exact_base_head_and_readback(self):
         """Quarantine is an exact close-only mutation, never a merge."""

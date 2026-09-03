@@ -2,7 +2,7 @@
 
 Operator procedures for the local Agent Control Plane.
 
-Last updated: 2026-09-02.
+Last updated: 2026-09-03.
 
 ## Session Entry
 
@@ -12,30 +12,22 @@ Operator sessions enter through the accepted router: run `uv run --no-project py
 
 The durable authority/evidence and safety contract is canonical in
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md#merge-dispatch-recovery-and-emergency-stop-contract).
-Use this procedure for the already-proved operator flow: read the exact
-Mission/Stage/PR/base/head/ref identity and accepted `main`, consume one
-authenticated OWNER marker, verify the stop state immediately before any
-mutation, retain the branch, and record the GitHub readback. Never retry an
+For an approved Mission, no per-orphan operator or OWNER comment is required.
+The service validates the Mission/Stage/WorkCard grant, persists the exact
+repository/PR/base/head/workflow/ref/`dispatch_id` quarantine intent, re-reads
+PR/main and the stop control, closes only that exact candidate, retains its
+branch, and records GitHub readback. `MERGED` completes normal accepted-main
+readback; `CLOSED_UNMERGED` automatically replans; unavailable or ambiguous
+facts remain `OUTCOME_UNKNOWN` for read-only reconciliation. Never retry an
 unknown dispatch or infer `NO_EFFECT_CONFIRMED` from elapsed time or a missing
 run; recovery `OUTCOME_UNKNOWN` is not research `INSUFFICIENT`.
 
-Required marker shape (replace every placeholder; post nothing until the
-identity has been independently checked):
-
-```text
-<!-- steward-orphan-dispatch-recovery:v1 {"mission_id":"...","proposal_sha256":"...","stage_id":"...","repository":"Igzela/token-efficient-agent-harness-lab","control_issue_number":208,"pr_number":...,"base_sha":"...","head_sha":"...","workflow_file":"agent-merge.yml","ref":"main","dispatch_id":"...","authorization":"ORPHAN_DISPATCH_RECOVERY","action":"QUARANTINE_EXACT_PR","authorization_id":"..."} -->
-```
-
-The authenticated GitHub author must have `OWNER` association and match the
-Mission's trusted owner identity. One exact marker is accepted; duplicate,
-malformed, stale, or partially matching markers remain fail-closed. The
-comment's GitHub `created_at` is the temporal authority; do not put
-`approved_at` or any external resolution in the marker. The marker authorizes
-only the exact quarantine. Readback yields `MERGED`, `CLOSED_UNMERGED`, or
-`OUTCOME_UNKNOWN` according to the canonical contract; the service never
-clears the stop label, retries the old dispatch, direct-merges, closes a
-different PR, deletes the retained branch, or permits concurrent old/fresh
-merge eligibility.
+Inspect the journal and GitHub only when diagnosing. Do not manually post a
+recovery marker, replay the merge, close another PR, delete the retained
+branch, or create a replacement while the old candidate is unresolved. The
+service does not activate emergency stop for a routine orphan. If an
+independently justified stop is already active, it remains a hard mutation
+guard and only read-only reconciliation proceeds.
 
 ## Agent Runtime and Tool Policy Operations
 
@@ -535,10 +527,12 @@ not journal evidence.
 On restart, the service replays only the durable activation or accepted-main
 rebind and resumes the next safe phase. A lost Ready/supersede/merge result is
 `OUTCOME_UNKNOWN`: retain branch, journal, and exact-head facts and reconcile
-GitHub read-only until proved. Never repeat a possibly issued mutation. A
-failed CI/review candidate is superseded with its branch retained, then receives
-a fresh bounded candidate head; accepted-main drift causes a fresh-base replan.
-All merges remain delegated solely to `agent-merge.yml`.
+GitHub read-only until proved. Never repeat a possibly issued mutation. A merge
+dispatch without a durable run ID uses the Mission's standing exact-PR
+quarantine; a persisted quarantine intent is never repeated. Only GitHub
+`CLOSED_UNMERGED` permits a fresh bounded candidate. Failed CI/review candidates
+are superseded with their branches retained, and accepted-main drift causes a
+fresh-base replan. All merges remain delegated solely to `agent-merge.yml`.
 
 For an interrupted WorkCard, the service may resume only a current-tail,
 same-attempt checkpoint with exact Mission/Stage/card/base/branch/head and

@@ -241,33 +241,33 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _parse_utc_timestamp(value: object) -> datetime | None:
-    if not isinstance(value, str) or mission_contract.TIMESTAMP.fullmatch(value) is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else None
-
-
-def _owner_recovery_journal_data(
-    marker: Mapping[str, Any],
+def _standing_recovery_journal_data(
+    mission: mission_contract.MaintenanceMission,
+    stage: mission_contract.Stage,
+    cards: tuple[mission_contract.WorkCard, ...],
     dispatch_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return redacted, journal-safe metadata for an owner recovery marker.
+    """Validate and record the Mission's standing exact-PR recovery grant.
 
     The append-only journal rejects credential-shaped keys, including keys
-    containing ``AUTH``.  More importantly, retaining the complete comment
-    payload would blur owner authority with external outcome evidence.  Keep
-    only the authenticated comment metadata and exact non-secret binding.
+    containing ``AUTH``. Keep the durable Mission grant separate from GitHub's
+    later factual outcome readback.
     """
+    grant = mission_contract.validate_repository_recovery_scope(
+        mission,
+        stage,
+        cards,
+        action="QUARANTINE_EXACT_PR",
+    )
     return {
-        "owner_marker_id": marker["authorization_id"],
-        "owner_comment_id": marker["comment_id"],
-        "owner_comment_created_at": marker["comment_created_at"],
-        "owner_identity": marker["owner_identity"],
-        "owner_action": marker["action"],
+        "mission_grant_id": grant.grant_id,
+        "mission_grant_type": grant.grant_type,
+        "mission_proposal_sha256": mission.proposal_sha256,
+        "mission_owner": mission.owner_approval.owner_identity,
+        "mission_granted_at": mission.owner_approval.approved_at,
+        "recovery_action": "QUARANTINE_EXACT_PR",
+        "recovery_scope_kind": "STAGE",
+        "recovery_scope_id": stage.stage_id,
         "dispatch_identity": {
             key: dispatch_identity[key]
             for key in (
@@ -1221,13 +1221,20 @@ class StewardService:
             stage.stage_id,
             "STAGE_MERGE_DISPATCH_RECONCILED",
         )
-        owner_authorized_quarantine = any(
-            event.detail == "legacy_orphan_closed_unmerged_replacement_authorized"
+        mission_recovery_quarantine = any(
+            event.detail
+            in {
+                "mission_orphan_closed_unmerged_replacement_planned",
+                "legacy_orphan_closed_unmerged_replacement_authorized",
+            }
             for event in replan_requests
         ) or (
             quarantine_reconciled is not None
             and quarantine_reconciled.detail
-            == "legacy_orphan_quarantine_closed_unmerged_observed"
+            in {
+                "mission_orphan_quarantine_closed_unmerged_observed",
+                "legacy_orphan_quarantine_closed_unmerged_observed",
+            }
         )
         # Accepted-main drift invalidates the base, not the candidate's work.
         # Replanning on the fresh authoritative base therefore keeps the same
@@ -1283,9 +1290,9 @@ class StewardService:
             supersede_key = hashlib.sha256(
                 f"{mission.mission_id}:{stage.stage_id}:{pr_number}:{expected_head}".encode()
             ).hexdigest()[:32]
-            if owner_authorized_quarantine:
-                # The exact owner authorization has already been consumed by
-                # quarantine_stage_pr. Retire only this journal candidate and
+            if mission_recovery_quarantine:
+                # The Mission's standing recovery grant has already been
+                # consumed by quarantine_stage_pr. Retire only this candidate and
                 # retain its remote branch as an auditable recovery artifact;
                 # never issue the ordinary supersede mutation a second time.
                 self.journal.append(
@@ -1295,7 +1302,7 @@ class StewardService:
                     stage_id=stage.stage_id,
                     card_id="",
                     state="RUNNING",
-                    detail="legacy_orphan_closed_unmerged_branch_retained",
+                    detail="mission_orphan_closed_unmerged_branch_retained",
                     data={
                         "pr_number": pr_number,
                         "head_sha": expected_head,
@@ -2003,33 +2010,18 @@ class StewardService:
                         facts = current_facts
                     if (
                         isinstance(reconciliation, Mapping)
-                        and reconciliation.get("status") in {"NOT_PROVEN", "REJECTED"}
+                        and reconciliation.get("status") == "NOT_PROVEN"
                         and merge_intent is not None
                         and workflow_run_id is None
                     ):
-                        authorization_reader = getattr(
-                            self.github_writer,
-                            "read_orphan_dispatch_recovery_authorization",
-                            None,
-                        )
-                        if callable(authorization_reader):
-                            try:
-                                authorization = authorization_reader(
-                                    mission.repository_identity.repository,
-                                    self.control_issue_number,
-                                    mission_id=mission.mission_id,
-                                    proposal_sha256=mission.proposal_sha256,
-                                    stage_id=stage.stage_id,
-                                    pr_number=pr_number,
-                                    expected_base_sha=expected_base,
-                                    expected_head_sha=expected_head,
-                                    workflow_file="agent-merge.yml",
-                                    dispatch_id=identity["dispatch_id"],
-                                    owner_identity=mission.owner_approval.owner_identity,
-                                )
-                            except (GitHubReadError, GitHubFactsError, OSError):
-                                authorization = None
-                            authorization_binding = {
+                        try:
+                            standing_recovery = _standing_recovery_journal_data(
+                                mission, stage, cards, identity
+                            )
+                        except mission_contract.MissionContractError:
+                            standing_recovery = None
+                        if standing_recovery is not None:
+                            recovery_binding = {
                                 "mission_id": mission.mission_id,
                                 "proposal_sha256": mission.proposal_sha256,
                                 "stage_id": stage.stage_id,
@@ -2041,34 +2033,29 @@ class StewardService:
                                 "workflow_file": "agent-merge.yml",
                                 "ref": "main",
                                 "dispatch_id": identity["dispatch_id"],
-                                "authorization": "ORPHAN_DISPATCH_RECOVERY",
+                                "grant_kind": "MISSION_STANDING_RECOVERY",
                                 "action": "QUARANTINE_EXACT_PR",
                             }
-                            authorization_temporally_fresh = False
-                            if isinstance(authorization, Mapping):
-                                intent_at = _parse_utc_timestamp(merge_intent.timestamp)
-                                comment_at = _parse_utc_timestamp(
-                                    authorization.get("comment_created_at")
-                                )
-                                authorization_temporally_fresh = (
-                                    intent_at is not None
-                                    and comment_at is not None
-                                    and comment_at > intent_at
-                                    and authorization.get("owner_identity")
-                                    == mission.owner_approval.owner_identity
-                                    and type(authorization.get("comment_id")) is int
-                                    and authorization.get("comment_id") > 0
-                                    and isinstance(authorization.get("authorization_id"), str)
-                                    and mission_contract.IDENTIFIER.fullmatch(
-                                        authorization["authorization_id"]
-                                    ) is not None
-                                )
+                            recorded_identity = standing_recovery[
+                                "dispatch_identity"
+                            ]
                             if (
-                                isinstance(authorization, Mapping)
-                                and authorization_temporally_fresh
+                                standing_recovery["mission_proposal_sha256"]
+                                == recovery_binding["proposal_sha256"]
+                                and standing_recovery["recovery_scope_id"]
+                                == recovery_binding["stage_id"]
                                 and all(
-                                    authorization.get(key) == value
-                                    for key, value in authorization_binding.items()
+                                    recorded_identity.get(key)
+                                    == recovery_binding[key]
+                                    for key in (
+                                        "repository",
+                                        "pr_number",
+                                        "base_sha",
+                                        "head_sha",
+                                        "workflow_file",
+                                        "ref",
+                                        "dispatch_id",
+                                    )
                                 )
                             ):
                                 quarantine_intent = self._latest_stage_event(
@@ -2124,7 +2111,7 @@ class StewardService:
                                         return {
                                             "status": "OUTCOME_UNKNOWN",
                                             "stage_id": stage.stage_id,
-                                            "reason": "legacy_orphan_preflight_not_exact",
+                                            "reason": "mission_orphan_preflight_not_exact",
                                         }
                                     # Re-read the stop control after the
                                     # exact PR/main preflight and immediately
@@ -2148,7 +2135,7 @@ class StewardService:
                                             "stage_id": stage.stage_id,
                                         }
                                     quarantine_key = hashlib.sha256(
-                                        f"{mission.mission_id}:{stage.stage_id}:{identity['dispatch_id']}:{authorization['comment_id']}".encode()
+                                        f"{mission.mission_id}:{stage.stage_id}:{identity['dispatch_id']}".encode()
                                     ).hexdigest()[:32]
                                     self.journal.append(
                                         event="STAGE_ORPHAN_QUARANTINE_INTENT",
@@ -2157,11 +2144,9 @@ class StewardService:
                                         stage_id=stage.stage_id,
                                         card_id="",
                                         state="RUNNING",
-                                        detail="owner_authorized_exact_orphan_quarantine_intent",
+                                        detail="mission_standing_exact_orphan_quarantine_intent",
                                         data={
-                                            **_owner_recovery_journal_data(
-                                                authorization, identity
-                                            ),
+                                            **standing_recovery,
                                             "preflight_pr": dict(current_facts),
                                             "preflight_accepted_main_sha": current_main,
                                         },
@@ -2207,7 +2192,7 @@ class StewardService:
                                             stage_id=stage.stage_id,
                                             card_id="",
                                             state="OUTCOME_UNKNOWN",
-                                            detail="legacy_orphan_quarantine_preflight_unproven",
+                                            detail="mission_orphan_quarantine_preflight_unproven",
                                             data={"error_class": type(exc).__name__},
                                             enforce_transition=False,
                                         )
@@ -2225,7 +2210,7 @@ class StewardService:
                                             stage_id=stage.stage_id,
                                             card_id="",
                                             state="OUTCOME_UNKNOWN",
-                                            detail="legacy_orphan_quarantine_outcome_unknown",
+                                            detail="mission_orphan_quarantine_outcome_unknown",
                                             data=dict(getattr(exc, "evidence", {}) or {}),
                                             enforce_transition=False,
                                         )
@@ -2288,9 +2273,7 @@ class StewardService:
                                         return {"status": "OUTCOME_UNKNOWN", "stage_id": stage.stage_id}
                                     evidence = {
                                         "reconciliation": dict(reconciliation),
-                                        **_owner_recovery_journal_data(
-                                            authorization, identity
-                                        ),
+                                        **standing_recovery,
                                         "quarantine": dict(quarantine_result),
                                         "current_pr": dict(current_facts),
                                     }
@@ -2304,7 +2287,7 @@ class StewardService:
                                         stage_id=stage.stage_id,
                                         card_id="",
                                         state="RUNNING",
-                                        detail="legacy_orphan_merge_observed_from_github",
+                                        detail="mission_orphan_merge_observed_from_github",
                                         data=evidence,
                                         enforce_transition=False,
                                     )
@@ -2326,9 +2309,7 @@ class StewardService:
                                         }
                                     evidence = {
                                         "reconciliation": dict(reconciliation),
-                                        **_owner_recovery_journal_data(
-                                            authorization, identity
-                                        ),
+                                        **standing_recovery,
                                         "quarantine": dict(quarantine_result),
                                     }
                                     evidence_key = hashlib.sha256(
@@ -2367,7 +2348,7 @@ class StewardService:
                                         stage_id=stage.stage_id,
                                         card_id="",
                                         state="RUNNING",
-                                        detail="legacy_orphan_quarantine_closed_unmerged_observed",
+                                        detail="mission_orphan_quarantine_closed_unmerged_observed",
                                         data=evidence,
                                         enforce_transition=False,
                                     )
@@ -2383,7 +2364,7 @@ class StewardService:
                                         stage_id=stage.stage_id,
                                         card_id="",
                                         state="RUNNING",
-                                        detail="legacy_orphan_closed_unmerged_replacement_authorized",
+                                        detail="mission_orphan_closed_unmerged_replacement_planned",
                                         data=evidence,
                                         enforce_transition=False,
                                     )

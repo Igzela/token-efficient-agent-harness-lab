@@ -75,6 +75,7 @@ SAFE_GRANT_TYPES = frozenset({"read_only", "repository_maintenance"})
 SAFE_OPERATIONS = frozenset(
     {"read", "write", "test", "branch", "draft_pr", "review", "ci_repair"}
 )
+STANDING_REPOSITORY_RECOVERY_ACTIONS = frozenset({"QUARANTINE_EXACT_PR"})
 SAFE_CHANGE_TYPES = frozenset(
     {"documentation", "source", "tests", "configuration", "workflow"}
 )
@@ -1311,6 +1312,41 @@ def validate_execution_scope(
         raise MissionContractError("execution_path_outside_grant")
 
 
+def validate_repository_recovery_scope(
+    mission: MaintenanceMission,
+    stage: Stage,
+    cards: tuple[WorkCard, ...],
+    *,
+    action: str,
+) -> Grant:
+    """Require standing Mission authority for one exact lifecycle recovery.
+
+    Recovery is inherent to the approved repository-maintenance lifecycle, not
+    a new provider/effect grant. The service must still bind and journal the
+    exact external candidate before invoking the returned capability.
+    """
+
+    model = validate_owner_approval(mission)
+    validate_stage(stage, model, cards)
+    if action not in STANDING_REPOSITORY_RECOVERY_ACTIONS:
+        raise MissionContractError("repository_recovery_action_forbidden")
+    grants = tuple(
+        grant
+        for grant in model.standing_grants
+        if grant.grant_type == "repository_maintenance"
+    )
+    if len(grants) != 1:
+        raise MissionContractError("repository_maintenance_grant_missing")
+    grant = grants[0]
+    if any(
+        not any(path_in_scope((scope,), path) for scope in grant.allowed_paths)
+        for card in cards
+        for path in card.allowed_paths
+    ):
+        raise MissionContractError("standing_recovery_path_outside_grant")
+    return grant
+
+
 def validate_registered_campaign() -> MaintenanceMission:
     """Validate the one statically registered campaign against trusted inputs."""
 
@@ -1588,6 +1624,7 @@ __all__ = [
     "validate_authenticated_owner_approval",
     "validate_legacy_compatibility",
     "validate_owner_approval",
+    "validate_repository_recovery_scope",
     "validate_registered_campaign",
     "validate_stage",
     "validate_workcard",
