@@ -1521,6 +1521,21 @@ class StewardService:
         replacement = self._next_stage_plan(
             mission, int(metadata["stage_index"]) - 1, retry=retry, strategy=strategy
         )
+        if replacement is None and mission.acceptance_ledger is not None:
+            # Dynamic research stages live beyond the fixed maintenance stage
+            # groups.  A failed dynamic candidate must receive the same
+            # bounded replacement path as its initial plan; otherwise the
+            # recovery loop raises ``stage_replan_group_missing`` and strands
+            # the active Mission after a routine worker failure.
+            eligible = mission.acceptance_ledger.unresolved_eligible()
+            if eligible:
+                replacement = self._next_dynamic_stage_plan(
+                    mission,
+                    int(metadata["stage_index"]) - 1,
+                    eligible,
+                    retry=retry,
+                    strategy=strategy,
+                )
         if replacement is None:
             raise StewardServiceError("stage_replan_group_missing")
         replacement_stage, replacement_cards, total = replacement

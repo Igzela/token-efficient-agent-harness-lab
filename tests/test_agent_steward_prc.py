@@ -444,6 +444,56 @@ class TestAutonomousStewardPRC(unittest.TestCase):
         )
         self.assertEqual(self.srv.status()["mission_state"], "RUNNING")
 
+    def test_dynamic_stage_failure_replans_with_remaining_acceptance_obligations(self):
+        """SIMULATED: dynamic research stages keep their bounded retry path."""
+
+        mission, digest = contract.compile_proposal_mission(
+            "Complete the bounded research mainline with acceptance evidence.",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-DYNAMIC-REPLAN",
+            acceptance_ledger=contract.build_research_acceptance_ledger(),
+        )
+        self.journal.record_mission_proposal(
+            mission.mission_id, digest, mission.to_wire()
+        )
+        active = self._approve(mission, digest, "dynamic-replan")
+        eligible = active.acceptance_ledger.unresolved_eligible()
+        planned = self.srv._next_dynamic_stage_plan(active, 7, eligible)
+        self.assertIsNotNone(planned)
+        stage, cards, total = planned
+        self.srv._record_stage_plan(
+            active,
+            stage,
+            cards,
+            stage_index=8,
+            stage_total=total,
+        )
+        self.journal.append(
+            event="STAGE_REPLAN_REQUESTED",
+            idempotency_key="dynamic-stage-replan-requested",
+            mission_id=active.mission_id,
+            stage_id=stage.stage_id,
+            card_id="",
+            state="RUNNING",
+            detail="stage_execution_replan_requested",
+            data={},
+            enforce_transition=False,
+        )
+
+        result = self.srv._replan_stage(
+            active,
+            stage,
+            {"stage_index": 8, "stage_total": total, "retry": 1, "strategy": "primary"},
+        )
+
+        self.assertEqual(result["status"], "STAGE_REPLANNED")
+        self.assertEqual(result["retry"], 2)
+        replacement, _replacement_cards, metadata = self.srv._stage_records(active.mission_id)[-1]
+        self.assertNotEqual(replacement.stage_id, stage.stage_id)
+        self.assertEqual(metadata["stage_index"], 8)
+        self.assertEqual(metadata["retry"], 2)
+
     def test_fault_scenario_4_accepted_main_drift(self):
         """Scenario 4: Drift in accepted main base SHA is safely detected."""
         mission, prop_sha = self.srv.propose("Please update README.md for drift test.", repository="Igzela/token-efficient-agent-harness-lab", base_sha=self.base_sha, mission_id="MISSION-F4")
