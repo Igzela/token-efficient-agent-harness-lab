@@ -2,6 +2,80 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+fn sanitize_text(value: &str, field: &str, max_bytes: usize) -> Result<String, OrchestrationError> {
+    let sanitized = crate::provider::redaction::redact_sensitive_patterns(value);
+    if sanitized.len() > max_bytes {
+        return Err(OrchestrationError::OversizedField {
+            field: field.to_string(),
+            current: sanitized.len(),
+            max: max_bytes,
+        });
+    }
+    Ok(sanitized)
+}
+
+fn validate_sanitized_text(
+    value: &str,
+    field: &str,
+    max_bytes: usize,
+) -> Result<(), OrchestrationError> {
+    let sanitized = sanitize_text(value, field, max_bytes)?;
+    if sanitized != value {
+        return Err(OrchestrationError::SecretDetected(field.to_string()));
+    }
+    Ok(())
+}
+
+fn sanitize_optional_text(
+    value: Option<&str>,
+    field: &str,
+    max_bytes: usize,
+) -> Result<Option<String>, OrchestrationError> {
+    value
+        .map(|item| sanitize_text(item, field, max_bytes))
+        .transpose()
+}
+
+fn sanitize_digest(
+    value: &str,
+    field: &str,
+    max_bytes: usize,
+) -> Result<String, OrchestrationError> {
+    sanitize_text(value, field, max_bytes.max(64))
+}
+
+fn sanitize_optional_digest(
+    value: Option<&str>,
+    field: &str,
+    max_bytes: usize,
+) -> Result<Option<String>, OrchestrationError> {
+    value
+        .map(|item| sanitize_digest(item, field, max_bytes))
+        .transpose()
+}
+
+fn validate_digest(value: &str, field: &str, max_bytes: usize) -> Result<(), OrchestrationError> {
+    validate_sanitized_text(value, field, max_bytes.max(64))
+}
+
+fn validate_artifact_reference(
+    value: &str,
+    max_bytes: usize,
+) -> Result<String, OrchestrationError> {
+    let sanitized = sanitize_text(value, "artifact_ref", max_bytes)?;
+    if sanitized.is_empty()
+        || sanitized.starts_with('/')
+        || sanitized.starts_with('\\')
+        || sanitized.contains('/')
+        || sanitized.contains('\\')
+        || sanitized.contains('\0')
+        || sanitized.split(':').any(|part| part == "..")
+    {
+        return Err(OrchestrationError::InvalidArtifactReference(sanitized));
+    }
+    Ok(sanitized)
+}
+
 pub const LEDGER_ORCHESTRATED_SCHEMA_VERSION: &str = "harness_evolution_ledger_orchestration.v1";
 pub const DEFAULT_MAX_LEDGER_TASKS: usize = 32;
 pub const DEFAULT_MAX_LEDGER_FINDINGS: usize = 64;
@@ -116,8 +190,9 @@ pub struct WorkingLedger {
 
 impl WorkingLedger {
     pub fn new(contract_digest: impl Into<String>, initial_plan: impl Into<String>) -> Self {
-        let contract = contract_digest.into();
-        let plan = initial_plan.into();
+        let contract =
+            crate::provider::redaction::redact_sensitive_patterns(&contract_digest.into());
+        let plan = crate::provider::redaction::redact_sensitive_patterns(&initial_plan.into());
         let fingerprint = compute_progress_fingerprint(None, None, None, &contract);
         Self {
             schema_version: LEDGER_ORCHESTRATED_SCHEMA_VERSION.to_string(),
@@ -142,9 +217,10 @@ impl WorkingLedger {
         description: &str,
         config: &LedgerOrchestratorConfig,
     ) -> Result<(), OrchestrationError> {
-        validate_task_id(id)?;
-        if self.tasks.iter().any(|t| t.id == id) {
-            return Err(OrchestrationError::DuplicateTaskId(id.to_string()));
+        let task_id = sanitize_text(id, "task_id", config.max_summary_bytes)?;
+        validate_task_id(&task_id)?;
+        if self.tasks.iter().any(|t| t.id == task_id) {
+            return Err(OrchestrationError::DuplicateTaskId(task_id));
         }
         if self.tasks.len() >= config.max_tasks {
             return Err(OrchestrationError::OversizedField {
@@ -160,9 +236,9 @@ impl WorkingLedger {
                 max: config.max_summary_bytes,
             });
         }
-        let sanitized = crate::provider::redaction::redact_sensitive_patterns(description);
+        let sanitized = sanitize_text(description, "task_description", config.max_summary_bytes)?;
         self.tasks.push(LedgerTaskRecord {
-            id: id.to_string(),
+            id: task_id,
             description: sanitized,
             status: LedgerTaskStatus::Pending,
             result_digest: None,
@@ -170,7 +246,10 @@ impl WorkingLedger {
             attempt_count: 0,
             failure_reason: None,
         });
-        self.validate_bounds(config)?;
+        if let Err(error) = self.validate_bounds(config) {
+            self.tasks.pop();
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -193,9 +272,42 @@ impl WorkingLedger {
                 max: config.max_summary_bytes,
             });
         }
-        finding.summary = crate::provider::redaction::redact_sensitive_patterns(&finding.summary);
+        finding.id = sanitize_text(&finding.id, "finding_id", config.max_summary_bytes)?;
+        if finding.id.is_empty() {
+            return Err(OrchestrationError::InvalidControllerDecision(
+                "finding id must not be empty".to_string(),
+            ));
+        }
+        finding.source =
+            sanitize_text(&finding.source, "finding_source", config.max_summary_bytes)?;
+        if finding.source.is_empty() {
+            return Err(OrchestrationError::InvalidControllerDecision(
+                "finding source must not be empty".to_string(),
+            ));
+        }
+        finding.related_task_id = finding
+            .related_task_id
+            .as_deref()
+            .map(|id| sanitize_text(id, "finding_related_task_id", config.max_summary_bytes))
+            .transpose()?;
+        if let Some(related_task_id) = &finding.related_task_id {
+            validate_task_id(related_task_id)?;
+        }
+        finding.evidence_digest = sanitize_optional_digest(
+            finding.evidence_digest.as_deref(),
+            "finding_evidence_digest",
+            config.max_summary_bytes,
+        )?;
+        finding.summary = sanitize_text(
+            &finding.summary,
+            "finding_summary",
+            config.max_summary_bytes,
+        )?;
         self.findings.push(finding);
-        self.validate_bounds(config)?;
+        if let Err(error) = self.validate_bounds(config) {
+            self.findings.pop();
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -218,10 +330,32 @@ impl WorkingLedger {
                 max: config.max_summary_bytes,
             });
         }
-        observation.observation_summary =
-            crate::provider::redaction::redact_sensitive_patterns(&observation.observation_summary);
+        observation.task_id = sanitize_text(
+            &observation.task_id,
+            "observation_task_id",
+            config.max_summary_bytes,
+        )?;
+        if observation.task_id.is_empty() {
+            return Err(OrchestrationError::InvalidControllerDecision(
+                "observation task id must not be empty".to_string(),
+            ));
+        }
+        validate_task_id(&observation.task_id)?;
+        observation.observation_summary = sanitize_text(
+            &observation.observation_summary,
+            "observation_summary",
+            config.max_summary_bytes,
+        )?;
+        observation.evidence_digest = sanitize_optional_digest(
+            observation.evidence_digest.as_deref(),
+            "observation_evidence_digest",
+            config.max_summary_bytes,
+        )?;
         self.observations.push(observation);
-        self.validate_bounds(config)?;
+        if let Err(error) = self.validate_bounds(config) {
+            self.observations.pop();
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -256,6 +390,152 @@ impl WorkingLedger {
         &self,
         config: &LedgerOrchestratorConfig,
     ) -> Result<(), OrchestrationError> {
+        if self.schema_version != LEDGER_ORCHESTRATED_SCHEMA_VERSION {
+            return Err(OrchestrationError::InvalidControllerDecision(
+                "working ledger schema version mismatch".to_string(),
+            ));
+        }
+        if self.tasks.len() > config.max_tasks {
+            return Err(OrchestrationError::OversizedField {
+                field: "tasks".to_string(),
+                current: self.tasks.len(),
+                max: config.max_tasks,
+            });
+        }
+        if self.findings.len() > config.max_findings {
+            return Err(OrchestrationError::OversizedField {
+                field: "findings".to_string(),
+                current: self.findings.len(),
+                max: config.max_findings,
+            });
+        }
+        if self.observations.len() > config.max_observations {
+            return Err(OrchestrationError::OversizedField {
+                field: "observations".to_string(),
+                current: self.observations.len(),
+                max: config.max_observations,
+            });
+        }
+        if self.truncation_count > config.max_truncations {
+            return Err(OrchestrationError::TruncationLimitExceeded(
+                config.max_truncations,
+            ));
+        }
+        if self.round_count > config.max_orchestration_rounds {
+            return Err(OrchestrationError::MaxRoundsExceeded(
+                config.max_orchestration_rounds,
+            ));
+        }
+        if self.round_count.saturating_add(self.replan_count) > config.max_orchestration_rounds {
+            return Err(OrchestrationError::MaxRoundsExceeded(
+                config.max_orchestration_rounds,
+            ));
+        }
+        if let Some(selected_task_id) = &self.current_selected_task_id {
+            validate_task_id(selected_task_id)?;
+            if self.get_task(selected_task_id).is_none() {
+                return Err(OrchestrationError::TaskNotFound(selected_task_id.clone()));
+            }
+        }
+        validate_digest(
+            &self.progress_fingerprint,
+            "progress_fingerprint",
+            config.max_summary_bytes,
+        )?;
+        for task in &self.tasks {
+            validate_task_id(&task.id)?;
+            validate_sanitized_text(&task.id, "task_id", config.max_summary_bytes)?;
+            if task.attempt_count > config.max_task_attempts {
+                return Err(OrchestrationError::InvalidControllerDecision(
+                    "task attempt count exceeds configured maximum".to_string(),
+                ));
+            }
+            validate_sanitized_text(
+                &task.description,
+                "task_description",
+                config.max_summary_bytes,
+            )?;
+            if let Some(result_digest) = &task.result_digest {
+                validate_digest(
+                    result_digest,
+                    "task_result_digest",
+                    config.max_summary_bytes,
+                )?;
+            }
+            if let Some(failure_reason) = &task.failure_reason {
+                validate_sanitized_text(
+                    failure_reason,
+                    "task_failure_reason",
+                    config.max_summary_bytes,
+                )?;
+            }
+            for reference in &task.evidence_refs {
+                let sanitized = validate_artifact_reference(reference, config.max_summary_bytes)?;
+                if sanitized != *reference {
+                    return Err(OrchestrationError::SecretDetected(
+                        "task_evidence_ref".to_string(),
+                    ));
+                }
+            }
+        }
+        for finding in &self.findings {
+            validate_sanitized_text(&finding.id, "finding_id", config.max_summary_bytes)?;
+            validate_sanitized_text(&finding.source, "finding_source", config.max_summary_bytes)?;
+            validate_sanitized_text(
+                &finding.summary,
+                "finding_summary",
+                config.max_summary_bytes,
+            )?;
+            if let Some(related_task_id) = &finding.related_task_id {
+                validate_task_id(related_task_id)?;
+                validate_sanitized_text(
+                    related_task_id,
+                    "finding_related_task_id",
+                    config.max_summary_bytes,
+                )?;
+            }
+            if let Some(evidence_digest) = &finding.evidence_digest {
+                validate_digest(
+                    evidence_digest,
+                    "finding_evidence_digest",
+                    config.max_summary_bytes,
+                )?;
+            }
+        }
+        for observation in &self.observations {
+            validate_sanitized_text(
+                &observation.task_id,
+                "observation_task_id",
+                config.max_summary_bytes,
+            )?;
+            validate_task_id(&observation.task_id)?;
+            validate_sanitized_text(
+                &observation.observation_summary,
+                "observation_summary",
+                config.max_summary_bytes,
+            )?;
+            if let Some(evidence_digest) = &observation.evidence_digest {
+                validate_digest(
+                    evidence_digest,
+                    "observation_evidence_digest",
+                    config.max_summary_bytes,
+                )?;
+            }
+        }
+        validate_digest(
+            &self.contract_digest,
+            "contract_digest",
+            config.max_summary_bytes,
+        )?;
+        validate_sanitized_text(&self.current_plan, "current_plan", config.max_summary_bytes)?;
+        for reference in &self.artifact_refs {
+            let sanitized = validate_artifact_reference(reference, config.max_summary_bytes)?;
+            if sanitized != *reference {
+                return Err(OrchestrationError::SecretDetected(
+                    "artifact_ref".to_string(),
+                ));
+            }
+        }
         let bytes = self.estimate_bytes();
         if bytes > config.max_ledger_bytes {
             return Err(OrchestrationError::OversizedLedger {
@@ -267,25 +547,37 @@ impl WorkingLedger {
     }
 
     pub fn estimate_bytes(&self) -> usize {
-        serde_json::to_vec(self).map(|v| v.len()).unwrap_or(0)
+        serde_json::to_vec(self)
+            .expect("WorkingLedger serialization must remain infallible")
+            .len()
     }
 
     pub fn state_digest(&self) -> String {
+        let bytes =
+            serde_json::to_vec(self).expect("WorkingLedger serialization must remain infallible");
         let mut hasher = Sha256::new();
-        hasher.update(self.contract_digest.as_bytes());
-        for task in &self.tasks {
-            hasher.update(task.id.as_bytes());
-            hasher.update(format!("{:?}", task.status).as_bytes());
-            if let Some(res) = &task.result_digest {
-                hasher.update(res.as_bytes());
-            }
-            for art in &task.evidence_refs {
-                hasher.update(art.as_bytes());
-            }
-        }
-        for art in &self.artifact_refs {
-            hasher.update(art.as_bytes());
-        }
+        hasher.update(bytes);
+        hex::encode(hasher.finalize())
+    }
+
+    pub fn progress_state_digest(&self) -> String {
+        let progress_state = serde_json::json!({
+            "contract_digest": self.contract_digest,
+            "current_plan": self.current_plan,
+            "tasks": self.tasks.iter().map(|task| serde_json::json!({
+                "id": task.id,
+                "description": task.description,
+                "status": task.status,
+                "result_digest": task.result_digest,
+                "evidence_refs": task.evidence_refs,
+            })).collect::<Vec<_>>(),
+            "findings": self.findings,
+            "artifact_refs": self.artifact_refs,
+        });
+        let bytes = serde_json::to_vec(&progress_state)
+            .expect("WorkingLedger progress serialization must remain infallible");
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
         hex::encode(hasher.finalize())
     }
 }
@@ -297,7 +589,9 @@ pub fn validate_task_id(id: &str) -> Result<(), OrchestrationError> {
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
     {
-        return Err(OrchestrationError::InvalidTaskId(id.to_string()));
+        return Err(OrchestrationError::InvalidTaskId(
+            crate::provider::redaction::redact_sensitive_patterns(id),
+        ));
     }
     Ok(())
 }
@@ -335,10 +629,27 @@ pub fn project_worker_context(
     task_id: &str,
     expected_evidence: &str,
 ) -> Result<WorkerContext, OrchestrationError> {
+    project_worker_context_with_limit(
+        ledger,
+        task_id,
+        expected_evidence,
+        DEFAULT_MAX_SUMMARY_BYTES,
+    )
+}
+
+fn project_worker_context_with_limit(
+    ledger: &WorkingLedger,
+    task_id: &str,
+    expected_evidence: &str,
+    max_bytes: usize,
+) -> Result<WorkerContext, OrchestrationError> {
+    let task_id = sanitize_text(task_id, "task_id", max_bytes)?;
+    validate_task_id(&task_id)?;
     let selected_task = ledger
-        .get_task(task_id)
+        .get_task(&task_id)
         .ok_or_else(|| OrchestrationError::TaskNotFound(task_id.to_string()))?
         .clone();
+    let selected_task = sanitize_task_record(&selected_task, max_bytes)?;
 
     // Deterministic fresh-context projection: worker sees only findings that are
     // either unbound (global discovered facts) or explicitly bound to this task.
@@ -348,16 +659,21 @@ pub fn project_worker_context(
         .iter()
         .filter(|f| match &f.related_task_id {
             None => true,
-            Some(rel) => rel == task_id,
+            Some(rel) => rel == &task_id,
         })
-        .cloned()
-        .collect();
+        .map(|finding| sanitize_finding(finding, max_bytes))
+        .collect::<Result<Vec<_>, _>>()?;
 
     // Collect relevant artifacts
-    let mut relevant_artifact_refs: Vec<String> = selected_task.evidence_refs.clone();
+    let mut relevant_artifact_refs: Vec<String> = selected_task
+        .evidence_refs
+        .iter()
+        .map(|reference| validate_artifact_reference(reference, max_bytes))
+        .collect::<Result<Vec<_>, _>>()?;
     for art in &ledger.artifact_refs {
-        if !relevant_artifact_refs.contains(art) {
-            relevant_artifact_refs.push(art.clone());
+        let sanitized = validate_artifact_reference(art, max_bytes)?;
+        if !relevant_artifact_refs.contains(&sanitized) {
+            relevant_artifact_refs.push(sanitized);
         }
     }
 
@@ -367,16 +683,72 @@ pub fn project_worker_context(
         "attempt".to_string(),
         selected_task.attempt_count.to_string(),
     );
-    execution_metadata.insert("task_id".to_string(), task_id.to_string());
+    execution_metadata.insert("task_id".to_string(), task_id.clone());
 
     Ok(WorkerContext {
-        contract_digest: ledger.contract_digest.clone(),
-        plan_summary: ledger.current_plan.clone(),
+        contract_digest: sanitize_text(&ledger.contract_digest, "contract_digest", max_bytes)?,
+        plan_summary: sanitize_text(&ledger.current_plan, "plan_summary", max_bytes)?,
         selected_task,
         relevant_findings,
         relevant_artifact_refs,
-        expected_evidence: expected_evidence.to_string(),
+        expected_evidence: sanitize_text(expected_evidence, "expected_evidence", max_bytes)?,
         execution_metadata,
+    })
+}
+
+fn sanitize_task_record(
+    task: &LedgerTaskRecord,
+    max_bytes: usize,
+) -> Result<LedgerTaskRecord, OrchestrationError> {
+    let id = sanitize_text(&task.id, "task_id", max_bytes)?;
+    validate_task_id(&id)?;
+    Ok(LedgerTaskRecord {
+        id,
+        description: sanitize_text(&task.description, "task_description", max_bytes)?,
+        status: task.status,
+        result_digest: sanitize_optional_digest(
+            task.result_digest.as_deref(),
+            "task_result_digest",
+            max_bytes,
+        )?,
+        evidence_refs: task
+            .evidence_refs
+            .iter()
+            .map(|reference| validate_artifact_reference(reference, max_bytes))
+            .collect::<Result<Vec<_>, _>>()?,
+        attempt_count: task.attempt_count,
+        failure_reason: sanitize_optional_text(
+            task.failure_reason.as_deref(),
+            "task_failure_reason",
+            max_bytes,
+        )?,
+    })
+}
+
+fn sanitize_finding(
+    finding: &LedgerFinding,
+    max_bytes: usize,
+) -> Result<LedgerFinding, OrchestrationError> {
+    let id = sanitize_text(&finding.id, "finding_id", max_bytes)?;
+    validate_task_id(&id)?;
+    let related_task_id = sanitize_optional_text(
+        finding.related_task_id.as_deref(),
+        "finding_related_task_id",
+        max_bytes,
+    )?;
+    if let Some(related_task_id) = &related_task_id {
+        validate_task_id(related_task_id)?;
+    }
+    Ok(LedgerFinding {
+        id,
+        summary: sanitize_text(&finding.summary, "finding_summary", max_bytes)?,
+        source: sanitize_text(&finding.source, "finding_source", max_bytes)?,
+        related_task_id,
+        evidence_digest: sanitize_optional_digest(
+            finding.evidence_digest.as_deref(),
+            "finding_evidence_digest",
+            max_bytes,
+        )?,
     })
 }
 
@@ -520,6 +892,7 @@ pub enum OrchestrationError {
     InvalidTaskId(String),
     DuplicateTaskId(String),
     TaskNotFound(String),
+    InvalidArtifactReference(String),
     OversizedLedger {
         current: usize,
         max: usize,
@@ -530,6 +903,7 @@ pub enum OrchestrationError {
         max: usize,
     },
     MaxRoundsExceeded(u32),
+    TruncationLimitExceeded(u32),
     NoProgressLimitExceeded(u32),
     InvalidControllerDecision(String),
     WorkerExecutionError(String),
@@ -541,9 +915,26 @@ pub enum OrchestrationError {
 impl std::fmt::Display for OrchestrationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidTaskId(id) => write!(f, "invalid task id: {id}"),
-            Self::DuplicateTaskId(id) => write!(f, "duplicate task id: {id}"),
-            Self::TaskNotFound(id) => write!(f, "task not found: {id}"),
+            Self::InvalidTaskId(id) => write!(
+                f,
+                "invalid task id: {}",
+                crate::provider::redaction::redact_sensitive_patterns(id)
+            ),
+            Self::DuplicateTaskId(id) => write!(
+                f,
+                "duplicate task id: {}",
+                crate::provider::redaction::redact_sensitive_patterns(id)
+            ),
+            Self::TaskNotFound(id) => write!(
+                f,
+                "task not found: {}",
+                crate::provider::redaction::redact_sensitive_patterns(id)
+            ),
+            Self::InvalidArtifactReference(reference) => write!(
+                f,
+                "invalid artifact reference: {}",
+                crate::provider::redaction::redact_sensitive_patterns(reference)
+            ),
             Self::OversizedLedger { current, max } => {
                 write!(f, "oversized ledger: {current} bytes exceeds max {max}")
             }
@@ -555,19 +946,202 @@ impl std::fmt::Display for OrchestrationError {
                 write!(f, "field {field} size {current} exceeds max {max}")
             }
             Self::MaxRoundsExceeded(r) => write!(f, "max orchestration rounds {r} exceeded"),
+            Self::TruncationLimitExceeded(r) => write!(f, "max truncations {r} exceeded"),
             Self::NoProgressLimitExceeded(r) => {
                 write!(f, "no progress limit {r} consecutive rounds exceeded")
             }
-            Self::InvalidControllerDecision(s) => write!(f, "invalid controller decision: {s}"),
-            Self::WorkerExecutionError(s) => write!(f, "worker execution error: {s}"),
-            Self::VerificationError(s) => write!(f, "verification error: {s}"),
-            Self::SecretDetected(s) => write!(f, "credential or secret shape detected: {s}"),
+            Self::InvalidControllerDecision(s) => write!(
+                f,
+                "invalid controller decision: {}",
+                crate::provider::redaction::redact_sensitive_patterns(s)
+            ),
+            Self::WorkerExecutionError(s) => write!(
+                f,
+                "worker execution error: {}",
+                crate::provider::redaction::redact_sensitive_patterns(s)
+            ),
+            Self::VerificationError(s) => write!(
+                f,
+                "verification error: {}",
+                crate::provider::redaction::redact_sensitive_patterns(s)
+            ),
+            Self::SecretDetected(s) => write!(
+                f,
+                "credential or secret shape detected: {}",
+                crate::provider::redaction::redact_sensitive_patterns(s)
+            ),
             Self::Cancelled => write!(f, "orchestration cancelled"),
         }
     }
 }
 
 impl std::error::Error for OrchestrationError {}
+
+fn sanitize_controller_action(
+    action: ControllerAction,
+    max_bytes: usize,
+    max_tasks: usize,
+) -> Result<ControllerAction, OrchestrationError> {
+    match action {
+        ControllerAction::ExecuteTask { task_id } => {
+            let task_id = sanitize_text(&task_id, "controller_task_id", max_bytes)?;
+            validate_task_id(&task_id)?;
+            Ok(ControllerAction::ExecuteTask { task_id })
+        }
+        ControllerAction::Replan {
+            new_plan_summary,
+            new_tasks,
+            supersede_task_ids,
+        } => {
+            if new_tasks.len() > max_tasks {
+                return Err(OrchestrationError::OversizedField {
+                    field: "new_tasks".to_string(),
+                    current: new_tasks.len(),
+                    max: max_tasks,
+                });
+            }
+            if supersede_task_ids.len() > max_tasks {
+                return Err(OrchestrationError::OversizedField {
+                    field: "supersede_task_ids".to_string(),
+                    current: supersede_task_ids.len(),
+                    max: max_tasks,
+                });
+            }
+            Ok(ControllerAction::Replan {
+                new_plan_summary: sanitize_optional_text(
+                    new_plan_summary.as_deref(),
+                    "new_plan_summary",
+                    max_bytes,
+                )?,
+                new_tasks: new_tasks
+                    .into_iter()
+                    .map(|task| {
+                        let id = sanitize_text(&task.id, "new_task_id", max_bytes)?;
+                        validate_task_id(&id)?;
+                        Ok(NewTaskSpec {
+                            id,
+                            description: sanitize_text(
+                                &task.description,
+                                "new_task_description",
+                                max_bytes,
+                            )?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, OrchestrationError>>()?,
+                supersede_task_ids: supersede_task_ids
+                    .into_iter()
+                    .map(|id| {
+                        let id = sanitize_text(&id, "supersede_task_id", max_bytes)?;
+                        validate_task_id(&id)?;
+                        Ok(id)
+                    })
+                    .collect::<Result<Vec<_>, OrchestrationError>>()?,
+            })
+        }
+        ControllerAction::DeclareComplete { deliverable_digest } => {
+            let digest = sanitize_digest(&deliverable_digest, "deliverable_digest", max_bytes)?;
+            if digest.is_empty() {
+                return Err(OrchestrationError::InvalidControllerDecision(
+                    "completion digest must not be empty".to_string(),
+                ));
+            }
+            Ok(ControllerAction::DeclareComplete {
+                deliverable_digest: digest,
+            })
+        }
+        ControllerAction::DeclareFailed { reason } => Ok(ControllerAction::DeclareFailed {
+            reason: sanitize_text(&reason, "failure_reason", max_bytes)?,
+        }),
+        ControllerAction::DeclareNoProgress { reason } => Ok(ControllerAction::DeclareNoProgress {
+            reason: sanitize_text(&reason, "no_progress_reason", max_bytes)?,
+        }),
+    }
+}
+
+fn sanitize_next_task_decision(
+    decision: NextTaskDecision,
+    max_bytes: usize,
+    max_tasks: usize,
+) -> Result<NextTaskDecision, OrchestrationError> {
+    Ok(NextTaskDecision {
+        action: sanitize_controller_action(decision.action, max_bytes, max_tasks)?,
+        reason_summary: sanitize_text(&decision.reason_summary, "reason_summary", max_bytes)?,
+        expected_evidence: sanitize_text(
+            &decision.expected_evidence,
+            "expected_evidence",
+            max_bytes,
+        )?,
+    })
+}
+
+fn sanitize_worker_result(
+    result: WorkerResult,
+    max_bytes: usize,
+    max_findings: usize,
+    max_artifact_refs: usize,
+) -> Result<WorkerResult, OrchestrationError> {
+    if result.findings.len() > max_findings {
+        return Err(OrchestrationError::OversizedField {
+            field: "worker_findings".to_string(),
+            current: result.findings.len(),
+            max: max_findings,
+        });
+    }
+    if result.artifact_refs.len() > max_artifact_refs {
+        return Err(OrchestrationError::OversizedField {
+            field: "worker_artifact_refs".to_string(),
+            current: result.artifact_refs.len(),
+            max: max_artifact_refs,
+        });
+    }
+    Ok(WorkerResult {
+        status: result.status,
+        output_digest: sanitize_optional_digest(
+            result.output_digest.as_deref(),
+            "output_digest",
+            max_bytes,
+        )?,
+        partial_summary: sanitize_optional_text(
+            result.partial_summary.as_deref(),
+            "partial_summary",
+            max_bytes,
+        )?,
+        artifact_refs: result
+            .artifact_refs
+            .iter()
+            .map(|reference| validate_artifact_reference(reference, max_bytes))
+            .collect::<Result<Vec<_>, _>>()?,
+        findings: result
+            .findings
+            .iter()
+            .map(|finding| sanitize_finding(finding, max_bytes))
+            .collect::<Result<Vec<_>, _>>()?,
+        failure_reason: sanitize_optional_text(
+            result.failure_reason.as_deref(),
+            "failure_reason",
+            max_bytes,
+        )?,
+    })
+}
+
+fn sanitize_verification_report(
+    report: VerificationReport,
+    max_bytes: usize,
+) -> Result<VerificationReport, OrchestrationError> {
+    Ok(VerificationReport {
+        outcome: report.outcome,
+        observation_summary: sanitize_text(
+            &report.observation_summary,
+            "observation_summary",
+            max_bytes,
+        )?,
+        evidence_digest: sanitize_optional_digest(
+            report.evidence_digest.as_deref(),
+            "verification_evidence_digest",
+            max_bytes,
+        )?,
+    })
+}
 
 pub struct LedgerOrchestrator<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> {
     pub config: LedgerOrchestratorConfig,
@@ -591,13 +1165,14 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
         controller: C,
         worker: W,
         verifier: V,
-    ) -> Self {
+    ) -> Result<Self, OrchestrationError> {
+        ledger.validate_bounds(&config)?;
         let metrics = OrchestrationMetrics {
             task_count: ledger.tasks.len(),
             ledger_peak_bytes: ledger.estimate_bytes(),
             ..Default::default()
         };
-        Self {
+        Ok(Self {
             config,
             state: OrchestrationLifecycleState::Initialized,
             ledger,
@@ -610,7 +1185,7 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
             pending_decision: None,
             terminal_summary: None,
             cancelled: false,
-        }
+        })
     }
 
     pub fn cancel(&mut self) {
@@ -627,7 +1202,12 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
             return Ok(self.state);
         }
 
-        if self.ledger.round_count >= self.config.max_orchestration_rounds {
+        if self
+            .ledger
+            .round_count
+            .saturating_add(self.ledger.replan_count)
+            >= self.config.max_orchestration_rounds
+        {
             self.state = OrchestrationLifecycleState::Failed;
             return Err(OrchestrationError::MaxRoundsExceeded(
                 self.config.max_orchestration_rounds,
@@ -641,11 +1221,21 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
             }
             OrchestrationLifecycleState::SelectingAction => {
                 self.metrics.manager_call_count += 1;
-                let decision = self.controller.decide_next_action(&self.ledger)?;
+                let decision = sanitize_next_task_decision(
+                    self.controller.decide_next_action(&self.ledger)?,
+                    self.config.max_summary_bytes,
+                    self.config.max_tasks,
+                )?;
                 match &decision.action {
                     ControllerAction::DeclareComplete {
                         deliverable_digest: _,
                     } => {
+                        if !self.ledger.all_verified() {
+                            return Err(OrchestrationError::InvalidControllerDecision(
+                                "cannot declare completion before all tasks are verified"
+                                    .to_string(),
+                            ));
+                        }
                         self.state = OrchestrationLifecycleState::Completed;
                         self.pending_decision = Some(decision);
                         Ok(self.state)
@@ -667,26 +1257,44 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         new_tasks,
                         supersede_task_ids,
                     } => {
+                        let ledger_snapshot = self.ledger.clone();
+                        let metrics_snapshot = self.metrics.clone();
                         self.metrics.replan_count += 1;
                         self.ledger.replan_count += 1;
                         if let Some(plan) = new_plan_summary {
-                            self.ledger.current_plan =
-                                crate::provider::redaction::redact_sensitive_patterns(plan);
+                            self.ledger.current_plan = plan.clone();
                         }
                         for id in supersede_task_ids {
-                            if let Some(task) = self.ledger.get_task_mut(id) {
-                                task.status = LedgerTaskStatus::Superseded;
-                            }
+                            let Some(task) = self.ledger.get_task_mut(id) else {
+                                self.ledger = ledger_snapshot;
+                                self.metrics = metrics_snapshot;
+                                return Err(OrchestrationError::InvalidControllerDecision(
+                                    format!("cannot supersede unknown task {id}"),
+                                ));
+                            };
+                            task.status = LedgerTaskStatus::Superseded;
                         }
                         for new_t in new_tasks {
-                            self.ledger
-                                .add_task(&new_t.id, &new_t.description, &self.config)?;
+                            if let Err(error) =
+                                self.ledger
+                                    .add_task(&new_t.id, &new_t.description, &self.config)
+                            {
+                                self.ledger = ledger_snapshot;
+                                self.metrics = metrics_snapshot;
+                                return Err(error);
+                            }
+                        }
+                        if let Err(error) = self.ledger.validate_bounds(&self.config) {
+                            self.ledger = ledger_snapshot;
+                            self.metrics = metrics_snapshot;
+                            return Err(error);
                         }
                         self.metrics.task_count = self.ledger.tasks.len();
                         self.state = OrchestrationLifecycleState::SelectingAction;
                         Ok(self.state)
                     }
                     ControllerAction::ExecuteTask { task_id } => {
+                        let ledger_snapshot = self.ledger.clone();
                         let task = self
                             .ledger
                             .get_task_mut(task_id)
@@ -699,6 +1307,10 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         }
                         task.status = LedgerTaskStatus::Selected;
                         self.ledger.current_selected_task_id = Some(task_id.clone());
+                        if let Err(error) = self.ledger.validate_bounds(&self.config) {
+                            self.ledger = ledger_snapshot;
+                            return Err(error);
+                        }
                         self.pending_decision = Some(decision);
                         self.state = OrchestrationLifecycleState::ExecutingWorker;
                         Ok(self.state)
@@ -706,6 +1318,16 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                 }
             }
             OrchestrationLifecycleState::ExecutingWorker => {
+                let ledger_snapshot = self.ledger.clone();
+                let metrics_snapshot = self.metrics.clone();
+                let state_snapshot = self.state;
+                let pending_decision_snapshot = self.pending_decision.clone();
+                let restore_execution_snapshot = |orchestrator: &mut Self| {
+                    orchestrator.ledger = ledger_snapshot.clone();
+                    orchestrator.metrics = metrics_snapshot.clone();
+                    orchestrator.state = state_snapshot;
+                    orchestrator.pending_decision = pending_decision_snapshot.clone();
+                };
                 let task_id = self
                     .ledger
                     .current_selected_task_id
@@ -715,17 +1337,31 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                             "missing selected task in ExecutingWorker state".into(),
                         )
                     })?;
-                let decision = self.pending_decision.take().ok_or_else(|| {
-                    OrchestrationError::InvalidControllerDecision(
-                        "missing controller decision in ExecutingWorker state".into(),
-                    )
-                })?;
+                let decision = match self.pending_decision.take() {
+                    Some(decision) => decision,
+                    None => {
+                        restore_execution_snapshot(self);
+                        return Err(OrchestrationError::InvalidControllerDecision(
+                            "missing controller decision in ExecutingWorker state".into(),
+                        ));
+                    }
+                };
 
                 self.ledger.round_count += 1;
                 self.metrics.round_count += 1;
 
-                let context =
-                    project_worker_context(&self.ledger, &task_id, &decision.expected_evidence)?;
+                let context = match project_worker_context_with_limit(
+                    &self.ledger,
+                    &task_id,
+                    &decision.expected_evidence,
+                    self.config.max_summary_bytes,
+                ) {
+                    Ok(context) => context,
+                    Err(error) => {
+                        restore_execution_snapshot(self);
+                        return Err(error);
+                    }
+                };
                 let context_bytes = serde_json::to_vec(&context).map(|v| v.len()).unwrap_or(0);
                 self.metrics.context_input_bytes += context_bytes as u64;
 
@@ -736,7 +1372,25 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                 }
 
                 self.metrics.worker_call_count += 1;
-                let worker_result = self.worker.execute_task(&context)?;
+                let raw_worker_result = match self.worker.execute_task(&context) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        restore_execution_snapshot(self);
+                        return Err(error);
+                    }
+                };
+                let worker_result = match sanitize_worker_result(
+                    raw_worker_result,
+                    self.config.max_summary_bytes,
+                    self.config.max_findings,
+                    self.config.max_ledger_bytes,
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        restore_execution_snapshot(self);
+                        return Err(error);
+                    }
+                };
 
                 // Handle worker outcomes
                 match worker_result.status {
@@ -756,7 +1410,10 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                             }
                         }
                         for f in &worker_result.findings {
-                            self.ledger.add_finding(f.clone(), &self.config)?;
+                            if let Err(error) = self.ledger.add_finding(f.clone(), &self.config) {
+                                restore_execution_snapshot(self);
+                                return Err(error);
+                            }
                         }
 
                         self.state = OrchestrationLifecycleState::Verifying;
@@ -768,15 +1425,29 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                             expected_evidence: decision.expected_evidence,
                         });
                         // Pass worker result along via state
-                        self.verify_worker_result(&task_id, &worker_result)?;
+                        if let Err(error) = self.verify_worker_result(&task_id, &worker_result) {
+                            restore_execution_snapshot(self);
+                            return Err(error);
+                        }
+                        if let Err(error) = self.ledger.validate_bounds(&self.config) {
+                            restore_execution_snapshot(self);
+                            return Err(error);
+                        }
                         Ok(self.state)
                     }
                     WorkerOutcomeStatus::Truncated => {
+                        if self.ledger.truncation_count >= self.config.max_truncations {
+                            restore_execution_snapshot(self);
+                            self.state = OrchestrationLifecycleState::Failed;
+                            return Err(OrchestrationError::TruncationLimitExceeded(
+                                self.config.max_truncations,
+                            ));
+                        }
                         self.metrics.truncation_count += 1;
                         self.ledger.truncation_count += 1;
                         // Recover bounded partial information
                         if let Some(summary) = &worker_result.partial_summary {
-                            self.ledger.add_finding(
+                            if let Err(error) = self.ledger.add_finding(
                                 LedgerFinding {
                                     id: format!(
                                         "truncation-recovery-{task_id}-{}",
@@ -788,10 +1459,16 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                                     evidence_digest: worker_result.output_digest.clone(),
                                 },
                                 &self.config,
-                            )?;
+                            ) {
+                                restore_execution_snapshot(self);
+                                return Err(error);
+                            }
                         }
                         for f in &worker_result.findings {
-                            self.ledger.add_finding(f.clone(), &self.config)?;
+                            if let Err(error) = self.ledger.add_finding(f.clone(), &self.config) {
+                                restore_execution_snapshot(self);
+                                return Err(error);
+                            }
                         }
 
                         let attempt = self
@@ -811,6 +1488,10 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                             }
                         }
 
+                        if let Err(error) = self.ledger.validate_bounds(&self.config) {
+                            restore_execution_snapshot(self);
+                            return Err(error);
+                        }
                         self.state = OrchestrationLifecycleState::SelectingAction;
                         Ok(self.state)
                     }
@@ -832,6 +1513,10 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                                 task.failure_reason = worker_result.failure_reason.clone();
                             }
                         }
+                        if let Err(error) = self.ledger.validate_bounds(&self.config) {
+                            restore_execution_snapshot(self);
+                            return Err(error);
+                        }
                         self.state = OrchestrationLifecycleState::SelectingAction;
                         Ok(self.state)
                     }
@@ -839,6 +1524,10 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         if let Some(task) = self.ledger.get_task_mut(&task_id) {
                             task.status = LedgerTaskStatus::Blocked;
                             task.failure_reason = worker_result.failure_reason.clone();
+                        }
+                        if let Err(error) = self.ledger.validate_bounds(&self.config) {
+                            restore_execution_snapshot(self);
+                            return Err(error);
                         }
                         self.state = OrchestrationLifecycleState::SelectingAction;
                         Ok(self.state)
@@ -873,9 +1562,11 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
             .ok_or_else(|| OrchestrationError::TaskNotFound(task_id.to_string()))?
             .clone();
 
-        let report = self
-            .verifier
-            .verify_task(&self.ledger, &task_record, worker_result)?;
+        let report = sanitize_verification_report(
+            self.verifier
+                .verify_task(&self.ledger, &task_record, worker_result)?,
+            self.config.max_summary_bytes,
+        )?;
 
         let observation = VerificationObservation {
             round: self.ledger.round_count,
@@ -891,7 +1582,7 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
             Some(task_id),
             worker_result.output_digest.as_deref(),
             report.evidence_digest.as_deref(),
-            &self.ledger.state_digest(),
+            &self.ledger.progress_state_digest(),
         );
         if self.last_fingerprint.as_deref() == Some(&new_fp) {
             self.consecutive_no_progress += 1;
@@ -1199,7 +1890,7 @@ mod tests {
         let verifier = MockVerifier::pass_all();
 
         let mut orchestrator =
-            LedgerOrchestrator::new(config, ledger, controller, worker, verifier);
+            LedgerOrchestrator::new(config, ledger, controller, worker, verifier).unwrap();
         let summary = orchestrator.run_to_completion().unwrap();
 
         assert_eq!(
@@ -1283,7 +1974,7 @@ mod tests {
         });
 
         let mut orchestrator =
-            LedgerOrchestrator::new(config, ledger, controller, worker, verifier);
+            LedgerOrchestrator::new(config, ledger, controller, worker, verifier).unwrap();
         let summary = orchestrator.run_to_completion().unwrap();
 
         assert_eq!(
@@ -1362,7 +2053,7 @@ mod tests {
             })
         });
         let mut orchestrator =
-            LedgerOrchestrator::new(config, ledger, controller, worker, verifier);
+            LedgerOrchestrator::new(config, ledger, controller, worker, verifier).unwrap();
         let summary = orchestrator.run_to_completion().unwrap();
 
         assert_eq!(
@@ -1415,7 +2106,7 @@ mod tests {
 
         let verifier = MockVerifier::pass_all();
         let mut orchestrator =
-            LedgerOrchestrator::new(config, ledger, controller, worker, verifier);
+            LedgerOrchestrator::new(config, ledger, controller, worker, verifier).unwrap();
         let summary = orchestrator.run_to_completion().unwrap();
 
         assert_eq!(
@@ -1609,10 +2300,14 @@ mod tests {
     #[test]
     fn security_and_authority_boundaries_isolated() {
         let config = LedgerOrchestratorConfig::default();
-        let mut ledger = WorkingLedger::new("contract:security", "testing boundaries");
+        let test_key = format!("{}_{}", "sk-test", "1234567890abcdef");
+        let mut ledger = WorkingLedger::new(
+            "contract:security",
+            format!("testing boundaries with DEEPSEEK_API_KEY={test_key}"),
+        );
+        assert!(!ledger.current_plan.contains(&test_key));
 
         // Secrets in task description are sanitized/redacted
-        let test_key = format!("{}_{}", "sk-test", "1234567890abcdef");
         let task_desc = format!("API key: DEEPSEEK_API_KEY={test_key}");
         ledger.add_task("task-sec", &task_desc, &config).unwrap();
         let task = ledger.get_task("task-sec").unwrap();
@@ -1637,6 +2332,185 @@ mod tests {
 
         // H_ledger is purely an in-memory/ephemeral state machine without authority
         // to invoke ProductStore transactions or schedule external processes.
+    }
+
+    #[test]
+    fn bounded_inputs_and_artifacts_are_rejected_at_orchestrator_boundary() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:unsafe", "bounded plan");
+        ledger.add_task("task-safe", "safe task", &config).unwrap();
+        ledger.artifact_refs.push("../escape".to_string());
+
+        let result = LedgerOrchestrator::new(
+            config,
+            ledger,
+            AdaptiveController,
+            MockWorker::new(|_| Err(OrchestrationError::Cancelled)),
+            MockVerifier::pass_all(),
+        );
+        assert!(matches!(
+            result,
+            Err(OrchestrationError::InvalidArtifactReference(_))
+        ));
+
+        let tight_config = LedgerOrchestratorConfig {
+            max_summary_bytes: 8,
+            ..Default::default()
+        };
+        let mut tight_ledger = WorkingLedger::new("c", "p");
+        tight_ledger
+            .add_task("task", "safe", &tight_config)
+            .unwrap();
+        assert!(matches!(
+            project_worker_context_with_limit(&tight_ledger, "task", "123456789", 8),
+            Err(OrchestrationError::OversizedField { ref field, .. }) if field == "expected_evidence"
+        ));
+    }
+
+    #[test]
+    fn invalid_replan_is_atomic() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:replan", "plan");
+        ledger.add_task("task", "task", &config).unwrap();
+        let before = ledger.clone();
+        let controller = ScriptedController::new(vec![NextTaskDecision {
+            action: ControllerAction::Replan {
+                new_plan_summary: Some("new plan".to_string()),
+                new_tasks: vec![NewTaskSpec {
+                    id: "new-task".to_string(),
+                    description: "new task".to_string(),
+                }],
+                supersede_task_ids: vec!["missing".to_string()],
+            },
+            reason_summary: "replan".to_string(),
+            expected_evidence: "evidence".to_string(),
+        }]);
+        let mut orchestrator = LedgerOrchestrator::new(
+            config,
+            ledger,
+            controller,
+            MockWorker::new(|_| Err(OrchestrationError::Cancelled)),
+            MockVerifier::pass_all(),
+        )
+        .unwrap();
+        orchestrator.step().unwrap();
+        let result = orchestrator.step();
+        assert!(matches!(
+            result,
+            Err(OrchestrationError::InvalidControllerDecision(_))
+        ));
+        assert_eq!(orchestrator.ledger, before);
+        assert_eq!(orchestrator.ledger.replan_count, 0);
+    }
+
+    #[test]
+    fn worker_error_restores_execution_state() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:worker-error", "plan");
+        ledger.add_task("task", "task", &config).unwrap();
+        let controller = ScriptedController::new(vec![NextTaskDecision {
+            action: ControllerAction::ExecuteTask {
+                task_id: "task".to_string(),
+            },
+            reason_summary: "execute".to_string(),
+            expected_evidence: "evidence".to_string(),
+        }]);
+        let mut orchestrator = LedgerOrchestrator::new(
+            config,
+            ledger,
+            controller,
+            MockWorker::new(|_| Err(OrchestrationError::Cancelled)),
+            MockVerifier::pass_all(),
+        )
+        .unwrap();
+        orchestrator.step().unwrap();
+        orchestrator.step().unwrap();
+        let ledger_before_execution = orchestrator.ledger.clone();
+        let metrics_before_execution = orchestrator.metrics.clone();
+
+        assert!(matches!(
+            orchestrator.step(),
+            Err(OrchestrationError::Cancelled)
+        ));
+        assert_eq!(orchestrator.ledger, ledger_before_execution);
+        assert_eq!(orchestrator.metrics, metrics_before_execution);
+        assert_eq!(
+            orchestrator.state,
+            OrchestrationLifecycleState::ExecutingWorker
+        );
+        assert!(orchestrator.pending_decision.is_some());
+    }
+
+    #[test]
+    fn truncation_budget_is_enforced() {
+        let config = LedgerOrchestratorConfig {
+            max_truncations: 1,
+            max_task_attempts: 10,
+            max_orchestration_rounds: 10,
+            ..Default::default()
+        };
+        let mut ledger = WorkingLedger::new("contract:trunc-budget", "bounded truncation");
+        ledger
+            .add_task("task-trunc", "always truncated", &config)
+            .unwrap();
+        let worker = MockWorker::new(|_| {
+            Ok(WorkerResult {
+                status: WorkerOutcomeStatus::Truncated,
+                output_digest: Some("partial".to_string()),
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: None,
+            })
+        });
+        let mut orchestrator = LedgerOrchestrator::new(
+            config,
+            ledger,
+            AdaptiveController,
+            worker,
+            MockVerifier::pass_all(),
+        )
+        .unwrap();
+
+        let result = orchestrator.run_to_completion();
+        assert!(matches!(
+            result,
+            Err(OrchestrationError::TruncationLimitExceeded(1))
+        ));
+    }
+
+    #[test]
+    fn completion_requires_verified_tasks_and_digest_covers_state() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:digest", "original plan");
+        ledger
+            .add_task("task-digest", "digest task", &config)
+            .unwrap();
+        let mut changed = ledger.clone();
+        changed.current_plan = "changed plan".to_string();
+        changed.tasks[0].attempt_count = 1;
+        changed.tasks[0].failure_reason = Some("failed once".to_string());
+        assert_ne!(ledger.state_digest(), changed.state_digest());
+
+        let controller = ScriptedController::new(vec![NextTaskDecision {
+            action: ControllerAction::DeclareComplete {
+                deliverable_digest: "premature".to_string(),
+            },
+            reason_summary: "premature completion".to_string(),
+            expected_evidence: "missing".to_string(),
+        }]);
+        let mut orchestrator = LedgerOrchestrator::new(
+            config,
+            ledger,
+            controller,
+            MockWorker::new(|_| Err(OrchestrationError::Cancelled)),
+            MockVerifier::pass_all(),
+        )
+        .unwrap();
+        assert!(matches!(
+            orchestrator.run_to_completion(),
+            Err(OrchestrationError::InvalidControllerDecision(_))
+        ));
     }
 
     #[test]
@@ -1673,7 +2547,7 @@ mod tests {
         });
         let verifier = MockVerifier::pass_all();
         let mut orchestrator =
-            LedgerOrchestrator::new(config.clone(), ledger, controller, worker, verifier);
+            LedgerOrchestrator::new(config.clone(), ledger, controller, worker, verifier).unwrap();
         orchestrator.cancel();
         let summary = orchestrator.run_to_completion().unwrap();
         assert_eq!(
@@ -1708,7 +2582,8 @@ mod tests {
             controller2,
             worker2,
             verifier2,
-        );
+        )
+        .unwrap();
         let res = orchestrator2.run_to_completion();
         assert!(res.is_err());
         assert!(matches!(
