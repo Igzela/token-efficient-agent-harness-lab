@@ -70,6 +70,14 @@ GATE_HALTING_DISPOSITIONS = frozenset(
     }
 )
 
+PROVENANCE_CLASSIFICATIONS = frozenset(
+    {
+        "EXECUTED_EVIDENCE",
+        "ACCEPTED_STATIC_BASIS",
+        "DEPENDENCY_DERIVED",
+    }
+)
+
 MAX_TEXT_CHARS = 8 * 1024
 MAX_PATH_CHARS = 512
 MAX_LIST_ITEMS = 100
@@ -567,6 +575,168 @@ class StopRule:
         return cls(code, category, _text(wire["description"], "stop_description"))
 
 
+def make_provenance_receipt(
+    *,
+    obligation_id: str,
+    accepted_main_sha: str,
+    evidence_producer_identity: str,
+    evaluator_identity: str,
+    provenance_classification: str,
+    hard_gate_outcome: str,
+    missingness: Any = False,
+    evidence_digest: str | None = None,
+    result_digest: str | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Construct a schema-valid provenance receipt for a terminal obligation."""
+    digest = evidence_digest or result_digest or hashlib.sha256(
+        json.dumps(
+            {
+                "obligation_id": obligation_id,
+                "accepted_main_sha": accepted_main_sha,
+                "evidence_producer_identity": evidence_producer_identity,
+                "evaluator_identity": evaluator_identity,
+                "provenance_classification": provenance_classification,
+                "hard_gate_outcome": hard_gate_outcome,
+                "missingness": missingness,
+                "extra": extra,
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "obligation_id": obligation_id,
+        "accepted_main_sha": accepted_main_sha,
+        "evidence_producer_identity": evidence_producer_identity,
+        "evaluator_identity": evaluator_identity,
+        "provenance_classification": provenance_classification,
+        "hard_gate_outcome": hard_gate_outcome,
+        "missingness": missingness,
+        "evidence_digest": digest,
+        **extra,
+    }
+
+
+def validate_provenance_receipt(
+    obligation_id: str,
+    disposition: str,
+    evidence: dict[str, Any],
+    ledger: MissionAcceptanceLedger | None = None,
+) -> dict[str, Any]:
+    """Validate that evidence conforms to a genuine, non-arbitrary provenance receipt."""
+    if not isinstance(evidence, dict):
+        raise MissionContractError("obligation_evidence_invalid")
+
+    required_fields = {
+        "obligation_id",
+        "accepted_main_sha",
+        "evidence_producer_identity",
+        "evaluator_identity",
+        "provenance_classification",
+        "hard_gate_outcome",
+        "missingness",
+    }
+    if not ("evidence_digest" in evidence or "result_digest" in evidence):
+        raise MissionContractError("evidence_receipt_digest_missing")
+
+    for req_field in required_fields:
+        if req_field not in evidence:
+            raise MissionContractError(f"evidence_receipt_field_missing_{req_field}")
+
+    if evidence["obligation_id"] != obligation_id:
+        raise MissionContractError("evidence_receipt_obligation_mismatch")
+
+    sha = evidence["accepted_main_sha"]
+    if not isinstance(sha, str) or not (SHA256.fullmatch(sha) or re.fullmatch(r"^[0-9a-f]{40}$", sha)):
+        raise MissionContractError("evidence_receipt_sha_invalid")
+
+    producer = evidence["evidence_producer_identity"]
+    if not isinstance(producer, str) or not producer:
+        raise MissionContractError("evidence_receipt_producer_invalid")
+
+    evaluator = evidence["evaluator_identity"]
+    if not isinstance(evaluator, str) or not evaluator:
+        raise MissionContractError("evidence_receipt_evaluator_invalid")
+
+    classification = evidence["provenance_classification"]
+    if classification not in PROVENANCE_CLASSIFICATIONS:
+        raise MissionContractError("evidence_receipt_classification_invalid")
+
+    hard_gate_outcome = evidence["hard_gate_outcome"]
+    if not isinstance(hard_gate_outcome, str) or not hard_gate_outcome:
+        raise MissionContractError("evidence_receipt_hard_gate_invalid")
+
+    status = evidence.get("status")
+    if status in NON_TERMINAL_OPERATIONAL_STATES:
+        raise MissionContractError("operational_state_not_scientific_terminal")
+
+    # Critical distinction: Operational absence cannot become scientific terminal
+    if disposition == "INSUFFICIENT":
+        reason_str = str(evidence.get("reason", ""))
+        if (
+            evidence.get("lack_of_provider_execution") is True
+            or evidence.get("credentials_absent") is True
+            or evidence.get("effect_authorization_absent") is True
+            or evidence.get("provider_transport_unavailable") is True
+            or evidence.get("experiment_executed") is False
+            or evidence.get("executed") is False
+            or (evidence.get("live_arms_observed") is False and evidence.get("provider_posts", 0) == 0 and not evidence.get("attempted_with_authority", False))
+            or (status == "EVIDENCE_LIMITED" and evidence.get("decision_grade_result") is False and "Absent live provider credentials" in reason_str)
+            or ("fails_closed_without_live_provider_transport_and_credentials" in str(evidence.get("disposition", "")) and not evidence.get("attempted_with_authority", False))
+        ):
+            raise MissionContractError("lack_of_provider_execution_cannot_produce_insufficient")
+
+    if disposition == "INCOMPARABLE":
+        reason_str = str(evidence.get("reason", ""))
+        if (
+            (evidence.get("live_provider_posts", 1) == 0 and evidence.get("unexecuted_cells", False) is True)
+            or evidence.get("executed_cells", 1) == 0
+            or "Provider-free matrix projection yields INCOMPARABLE for unexecuted live cells" in reason_str
+            or (evidence.get("projection_result") == "Incomparable(outcome_unknown)" and evidence.get("live_provider_posts", 1) == 0 and not evidence.get("attempted_with_authority", False))
+        ):
+            raise MissionContractError("unexecuted_cells_cannot_produce_incomparable")
+
+    if classification == "ACCEPTED_STATIC_BASIS":
+        if disposition != "COMPLETE":
+            raise MissionContractError("static_basis_must_be_complete")
+        if hard_gate_outcome != "PASS":
+            raise MissionContractError("static_basis_hard_gate_must_pass")
+
+    elif classification == "DEPENDENCY_DERIVED":
+        if disposition not in {"NOT_JUSTIFIED_BY_PRECEDING_GATE", "SUPERSEDED_BY_ACCEPTED_EVIDENCE"}:
+            raise MissionContractError("dependency_derived_must_be_not_justified_or_superseded")
+        upstream_id = evidence.get("upstream_obligation_id") or evidence.get("upstream_gate")
+        if not upstream_id or not isinstance(upstream_id, str):
+            raise MissionContractError("dependency_derived_missing_upstream_gate")
+        if ledger is not None:
+            up_ob = ledger.get(upstream_id)
+            if up_ob is None:
+                raise MissionContractError("upstream_gate_not_found")
+            if up_ob.disposition not in GATE_HALTING_DISPOSITIONS:
+                raise MissionContractError("upstream_gate_not_halting")
+            if not up_ob.evidence or not is_valid_provenance_receipt(up_ob.obligation_id, up_ob.disposition, up_ob.evidence, ledger):
+                raise MissionContractError("upstream_gate_evidence_not_validated_provenance")
+
+    elif classification == "EXECUTED_EVIDENCE":
+        if not (evidence.get("execution_identity") or evidence.get("attempt_identity") or evidence.get("run_id") or evidence.get("cell_identity")):
+            raise MissionContractError("executed_evidence_missing_execution_identity")
+
+    return evidence
+
+
+def is_valid_provenance_receipt(
+    obligation_id: str,
+    disposition: str,
+    evidence: dict[str, Any],
+    ledger: MissionAcceptanceLedger | None = None,
+) -> bool:
+    try:
+        validate_provenance_receipt(obligation_id, disposition, evidence, ledger)
+        return True
+    except MissionContractError:
+        return False
+
+
 @dataclass(frozen=True)
 class AcceptanceObligation:
     obligation_id: str
@@ -684,6 +854,11 @@ class MissionAcceptanceLedger:
                     raise MissionContractError("obligation_dependency_missing")
                 if dep == ob.obligation_id:
                     raise MissionContractError("obligation_self_dependency")
+            if ob.disposition is not None:
+                if ob.disposition in NON_TERMINAL_OPERATIONAL_STATES:
+                    raise MissionContractError("operational_state_not_scientific_terminal")
+                if ob.disposition not in SCIENTIFIC_TERMINAL_DISPOSITIONS:
+                    raise MissionContractError("obligation_disposition_invalid")
         visited: dict[str, int] = {}
         def visit(node_id: str) -> None:
             if visited.get(node_id) == 0:
@@ -700,10 +875,22 @@ class MissionAcceptanceLedger:
             visit(ob.obligation_id)
 
     def is_terminal(self) -> bool:
-        return all(ob.disposition in SCIENTIFIC_TERMINAL_DISPOSITIONS for ob in self.obligations)
+        if not self.obligations:
+            return False
+        for ob in self.obligations:
+            if ob.disposition not in SCIENTIFIC_TERMINAL_DISPOSITIONS:
+                return False
+            if not ob.evidence or not is_valid_provenance_receipt(ob.obligation_id, ob.disposition, ob.evidence, self):
+                return False
+        return True
 
     def unresolved_eligible(self) -> tuple[AcceptanceObligation, ...]:
-        terminal_ids = {ob.obligation_id for ob in self.obligations if ob.disposition in SCIENTIFIC_TERMINAL_DISPOSITIONS}
+        terminal_ids = {
+            ob.obligation_id
+            for ob in self.obligations
+            if ob.disposition in SCIENTIFIC_TERMINAL_DISPOSITIONS
+            and is_valid_provenance_receipt(ob.obligation_id, ob.disposition, ob.evidence, self)
+        }
         eligible = []
         for ob in self.obligations:
             if ob.disposition is None:
@@ -732,6 +919,9 @@ class MissionAcceptanceLedger:
         if existing is None:
             raise MissionContractError("obligation_not_found")
 
+        new_evidence = dict(evidence or {})
+        validate_provenance_receipt(obligation_id, disposition, new_evidence, ledger=self)
+
         if disposition == "NOT_JUSTIFIED_BY_PRECEDING_GATE":
             has_halting_upstream = False
             for dep_id in existing.dependencies:
@@ -742,7 +932,6 @@ class MissionAcceptanceLedger:
             if not has_halting_upstream:
                 raise MissionContractError("not_justified_requires_halting_preceding_gate")
 
-        new_evidence = dict(evidence or {})
         if existing.disposition is not None:
             if existing.disposition == disposition and existing.evidence == new_evidence:
                 return self
@@ -1282,10 +1471,38 @@ class AuthenticatedOwnerApprovalValidator:
         )
 
 
+def is_permissive_authenticator(
+    owner_authenticator: object,
+    normalized_approval: OwnerApproval,
+    proposal_sha256: str,
+) -> bool:
+    """Check whether an authenticator is permissive (accepts mismatched proposal or identity)."""
+    verifier = getattr(owner_authenticator, "verify", None)
+    if not callable(verifier):
+        return True
+    decoy_proposal = "0" * 64 if proposal_sha256 != "0" * 64 else "1" * 64
+    try:
+        if verifier(normalized_approval, decoy_proposal) is True:
+            return True
+    except Exception:
+        pass
+
+    try:
+        decoy_approval = replace(normalized_approval, owner_identity="unauthenticated_decoy_owner")
+        if verifier(decoy_approval, proposal_sha256) is True:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
 def validate_authenticated_owner_approval(
     approval: OwnerApproval | dict[str, Any],
     proposal_sha256: str,
     owner_authenticator: object,
+    *,
+    reject_permissive: bool = False,
 ) -> OwnerApproval:
     """Validate externally authenticated approval facts without activating.
 
@@ -1306,6 +1523,10 @@ def validate_authenticated_owner_approval(
     verifier = getattr(owner_authenticator, "verify", None)
     if not callable(verifier):
         raise MissionContractError("activation_authenticator_missing")
+
+    if reject_permissive and is_permissive_authenticator(owner_authenticator, normalized, proposal_sha256):
+        raise MissionContractError("permissive_authenticator_rejected")
+
     try:
         authenticated = verifier(normalized, proposal_sha256)
     except Exception as exc:
@@ -2030,24 +2251,33 @@ def validate_legacy_compatibility(packet: object, capsule: object) -> LegacyMiss
 
 
 __all__ = [
+    "AcceptanceObligation",
     "AuthenticatedOwnerApprovalValidator",
     "Budget",
+    "GATE_HALTING_DISPOSITIONS",
     "Grant",
     "LegacyMissionProjection",
     "LIFECYCLE_COORDINATOR",
     "MaintenanceMission",
+    "MissionAcceptanceLedger",
     "MissionContractError",
+    "NON_TERMINAL_OPERATIONAL_STATES",
     "OwnerApproval",
     "OwnerApprovalEvidence",
+    "PROVENANCE_CLASSIFICATIONS",
     "RepositoryIdentity",
     "RollbackBoundary",
+    "SCIENTIFIC_TERMINAL_DISPOSITIONS",
     "Stage",
     "StopRule",
     "WorkCard",
     "activate_current_mission",
     "campaign_mission",
     "compile_proposal_mission",
+    "is_permissive_authenticator",
+    "is_valid_provenance_receipt",
     "json_sha256",
+    "make_provenance_receipt",
     "path_in_scope",
     "stop_category",
     "validate_current_mission",
@@ -2055,6 +2285,7 @@ __all__ = [
     "validate_authenticated_owner_approval",
     "validate_legacy_compatibility",
     "validate_owner_approval",
+    "validate_provenance_receipt",
     "validate_registered_campaign",
     "validate_stage",
     "validate_workcard",

@@ -445,7 +445,7 @@ class StewardService:
         """Rehydrate only a durable activation or accepted-main rebind."""
 
         model = mission_contract.MaintenanceMission.from_wire(record.data)
-        if record.event not in {"MISSION_ACTIVATED", "MISSION_BASE_ADVANCED", "MISSION_BASE_DRIFT_REBOUND"} or record.state != "RUNNING":
+        if record.event not in {"MISSION_ACTIVATED", "MISSION_BASE_ADVANCED", "MISSION_BASE_DRIFT_REBOUND", "MISSION_CORRECTIVE_CONTINUATION"} or record.state != "RUNNING":
             raise StewardServiceError("journal_active_mission_invalid")
         if record.mission_id != model.mission_id or model.state != "RUNNING":
             raise StewardServiceError("journal_active_mission_invalid")
@@ -638,7 +638,7 @@ class StewardService:
             approval_evidence
         )
         mission_contract.validate_authenticated_owner_approval(
-            approval, model.proposal_sha256, authenticator
+            approval, model.proposal_sha256, authenticator, reject_permissive=True
         )
         consumed = self.journal.consume_owner_approval(
             repository=model.repository_identity.repository,

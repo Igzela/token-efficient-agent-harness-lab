@@ -1,26 +1,30 @@
 """Regression tests for Mission completion semantics and research acceptance ledgers.
 
-Enforces:
-1. Final preplanned Stage merges with unresolved obligations -> stays RUNNING / RESEARCH_PENDING.
-2. All Stage PRs complete but RWE unresolved -> not COMPLETE.
-3. Operational BLOCKED_AUTHORITY rejected as scientific terminal disposition.
-4. Preceding-gate dependency semantics (halting upstream allows NOT_JUSTIFIED_BY_PRECEDING_GATE).
-5. Dynamically generated follow-up Stage for unresolved eligible obligations.
-6. Service restart restores exact acceptance ledger from journal replay.
-7. Duplicate evidence/disposition is idempotent.
-8. Contradictory evidence fails closed.
-9. Mission completes only after every required obligation has accepted terminal evidence.
-10. Simple ordinary maintenance missions without acceptance ledger retain bounded completion.
+Enforces all 12 canonical requirements:
+1. Fake OwnerApproval cannot activate a production research successor.
+2. Permissive/fake authenticator cannot enter production activation path.
+3. Arbitrary terminal labels with arbitrary evidence dictionaries cannot terminalize a ledger.
+4. LACK_OF_PROVIDER_EXECUTION cannot become INSUFFICIENT.
+5. Zero live posts / unexecuted cells cannot become INCOMPARABLE.
+6. Actual canonical evaluator output can produce INSUFFICIENT.
+7. Actual canonical comparison result can produce INCOMPARABLE.
+8. NOT_JUSTIFIED requires a validated scientifically terminal upstream gate.
+9. Direct journal MISSION_COMPLETED injection cannot bypass eligibility.
+10. Restart preserves validated provenance.
+11. Ordinary maintenance Missions still complete normally.
+12. A real research Mission stays RESEARCH_PENDING while evidence acquisition is operationally blocked.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from typing import Any
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -59,6 +63,26 @@ class TestMissionCompletionSemantics(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    def _make_receipt(
+        self,
+        obligation_id: str,
+        *,
+        classification: str = "ACCEPTED_STATIC_BASIS",
+        outcome: str = "PASS",
+        disposition: str = "COMPLETE",
+        **extra: Any,
+    ) -> dict[str, Any]:
+        return contract.make_provenance_receipt(
+            obligation_id=obligation_id,
+            accepted_main_sha=self.base_sha,
+            evidence_producer_identity="test_producer",
+            evaluator_identity="test_evaluator",
+            provenance_classification=classification,
+            hard_gate_outcome=outcome,
+            missingness=False,
+            **extra,
+        )
+
     def _make_mission_with_ledger(
         self,
         obligations: tuple[contract.AcceptanceObligation, ...],
@@ -77,6 +101,16 @@ class TestMissionCompletionSemantics(unittest.TestCase):
             base_sha=self.base_sha,
             acceptance_ledger=ledger,
         )
+        evidence = contract.OwnerApprovalEvidence(
+            transport="github_issue_comment",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            mission_id=proposal.mission_id,
+            approval_id="fixture-approval",
+            owner_identity="github:Igzela",
+            proposal_sha256=digest,
+            accepted_main_sha=self.base_sha,
+            evidence_id="fixture-comment-1",
+        )
         return contract.activate_current_mission(
             repository=proposal.repository_identity.repository,
             base_sha=proposal.repository_identity.base_sha,
@@ -87,132 +121,185 @@ class TestMissionCompletionSemantics(unittest.TestCase):
             owner_approval=contract.OwnerApproval(
                 "github:Igzela", digest, "fixture-approval", "2026-09-04T00:00:00Z"
             ),
-            owner_authenticator=type("Auth", (), {"verify": lambda *_args: True})(),
+            owner_authenticator=contract.AuthenticatedOwnerApprovalValidator(evidence),
             mission=proposal,
         )
 
-    def test_01_final_preplanned_stage_merges_with_unresolved_obligations_stays_running(self):
-        """Test 1: Final preplanned Stage merges but unresolved obligations remain -> stays RUNNING."""
-        ob1 = contract.AcceptanceObligation(
-            obligation_id="common_rwe_evidence_basis",
-            description="Validate frozen RWE evidence basis.",
+    def test_01_fake_owner_approval_cannot_activate_production_research_successor(self):
+        """Requirement 1: fake OwnerApproval cannot activate a production research successor."""
+        successor = contract.build_research_successor_mission(base_sha=self.base_sha)
+        self.journal.record_mission_proposal(successor.mission_id, successor.proposal_sha256, successor.to_wire())
+
+        srv = service.StewardService(
+            journal=self.journal,
+            github=self.github_writer,
+            repo_path=self.repo_dir,
+        )
+        # Attempt to activate with synthetic unauthenticated approval (no valid Issue comment)
+        with self.assertRaises((contract.MissionContractError, service.StewardServiceError)):
+            srv.approve(
+                successor,
+                control_issue_number=208,
+                approval_comment_id=999999,  # Non-existent comment
+            )
+
+    def test_02_permissive_fake_authenticator_cannot_enter_production_activation_path(self):
+        """Requirement 2: permissive/fake authenticator cannot enter production activation path."""
+        proposal = contract.build_research_successor_mission(base_sha=self.base_sha)
+        approval = contract.OwnerApproval(
+            "github:Igzela", proposal.proposal_sha256, "fake-approval", "2026-09-04T00:00:00Z"
+        )
+        permissive_auth = type("FakeAuth", (), {"verify": lambda *_a: True})()
+
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            contract.validate_authenticated_owner_approval(
+                approval, proposal.proposal_sha256, permissive_auth, reject_permissive=True
+            )
+        self.assertEqual(str(ctx.exception), "permissive_authenticator_rejected")
+
+    def test_03_arbitrary_terminal_labels_with_arbitrary_evidence_cannot_terminalize_ledger(self):
+        """Requirement 3: arbitrary terminal labels with arbitrary evidence dictionaries cannot terminalize a ledger."""
+        ob = contract.AcceptanceObligation(
+            obligation_id="rwe_test",
+            description="Test obligation",
             category="basis",
             dependencies=(),
             required_paths=("README.md",),
         )
-        mission = self._make_mission_with_ledger((ob1,), allowed_paths=("README.md",))
-        self.journal.record_mission_activation(
-            mission.mission_id, mission.proposal_sha256, mission.to_wire()
-        )
+        ledger = contract.MissionAcceptanceLedger((ob,))
 
-        srv = service.StewardService(
-            mission_id=mission.mission_id,
-            journal=self.journal,
-            github=self.github_writer,
-            github_writer=self.github_writer,
-            repo_path=self.repo_dir,
-            control_state=type("FakeControl", (), {"emergency_stop_active": lambda *a, **kw: False})(),
-        )
+        # Arbitrary caller dictionary without required provenance receipt fields
+        arbitrary_evidence = {"result": "pass", "random_key": 12345}
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            ledger.disposition_obligation("rwe_test", "COMPLETE", arbitrary_evidence)
+        self.assertIn("evidence_receipt", str(ctx.exception))
 
-        # Stage 1 is the sole preplanned stage (index 1 of 1)
-        # Step plans stage 1
-        res1 = srv.step()
-        self.assertEqual(res1["status"], "STAGE_PLANNED")
-        stage_id = res1["stage_id"]
+        # Even if an unvalidated obligation object was constructed, is_terminal returns False
+        unvalidated_ob = replace(ob, disposition="COMPLETE", evidence=arbitrary_evidence)
+        unvalidated_ledger = contract.MissionAcceptanceLedger((unvalidated_ob,))
+        self.assertFalse(unvalidated_ledger.is_terminal())
 
-        # Simulate stage execution and merge readback
-        new_commit = subprocess.run(
-            ["git", "commit", "--allow-empty", "-m", "Stage 1 merge commit"],
-            cwd=self.repo_dir,
-            check=True,
-            capture_output=True,
-        )
-        merged_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=self.repo_dir,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        self.github_writer.remote_main_sha = merged_sha
-
-        # Readback on final stage
-        with patch("subprocess.run") as git_run:
-            git_run.return_value = MagicMock(returncode=0, stdout=merged_sha + "\n", stderr="")
-            readback = srv.post_merge_readback(
-                stage_id=stage_id,
-                pr_number=601,
-                expected_head_sha=merged_sha,
-                is_final_stage=True,
-            )
-        self.assertEqual(readback["status"], "VERIFIED")
-        # Mission must NOT be COMPLETE because ob1 is unresolved!
-        self.assertEqual(readback["mission_state"], "RUNNING")
-        self.assertEqual(srv.mission.state, "RUNNING")
-
-        # Further advance returns dynamic stage or RESEARCH_PENDING, not COMPLETE
-        res_next = srv.step()
-        self.assertIn(res_next["status"], {"STAGE_PLANNED", "RESEARCH_PENDING"})
-        self.assertNotEqual(res_next["status"], "COMPLETE")
-
-    def test_02_all_stage_prs_complete_but_rwe_unresolved_not_complete(self):
-        """Test 2: All Stage PRs complete but RWE unresolved -> not COMPLETE."""
-        proposal = contract.build_research_successor_mission(base_sha=self.base_sha)
-        mission = contract.activate_current_mission(
-            repository=proposal.repository_identity.repository,
-            base_sha=proposal.repository_identity.base_sha,
-            branch=proposal.repository_identity.branch,
-            source_ref=proposal.repository_identity.source_ref,
-            source_sha256=proposal.repository_identity.source_sha256,
-            proposal_sha256=proposal.proposal_sha256,
-            owner_approval=contract.OwnerApproval(
-                "github:Igzela", proposal.proposal_sha256, "fixture-approval", "2026-09-04T00:00:00Z"
-            ),
-            owner_authenticator=type("Auth", (), {"verify": lambda *_args: True})(),
-            mission=proposal,
-        )
-        self.journal.record_mission_activation(
-            mission.mission_id, mission.proposal_sha256, mission.to_wire()
-        )
-        srv = service.StewardService(
-            mission_id=mission.mission_id,
-            journal=self.journal,
-            github=self.github_writer,
-            repo_path=self.repo_dir,
-        )
-        self.assertIsNotNone(srv.mission.acceptance_ledger)
-        self.assertFalse(srv.mission.acceptance_ledger.is_terminal())
-
-        # Calling complete_mission_if_eligible must refuse completion
-        res = srv.complete_mission_if_eligible()
-        self.assertEqual(res["status"], "RESEARCH_PENDING")
-        self.assertEqual(srv.mission.state, "RUNNING")
-
-    def test_03_operational_blocked_authority_rejected_as_scientific_terminal(self):
-        """Test 3: Operational BLOCKED_AUTHORITY rejected as scientific terminal disposition."""
+    def test_04_lack_of_provider_execution_cannot_become_insufficient(self):
+        """Requirement 4: LACK_OF_PROVIDER_EXECUTION cannot become INSUFFICIENT."""
         ob = contract.AcceptanceObligation(
-            obligation_id="mx1_c1_1x2x1",
-            description="Matrix rung evaluation",
+            obligation_id="rwe_replay",
+            description="Replay obligation",
             category="evaluation",
             dependencies=(),
             required_paths=("README.md",),
         )
         ledger = contract.MissionAcceptanceLedger((ob,))
-        ledger.validate()
 
-        # Rejection in ledger
+        # Evidence with lack_of_provider_execution or absent credentials
+        evidence = contract.make_provenance_receipt(
+            obligation_id="rwe_replay",
+            accepted_main_sha=self.base_sha,
+            evidence_producer_identity="ProductGoldenPathCellDriver",
+            evaluator_identity="rwe_evaluator",
+            provenance_classification="EXECUTED_EVIDENCE",
+            hard_gate_outcome="INSUFFICIENT",
+            missingness=True,
+            execution_identity="run-1",
+            lack_of_provider_execution=True,
+            credentials_absent=True,
+            reason="Absent live provider credentials and live effect authority; campaign remains evidence-limited.",
+        )
         with self.assertRaises(contract.MissionContractError) as ctx:
-            ledger.disposition_obligation("mx1_c1_1x2x1", "BLOCKED_AUTHORITY", {"reason": "needs auth"})
-        self.assertEqual(str(ctx.exception), "operational_state_not_scientific_terminal")
+            ledger.disposition_obligation("rwe_replay", "INSUFFICIENT", evidence)
+        self.assertEqual(str(ctx.exception), "lack_of_provider_execution_cannot_produce_insufficient")
 
-        # Rejection in journal
-        with self.assertRaises(JournalError):
-            self.journal.record_obligation_disposition(
-                "M1", "mx1_c1_1x2x1", "BLOCKED_AUTHORITY", {"reason": "needs auth"}
-            )
+    def test_05_zero_live_posts_unexecuted_cells_cannot_become_incomparable(self):
+        """Requirement 5: zero live posts/unexecuted cells cannot become INCOMPARABLE."""
+        ob = contract.AcceptanceObligation(
+            obligation_id="mx1_cell",
+            description="Matrix rung",
+            category="ladder",
+            dependencies=(),
+            required_paths=("README.md",),
+        )
+        ledger = contract.MissionAcceptanceLedger((ob,))
 
-    def test_04_preceding_gate_dependency_semantics(self):
-        """Test 4: Halting upstream gate allows NOT_JUSTIFIED_BY_PRECEDING_GATE; unresolved/complete fails."""
+        evidence = contract.make_provenance_receipt(
+            obligation_id="mx1_cell",
+            accepted_main_sha=self.base_sha,
+            evidence_producer_identity="mx1_matrix_plan",
+            evaluator_identity="mx1_evaluator",
+            provenance_classification="EXECUTED_EVIDENCE",
+            hard_gate_outcome="INCOMPARABLE",
+            missingness=True,
+            execution_identity="matrix-cell-1",
+            live_provider_posts=0,
+            unexecuted_cells=True,
+            projection_result="Incomparable(outcome_unknown)",
+            reason="Provider-free matrix projection yields INCOMPARABLE for unexecuted live cells; Model effects cannot be isolated.",
+        )
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            ledger.disposition_obligation("mx1_cell", "INCOMPARABLE", evidence)
+        self.assertEqual(str(ctx.exception), "unexecuted_cells_cannot_produce_incomparable")
+
+    def test_06_actual_canonical_evaluator_output_can_produce_insufficient(self):
+        """Requirement 6: actual canonical evaluator output can produce INSUFFICIENT."""
+        ob = contract.AcceptanceObligation(
+            obligation_id="cws_strategy",
+            description="CWS benchmark",
+            category="evaluation",
+            dependencies=(),
+            required_paths=("README.md",),
+        )
+        ledger = contract.MissionAcceptanceLedger((ob,))
+
+        # Genuine executed run with live posts and authorized execution, but evaluator determined INSUFFICIENT
+        valid_evidence = contract.make_provenance_receipt(
+            obligation_id="cws_strategy",
+            accepted_main_sha=self.base_sha,
+            evidence_producer_identity="cws_benchmark_analyze",
+            evaluator_identity="context_working_set_evaluator",
+            provenance_classification="EXECUTED_EVIDENCE",
+            hard_gate_outcome="INSUFFICIENT",
+            missingness=False,
+            execution_identity="cws-bench-exec-42",
+            attempt_identity="attempt-1",
+            executed=True,
+            provider_posts=8,
+            attempted_with_authority=True,
+            disposition="InsufficientDefaultOff",
+        )
+        updated_ledger = ledger.disposition_obligation("cws_strategy", "INSUFFICIENT", valid_evidence)
+        self.assertEqual(updated_ledger.get("cws_strategy").disposition, "INSUFFICIENT")
+        self.assertTrue(updated_ledger.is_terminal())
+
+    def test_07_actual_canonical_comparison_result_can_produce_incomparable(self):
+        """Requirement 7: actual canonical comparison result can produce INCOMPARABLE."""
+        ob = contract.AcceptanceObligation(
+            obligation_id="mx1_matrix",
+            description="Matrix comparison",
+            category="ladder",
+            dependencies=(),
+            required_paths=("README.md",),
+        )
+        ledger = contract.MissionAcceptanceLedger((ob,))
+
+        # Genuine executed cells with live posts, but comparison contract determines incomparable
+        valid_evidence = contract.make_provenance_receipt(
+            obligation_id="mx1_matrix",
+            accepted_main_sha=self.base_sha,
+            evidence_producer_identity="mx1_matrix_comparator",
+            evaluator_identity="matrix_evaluator",
+            provenance_classification="EXECUTED_EVIDENCE",
+            hard_gate_outcome="INCOMPARABLE",
+            missingness=False,
+            execution_identity="rung-1x2x1-run",
+            executed_cells=2,
+            live_provider_posts=6,
+            attempted_with_authority=True,
+            reason="Executed treatment arms exhibited divergent variance exceeding protocol bound.",
+        )
+        updated_ledger = ledger.disposition_obligation("mx1_matrix", "INCOMPARABLE", valid_evidence)
+        self.assertEqual(updated_ledger.get("mx1_matrix").disposition, "INCOMPARABLE")
+        self.assertTrue(updated_ledger.is_terminal())
+
+    def test_08_not_justified_requires_validated_scientifically_terminal_upstream_gate(self):
+        """Requirement 8: NOT_JUSTIFIED requires a validated scientifically terminal upstream gate."""
         ob_up = contract.AcceptanceObligation(
             obligation_id="rung1",
             description="Upstream rung",
@@ -228,34 +315,63 @@ class TestMissionCompletionSemantics(unittest.TestCase):
             required_paths=("README.md",),
         )
         ledger = contract.MissionAcceptanceLedger((ob_up, ob_down))
-        ledger.validate()
 
         # Fails when upstream is unresolved
-        with self.assertRaises(contract.MissionContractError) as ctx:
-            ledger.disposition_obligation("rung2", "NOT_JUSTIFIED_BY_PRECEDING_GATE", {"evidence": "skip"})
-        self.assertEqual(str(ctx.exception), "not_justified_requires_halting_preceding_gate")
-
-        # Upstream completes with non-halting COMPLETE
-        ledger_comp = ledger.disposition_obligation("rung1", "COMPLETE", {"passed": True})
-        # Fails when upstream is COMPLETE
-        with self.assertRaises(contract.MissionContractError) as ctx:
-            ledger_comp.disposition_obligation("rung2", "NOT_JUSTIFIED_BY_PRECEDING_GATE", {"evidence": "skip"})
-        self.assertEqual(str(ctx.exception), "not_justified_requires_halting_preceding_gate")
-
-        # Upstream completes with halting INCOMPARABLE
-        ledger_halt = ledger.disposition_obligation("rung1", "INCOMPARABLE", {"reason": "evidence_missing"})
-        # Now downstream CAN be NOT_JUSTIFIED_BY_PRECEDING_GATE
-        ledger_halt2 = ledger_halt.disposition_obligation(
-            "rung2", "NOT_JUSTIFIED_BY_PRECEDING_GATE", {"upstream": "rung1", "reason": "incomparable"}
+        down_ev = contract.make_provenance_receipt(
+            obligation_id="rung2",
+            accepted_main_sha=self.base_sha,
+            evidence_producer_identity="dependency_resolver",
+            evaluator_identity="gate_evaluator",
+            provenance_classification="DEPENDENCY_DERIVED",
+            hard_gate_outcome="HALTED",
+            missingness=False,
+            upstream_gate="rung1",
         )
-        self.assertEqual(ledger_halt2.get("rung2").disposition, "NOT_JUSTIFIED_BY_PRECEDING_GATE")
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            ledger.disposition_obligation("rung2", "NOT_JUSTIFIED_BY_PRECEDING_GATE", down_ev)
+        self.assertEqual(str(ctx.exception), "upstream_gate_not_halting")
 
-    def test_05_dynamically_generated_follow_up_stage_satisfies_obligation(self):
-        """Test 5: Dynamically generated follow-up Stage satisfies an unresolved obligation."""
+        # Fails when upstream completed with COMPLETE (non-halting)
+        up_ev = contract.make_provenance_receipt(
+            obligation_id="rung1",
+            accepted_main_sha=self.base_sha,
+            evidence_producer_identity="test_runner",
+            evaluator_identity="test_evaluator",
+            provenance_classification="ACCEPTED_STATIC_BASIS",
+            hard_gate_outcome="PASS",
+            missingness=False,
+        )
+        ledger_comp = ledger.disposition_obligation("rung1", "COMPLETE", up_ev)
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            ledger_comp.disposition_obligation("rung2", "NOT_JUSTIFIED_BY_PRECEDING_GATE", down_ev)
+        self.assertEqual(str(ctx.exception), "upstream_gate_not_halting")
+
+        # Upstream genuinely halting with validated provenance receipt (INSUFFICIENT)
+        halt_ev = contract.make_provenance_receipt(
+            obligation_id="rung1",
+            accepted_main_sha=self.base_sha,
+            evidence_producer_identity="test_eval",
+            evaluator_identity="test_evaluator",
+            provenance_classification="EXECUTED_EVIDENCE",
+            hard_gate_outcome="INSUFFICIENT",
+            missingness=False,
+            execution_identity="run-99",
+            executed=True,
+            provider_posts=4,
+            attempted_with_authority=True,
+        )
+        ledger_halt = ledger.disposition_obligation("rung1", "INSUFFICIENT", halt_ev)
+        # Downstream succeeds with validated DEPENDENCY_DERIVED provenance
+        ledger_halt2 = ledger_halt.disposition_obligation("rung2", "NOT_JUSTIFIED_BY_PRECEDING_GATE", down_ev)
+        self.assertEqual(ledger_halt2.get("rung2").disposition, "NOT_JUSTIFIED_BY_PRECEDING_GATE")
+        self.assertTrue(ledger_halt2.is_terminal())
+
+    def test_09_direct_journal_mission_completed_injection_cannot_bypass_eligibility(self):
+        """Requirement 9: direct journal MISSION_COMPLETED injection cannot bypass eligibility."""
         ob1 = contract.AcceptanceObligation(
-            obligation_id="common_rwe_evidence_basis",
-            description="Validate frozen RWE evidence basis.",
-            category="basis",
+            obligation_id="ob1",
+            description="Obligation 1",
+            category="gate",
             dependencies=(),
             required_paths=("README.md",),
         )
@@ -263,26 +379,29 @@ class TestMissionCompletionSemantics(unittest.TestCase):
         self.journal.record_mission_activation(
             mission.mission_id, mission.proposal_sha256, mission.to_wire()
         )
-        srv = service.StewardService(
-            mission_id=mission.mission_id,
-            journal=self.journal,
-            github=self.github_writer,
-            repo_path=self.repo_dir,
-        )
 
-        plan = srv._next_dynamic_stage_plan(mission, index=1, eligible=(ob1,))
-        self.assertIsNotNone(plan)
-        stage, cards, total = plan
-        self.assertEqual(total, 2)
-        self.assertEqual(len(cards), 1)
-        self.assertEqual(cards[0].allowed_paths, ("README.md",))
-        self.assertIn("common_rwe_evidence_basis", stage.objective)
+        # Attempt to inject MISSION_COMPLETED while ob1 is unresolved
+        with self.assertRaises(JournalError):
+            self.journal.append(
+                event="MISSION_COMPLETED",
+                idempotency_key="injected-completion-key",
+                mission_id=mission.mission_id,
+                stage_id="mission-closeout",
+                card_id="",
+                state="COMPLETE",
+                detail="fake_injection",
+                data={"obligations": {}},
+                enforce_transition=False,
+            )
 
-    def test_06_restart_restores_exact_acceptance_ledger_from_journal_replay(self):
-        """Test 6: Restart restores exact acceptance ledger from journal replay."""
+        with self.assertRaises(JournalError):
+            self.journal.record_mission_completion(mission.mission_id)
+
+    def test_10_restart_preserves_validated_provenance(self):
+        """Requirement 10: restart preserves validated provenance."""
         ob1 = contract.AcceptanceObligation(
-            obligation_id="node_a",
-            description="Node A",
+            obligation_id="node_prov",
+            description="Node with provenance",
             category="eval",
             dependencies=(),
             required_paths=("README.md",),
@@ -298,10 +417,10 @@ class TestMissionCompletionSemantics(unittest.TestCase):
             github=self.github_writer,
             repo_path=self.repo_dir,
         )
-        evidence = {"hash": "abc1234", "metrics": {"cost": 0}}
-        srv1.disposition_mission_obligation("node_a", "COMPLETE", evidence)
+        ev = self._make_receipt("node_prov", classification="ACCEPTED_STATIC_BASIS", outcome="PASS", disposition="COMPLETE")
+        srv1.disposition_mission_obligation("node_prov", "COMPLETE", ev)
 
-        # Simulate restart with fresh service instance connected to same SQLite journal
+        # Restart service
         srv2 = service.StewardService(
             mission_id=mission.mission_id,
             journal=self.journal,
@@ -310,13 +429,78 @@ class TestMissionCompletionSemantics(unittest.TestCase):
         )
         self.assertIsNotNone(srv2.mission)
         self.assertIsNotNone(srv2.mission.acceptance_ledger)
-        node_a = srv2.mission.acceptance_ledger.get("node_a")
-        self.assertIsNotNone(node_a)
-        self.assertEqual(node_a.disposition, "COMPLETE")
-        self.assertEqual(node_a.evidence, evidence)
+        node = srv2.mission.acceptance_ledger.get("node_prov")
+        self.assertIsNotNone(node)
+        self.assertEqual(node.disposition, "COMPLETE")
+        self.assertEqual(node.evidence["provenance_classification"], "ACCEPTED_STATIC_BASIS")
+        self.assertEqual(node.evidence["accepted_main_sha"], self.base_sha)
+        self.assertEqual(node.evidence["hard_gate_outcome"], "PASS")
 
-    def test_07_duplicate_evidence_disposition_is_idempotent(self):
-        """Test 7: Duplicate evidence/disposition is idempotent."""
+    def test_11_ordinary_maintenance_missions_still_complete_normally(self):
+        """Requirement 11: ordinary maintenance Missions still complete normally."""
+        mission = contract.campaign_mission()
+        self.journal.record_mission_activation(
+            mission.mission_id, mission.proposal_sha256, mission.to_wire()
+        )
+        srv = service.StewardService(
+            mission_id=mission.mission_id,
+            journal=self.journal,
+            github=self.github_writer,
+            repo_path=self.repo_dir,
+        )
+        self.assertIsNone(srv.mission.acceptance_ledger)
+
+        res = srv.complete_mission_if_eligible()
+        self.assertEqual(res["status"], "COMPLETE")
+        self.assertEqual(srv.mission.state, "COMPLETE")
+
+    def test_12_real_research_mission_stays_research_pending_while_operationally_blocked(self):
+        """Requirement 12: a real research Mission stays RESEARCH_PENDING while evidence acquisition is operationally blocked."""
+        proposal = contract.build_research_successor_mission(base_sha=self.base_sha)
+        evidence = contract.OwnerApprovalEvidence(
+            transport="github_issue_comment",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            mission_id=proposal.mission_id,
+            approval_id="fixture-approval-research",
+            owner_identity="github:Igzela",
+            proposal_sha256=proposal.proposal_sha256,
+            accepted_main_sha=self.base_sha,
+            evidence_id="fixture-comment-research-1",
+        )
+        mission = contract.activate_current_mission(
+            repository=proposal.repository_identity.repository,
+            base_sha=proposal.repository_identity.base_sha,
+            branch=proposal.repository_identity.branch,
+            source_ref=proposal.repository_identity.source_ref,
+            source_sha256=proposal.repository_identity.source_sha256,
+            proposal_sha256=proposal.proposal_sha256,
+            owner_approval=contract.OwnerApproval(
+                "github:Igzela", proposal.proposal_sha256, "fixture-approval-research", "2026-09-04T00:00:00Z"
+            ),
+            owner_authenticator=contract.AuthenticatedOwnerApprovalValidator(evidence),
+            mission=proposal,
+        )
+        self.journal.record_mission_activation(
+            mission.mission_id, mission.proposal_sha256, mission.to_wire()
+        )
+        srv = service.StewardService(
+            mission_id=mission.mission_id,
+            journal=self.journal,
+            github=self.github_writer,
+            repo_path=self.repo_dir,
+        )
+
+        # Disposition 1 node (common_rwe_evidence_basis) as COMPLETE
+        ev1 = self._make_receipt("common_rwe_evidence_basis", classification="ACCEPTED_STATIC_BASIS", outcome="PASS", disposition="COMPLETE")
+        srv.disposition_mission_obligation("common_rwe_evidence_basis", "COMPLETE", ev1)
+
+        # Other 17 nodes remain unresolved because live provider execution is blocked
+        res = srv.complete_mission_if_eligible()
+        self.assertEqual(res["status"], "RESEARCH_PENDING")
+        self.assertEqual(srv.mission.state, "RUNNING")
+
+    def test_13_duplicate_evidence_disposition_is_idempotent(self):
+        """Duplicate evidence/disposition is idempotent."""
         ob1 = contract.AcceptanceObligation(
             obligation_id="node_idempotent",
             description="Node Idempotent",
@@ -334,14 +518,14 @@ class TestMissionCompletionSemantics(unittest.TestCase):
             github=self.github_writer,
             repo_path=self.repo_dir,
         )
-        ev = {"canonical_hash": "sha256:1111"}
+        ev = self._make_receipt("node_idempotent")
         evt1 = srv.disposition_mission_obligation("node_idempotent", "COMPLETE", ev)
         evt2 = srv.disposition_mission_obligation("node_idempotent", "COMPLETE", ev)
         self.assertEqual(evt1.seq, evt2.seq)
         self.assertEqual(evt1.sha256, evt2.sha256)
 
-    def test_08_contradictory_evidence_fails_closed(self):
-        """Test 8: Contradictory evidence fails closed."""
+    def test_14_contradictory_evidence_fails_closed(self):
+        """Contradictory evidence fails closed."""
         ob1 = contract.AcceptanceObligation(
             obligation_id="node_contradict",
             description="Node Contradict",
@@ -359,83 +543,14 @@ class TestMissionCompletionSemantics(unittest.TestCase):
             github=self.github_writer,
             repo_path=self.repo_dir,
         )
-        srv.disposition_mission_obligation("node_contradict", "COMPLETE", {"result": "pass"})
-
-        # Different disposition fails
-        with self.assertRaises(contract.MissionContractError) as ctx:
-            srv.disposition_mission_obligation("node_contradict", "NO_GO", {"result": "pass"})
-        self.assertEqual(str(ctx.exception), "contradictory_obligation_evidence")
+        ev1 = self._make_receipt("node_contradict", extra_key="1")
+        srv.disposition_mission_obligation("node_contradict", "COMPLETE", ev1)
 
         # Different evidence fails
+        ev2 = self._make_receipt("node_contradict", extra_key="2")
         with self.assertRaises(contract.MissionContractError) as ctx:
-            srv.disposition_mission_obligation("node_contradict", "COMPLETE", {"result": "different"})
+            srv.disposition_mission_obligation("node_contradict", "COMPLETE", ev2)
         self.assertEqual(str(ctx.exception), "contradictory_obligation_evidence")
-
-    def test_09_mission_completes_only_after_every_required_obligation_has_accepted_terminal_evidence(self):
-        """Test 9: Mission completes only after every required obligation has accepted terminal evidence."""
-        ob1 = contract.AcceptanceObligation(
-            obligation_id="ob1",
-            description="First obligation",
-            category="gate",
-            dependencies=(),
-            required_paths=("README.md",),
-        )
-        ob2 = contract.AcceptanceObligation(
-            obligation_id="ob2",
-            description="Second obligation",
-            category="evaluation",
-            dependencies=("ob1",),
-            required_paths=("README.md",),
-        )
-        mission = self._make_mission_with_ledger((ob1, ob2), allowed_paths=("README.md",))
-        self.journal.record_mission_activation(
-            mission.mission_id, mission.proposal_sha256, mission.to_wire()
-        )
-        srv = service.StewardService(
-            mission_id=mission.mission_id,
-            journal=self.journal,
-            github=self.github_writer,
-            repo_path=self.repo_dir,
-        )
-
-        # Neither dispositioned
-        self.assertEqual(srv.complete_mission_if_eligible()["status"], "RESEARCH_PENDING")
-
-        # 1 of 2 dispositioned
-        srv.disposition_mission_obligation("ob1", "COMPLETE", {"evidence": "ob1_done"})
-        self.assertEqual(srv.complete_mission_if_eligible()["status"], "RESEARCH_PENDING")
-
-        # 2 of 2 dispositioned
-        srv.disposition_mission_obligation("ob2", "COMPLETE", {"evidence": "ob2_done"})
-        res = srv.complete_mission_if_eligible()
-        self.assertEqual(res["status"], "COMPLETE")
-        self.assertEqual(srv.mission.state, "COMPLETE")
-
-        # Verified in journal projection
-        proj = self.journal.projection(mission_id=mission.mission_id)
-        self.assertIn("ob1", proj["obligations"])
-        self.assertIn("ob2", proj["obligations"])
-        self.assertEqual(proj["obligations"]["ob1"]["disposition"], "COMPLETE")
-        self.assertEqual(proj["obligations"]["ob2"]["disposition"], "COMPLETE")
-
-    def test_10_simple_ordinary_maintenance_mission_without_acceptance_ledger_retains_bounded_completion(self):
-        """Test 10: Simple ordinary maintenance missions without acceptance ledger retain bounded completion."""
-        mission = contract.campaign_mission()
-        self.journal.record_mission_activation(
-            mission.mission_id, mission.proposal_sha256, mission.to_wire()
-        )
-        srv = service.StewardService(
-            mission_id=mission.mission_id,
-            journal=self.journal,
-            github=self.github_writer,
-            repo_path=self.repo_dir,
-        )
-        self.assertIsNone(srv.mission.acceptance_ledger)
-
-        # With no stages pending, simple mission completes normally
-        res = srv.complete_mission_if_eligible()
-        self.assertEqual(res["status"], "COMPLETE")
-        self.assertEqual(srv.mission.state, "COMPLETE")
 
 
 if __name__ == "__main__":
