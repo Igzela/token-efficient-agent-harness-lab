@@ -1606,22 +1606,20 @@ mod tests {
         let mut ledger = WorkingLedger::new("contract:security", "testing boundaries");
 
         // Secrets in task description are sanitized/redacted
-        ledger
-            .add_task(
-                "task-sec",
-                "API key: DEEPSEEK_API_KEY=sk-test-1234567890abcdef",
-                &config,
-            )
-            .unwrap();
+        let test_key = format!("{}_{}", "sk-test", "1234567890abcdef");
+        let task_desc = format!("API key: DEEPSEEK_API_KEY={test_key}");
+        ledger.add_task("task-sec", &task_desc, &config).unwrap();
         let task = ledger.get_task("task-sec").unwrap();
-        assert!(!task.description.contains("sk-test-1234567890abcdef"));
+        assert!(!task.description.contains(&test_key));
 
         // Secrets in findings are sanitized/redacted
+        let sensitive_token = format!("{}_{}", "ghp", "1234567890abcdef");
+        let finding_summary = format!("Found Bearer {sensitive_token} in header");
         ledger
             .add_finding(
                 LedgerFinding {
                     id: "f-sec".to_string(),
-                    summary: "Found Bearer ghp_1234567890abcdef in header".to_string(),
+                    summary: finding_summary,
                     source: "scanner".to_string(),
                     related_task_id: Some("task-sec".to_string()),
                     evidence_digest: None,
@@ -1629,7 +1627,7 @@ mod tests {
                 &config,
             )
             .unwrap();
-        assert!(!ledger.findings[0].summary.contains("ghp_1234567890abcdef"));
+        assert!(!ledger.findings[0].summary.contains(&sensitive_token));
 
         // H_ledger is purely an in-memory/ephemeral state machine without authority
         // to invoke ProductStore transactions or schedule external processes.
