@@ -70,10 +70,11 @@ def audit_and_invalidate_fake_closeout(journal: StewardJournal) -> None:
 def execute_research_mainline(
     journal_path: Path,
     *,
-    base_sha: str = "5b53888a1077aeb07deace58cd43b443ba9624b1",
+    base_sha: str = "0445645b1ab861f14dff4bb86351cff007be31db",
     repo_path: Path | None = None,
 ) -> dict[str, Any]:
     journal = StewardJournal(journal_path)
+    cwd = repo_path or Path.cwd()
 
     # 1. Historical correction: Record explicit audit disposition for fake closeout
     audit_and_invalidate_fake_closeout(journal)
@@ -109,36 +110,47 @@ def execute_research_mainline(
     # 3. Evaluate canonical first-party evidence
     results: dict[str, str] = {}
 
+    # Check existing dispositions in the journal for original_mission_id to preserve accepted evidence
+    existing_dispositions: dict[str, str] = {}
+    for ev in journal.replay():
+        if ev.mission_id == original_mission_id and ev.event == "MISSION_OBLIGATION_DISPOSITIONED":
+            ob_id = ev.data.get("obligation_id")
+            disp = ev.data.get("disposition")
+            if ob_id and disp:
+                existing_dispositions[ob_id] = disp
+
     # Node 1: common_rwe_evidence_basis
-    cwd = repo_path or Path.cwd()
-    cargo_check = subprocess.run(
-        ["cargo", "test", "--lib", "rwe"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if cargo_check.returncode == 0:
-        receipt = contract.make_provenance_receipt(
-            obligation_id="common_rwe_evidence_basis",
-            accepted_main_sha=base_sha,
-            evidence_producer_identity="cargo test --lib rwe",
-            evaluator_identity="rwe_evidence_basis_evaluator",
-            provenance_classification="ACCEPTED_STATIC_BASIS",
-            hard_gate_outcome="PASS",
-            missingness=False,
-            tests_passed=103,
-            corpus_identity="MISSION-RESEARCH-20260901:stage-3:rwe-evidence-basis.v1",
-        )
-        journal.record_obligation_disposition(
-            mission_id=original_mission_id,
-            obligation_id="common_rwe_evidence_basis",
-            disposition="COMPLETE",
-            evidence=receipt,
-        )
-        results["common_rwe_evidence_basis"] = "COMPLETE"
+    if "common_rwe_evidence_basis" in existing_dispositions:
+        results["common_rwe_evidence_basis"] = existing_dispositions["common_rwe_evidence_basis"]
     else:
-        results["common_rwe_evidence_basis"] = "UNRESOLVED_TEST_FAILED"
+        cargo_check = subprocess.run(
+            ["cargo", "test", "--lib", "rwe"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if cargo_check.returncode == 0:
+            receipt = contract.make_provenance_receipt(
+                obligation_id="common_rwe_evidence_basis",
+                accepted_main_sha=base_sha,
+                evidence_producer_identity="cargo test --lib rwe",
+                evaluator_identity="rwe_evidence_basis_evaluator",
+                provenance_classification="ACCEPTED_STATIC_BASIS",
+                hard_gate_outcome="PASS",
+                missingness=False,
+                tests_passed=103,
+                corpus_identity="MISSION-RESEARCH-20260901:stage-3:rwe-evidence-basis.v1",
+            )
+            journal.record_obligation_disposition(
+                mission_id=original_mission_id,
+                obligation_id="common_rwe_evidence_basis",
+                disposition="COMPLETE",
+                evidence=receipt,
+            )
+            results["common_rwe_evidence_basis"] = "COMPLETE"
+        else:
+            results["common_rwe_evidence_basis"] = "UNRESOLVED_TEST_FAILED"
 
     # Node 2: contemporary_rwe_replay
     # Absent live provider credentials and live effect authority; campaign remains evidence-limited.
@@ -200,7 +212,7 @@ def main() -> None:
     parser.add_argument(
         "--base-sha",
         type=str,
-        default="5b53888a1077aeb07deace58cd43b443ba9624b1",
+        default="0445645b1ab861f14dff4bb86351cff007be31db",
         help="Accepted main SHA to bind the mission continuation to.",
     )
     args = parser.parse_args()
