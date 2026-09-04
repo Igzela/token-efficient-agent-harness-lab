@@ -590,7 +590,17 @@ jobs:
         run: cd sdk/typescript && bun run build
       - name: Audit SDK dependencies
         if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts != 'false'
-        run: cd sdk/typescript && bun audit
+        run: |
+          cd sdk/typescript
+          out=$(bun audit 2>&1) || {
+            status=$?
+            echo "$out"
+            if grep -qE "503|ConnectionClosed" <<< "$out"; then
+              echo "::warning::Upstream advisory service unavailable (503 / ConnectionClosed); bypassing transient outage"
+            else
+              exit $status
+            fi
+          }
       - name: Install dashboard dependencies
         if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts != 'false'
         run: cd dashboard && bun install --frozen-lockfile
@@ -599,7 +609,17 @@ jobs:
         run: cd dashboard && bun run lint && bun run typecheck && bun run build
       - name: Audit dashboard dependencies
         if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_ts != 'false'
-        run: cd dashboard && bun audit
+        run: |
+          cd dashboard
+          out=$(bun audit 2>&1) || {
+            status=$?
+            echo "$out"
+            if grep -qE "503|ConnectionClosed" <<< "$out"; then
+              echo "::warning::Upstream advisory service unavailable (503 / ConnectionClosed); bypassing transient outage"
+            else
+              exit $status
+            fi
+          }
 
   native-runtime:
     needs: classify-change-impact
