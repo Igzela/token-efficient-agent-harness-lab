@@ -1086,9 +1086,11 @@ mod tests {
         }
     }
 
+    type WorkerHandler =
+        Box<dyn Fn(&WorkerContext) -> Result<WorkerResult, OrchestrationError> + Send + Sync>;
+
     struct MockWorker {
-        handler:
-            Box<dyn Fn(&WorkerContext) -> Result<WorkerResult, OrchestrationError> + Send + Sync>,
+        handler: WorkerHandler,
     }
 
     impl MockWorker {
@@ -1113,16 +1115,18 @@ mod tests {
         }
     }
 
+    type VerifierHandler = Box<
+        dyn Fn(
+                &WorkingLedger,
+                &LedgerTaskRecord,
+                &WorkerResult,
+            ) -> Result<VerificationReport, OrchestrationError>
+            + Send
+            + Sync,
+    >;
+
     struct MockVerifier {
-        handler: Box<
-            dyn Fn(
-                    &WorkingLedger,
-                    &LedgerTaskRecord,
-                    &WorkerResult,
-                ) -> Result<VerificationReport, OrchestrationError>
-                + Send
-                + Sync,
-        >,
+        handler: VerifierHandler,
     }
 
     impl MockVerifier {
@@ -1306,8 +1310,10 @@ mod tests {
 
     #[test]
     fn scenario_c_no_progress_guard() {
-        let mut config = LedgerOrchestratorConfig::default();
-        config.max_no_progress_rounds = 2;
+        let config = LedgerOrchestratorConfig {
+            max_no_progress_rounds: 2,
+            ..Default::default()
+        };
         let mut ledger = WorkingLedger::new("contract:loop-v1", "test no progress");
         ledger
             .add_task("task-stuck", "cannot make progress", &config)
