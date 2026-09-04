@@ -118,7 +118,10 @@ SANITIZED_ENV=(
   "CODEX_HOME=$CODEX_HOME"
   "AGENT_CODEX_MODEL_TIER=$MODEL_TIER"
 )
-for optional_name in USER LOGNAME SHELL HTTP_PROXY HTTPS_PROXY ALL_PROXY; do
+for optional_name in USER LOGNAME SHELL HTTP_PROXY HTTPS_PROXY ALL_PROXY PYTHONPATH \
+  STEWARD_WORKCARD_ID STEWARD_WORKTREE STEWARD_WORKER_TYPE STEWARD_ALLOWED_PATHS \
+  STEWARD_FORBIDDEN_PATHS STEWARD_CARD_OBJECTIVE STEWARD_SESSION_STATE_DIR \
+  STEWARD_MAX_CONTINUATIONS; do
   if [[ -v "$optional_name" && -n "${!optional_name}" ]]; then
     SANITIZED_ENV+=("$optional_name=${!optional_name}")
   fi
@@ -159,10 +162,14 @@ if [ "$WORKER_TYPE" != "review" ]; then
   # repair calls; reviews explicitly select read-only below.
   APPROVAL_ARGS=(--approve-for-me)
 fi
+CONFIG_LOAD_ARGS=()
+if [ ! -f "$CODEX_HOME/config.toml" ]; then
+  CONFIG_LOAD_ARGS=(--ignore-user-config)
+fi
 CODEX_EXEC_ARGS=(
   --json
   --ephemeral
-  --ignore-user-config
+  "${CONFIG_LOAD_ARGS[@]}"
   --skip-git-repo-check
   "${APPROVAL_ARGS[@]}"
 )

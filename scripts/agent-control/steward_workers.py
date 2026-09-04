@@ -21,6 +21,7 @@ import stat
 import subprocess
 import tempfile
 import shutil
+import sys
 from typing import Any, Callable, Mapping, Protocol
 import uuid
 
@@ -975,6 +976,7 @@ class CodexWorkCardWorker:
         model_tier: str = "T1",
         git_sandbox: _SandboxGit | None = None,
         worktree_writable: bool = True,
+        context: WorkerContext | None = None,
     ) -> tuple[int, Path, str | None]:
         if worker_type not in {"implement", "ci-repair", "review"}:
             raise WorkerError("codex_worker_type_invalid")
@@ -992,6 +994,28 @@ class CodexWorkCardWorker:
             home.mkdir(parents=True)
             codex_home = home / ".codex"
             codex_home.mkdir(parents=True)
+            hooks_pkg_source = Path(__file__).resolve().parent / "codex_hooks"
+            hooks_destination = root / "codex_hooks"
+            hooks_state_dir = root / "hooks_state"
+            hooks_state_dir.mkdir(parents=True, exist_ok=True)
+            if hooks_pkg_source.is_dir():
+                shutil.copytree(hooks_pkg_source, hooks_destination)
+                dispatcher_copy = hooks_destination / "dispatcher.py"
+                dispatcher_copy.chmod(0o755)
+                try:
+                    control_dir = str(Path(__file__).resolve().parent)
+                    if control_dir not in sys.path:
+                        sys.path.insert(0, control_dir)
+                    import codex_hooks.config as hook_cfg_module
+                    hook_gen = hook_cfg_module.HookConfigGenerator(
+                        dispatcher_path=dispatcher_copy,
+                        worktree_path=worktree,
+                        python_executable="/usr/bin/python3",
+                        timeout_seconds=30,
+                    )
+                    hook_gen.write_config(codex_home / "config.toml")
+                except Exception as exc:
+                    sys.stderr.write(f"HOOKS PROVISIONING ERROR: {exc}\n")
             source_home = Path(str(environment.get("HOME", "")))
             readonly_paths: list[tuple[Path, Path]] = [
                 (wrapper_copy, wrapper_copy),
@@ -1067,6 +1091,18 @@ class CodexWorkCardWorker:
             child_environment["CODEX_HOME"] = str(codex_home)
             child_environment["AGENT_CODEX_MODEL_TIER"] = model_tier
             child_environment["AGENT_CODEX_TIMEOUT_SECONDS"] = str(self.timeout_seconds)
+            child_environment["STEWARD_WORKTREE"] = str(worktree)
+            child_environment["STEWARD_WORKER_TYPE"] = worker_type
+            child_environment["STEWARD_SESSION_STATE_DIR"] = str(hooks_state_dir)
+            if context is not None:
+                child_environment["STEWARD_WORKCARD_ID"] = context.card_id
+                child_environment["STEWARD_ALLOWED_PATHS"] = json.dumps(list(context.allowed_paths))
+                child_environment["STEWARD_FORBIDDEN_PATHS"] = json.dumps(list(context.forbidden_paths))
+                child_environment["STEWARD_CARD_OBJECTIVE"] = json.dumps(list(context.steps))
+            py_path = f"{root}:{hooks_destination}"
+            if "PYTHONPATH" in child_environment:
+                py_path = f"{py_path}:{child_environment['PYTHONPATH']}"
+            child_environment["PYTHONPATH"] = py_path
             codex_path: Path | None = None
             if service_auth_source is not None:
                 codex_path = SERVICE_CODEX_BINARY
@@ -1190,6 +1226,7 @@ class CodexWorkCardWorker:
                 environment=context.environment,
                 model_tier=context.model_tier,
                 git_sandbox=git_sandbox,
+                context=context,
             )
             if git_sandbox is not None:
                 child_head = self._sandbox_head(git_sandbox)
@@ -1332,6 +1369,7 @@ class CodexWorkCardReviewer:
                 model_tier=context.model_tier,
                 git_sandbox=git_sandbox,
                 worktree_writable=False,
+                context=context,
             )
         finally:
             if git_sandbox is not None:

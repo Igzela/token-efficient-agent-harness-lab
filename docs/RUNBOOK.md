@@ -554,6 +554,36 @@ invocation. Its complete managed-runtime security boundary is owned by
 Raw prompts, model outputs, transcripts, credentials, and private paths are
 not journal evidence.
 
+### Codex Lifecycle Hooks Operations and Diagnostics
+
+Operators diagnose and audit Codex Lifecycle Hooks using the following deterministic procedures:
+
+1. **Verify Runtime Hook Capability (H0 Probe)**:
+   Run the capability probe against the local Codex CLI installation before dispatch:
+   ```bash
+   uv run --no-project python scripts/agent-control/codex_hooks/probe.py
+   # Or for structured JSON output:
+   uv run --no-project python scripts/agent-control/codex_hooks/probe.py --json
+   ```
+   All 14 capabilities must report `VERIFIED` and overall status `READY`. If status is `DEGRADED`, `BLOCKED`, or `UNSUPPORTED`, verify Codex binary version, `codex features list`, and strict configuration permissions.
+
+2. **Inspect Ephemeral Receipts and Telemetry (H1)**:
+   During or after worker execution, inspect tool receipts and ROI telemetry in the worker's ephemeral state directory:
+   ```bash
+   # View recorded tool receipts:
+   ls -la /tmp/steward-codex-*/hooks_state/receipts/
+   # Inspect telemetry metrics:
+   cat /tmp/steward-codex-*/hooks_state/telemetry.json
+   ```
+   Telemetry confirms bootstrap token savings, receipt compression bytes, path violations blocked, and premature stops intercepted.
+
+3. **Diagnosing Guard Blocks and Continuation Loops (H2 & H3)**:
+   - **Path Violation (H2)**: If a tool call was blocked, inspect stderr in the worker log or `telemetry.json` for `PreToolUse_Block`. Ensure the active WorkCard's `allowed_paths` encompasses all necessary edits and does not include forbidden paths (e.g. `docs/ROADMAP.md`).
+   - **Premature Stop Intercept (H3)**: If a worker attempted to finish without file changes, the Stop hook emits exit code 2 and prompts continuation. If the retry budget (default: 2) is exhausted, the worker terminates and reports `no_workspace_changes` for deterministic Stage replan.
+
+4. **Hook Trust and Integrity**:
+   The production configuration provisions cryptographic `trusted_hash` entries in `[hooks.state."<path>"]` and `[projects."<worktree>"]`. Never pass `--dangerously-bypass-hook-trust` in production. If a hash mismatch error occurs, regenerate the trust bundle using `compute_bundle_hash` or verify file integrity.
+
 On restart, the service replays only the durable activation or accepted-main
 rebind and resumes the next safe phase. A lost Ready/supersede/merge result is
 `OUTCOME_UNKNOWN`: retain branch, journal, and exact-head facts and reconcile

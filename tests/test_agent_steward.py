@@ -1722,3 +1722,53 @@ class StewardConcurrencyTests(unittest.TestCase):
             results = instance.dispatch_cards(self.mission, stage, cards, base_sha=BASE)
         self.assertEqual(set(results), {"card-a", "card-b"})
         self.assertEqual(maximum, 1)
+
+    def test_codex_worker_provisions_lifecycle_hooks(self):
+        worker = workers.CodexWorkCardWorker(timeout_seconds=30)
+        context = workers.WorkerContext(
+            "mission-test",
+            "stage-test",
+            "card-hooks-test",
+            1,
+            "T1",
+            BASE,
+            self.root,
+            ("scripts/agent-control/codex_hooks",),
+            ("Implement hooks",),
+            ("git diff --check",),
+            ("Do not widen scope",),
+            ("evidence",),
+            workers.child_environment(),
+            objective="Test hooks provisioning.",
+        )
+        intercepted_env = {}
+        intercepted_config = ""
+
+        def fake_bounded(cmd, cwd=None, timeout_seconds=None, env=None):
+            nonlocal intercepted_env, intercepted_config
+            intercepted_env = dict(env or {})
+            codex_home = Path(intercepted_env.get("CODEX_HOME", ""))
+            cfg = codex_home / "config.toml"
+            if cfg.is_file():
+                intercepted_config = cfg.read_text(encoding="utf-8")
+            return 0, "", ""
+
+        with mock.patch("local_verification._bounded_process", side_effect=fake_bounded), \
+             mock.patch.object(worker, "_git", return_value=BASE):
+            code, path, reason = worker._invoke(
+                "implement",
+                "prompt",
+                self.root,
+                environment=context.environment,
+                context=context,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(intercepted_env.get("STEWARD_WORKCARD_ID"), "card-hooks-test")
+        self.assertEqual(intercepted_env.get("STEWARD_WORKTREE"), str(self.root))
+        self.assertIn("hooks_state", intercepted_env.get("STEWARD_SESSION_STATE_DIR", ""))
+        self.assertIn("PYTHONPATH", intercepted_env)
+        self.assertIn("[hooks]", intercepted_config)
+        self.assertIn("SessionStart", intercepted_config)
+        self.assertIn("PreToolUse", intercepted_config)
+        self.assertIn("Stop", intercepted_config)
+        self.assertIn("trusted_hash", intercepted_config)

@@ -117,6 +117,11 @@ Ordinary maintenance missions without an acceptance ledger retain their standard
   canonical in
   [`docs/ARCHITECTURE.md`](ARCHITECTURE.md#managed-codex-credential-boundary).
   Marker and PR4B adapters are test-only compatibility surfaces.
+- **Codex Lifecycle Hooks Autonomous Operating Contract**:
+  - **H0 Capability Gating**: Production workers gate hook invocation on `CodexHookProbe`. All 14 capabilities (`hooks.basic`, `session_start`, `pre_tool`, `post_tool`, `permission_request`, `compact`, `stop`, `interrupt`, `subagent`, `async`, `mcp_tool`, `isolated_codex_home`, `hook_trust_bootstrap`, `definition_hash_invalidation`) must be actively evaluated; missing core capabilities fail closed with deterministic diagnostics.
+  - **H1 Context & Compaction Invariants**: Bounded context injection at `SessionStart` isolates WorkCard requirements. The `PreCompact` snapshot and `PostCompact` rehydration contract guarantees that long-running context compactions cannot cause the agent to lose its assigned scope or produce goal drift.
+  - **H2 Worktree Boundary Enforcement**: `PreToolUse` strictly enforces `allowed_paths` and worktree isolation, preventing edits to forbidden files or destructive operations. `PermissionRequest` auto-approves safe bounded execution.
+  - **H3 Completion Continuation Loop**: The `Stop` hook enforces that an implementation worker does not terminate prematurely before producing workspace edits and verifying its changes. When incomplete, a bounded continuation retry budget (default: 2 attempts) intercepts the stop signal and prompts continuation without operator intervention.
 
 ## Review Convergence Protocol
 
