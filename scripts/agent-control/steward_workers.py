@@ -188,8 +188,11 @@ def child_environment(
         # installation directory; no caller-controlled PATH entries are
         # forwarded to the child.
         codex_dir = Path(environment["HOME"]) / ".local" / "bin"
-        if (codex_dir / "codex").is_file() and os.access(codex_dir / "codex", os.X_OK):
-            path_entries.append(str(codex_dir))
+        codex_path = _resolve_interactive_codex_candidate(
+            str(codex_dir / "codex"), home=Path(environment["HOME"])
+        )
+        if codex_path is not None:
+            path_entries.append(str(codex_path.parent))
     environment["PATH"] = ":".join(path_entries)
     return environment
 
@@ -241,6 +244,77 @@ def _systemd_codex_auth_source() -> Path | None:
     ):
         return None
     return source
+
+
+def _resolve_interactive_codex_candidate(
+    codex_bin: str, *, home: Path
+) -> Path | None:
+    """Resolve the user-local CLI while keeping it inside authenticated HOME."""
+
+    try:
+        candidate = Path(codex_bin).resolve(strict=True)
+        candidate.relative_to(home.resolve(strict=True))
+        metadata = os.lstat(candidate)
+    except (OSError, ValueError):
+        return None
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_mode & 0o022
+        or not os.access(candidate, os.X_OK)
+    ):
+        return None
+    return candidate
+
+
+def _copy_interactive_codex_executable(
+    source: Path, destination: Path, *, home: Path
+) -> Path | None:
+    """Copy one HOME-confined executable into the isolated sandbox."""
+
+    directory_fds: list[int] = []
+    executable_fd: int | None = None
+
+    try:
+        resolved_home = home.resolve(strict=True)
+        relative_source = source.resolve(strict=True).relative_to(resolved_home)
+        if any(part in {".", ".."} for part in relative_source.parts):
+            return None
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        root_fd = os.open(os.sep, directory_flags)
+        directory_fds.append(root_fd)
+        home_fd = root_fd
+        for component in resolved_home.parts[1:]:
+            next_fd = os.open(component, directory_flags, dir_fd=home_fd)
+            directory_fds.append(next_fd)
+            home_fd = next_fd
+        parent_fd = home_fd
+        for component in relative_source.parts[:-1]:
+            next_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+            directory_fds.append(next_fd)
+            parent_fd = next_fd
+        executable_fd = os.open(
+            relative_source.parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd
+        )
+        metadata = os.fstat(executable_fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_mode & 0o022
+            or not metadata.st_mode & 0o111
+        ):
+            return None
+        with os.fdopen(executable_fd, "rb") as handle:
+            executable_fd = None
+            with destination.open("xb") as copied:
+                shutil.copyfileobj(handle, copied)
+        destination.chmod(stat.S_IMODE(metadata.st_mode) & ~0o022)
+    except (OSError, ValueError):
+        return None
+    finally:
+        if executable_fd is not None:
+            os.close(executable_fd)
+        for directory_fd in reversed(directory_fds):
+            os.close(directory_fd)
+    return destination
 
 
 def select_model_tier(base_tier: str, attempt: int) -> str:
@@ -1131,8 +1205,15 @@ class CodexWorkCardWorker:
                     and not codex_metadata.st_mode & 0o022
                     and os.access(codex_path, os.X_OK)
                 ):
-                    codex_destination = root / "codex"
-                    readonly_paths.append((codex_path, codex_destination))
+                    if service_auth_source is not None:
+                        codex_source = codex_path
+                    else:
+                        codex_source = _copy_interactive_codex_executable(
+                            codex_path, root / "codex-source", home=source_home
+                        )
+                    if codex_source is not None:
+                        codex_destination = root / "codex"
+                        readonly_paths.append((codex_source, codex_destination))
             sandboxed_command = _sandbox_command(
                 [
                     str(wrapper_copy),
