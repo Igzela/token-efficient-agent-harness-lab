@@ -423,7 +423,7 @@ class StewardService:
                 rec = self.journal.active_mission_record()
                 if rec is not None and rec.mission_id == mission_id and rec.data:
                     try:
-                        registered = self._restore_journal_mission(rec)
+                        registered = self._restore_journal_mission(rec, self.journal)
                     except Exception:
                         pass
                 if registered is None:
@@ -432,15 +432,16 @@ class StewardService:
             rec = self.journal.active_mission_record()
             if rec is not None and rec.data:
                 try:
-                    registered = self._restore_journal_mission(rec)
+                    registered = self._restore_journal_mission(rec, self.journal)
                 except Exception:
                     pass
 
         self.mission = registered
         self.mission_id = mission_id or (registered.mission_id if registered else None)
 
-    @staticmethod
-    def _restore_journal_mission(record: Any) -> mission_contract.MaintenanceMission:
+    def _restore_journal_mission(
+        self_or_cls: Any, record: Any, journal: StewardJournal | None = None
+    ) -> mission_contract.MaintenanceMission:
         """Rehydrate only a durable activation or accepted-main rebind."""
 
         model = mission_contract.MaintenanceMission.from_wire(record.data)
@@ -448,7 +449,25 @@ class StewardService:
             raise StewardServiceError("journal_active_mission_invalid")
         if record.mission_id != model.mission_id or model.state != "RUNNING":
             raise StewardServiceError("journal_active_mission_invalid")
-        return mission_contract.restore_durable_activation(model)
+        restored = mission_contract.restore_durable_activation(model)
+        j = journal or getattr(self_or_cls, "journal", None)
+        if j is not None and restored.acceptance_ledger is not None:
+            for event in j.replay():
+                if event.mission_id == restored.mission_id and event.event == "MISSION_OBLIGATION_DISPOSITIONED":
+                    ob_id = event.data.get("obligation_id")
+                    disp = event.data.get("disposition")
+                    ev = event.data.get("evidence", {})
+                    if ob_id and disp:
+                        try:
+                            restored = replace(
+                                restored,
+                                acceptance_ledger=restored.acceptance_ledger.disposition_obligation(
+                                    ob_id, disp, ev
+                                ),
+                            )
+                        except Exception:
+                            pass
+        return restored
 
     def heartbeat(self, *, tick_id: str | None = None) -> dict[str, Any]:
         """Record one idempotent liveness fact without changing work state."""
@@ -1031,6 +1050,75 @@ class StewardService:
         )
         mission_contract.validate_stage(stage, mission, cards)
         return stage, cards, len(groups)
+
+    def _next_dynamic_stage_plan(
+        self,
+        mission: mission_contract.MaintenanceMission,
+        index: int,
+        eligible: tuple[mission_contract.AcceptanceObligation, ...],
+        *,
+        retry: int = 1,
+        strategy: str = "primary",
+    ) -> tuple[mission_contract.Stage, tuple[mission_contract.WorkCard, ...], int] | None:
+        paths: list[str] = []
+        for ob in eligible:
+            for p in ob.required_paths:
+                for allowed in mission.allowed_paths:
+                    if mission_contract._contains(allowed, p) or mission_contract._contains(p, allowed):
+                        if allowed not in paths:
+                            paths.append(allowed)
+        if not paths:
+            paths = list(mission.allowed_paths[:2])
+        selected_paths = tuple(paths[:2])
+        stage_number = index + 1
+        if type(retry) is not int or not 1 <= retry <= mission.budget.max_attempts:
+            raise StewardServiceError("stage_retry_budget_invalid")
+        if strategy not in {"primary", "alternative"}:
+            raise StewardServiceError("stage_replan_strategy_invalid")
+        token = hashlib.sha256(
+            f"{mission.mission_id}:{mission.proposal_sha256}:{stage_number}:{strategy}:{retry}:{mission.repository_identity.base_sha}".encode("utf-8")
+        ).hexdigest()[:16]
+        stage_id = f"steward-stage-{stage_number}-{token}"
+        eligible_names = ", ".join(ob.obligation_id for ob in eligible[:3])
+        cards = tuple(
+            mission_contract.WorkCard(
+                card_id=f"{stage_id}:card-{card_index}",
+                stage_id=stage_id,
+                allowed_paths=(path,),
+                forbidden_paths=("outside-approved-scope/",),
+                steps=(
+                    (
+                        f"Satisfy bounded acceptance obligations ({eligible_names})."
+                        if strategy == "primary"
+                        else f"Alternative bounded implementation for obligations ({eligible_names})."
+                    ),
+                ),
+                focused_tests=mission.quality_checks,
+                negative_checks=("Reject path, authority, credential, and external-effect expansion.",),
+                expected_evidence=("implementation head", "focused-check receipt", "independent review receipt"),
+                dependencies=(),
+                path_locks=(path,),
+                max_attempts=min(mission.budget.max_attempts, 3),
+                model_tier="T1",
+                rollback=mission.rollback,
+                result_state="PENDING",
+            )
+            for card_index, path in enumerate(selected_paths, start=1)
+        )
+        stage = mission_contract.Stage(
+            stage_id=stage_id,
+            mission_id=mission.mission_id,
+            objective=f"Autonomously planned dynamic stage {stage_number} for acceptance obligations ({eligible_names}).",
+            repository_identity=mission.repository_identity,
+            acceptance_checks=mission.quality_checks,
+            compatibility_checks=("accepted-main dependency is journal-bound",),
+            workcard_ids=tuple(card.card_id for card in cards),
+            rollback=mission.rollback,
+            integration_pr=None,
+            exact_head=None,
+        )
+        mission_contract.validate_stage(stage, mission, cards)
+        return stage, cards, stage_number
 
     def _stage_records(
         self, mission_id: str,
@@ -3136,11 +3224,15 @@ class StewardService:
             return {"status": "MERGE_READBACK", "stage_id": stage.stage_id}
         if status.outcome != "COMPLETE":
             return {"status": "WAITING", "stage_id": stage.stage_id}
+        is_final_stage = (
+            metadata["stage_index"] == metadata["stage_total"]
+            and (self.mission.acceptance_ledger is None or self.mission.acceptance_ledger.is_terminal())
+        )
         readback = self.post_merge_readback(
             stage_id=stage.stage_id,
             pr_number=pr_number,
             expected_head_sha=expected_head,
-            is_final_stage=metadata["stage_index"] == metadata["stage_total"],
+            is_final_stage=is_final_stage,
         )
         if readback["status"] != "VERIFIED":
             return {"status": readback["status"], "stage_id": stage.stage_id}
@@ -3404,10 +3496,18 @@ class StewardService:
             while next_index + 1 in complete_indices:
                 next_index += 1
             next_plan = self._next_stage_plan(active, next_index)
+            if next_plan is None and active.acceptance_ledger is not None and not active.acceptance_ledger.is_terminal():
+                eligible = active.acceptance_ledger.unresolved_eligible()
+                if eligible:
+                    next_plan = self._next_dynamic_stage_plan(active, next_index, eligible)
             if next_plan is None:
-                self.journal.record_mission_completion(active.mission_id, {"final_head_sha": active.repository_identity.base_sha})
-                self.mission = replace(active, state="COMPLETE")
-                return {"status": "COMPLETE", "mission_id": active.mission_id}
+                if active.acceptance_ledger is None or active.acceptance_ledger.is_terminal():
+                    self.journal.record_mission_completion(
+                        active.mission_id, {"final_head_sha": active.repository_identity.base_sha}
+                    )
+                    self.mission = replace(active, state="COMPLETE")
+                    return {"status": "COMPLETE", "mission_id": active.mission_id}
+                return {"status": "RESEARCH_PENDING", "mission_id": active.mission_id}
             stage, cards, total = next_plan
             self._record_stage_plan(
                 active,
@@ -3780,13 +3880,17 @@ class StewardService:
             )
             return {"status": "POST_MERGE_SMOKE_FAILED", "mission_state": self.mission.state}
 
+        ledger_terminal = (
+            self.mission.acceptance_ledger is None or self.mission.acceptance_ledger.is_terminal()
+        )
+        stage_is_complete = is_final_stage and ledger_terminal
         self.journal.append(
             event="POST_MERGE_VERIFIED",
             idempotency_key=f"post-merge-verified:{self.mission.mission_id}:{stage_id}:{accepted_main_sha}",
             mission_id=self.mission.mission_id,
             stage_id=stage_id,
             card_id="",
-            state="COMPLETE" if is_final_stage else "RUNNING",
+            state="COMPLETE" if stage_is_complete else "RUNNING",
             detail="post_merge_readback_verified",
             data={
                 "pr_number": pr_number,
@@ -3797,7 +3901,7 @@ class StewardService:
             },
             enforce_transition=False,
         )
-        if is_final_stage:
+        if stage_is_complete:
             self.journal.record_mission_completion(
                 self.mission.mission_id,
                 summary={"final_head_sha": accepted_main_sha, "stage_pr_number": pr_number},
@@ -4265,6 +4369,86 @@ class StewardService:
         return ReconciliationReport(
             _now(), tuple(items), self.journal.projection(mission_id=self.mission_id)
         )
+
+    def disposition_mission_obligation(
+        self,
+        obligation_id: str,
+        disposition: str,
+        evidence: dict[str, Any] | None = None,
+        *,
+        idempotency_key: str | None = None,
+    ) -> Any:
+        """Apply and record one terminal disposition for a mission acceptance obligation."""
+        active = self.mission
+        if active is None:
+            rec = self.journal.active_mission_record()
+            if rec and rec.data:
+                try:
+                    active = self._restore_journal_mission(rec, self.journal)
+                    self.mission = active
+                    self.mission_id = active.mission_id
+                except Exception:
+                    active = None
+        if active is None:
+            raise StewardServiceError("no_active_mission")
+        if active.acceptance_ledger is None:
+            raise StewardServiceError("mission_has_no_acceptance_ledger")
+
+        clean_evidence = dict(evidence or {})
+        new_ledger = active.acceptance_ledger.disposition_obligation(
+            obligation_id, disposition, clean_evidence
+        )
+        self.mission = replace(active, acceptance_ledger=new_ledger)
+
+        event = self.journal.record_obligation_disposition(
+            active.mission_id,
+            obligation_id,
+            disposition,
+            clean_evidence,
+            idempotency_key=idempotency_key,
+        )
+        return event
+
+    def complete_mission_if_eligible(self) -> dict[str, Any]:
+        """Complete the active mission if its stage lifecycle is settled and acceptance ledger is terminal."""
+        active = self.mission
+        if active is None:
+            rec = self.journal.active_mission_record()
+            if rec and rec.data:
+                try:
+                    active = self._restore_journal_mission(rec, self.journal)
+                    self.mission = active
+                    self.mission_id = active.mission_id
+                except Exception:
+                    active = None
+        if active is None:
+            raise StewardServiceError("no_active_mission")
+        if active.state == "COMPLETE":
+            return {"status": "COMPLETE", "mission_id": active.mission_id}
+        if active.acceptance_ledger is not None and not active.acceptance_ledger.is_terminal():
+            return {"status": "RESEARCH_PENDING", "mission_id": active.mission_id}
+        records = self._stage_records(active.mission_id)
+        completed = {
+            stage.stage_id
+            for stage, _cards, _metadata in records
+            if self._latest_stage_event(active.mission_id, stage.stage_id, "POST_MERGE_VERIFIED") is not None
+        }
+        superseded = {
+            stage.stage_id
+            for stage, _cards, _metadata in records
+            if self._latest_stage_event(active.mission_id, stage.stage_id, "STAGE_SUPERSEDED") is not None
+        }
+        pending = [
+            record for record in records
+            if record[0].stage_id not in completed and record[0].stage_id not in superseded
+        ]
+        if pending:
+            return {"status": "STAGES_PENDING", "mission_id": active.mission_id}
+        self.journal.record_mission_completion(
+            active.mission_id, {"final_head_sha": active.repository_identity.base_sha}
+        )
+        self.mission = replace(active, state="COMPLETE")
+        return {"status": "COMPLETE", "mission_id": active.mission_id}
 
 
 def main(argv: list[str] | None = None) -> int:

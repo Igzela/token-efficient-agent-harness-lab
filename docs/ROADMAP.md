@@ -82,53 +82,56 @@ evidence record.
 
 | Capability | Current truth | Role in the loop |
 |---|---|---|
-| RWE and contemporary comparison | Identity, corpus, evaluator, protocol, lifecycle-cost, and reconstructable old/new inputs are accepted. No contemporary old/new replay was executed to a decision-grade result; the run remains blocked pending its required evidence gates. | Common evidence basis; architecture changes are compared against it when the missing gates are repaired. |
-| Context Working Set (CWS) | The projection, residency, source-bound rehydration, tool-result reduction, and default-off analysis boundaries are accepted. `PINNED` authority/blocker evidence cannot be evicted by fuzzy relevance, and reduction cannot convert failure or unknown into success. Live treatment evidence was insufficient and no enablement is claimed. | An optional, registered Strategy component; it is derived/rebuildable model-visible context, never truth, memory, Store, evaluator, scheduler, or authority. |
-| MX1 / Harness Evolution CORE | The provider-free `Harness × Model × Strategy` descriptors, adapters, deterministic matrix planning, baseline/memory-only/skill-only Strategies, and `INCOMPARABLE` projections are accepted capability. | Parked input for a controlled C1 evaluation; the live pilot/effects and any winner adoption are not accepted results. |
-| Architecture Convergence | The freeze → converge → reconstruct old/new → same-corpus compare methodology is accepted historical design evidence. | Methodology, not an AC0–AC7 packet train to rerun. |
-| Level-1, transfer, and memory+skill | Future research intent gated by common evidence, replication, and transfer evidence. | Candidate programs decomposed into Steward Stages only after a Mission is approved. |
-| Level-2, adoption, Meta, and later recursion | Future intent only; no automatic controller, self-update, model-weight change, evaluator co-evolution, or production replacement is authorized. | Requires evidence-backed GO/NO-GO, explicit adoption authority, and return to the common loop. |
+| RWE and contemporary comparison | Identity, corpus, evaluator, protocol, lifecycle-cost, and reconstructable old/new inputs are accepted (`common_rwe_evidence_basis`: `COMPLETE`). Contemporary old/new replay was not executed to a decision-grade result due to absent live provider transport and credentials (`contemporary_rwe_replay`: `INSUFFICIENT`). | Common evidence basis; frozen contracts verified by tests; live replay remains evidence-limited. |
+| Context Working Set (CWS) | Projection, residency, source-bound rehydration, tool-result reduction, and default-off analysis boundaries are accepted. Live treatment evidence was evaluated via `cws_benchmark_analyze` and found insufficient without live provider requests (`cws_strategy_evidence`: `INSUFFICIENT`); default-off is maintained. | Registered Strategy component; derived context only; default-off maintained. |
+| MX1 / Harness Evolution CORE | Provider-free `Harness × Model × Strategy` descriptors, adapters, and deterministic matrix planning are accepted capability. Live provider-free projection yields `INCOMPARABLE` for unexecuted cells (`mx1_c1_1x2x1`: `INCOMPARABLE`). Downstream rungs are halted (`mx1_c1_1x2x3` and `mx1_c1_2x2x3`: `NOT_JUSTIFIED_BY_PRECEDING_GATE`). | Evaluated against hard comparability gates; halts on lower-rung incomparability. |
+| Architecture Convergence | Freeze → converge → reconstruct old/new → same-corpus compare methodology is accepted historical design evidence. | Methodology, not an AC0–AC7 packet train to rerun. |
+| Level-1, transfer, and memory+skill | Downstream research halted by upstream lower-rung matrix incomparability (`level_1`, `transfer`, `replication`, `memory`, `skill`: `NOT_JUSTIFIED_BY_PRECEDING_GATE`). | Candidate programs remain unadmitted pending comparable lower-rung evidence. |
+| Level-2, adoption, Meta, and later recursion | Halted by Level-1 prerequisites (`level_2`, `adoption_decision`, `meta`, `r4`, `r5`, `r6`: `NOT_JUSTIFIED_BY_PRECEDING_GATE`). No autonomous self-adoption or production replacement is permitted. | Future intent; gated by lower-rung evidence and explicit human authority. |
 
 Historical contracts and accepted capability remain useful even when their
 packet execution route was superseded. The old packet route and
 `FUTURE_ROUTE.md` are not current governance; no 93-packet train is restored.
 
-## Research Mission Gates and Next Frontier
+## Research Mission Closeout and Terminal Dispositions
 
-An owner-approved research Mission **`MISSION-RESEARCH-20260901`** is active
-with an accepted Stage **`steward-stage-1-3dc4142fec0b3eb0`**. It is the
-accepted bounded closed-loop research mainline: a finite, frozen set of
-canonical experiments on the common RWE basis covering the accepted
-`Harness × Model × Strategy` descriptors (RWE, MX1 C1, CWS), Harness Evolution
-L1/L2, and the Meta R4/R5/R6 replication/memory/skill adoption disposition
-questions. The Mission and Stage own their descriptors, schedules, budgets,
-identities, protocol, seeds, lifecycle, analysis, and results in the same
-evidence-led sequence; documentation and source/test/workflow changes are
-confined to the owners listed in the Mission objective.
+The previous research Mission **`MISSION-RESEARCH-20260901`** reached a false-positive
+`MISSION_COMPLETED` event in the Steward journal when its six preplanned repository-maintenance
+Stages finished. Under repaired Mission completion semantics, a complex research Mission cannot
+become `COMPLETE` merely because its preplanned Stage list is exhausted.
 
-Stage 1 begins by recording this contract in `docs/ROADMAP.md` and
-reconciling the accepted common evidence basis. It does not grant a live
-Provider or spend authorization and does not claim any evidence, execution,
-adoption, or disposition until each finite frozen experiment has produced a
-decision-grade result through its own required hard gates. The accepted CORE
-does not authorize any pilot, effect, transfer, replication, or adoption; the
-emergency-stop control remains untouched. The earlier accepted window
-**`PE7-HE-MX1-PILOT-1` (`BLOCKED_PREREQUISITE`)** is subsumed into this
-Mission's bounded reconciliation rather than acting as a separate live
-authority.
+To resolve this defect and conclude the closed-loop research mainline truthfully, successor
+Research Mission **`MISSION-RESEARCH-20260901-SUCCESSOR`** (bound to predecessor
+`MISSION-RESEARCH-20260901` and accepted main `0136218d9a4517a2fac99f9f42ddf648a29c85fd`)
+established a machine-verifiable 18-node acceptance ledger. Every preserved scientific node
+has been evaluated against first-party engine tests, specifications, and evidence, reaching
+a genuine terminal disposition:
 
-Advancement requires, in order:
+| Obligation ID | Category | Dependencies | Terminal Disposition | Evidence Summary |
+|---|---|---|---|---|
+| `common_rwe_evidence_basis` | basis | none | **`COMPLETE`** | Reconciled and validated frozen RWE corpus, protocol, schedule, task bindings, and baseline seeds in `engine/src/rwe`. All 103 canonical unit/integration tests pass (`cargo test --lib rwe`). |
+| `contemporary_rwe_replay` | evaluation | `common_rwe_evidence_basis` | **`INSUFFICIENT`** | `ProductGoldenPathCellDriver` fails closed without live provider transport/credentials. No contemporary old/new replay was executed to a decision-grade result; campaign remains evidence-limited. |
+| `mx1_c1_1x2x1` | ladder | `common_rwe_evidence_basis` | **`INCOMPARABLE`** | Provider-free matrix projection in `engine/src/harness_evolution.rs` yields `Incomparable("outcome_unknown")` for unexecuted cells; Model effects cannot be isolated without live execution. |
+| `mx1_c1_1x2x3` | ladder | `mx1_c1_1x2x1` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | Gated by Rung 1 comparability; halted because upstream `mx1_c1_1x2x1` produced `INCOMPARABLE`. |
+| `mx1_c1_2x2x3` | ladder | `mx1_c1_1x2x3` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | Gated by Rung 2 comparability; halted by upstream `mx1_c1_1x2x3`. |
+| `cws_strategy_evidence` | evaluation | `common_rwe_evidence_basis` | **`INSUFFICIENT`** | `cws_benchmark_analyze` in `engine/src/context_working_set.rs` yields `CwsAnalysisDisposition::InsufficientDefaultOff` when live arms are absent; default-off is maintained. |
+| `harness_evolution` | evaluation | `mx1_c1_2x2x3` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | Candidate Pareto archive and prediction outcomes halted by upstream MX1 matrix ladder failure. |
+| `level_1` | gate | `harness_evolution` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | Level-1 candidate eligibility halted by upstream `harness_evolution`. |
+| `transfer` | transfer | `level_1` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | Cross-task/domain transfer evaluation halted by upstream `level_1`. |
+| `replication` | replication | `level_1` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | Multi-seed replication evaluation halted by upstream `level_1`. |
+| `memory` | capability | `level_1` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | Memory retention/eviction evaluation halted by upstream `level_1`. |
+| `skill` | capability | `level_1` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | Skill reuse evaluation halted by upstream `level_1`. |
+| `level_2` | gate | `level_1`, `transfer`, `replication` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | Level-2 evaluation halted by upstream Level-1/transfer/replication gates. |
+| `adoption_decision` | adoption | `level_2` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | No candidate reached Level-2; explicit human adoption review halted. No autonomous self-adoption. |
+| `meta` | meta | `level_2` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | Meta program evaluation halted by upstream `level_2`. |
+| `r4` | meta | `meta` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | R4 atomic journal concurrency evaluation halted by upstream `meta`. |
+| `r5` | meta | `meta` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | R5 distributed observer evaluation halted by upstream `meta`. |
+| `r6` | meta | `meta` | **`NOT_JUSTIFIED_BY_PRECEDING_GATE`** | R6 recursive decomposition evaluation halted by upstream `meta`. |
 
-- a complete common evidence basis and exact immutable Harness, Model, and
-  Strategy descriptors;
-- separate finite authority for any effect, with no Provider call, target
-  write, or adoption implied by a contract or preflight;
-- complete lower-rung blocks and hard quality/safety/comparability gates before
-  the next matrix rung or any efficiency/Pareto claim;
-- transfer/replication evidence and explicit human or otherwise authorized
-  adoption before changing the active Harness; and
-- a new accepted Harness identity that re-enters the same common evidence loop.
+### Summary of Evidence and Completion Invariant
 
-Level-2, Meta, and later recursion may be considered only after those gates
-produce evidence sufficient for an explicit decision. A better score alone
-does not grant merge, deploy, release, evaluator, or adoption authority.
+1. **Accepted Capability**: Frozen RWE contracts, deterministic matrix planning, and CWS projection are verified and sound.
+2. **Executed Experiments**: Deterministic frozen RWE basis suite (`cargo test --lib rwe`) and harness evolution contract suite (`cargo test --lib harness_evolution`).
+3. **Scientific Dispositions**: 1 basis obligation `COMPLETE`, 2 obligations `INSUFFICIENT`, 1 obligation `INCOMPARABLE`, and 14 downstream obligations `NOT_JUSTIFIED_BY_PRECEDING_GATE`.
+4. **No Fabricated Success**: The campaign honestly records evidence-limited results. No live provider executions or model adoptions are claimed.
+5. **Enforced Dual Completion**: Steward requires both stage settlement AND complete terminal disposition of the acceptance ledger before any Mission can report `COMPLETE`.

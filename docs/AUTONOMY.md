@@ -64,6 +64,13 @@ lifecycle owner.  Every production iteration holds the one service `flock`,
 reads Issue #208's `agent-emergency-stop` label before dispatch or merge, and
 records intent before a Ready, candidate-supersede, or merge-workflow mutation.
 
+A Mission reaches `COMPLETE` only when both conditions are satisfied:
+1. its repository-maintenance Stage lifecycle is settled; and
+2. every Mission-level acceptance obligation has a machine-verifiable terminal disposition.
+If preplanned Stages are exhausted while obligations remain unresolved, Steward generates
+dynamic follow-up Stages or enters `RESEARCH_PENDING`, preventing false-positive completion.
+Ordinary maintenance missions without an acceptance ledger retain their standard bounded behavior.
+
 ### Stop Taxonomy: Routine Recovery vs Owner Pause
 
 | Category | Trigger | Disposition |
