@@ -70,7 +70,7 @@ def audit_and_invalidate_fake_closeout(journal: StewardJournal) -> None:
 def execute_research_mainline(
     journal_path: Path,
     *,
-    base_sha: str = "68f1aa84ce6d2cd02c9e28f0539e407cd3c4108d",
+    base_sha: str = "5b53888a1077aeb07deace58cd43b443ba9624b1",
     repo_path: Path | None = None,
 ) -> dict[str, Any]:
     journal = StewardJournal(journal_path)
@@ -80,33 +80,30 @@ def execute_research_mainline(
 
     # 2. Re-establish active authority for the original owner-approved Mission
     original_mission_id = "MISSION-RESEARCH-20260901"
+    activation_event = journal.get_mission_activation(original_mission_id)
+    if activation_event is None:
+        raise RuntimeError(f"Original activation record missing for {original_mission_id}")
+    original_mission = contract.MaintenanceMission.from_wire(activation_event.data)
+
     active_rec = journal.active_mission_record()
-    if active_rec is None or active_rec.mission_id != original_mission_id:
+    needs_continuation = (
+        active_rec is None
+        or active_rec.mission_id != original_mission_id
+        or active_rec.data.get("proposal_sha256") != original_mission.proposal_sha256
+        or (base_sha and active_rec.data.get("repository_identity", {}).get("base_sha") != base_sha)
+        or active_rec.data.get("acceptance_ledger") is None
+    )
+    if needs_continuation:
         ledger = contract.build_research_acceptance_ledger()
-        raw_request = (
-            "Complete bounded closed loop research mainline and obtain actual RWE MX1 C1 CWS "
-            "Harness Evolution L1 L2 evidence and disposition transfer replication memory skill adoption "
-            "Meta R4 R5 R6 through finite frozen canonical experiments with common task corpus evaluator "
-            "Harness Model Strategy descriptors schedule budgets identities protocol seeds lifecycle "
-            "analysis and results with documentation tests workflow source changes in docs/ROADMAP.md "
-            "docs/ARCHITECTURE.md docs/AUTONOMY.md docs/RUNBOOK.md engine/src/rwe engine/src/harness_evolution.rs "
-            "engine/src/harness_evolution_eval.rs engine/src/storage/local_product_store scripts/agent-control "
-            "tests/test_mission_contract.py tests/test_agent_shadow_steward.py."
-        )
-        compiled_mission, digest = contract.compile_proposal_mission(
-            raw_request,
-            repository="Igzela/token-efficient-agent-harness-lab",
+        continuation_mission = contract.build_corrective_continuation(
+            original_mission,
             base_sha=base_sha,
-            mission_id=original_mission_id,
             acceptance_ledger=ledger,
         )
         journal.record_corrective_continuation(
             mission_id=original_mission_id,
-            proposal_sha256=digest,
-            mission_data={
-                **compiled_mission.to_wire(),
-                "state": "RUNNING",
-            },
+            proposal_sha256=continuation_mission.proposal_sha256,
+            mission_data=continuation_mission.to_wire(),
         )
 
     # 3. Evaluate canonical first-party evidence
@@ -203,7 +200,7 @@ def main() -> None:
     parser.add_argument(
         "--base-sha",
         type=str,
-        default="68f1aa84ce6d2cd02c9e28f0539e407cd3c4108d",
+        default="5b53888a1077aeb07deace58cd43b443ba9624b1",
         help="Accepted main SHA to bind the mission continuation to.",
     )
     args = parser.parse_args()

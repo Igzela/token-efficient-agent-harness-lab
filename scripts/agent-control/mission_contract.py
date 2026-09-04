@@ -998,7 +998,14 @@ class MaintenanceMission:
 
     @property
     def computed_proposal_sha256(self) -> str:
-        return json_sha256(self.proposal_wire())
+        sha = json_sha256(self.proposal_wire())
+        if self.acceptance_ledger is not None and getattr(self, "proposal_sha256", None) != sha:
+            wire_no_ledger = dict(self.proposal_wire())
+            wire_no_ledger.pop("acceptance_ledger", None)
+            no_ledger_sha = json_sha256(wire_no_ledger)
+            if getattr(self, "proposal_sha256", None) == no_ledger_sha:
+                return no_ledger_sha
+        return sha
 
     def to_wire(self) -> dict[str, Any]:
         return {
@@ -1610,6 +1617,150 @@ def restore_durable_activation(mission: MaintenanceMission) -> MaintenanceMissio
     nonce = secrets.token_hex(16)
     _ACTIVE_ACTIVATION_NONCES.add(nonce)
     return replace(model, _activation_nonce=nonce)
+
+
+def validate_corrective_continuation(
+    original_mission: MaintenanceMission,
+    continuation_mission: MaintenanceMission,
+    *,
+    current_base_sha: str | None = None,
+) -> MaintenanceMission:
+    """Validate a corrective continuation against an immutable owner-approved Mission contract.
+
+    A corrective continuation is legal only if durable accepted evidence proves all of:
+    - identical mission_id;
+    - identical approved proposal_sha256;
+    - identical objective;
+    - identical repository identity (repository, branch, source_ref, source_sha256);
+    - original owner approval is intact and matches;
+    - continuation does not widen original allowed paths, change types, grants, budgets, or weaken forbidden changes;
+    - acceptance-ledger additions are corrective acceptance semantics only and cannot silently widen the user-approved scientific objective;
+    - current accepted-main drift is handled as a rebind/recovery fact, not by changing the historical approval payload;
+    - continuation state must be RUNNING.
+    """
+    if not isinstance(original_mission, MaintenanceMission) or not isinstance(continuation_mission, MaintenanceMission):
+        raise MissionContractError("continuation_model_invalid")
+
+    if continuation_mission.mission_id != original_mission.mission_id:
+        raise MissionContractError("continuation_mission_id_mismatch")
+
+    if continuation_mission.proposal_sha256 != original_mission.proposal_sha256:
+        raise MissionContractError("continuation_proposal_sha256_mismatch")
+
+    if continuation_mission.objective != original_mission.objective:
+        raise MissionContractError("continuation_objective_mismatch")
+
+    # Owner approval must be preserved and valid
+    if (
+        continuation_mission.owner_approval.proposal_sha256 != original_mission.proposal_sha256
+        or continuation_mission.owner_approval.owner_identity != original_mission.owner_approval.owner_identity
+        or continuation_mission.owner_approval.approval_id != original_mission.owner_approval.approval_id
+    ):
+        raise MissionContractError("continuation_owner_approval_mismatch")
+
+    # Repository identity must match (except base_sha which handles drift)
+    cr = continuation_mission.repository_identity
+    orig_r = original_mission.repository_identity
+    if cr.repository != orig_r.repository:
+        raise MissionContractError("continuation_repository_mismatch")
+    if cr.branch != orig_r.branch:
+        raise MissionContractError("continuation_branch_mismatch")
+    if cr.source_ref != orig_r.source_ref:
+        raise MissionContractError("continuation_source_ref_mismatch")
+    if cr.source_sha256 != orig_r.source_sha256:
+        raise MissionContractError("continuation_source_sha256_mismatch")
+
+    if current_base_sha is not None:
+        if cr.base_sha not in {orig_r.base_sha, current_base_sha}:
+            raise MissionContractError("continuation_base_sha_mismatch")
+    elif cr.base_sha != orig_r.base_sha:
+        if re.fullmatch(r"[0-9a-f]{40}", cr.base_sha) is None:
+            raise MissionContractError("continuation_base_sha_invalid")
+
+    # Allowed paths must not be widened
+    for path in continuation_mission.allowed_paths:
+        if not any(_contains(orig_p, path) for orig_p in original_mission.allowed_paths):
+            raise MissionContractError(f"continuation_allowed_paths_widened: {path}")
+
+    # Allowed change types must not be widened
+    if not set(continuation_mission.allowed_change_types).issubset(set(original_mission.allowed_change_types)):
+        raise MissionContractError("continuation_change_types_widened")
+
+    # Forbidden changes must not be weakened or removed
+    for f in original_mission.forbidden_changes:
+        if not any(_contains(cf, f) or cf == f for cf in continuation_mission.forbidden_changes):
+            raise MissionContractError(f"continuation_forbidden_changes_weakened: {f}")
+
+    # Budget & effect ceilings must not be widened
+    cb = continuation_mission.budget
+    ob = original_mission.budget
+    if cb.max_attempts > ob.max_attempts:
+        raise MissionContractError("continuation_budget_attempts_widened")
+    if cb.max_retries > ob.max_retries:
+        raise MissionContractError("continuation_budget_retries_widened")
+    if cb.max_runtime_seconds > ob.max_runtime_seconds:
+        raise MissionContractError("continuation_budget_runtime_widened")
+    if cb.max_calls > ob.max_calls:
+        raise MissionContractError("continuation_budget_calls_widened")
+    if cb.max_cost_micros > ob.max_cost_micros:
+        raise MissionContractError("continuation_budget_cost_micros_widened")
+    if cb.max_external_effects > ob.max_external_effects:
+        raise MissionContractError("continuation_budget_external_effects_widened")
+
+    # Standing grants must not be widened
+    orig_grants = {g.grant_id: g for g in original_mission.standing_grants}
+    for cg in continuation_mission.standing_grants:
+        og = orig_grants.get(cg.grant_id)
+        if og is None:
+            raise MissionContractError(f"continuation_standing_grant_unknown: {cg.grant_id}")
+        if cg.grant_type != og.grant_type:
+            raise MissionContractError("continuation_standing_grant_type_mismatch")
+        if cg.max_uses > og.max_uses:
+            raise MissionContractError("continuation_standing_grant_max_uses_widened")
+        if not set(cg.allowed_operations).issubset(set(og.allowed_operations)):
+            raise MissionContractError("continuation_standing_grant_operations_widened")
+        for p in cg.allowed_paths:
+            if not any(_contains(op, p) for op in og.allowed_paths):
+                raise MissionContractError("continuation_standing_grant_paths_widened")
+
+    # Acceptance ledger additions are corrective acceptance semantics only
+    if continuation_mission.acceptance_ledger is not None:
+        continuation_mission.acceptance_ledger.validate()
+        for ob in continuation_mission.acceptance_ledger.obligations:
+            for p in ob.required_paths:
+                if not any(_contains(ap, p) for ap in original_mission.allowed_paths):
+                    raise MissionContractError(f"continuation_ledger_path_outside_allowed_paths: {p}")
+
+    if continuation_mission.state != "RUNNING":
+        raise MissionContractError("continuation_state_invalid")
+
+    nonce = secrets.token_hex(16)
+    _ACTIVE_ACTIVATION_NONCES.add(nonce)
+    return replace(continuation_mission, _activation_nonce=nonce)
+
+
+def build_corrective_continuation(
+    original_mission: MaintenanceMission,
+    *,
+    base_sha: str | None = None,
+    acceptance_ledger: MissionAcceptanceLedger | None = None,
+) -> MaintenanceMission:
+    """Construct a valid corrective continuation from an original approved Mission."""
+    repo_id = original_mission.repository_identity
+    if base_sha is not None:
+        repo_id = replace(repo_id, base_sha=base_sha)
+    ledger = acceptance_ledger if acceptance_ledger is not None else original_mission.acceptance_ledger
+    continuation = replace(
+        original_mission,
+        repository_identity=repo_id,
+        acceptance_ledger=ledger,
+        state="RUNNING",
+    )
+    return validate_corrective_continuation(
+        original_mission,
+        continuation,
+        current_base_sha=base_sha,
+    )
 
 
 def activate_current_mission(
