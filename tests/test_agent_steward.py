@@ -1353,30 +1353,131 @@ else:
         self.assertEqual(failure_reason, "authentication_failure")
         self.assertFalse(response_path.exists())
 
-    def test_interactive_codex_symlink_is_rejected(self):
-        bin_dir = self.root / "symlink-codex-bin"
-        bin_dir.mkdir()
-        real_codex = self.root / "real-codex"
-        real_codex.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
+    def test_interactive_codex_symlink_resolves_to_a_safe_executable(self):
+        bin_dir = self.root / ".local" / "bin"
+        bin_dir.mkdir(parents=True)
+        real_codex = self.root / ".codex" / "packages" / "bin" / "codex"
+        real_codex.parent.mkdir(parents=True)
+        real_codex.write_text(
+            """#!/usr/bin/env python3
+import json
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("1.0.0")
+elif args[:2] == ["exec", "--help"]:
+    print("--json --ephemeral --ignore-user-config --skip-git-repo-check --sandbox --model --cd --output-last-message")
+elif args and args[0] == "exec":
+    output = Path(args[args.index("--output-last-message") + 1])
+    output.write_text(json.dumps({"verdict": "PASS", "blockers": [], "summary": "bounded"}), encoding="utf-8")
+    print(json.dumps({"type": "turn.completed"}))
+else:
+    raise SystemExit(2)
+""",
+            encoding="utf-8",
+        )
         real_codex.chmod(0o755)
         (bin_dir / "codex").symlink_to(real_codex)
         auth_dir = self.root / ".codex"
-        auth_dir.mkdir()
         (auth_dir / "auth.json").write_text("interactive-auth", encoding="utf-8")
+        environment = workers.child_environment(
+            {"HOME": str(self.root), "PATH": "/caller-controlled-path"},
+            preserve_home=True,
+        )
+        self.assertEqual(environment["PATH"], f"/usr/bin:/bin:{real_codex.parent}")
         worker = workers.CodexWorkCardWorker(timeout_seconds=5)
         with mock.patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": ""}, clear=False):
             exit_code, response_path, failure_reason = worker._invoke(
                 "review",
                 "bounded review",
                 self.root,
-                environment={
-                    "HOME": str(self.root),
-                    "PATH": f"{bin_dir}:/usr/bin:/bin",
-                },
+                environment=environment,
             )
-        self.assertEqual(exit_code, 1)
-        self.assertEqual(failure_reason, "cli_missing")
-        self.assertFalse(response_path.exists())
+        self.assertEqual(exit_code, 0)
+        self.assertIsNone(failure_reason)
+        self.addCleanup(
+            lambda: response_path.parent.rmdir()
+            if response_path.parent.exists()
+            else None
+        )
+        self.addCleanup(response_path.unlink, missing_ok=True)
+        self.assertTrue(response_path.is_file())
+
+    def test_interactive_codex_symlink_cannot_escape_authenticated_home(self):
+        bin_dir = self.root / ".local" / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "codex").symlink_to("/bin/sh")
+        environment = workers.child_environment(
+            {"HOME": str(self.root), "PATH": "/caller-controlled-path"},
+            preserve_home=True,
+        )
+        self.assertEqual(environment["PATH"], "/usr/bin:/bin")
+
+    def test_interactive_codex_parent_symlink_is_rejected_during_copy(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        outside_codex = outside / "codex"
+        outside_codex.write_text("outside", encoding="utf-8")
+        outside_codex.chmod(0o755)
+
+        inside_root = self.root / "inside"
+        inside_bin = inside_root / "bin"
+        inside_bin.mkdir(parents=True)
+        inside_codex = inside_bin / "codex"
+        inside_codex.write_text("inside", encoding="utf-8")
+        inside_codex.chmod(0o755)
+        resolved_codex = inside_codex.resolve()
+
+        shutil.rmtree(inside_root)
+        inside_root.symlink_to(outside, target_is_directory=True)
+
+        copied = self.root / "copied-codex"
+        self.assertIsNone(
+            workers._copy_interactive_codex_executable(
+                resolved_codex, copied, home=self.root
+            )
+        )
+        self.assertFalse(copied.exists())
+
+    def test_interactive_codex_ancestor_replacement_is_rejected_during_copy(self):
+        outside = self.root / "outside"
+        outside_bin = outside / "user" / "bin"
+        outside_bin.mkdir(parents=True)
+        outside_codex = outside_bin / "codex"
+        outside_codex.write_text("outside", encoding="utf-8")
+        outside_codex.chmod(0o755)
+
+        trusted_parent = self.root / "trusted-parent"
+        trusted_home = trusted_parent / "user"
+        trusted_bin = trusted_home / "bin"
+        trusted_bin.mkdir(parents=True)
+        trusted_codex = trusted_bin / "codex"
+        trusted_codex.write_text("inside", encoding="utf-8")
+        trusted_codex.chmod(0o755)
+        resolved_codex = trusted_codex.resolve()
+
+        real_open = os.open
+        replaced = False
+
+        def replace_ancestor_before_open(path, flags, *args, **kwargs):
+            nonlocal replaced
+            if not replaced and path == os.sep:
+                shutil.rmtree(trusted_parent)
+                trusted_parent.symlink_to(outside, target_is_directory=True)
+                replaced = True
+            return real_open(path, flags, *args, **kwargs)
+
+        copied = self.root / "copied-codex"
+        with mock.patch.object(workers.os, "open", side_effect=replace_ancestor_before_open):
+            self.assertIsNone(
+                workers._copy_interactive_codex_executable(
+                    resolved_codex, copied, home=trusted_home
+                )
+            )
+        self.assertTrue(replaced)
+        self.assertFalse(copied.exists())
 
     def test_managed_service_declares_bounded_codex_runtime_sources(self):
         unit = (ROOT / "scripts" / "agent-control" / "steward.service").read_text(
