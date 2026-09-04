@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +83,69 @@ class MissionContractTests(unittest.TestCase):
         self.assertEqual(len(cards), 2)
         self.assertIn("contemporary_rwe_replay", cards[0].steps[0])
         self.assertIsNone(steward._next_replacement_plan(self.mission, 7))
+
+    def test_dynamic_replan_settles_when_terminal_ledger_has_no_replacement(self):
+        """A terminal dynamic ledger settles a failed candidate without crashing."""
+
+        obligation = contract.AcceptanceObligation(
+            obligation_id="terminal_dynamic_obligation",
+            description="Terminal dynamic test obligation",
+            category="research",
+            required_paths=("engine/src/rwe",),
+        )
+        pending_ledger = contract.MissionAcceptanceLedger((obligation,))
+        pending_mission = replace(
+            self.mission,
+            state="RUNNING",
+            acceptance_ledger=pending_ledger,
+            allowed_paths=("engine/src/rwe",),
+        )
+        steward = object.__new__(steward_service.StewardService)
+
+        eligible = pending_ledger.unresolved_eligible()
+        planned = steward._next_dynamic_stage_plan(pending_mission, 7, eligible)
+        self.assertIsNotNone(planned)
+        stage, _cards, total = planned
+
+        receipt = contract.make_provenance_receipt(
+            obligation_id=obligation.obligation_id,
+            accepted_main_sha=self.mission.repository_identity.base_sha,
+            evidence_producer_identity="test_terminal_dynamic",
+            evaluator_identity="test_ledger_evaluator",
+            provenance_classification="ACCEPTED_STATIC_BASIS",
+            hard_gate_outcome="PASS",
+            missingness=False,
+        )
+        terminal_mission = replace(
+            pending_mission,
+            acceptance_ledger=pending_ledger.disposition_obligation(
+                obligation.obligation_id, "COMPLETE", receipt
+            ),
+        )
+
+        class RecordingJournal:
+            def __init__(self):
+                self.events = []
+
+            def replay(self):
+                return tuple(self.events)
+
+            def append(self, **kwargs):
+                self.events.append(SimpleNamespace(**kwargs))
+
+        steward.journal = RecordingJournal()
+        result = steward._replan_stage(
+            terminal_mission,
+            stage,
+            {"stage_index": total, "retry": 1, "strategy": "primary"},
+        )
+
+        self.assertEqual(result["status"], "STAGE_REPLAN_SETTLED")
+        self.assertEqual(result["reason"], "acceptance_ledger_terminal")
+        self.assertEqual(
+            [event.event for event in steward.journal.events],
+            ["STAGE_SUPERSEDED"],
+        )
 
     def test_proposal_digest_and_owner_approval_are_bound(self):
         wire = self.mission.to_wire()

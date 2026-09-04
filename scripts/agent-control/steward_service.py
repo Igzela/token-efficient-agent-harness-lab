@@ -1570,6 +1570,19 @@ class StewardService:
                     strategy=strategy,
                 )
         if replacement is None:
+            # A failed dynamic candidate may race with an evaluator that
+            # terminalized the last eligible obligation.  The candidate is
+            # already superseded above; settle it and let the next loop tick
+            # perform the normal terminal-ledger mission completion check.
+            if (
+                mission.acceptance_ledger is not None
+                and mission.acceptance_ledger.is_terminal()
+            ):
+                return {
+                    "status": "STAGE_REPLAN_SETTLED",
+                    "stage_id": stage.stage_id,
+                    "reason": "acceptance_ledger_terminal",
+                }
             raise StewardServiceError("stage_replan_group_missing")
         replacement_stage, replacement_cards, total = replacement
         self._record_stage_plan(
