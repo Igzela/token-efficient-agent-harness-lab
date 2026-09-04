@@ -524,6 +524,16 @@ fn mx1_confined_adapter_package_sha256() -> String {
     hex::encode(Sha256::digest(include_bytes!("harness_evolution.rs")))
 }
 
+/// The ledger-orchestrated candidate spans the common MX1 seam and its
+/// implementation module. Bind both source units so changing the candidate
+/// cannot preserve a stale descriptor identity.
+fn mx1_ledger_orchestrated_package_sha256() -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(include_bytes!("harness_evolution.rs"));
+    hasher.update(include_bytes!("harness_evolution/ledger_orchestration.rs"));
+    hex::encode(hasher.finalize())
+}
+
 fn mx1_validate_frozen_harness_identity(
     descriptor: &Mx1HarnessImplementationDescriptor,
 ) -> Result<(), EvolutionAdmissionError> {
@@ -545,7 +555,7 @@ fn mx1_validate_frozen_harness_identity(
             ),
             LEDGER_ORCHESTRATED_HARNESS_ID => (
                 "rust-engine-harness-evolution",
-                mx1_confined_adapter_package_sha256(),
+                mx1_ledger_orchestrated_package_sha256(),
                 "provider-independent-v1",
                 Mx1HarnessAdmissionDisposition::ConfinedSubprocess,
                 "product-owned-confined-subprocess;core-no-spawn",
@@ -557,6 +567,11 @@ fn mx1_validate_frozen_harness_identity(
                 ));
             }
         };
+    let expected_restart_mapping = if descriptor.descriptor_id == LEDGER_ORCHESTRATED_HARNESS_ID {
+        "not-supported-by-provider-independent-core"
+    } else {
+        "product-terminal-restart-evidence"
+    };
     if descriptor.source_owner != expected_owner
         || descriptor.source_identity != expected_source
         || descriptor.version != expected_version
@@ -568,7 +583,7 @@ fn mx1_validate_frozen_harness_identity(
         || descriptor.usage_cost_mapping != "existing-product-usage-and-cost-owners"
         || descriptor.cancellation_mapping != "product-task-killed-state"
         || descriptor.cleanup_mapping != "product-terminal-cleanup-evidence"
-        || descriptor.restart_mapping != "product-terminal-restart-evidence"
+        || descriptor.restart_mapping != expected_restart_mapping
         || descriptor.retry_mapping != "model-plan-max-retries"
         || descriptor.failure_mapping != "product-task-failure-code-digest"
         || descriptor.outcome_unknown_mapping != "product-task-outcome-unknown"
@@ -1502,6 +1517,13 @@ fn mx1_normalize_run(
             "Harness run evidence is not a complete Product Golden Path projection",
         ));
     }
+    if evidence.product_task_id != cell.identity.task_id || evidence.product_task_id != plan.task_id
+    {
+        return Err(mx1_error(
+            "mx1_run_task_binding",
+            "Harness run evidence belongs to a different Product task than the planned cell",
+        ));
+    }
     mx1_require_sha(
         "product workspace_binding_sha256",
         &evidence.workspace_binding_sha256,
@@ -2280,7 +2302,7 @@ pub fn sample_mx1_descriptor_manifest() -> Mx1DescriptorManifest {
 }
 
 pub fn sample_ledger_orchestrated_harness_descriptor() -> Mx1HarnessImplementationDescriptor {
-    let source_identity = mx1_confined_adapter_package_sha256();
+    let source_identity = mx1_ledger_orchestrated_package_sha256();
     let mut descriptor = Mx1HarnessImplementationDescriptor {
         schema_version: MX1_DESCRIPTOR_SCHEMA_VERSION.to_string(),
         descriptor_id: LEDGER_ORCHESTRATED_HARNESS_ID.to_string(),
@@ -2305,7 +2327,6 @@ pub fn sample_ledger_orchestrated_harness_descriptor() -> Mx1HarnessImplementati
         shared_run_seam_version: PRODUCT_HARNESS_RUN_SEAM_SCHEMA_VERSION.to_string(),
         supported_task_capabilities: vec![
             "failure".to_string(),
-            "restart".to_string(),
             "terminal-evidence".to_string(),
             "workspace-confinement".to_string(),
         ],
@@ -2320,7 +2341,7 @@ pub fn sample_ledger_orchestrated_harness_descriptor() -> Mx1HarnessImplementati
         usage_cost_mapping: "existing-product-usage-and-cost-owners".to_string(),
         cancellation_mapping: "product-task-killed-state".to_string(),
         cleanup_mapping: "product-terminal-cleanup-evidence".to_string(),
-        restart_mapping: "product-terminal-restart-evidence".to_string(),
+        restart_mapping: "not-supported-by-provider-independent-core".to_string(),
         retry_mapping: "model-plan-max-retries".to_string(),
         failure_mapping: "product-task-failure-code-digest".to_string(),
         outcome_unknown_mapping: "product-task-outcome-unknown".to_string(),

@@ -126,11 +126,15 @@ pub enum LedgerTaskStatus {
     Failed,
     Blocked,
     Superseded,
+    OutcomeUnknown,
 }
 
 impl LedgerTaskStatus {
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Verified | Self::Failed | Self::Superseded)
+        matches!(
+            self,
+            Self::Verified | Self::Failed | Self::Superseded | Self::OutcomeUnknown
+        )
     }
 }
 
@@ -378,12 +382,28 @@ impl WorkingLedger {
     pub fn all_verified(&self) -> bool {
         !self.tasks.is_empty()
             && self.tasks.iter().all(|t| {
-                t.status == LedgerTaskStatus::Verified || t.status == LedgerTaskStatus::Superseded
+                t.status == LedgerTaskStatus::Superseded
+                    || (t.status == LedgerTaskStatus::Verified
+                        && self.verified_task_has_pass_evidence(t))
             })
             && self
                 .tasks
                 .iter()
                 .any(|t| t.status == LedgerTaskStatus::Verified)
+    }
+
+    fn verified_task_has_pass_evidence(&self, task: &LedgerTaskRecord) -> bool {
+        task.result_digest
+            .as_deref()
+            .is_some_and(|digest| !digest.is_empty())
+            && self.observations.iter().any(|observation| {
+                observation.task_id == task.id
+                    && observation.outcome == VerificationOutcome::Pass
+                    && observation
+                        .evidence_digest
+                        .as_deref()
+                        .is_some_and(|digest| !digest.is_empty())
+            })
     }
 
     pub fn validate_bounds(
@@ -469,6 +489,14 @@ impl WorkingLedger {
                     config.max_summary_bytes,
                 )?;
             }
+            if task.status == LedgerTaskStatus::Verified
+                && !self.verified_task_has_pass_evidence(task)
+            {
+                return Err(OrchestrationError::InvalidControllerDecision(
+                    "verified task lacks a result digest and passing verification evidence"
+                        .to_string(),
+                ));
+            }
             for reference in &task.evidence_refs {
                 let sanitized = validate_artifact_reference(reference, config.max_summary_bytes)?;
                 if sanitized != *reference {
@@ -509,6 +537,11 @@ impl WorkingLedger {
                 config.max_summary_bytes,
             )?;
             validate_task_id(&observation.task_id)?;
+            if self.get_task(&observation.task_id).is_none() {
+                return Err(OrchestrationError::TaskNotFound(
+                    observation.task_id.clone(),
+                ));
+            }
             validate_sanitized_text(
                 &observation.observation_summary,
                 "observation_summary",
@@ -664,18 +697,14 @@ fn project_worker_context_with_limit(
         .map(|finding| sanitize_finding(finding, max_bytes))
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Collect relevant artifacts
-    let mut relevant_artifact_refs: Vec<String> = selected_task
+    // Collect only artifacts explicitly attached to the selected task. The
+    // ledger-level artifact list is audit state, not worker-visible context;
+    // projecting it here would leak another task's artifacts across tasks.
+    let relevant_artifact_refs: Vec<String> = selected_task
         .evidence_refs
         .iter()
         .map(|reference| validate_artifact_reference(reference, max_bytes))
         .collect::<Result<Vec<_>, _>>()?;
-    for art in &ledger.artifact_refs {
-        let sanitized = validate_artifact_reference(art, max_bytes)?;
-        if !relevant_artifact_refs.contains(&sanitized) {
-            relevant_artifact_refs.push(sanitized);
-        }
-    }
 
     let mut execution_metadata = BTreeMap::new();
     execution_metadata.insert("round".to_string(), ledger.round_count.to_string());
@@ -1328,6 +1357,33 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                     orchestrator.state = state_snapshot;
                     orchestrator.pending_decision = pending_decision_snapshot.clone();
                 };
+                let terminate_unknown_worker_attempt = |orchestrator: &mut Self, task_id: &str| {
+                    // A worker error does not prove that no external work was
+                    // performed. Restore only the pre-attempt ledger contents,
+                    // then leave an explicit terminal fence so callers cannot
+                    // replay an outcome whose effect status is unknown.
+                    orchestrator.ledger = ledger_snapshot.clone();
+                    orchestrator.metrics = metrics_snapshot.clone();
+                    orchestrator.ledger.round_count =
+                        orchestrator.ledger.round_count.saturating_add(1);
+                    orchestrator.metrics.round_count =
+                        orchestrator.metrics.round_count.saturating_add(1);
+                    orchestrator.metrics.worker_call_count =
+                        orchestrator.metrics.worker_call_count.saturating_add(1);
+                    if let Some(task) = orchestrator.ledger.get_task_mut(task_id) {
+                        task.status = LedgerTaskStatus::OutcomeUnknown;
+                        task.attempt_count = task
+                            .attempt_count
+                            .saturating_add(1)
+                            .min(orchestrator.config.max_task_attempts);
+                        task.failure_reason = Some(
+                            "worker outcome unknown; external effect status cannot be proven"
+                                .to_string(),
+                        );
+                    }
+                    orchestrator.state = OrchestrationLifecycleState::Failed;
+                    orchestrator.pending_decision = None;
+                };
                 let task_id = self
                     .ledger
                     .current_selected_task_id
@@ -1375,7 +1431,7 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                 let raw_worker_result = match self.worker.execute_task(&context) {
                     Ok(result) => result,
                     Err(error) => {
-                        restore_execution_snapshot(self);
+                        terminate_unknown_worker_attempt(self, &task_id);
                         return Err(error);
                     }
                 };
@@ -1387,7 +1443,7 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                 ) {
                     Ok(result) => result,
                     Err(error) => {
-                        restore_execution_snapshot(self);
+                        terminate_unknown_worker_attempt(self, &task_id);
                         return Err(error);
                     }
                 };
@@ -1411,7 +1467,7 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         }
                         for f in &worker_result.findings {
                             if let Err(error) = self.ledger.add_finding(f.clone(), &self.config) {
-                                restore_execution_snapshot(self);
+                                terminate_unknown_worker_attempt(self, &task_id);
                                 return Err(error);
                             }
                         }
@@ -1426,11 +1482,11 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         });
                         // Pass worker result along via state
                         if let Err(error) = self.verify_worker_result(&task_id, &worker_result) {
-                            restore_execution_snapshot(self);
+                            terminate_unknown_worker_attempt(self, &task_id);
                             return Err(error);
                         }
                         if let Err(error) = self.ledger.validate_bounds(&self.config) {
-                            restore_execution_snapshot(self);
+                            terminate_unknown_worker_attempt(self, &task_id);
                             return Err(error);
                         }
                         Ok(self.state)
@@ -2298,6 +2354,21 @@ mod tests {
     }
 
     #[test]
+    fn worker_context_isolates_task_artifacts() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:artifact-isolation", "plan");
+        ledger.add_task("task-1", "first task", &config).unwrap();
+        ledger.add_task("task-2", "second task", &config).unwrap();
+        ledger.tasks[0].evidence_refs = vec!["artifact:task-1".to_string()];
+        ledger.tasks[1].evidence_refs = vec!["artifact:task-2".to_string()];
+        ledger.artifact_refs = vec!["artifact:task-1".to_string()];
+
+        let context = project_worker_context(&ledger, "task-2", "expected").unwrap();
+
+        assert_eq!(context.relevant_artifact_refs, vec!["artifact:task-2"]);
+    }
+
+    #[test]
     fn security_and_authority_boundaries_isolated() {
         let config = LedgerOrchestratorConfig::default();
         let test_key = format!("{}_{}", "sk-test", "1234567890abcdef");
@@ -2404,7 +2475,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_error_restores_execution_state() {
+    fn worker_error_is_fenced_as_unknown_without_replay() {
         let config = LedgerOrchestratorConfig::default();
         let mut ledger = WorkingLedger::new("contract:worker-error", "plan");
         ledger.add_task("task", "task", &config).unwrap();
@@ -2432,13 +2503,22 @@ mod tests {
             orchestrator.step(),
             Err(OrchestrationError::Cancelled)
         ));
-        assert_eq!(orchestrator.ledger, ledger_before_execution);
-        assert_eq!(orchestrator.metrics, metrics_before_execution);
+        assert_ne!(orchestrator.ledger, ledger_before_execution);
+        assert_ne!(orchestrator.metrics, metrics_before_execution);
+        assert_eq!(orchestrator.state, OrchestrationLifecycleState::Failed);
+        assert!(orchestrator.pending_decision.is_none());
         assert_eq!(
-            orchestrator.state,
-            OrchestrationLifecycleState::ExecutingWorker
+            orchestrator.ledger.get_task("task").unwrap().status,
+            LedgerTaskStatus::OutcomeUnknown
         );
-        assert!(orchestrator.pending_decision.is_some());
+        assert_eq!(
+            orchestrator.ledger.get_task("task").unwrap().attempt_count,
+            1
+        );
+        assert_eq!(
+            orchestrator.step().unwrap(),
+            OrchestrationLifecycleState::Failed
+        );
     }
 
     #[test]
@@ -2486,6 +2566,19 @@ mod tests {
         ledger
             .add_task("task-digest", "digest task", &config)
             .unwrap();
+        let mut forged = ledger.clone();
+        forged.tasks[0].status = LedgerTaskStatus::Verified;
+        assert!(!forged.all_verified());
+        assert!(matches!(
+            LedgerOrchestrator::new(
+                config.clone(),
+                forged,
+                AdaptiveController,
+                MockWorker::new(|_| Err(OrchestrationError::Cancelled)),
+                MockVerifier::pass_all(),
+            ),
+            Err(OrchestrationError::InvalidControllerDecision(_))
+        ));
         let mut changed = ledger.clone();
         changed.current_plan = "changed plan".to_string();
         changed.tasks[0].attempt_count = 1;
@@ -2721,6 +2814,16 @@ mod tests {
             Some(&terminal_val),
         )
         .unwrap();
+
+        let mut foreign_evidence = evidence.clone();
+        foreign_evidence.product_task_id = "different-product-task".to_string();
+        assert_eq!(
+            adapter
+                .normalize_run(&plan, cell, &foreign_evidence)
+                .unwrap_err()
+                .code,
+            "mx1_run_task_binding"
+        );
 
         let normalized = adapter.normalize_run(&plan, cell, &evidence).unwrap();
         assert_eq!(normalized.cell_id, cell.cell_id);
