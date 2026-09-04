@@ -67,6 +67,11 @@ pub const MX1_MEMORY_ONLY_STRATEGY_ID: &str = "single-pass-plan-implement-review
 pub const MX1_SKILL_ONLY_STRATEGY_ID: &str = "single-pass-plan-implement-review:skill-only:v1";
 const MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT: &str = "https://api.deepseek.com/chat/completions";
 const MX1_DEEPSEEK_CREDENTIAL_REFERENCE: &str = "DEEPSEEK_API_KEY";
+// Versioned compatibility identity for serialized pre-ledger MX1 manifests.
+// New H1 manifests use the current source-unit identity below; v1 records are
+// accepted only against this exact frozen predecessor identity.
+const MX1_SECOND_HARNESS_V1_SOURCE_IDENTITY: &str =
+    "2af3dda7266b67b3935ee034a64fbaa3cacd74182d24a79dcc5c30c29a49a9f7";
 
 /// Canonical evidence freeze and validation receipt for MISSION-RESEARCH-20260901 (Stage 3).
 pub const RESEARCH_MAINLINE_STAGE_3_HARNESS_EVOLUTION_SEAL: &str =
@@ -356,11 +361,13 @@ pub trait Mx1HarnessRunAdapter {
 #[derive(Debug, Clone)]
 pub struct Mx1EngineManagedHarnessAdapter {
     descriptor: Mx1HarnessImplementationDescriptor,
+    manifest: Mx1DescriptorManifest,
 }
 
 #[derive(Debug, Clone)]
 pub struct Mx1ConfinedSubprocessHarnessAdapter {
     descriptor: Mx1HarnessImplementationDescriptor,
+    manifest: Mx1DescriptorManifest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -546,13 +553,35 @@ fn mx1_validate_frozen_harness_identity(
                 Mx1HarnessAdmissionDisposition::EmbedBehindSeam,
                 "engine-owned-no-exec-in-core",
             ),
-            MX1_SECOND_HARNESS_ID => (
-                "rust-engine-harness-evolution",
-                mx1_confined_adapter_package_sha256(),
-                "provider-free-adapter-v1",
-                Mx1HarnessAdmissionDisposition::ConfinedSubprocess,
-                "product-owned-confined-subprocess;core-no-spawn",
-            ),
+            MX1_SECOND_HARNESS_ID => {
+                let (source_identity, version) = match descriptor.version.as_str() {
+                    "provider-free-adapter-v1"
+                        if descriptor.source_identity == MX1_SECOND_HARNESS_V1_SOURCE_IDENTITY =>
+                    {
+                        (
+                            MX1_SECOND_HARNESS_V1_SOURCE_IDENTITY.to_string(),
+                            "provider-free-adapter-v1",
+                        )
+                    }
+                    "provider-free-adapter-v2" => (
+                        mx1_confined_adapter_package_sha256(),
+                        "provider-free-adapter-v2",
+                    ),
+                    _ => {
+                        return Err(mx1_error(
+                            "mx1_harness_identity",
+                            "second Harness source identity requires an explicit versioned migration",
+                        ));
+                    }
+                };
+                (
+                    "rust-engine-harness-evolution",
+                    source_identity,
+                    version,
+                    Mx1HarnessAdmissionDisposition::ConfinedSubprocess,
+                    "product-owned-confined-subprocess;core-no-spawn",
+                )
+            }
             LEDGER_ORCHESTRATED_HARNESS_ID => (
                 "rust-engine-harness-evolution",
                 mx1_ledger_orchestrated_package_sha256(),
@@ -699,7 +728,8 @@ fn mx1_validate_frozen_strategy_identity(
                 "implement".to_string(),
                 "review".to_string(),
             ]
-        || descriptor.source_identity != mx1_confined_adapter_package_sha256()
+        || (descriptor.source_identity != mx1_confined_adapter_package_sha256()
+            && descriptor.source_identity != MX1_SECOND_HARNESS_V1_SOURCE_IDENTITY)
         || descriptor.source_identity_sha256 != sha256_hex(&descriptor.source_identity)
         || descriptor.admitted_input_class != "redacted-digest-reference"
         || descriptor.redaction_class != "digest-only"
@@ -1583,6 +1613,33 @@ fn mx1_normalize_run(
     })
 }
 
+fn mx1_manifest_for_adapter(
+    descriptor: &Mx1HarnessImplementationDescriptor,
+) -> Result<Mx1DescriptorManifest, EvolutionAdmissionError> {
+    let manifest = if descriptor.descriptor_id == LEDGER_ORCHESTRATED_HARNESS_ID {
+        sample_mx1_descriptor_manifest_with_ledger_harness()
+    } else {
+        sample_mx1_descriptor_manifest()
+    };
+    let expected = manifest
+        .harnesses
+        .iter()
+        .find(|candidate| candidate.descriptor_id == descriptor.descriptor_id)
+        .ok_or_else(|| {
+            mx1_error(
+                "mx1_adapter_manifest",
+                "adapter descriptor is absent from its canonical sealed manifest",
+            )
+        })?;
+    if expected != descriptor {
+        return Err(mx1_error(
+            "mx1_adapter_manifest",
+            "adapter descriptor does not match its canonical sealed manifest",
+        ));
+    }
+    Ok(manifest)
+}
+
 impl Mx1EngineManagedHarnessAdapter {
     pub fn new(
         descriptor: Mx1HarnessImplementationDescriptor,
@@ -1596,7 +1653,11 @@ impl Mx1EngineManagedHarnessAdapter {
                 "engine-managed adapter must bind the frozen arm-zero descriptor",
             ));
         }
-        Ok(Self { descriptor })
+        let manifest = mx1_manifest_for_adapter(&descriptor)?;
+        Ok(Self {
+            descriptor,
+            manifest,
+        })
     }
 }
 
@@ -1611,6 +1672,7 @@ impl Mx1HarnessRunAdapter for Mx1EngineManagedHarnessAdapter {
         cell: &Mx1MatrixCell,
         evidence: &ProductHarnessRunEvidence,
     ) -> Result<Mx1NormalizedHarnessRun, EvolutionAdmissionError> {
+        validate_mx1_matrix_plan(&self.manifest, plan)?;
         mx1_normalize_run(&self.descriptor, plan, cell, evidence)
     }
 }
@@ -1630,7 +1692,11 @@ impl Mx1ConfinedSubprocessHarnessAdapter {
             ));
         }
         mx1_confined_adapter_capability_probe(&descriptor)?;
-        Ok(Self { descriptor })
+        let manifest = mx1_manifest_for_adapter(&descriptor)?;
+        Ok(Self {
+            descriptor,
+            manifest,
+        })
     }
 }
 
@@ -1647,6 +1713,7 @@ impl Mx1HarnessRunAdapter for Mx1ConfinedSubprocessHarnessAdapter {
     ) -> Result<Mx1NormalizedHarnessRun, EvolutionAdmissionError> {
         // CORE deliberately performs no subprocess execution. A later effect
         // packet may use this admitted identity only through existing owners.
+        validate_mx1_matrix_plan(&self.manifest, plan)?;
         mx1_normalize_run(&self.descriptor, plan, cell, evidence)
     }
 }
@@ -1654,6 +1721,7 @@ impl Mx1HarnessRunAdapter for Mx1ConfinedSubprocessHarnessAdapter {
 #[derive(Debug, Clone)]
 pub struct Mx1LedgerOrchestratedHarnessAdapter {
     descriptor: Mx1HarnessImplementationDescriptor,
+    manifest: Mx1DescriptorManifest,
 }
 
 impl Mx1LedgerOrchestratedHarnessAdapter {
@@ -1671,7 +1739,11 @@ impl Mx1LedgerOrchestratedHarnessAdapter {
             ));
         }
         mx1_confined_adapter_capability_probe(&descriptor)?;
-        Ok(Self { descriptor })
+        let manifest = mx1_manifest_for_adapter(&descriptor)?;
+        Ok(Self {
+            descriptor,
+            manifest,
+        })
     }
 }
 
@@ -1686,6 +1758,7 @@ impl Mx1HarnessRunAdapter for Mx1LedgerOrchestratedHarnessAdapter {
         cell: &Mx1MatrixCell,
         evidence: &ProductHarnessRunEvidence,
     ) -> Result<Mx1NormalizedHarnessRun, EvolutionAdmissionError> {
+        validate_mx1_matrix_plan(&self.manifest, plan)?;
         mx1_normalize_run(&self.descriptor, plan, cell, evidence)
     }
 }
@@ -2091,7 +2164,7 @@ pub fn sample_mx1_descriptor_manifest() -> Mx1DescriptorManifest {
             version: if descriptor_id == MX1_ARM_ZERO_HARNESS_ID {
                 "v1".to_string()
             } else {
-                "provider-free-adapter-v1".to_string()
+                "provider-free-adapter-v2".to_string()
             },
             build_identity_sha256: mx1_expected_harness_evidence_digest(
                 "build",
