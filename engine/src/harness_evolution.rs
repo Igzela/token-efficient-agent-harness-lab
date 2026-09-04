@@ -6,6 +6,16 @@
 //! permissions, budgets, audit, target-output, merge, release, and rollback
 //! owners remain immutable to candidates.
 
+pub mod ledger_orchestration;
+pub use ledger_orchestration::{
+    compute_progress_fingerprint, project_worker_context, ControllerAction, LedgerController,
+    LedgerFinding, LedgerOrchestrator, LedgerOrchestratorConfig, LedgerTaskRecord,
+    LedgerTaskStatus, LedgerWorker, NextTaskDecision, OrchestrationError,
+    OrchestrationLifecycleState, OrchestrationMetrics, OrchestrationSummary,
+    VerificationObservation, VerificationOutcome, VerificationReport, WorkerContext,
+    WorkerOutcomeStatus, WorkerResult, WorkingLedger,
+};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -49,6 +59,7 @@ pub const MX1_CONTRACT_ID: &str = "PE7-HE-MX1-CONTRACT-1";
 pub const MX1_ARM_ZERO_HARNESS_ID: &str = "engine-managed@075f995b574fb8a28f08986291751152bf158dd5";
 pub const MX1_ARM_ZERO_MODEL_ID: &str = "deepseek-v4-pro:single-model-three-role:v1";
 pub const MX1_SECOND_HARNESS_ID: &str = "confined-subprocess-adapter:provider-free:v1";
+pub const LEDGER_ORCHESTRATED_HARNESS_ID: &str = "ledger-orchestrated:provider-independent:v1";
 pub const MX1_SECOND_MODEL_ID: &str = "deepseek-v4-flash:single-model-three-role:v1";
 pub const MX1_NO_PROJECTION_STRATEGY_ID: &str =
     "single-pass-plan-implement-review:no-projection:v1";
@@ -532,10 +543,17 @@ fn mx1_validate_frozen_harness_identity(
                 Mx1HarnessAdmissionDisposition::ConfinedSubprocess,
                 "product-owned-confined-subprocess;core-no-spawn",
             ),
+            LEDGER_ORCHESTRATED_HARNESS_ID => (
+                "rust-engine-harness-evolution",
+                mx1_confined_adapter_package_sha256(),
+                "provider-independent-v1",
+                Mx1HarnessAdmissionDisposition::ConfinedSubprocess,
+                "product-owned-confined-subprocess;core-no-spawn",
+            ),
             _ => {
                 return Err(mx1_error(
                     "mx1_harness_identity",
-                    "Harness descriptor is not one of the two frozen MX1 implementations",
+                    "Harness descriptor is not one of the admitted frozen MX1 implementations",
                 ));
             }
         };
@@ -589,10 +607,12 @@ fn mx1_confined_adapter_capability_probe(
     descriptor: &Mx1HarnessImplementationDescriptor,
 ) -> Result<(), EvolutionAdmissionError> {
     mx1_validate_frozen_harness_identity(descriptor)?;
-    if descriptor.descriptor_id != MX1_SECOND_HARNESS_ID {
+    if descriptor.descriptor_id != MX1_SECOND_HARNESS_ID
+        && descriptor.descriptor_id != LEDGER_ORCHESTRATED_HARNESS_ID
+    {
         return Err(mx1_error(
             "mx1_second_harness_probe",
-            "confined adapter probe can only attest the frozen H1 package",
+            "confined adapter probe can only attest the frozen second Harness package",
         ));
     }
     Ok(())
@@ -1609,6 +1629,45 @@ impl Mx1HarnessRunAdapter for Mx1ConfinedSubprocessHarnessAdapter {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Mx1LedgerOrchestratedHarnessAdapter {
+    descriptor: Mx1HarnessImplementationDescriptor,
+}
+
+impl Mx1LedgerOrchestratedHarnessAdapter {
+    pub fn new(
+        descriptor: Mx1HarnessImplementationDescriptor,
+    ) -> Result<Self, EvolutionAdmissionError> {
+        mx1_validate_harness_descriptor(&descriptor)?;
+        if descriptor.descriptor_id != LEDGER_ORCHESTRATED_HARNESS_ID
+            || descriptor.admission_disposition
+                != Mx1HarnessAdmissionDisposition::ConfinedSubprocess
+        {
+            return Err(mx1_error(
+                "mx1_ledger_orchestrated_harness",
+                "adapter must bind the admitted ledger-orchestrated descriptor",
+            ));
+        }
+        mx1_confined_adapter_capability_probe(&descriptor)?;
+        Ok(Self { descriptor })
+    }
+}
+
+impl Mx1HarnessRunAdapter for Mx1LedgerOrchestratedHarnessAdapter {
+    fn descriptor(&self) -> &Mx1HarnessImplementationDescriptor {
+        &self.descriptor
+    }
+
+    fn normalize_run(
+        &self,
+        plan: &Mx1MatrixPlan,
+        cell: &Mx1MatrixCell,
+        evidence: &ProductHarnessRunEvidence,
+    ) -> Result<Mx1NormalizedHarnessRun, EvolutionAdmissionError> {
+        mx1_normalize_run(&self.descriptor, plan, cell, evidence)
+    }
+}
+
 fn mx1_length_prefixed_key(fields: &[String]) -> String {
     let mut encoded = String::new();
     for field in fields {
@@ -2218,6 +2277,109 @@ pub fn sample_mx1_descriptor_manifest() -> Mx1DescriptorManifest {
         manifest_sha256: String::new(),
     })
     .expect("the built-in MX1 provider-free descriptor manifest is valid")
+}
+
+pub fn sample_ledger_orchestrated_harness_descriptor() -> Mx1HarnessImplementationDescriptor {
+    let source_identity = mx1_confined_adapter_package_sha256();
+    let mut descriptor = Mx1HarnessImplementationDescriptor {
+        schema_version: MX1_DESCRIPTOR_SCHEMA_VERSION.to_string(),
+        descriptor_id: LEDGER_ORCHESTRATED_HARNESS_ID.to_string(),
+        source_owner: "rust-engine-harness-evolution".to_string(),
+        source_identity: source_identity.clone(),
+        version: "provider-independent-v1".to_string(),
+        build_identity_sha256: mx1_expected_harness_evidence_digest(
+            "build",
+            LEDGER_ORCHESTRATED_HARNESS_ID,
+            &source_identity,
+        ),
+        executable_identity_sha256: mx1_expected_harness_evidence_digest(
+            "executable",
+            LEDGER_ORCHESTRATED_HARNESS_ID,
+            &source_identity,
+        ),
+        capability_probe_sha256: mx1_expected_harness_evidence_digest(
+            "capability-probe",
+            LEDGER_ORCHESTRATED_HARNESS_ID,
+            &source_identity,
+        ),
+        shared_run_seam_version: PRODUCT_HARNESS_RUN_SEAM_SCHEMA_VERSION.to_string(),
+        supported_task_capabilities: vec![
+            "failure".to_string(),
+            "restart".to_string(),
+            "terminal-evidence".to_string(),
+            "workspace-confinement".to_string(),
+        ],
+        supported_tool_capabilities: vec![
+            "bounded-tools".to_string(),
+            "no-provider-execution-in-core".to_string(),
+        ],
+        process_confinement: "product-owned-confined-subprocess;core-no-spawn".to_string(),
+        workspace_confinement: "product-workspace-binding-digest".to_string(),
+        terminal_outcome_mapping: "product-task-status".to_string(),
+        verified_deliverable_mapping: "product-terminal-evidence".to_string(),
+        usage_cost_mapping: "existing-product-usage-and-cost-owners".to_string(),
+        cancellation_mapping: "product-task-killed-state".to_string(),
+        cleanup_mapping: "product-terminal-cleanup-evidence".to_string(),
+        restart_mapping: "product-terminal-restart-evidence".to_string(),
+        retry_mapping: "model-plan-max-retries".to_string(),
+        failure_mapping: "product-task-failure-code-digest".to_string(),
+        outcome_unknown_mapping: "product-task-outcome-unknown".to_string(),
+        license_id: "Apache-2.0".to_string(),
+        sbom_sha256: mx1_expected_harness_evidence_digest(
+            "sbom",
+            LEDGER_ORCHESTRATED_HARNESS_ID,
+            &source_identity,
+        ),
+        provenance_sha256: mx1_expected_harness_evidence_digest(
+            "provenance",
+            LEDGER_ORCHESTRATED_HARNESS_ID,
+            &source_identity,
+        ),
+        supported_model_ids: vec![
+            MX1_ARM_ZERO_MODEL_ID.to_string(),
+            MX1_SECOND_MODEL_ID.to_string(),
+        ],
+        supported_strategy_ids: vec![
+            MX1_NO_PROJECTION_STRATEGY_ID.to_string(),
+            MX1_MEMORY_ONLY_STRATEGY_ID.to_string(),
+            MX1_SKILL_ONLY_STRATEGY_ID.to_string(),
+        ],
+        default_off: true,
+        rollback_binding_sha256: mx1_expected_harness_evidence_digest(
+            "rollback",
+            LEDGER_ORCHESTRATED_HARNESS_ID,
+            &source_identity,
+        ),
+        admission_disposition: Mx1HarnessAdmissionDisposition::ConfinedSubprocess,
+    };
+    descriptor.supported_model_ids.sort();
+    descriptor.supported_strategy_ids.sort();
+    descriptor
+}
+
+pub fn sample_mx1_descriptor_manifest_with_ledger_harness() -> Mx1DescriptorManifest {
+    let mut manifest = sample_mx1_descriptor_manifest();
+    manifest.harnesses = vec![
+        manifest
+            .harnesses
+            .into_iter()
+            .find(|h| h.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+            .unwrap(),
+        sample_ledger_orchestrated_harness_descriptor(),
+    ];
+    let mut sorted_harness_ids = vec![
+        MX1_ARM_ZERO_HARNESS_ID.to_string(),
+        LEDGER_ORCHESTRATED_HARNESS_ID.to_string(),
+    ];
+    sorted_harness_ids.sort();
+    for model in &mut manifest.models {
+        model.supported_harness_ids = sorted_harness_ids.clone();
+    }
+    for strategy in &mut manifest.strategies {
+        strategy.supported_harness_ids = sorted_harness_ids.clone();
+    }
+    seal_mx1_descriptor_manifest(manifest)
+        .expect("the ledger-orchestrated manifest must seal cleanly")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
