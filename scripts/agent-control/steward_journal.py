@@ -489,6 +489,8 @@ class StewardJournal:
             )
             if enforce_transition and card_id and not transition_allowed(current, state):
                 raise TransitionRejected(current, state)
+            if event == "MISSION_COMPLETED":
+                self._verify_mission_completion_eligibility_locked(events, mission_id)
             previous = events[-1].sha256 if events else ""
             candidate = JournalEvent(
                 seq=len(events) + 1,
@@ -520,6 +522,49 @@ class StewardJournal:
             raise
         finally:
             connection.close()
+
+    def _verify_mission_completion_eligibility_locked(
+        self, events: list[JournalEvent], mission_id: str
+    ) -> None:
+        """Enforce that MISSION_COMPLETED cannot be appended unless eligibility is proven."""
+        import mission_contract as contract
+
+        # 1. Find active mission activation/advancement record for mission_id
+        active_event = None
+        for ev in reversed(events):
+            if ev.mission_id == mission_id and ev.event in {
+                "MISSION_ACTIVATED",
+                "MISSION_BASE_ADVANCED",
+                "MISSION_BASE_DRIFT_REBOUND",
+                "MISSION_CORRECTIVE_CONTINUATION",
+            }:
+                active_event = ev
+                break
+        if active_event is None:
+            raise JournalError("mission_completion_ineligible_no_active_mission")
+
+        # 2. Check acceptance ledger if mission data contains one
+        raw_ledger = active_event.data.get("acceptance_ledger")
+        if raw_ledger and isinstance(raw_ledger, dict):
+            raw_obs = raw_ledger.get("obligations", [])
+            obligations_state: dict[str, dict[str, Any]] = {}
+            for ev in events:
+                if ev.mission_id == mission_id and ev.event == "MISSION_OBLIGATION_DISPOSITIONED":
+                    ob_id = ev.data.get("obligation_id")
+                    if ob_id:
+                        obligations_state[ob_id] = ev.data
+
+            for ob_wire in raw_obs:
+                ob_id = ob_wire.get("obligation_id")
+                if not ob_id or ob_id not in obligations_state:
+                    raise JournalError(f"mission_completion_ineligible_unresolved_obligation_{ob_id}")
+                disp_data = obligations_state[ob_id]
+                disp = disp_data.get("disposition")
+                if disp not in SCIENTIFIC_TERMINAL_DISPOSITIONS:
+                    raise JournalError(f"mission_completion_ineligible_non_terminal_{ob_id}")
+                ev_data = disp_data.get("evidence", {})
+                if not contract.is_valid_provenance_receipt(ob_id, disp, ev_data):
+                    raise JournalError(f"mission_completion_ineligible_invalid_provenance_{ob_id}")
 
     def heartbeat(self, *, mission_id: str, idempotency_key: str, detail: str = "tick") -> JournalEvent:
         return self.append(
@@ -716,8 +761,15 @@ class StewardJournal:
             key = card_id if len(card_occurrences[card_id]) == 1 else ":".join(binding)
             card_states[key] = event.state
         obligations: dict[str, dict[str, Any]] = {}
+        invalidated_missions = {
+            ev.mission_id
+            for ev in events
+            if ev.event == "MISSION_CLOSEOUT_INVALIDATED"
+        }
         for event in events:
             if event.event == "MISSION_OBLIGATION_DISPOSITIONED":
+                if event.mission_id in invalidated_missions:
+                    continue
                 ob_id = event.data.get("obligation_id")
                 if ob_id:
                     obligations[ob_id] = {
@@ -772,12 +824,72 @@ class StewardJournal:
         journal, not a second approval or a parallel state store.
         """
         all_events = self.replay()
+        invalidated_missions: set[str] = set()
         for event in reversed(all_events):
+            if event.event == "MISSION_CLOSEOUT_INVALIDATED":
+                invalidated_missions.add(event.mission_id)
             if event.event in {"MISSION_COMPLETED", "MISSION_STOPPED"}:
-                return None
-            if event.event in {"MISSION_BASE_DRIFT_REBOUND", "MISSION_BASE_ADVANCED", "MISSION_ACTIVATED"}:
+                if event.mission_id not in invalidated_missions:
+                    return None
+            if event.event in {
+                "MISSION_BASE_DRIFT_REBOUND",
+                "MISSION_BASE_ADVANCED",
+                "MISSION_ACTIVATED",
+                "MISSION_CORRECTIVE_CONTINUATION",
+            }:
                 return event
         return None
+
+    def record_closeout_invalidation(
+        self,
+        mission_id: str,
+        reason: str,
+        details: dict[str, Any] | None = None,
+        *,
+        idempotency_key: str | None = None,
+    ) -> JournalEvent:
+        """Record an explicit corrective audit disposition invalidating an unauthenticated or fake closeout."""
+        key = idempotency_key or f"closeout-invalidated:{mission_id}"
+        data = _validate_data(
+            {
+                "mission_id": mission_id,
+                "reason": reason,
+                "details": details or {},
+            }
+        )
+        return self.append(
+            event="MISSION_CLOSEOUT_INVALIDATED",
+            idempotency_key=key,
+            mission_id=mission_id,
+            stage_id="audit",
+            card_id="",
+            state="RUNNING",
+            detail="closeout_superseded_and_invalidated",
+            data=data,
+            enforce_transition=False,
+        )
+
+    def record_corrective_continuation(
+        self,
+        mission_id: str,
+        proposal_sha256: str,
+        mission_data: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> JournalEvent:
+        """Record corrective continuation of an owner-approved mission."""
+        key = idempotency_key or f"mission-corrective-continuation:{mission_id}:{proposal_sha256[:16]}"
+        return self.append(
+            event="MISSION_CORRECTIVE_CONTINUATION",
+            idempotency_key=key,
+            mission_id=mission_id,
+            stage_id="mission",
+            card_id="",
+            state="RUNNING",
+            detail="mission_corrective_continuation",
+            data=mission_data,
+            enforce_transition=False,
+        )
 
     def record_mission_proposal(
         self,
@@ -907,6 +1019,12 @@ class StewardJournal:
         if disposition not in SCIENTIFIC_TERMINAL_DISPOSITIONS:
             raise JournalError(f"disposition_{disposition}_not_scientific_terminal")
         evidence_data = _validate_data(evidence or {})
+
+        import mission_contract as contract
+        try:
+            contract.validate_provenance_receipt(obligation_id, disposition, evidence_data)
+        except contract.MissionContractError as exc:
+            raise JournalError(f"obligation_evidence_invalid: {exc}") from exc
 
         event = "MISSION_OBLIGATION_DISPOSITIONED"
         stage_id = "acceptance"
