@@ -62,6 +62,38 @@ its private `/tmp`. The checked-in unit names those three exact write roots.
 This is repository-maintenance authority, not permission to write another
 repository, an operator home, or an arbitrary host path.
 
+### Codex Lifecycle Hooks Architecture & Trust Model (H0–H3)
+
+Codex Lifecycle Hooks integrate the local Codex execution engine with Steward WorkCard constraints. Hooks are strictly worker-local event adapters; the Steward service remains the sole scheduler, reviewer, journal writer, and merge authority. Hooks never write to the durable journal or claim task completion.
+
+- **Authority and Lifecycle Separation**:
+  - The Steward owns WorkCard definition, path locks, git tree lifecycle, PR integration, and verification gates.
+  - Hooks adapt events (`SessionStart`, `PreCompact`, `PostCompact`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) inside the isolated child worker namespace during CLI execution.
+  - No hook may write to `/var/lib/agent-steward/steward.sqlite3` or alter durable mission state.
+
+- **H0: Runtime Capability & Trust Probe**:
+  - Evaluates 14 distinct runtime capabilities (`hooks.basic`, `session_start`, `pre_tool`, `post_tool`, `permission_request`, `compact`, `stop`, `interrupt`, `subagent`, `async`, `mcp_tool`, `isolated_codex_home`, `hook_trust_bootstrap`, `definition_hash_invalidation`).
+  - Reports explicit deterministic states: `VERIFIED`, `UNSUPPORTED`, `BLOCKED`, or `UNVERIFIED`.
+  - Serves as the pre-flight gate before dispatching hook-enabled worker sessions.
+
+- **H1: Context Bootstrap, Compaction Rehydration & Ephemeral Receipts**:
+  - `SessionStart`: Injects bounded WorkCard objective, target paths, and execution invariants into the initial agent context, avoiding large whole-document ingestion.
+  - `PreCompact` & `PostCompact`: Snapshots current task progress and git modifications prior to model context compaction, and rehydrates active constraints into the post-compaction context to prevent goal drift.
+  - `PostToolUse`: Captures tool output receipts in the worker's ephemeral state directory (`hooks_state/receipts/`), compressing oversized command outputs.
+  - Minimal ROI Telemetry: Measures bootstrap tokens saved, receipt bytes compressed, and compaction events.
+
+- **H2: Worktree Path Boundary Guard & Permission Auto-Approval**:
+  - `PreToolUse`: Intercepts file writes and shell execution. Enforces that target files lie strictly within the active WorkCard's `allowed_paths`, prevents escaping the worktree root, and rejects strictly forbidden paths (e.g. `docs/ROADMAP.md`) or dangerous commands (`git push`, `rm -rf /`, `/var/lib/agent-steward`).
+  - `PermissionRequest`: Auto-approves bounded, safe workspace operations (e.g. `pytest`, `python`, in-scope edits) while denying unauthorized external operations.
+
+- **H3: WorkCard Completion Evaluation & Continuation Loop**:
+  - `Stop`: Intercepts premature termination if the worker attempts to stop before producing workspace modifications or completing required verification. Emits a concise continuation prompt on stderr (exit code 2) up to a bounded attempt budget (default: 2 retries). Graceful completion or budget exhaustion allows exit code 0.
+
+- **Cryptographic Trust Bootstrap**:
+  - The production configuration never uses `--dangerously-bypass-hook-trust`.
+  - `HookConfigGenerator` computes the SHA256 digest of the dispatcher and hook package (`compute_bundle_hash`), provisioning verified `trusted_hash` entries under `[hooks.state."<path>"]` and `[projects."<worktree>"]` within the isolated worker's `CODEX_HOME/config.toml`.
+  - Tampering with hook code invalidates the hash and halts execution fail-closed.
+
 ## Research Mainline: Finite Frozen Canonical Experiments
 
 Research evidence on the common RWE basis is obtained only through finite
@@ -245,7 +277,7 @@ flowchart LR
 | **Scheduler** | `workflow_runs` uses `queue_lease` for claim, calls the external executor, then records settlement | Admission, concurrency, leases, retries, pause/kill, and run state | Claim transaction commits before external execution; settlement is a later transaction; scheduler/store tests |
 | **ToolPolicy** | `tool_execution_policy`, `tool_registry`, and authenticated policy handlers | Capability, allowlist, hook validation, and execution gating | Policy mutations are hash-bound and audited by Store; tool registry and API policy tests |
 | **ProductTask** | `product_tasks` transaction view, product-task handlers, and `target_repo_output` | Product intake, approval/output gates, workspace-bound patch export | Target default branch is never a workspace; target-output and golden-path recovery tests |
-| **agent-control** | `steward_service.py`, `steward.py`, `steward_journal.py`, `steward_workers.py`, `steward_github.py`, `mission_contract.py` | Repository-maintenance missions, stages, WorkCards, reviews, PR integration, and guarded merge dispatch | One journal-backed lifecycle writer; authenticated Issue-comment approval; Codex CLI worker/reviewer transport; GitHub remains merge and accepted-main authority; no ProductStore runtime state |
+| **agent-control** | `steward_service.py`, `steward.py`, `steward_journal.py`, `steward_workers.py`, `steward_github.py`, `mission_contract.py`, `codex_hooks/` | Repository-maintenance missions, stages, WorkCards, reviews, PR integration, and guarded merge dispatch | One journal-backed lifecycle writer; authenticated Issue-comment approval; Codex CLI worker/reviewer transport; GitHub remains merge and accepted-main authority; no ProductStore runtime state |
 
 ### PR7 Acceptance Scope
 
