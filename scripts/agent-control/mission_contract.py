@@ -26,6 +26,49 @@ SCHEMA_VERSION = "maintenance_mission.v1"
 STAGE_SCHEMA_VERSION = "maintenance_stage.v1"
 WORKCARD_SCHEMA_VERSION = "maintenance_workcard.v1"
 PROJECTION_SCHEMA_VERSION = "legacy_mission_projection.v1"
+ACCEPTANCE_LEDGER_SCHEMA_VERSION = "mission_acceptance_ledger.v1"
+ACCEPTANCE_OBLIGATION_SCHEMA_VERSION = "mission_acceptance_obligation.v1"
+
+SCIENTIFIC_TERMINAL_DISPOSITIONS = frozenset(
+    {
+        "COMPLETE",
+        "GO",
+        "NO_GO",
+        "INSUFFICIENT",
+        "INCOMPARABLE",
+        "REJECT",
+        "SATURATED",
+        "TRANSFER_FAILED",
+        "REPLICATION_FAILED",
+        "SUPERSEDED_BY_ACCEPTED_EVIDENCE",
+        "NOT_JUSTIFIED_BY_PRECEDING_GATE",
+    }
+)
+
+NON_TERMINAL_OPERATIONAL_STATES = frozenset(
+    {
+        "BLOCKED_AUTHORITY",
+        "WAITING",
+        "PROPOSING",
+        "MISSING_EVIDENCE",
+        "STAGE_EXHAUSTION",
+        "LACK_OF_PROVIDER_EXECUTION",
+        "OUTCOME_UNKNOWN",
+        "IN_PROGRESS",
+    }
+)
+
+GATE_HALTING_DISPOSITIONS = frozenset(
+    {
+        "NO_GO",
+        "REJECT",
+        "INSUFFICIENT",
+        "INCOMPARABLE",
+        "TRANSFER_FAILED",
+        "REPLICATION_FAILED",
+        "NOT_JUSTIFIED_BY_PRECEDING_GATE",
+    }
+)
 
 MAX_TEXT_CHARS = 8 * 1024
 MAX_PATH_CHARS = 512
@@ -177,7 +220,7 @@ def json_sha256(value: object) -> str:
 
 
 def _mapping(value: object, fields: set[str], required: set[str], reason: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != fields or not required <= set(value):
+    if not isinstance(value, dict) or not (set(value) <= fields) or not (required <= set(value)):
         raise MissionContractError(reason)
     return value
 
@@ -525,6 +568,198 @@ class StopRule:
 
 
 @dataclass(frozen=True)
+class AcceptanceObligation:
+    obligation_id: str
+    description: str
+    category: str
+    dependencies: tuple[str, ...] = ()
+    required_paths: tuple[str, ...] = ()
+    disposition: str | None = None
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "required_paths", tuple(sorted(self.required_paths)))
+
+    def proposal_wire(self) -> dict[str, Any]:
+        return {
+            "schema_version": ACCEPTANCE_OBLIGATION_SCHEMA_VERSION,
+            "obligation_id": self.obligation_id,
+            "description": self.description,
+            "category": self.category,
+            "dependencies": list(self.dependencies),
+            "required_paths": list(self.required_paths),
+        }
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "schema_version": ACCEPTANCE_OBLIGATION_SCHEMA_VERSION,
+            "obligation_id": self.obligation_id,
+            "description": self.description,
+            "category": self.category,
+            "dependencies": list(self.dependencies),
+            "required_paths": list(self.required_paths),
+            "disposition": self.disposition,
+            "evidence": dict(self.evidence),
+        }
+
+    @classmethod
+    def from_wire(cls, value: object) -> AcceptanceObligation:
+        fields = {
+            "schema_version",
+            "obligation_id",
+            "description",
+            "category",
+            "dependencies",
+            "required_paths",
+            "disposition",
+            "evidence",
+        }
+        wire = _mapping(value, fields, fields - {"required_paths", "disposition", "evidence"}, "obligation_fields_invalid")
+        if wire["schema_version"] != ACCEPTANCE_OBLIGATION_SCHEMA_VERSION:
+            raise MissionContractError("obligation_schema_unsupported")
+        obligation_id = _identifier(wire["obligation_id"], "obligation_id")
+        description = _text(wire["description"], "obligation_description")
+        category = _text(wire["category"], "obligation_category", max_chars=64)
+        dependencies = _strings(wire.get("dependencies", []), "obligation_dependencies", allow_empty=True)
+        required_paths = _paths(wire.get("required_paths", []), "obligation_required_paths", allow_empty=True)
+        disposition = wire.get("disposition")
+        if disposition is not None:
+            disposition = _text(disposition, "obligation_disposition", max_chars=64)
+            if disposition in NON_TERMINAL_OPERATIONAL_STATES:
+                raise MissionContractError("operational_state_not_scientific_terminal")
+            if disposition not in SCIENTIFIC_TERMINAL_DISPOSITIONS:
+                raise MissionContractError("obligation_disposition_invalid")
+        evidence = wire.get("evidence")
+        if evidence is not None and not isinstance(evidence, dict):
+            raise MissionContractError("obligation_evidence_invalid")
+        return cls(
+            obligation_id=obligation_id,
+            description=description,
+            category=category,
+            dependencies=tuple(dependencies),
+            required_paths=tuple(required_paths),
+            disposition=disposition,
+            evidence=dict(evidence or {}),
+        )
+
+
+@dataclass(frozen=True)
+class MissionAcceptanceLedger:
+    obligations: tuple[AcceptanceObligation, ...]
+
+    def proposal_wire(self) -> dict[str, Any]:
+        return {
+            "schema_version": ACCEPTANCE_LEDGER_SCHEMA_VERSION,
+            "obligations": [ob.proposal_wire() for ob in self.obligations],
+        }
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "schema_version": ACCEPTANCE_LEDGER_SCHEMA_VERSION,
+            "obligations": [ob.to_wire() for ob in self.obligations],
+        }
+
+    @classmethod
+    def from_wire(cls, value: object) -> MissionAcceptanceLedger:
+        if not isinstance(value, dict):
+            raise MissionContractError("acceptance_ledger_invalid")
+        if value.get("schema_version") != ACCEPTANCE_LEDGER_SCHEMA_VERSION:
+            raise MissionContractError("acceptance_ledger_schema_unsupported")
+        raw_obs = value.get("obligations")
+        if not isinstance(raw_obs, list) or not raw_obs:
+            raise MissionContractError("acceptance_ledger_empty")
+        obligations = tuple(AcceptanceObligation.from_wire(item) for item in raw_obs)
+        ledger = cls(obligations)
+        ledger.validate()
+        return ledger
+
+    def validate(self) -> None:
+        ids = [ob.obligation_id for ob in self.obligations]
+        if len(set(ids)) != len(ids):
+            raise MissionContractError("acceptance_ledger_duplicate_obligation")
+        id_set = set(ids)
+        for ob in self.obligations:
+            for dep in ob.dependencies:
+                if dep not in id_set:
+                    raise MissionContractError("obligation_dependency_missing")
+                if dep == ob.obligation_id:
+                    raise MissionContractError("obligation_self_dependency")
+        visited: dict[str, int] = {}
+        def visit(node_id: str) -> None:
+            if visited.get(node_id) == 0:
+                raise MissionContractError("obligation_dependency_cycle")
+            if visited.get(node_id) == 1:
+                return
+            visited[node_id] = 0
+            ob = next(o for o in self.obligations if o.obligation_id == node_id)
+            for dep in ob.dependencies:
+                visit(dep)
+            visited[node_id] = 1
+
+        for ob in self.obligations:
+            visit(ob.obligation_id)
+
+    def is_terminal(self) -> bool:
+        return all(ob.disposition in SCIENTIFIC_TERMINAL_DISPOSITIONS for ob in self.obligations)
+
+    def unresolved_eligible(self) -> tuple[AcceptanceObligation, ...]:
+        terminal_ids = {ob.obligation_id for ob in self.obligations if ob.disposition in SCIENTIFIC_TERMINAL_DISPOSITIONS}
+        eligible = []
+        for ob in self.obligations:
+            if ob.disposition is None:
+                if all(dep in terminal_ids for dep in ob.dependencies):
+                    eligible.append(ob)
+        return tuple(eligible)
+
+    def get(self, obligation_id: str) -> AcceptanceObligation | None:
+        for ob in self.obligations:
+            if ob.obligation_id == obligation_id:
+                return ob
+        return None
+
+    def disposition_obligation(
+        self,
+        obligation_id: str,
+        disposition: str,
+        evidence: dict[str, Any] | None = None,
+    ) -> MissionAcceptanceLedger:
+        if disposition in NON_TERMINAL_OPERATIONAL_STATES:
+            raise MissionContractError("operational_state_not_scientific_terminal")
+        if disposition not in SCIENTIFIC_TERMINAL_DISPOSITIONS:
+            raise MissionContractError("obligation_disposition_invalid")
+
+        existing = self.get(obligation_id)
+        if existing is None:
+            raise MissionContractError("obligation_not_found")
+
+        if disposition == "NOT_JUSTIFIED_BY_PRECEDING_GATE":
+            has_halting_upstream = False
+            for dep_id in existing.dependencies:
+                dep_ob = self.get(dep_id)
+                if dep_ob is not None and dep_ob.disposition in GATE_HALTING_DISPOSITIONS:
+                    has_halting_upstream = True
+                    break
+            if not has_halting_upstream:
+                raise MissionContractError("not_justified_requires_halting_preceding_gate")
+
+        new_evidence = dict(evidence or {})
+        if existing.disposition is not None:
+            if existing.disposition == disposition and existing.evidence == new_evidence:
+                return self
+            raise MissionContractError("contradictory_obligation_evidence")
+
+        updated_obs = []
+        for ob in self.obligations:
+            if ob.obligation_id == obligation_id:
+                updated_obs.append(replace(ob, disposition=disposition, evidence=new_evidence))
+            else:
+                updated_obs.append(ob)
+        new_ledger = MissionAcceptanceLedger(tuple(updated_obs))
+        new_ledger.validate()
+        return new_ledger
+
+
+@dataclass(frozen=True)
 class MaintenanceMission:
     mission_id: str
     state: str
@@ -541,6 +776,8 @@ class MaintenanceMission:
     rollback: RollbackBoundary
     proposal_sha256: str
     owner_approval: OwnerApproval
+    acceptance_ledger: MissionAcceptanceLedger | None = None
+    predecessor_mission_id: str | None = None
     # Runtime-only proof produced by activate_current_mission.  It is
     # deliberately absent from the wire contract and therefore cannot be
     # forged by changing a serialized lifecycle state.
@@ -549,7 +786,7 @@ class MaintenanceMission:
     def proposal_wire(self) -> dict[str, Any]:
         """Return the approved semantic payload, excluding approval metadata."""
 
-        return {
+        wire = {
             "schema_version": SCHEMA_VERSION,
             "mission_id": self.mission_id,
             "objective": self.objective,
@@ -564,6 +801,11 @@ class MaintenanceMission:
             "stop_rules": [rule.to_wire() for rule in self.stop_rules],
             "rollback": self.rollback.to_wire(),
         }
+        if self.acceptance_ledger is not None:
+            wire["acceptance_ledger"] = self.acceptance_ledger.proposal_wire()
+        if self.predecessor_mission_id is not None:
+            wire["predecessor_mission_id"] = self.predecessor_mission_id
+        return wire
 
     @property
     def computed_proposal_sha256(self) -> str:
@@ -580,7 +822,7 @@ class MaintenanceMission:
 
     @classmethod
     def from_wire(cls, value: object) -> MaintenanceMission:
-        fields = {
+        required_fields = {
             "schema_version",
             "mission_id",
             "state",
@@ -598,7 +840,8 @@ class MaintenanceMission:
             "proposal_sha256",
             "owner_approval",
         }
-        wire = _mapping(value, fields, fields, "mission_fields_invalid")
+        allowed_fields = required_fields | {"acceptance_ledger", "predecessor_mission_id"}
+        wire = _mapping(value, allowed_fields, required_fields, "mission_fields_invalid")
         if wire["schema_version"] != SCHEMA_VERSION:
             raise MissionContractError("mission_schema_unsupported")
         mission_id = _identifier(wire["mission_id"], "mission_id")
@@ -635,6 +878,12 @@ class MaintenanceMission:
         approval = OwnerApproval.from_wire(wire["owner_approval"])
         if approval.owner_identity not in TRUSTED_OWNER_IDENTITIES:
             raise MissionContractError("owner_approval_identity_untrusted")
+        acceptance_ledger = None
+        if "acceptance_ledger" in wire and wire["acceptance_ledger"] is not None:
+            acceptance_ledger = MissionAcceptanceLedger.from_wire(wire["acceptance_ledger"])
+        predecessor_mission_id = None
+        if "predecessor_mission_id" in wire and wire["predecessor_mission_id"] is not None:
+            predecessor_mission_id = _identifier(wire["predecessor_mission_id"], "predecessor_mission_id")
         model = cls(
             mission_id,
             state,
@@ -651,6 +900,8 @@ class MaintenanceMission:
             rollback,
             proposal_sha,
             approval,
+            acceptance_ledger,
+            predecessor_mission_id,
         )
         if model.computed_proposal_sha256 != proposal_sha:
             raise MissionContractError("mission_proposal_digest_mismatch")
@@ -1196,6 +1447,141 @@ def activate_current_mission(
     )
 
 
+def build_research_acceptance_ledger() -> MissionAcceptanceLedger:
+    """Canonical 18-node research acceptance ledger for the closed-loop research mainline."""
+    obligations = (
+        AcceptanceObligation(
+            obligation_id="common_rwe_evidence_basis",
+            description="Reconcile and validate frozen RWE corpus, protocol, schedule, task bindings, and baseline seeds.",
+            category="evidence_basis",
+            dependencies=(),
+            required_paths=("engine/src/rwe", "docs/ROADMAP.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="contemporary_rwe_replay",
+            description="Execute or evaluate contemporary RWE old/new replay against frozen comparison manifest and evidence gates.",
+            category="evaluation",
+            dependencies=("common_rwe_evidence_basis",),
+            required_paths=("engine/src/rwe", "docs/ROADMAP.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="mx1_c1_1x2x1",
+            description="MX1 C1 ladder Rung 1 (1x2x1): isolate Model effects across frozen model descriptors with arm-zero harness and no-projection strategy.",
+            category="ladder",
+            dependencies=("common_rwe_evidence_basis",),
+            required_paths=("engine/src/harness_evolution.rs", "engine/src/harness_evolution_eval.rs"),
+        ),
+        AcceptanceObligation(
+            obligation_id="mx1_c1_1x2x3",
+            description="MX1 C1 ladder Rung 2 (1x2x3): evaluate Strategy and ModelxStrategy interactions across baseline, memory-only, and skill-only strategies.",
+            category="ladder",
+            dependencies=("mx1_c1_1x2x1",),
+            required_paths=("engine/src/harness_evolution.rs", "engine/src/harness_evolution_eval.rs"),
+        ),
+        AcceptanceObligation(
+            obligation_id="mx1_c1_2x2x3",
+            description="MX1 C1 ladder Rung 3 (2x2x3): evaluate Harness and higher-order interactions with confined second harness.",
+            category="ladder",
+            dependencies=("mx1_c1_1x2x3",),
+            required_paths=("engine/src/harness_evolution.rs", "engine/src/harness_evolution_eval.rs"),
+        ),
+        AcceptanceObligation(
+            obligation_id="cws_strategy_evidence",
+            description="Evaluate CWS runtime projection, residency, and default-off analysis boundaries against hard quality and safety gates.",
+            category="evaluation",
+            dependencies=("common_rwe_evidence_basis",),
+            required_paths=("engine/src/rwe", "docs/ROADMAP.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="harness_evolution",
+            description="Evaluate candidate Pareto archive, prediction outcomes, and mutation hypotheses on sealed holdouts.",
+            category="evaluation",
+            dependencies=("mx1_c1_2x2x3",),
+            required_paths=("engine/src/harness_evolution.rs", "engine/src/harness_evolution_eval.rs"),
+        ),
+        AcceptanceObligation(
+            obligation_id="level_1",
+            description="Evaluate Level-1 candidate eligibility, lower-rung evidence completeness, and hard quality/safety gates.",
+            category="gate",
+            dependencies=("harness_evolution",),
+            required_paths=("docs/ROADMAP.md", "docs/ARCHITECTURE.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="transfer",
+            description="Evaluate cross-task and cross-domain transfer evidence before any harness candidate advancement.",
+            category="transfer",
+            dependencies=("level_1",),
+            required_paths=("docs/ROADMAP.md", "docs/ARCHITECTURE.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="replication",
+            description="Evaluate multi-seed replication fidelity and deterministic variance bounds.",
+            category="replication",
+            dependencies=("level_1",),
+            required_paths=("docs/ROADMAP.md", "docs/ARCHITECTURE.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="memory",
+            description="Evaluate durable memory version retrieval efficiency, retention bounds, and eviction safety.",
+            category="capability",
+            dependencies=("level_1",),
+            required_paths=("docs/ROADMAP.md", "docs/ARCHITECTURE.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="skill",
+            description="Evaluate acquired skill reuse, execution boundary preservation, and tool-allowlist conformance.",
+            category="capability",
+            dependencies=("level_1",),
+            required_paths=("docs/ROADMAP.md", "docs/ARCHITECTURE.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="level_2",
+            description="Evaluate Level-2 candidate prerequisites, lower-rung evidence completion, and comparability.",
+            category="gate",
+            dependencies=("level_1", "transfer", "replication"),
+            required_paths=("docs/ROADMAP.md", "docs/ARCHITECTURE.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="adoption_decision",
+            description="Explicit human owner adoption review and decision; no autonomous self-adoption or production replacement.",
+            category="adoption",
+            dependencies=("level_2",),
+            required_paths=("docs/ROADMAP.md", "docs/ARCHITECTURE.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="meta",
+            description="Evaluate Meta research program prerequisites, evaluator invariance, and recursive control boundaries.",
+            category="meta",
+            dependencies=("level_2",),
+            required_paths=("docs/ROADMAP.md", "docs/ARCHITECTURE.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="r4",
+            description="R4 evaluation: atomic journal append and crash recovery under high concurrency.",
+            category="meta",
+            dependencies=("meta",),
+            required_paths=("docs/ROADMAP.md", "docs/ARCHITECTURE.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="r5",
+            description="R5 evaluation: distributed observer consistency and cross-worktree reconciliation boundaries.",
+            category="meta",
+            dependencies=("meta",),
+            required_paths=("docs/ROADMAP.md", "docs/ARCHITECTURE.md"),
+        ),
+        AcceptanceObligation(
+            obligation_id="r6",
+            description="R6 evaluation: long-horizon recursive task decomposition and bounded delegation contracts.",
+            category="meta",
+            dependencies=("meta",),
+            required_paths=("docs/ROADMAP.md", "docs/ARCHITECTURE.md"),
+        ),
+    )
+    ledger = MissionAcceptanceLedger(obligations)
+    ledger.validate()
+    return ledger
+
+
 def compile_proposal_mission(
     raw_request: str,
     *,
@@ -1205,6 +1591,8 @@ def compile_proposal_mission(
     source_ref: str = "main",
     source_sha256: str = "",
     mission_id: str | None = None,
+    acceptance_ledger: MissionAcceptanceLedger | None = None,
+    predecessor_mission_id: str | None = None,
 ) -> tuple[MaintenanceMission, str]:
     """Compile an untrusted natural language request into a proposed MaintenanceMission."""
 
@@ -1219,7 +1607,7 @@ def compile_proposal_mission(
         source_ref=source_ref,
         source_sha256=sha_source,
     )
-    paths = proposal.requested_paths or ("README.md",)
+    paths = tuple(sorted(proposal.requested_paths or ("README.md",)))
     grants = (
         Grant(
             grant_id="repository-maintenance",
@@ -1270,6 +1658,11 @@ def compile_proposal_mission(
         "stop_rules": [s.to_wire() for s in stops],
         "rollback": rollback.to_wire(),
     }
+    if acceptance_ledger is not None:
+        wire["acceptance_ledger"] = acceptance_ledger.proposal_wire()
+    if predecessor_mission_id is not None:
+        wire["predecessor_mission_id"] = predecessor_mission_id
+
     proposal_sha256 = json_sha256(wire)
     approval = OwnerApproval(
         owner_identity="repository-owner",
@@ -1293,8 +1686,46 @@ def compile_proposal_mission(
         rollback=rollback,
         proposal_sha256=proposal_sha256,
         owner_approval=approval,
+        acceptance_ledger=acceptance_ledger,
+        predecessor_mission_id=predecessor_mission_id,
     )
     return mission, proposal_sha256
+
+
+def build_research_successor_mission(
+    *,
+    base_sha: str,
+    predecessor_mission_id: str = "MISSION-RESEARCH-20260901",
+    mission_id: str = "MISSION-RESEARCH-20260901-SUCCESSOR",
+    repository: str = "Igzela/token-efficient-agent-harness-lab",
+    branch: str = "main",
+    source_ref: str = "main",
+    source_sha256: str = "",
+) -> MaintenanceMission:
+    """Construct an owner-approvable research successor Mission bound to accepted main."""
+    raw_request = (
+        "Complete bounded closed loop research mainline and obtain actual RWE MX1 C1 CWS "
+        "Harness Evolution L1 L2 evidence and disposition transfer replication memory skill adoption "
+        "Meta R4 R5 R6 through finite frozen canonical experiments with common task corpus evaluator "
+        "Harness Model Strategy descriptors schedule budgets identities protocol seeds lifecycle "
+        "analysis and results with documentation tests workflow source changes in docs/ROADMAP.md "
+        "docs/ARCHITECTURE.md docs/AUTONOMY.md docs/RUNBOOK.md engine/src/rwe engine/src/harness_evolution.rs "
+        "engine/src/harness_evolution_eval.rs engine/src/storage/local_product_store scripts/agent-control "
+        "tests/test_mission_contract.py tests/test_agent_shadow_steward.py."
+    )
+    ledger = build_research_acceptance_ledger()
+    mission, _ = compile_proposal_mission(
+        raw_request,
+        repository=repository,
+        base_sha=base_sha,
+        branch=branch,
+        source_ref=source_ref,
+        source_sha256=source_sha256,
+        mission_id=mission_id,
+        acceptance_ledger=ledger,
+        predecessor_mission_id=predecessor_mission_id,
+    )
+    return mission
 
 
 def validate_execution_scope(

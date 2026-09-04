@@ -57,6 +57,21 @@ MISSION_STATES = frozenset(
         "OUTCOME_UNKNOWN",
     }
 )
+SCIENTIFIC_TERMINAL_DISPOSITIONS = frozenset(
+    {
+        "COMPLETE",
+        "GO",
+        "NO_GO",
+        "INSUFFICIENT",
+        "INCOMPARABLE",
+        "REJECT",
+        "SATURATED",
+        "TRANSFER_FAILED",
+        "REPLICATION_FAILED",
+        "SUPERSEDED_BY_ACCEPTED_EVIDENCE",
+        "NOT_JUSTIFIED_BY_PRECEDING_GATE",
+    }
+)
 ALL_STATES = CARD_STATES | MISSION_STATES | {"HEALTHY", "STOPPED"}
 # OUTCOME_UNKNOWN is deliberately recoverable: it must remain visible to the
 # read-only reconciliation loop and may never be replayed as if it succeeded.
@@ -700,10 +715,21 @@ class StewardJournal:
             card_id = binding[2]
             key = card_id if len(card_occurrences[card_id]) == 1 else ":".join(binding)
             card_states[key] = event.state
+        obligations: dict[str, dict[str, Any]] = {}
+        for event in events:
+            if event.event == "MISSION_OBLIGATION_DISPOSITIONED":
+                ob_id = event.data.get("obligation_id")
+                if ob_id:
+                    obligations[ob_id] = {
+                        "disposition": event.data.get("disposition"),
+                        "timestamp": event.timestamp,
+                        "evidence": event.data.get("evidence", {}),
+                    }
         return {
             "schema_version": SCHEMA_VERSION,
             "event_count": len(events),
             "card_states": dict(sorted(card_states.items())),
+            "obligations": obligations,
             "active_cards": sorted(
                 {
                     binding[2]
@@ -860,6 +886,118 @@ class StewardJournal:
             enforce_transition=False,
         )
 
+    def record_obligation_disposition(
+        self,
+        mission_id: str,
+        obligation_id: str,
+        disposition: str,
+        evidence: dict[str, Any] | None = None,
+        *,
+        idempotency_key: str | None = None,
+    ) -> JournalEvent:
+        """Record one terminal scientific disposition for a mission acceptance obligation.
+
+        Idempotent duplicates return the existing event. Contradictory dispositions
+        or evidence fail closed with JournalError.
+        """
+        if not isinstance(mission_id, str) or IDENTIFIER.fullmatch(mission_id) is None:
+            raise JournalError("mission_id_invalid")
+        if not isinstance(obligation_id, str) or IDENTIFIER.fullmatch(obligation_id) is None:
+            raise JournalError("obligation_id_invalid")
+        if disposition not in SCIENTIFIC_TERMINAL_DISPOSITIONS:
+            raise JournalError(f"disposition_{disposition}_not_scientific_terminal")
+        evidence_data = _validate_data(evidence or {})
+
+        event = "MISSION_OBLIGATION_DISPOSITIONED"
+        stage_id = "acceptance"
+        card_id = ""
+        state = "RUNNING"
+        detail = f"obligation_{obligation_id}_dispositioned"
+        key = idempotency_key or f"obligation-dispositioned:{mission_id}:{obligation_id}"
+        data = _validate_data(
+            {
+                "mission_id": mission_id,
+                "obligation_id": obligation_id,
+                "disposition": disposition,
+                "evidence": evidence_data,
+            }
+        )
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            events = self._read_locked(connection)
+
+            for past in events:
+                if (
+                    past.event == event
+                    and past.mission_id == mission_id
+                    and past.data.get("obligation_id") == obligation_id
+                ):
+                    past_disp = past.data.get("disposition")
+                    past_ev = past.data.get("evidence", {})
+                    if past_disp == disposition and past_ev == evidence_data:
+                        connection.commit()
+                        return past
+                    raise JournalError(
+                        f"contradictory_obligation_evidence for {obligation_id}: "
+                        f"existing ({past_disp}) vs new ({disposition})"
+                    )
+
+            existing_row = connection.execute(
+                "SELECT record_json FROM steward_journal_events WHERE idempotency_key = ?",
+                (key,),
+            ).fetchone()
+            if existing_row is not None:
+                try:
+                    existing = JournalEvent.from_wire(json.loads(existing_row["record_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise JournalCorrupt("obligation disposition record cannot be decoded") from exc
+                if (
+                    existing.event == event
+                    and existing.mission_id == mission_id
+                    and existing.data.get("obligation_id") == obligation_id
+                    and existing.data.get("disposition") == disposition
+                    and existing.data.get("evidence") == evidence_data
+                ):
+                    connection.commit()
+                    return existing
+                raise IdempotencyConflict("obligation disposition idempotency conflict")
+
+            if len(events) >= MAX_EVENTS:
+                raise JournalError("journal_event_limit_exceeded")
+            previous = events[-1].sha256 if events else ""
+            candidate = JournalEvent(
+                seq=len(events) + 1,
+                timestamp=_now(),
+                event=event,
+                idempotency_key=key,
+                mission_id=mission_id,
+                stage_id=stage_id,
+                card_id=card_id,
+                attempt=0,
+                state=state,
+                detail=detail,
+                data=data,
+                prev_sha256=previous,
+                sha256="",
+            )
+            record = JournalEvent(**{**candidate.__dict__, "sha256": _sha256(candidate.unsigned_wire())})
+            connection.execute(
+                "INSERT INTO steward_journal_events(seq, idempotency_key, record_json) VALUES (?, ?, ?)",
+                (record.seq, record.idempotency_key, _canonical(record.to_wire())),
+            )
+            connection.commit()
+            return record
+        except sqlite3.IntegrityError as exc:
+            connection.rollback()
+            raise JournalError("journal_append_conflict") from exc
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
 
 __all__ = [
     "ALL_STATES",
@@ -869,6 +1007,7 @@ __all__ = [
     "JournalError",
     "IdempotencyConflict",
     "JournalEvent",
+    "SCIENTIFIC_TERMINAL_DISPOSITIONS",
     "StewardJournal",
     "TERMINAL_STATES",
     "TransitionRejected",

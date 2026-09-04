@@ -169,7 +169,7 @@ flowchart TD
     C --> V["Test · Independent Review · CI · Merge"]
     V -->|Incomplete / Retry| G
     V -->|Stage Verified| M
-    M -->|All Stages Complete| D["Mission Summary"]
+    M -->|Stages Settled & Ledger Terminal| D["Mission Summary"]
 ```
 
 | Layer | Responsibility | Authority / Decision Maker |

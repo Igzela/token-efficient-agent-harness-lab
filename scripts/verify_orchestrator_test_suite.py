@@ -15,6 +15,7 @@ REQUIRED = (
     "tests/test_agent_steward_prb.py",
     "tests/test_agent_steward_prc.py",
     "tests/test_mission_contract.py",
+    "tests/test_mission_completion_semantics.py",
     "tests/test_review_convergence.py",
     "tests/test_review_loop.py",
     "tests/test_steward_deferred_acceptance.py",
