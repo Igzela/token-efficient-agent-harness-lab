@@ -1,3 +1,12 @@
+//! Crate-local, provider-free candidate loop for deterministic harness research.
+//!
+//! This module is intentionally not a public runtime API. Its injected
+//! controller, worker, and verifier traits are test/evaluation seams only; the
+//! loop has no ProductStore, scheduler, provider, workspace, budget, effect,
+//! or external recovery authority. `rollback_to_checkpoint` restores only an
+//! in-memory candidate ledger after the owning effect layer has confirmed that
+//! no unknown external outcome remains.
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -16,6 +25,67 @@ fn sanitize_text(value: &str, field: &str, max_bytes: usize) -> Result<String, O
         });
     }
     Ok(sanitized)
+}
+
+/// Keep ledger prose as a bounded semantic summary rather than a transcript,
+/// command result, or path-bearing payload. Digests and artifact references
+/// carry the durable identity; this field is only for short human-readable
+/// routing context.
+fn sanitize_summary_text(
+    value: &str,
+    field: &str,
+    max_bytes: usize,
+) -> Result<String, OrchestrationError> {
+    let sanitized = sanitize_text(value, field, max_bytes)?;
+    let lower = sanitized.to_ascii_lowercase();
+    let has_path_like_token = sanitized.split_whitespace().any(|token| {
+        token.starts_with('/')
+            || token.starts_with('\\')
+            || token.starts_with("~/")
+            || token.starts_with("file://")
+            || token.contains('/')
+            || token.contains('\\')
+    });
+    let has_transcript_marker = [
+        "system:",
+        "user:",
+        "assistant:",
+        "tool:",
+        "stdout:",
+        "stderr:",
+        "traceback",
+        "```",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
+    if sanitized.chars().any(char::is_control) || has_path_like_token || has_transcript_marker {
+        return Err(OrchestrationError::InvalidControllerDecision(format!(
+            "{field} must be a single-line semantic summary"
+        )));
+    }
+    Ok(sanitized)
+}
+
+fn sanitize_optional_summary_text(
+    value: Option<&str>,
+    field: &str,
+    max_bytes: usize,
+) -> Result<Option<String>, OrchestrationError> {
+    value
+        .map(|item| sanitize_summary_text(item, field, max_bytes))
+        .transpose()
+}
+
+fn validate_summary_text(
+    value: &str,
+    field: &str,
+    max_bytes: usize,
+) -> Result<(), OrchestrationError> {
+    let sanitized = sanitize_summary_text(value, field, max_bytes)?;
+    if sanitized != value {
+        return Err(OrchestrationError::SecretDetected(field.to_string()));
+    }
+    Ok(())
 }
 
 fn validate_sanitized_text(
@@ -45,7 +115,13 @@ fn sanitize_digest(
     field: &str,
     max_bytes: usize,
 ) -> Result<String, OrchestrationError> {
-    sanitize_text(value, field, max_bytes.max(64))
+    let sanitized = sanitize_text(value, field, max_bytes.max(64))?;
+    if sanitized.len() != 64 || !sanitized.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(OrchestrationError::InvalidControllerDecision(format!(
+            "{field} must be a canonical SHA-256 digest"
+        )));
+    }
+    Ok(sanitized)
 }
 
 fn sanitize_optional_digest(
@@ -59,7 +135,16 @@ fn sanitize_optional_digest(
 }
 
 fn validate_digest(value: &str, field: &str, max_bytes: usize) -> Result<(), OrchestrationError> {
-    validate_sanitized_text(value, field, max_bytes.max(64))
+    let sanitized = sanitize_text(value, field, max_bytes.max(64))?;
+    if sanitized != value {
+        return Err(OrchestrationError::SecretDetected(field.to_string()));
+    }
+    if sanitized.len() != 64 || !sanitized.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(OrchestrationError::InvalidControllerDecision(format!(
+            "{field} must be a canonical SHA-256 digest"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_artifact_reference(
@@ -140,7 +225,7 @@ impl LedgerTaskStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Verified | Self::Failed | Self::Superseded | Self::OutcomeUnknown
+            Self::Verified | Self::Failed | Self::Blocked | Self::Superseded | Self::OutcomeUnknown
         )
     }
 }
@@ -214,6 +299,16 @@ pub struct WorkingLedger {
     pub checkpoint_digest: Option<String>,
     #[serde(default)]
     pub rollback_target: Option<String>,
+    /// Monotonic local generation used to prevent a rollback from recreating
+    /// an attempt identity that may still arrive late from the old attempt.
+    #[serde(default)]
+    pub attempt_generation: u64,
+    /// Restart-safe no-progress state. These fields are deliberately separate
+    /// from the cumulative observation counter.
+    #[serde(default)]
+    pub no_progress_streak: u32,
+    #[serde(default)]
+    pub last_progress_fingerprint: Option<String>,
 }
 
 impl WorkingLedger {
@@ -239,6 +334,9 @@ impl WorkingLedger {
             outcome_unknown_task_ids: Vec::new(),
             checkpoint_digest: None,
             rollback_target: None,
+            attempt_generation: 0,
+            no_progress_streak: 0,
+            last_progress_fingerprint: None,
         }
     }
 
@@ -267,7 +365,8 @@ impl WorkingLedger {
                 max: config.max_summary_bytes,
             });
         }
-        let sanitized = sanitize_text(description, "task_description", config.max_summary_bytes)?;
+        let sanitized =
+            sanitize_summary_text(description, "task_description", config.max_summary_bytes)?;
         self.tasks.push(LedgerTaskRecord {
             id: task_id,
             description: sanitized,
@@ -311,7 +410,7 @@ impl WorkingLedger {
             ));
         }
         finding.source =
-            sanitize_text(&finding.source, "finding_source", config.max_summary_bytes)?;
+            sanitize_summary_text(&finding.source, "finding_source", config.max_summary_bytes)?;
         if finding.source.is_empty() {
             return Err(OrchestrationError::InvalidControllerDecision(
                 "finding source must not be empty".to_string(),
@@ -330,7 +429,7 @@ impl WorkingLedger {
             "finding_evidence_digest",
             config.max_summary_bytes,
         )?;
-        finding.summary = sanitize_text(
+        finding.summary = sanitize_summary_text(
             &finding.summary,
             "finding_summary",
             config.max_summary_bytes,
@@ -373,7 +472,7 @@ impl WorkingLedger {
             ));
         }
         validate_task_id(&observation.task_id)?;
-        observation.observation_summary = sanitize_text(
+        observation.observation_summary = sanitize_summary_text(
             &observation.observation_summary,
             "observation_summary",
             config.max_summary_bytes,
@@ -545,7 +644,7 @@ impl WorkingLedger {
             if let Some(attempt_id) = &task.attempt_id {
                 validate_digest(attempt_id, "task_attempt_id", config.max_summary_bytes)?;
             }
-            validate_sanitized_text(
+            validate_summary_text(
                 &task.description,
                 "task_description",
                 config.max_summary_bytes,
@@ -558,7 +657,7 @@ impl WorkingLedger {
                 )?;
             }
             if let Some(failure_reason) = &task.failure_reason {
-                validate_sanitized_text(
+                validate_summary_text(
                     failure_reason,
                     "task_failure_reason",
                     config.max_summary_bytes,
@@ -583,8 +682,8 @@ impl WorkingLedger {
         }
         for finding in &self.findings {
             validate_sanitized_text(&finding.id, "finding_id", config.max_summary_bytes)?;
-            validate_sanitized_text(&finding.source, "finding_source", config.max_summary_bytes)?;
-            validate_sanitized_text(
+            validate_summary_text(&finding.source, "finding_source", config.max_summary_bytes)?;
+            validate_summary_text(
                 &finding.summary,
                 "finding_summary",
                 config.max_summary_bytes,
@@ -631,7 +730,7 @@ impl WorkingLedger {
                     config.max_summary_bytes,
                 )?;
             }
-            validate_sanitized_text(
+            validate_summary_text(
                 &observation.observation_summary,
                 "observation_summary",
                 config.max_summary_bytes,
@@ -644,7 +743,7 @@ impl WorkingLedger {
                 )?;
             }
         }
-        validate_digest(
+        validate_sanitized_text(
             &self.contract_digest,
             "contract_digest",
             config.max_summary_bytes,
@@ -659,7 +758,19 @@ impl WorkingLedger {
         if let Some(rollback_target) = &self.rollback_target {
             validate_sanitized_text(rollback_target, "rollback_target", config.max_summary_bytes)?;
         }
-        validate_sanitized_text(&self.current_plan, "current_plan", config.max_summary_bytes)?;
+        if self.no_progress_streak > config.max_no_progress_rounds {
+            return Err(OrchestrationError::NoProgressLimitExceeded(
+                self.no_progress_streak,
+            ));
+        }
+        if let Some(last_progress_fingerprint) = &self.last_progress_fingerprint {
+            validate_digest(
+                last_progress_fingerprint,
+                "last_progress_fingerprint",
+                config.max_summary_bytes,
+            )?;
+        }
+        validate_summary_text(&self.current_plan, "current_plan", config.max_summary_bytes)?;
         for reference in &self.artifact_refs {
             let sanitized = validate_artifact_reference(reference, config.max_summary_bytes)?;
             if sanitized != *reference {
@@ -852,12 +963,16 @@ fn project_worker_context_with_limit(
 
     let context = WorkerContext {
         contract_digest: sanitize_text(&ledger.contract_digest, "contract_digest", max_bytes)?,
-        plan_summary: sanitize_text(&ledger.current_plan, "plan_summary", max_bytes)?,
+        plan_summary: sanitize_summary_text(&ledger.current_plan, "plan_summary", max_bytes)?,
         selected_task,
         relevant_findings,
         relevant_observations,
         relevant_artifact_refs,
-        expected_evidence: sanitize_text(expected_evidence, "expected_evidence", max_bytes)?,
+        expected_evidence: sanitize_summary_text(
+            expected_evidence,
+            "expected_evidence",
+            max_bytes,
+        )?,
         execution_metadata,
     };
     let context_bytes = serde_json::to_vec(&context)
@@ -892,7 +1007,7 @@ fn sanitize_observation(
             max_bytes,
         )?,
         outcome: observation.outcome,
-        observation_summary: sanitize_text(
+        observation_summary: sanitize_summary_text(
             &observation.observation_summary,
             "observation_summary",
             max_bytes,
@@ -913,7 +1028,7 @@ fn sanitize_task_record(
     validate_task_id(&id)?;
     Ok(LedgerTaskRecord {
         id,
-        description: sanitize_text(&task.description, "task_description", max_bytes)?,
+        description: sanitize_summary_text(&task.description, "task_description", max_bytes)?,
         status: task.status,
         result_digest: sanitize_optional_digest(
             task.result_digest.as_deref(),
@@ -931,7 +1046,7 @@ fn sanitize_task_record(
             "task_attempt_id",
             max_bytes,
         )?,
-        failure_reason: sanitize_optional_text(
+        failure_reason: sanitize_optional_summary_text(
             task.failure_reason.as_deref(),
             "task_failure_reason",
             max_bytes,
@@ -955,8 +1070,8 @@ fn sanitize_finding(
     }
     Ok(LedgerFinding {
         id,
-        summary: sanitize_text(&finding.summary, "finding_summary", max_bytes)?,
-        source: sanitize_text(&finding.source, "finding_source", max_bytes)?,
+        summary: sanitize_summary_text(&finding.summary, "finding_summary", max_bytes)?,
+        source: sanitize_summary_text(&finding.source, "finding_source", max_bytes)?,
         related_task_id,
         evidence_digest: sanitize_optional_digest(
             finding.evidence_digest.as_deref(),
@@ -980,6 +1095,11 @@ pub struct WorkerResult {
     pub task_id: String,
     pub attempt_id: String,
     pub status: WorkerOutcomeStatus,
+    /// Truncation may be retried only when the worker attests that this
+    /// attempt performed no ProductStore-owned external effect. The core has
+    /// no effect authority; a missing/false attestation is fenced unknown.
+    #[serde(default)]
+    pub effect_free: bool,
     pub output_digest: Option<String>,
     pub partial_summary: Option<String>,
     pub artifact_refs: Vec<String>,
@@ -1226,7 +1346,7 @@ fn sanitize_controller_action(
                 });
             }
             Ok(ControllerAction::Replan {
-                new_plan_summary: sanitize_optional_text(
+                new_plan_summary: sanitize_optional_summary_text(
                     new_plan_summary.as_deref(),
                     "new_plan_summary",
                     max_bytes,
@@ -1238,7 +1358,7 @@ fn sanitize_controller_action(
                         validate_task_id(&id)?;
                         Ok(NewTaskSpec {
                             id,
-                            description: sanitize_text(
+                            description: sanitize_summary_text(
                                 &task.description,
                                 "new_task_description",
                                 max_bytes,
@@ -1268,10 +1388,10 @@ fn sanitize_controller_action(
             })
         }
         ControllerAction::DeclareFailed { reason } => Ok(ControllerAction::DeclareFailed {
-            reason: sanitize_text(&reason, "failure_reason", max_bytes)?,
+            reason: sanitize_summary_text(&reason, "failure_reason", max_bytes)?,
         }),
         ControllerAction::DeclareNoProgress { reason } => Ok(ControllerAction::DeclareNoProgress {
-            reason: sanitize_text(&reason, "no_progress_reason", max_bytes)?,
+            reason: sanitize_summary_text(&reason, "no_progress_reason", max_bytes)?,
         }),
     }
 }
@@ -1283,8 +1403,12 @@ fn sanitize_next_task_decision(
 ) -> Result<NextTaskDecision, OrchestrationError> {
     Ok(NextTaskDecision {
         action: sanitize_controller_action(decision.action, max_bytes, max_tasks)?,
-        reason_summary: sanitize_text(&decision.reason_summary, "reason_summary", max_bytes)?,
-        expected_evidence: sanitize_text(
+        reason_summary: sanitize_summary_text(
+            &decision.reason_summary,
+            "reason_summary",
+            max_bytes,
+        )?,
+        expected_evidence: sanitize_summary_text(
             &decision.expected_evidence,
             "expected_evidence",
             max_bytes,
@@ -1328,12 +1452,13 @@ fn sanitize_worker_result(
             attempt_id
         },
         status: result.status,
+        effect_free: result.effect_free,
         output_digest: sanitize_optional_digest(
             result.output_digest.as_deref(),
             "output_digest",
             max_bytes,
         )?,
-        partial_summary: sanitize_optional_text(
+        partial_summary: sanitize_optional_summary_text(
             result.partial_summary.as_deref(),
             "partial_summary",
             max_bytes,
@@ -1348,7 +1473,7 @@ fn sanitize_worker_result(
             .iter()
             .map(|finding| sanitize_finding(finding, max_bytes))
             .collect::<Result<Vec<_>, _>>()?,
-        failure_reason: sanitize_optional_text(
+        failure_reason: sanitize_optional_summary_text(
             result.failure_reason.as_deref(),
             "failure_reason",
             max_bytes,
@@ -1362,7 +1487,7 @@ fn sanitize_verification_report(
 ) -> Result<VerificationReport, OrchestrationError> {
     Ok(VerificationReport {
         outcome: report.outcome,
-        observation_summary: sanitize_text(
+        observation_summary: sanitize_summary_text(
             &report.observation_summary,
             "observation_summary",
             max_bytes,
@@ -1400,11 +1525,23 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
         verifier: V,
     ) -> Result<Self, OrchestrationError> {
         ledger.validate_bounds(&config)?;
+        if ledger.tasks.iter().any(|task| {
+            matches!(
+                task.status,
+                LedgerTaskStatus::Selected | LedgerTaskStatus::Running
+            )
+        }) {
+            return Err(OrchestrationError::InvalidControllerDecision(
+                "in-flight task requires owner recovery before rehydration".to_string(),
+            ));
+        }
         let metrics = OrchestrationMetrics {
             task_count: ledger.tasks.len(),
             ledger_peak_bytes: ledger.estimate_bytes(),
             ..Default::default()
         };
+        let initial_no_progress_streak = ledger.no_progress_streak;
+        let initial_last_progress_fingerprint = ledger.last_progress_fingerprint.clone();
         Ok(Self {
             config,
             state: OrchestrationLifecycleState::Initialized,
@@ -1413,8 +1550,8 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
             worker,
             verifier,
             metrics,
-            consecutive_no_progress: 0,
-            last_fingerprint: None,
+            consecutive_no_progress: initial_no_progress_streak,
+            last_fingerprint: initial_last_progress_fingerprint,
             pending_decision: None,
             recovery_checkpoint: None,
             terminal_summary: None,
@@ -1602,13 +1739,15 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         orchestrator.metrics.round_count.saturating_add(1);
                     orchestrator.metrics.worker_call_count =
                         orchestrator.metrics.worker_call_count.saturating_add(1);
+                    let attempt_generation = orchestrator.ledger.attempt_generation;
                     if let Some(task) = orchestrator.ledger.get_task_mut(task_id) {
                         let next_attempt = task.attempt_count.saturating_add(1);
                         task.status = LedgerTaskStatus::OutcomeUnknown;
                         task.attempt_count =
                             next_attempt.min(orchestrator.config.max_task_attempts);
                         task.attempt_id = Some(sha256_hex(&format!(
-                            "ledger-attempt|{task_id}|{next_attempt}|{checkpoint_digest}"
+                            "ledger-attempt|{}|{task_id}|{next_attempt}|{checkpoint_digest}",
+                            attempt_generation
                         )));
                         task.failure_reason = Some(
                             "worker outcome unknown; external effect status cannot be proven"
@@ -1657,7 +1796,8 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                     .map(|task| task.attempt_count.saturating_add(1))
                     .ok_or_else(|| OrchestrationError::TaskNotFound(task_id.clone()))?;
                 let attempt_id = sha256_hex(&format!(
-                    "ledger-attempt|{task_id}|{next_attempt}|{checkpoint_digest}"
+                    "ledger-attempt|{}|{task_id}|{next_attempt}|{checkpoint_digest}",
+                    self.ledger.attempt_generation
                 ));
                 self.ledger.checkpoint_digest = Some(checkpoint_digest.clone());
                 self.ledger.rollback_target = None;
@@ -1790,6 +1930,12 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         Ok(self.state)
                     }
                     WorkerOutcomeStatus::Truncated => {
+                        if !worker_result.effect_free {
+                            terminate_unknown_worker_attempt(self, &task_id);
+                            return Err(OrchestrationError::InvalidControllerDecision(
+                                "truncated attempt lacks an effect-free attestation".to_string(),
+                            ));
+                        }
                         if self.ledger.truncation_count >= self.config.max_truncations {
                             restore_execution_snapshot(self);
                             self.state = OrchestrationLifecycleState::Failed;
@@ -1963,6 +2109,8 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
             self.consecutive_no_progress = 0;
             self.last_fingerprint = Some(new_fp.clone());
         }
+        self.ledger.no_progress_streak = self.consecutive_no_progress;
+        self.ledger.last_progress_fingerprint = Some(new_fp.clone());
         self.ledger.progress_fingerprint = new_fp;
 
         if self.consecutive_no_progress >= self.config.max_no_progress_rounds {
@@ -2104,6 +2252,15 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                 "no in-memory orchestration checkpoint is available".to_string(),
             ));
         };
+        let next_attempt_generation =
+            checkpoint
+                .attempt_generation
+                .checked_add(1)
+                .ok_or_else(|| {
+                    OrchestrationError::InvalidControllerDecision(
+                        "attempt generation exhausted; recovery is required".to_string(),
+                    )
+                })?;
         self.ledger = checkpoint;
         for task in &mut self.ledger.tasks {
             if matches!(
@@ -2115,10 +2272,13 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
         }
         self.ledger.current_selected_task_id = None;
         self.ledger.rollback_target = None;
+        self.ledger.attempt_generation = next_attempt_generation;
         self.state = OrchestrationLifecycleState::SelectingAction;
         self.pending_decision = None;
         self.consecutive_no_progress = 0;
         self.last_fingerprint = None;
+        self.ledger.no_progress_streak = 0;
+        self.ledger.last_progress_fingerprint = None;
         self.terminal_summary = None;
         Ok(())
     }
@@ -2266,7 +2426,7 @@ mod tests {
                 Ok(VerificationReport {
                     outcome: VerificationOutcome::Pass,
                     observation_summary: "checks passed".to_string(),
-                    evidence_digest: Some("pass_digest".to_string()),
+                    evidence_digest: Some(sha256_hex("pass_digest")),
                 })
             })
         }
@@ -2301,7 +2461,8 @@ mod tests {
                 task_id: task_id.clone(),
                 attempt_id: ctx.execution_metadata["attempt_id"].clone(),
                 status: WorkerOutcomeStatus::Completed,
-                output_digest: Some(format!("output_digest_{task_id}")),
+                effect_free: true,
+                output_digest: Some(sha256_hex(&format!("output_digest_{task_id}"))),
                 partial_summary: None,
                 artifact_refs: vec![format!("artifact:{task_id}")],
                 findings: vec![LedgerFinding {
@@ -2309,7 +2470,7 @@ mod tests {
                     summary: format!("successfully built {task_id}"),
                     source: "worker".to_string(),
                     related_task_id: Some(task_id.clone()),
-                    evidence_digest: Some(format!("ev-{task_id}")),
+                    evidence_digest: Some(sha256_hex(&format!("ev-{task_id}"))),
                 }],
                 failure_reason: None,
             })
@@ -2369,7 +2530,8 @@ mod tests {
                     task_id: ctx.selected_task.id.clone(),
                     attempt_id: ctx.execution_metadata["attempt_id"].clone(),
                     status: WorkerOutcomeStatus::Completed,
-                    output_digest: Some("buggy_output_attempt_1".to_string()),
+                    effect_free: true,
+                    output_digest: Some(sha256_hex("buggy_output_attempt_1")),
                     partial_summary: None,
                     artifact_refs: vec!["patch:leak_incomplete".to_string()],
                     findings: vec![],
@@ -2380,7 +2542,8 @@ mod tests {
                     task_id: ctx.selected_task.id.clone(),
                     attempt_id: ctx.execution_metadata["attempt_id"].clone(),
                     status: WorkerOutcomeStatus::Completed,
-                    output_digest: Some("fixed_output_attempt_2".to_string()),
+                    effect_free: true,
+                    output_digest: Some(sha256_hex("fixed_output_attempt_2")),
                     partial_summary: None,
                     artifact_refs: vec!["patch:leak_repaired".to_string()],
                     findings: vec![LedgerFinding {
@@ -2388,7 +2551,7 @@ mod tests {
                         summary: "fixed memory free in cleanup".to_string(),
                         source: "worker_repair".to_string(),
                         related_task_id: Some("task-bugfix".to_string()),
-                        evidence_digest: Some("ev:repaired".to_string()),
+                        evidence_digest: Some(sha256_hex("ev:repaired")),
                     }],
                     failure_reason: None,
                 })
@@ -2396,17 +2559,19 @@ mod tests {
         });
 
         let verifier = MockVerifier::new(|_ledger, _task, result| {
-            if result.output_digest.as_deref() == Some("buggy_output_attempt_1") {
+            if result.output_digest.as_deref()
+                == Some(sha256_hex("buggy_output_attempt_1").as_str())
+            {
                 Ok(VerificationReport {
                     outcome: VerificationOutcome::Fail,
                     observation_summary: "leak still detected on stress test".to_string(),
-                    evidence_digest: Some("test_fail_leak_persists".to_string()),
+                    evidence_digest: Some(sha256_hex("test_fail_leak_persists")),
                 })
             } else {
                 Ok(VerificationReport {
                     outcome: VerificationOutcome::Pass,
                     observation_summary: "leak resolved; valgrind clean".to_string(),
-                    evidence_digest: Some("test_pass_leak_clean".to_string()),
+                    evidence_digest: Some(sha256_hex("test_pass_leak_clean")),
                 })
             }
         });
@@ -2477,7 +2642,8 @@ mod tests {
                 task_id: ctx.selected_task.id.clone(),
                 attempt_id: ctx.execution_metadata["attempt_id"].clone(),
                 status: WorkerOutcomeStatus::Completed,
-                output_digest: Some("identical_stuck_output".to_string()),
+                effect_free: true,
+                output_digest: Some(sha256_hex("identical_stuck_output")),
                 partial_summary: None,
                 artifact_refs: vec![],
                 findings: vec![],
@@ -2489,7 +2655,7 @@ mod tests {
             Ok(VerificationReport {
                 outcome: VerificationOutcome::Fail,
                 observation_summary: "stuck output fails verification identically".to_string(),
-                evidence_digest: Some("fail_digest_identical".to_string()),
+                evidence_digest: Some(sha256_hex("fail_digest_identical")),
             })
         });
         let mut orchestrator =
@@ -2526,7 +2692,8 @@ mod tests {
                     task_id: "task-large".to_string(),
                     attempt_id: ctx.execution_metadata["attempt_id"].clone(),
                     status: WorkerOutcomeStatus::Truncated,
-                    output_digest: Some("partial_out_sha".to_string()),
+                    effect_free: true,
+                    output_digest: Some(sha256_hex("partial_out_sha")),
                     partial_summary: Some("Discovered root cause in token buffer".to_string()),
                     artifact_refs: vec!["partial_patch.diff".to_string()],
                     findings: vec![LedgerFinding {
@@ -2534,7 +2701,7 @@ mod tests {
                         summary: "token buffer boundary is 4096 bytes".to_string(),
                         source: "worker_truncation".to_string(),
                         related_task_id: Some("task-large".to_string()),
-                        evidence_digest: Some("ev:buffer".to_string()),
+                        evidence_digest: Some(sha256_hex("ev:buffer")),
                     }],
                     failure_reason: None,
                 })
@@ -2543,7 +2710,8 @@ mod tests {
                     task_id: "task-large".to_string(),
                     attempt_id: ctx.execution_metadata["attempt_id"].clone(),
                     status: WorkerOutcomeStatus::Completed,
-                    output_digest: Some("full_completed_patch".to_string()),
+                    effect_free: true,
+                    output_digest: Some(sha256_hex("full_completed_patch")),
                     partial_summary: None,
                     artifact_refs: vec!["complete_patch.diff".to_string()],
                     findings: vec![],
@@ -2580,7 +2748,7 @@ mod tests {
                 .unwrap()
                 .result_digest
                 .as_deref(),
-            Some("full_completed_patch")
+            Some(sha256_hex("full_completed_patch").as_str())
         );
         assert_eq!(orchestrator.ledger.findings[0].id.len(), 64);
         assert_eq!(
@@ -2683,7 +2851,7 @@ mod tests {
                     summary: "private finding in cell 1".to_string(),
                     source: "cell_1".to_string(),
                     related_task_id: Some("task-cell-1".to_string()),
-                    evidence_digest: Some("ev:cell1".to_string()),
+                    evidence_digest: Some(sha256_hex("ev:cell1")),
                 },
                 &config,
             )
@@ -2944,6 +3112,182 @@ mod tests {
     }
 
     #[test]
+    fn rehydration_rejects_in_flight_tasks_and_restores_no_progress_state() {
+        let config = LedgerOrchestratorConfig::default();
+        for status in [LedgerTaskStatus::Selected, LedgerTaskStatus::Running] {
+            let mut ledger = WorkingLedger::new("contract:rehydration", "plan");
+            ledger.add_task("task", "task", &config).unwrap();
+            ledger.tasks[0].status = status;
+            assert!(matches!(
+                LedgerOrchestrator::new(
+                    config.clone(),
+                    ledger,
+                    AdaptiveController,
+                    MockWorker::new(|_| Err(OrchestrationError::Cancelled)),
+                    MockVerifier::pass_all(),
+                ),
+                Err(OrchestrationError::InvalidControllerDecision(_))
+            ));
+        }
+
+        let mut ledger = WorkingLedger::new("contract:rehydration", "plan");
+        ledger.add_task("task", "task", &config).unwrap();
+        ledger.no_progress_streak = 1;
+        ledger.last_progress_fingerprint = Some(sha256_hex("last-progress"));
+        let serialized = serde_json::to_string(&ledger).unwrap();
+        let rehydrated: WorkingLedger = serde_json::from_str(&serialized).unwrap();
+        let orchestrator = LedgerOrchestrator::new(
+            config,
+            rehydrated,
+            AdaptiveController,
+            MockWorker::new(|_| Err(OrchestrationError::Cancelled)),
+            MockVerifier::pass_all(),
+        )
+        .unwrap();
+        assert_eq!(orchestrator.consecutive_no_progress, 1);
+        assert_eq!(
+            orchestrator.last_fingerprint,
+            Some(sha256_hex("last-progress"))
+        );
+    }
+
+    #[test]
+    fn truncation_without_effect_free_attestation_is_fenced_unknown() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:trunc-unknown", "plan");
+        ledger.add_task("task", "task", &config).unwrap();
+        let worker = MockWorker::new(|ctx| {
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Truncated,
+                effect_free: false,
+                output_digest: Some(sha256_hex("partial")),
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: None,
+            })
+        });
+        let mut orchestrator = LedgerOrchestrator::new(
+            config,
+            ledger,
+            AdaptiveController,
+            worker,
+            MockVerifier::pass_all(),
+        )
+        .unwrap();
+        assert!(matches!(
+            orchestrator.run_to_completion(),
+            Err(OrchestrationError::InvalidControllerDecision(_))
+        ));
+        assert_eq!(orchestrator.state, OrchestrationLifecycleState::Failed);
+        assert_eq!(
+            orchestrator.ledger.get_task("task").unwrap().status,
+            LedgerTaskStatus::OutcomeUnknown
+        );
+    }
+
+    #[test]
+    fn rollback_advances_attempt_generation_before_retry() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:rollback-generation", "plan");
+        ledger.add_task("task", "task", &config).unwrap();
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_clone = calls.clone();
+        let worker = MockWorker::new(move |ctx| {
+            if calls_clone.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(WorkerResult {
+                    task_id: ctx.selected_task.id.clone(),
+                    attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                    status: WorkerOutcomeStatus::Truncated,
+                    effect_free: true,
+                    output_digest: Some(sha256_hex("partial")),
+                    partial_summary: None,
+                    artifact_refs: vec![],
+                    findings: vec![],
+                    failure_reason: None,
+                })
+            } else {
+                Ok(WorkerResult {
+                    task_id: ctx.selected_task.id.clone(),
+                    attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                    status: WorkerOutcomeStatus::Completed,
+                    effect_free: true,
+                    output_digest: Some(sha256_hex("complete")),
+                    partial_summary: None,
+                    artifact_refs: vec![],
+                    findings: vec![],
+                    failure_reason: None,
+                })
+            }
+        });
+        let mut orchestrator = LedgerOrchestrator::new(
+            config,
+            ledger,
+            AdaptiveController,
+            worker,
+            MockVerifier::pass_all(),
+        )
+        .unwrap();
+        orchestrator.step().unwrap();
+        orchestrator.step().unwrap();
+        orchestrator.step().unwrap();
+        let first_attempt = orchestrator
+            .ledger
+            .get_task("task")
+            .unwrap()
+            .attempt_id
+            .clone()
+            .unwrap();
+        assert_eq!(orchestrator.ledger.attempt_generation, 0);
+
+        orchestrator.rollback_to_checkpoint().unwrap();
+        assert_eq!(orchestrator.ledger.attempt_generation, 1);
+        assert_eq!(
+            orchestrator.ledger.get_task("task").unwrap().status,
+            LedgerTaskStatus::Pending
+        );
+        orchestrator.step().unwrap();
+        orchestrator.step().unwrap();
+        let second_attempt = orchestrator
+            .ledger
+            .get_task("task")
+            .unwrap()
+            .attempt_id
+            .clone()
+            .unwrap();
+        assert_ne!(first_attempt, second_attempt);
+    }
+
+    #[test]
+    fn ledger_summaries_reject_transcripts_and_paths() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:summaries", "plan");
+        assert!(ledger
+            .add_task("task", "assistant: raw output", &config)
+            .is_err());
+        assert!(ledger
+            .add_task("task", "private /home/user/file", &config)
+            .is_err());
+        assert!(ledger
+            .add_task("task", "safe semantic summary", &config)
+            .is_ok());
+        assert!(ledger
+            .add_finding(
+                LedgerFinding {
+                    id: "finding".to_string(),
+                    summary: "```raw output```".to_string(),
+                    source: "worker".to_string(),
+                    related_task_id: Some("task".to_string()),
+                    evidence_digest: None,
+                },
+                &config,
+            )
+            .is_err());
+    }
+
+    #[test]
     fn truncation_budget_is_enforced() {
         let config = LedgerOrchestratorConfig {
             max_truncations: 1,
@@ -2960,7 +3304,8 @@ mod tests {
                 task_id: ctx.selected_task.id.clone(),
                 attempt_id: ctx.execution_metadata["attempt_id"].clone(),
                 status: WorkerOutcomeStatus::Truncated,
-                output_digest: Some("partial".to_string()),
+                effect_free: true,
+                output_digest: Some(sha256_hex("partial")),
                 partial_summary: None,
                 artifact_refs: vec![],
                 findings: vec![],
@@ -3109,7 +3454,8 @@ mod tests {
                 task_id: "task".to_string(),
                 attempt_id: "unused-attempt".to_string(),
                 status: WorkerOutcomeStatus::Completed,
-                output_digest: Some("out".to_string()),
+                effect_free: true,
+                output_digest: Some(sha256_hex("out")),
                 partial_summary: None,
                 artifact_refs: vec![],
                 findings: vec![],
@@ -3141,6 +3487,7 @@ mod tests {
                 task_id: ctx.selected_task.id.clone(),
                 attempt_id: ctx.execution_metadata["attempt_id"].clone(),
                 status: WorkerOutcomeStatus::Failed,
+                effect_free: true,
                 output_digest: None,
                 partial_summary: None,
                 artifact_refs: vec![],
@@ -3277,7 +3624,7 @@ mod tests {
         ));
         terminal_val["content_sha256"] = serde_json::Value::String(digest);
 
-        let evidence = crate::product_golden_path::project_product_harness_run(
+        let mut evidence = crate::product_golden_path::project_product_harness_run(
             &serde_json::json!({
                 "task_id": "task-pe7-test-norm",
                 "status": "completed",
@@ -3294,6 +3641,18 @@ mod tests {
             Some(&terminal_val),
         )
         .unwrap();
+        evidence.matrix_binding = Some(crate::product_golden_path::ProductHarnessMatrixBinding {
+            plan_id: plan.plan_id.clone(),
+            manifest_sha256: plan.manifest_sha256.clone(),
+            rung: plan.rung.as_str().to_string(),
+            repetition: plan.repetition,
+            cell_id: cell.cell_id.clone(),
+            cell_descriptor_sha256: cell.descriptor_digest.clone(),
+            harness_id: cell.identity.harness_id.clone(),
+            model_id: cell.identity.model_id.clone(),
+            strategy_id: cell.identity.strategy_id.clone(),
+            task_id: cell.identity.task_id.clone(),
+        });
 
         let mut forged_plan = plan.clone();
         forged_plan.plan_id = "0".repeat(64);

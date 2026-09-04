@@ -6,6 +6,9 @@
 //! permissions, budgets, audit, target-output, merge, release, and rollback
 //! owners remain immutable to candidates.
 
+// The ledger loop is a candidate seam, not a runtime, scheduler, persistence,
+// effect, or recovery authority; ProductStore and the existing engine owners
+// remain the only authorities for those concerns.
 pub mod ledger_orchestration;
 pub use ledger_orchestration::{
     compute_progress_fingerprint, project_worker_context, ControllerAction, LedgerController,
@@ -1554,6 +1557,28 @@ fn mx1_normalize_run(
             "Harness run evidence belongs to a different Product task than the planned cell",
         ));
     }
+    let Some(matrix_binding) = &evidence.matrix_binding else {
+        return Err(mx1_error(
+            "mx1_matrix_evidence_binding",
+            "Harness run evidence lacks producer-owned exact matrix cell provenance",
+        ));
+    };
+    if matrix_binding.plan_id != plan.plan_id
+        || matrix_binding.manifest_sha256 != plan.manifest_sha256
+        || matrix_binding.rung != plan.rung.as_str()
+        || matrix_binding.repetition != plan.repetition
+        || matrix_binding.cell_id != cell.cell_id
+        || matrix_binding.cell_descriptor_sha256 != cell.descriptor_digest
+        || matrix_binding.harness_id != cell.identity.harness_id
+        || matrix_binding.model_id != cell.identity.model_id
+        || matrix_binding.strategy_id != cell.identity.strategy_id
+        || matrix_binding.task_id != evidence.product_task_id
+    {
+        return Err(mx1_error(
+            "mx1_matrix_evidence_binding",
+            "Harness run evidence is bound to a different matrix plan or cell",
+        ));
+    }
     mx1_require_sha(
         "product workspace_binding_sha256",
         &evidence.workspace_binding_sha256,
@@ -1618,6 +1643,10 @@ fn mx1_manifest_for_adapter(
 ) -> Result<Mx1DescriptorManifest, EvolutionAdmissionError> {
     let manifest = if descriptor.descriptor_id == LEDGER_ORCHESTRATED_HARNESS_ID {
         sample_mx1_descriptor_manifest_with_ledger_harness()
+    } else if descriptor.descriptor_id == MX1_SECOND_HARNESS_ID
+        && descriptor.version == "provider-free-adapter-v1"
+    {
+        sample_mx1_descriptor_manifest_v1()
     } else {
         sample_mx1_descriptor_manifest()
     };
@@ -1682,7 +1711,7 @@ impl Mx1ConfinedSubprocessHarnessAdapter {
         descriptor: Mx1HarnessImplementationDescriptor,
     ) -> Result<Self, EvolutionAdmissionError> {
         mx1_validate_harness_descriptor(&descriptor)?;
-        if descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID
+        if descriptor.descriptor_id != MX1_SECOND_HARNESS_ID
             || descriptor.admission_disposition
                 != Mx1HarnessAdmissionDisposition::ConfinedSubprocess
         {
@@ -1964,6 +1993,29 @@ pub fn validate_mx1_matrix_plan(
 /// Build the provider-free read model for a planned block. Missing evidence,
 /// `OutcomeUnknown`, descriptor mismatch, and unsupported cells stay explicit
 /// `INCOMPARABLE`; this function never infers an outcome or retries an effect.
+fn mx1_lifecycle_evidence_is_complete(run: &Mx1NormalizedHarnessRun) -> bool {
+    let common_dimensions = [run.usage, run.cost, run.cleanup, run.restart, run.recovery];
+    if common_dimensions.contains(&ProductHarnessEvidenceState::Unavailable) {
+        return false;
+    }
+    match run.terminal_outcome {
+        ProductTaskStatus::Completed => {
+            run.verified_deliverable == ProductHarnessEvidenceState::Observed
+                && run.terminal_evidence_sha256.is_some()
+        }
+        ProductTaskStatus::Killed => run.cancellation == ProductHarnessEvidenceState::Observed,
+        ProductTaskStatus::Failed
+        | ProductTaskStatus::BudgetExhausted
+        | ProductTaskStatus::Blocked => {
+            run.failure == ProductHarnessEvidenceState::Observed
+                && run.failure_code.is_some()
+                && run.failure_detail_sha256.is_some()
+        }
+        ProductTaskStatus::OutcomeUnknown => false,
+        _ => false,
+    }
+}
+
 pub fn project_mx1_matrix_read_only(
     manifest: &Mx1DescriptorManifest,
     plan: &Mx1MatrixPlan,
@@ -2098,6 +2150,16 @@ pub fn project_mx1_matrix_read_only(
                     (
                         Mx1ReadOnlyCellDisposition::Incomparable(
                             "verified_delivery_evidence_missing".to_string(),
+                        ),
+                        Some(observation.normalized_run.clone()),
+                    )
+                }
+                Some(observation)
+                    if !mx1_lifecycle_evidence_is_complete(&observation.normalized_run) =>
+                {
+                    (
+                        Mx1ReadOnlyCellDisposition::Incomparable(
+                            "lifecycle_evidence_incomplete".to_string(),
                         ),
                         Some(observation.normalized_run.clone()),
                     )
@@ -2372,6 +2434,47 @@ pub fn sample_mx1_descriptor_manifest() -> Mx1DescriptorManifest {
         manifest_sha256: String::new(),
     })
     .expect("the built-in MX1 provider-free descriptor manifest is valid")
+}
+
+fn sample_mx1_descriptor_manifest_v1() -> Mx1DescriptorManifest {
+    let mut manifest = sample_mx1_descriptor_manifest();
+    let legacy_source = MX1_SECOND_HARNESS_V1_SOURCE_IDENTITY.to_string();
+    let legacy_harness = manifest
+        .harnesses
+        .iter_mut()
+        .find(|descriptor| descriptor.descriptor_id == MX1_SECOND_HARNESS_ID)
+        .expect("the current manifest contains the second Harness");
+    legacy_harness.source_identity = legacy_source.clone();
+    legacy_harness.version = "provider-free-adapter-v1".to_string();
+    for evidence_kind in [
+        "build",
+        "executable",
+        "capability-probe",
+        "sbom",
+        "provenance",
+        "rollback",
+    ] {
+        let digest = mx1_expected_harness_evidence_digest(
+            evidence_kind,
+            MX1_SECOND_HARNESS_ID,
+            &legacy_source,
+        );
+        match evidence_kind {
+            "build" => legacy_harness.build_identity_sha256 = digest,
+            "executable" => legacy_harness.executable_identity_sha256 = digest,
+            "capability-probe" => legacy_harness.capability_probe_sha256 = digest,
+            "sbom" => legacy_harness.sbom_sha256 = digest,
+            "provenance" => legacy_harness.provenance_sha256 = digest,
+            "rollback" => legacy_harness.rollback_binding_sha256 = digest,
+            _ => unreachable!("all legacy Harness evidence kinds are listed"),
+        }
+    }
+    for strategy in &mut manifest.strategies {
+        strategy.source_identity = legacy_source.clone();
+        strategy.source_identity_sha256 = sha256_hex(&legacy_source);
+    }
+    seal_mx1_descriptor_manifest(manifest)
+        .expect("the frozen v1 MX1 descriptor manifest must seal cleanly")
 }
 
 pub fn sample_ledger_orchestrated_harness_descriptor() -> Mx1HarnessImplementationDescriptor {
@@ -6838,12 +6941,47 @@ mod tests {
         .unwrap()
     }
 
+    fn mx1_product_run_for_cell(
+        status: ProductTaskStatus,
+        plan: &Mx1MatrixPlan,
+        cell: &Mx1MatrixCell,
+    ) -> ProductHarnessRunEvidence {
+        let mut evidence = mx1_product_run(status);
+        evidence.matrix_binding = Some(crate::product_golden_path::ProductHarnessMatrixBinding {
+            plan_id: plan.plan_id.clone(),
+            manifest_sha256: plan.manifest_sha256.clone(),
+            rung: plan.rung.as_str().to_string(),
+            repetition: plan.repetition,
+            cell_id: cell.cell_id.clone(),
+            cell_descriptor_sha256: cell.descriptor_digest.clone(),
+            harness_id: cell.identity.harness_id.clone(),
+            model_id: cell.identity.model_id.clone(),
+            strategy_id: cell.identity.strategy_id.clone(),
+            task_id: cell.identity.task_id.clone(),
+        });
+        evidence
+    }
+
     #[test]
     fn mx1_manifest_is_exact_and_rejects_descriptor_drift() {
         let manifest = sample_mx1_descriptor_manifest();
         validate_mx1_descriptor_manifest(&manifest).unwrap();
         let duplicate = sample_mx1_descriptor_manifest();
         assert_eq!(manifest.manifest_sha256, duplicate.manifest_sha256);
+
+        let legacy_manifest = sample_mx1_descriptor_manifest_v1();
+        validate_mx1_descriptor_manifest(&legacy_manifest).unwrap();
+        let legacy_descriptor = legacy_manifest
+            .harnesses
+            .iter()
+            .find(|descriptor| descriptor.descriptor_id == MX1_SECOND_HARNESS_ID)
+            .unwrap()
+            .clone();
+        Mx1ConfinedSubprocessHarnessAdapter::new(legacy_descriptor).unwrap();
+        assert!(Mx1ConfinedSubprocessHarnessAdapter::new(
+            sample_ledger_orchestrated_harness_descriptor(),
+        )
+        .is_err());
 
         let mut drifted = manifest.clone();
         drifted.models[0].max_input_tokens = 1;
@@ -6927,7 +7065,6 @@ mod tests {
             .find(|descriptor| descriptor.descriptor_id != MX1_ARM_ZERO_HARNESS_ID)
             .unwrap()
             .clone();
-        let evidence = mx1_product_run(ProductTaskStatus::Completed);
         let left_cell = plan
             .cells
             .iter()
@@ -6938,13 +7075,33 @@ mod tests {
             .iter()
             .find(|cell| cell.identity.harness_id == MX1_SECOND_HARNESS_ID)
             .unwrap();
+        assert_eq!(
+            Mx1EngineManagedHarnessAdapter::new(arm_zero.clone())
+                .unwrap()
+                .normalize_run(
+                    &plan,
+                    left_cell,
+                    &mx1_product_run(ProductTaskStatus::Completed)
+                )
+                .unwrap_err()
+                .code,
+            "mx1_matrix_evidence_binding"
+        );
         let left = Mx1EngineManagedHarnessAdapter::new(arm_zero)
             .unwrap()
-            .normalize_run(&plan, left_cell, &evidence)
+            .normalize_run(
+                &plan,
+                left_cell,
+                &mx1_product_run_for_cell(ProductTaskStatus::Completed, &plan, left_cell),
+            )
             .unwrap();
         let right = Mx1ConfinedSubprocessHarnessAdapter::new(second)
             .unwrap()
-            .normalize_run(&plan, right_cell, &evidence)
+            .normalize_run(
+                &plan,
+                right_cell,
+                &mx1_product_run_for_cell(ProductTaskStatus::Completed, &plan, right_cell),
+            )
             .unwrap();
         assert_ne!(left.harness_id, right.harness_id);
         assert_eq!(left.product_task_id, right.product_task_id);
@@ -7094,7 +7251,7 @@ mod tests {
             .normalize_run(
                 &plan,
                 target,
-                &mx1_product_run(ProductTaskStatus::OutcomeUnknown),
+                &mx1_product_run_for_cell(ProductTaskStatus::OutcomeUnknown, &plan, target),
             )
             .unwrap();
         let projection = project_mx1_matrix_read_only(
@@ -7128,7 +7285,7 @@ mod tests {
         .normalize_run(
             &plan,
             target,
-            &mx1_product_run(ProductTaskStatus::Completed),
+            &mx1_product_run_for_cell(ProductTaskStatus::Completed, &plan, target),
         )
         .unwrap();
         descriptor_drift.cell_descriptor_sha256 = sha256_hex("wrong-mx1-cell-descriptor");
@@ -7176,7 +7333,7 @@ mod tests {
         .normalize_run(
             &plan,
             target,
-            &mx1_product_run(ProductTaskStatus::Completed),
+            &mx1_product_run_for_cell(ProductTaskStatus::Completed, &plan, target),
         )
         .unwrap();
         let projection = project_mx1_matrix_read_only(
@@ -7223,7 +7380,7 @@ mod tests {
         .normalize_run(
             &plan,
             target,
-            &mx1_product_run(ProductTaskStatus::Completed),
+            &mx1_product_run_for_cell(ProductTaskStatus::Completed, &plan, target),
         )
         .unwrap();
         let projection = project_mx1_matrix_read_only(
@@ -7245,7 +7402,8 @@ mod tests {
             Mx1ReadOnlyCellDisposition::Incomparable("matrix_plan_identity_mismatch".to_string())
         );
 
-        let mut missing_terminal = mx1_product_run(ProductTaskStatus::Completed);
+        let mut missing_terminal =
+            mx1_product_run_for_cell(ProductTaskStatus::Completed, &plan, target);
         missing_terminal.terminal_evidence_sha256 = None;
         missing_terminal.verified_deliverable = ProductHarnessEvidenceState::Unavailable;
         let missing_delivery = Mx1EngineManagedHarnessAdapter::new(
@@ -7278,6 +7436,42 @@ mod tests {
             Mx1ReadOnlyCellDisposition::Incomparable(
                 "verified_delivery_evidence_missing".to_string()
             )
+        );
+
+        let mut missing_lifecycle =
+            mx1_product_run_for_cell(ProductTaskStatus::Completed, &plan, target);
+        missing_lifecycle.usage = crate::product_golden_path::ProductHarnessObservedEvidence {
+            state: ProductHarnessEvidenceState::Unavailable,
+            evidence_sha256: None,
+        };
+        let missing_lifecycle = Mx1EngineManagedHarnessAdapter::new(
+            manifest
+                .harnesses
+                .iter()
+                .find(|descriptor| descriptor.descriptor_id == MX1_ARM_ZERO_HARNESS_ID)
+                .unwrap()
+                .clone(),
+        )
+        .unwrap()
+        .normalize_run(&plan, target, &missing_lifecycle)
+        .unwrap();
+        let projection = project_mx1_matrix_read_only(
+            &manifest,
+            &plan,
+            &[Mx1MatrixObservation {
+                cell_id: target.cell_id.clone(),
+                normalized_run: missing_lifecycle,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            projection
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id == target.cell_id)
+                .unwrap()
+                .disposition,
+            Mx1ReadOnlyCellDisposition::Incomparable("lifecycle_evidence_incomplete".to_string())
         );
 
         let mut unsupported = manifest.clone();
