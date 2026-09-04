@@ -3,6 +3,7 @@
 //! Live multi-task RWE requires a separately persisted store-owned spend authorization.
 //! Fixture completion is never labeled as a live baseline.
 
+pub mod campaign_package;
 pub mod corpus;
 pub mod economic_protocol;
 pub mod execution_schedule;
@@ -11,6 +12,11 @@ pub mod live_baseline_coordinator;
 pub mod operator_corpus;
 pub mod runner;
 
+pub use campaign_package::{
+    canonical_agy_v1_candidate_package, canonical_deepseek_v2_package,
+    record_campaign_package_audit, FrozenCampaignPackage, RWE_AGY_V1_PACKAGE_ID,
+    RWE_CAMPAIGN_PACKAGE_SCHEMA, RWE_DEEPSEEK_V2_PACKAGE_ID,
+};
 pub use corpus::{freeze_first_rwe_corpus, FirstRweCorpus, RWE_CORPUS_SCHEMA};
 pub use economic_protocol::{
     classify_evidence_sufficiency, freeze_rwe_economic_protocol, freeze_vde_artifact,
