@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "agent-control"))
 
 import mission_contract as contract  # noqa: E402
+import steward_service  # noqa: E402
 
 
 class MissionContractTests(unittest.TestCase):
@@ -41,6 +42,46 @@ class MissionContractTests(unittest.TestCase):
             self.mission.owner_approval.proposal_sha256,
         )
         self.assertEqual(self.mission.budget.max_external_effects, 0)
+
+    def test_dynamic_acceptance_stage_can_be_replanned_after_fixed_groups(self):
+        """A failed dynamic stage must replan from currently eligible obligations."""
+
+        ledger = contract.build_research_acceptance_ledger()
+        basis_receipt = contract.make_provenance_receipt(
+            obligation_id="common_rwe_evidence_basis",
+            accepted_main_sha=self.mission.repository_identity.base_sha,
+            evidence_producer_identity="test_static_basis",
+            evaluator_identity="test_ledger_evaluator",
+            provenance_classification="ACCEPTED_STATIC_BASIS",
+            hard_gate_outcome="PASS",
+            missingness=False,
+        )
+        ledger = ledger.disposition_obligation(
+            "common_rwe_evidence_basis", "COMPLETE", basis_receipt
+        )
+        mission = replace(
+            self.mission,
+            state="RUNNING",
+            acceptance_ledger=ledger,
+            allowed_paths=(
+                "docs/ROADMAP.md",
+                "engine/src/rwe",
+                "engine/src/harness_evolution.rs",
+                "engine/src/harness_evolution_eval.rs",
+            ),
+        )
+        steward = object.__new__(steward_service.StewardService)
+
+        self.assertIsNone(steward._next_stage_plan(mission, 7))
+        replacement = steward._next_replacement_plan(mission, 7)
+
+        self.assertIsNotNone(replacement)
+        stage, cards, total = replacement
+        self.assertEqual(stage.stage_id.split("-")[2], "8")
+        self.assertEqual(total, 8)
+        self.assertEqual(len(cards), 2)
+        self.assertIn("contemporary_rwe_replay", cards[0].steps[0])
+        self.assertIsNone(steward._next_replacement_plan(self.mission, 7))
 
     def test_proposal_digest_and_owner_approval_are_bound(self):
         wire = self.mission.to_wire()

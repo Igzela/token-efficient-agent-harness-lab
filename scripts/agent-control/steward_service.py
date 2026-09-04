@@ -1051,6 +1051,39 @@ class StewardService:
         mission_contract.validate_stage(stage, mission, cards)
         return stage, cards, len(groups)
 
+    def _next_replacement_plan(
+        self,
+        mission: mission_contract.MaintenanceMission,
+        index: int,
+        *,
+        retry: int = 1,
+        strategy: str = "primary",
+    ) -> tuple[mission_contract.Stage, tuple[mission_contract.WorkCard, ...], int] | None:
+        """Recreate either a static or an eligible dynamic stage plan.
+
+        Dynamic stages are derived after the fixed path groups are exhausted.
+        Replan must preserve that distinction: asking the static planner for a
+        dynamic stage's index returns ``None`` and would turn a recoverable
+        worker failure into ``stage_replan_group_missing``. The ledger remains
+        the authority for the fallback, so no replacement is created when no
+        predecessor-gated obligation is eligible.
+        """
+
+        replacement = self._next_stage_plan(
+            mission, index, retry=retry, strategy=strategy
+        )
+        if replacement is not None:
+            return replacement
+        ledger = mission.acceptance_ledger
+        if ledger is None:
+            return None
+        eligible = ledger.unresolved_eligible()
+        if not eligible:
+            return None
+        return self._next_dynamic_stage_plan(
+            mission, index, eligible, retry=retry, strategy=strategy
+        )
+
     def _next_dynamic_stage_plan(
         self,
         mission: mission_contract.MaintenanceMission,
@@ -1518,7 +1551,7 @@ class StewardService:
                 enforce_transition=False,
             )
 
-        replacement = self._next_stage_plan(
+        replacement = self._next_replacement_plan(
             mission, int(metadata["stage_index"]) - 1, retry=retry, strategy=strategy
         )
         if replacement is None and mission.acceptance_ledger is not None:
@@ -3510,11 +3543,7 @@ class StewardService:
             next_index = 0
             while next_index + 1 in complete_indices:
                 next_index += 1
-            next_plan = self._next_stage_plan(active, next_index)
-            if next_plan is None and active.acceptance_ledger is not None and not active.acceptance_ledger.is_terminal():
-                eligible = active.acceptance_ledger.unresolved_eligible()
-                if eligible:
-                    next_plan = self._next_dynamic_stage_plan(active, next_index, eligible)
+            next_plan = self._next_replacement_plan(active, next_index)
             if next_plan is None:
                 if active.acceptance_ledger is None or active.acceptance_ledger.is_terminal():
                     self.journal.record_mission_completion(
