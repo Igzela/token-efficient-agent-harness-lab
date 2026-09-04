@@ -553,5 +553,425 @@ class TestMissionCompletionSemantics(unittest.TestCase):
         self.assertEqual(str(ctx.exception), "contradictory_obligation_evidence")
 
 
+
+class TestCorrectiveContinuationAuthority(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.journal_path = self.root / "steward.sqlite3"
+        self.journal = StewardJournal(self.journal_path)
+
+        self.repo_dir = self.root / "repo"
+        self.repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test Steward"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "steward@localhost.invalid"], cwd=self.repo_dir, check=True, capture_output=True)
+
+        readme = self.repo_dir / "README.md"
+        readme.write_text("# Test Repo\nInitial content.\n")
+        subprocess.run(["git", "add", "README.md"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=self.repo_dir, check=True, capture_output=True)
+
+        rev = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, check=True, capture_output=True, text=True)
+        self.base_sha = rev.stdout.strip()
+
+        self.github_writer = FakeGitHubWriter(initial_pr_number=601)
+        self.github_writer.remote_main_sha = self.base_sha
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _make_receipt(
+        self,
+        obligation_id: str,
+        *,
+        classification: str = "ACCEPTED_STATIC_BASIS",
+        outcome: str = "PASS",
+        disposition: str = "COMPLETE",
+        **extra: Any,
+    ) -> dict[str, Any]:
+        return contract.make_provenance_receipt(
+            obligation_id=obligation_id,
+            accepted_main_sha=self.base_sha,
+            evidence_producer_identity="test_producer",
+            evaluator_identity="test_evaluator",
+            provenance_classification=classification,
+            hard_gate_outcome=outcome,
+            missingness=False,
+            **extra,
+        )
+
+    def _setup_authenticated_mission(
+        self,
+        mission_id: str = "MISSION-RESEARCH-20260901",
+        allowed_paths: tuple[str, ...] = ("README.md", "docs/ROADMAP.md"),
+    ) -> contract.MaintenanceMission:
+        req = (
+            "Complete bounded closed loop research mainline and obtain actual RWE MX1 C1 CWS "
+            f"with documentation and tests covering {' '.join(allowed_paths)}."
+        )
+        proposal, digest = contract.compile_proposal_mission(
+            req,
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id=mission_id,
+        )
+        approval_id = f"{mission_id}-owner-approval"
+        self.journal.consume_owner_approval(
+            repository="Igzela/token-efficient-agent-harness-lab",
+            mission_id=mission_id,
+            approval_id=approval_id,
+            proposal_sha256=digest,
+            accepted_main_sha=self.base_sha,
+        )
+        evidence = contract.OwnerApprovalEvidence(
+            transport="github_issue_comment",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            mission_id=mission_id,
+            approval_id=approval_id,
+            owner_identity="github:Igzela",
+            proposal_sha256=digest,
+            accepted_main_sha=self.base_sha,
+            evidence_id=f"comment-{mission_id}",
+        )
+        activated = contract.activate_current_mission(
+            repository=proposal.repository_identity.repository,
+            base_sha=proposal.repository_identity.base_sha,
+            branch=proposal.repository_identity.branch,
+            source_ref=proposal.repository_identity.source_ref,
+            source_sha256=proposal.repository_identity.source_sha256,
+            proposal_sha256=digest,
+            owner_approval=contract.OwnerApproval(
+                "github:Igzela", digest, approval_id, "2026-09-04T00:00:00Z"
+            ),
+            owner_authenticator=contract.AuthenticatedOwnerApprovalValidator(evidence),
+            mission=proposal,
+        )
+        self.journal.record_mission_activation(
+            activated.mission_id, activated.proposal_sha256, activated.to_wire()
+        )
+        return activated
+
+    def test_01_exact_original_approved_mission_can_be_correctively_continued(self):
+        """1. Exact original approved Mission can be correctively continued without another OWNER prompt."""
+        orig = self._setup_authenticated_mission()
+        continuation = contract.build_corrective_continuation(orig, base_sha=self.base_sha)
+        evt = self.journal.record_corrective_continuation(
+            orig.mission_id, continuation.proposal_sha256, continuation.to_wire()
+        )
+        self.assertEqual(evt.event, "MISSION_CORRECTIVE_CONTINUATION")
+        active = self.journal.active_mission_record()
+        self.assertIsNotNone(active)
+        self.assertEqual(active.mission_id, orig.mission_id)
+        self.assertEqual(active.data.get("proposal_sha256"), orig.proposal_sha256)
+
+    def test_02_changed_proposal_digest_is_rejected(self):
+        """2. Continuation with changed proposal digest is rejected."""
+        orig = self._setup_authenticated_mission()
+        continuation = contract.build_corrective_continuation(orig, base_sha=self.base_sha)
+        tampered_wire = continuation.to_wire()
+        tampered_wire["proposal_sha256"] = "0" * 64
+        with self.assertRaises(JournalError) as ctx:
+            self.journal.record_corrective_continuation(
+                orig.mission_id, "0" * 64, tampered_wire
+            )
+        self.assertIn("continuation_wire_decode_failed", str(ctx.exception))
+
+    def test_03_changed_objective_is_rejected(self):
+        """3. Continuation with changed objective is rejected."""
+        orig = self._setup_authenticated_mission()
+        tampered = replace(orig, objective="Altered unauthorized objective")
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            contract.validate_corrective_continuation(orig, tampered)
+        self.assertEqual(str(ctx.exception), "continuation_objective_mismatch")
+
+    def test_04_widened_paths_are_rejected(self):
+        """4. Continuation with widened paths is rejected (allowed_paths and ledger required_paths)."""
+        orig = self._setup_authenticated_mission(allowed_paths=("README.md",))
+        # 4a: Widened mission allowed_paths
+        tampered = replace(orig, allowed_paths=("README.md", "unauthorized/secret.py"))
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            contract.validate_corrective_continuation(orig, tampered)
+        self.assertIn("continuation_allowed_paths_widened", str(ctx.exception))
+
+        # 4b: Ledger required_paths outside mission allowed_paths
+        ob = contract.AcceptanceObligation(
+            obligation_id="ob_outside",
+            description="Obligation outside allowed paths",
+            category="basis",
+            dependencies=(),
+            required_paths=("unauthorized/path.py",),
+        )
+        bad_ledger = contract.MissionAcceptanceLedger((ob,))
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            contract.build_corrective_continuation(orig, acceptance_ledger=bad_ledger)
+        self.assertIn("continuation_ledger_path_outside_allowed_paths", str(ctx.exception))
+
+    def test_05_widened_grants_budgets_or_weakened_forbidden_changes_rejected(self):
+        """5. Continuation with widened grants, budgets, effect ceilings, or weakened forbidden changes is rejected."""
+        orig = self._setup_authenticated_mission()
+        # Budget widened
+        bad_budget = replace(orig.budget, max_calls=orig.budget.max_calls + 1000)
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            contract.validate_corrective_continuation(orig, replace(orig, budget=bad_budget))
+        self.assertEqual(str(ctx.exception), "continuation_budget_calls_widened")
+
+        # Effect ceilings widened
+        bad_effects = replace(orig.budget, max_external_effects=1)
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            contract.validate_corrective_continuation(orig, replace(orig, budget=bad_effects))
+        self.assertEqual(str(ctx.exception), "continuation_budget_external_effects_widened")
+
+        # Standing grant operations widened
+        bad_grant = replace(orig.standing_grants[0], allowed_operations=orig.standing_grants[0].allowed_operations + ("forbidden_op",))
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            contract.validate_corrective_continuation(orig, replace(orig, standing_grants=(bad_grant,)))
+        self.assertEqual(str(ctx.exception), "continuation_standing_grant_operations_widened")
+
+        # Forbidden changes weakened
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            contract.validate_corrective_continuation(orig, replace(orig, forbidden_changes=()))
+        self.assertIn("continuation_forbidden_changes_weakened", str(ctx.exception))
+
+    def test_06_different_repository_is_rejected(self):
+        """6. Continuation pointing to a different repository is rejected."""
+        orig = self._setup_authenticated_mission()
+        bad_repo = replace(orig.repository_identity, repository="attacker/repo")
+        with self.assertRaises(contract.MissionContractError) as ctx:
+            contract.validate_corrective_continuation(orig, replace(orig, repository_identity=bad_repo))
+        self.assertEqual(str(ctx.exception), "continuation_repository_mismatch")
+
+    def test_07_synthetic_or_invalidated_successor_cannot_supply_authority(self):
+        """7. Synthetic or invalidated successor cannot supply authority."""
+        self.journal.record_closeout_invalidation(
+            mission_id="MISSION-RESEARCH-20260901-SUCCESSOR",
+            reason="audit invalidation",
+            details={"test": True},
+        )
+        self.assertIsNone(self.journal.get_mission_activation("MISSION-RESEARCH-20260901-SUCCESSOR"))
+        with self.assertRaises(JournalError) as ctx:
+            self.journal.record_corrective_continuation(
+                mission_id="MISSION-RESEARCH-20260901-SUCCESSOR",
+                proposal_sha256="0" * 64,
+                mission_data={"mission_id": "MISSION-RESEARCH-20260901-SUCCESSOR"},
+            )
+        self.assertIn("mission_invalidated_cannot_continue", str(ctx.exception))
+
+    def test_08_missing_historical_authenticated_activation_fails_closed(self):
+        """8. Missing historical authenticated activation fails closed."""
+        # 8a: Never activated mission
+        with self.assertRaises(JournalError) as ctx:
+            self.journal.record_corrective_continuation(
+                mission_id="MISSION-NEVER-ACTIVATED",
+                proposal_sha256="0" * 64,
+                mission_data={"mission_id": "MISSION-NEVER-ACTIVATED"},
+            )
+        self.assertIn("mission_activation_missing", str(ctx.exception))
+
+        # 8b: Activated without consumed approval
+        req = "Mission without consumed approval"
+        proposal, digest = contract.compile_proposal_mission(
+            req,
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-NO-CONSUMED",
+        )
+        evidence = contract.OwnerApprovalEvidence(
+            transport="github_issue_comment",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            mission_id=proposal.mission_id,
+            approval_id="fixture-approval-no-consumed",
+            owner_identity="github:Igzela",
+            proposal_sha256=digest,
+            accepted_main_sha=self.base_sha,
+            evidence_id="fixture-comment-no-consumed",
+        )
+        activated = contract.activate_current_mission(
+            repository=proposal.repository_identity.repository,
+            base_sha=proposal.repository_identity.base_sha,
+            branch=proposal.repository_identity.branch,
+            source_ref=proposal.repository_identity.source_ref,
+            source_sha256=proposal.repository_identity.source_sha256,
+            proposal_sha256=digest,
+            owner_approval=contract.OwnerApproval(
+                "github:Igzela", digest, "fixture-approval-no-consumed", "2026-09-04T00:00:00Z"
+            ),
+            owner_authenticator=contract.AuthenticatedOwnerApprovalValidator(evidence),
+            mission=proposal,
+        )
+        self.journal.record_mission_activation(
+            activated.mission_id, activated.proposal_sha256, activated.to_wire()
+        )
+        continuation = contract.build_corrective_continuation(activated, base_sha=self.base_sha)
+        with self.assertRaises(JournalError) as ctx:
+            self.journal.record_corrective_continuation(
+                activated.mission_id, continuation.proposal_sha256, continuation.to_wire()
+            )
+        self.assertIn("historical_approval_not_consumed", str(ctx.exception))
+
+    def test_09_accepted_main_advancement_preserves_authority_envelope(self):
+        """9. Accepted-main advancement caused by the Mission itself does not require new OWNER approval."""
+        orig = self._setup_authenticated_mission()
+        # Advance git main
+        new_readme = self.repo_dir / "README.md"
+        new_readme.write_text("# Updated README\n")
+        subprocess.run(["git", "add", "README.md"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Advance main"], cwd=self.repo_dir, check=True, capture_output=True)
+        new_rev = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, check=True, capture_output=True, text=True)
+        new_base_sha = new_rev.stdout.strip()
+
+        # Rebind to advanced main without needing a new owner prompt
+        continuation = contract.build_corrective_continuation(orig, base_sha=new_base_sha)
+        self.assertEqual(continuation.proposal_sha256, orig.proposal_sha256)
+        evt = self.journal.record_corrective_continuation(
+            orig.mission_id, continuation.proposal_sha256, continuation.to_wire()
+        )
+        self.assertEqual(evt.event, "MISSION_CORRECTIVE_CONTINUATION")
+        active = self.journal.active_mission_record()
+        self.assertEqual(active.data.get("repository_identity", {}).get("base_sha"), new_base_sha)
+
+    def test_10_restart_idempotent_corrective_continuation_preserves_evidence(self):
+        """10. Restart/idempotent corrective continuation restores running state without dropping evidence."""
+        ob = contract.AcceptanceObligation(
+            obligation_id="common_rwe_evidence_basis",
+            description="Test obligation",
+            category="basis",
+            dependencies=(),
+            required_paths=("README.md",),
+        )
+        ledger = contract.MissionAcceptanceLedger((ob,))
+        orig = self._setup_authenticated_mission()
+        continuation = contract.build_corrective_continuation(orig, base_sha=self.base_sha, acceptance_ledger=ledger)
+        self.journal.record_corrective_continuation(
+            orig.mission_id, continuation.proposal_sha256, continuation.to_wire()
+        )
+        srv = service.StewardService(
+            mission_id=orig.mission_id,
+            journal=self.journal,
+            github=self.github_writer,
+            repo_path=self.repo_dir,
+        )
+        receipt = self._make_receipt("common_rwe_evidence_basis", classification="ACCEPTED_STATIC_BASIS", outcome="PASS", disposition="COMPLETE")
+        srv.disposition_mission_obligation("common_rwe_evidence_basis", "COMPLETE", receipt)
+
+        # Restart / re-run continuation idempotently
+        continuation2 = contract.build_corrective_continuation(orig, base_sha=self.base_sha, acceptance_ledger=ledger)
+        evt = self.journal.record_corrective_continuation(
+            orig.mission_id, continuation2.proposal_sha256, continuation2.to_wire()
+        )
+        self.assertEqual(evt.event, "MISSION_CORRECTIVE_CONTINUATION")
+
+        srv2 = service.StewardService(
+            mission_id=orig.mission_id,
+            journal=self.journal,
+            github=self.github_writer,
+            repo_path=self.repo_dir,
+        )
+        self.assertIsNotNone(srv2.mission.acceptance_ledger)
+        ob_map = {ob.obligation_id: ob for ob in srv2.mission.acceptance_ledger.obligations}
+        self.assertIn("common_rwe_evidence_basis", ob_map)
+        self.assertEqual(ob_map["common_rwe_evidence_basis"].disposition, "COMPLETE")
+
+    def test_11_research_mission_stays_research_pending_after_repair(self):
+        """11. MISSION-RESEARCH-20260901 remains RESEARCH_PENDING after repair."""
+        import run_research_mainline as rrm
+        orig = self._setup_authenticated_mission(
+            mission_id="MISSION-RESEARCH-20260901",
+            allowed_paths=(
+                "docs/ARCHITECTURE.md",
+                "docs/AUTONOMY.md",
+                "docs/ROADMAP.md",
+                "docs/RUNBOOK.md",
+                "engine/src/harness_evolution.rs",
+                "engine/src/harness_evolution_eval.rs",
+                "engine/src/rwe",
+                "engine/src/storage/local_product_store",
+                "scripts/agent-control",
+                "tests/test_agent_shadow_steward.py",
+                "tests/test_mission_contract.py",
+            ),
+        )
+        # Create unauthenticated successor in journal
+        self.journal.record_mission_activation(
+            "MISSION-RESEARCH-20260901-SUCCESSOR",
+            "0" * 64,
+            {"mission_id": "MISSION-RESEARCH-20260901-SUCCESSOR"},
+        )
+
+        orig_run = subprocess.run
+        def mock_subp(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args")
+            if cmd and "cargo" in cmd:
+                return MagicMock(returncode=0)
+            return orig_run(*args, **kwargs)
+
+        with patch("subprocess.run", side_effect=mock_subp):
+            outcome = rrm.execute_research_mainline(
+                self.journal_path,
+                base_sha=self.base_sha,
+                repo_path=self.repo_dir,
+            )
+
+        self.assertEqual(outcome["mission_id"], "MISSION-RESEARCH-20260901")
+        self.assertEqual(outcome["mission_status"], "RESEARCH_PENDING")
+        self.assertEqual(outcome["dispositions"]["common_rwe_evidence_basis"], "COMPLETE")
+        self.assertEqual(outcome["dispositions"]["contemporary_rwe_replay"], "UNRESOLVED_LACK_OF_PROVIDER_EXECUTION")
+        self.assertEqual(outcome["dispositions"]["mx1_c1_1x2x1"], "UNRESOLVED_UNEXECUTED_CELLS")
+        self.assertEqual(outcome["dispositions"]["level_1"], "UNRESOLVED_PREDECESSOR_GATE_PENDING")
+
+    def test_12_ordinary_maintenance_mission_behavior_unchanged(self):
+        """12. Ordinary maintenance Mission behavior is unchanged."""
+        req = "Ordinary maintenance mission for testing"
+        proposal, digest = contract.compile_proposal_mission(
+            req,
+            repository="Igzela/token-efficient-agent-harness-lab",
+            base_sha=self.base_sha,
+            mission_id="MISSION-MAINTENANCE-TEST",
+        )
+        self.journal.consume_owner_approval(
+            repository="Igzela/token-efficient-agent-harness-lab",
+            mission_id="MISSION-MAINTENANCE-TEST",
+            approval_id="test-approval-maint",
+            proposal_sha256=digest,
+            accepted_main_sha=self.base_sha,
+        )
+        evidence = contract.OwnerApprovalEvidence(
+            transport="github_issue_comment",
+            repository="Igzela/token-efficient-agent-harness-lab",
+            mission_id="MISSION-MAINTENANCE-TEST",
+            approval_id="test-approval-maint",
+            owner_identity="github:Igzela",
+            proposal_sha256=digest,
+            accepted_main_sha=self.base_sha,
+            evidence_id="comment-maint-1",
+        )
+        activated = contract.activate_current_mission(
+            repository=proposal.repository_identity.repository,
+            base_sha=proposal.repository_identity.base_sha,
+            branch=proposal.repository_identity.branch,
+            source_ref=proposal.repository_identity.source_ref,
+            source_sha256=proposal.repository_identity.source_sha256,
+            proposal_sha256=digest,
+            owner_approval=contract.OwnerApproval(
+                "github:Igzela", digest, "test-approval-maint", "2026-09-04T00:00:00Z"
+            ),
+            owner_authenticator=contract.AuthenticatedOwnerApprovalValidator(evidence),
+            mission=proposal,
+        )
+        self.journal.record_mission_activation(
+            activated.mission_id, activated.proposal_sha256, activated.to_wire()
+        )
+        srv = service.StewardService(
+            mission_id=activated.mission_id,
+            journal=self.journal,
+            github=self.github_writer,
+            repo_path=self.repo_dir,
+        )
+        self.assertIsNone(srv.mission.acceptance_ledger)
+        res = srv.complete_mission_if_eligible()
+        self.assertEqual(res["status"], "COMPLETE")
+        self.assertEqual(srv.mission.state, "COMPLETE")
+
+
 if __name__ == "__main__":
     unittest.main()

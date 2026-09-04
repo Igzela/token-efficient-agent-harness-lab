@@ -491,6 +491,8 @@ class StewardJournal:
                 raise TransitionRejected(current, state)
             if event == "MISSION_COMPLETED":
                 self._verify_mission_completion_eligibility_locked(events, mission_id)
+            if event == "MISSION_CORRECTIVE_CONTINUATION":
+                self._verify_corrective_continuation_eligibility_locked(events, mission_id, clean_data)
             previous = events[-1].sha256 if events else ""
             candidate = JournalEvent(
                 seq=len(events) + 1,
@@ -522,6 +524,60 @@ class StewardJournal:
             raise
         finally:
             connection.close()
+
+    def _verify_corrective_continuation_eligibility_locked(
+        self, events: list[JournalEvent], mission_id: str, data: dict[str, Any]
+    ) -> None:
+        """Enforce that MISSION_CORRECTIVE_CONTINUATION cannot be appended unless bound to authentic prior activation."""
+        import mission_contract as contract
+
+        # 1. Reject continuation of invalidated synthetic records
+        invalidated_missions = {
+            ev.mission_id
+            for ev in events
+            if ev.event == "MISSION_CLOSEOUT_INVALIDATED"
+        }
+        if mission_id in invalidated_missions:
+            raise JournalError(f"mission_invalidated_cannot_continue_{mission_id}")
+
+        # 2. Find durable historical activation event for this exact mission_id
+        activation_event = None
+        for ev in events:
+            if ev.mission_id == mission_id and ev.event == "MISSION_ACTIVATED":
+                activation_event = ev
+                break
+        if activation_event is None:
+            raise JournalError(f"mission_activation_missing_{mission_id}")
+
+        # 3. Ensure original authenticated owner approval exists and was consumed
+        act_data = activation_event.data
+        act_owner_appr = act_data.get("owner_approval")
+        if not isinstance(act_owner_appr, dict):
+            raise JournalError(f"historical_owner_approval_missing_{mission_id}")
+        if act_owner_appr.get("owner_identity") not in contract.AUTHENTICATED_OWNER_IDENTITIES:
+            raise JournalError(f"historical_owner_identity_untrusted_{mission_id}")
+
+        approval_consumed = any(
+            ev.event == "MISSION_APPROVAL_CONSUMED"
+            and ev.mission_id == mission_id
+            and ev.data.get("proposal_sha256") == act_data.get("proposal_sha256")
+            and ev.data.get("repository") == act_data.get("repository_identity", {}).get("repository")
+            for ev in events
+        )
+        if not approval_consumed:
+            raise JournalError(f"historical_approval_not_consumed_{mission_id}")
+
+        # 4. Canonical mission contract validation
+        try:
+            original_mission = contract.MaintenanceMission.from_wire(act_data)
+            continuation_mission = contract.MaintenanceMission.from_wire(data)
+        except Exception as exc:
+            raise JournalError(f"continuation_wire_decode_failed: {exc}") from exc
+
+        try:
+            contract.validate_corrective_continuation(original_mission, continuation_mission)
+        except contract.MissionContractError as exc:
+            raise JournalError(f"corrective_continuation_ineligible: {exc}") from exc
 
     def _verify_mission_completion_eligibility_locked(
         self, events: list[JournalEvent], mission_id: str
@@ -837,7 +893,23 @@ class StewardJournal:
                 "MISSION_ACTIVATED",
                 "MISSION_CORRECTIVE_CONTINUATION",
             }:
-                return event
+                if event.mission_id not in invalidated_missions:
+                    return event
+        return None
+
+    def get_mission_activation(self, mission_id: str) -> JournalEvent | None:
+        """Return the durable historical activation event for a mission, ignoring invalidated missions."""
+        events = self.replay()
+        invalidated_missions = {
+            ev.mission_id
+            for ev in events
+            if ev.event == "MISSION_CLOSEOUT_INVALIDATED"
+        }
+        if mission_id in invalidated_missions:
+            return None
+        for ev in events:
+            if ev.mission_id == mission_id and ev.event == "MISSION_ACTIVATED":
+                return ev
         return None
 
     def record_closeout_invalidation(
@@ -878,7 +950,15 @@ class StewardJournal:
         idempotency_key: str | None = None,
     ) -> JournalEvent:
         """Record corrective continuation of an owner-approved mission."""
-        key = idempotency_key or f"mission-corrective-continuation:{mission_id}:{proposal_sha256[:16]}"
+        base_sha = str(mission_data.get("repository_identity", {}).get("base_sha", ""))
+        key = (
+            idempotency_key
+            or (
+                f"mission-corrective-continuation:{mission_id}:{proposal_sha256[:16]}:{base_sha[:16]}"
+                if base_sha
+                else f"mission-corrective-continuation:{mission_id}:{proposal_sha256[:16]}"
+            )
+        )
         return self.append(
             event="MISSION_CORRECTIVE_CONTINUATION",
             idempotency_key=key,
