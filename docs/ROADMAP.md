@@ -113,33 +113,59 @@ To restore scientific integrity while strictly preserving the dual-completion in
 - The dual-completion rule remains active: a Mission cannot reach `COMPLETE` while its acceptance ledger has unresolved obligations.
 - Dispositions must carry verified provenance receipts (`make_provenance_receipt`) bound to accepted main SHA, evidence producer/evaluator identities, and explicit missingness checks. Operational absence is strictly prohibited from being recorded as scientific failure.
 
-### Frontier Status of Research Acceptance Obligations
+### Frozen Campaign Package Seam (`rwe_campaign_package.v1`)
 
-| Obligation ID | Category | Dependencies | Current Status | Provenance & Evidence Basis |
-|---|---|---|---|---|
-| `common_rwe_evidence_basis` | basis | none | **`COMPLETE`** | Provenance: `ACCEPTED_STATIC_BASIS`. Reconciled and validated frozen RWE corpus, protocol, schedule, task bindings, and baseline seeds in `engine/src/rwe`. All 103 canonical unit/integration tests pass (`cargo test --lib rwe`). |
-| `contemporary_rwe_replay` | evaluation | `common_rwe_evidence_basis` | **`UNRESOLVED`** | Provenance: `EXECUTED_EVIDENCE`. `ProductGoldenPathCellDriver` requires live provider transport and credentials. Operational absence (`lack_of_provider_execution=True`) is not a scientific failure; obligation remains open pending live execution. |
-| `mx1_c1_1x2x1` | ladder | `common_rwe_evidence_basis` | **`UNRESOLVED`** | Provenance: `EXECUTED_EVIDENCE`. Provider-free matrix projection in `engine/src/harness_evolution.rs` cannot evaluate Model effects without live execution. Unexecuted cells cannot be classified as `INCOMPARABLE`; obligation remains open. |
-| `mx1_c1_1x2x3` | ladder | `mx1_c1_1x2x1` | **`UNRESOLVED`** | Pending upstream `mx1_c1_1x2x1` terminal resolution with valid provenance. |
-| `mx1_c1_2x2x3` | ladder | `mx1_c1_1x2x3` | **`UNRESOLVED`** | Pending upstream `mx1_c1_1x2x3` terminal resolution. |
-| `cws_strategy_evidence` | evaluation | `common_rwe_evidence_basis` | **`UNRESOLVED`** | Pending live provider requests. CWS remains default-off in production. |
-| `harness_evolution` | evaluation | `mx1_c1_2x2x3` | **`UNRESOLVED`** | Candidate Pareto archive and prediction outcomes pending upstream MX1 matrix ladder resolution. |
-| `level_1` | gate | `harness_evolution` | **`UNRESOLVED`** | Level-1 candidate eligibility pending upstream `harness_evolution`. |
-| `transfer` | transfer | `level_1` | **`UNRESOLVED`** | Cross-task/domain transfer evaluation pending upstream `level_1`. |
-| `replication` | replication | `level_1` | **`UNRESOLVED`** | Multi-seed replication evaluation pending upstream `level_1`. |
-| `memory` | capability | `level_1` | **`UNRESOLVED`** | Memory retention/eviction evaluation pending upstream `level_1`. |
-| `skill` | capability | `level_1` | **`UNRESOLVED`** | Skill reuse evaluation pending upstream `level_1`. |
-| `level_2` | gate | `level_1`, `transfer`, `replication` | **`UNRESOLVED`** | Level-2 evaluation pending upstream Level-1/transfer/replication gates. |
-| `adoption_decision` | adoption | `level_2` | **`UNRESOLVED`** | No candidate reached Level-2; explicit human adoption review gated. No autonomous self-adoption. |
-| `meta` | meta | `level_2` | **`UNRESOLVED`** | Meta program evaluation pending upstream `level_2`. |
-| `r4` | meta | `meta` | **`UNRESOLVED`** | R4 atomic journal concurrency evaluation pending upstream `meta`. |
-| `r5` | meta | `meta` | **`UNRESOLVED`** | R5 distributed observer evaluation pending upstream `meta`. |
-| `r6` | meta | `meta` | **`UNRESOLVED`** | R6 recursive decomposition evaluation pending upstream `meta`. |
+To prevent silent provider substitution, unverified execution, or configuration drift during the research campaign:
+- A Store-owned, immutable campaign descriptor schema `rwe_campaign_package.v1` (`FrozenCampaignPackage` in `engine/src/rwe/campaign_package.rs`) binds the complete execution context:
+  - `package_id`, `provider_kind`, `models`, `binary_path`, `binary_sha256`, `four_cell_count`, `budgets` (per-call token budget, maximum spend ceiling, timeout seconds), and `rollback_strategy`.
+- **Canonical DeepSeek v2 Freeze** (`canonical_deepseek_v2_package()`):
+  - Binds the frozen Decision B DeepSeek v2 models (`deepseek-chat` and `deepseek-coder`).
+  - DeepSeek balance is currently 0: live execution is blocked by operational absence (`lack_of_provider_execution=true`). Under non-evidence and integrity rules, this is strictly operational absence and MUST NOT be recorded as scientific failure (`INSUFFICIENT` or `INCOMPARABLE`).
+- **Candidate AGY v1 Package** (`canonical_agy_v1_candidate_package()`):
+  - Binds the local `agy` CLI binary (`/usr/local/bin/agy` or `~/.local/bin/agy`).
+  - Marked with `requires_owner_approval: true` and `live_authorization_required: true`.
+  - Prohibits silent substitution: AGY can only execute cells if a Store-owned package is explicitly approved by repository authority and granted live authorization.
+- **Fail-Closed Driver Enforcement**:
+  - `ProductGoldenPathCellDriver` verifies `campaign_package` in `ensure_effects_ready()`.
+  - Unapproved or unauthorized candidate packages fail closed before any authority consumption or execution attempt.
+  - Package identity and canonical SHA256 hashes are recorded in `LocalProductStore` audit entries via `record_campaign_package_audit()`.
+
+### Frontier Status and 6-Dimensional Accounting of Acceptance Obligations
+
+Each of the 18 research acceptance obligations is accounted for across six mandatory dimensions:
+1. **Confirmed Facts**: Provable invariants established by current code, contracts, or journals.
+2. **Missing Evidence**: Empirical data or execution outputs currently absent.
+3. **Code & Test Evidence**: Verified repository implementations and passing regression suites.
+4. **Real Provider Status**: Current transport availability, account balance, and execution reality.
+5. **Target Write Status**: Whether any target write has occurred or is permitted (`target_write_performed=false`).
+6. **Remaining Blockers**: Specific prerequisites, authorizations, or dependencies blocking terminal resolution.
+
+| Obligation ID | Category | Dependencies | Current Status | 1. Confirmed Facts | 2. Missing Evidence | 3. Code & Test Evidence | 4. Real Provider Status | 5. Target Write Status | 6. Remaining Blockers |
+|---|---|---|---|---|---|---|---|---|---|
+| `common_rwe_evidence_basis` | basis | none | **`COMPLETE`** | Frozen operator corpus, protocol, schedule, task bindings, baseline seeds v1/v2, and campaign package seam deterministically bound. | None for static basis. | `engine/src/rwe/operator_corpus.rs`, `engine/src/rwe/campaign_package.rs`, `engine/src/rwe/live_baseline_coordinator.rs`; 109 unit/integration tests pass (`cargo test --lib rwe`). | Provider-free basis; no live provider required for static contracts. | `target_write_performed=false`; zero mutation. | None (fully resolved and accepted). |
+| `contemporary_rwe_replay` | evaluation | `common_rwe_evidence_basis` | **`UNRESOLVED`** | Golden-path prerequisite and driver scaffolding verified; fail-closed guards tested. | Real provider responses from 4-cell golden path replay under live transport. | `engine/src/rwe/live_baseline_coordinator.rs`; preflight and simulated transport verified. | DeepSeek v2 balance = 0 (`lack_of_provider_execution=true`); AGY candidate package unapproved/unauthorized. | `target_write_performed=false`; no target write permitted. | Lack of funded/authorized live provider transport. Operational absence must remain open, never mapped to `INSUFFICIENT`. |
+| `mx1_c1_1x2x1` | ladder | `common_rwe_evidence_basis` | **`UNRESOLVED`** | 1x2x1 matrix configuration and seed progression modeled in harness evolution. | Live cell execution evidence for 1x2x1 matrix slice. | `engine/src/harness_evolution.rs`; deterministic matrix planner tests pass. | Operational absence (zero live provider executions). | `target_write_performed=false`. | Live provider execution required; unexecuted cells cannot be classified as `INCOMPARABLE`. |
+| `mx1_c1_1x2x3` | ladder | `mx1_c1_1x2x1` | **`UNRESOLVED`** | 1x2x3 matrix configuration and seed progression modeled. | 3-seed live matrix execution outputs. | `engine/src/harness_evolution.rs`. | Operational absence (zero live provider executions). | `target_write_performed=false`. | Blocked by upstream `mx1_c1_1x2x1` terminal resolution. |
+| `mx1_c1_2x2x3` | ladder | `mx1_c1_1x2x3` | **`UNRESOLVED`** | Full 2x2x3 candidate matrix ladder contract modeled. | 2x2x3 matrix execution results across models and seeds. | `engine/src/harness_evolution.rs`. | Operational absence (zero live provider executions). | `target_write_performed=false`. | Blocked by upstream `mx1_c1_1x2x3` terminal resolution. |
+| `cws_strategy_evidence` | evaluation | `common_rwe_evidence_basis` | **`UNRESOLVED`** | CWS strategy projection logic verified; production default-off invariant enforced. | Live request-level CWS evaluation empirical data. | `engine/src/harness_evolution.rs`. | Operational absence (zero live requests executed). | `target_write_performed=false`; default-off preserved. | Blocked by upstream live execution. |
+| `harness_evolution` | evaluation | `mx1_c1_2x2x3` | **`UNRESOLVED`** | Pareto front calculation and evolutionary candidate scoring implemented. | Real empirical Pareto archive derived from executed matrix ladders. | `engine/src/harness_evolution.rs`. | Operational absence. | `target_write_performed=false`. | Blocked by upstream `mx1_c1_2x2x3` completion. |
+| `level_1` | gate | `harness_evolution` | **`UNRESOLVED`** | Level-1 candidate qualification criteria specified. | Evaluated candidate metrics meeting Level-1 threshold. | `engine/src/harness_evolution.rs`. | Operational absence. | `target_write_performed=false`. | Blocked by upstream `harness_evolution`. |
+| `transfer` | transfer | `level_1` | **`UNRESOLVED`** | Cross-domain/cross-task transfer evaluation protocol specified. | Empirical transfer performance scores across domains. | `engine/src/rwe` and evolution specs. | Operational absence. | `target_write_performed=false`. | Blocked by upstream `level_1` gate. |
+| `replication` | replication | `level_1` | **`UNRESOLVED`** | Replication protocol across independent seeds specified. | Multi-seed replication run outputs. | `engine/src/rwe/operator_corpus.rs`. | Operational absence. | `target_write_performed=false`. | Blocked by upstream `level_1` gate. |
+| `memory` | capability | `level_1` | **`UNRESOLVED`** | Memory retention and eviction metrics defined. | Live harness memory bench data. | Memory telemetry interfaces in `engine/`. | Operational absence. | `target_write_performed=false`. | Blocked by upstream `level_1` gate. |
+| `skill` | capability | `level_1` | **`UNRESOLVED`** | Skill library reuse metrics defined. | Live skill invocation and reuse empirical results. | Skill evaluation interfaces in `engine/`. | Operational absence. | `target_write_performed=false`. | Blocked by upstream `level_1` gate. |
+| `level_2` | gate | `level_1`, `transfer`, `replication` | **`UNRESOLVED`** | Level-2 qualification gate requirements defined. | Candidate passing Level-1, Transfer, and Replication composite gates. | Level-2 gate evaluation contracts in `engine/`. | Operational absence. | `target_write_performed=false`. | Blocked by upstream `level_1`, `transfer`, and `replication` gates. |
+| `adoption_decision` | adoption | `level_2` | **`UNRESOLVED`** | Policy mandates explicit human authority; autonomous self-adoption is strictly prohibited. | Human review and signed adoption authority decision. | Policy guards in `docs/ARCHITECTURE.md`, `docs/AUTONOMY.md`, `engine/src/rwe/runner.rs`. | Operational absence. | No production writes or replacements permitted. | Blocked by upstream `level_2` and explicit human governance approval. |
+| `meta` | meta | `level_2` | **`UNRESOLVED`** | Meta-agent optimization framework and safety bounds specified. | Meta-optimization execution trace and validated performance gains. | Meta-evaluation scaffolding in `engine/src/meta`. | Operational absence. | `target_write_performed=false`. | Blocked by upstream `level_2` resolution. |
+| `r4` | meta | `meta` | **`UNRESOLVED`** | R4 atomic journal concurrency architecture specified. | Concurrent multi-agent journal stress test empirical telemetry. | Journal concurrency models in `engine/`. | Operational absence. | `target_write_performed=false`. | Blocked by upstream `meta`. |
+| `r5` | meta | `meta` | **`UNRESOLVED`** | R5 distributed observer architecture specified. | Distributed consensus and observation empirical validation. | Observer interfaces in `engine/`. | Operational absence. | `target_write_performed=false`. | Blocked by upstream `meta`. |
+| `r6` | meta | `meta` | **`UNRESOLVED`** | R6 recursive decomposition boundary and rollback invariants specified. | Multi-level recursive decomposition execution receipts. | Recursive dispatch safety limits in `engine/`. | Operational absence. | `target_write_performed=false`. | Blocked by upstream `meta`. |
 
 ### Summary of Evidence and Resumption Posture
 
 1. **Current Mission State**: Truthfully held in **`RESEARCH_PENDING`** under dual-completion invariant.
-2. **Accepted Capability**: Frozen RWE contracts, deterministic matrix planning, and CWS projection are verified and sound.
-3. **Executed Experiments**: Deterministic frozen RWE basis suite (`cargo test --lib rwe`, 103 passed) validates `common_rwe_evidence_basis`.
+2. **Accepted Capability**: Frozen RWE contracts, deterministic matrix planning, CWS projection, and campaign package seam are verified and sound.
+3. **Executed Experiments**: Deterministic frozen RWE basis suite (`cargo test --lib rwe`, 109 passed) validates `common_rwe_evidence_basis`.
 4. **No Fabricated Evidence**: Operational absence is never mapped to scientific failure. No live provider executions or model adoptions are claimed without verifiable receipts.
-5. **Enforced Dual Completion**: Steward requires both stage settlement AND complete terminal disposition of the acceptance ledger before any Mission can report `COMPLETE`. Direct journal injection of `MISSION_COMPLETED` is rejected.
+5. **Campaign Package Seam**: `rwe_campaign_package.v1` guards against silent provider substitution; AGY candidate package is explicitly defined as requiring owner approval and live authorization.
+6. **Enforced Dual Completion**: Steward requires both stage settlement AND complete terminal disposition of the acceptance ledger before any Mission can report `COMPLETE`. Direct journal injection of `MISSION_COMPLETED` is rejected.

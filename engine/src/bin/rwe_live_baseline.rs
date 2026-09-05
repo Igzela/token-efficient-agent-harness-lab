@@ -154,6 +154,7 @@ fn main() {
                 fake_transport: None,
                 cell_executor_key_id,
                 cell_confirmer_key_id,
+                campaign_package: None,
             };
             run_frozen_schedule(
                 &store,

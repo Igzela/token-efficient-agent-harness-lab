@@ -366,6 +366,8 @@ pub struct ProductGoldenPathCellDriver {
     /// activator; the store rejects shared identities). Required only when
     /// `allow_live_provider_effects` is true.
     pub cell_confirmer_key_id: Option<String>,
+    /// Bound frozen campaign package (defaults to canonical DeepSeek v2 if None).
+    pub campaign_package: Option<crate::rwe::campaign_package::FrozenCampaignPackage>,
 }
 
 impl Clone for ProductGoldenPathCellDriver {
@@ -376,6 +378,7 @@ impl Clone for ProductGoldenPathCellDriver {
             fake_transport: self.fake_transport.clone(),
             cell_executor_key_id: self.cell_executor_key_id.clone(),
             cell_confirmer_key_id: self.cell_confirmer_key_id.clone(),
+            campaign_package: self.campaign_package.clone(),
         }
     }
 }
@@ -391,6 +394,7 @@ impl std::fmt::Debug for ProductGoldenPathCellDriver {
             .field("fake_transport", &self.fake_transport.is_some())
             .field("cell_executor_key_id", &self.cell_executor_key_id)
             .field("cell_confirmer_key_id", &self.cell_confirmer_key_id)
+            .field("campaign_package", &self.campaign_package)
             .finish()
     }
 }
@@ -403,7 +407,20 @@ impl CellDriver for ProductGoldenPathCellDriver {
             );
         }
         rwe_composition_seam_ready()?;
+        let pkg = match &self.campaign_package {
+            Some(p) => {
+                p.validate()?;
+                p.clone()
+            }
+            None => crate::rwe::campaign_package::canonical_deepseek_v2_package()?,
+        };
         if self.allow_live_provider_effects {
+            if pkg.requires_owner_approval {
+                return Err(format!(
+                    "campaign package {} requires explicit owner approval before live execution",
+                    pkg.package_id
+                ));
+            }
             // Operator live-run token: parity with the armed integration
             // fixture's ACP_RWE_ARMED_LIVE_RUN=1 gate. Live provider POSTs and
             // target writes require the explicit operator authorization symbol.
@@ -412,13 +429,19 @@ impl CellDriver for ProductGoldenPathCellDriver {
                     "live RWE cell requires the operator live-run token {RWE_OPERATOR_LIVE_RUN_TOKEN}=1"
                 ));
             }
-            let cred = std::env::var(DEEPSEEK_CREDENTIAL_REFERENCE)
-                .ok()
-                .filter(|v| !v.trim().is_empty());
-            if cred.is_none() && self.fake_transport.is_none() {
-                return Err(format!(
-                    "live RWE cell requires {DEEPSEEK_CREDENTIAL_REFERENCE} or an injected fake transport"
-                ));
+            if pkg.provider_kind == "managed_deepseek" {
+                let cred = std::env::var(DEEPSEEK_CREDENTIAL_REFERENCE)
+                    .ok()
+                    .filter(|v| !v.trim().is_empty());
+                if cred.is_none() && self.fake_transport.is_none() {
+                    return Err(format!(
+                        "live RWE cell requires {DEEPSEEK_CREDENTIAL_REFERENCE} or an injected fake transport"
+                    ));
+                }
+            } else if pkg.provider_kind == "agy" {
+                return Err(
+                    "live RWE cell for agy provider requires explicit Store live authorization and owner approval".into(),
+                );
             }
             if self.target_repo_path.is_none() {
                 return Err("live RWE cell requires target_repo_path matching frozen SHA".into());
@@ -458,6 +481,11 @@ impl CellDriver for ProductGoldenPathCellDriver {
         // and are still blocked in CI. Fake transport proves composition without seal
         // claims from caller-authored receipts.
         if !self.allow_live_provider_effects {
+            let pkg = match &self.campaign_package {
+                Some(p) => p.clone(),
+                None => crate::rwe::campaign_package::canonical_deepseek_v2_package()?,
+            };
+            let pkg_sha = pkg.canonical_sha256().unwrap_or_else(|_| "unknown".into());
             return Ok(CellOutcome {
                 classification: "blocked_provider_free_mode".into(),
                 provider_requests: 0,
@@ -483,8 +511,10 @@ impl CellDriver for ProductGoldenPathCellDriver {
                 delegated_attempt_id: ids.delegated_attempt_id.clone(),
                 workspace_id: ids.worktree_id.clone(),
                 note: format!(
-                    "store-owned ProductTask admitted under {}; live provider/target effects deferred until controller authorization; seam={RWE_LIVE_CELL_COMPOSITION_SEAM}; cell={}",
+                    "store-owned ProductTask admitted under {}; live provider/target effects deferred until controller authorization; seam={RWE_LIVE_CELL_COMPOSITION_SEAM}; package_id={}; package_sha={}; cell={}",
                     principal.tenant_id(),
+                    pkg.package_id,
+                    pkg_sha,
                     cell.get("cell_id").and_then(Value::as_str).unwrap_or("")
                 ),
             });
@@ -3884,6 +3914,7 @@ mod tests {
             fake_transport: None,
             cell_executor_key_id: None,
             cell_confirmer_key_id: None,
+            campaign_package: None,
         };
         let result = run_frozen_schedule(
             &store,
@@ -4485,6 +4516,7 @@ mod tests {
             fake_transport: Some(transport),
             cell_executor_key_id: None,
             cell_confirmer_key_id: None,
+            campaign_package: None,
         };
         let result =
             run_frozen_schedule(&store, &principal, "run-ftx", "auth-ftx", &lease, &driver)
@@ -4586,6 +4618,7 @@ mod tests {
             fake_transport: Some(transport),
             cell_executor_key_id: None,
             cell_confirmer_key_id: None,
+            campaign_package: None,
         };
         let result = run_frozen_schedule(
             &store,
@@ -5057,6 +5090,7 @@ mod tests {
             fake_transport: Some(transport),
             cell_executor_key_id: Some("op-armed-exec".into()),
             cell_confirmer_key_id: Some("op-armed-conf".into()),
+            campaign_package: None,
         };
 
         let result = run_frozen_schedule(
@@ -5250,6 +5284,56 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(ws["status"], "cleaned");
+        }
+    }
+
+    #[test]
+    fn product_golden_path_driver_binds_campaign_package_and_fails_closed_on_unapproved_agy() {
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let had_ci = std::env::var_os("CI");
+        std::env::remove_var("CI");
+
+        let mut driver = ProductGoldenPathCellDriver::default();
+        assert!(driver.campaign_package.is_none());
+        // Default package is canonical DeepSeek v2
+        assert!(driver.ensure_effects_ready().is_ok());
+
+        // Bind AGY candidate package
+        let agy_pkg = crate::rwe::campaign_package::canonical_agy_v1_candidate_package().unwrap();
+        driver.campaign_package = Some(agy_pkg);
+        // In provider-free mode, ensure_effects_ready passes
+        assert!(driver.ensure_effects_ready().is_ok());
+
+        // If live provider effects requested, fails closed because AGY requires owner approval and live auth
+        driver.allow_live_provider_effects = true;
+        let err = driver.ensure_effects_ready().unwrap_err();
+        assert!(err.contains("requires explicit owner approval before live execution"));
+
+        match had_ci {
+            Some(v) => std::env::set_var("CI", v),
+            None => std::env::remove_var("CI"),
+        }
+    }
+
+    #[test]
+    fn product_golden_path_driver_rejects_tampered_campaign_package() {
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let had_ci = std::env::var_os("CI");
+        std::env::remove_var("CI");
+
+        let mut driver = ProductGoldenPathCellDriver::default();
+        let mut tampered = crate::rwe::campaign_package::canonical_deepseek_v2_package().unwrap();
+        tampered.target_repo = "fake/repo".into();
+        driver.campaign_package = Some(tampered);
+        assert!(driver.ensure_effects_ready().is_err());
+
+        match had_ci {
+            Some(v) => std::env::set_var("CI", v),
+            None => std::env::remove_var("CI"),
         }
     }
 }
