@@ -5,9 +5,8 @@ Single entrypoint invoked by the Codex hook execution engine:
 `python3 dispatcher.py <event_name>`
 
 Reads event context from stdin (JSON), routes to specialized event handlers
-(Session, Guard, Continuation), and emits responses according to the Codex
-hook wire protocol (JSON on stdout with exit 0, or blocking message on stderr
-with exit 2).
+(Session, Guard, Continuation), and emits responses strictly adhering to the
+official Codex hook wire schemas.
 """
 
 from __future__ import annotations
@@ -27,12 +26,24 @@ if str(_PKG_PARENT) not in sys.path:
 try:
     from .continuation import ContinuationHandler
     from .guard import GuardHandler
-    from .protocol import HookEventName, HookInput, HookOutput, HookSpecificOutput, PermissionDecision
+    from .protocol import (
+        HookEventName,
+        HookInput,
+        HookOutput,
+        HookSpecificOutput,
+        PermissionDecision,
+    )
     from .session import SessionHandler
 except ImportError:
     from codex_hooks.continuation import ContinuationHandler
     from codex_hooks.guard import GuardHandler
-    from codex_hooks.protocol import HookEventName, HookInput, HookOutput, HookSpecificOutput, PermissionDecision
+    from codex_hooks.protocol import (
+        HookEventName,
+        HookInput,
+        HookOutput,
+        HookSpecificOutput,
+        PermissionDecision,
+    )
     from codex_hooks.session import SessionHandler
 
 
@@ -53,7 +64,6 @@ class HookDispatcher:
         try:
             hook_input = HookInput.from_json(raw_input, event_override=event_name)
         except Exception as exc:
-            # Malformed input: return exit 1 or 2 with error
             return 2, "", f"Malformed hook input: {exc}"
 
         event = hook_input.hook_event_name or event_name
@@ -76,18 +86,13 @@ class HookDispatcher:
 
         elif event == HookEventName.PRE_TOOL_USE.value:
             output = self.guard_handler.handle_pre_tool_use(hook_input)
-            # If blocked, also support exit code 2 if reason present
-            if output.hookSpecificOutput and output.hookSpecificOutput.permissionDecision == PermissionDecision.BLOCK.value:
-                reason = output.hookSpecificOutput.permissionDecisionReason or "Tool use blocked by policy"
-                # Emit both structured JSON on stdout and reason on stderr
+            if output.decision == "block":
+                reason = output.reason or "Tool use blocked by policy"
                 return 2, output.to_json(), reason
             return 0, output.to_json(), ""
 
         elif event == HookEventName.PERMISSION_REQUEST.value:
             output = self.guard_handler.handle_permission_request(hook_input)
-            if output.hookSpecificOutput and output.hookSpecificOutput.permissionDecision == PermissionDecision.BLOCK.value:
-                reason = output.hookSpecificOutput.permissionDecisionReason or "Permission denied by policy"
-                return 2, output.to_json(), reason
             return 0, output.to_json(), ""
 
         elif event == HookEventName.STOP.value:

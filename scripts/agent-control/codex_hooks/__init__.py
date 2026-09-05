@@ -4,7 +4,16 @@ Provides runtime capability probing (H0), session bootstrap & receipts (H1),
 path boundaries & permission guards (H2), and completion continuation (H3).
 """
 
-from .config import DEFAULT_HOOK_EVENTS, HookConfigGenerator, compute_bundle_hash
+from .config import (
+    DEFAULT_HOOK_EVENTS,
+    EVENT_NAME_NORMALIZATION,
+    HookConfigGenerator,
+    compute_file_sha256,
+    discover_hooks,
+    hook_key,
+    normalize_event_name,
+    provision_trust,
+)
 from .continuation import ContinuationDecision, ContinuationHandler
 from .dispatcher import HookDispatcher
 from .guard import FORBIDDEN_COMMAND_PATTERNS, GuardHandler
@@ -16,6 +25,7 @@ from .protocol import (
     HookOutput,
     HookSpecificOutput,
     PermissionDecision,
+    PermissionRequestDecisionWire,
 )
 from .session import SessionHandler
 from .telemetry import HookTelemetry, HookTelemetryData
@@ -28,6 +38,7 @@ __all__ = [
     "CodexHookProbeResult",
     "CapabilityStatus",
     "DEFAULT_HOOK_EVENTS",
+    "EVENT_NAME_NORMALIZATION",
     "FORBIDDEN_COMMAND_PATTERNS",
     "GuardHandler",
     "HookConfigGenerator",
@@ -39,6 +50,11 @@ __all__ = [
     "HookTelemetry",
     "HookTelemetryData",
     "PermissionDecision",
+    "PermissionRequestDecisionWire",
     "SessionHandler",
-    "compute_bundle_hash",
+    "compute_file_sha256",
+    "discover_hooks",
+    "hook_key",
+    "normalize_event_name",
+    "provision_trust",
 ]
