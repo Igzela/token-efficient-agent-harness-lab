@@ -29,10 +29,11 @@ use super::runner::{
 };
 use crate::harness_evolution::{
     ControllerAction, EffectReceiptDisposition, LedgerController, LedgerOrchestrator,
-    LedgerOrchestratorConfig, LedgerTaskRecord, LedgerTerminalDisposition, LedgerTerminalRecord,
-    LedgerVerifier, LedgerWorker, NextTaskDecision, OrchestrationError, OrchestrationUsageEnvelope,
-    StoreEffectReceipt, VerificationOutcome, VerificationReport, WorkerContext,
-    WorkerOutcomeStatus, WorkerResult, WorkingLedger, LEDGER_ORCHESTRATED_HARNESS_ID,
+    LedgerOrchestratorConfig, LedgerTaskRecord, LedgerTaskStatus, LedgerTerminalDisposition,
+    LedgerTerminalRecord, LedgerVerifier, LedgerWorker, NewTaskSpec, NextTaskDecision,
+    OrchestrationError, OrchestrationUsageEnvelope, StoreEffectReceipt, VerificationOutcome,
+    VerificationReport, WorkerContext, WorkerOutcomeStatus, WorkerResult, WorkingLedger,
+    LEDGER_ORCHESTRATED_HARNESS_ID,
 };
 use crate::product_golden_path::{validate_matrix_binding, ProductHarnessMatrixBinding};
 use crate::provider::config::{CredentialRef, ProviderConfig};
@@ -46,6 +47,7 @@ use crate::provider::managed_deepseek::{
 use crate::provider::managed_deepseek_executor::{
     ManagedDeepSeekExecutorConfig, ManagedDeepSeekNodeExecutor,
 };
+use crate::provider::transport::ProviderTransportProvenance;
 use crate::storage::local_product_store::{
     compute_attempt_manifest_sha256, AuthenticatedPrincipal, DelegationContract, LocalProductStore,
     RweAuthorizationV2IssueRequest, DELEGATION_SCHEMA_VERSION,
@@ -759,6 +761,55 @@ impl LedgerController for LiveLedgerCellController {
                 expected_evidence: "final_live_deliverable".to_string(),
             });
         }
+        // Inspect for verification failures on active tasks that require repair replanning.
+        for task in &ledger.tasks {
+            if task.status == LedgerTaskStatus::Pending || task.status == LedgerTaskStatus::Failed {
+                let latest_fail_obs =
+                    ledger.observations.iter().rev().find(|obs| {
+                        obs.task_id == task.id && obs.outcome == VerificationOutcome::Fail
+                    });
+                if let Some(fail_obs) = latest_fail_obs {
+                    if ledger.replan_count >= 2 || task.attempt_count >= 3 {
+                        return Ok(NextTaskDecision {
+                            action: ControllerAction::DeclareNoProgress {
+                                reason: format!(
+                                    "task {} failed verification repeatedly; replan budget exhausted",
+                                    task.id
+                                ),
+                            },
+                            reason_summary: "live terminal no-progress".to_string(),
+                            expected_evidence: String::new(),
+                        });
+                    }
+                    let base_id = task.id.split("-rep-").next().unwrap_or(&task.id);
+                    let base_id = base_id.split("-repair-").next().unwrap_or(base_id);
+                    let repair_task_id = format!("{base_id}-rep-{}", ledger.replan_count + 1);
+                    if !ledger.tasks.iter().any(|t| t.id == repair_task_id) {
+                        return Ok(NextTaskDecision {
+                            action: ControllerAction::Replan {
+                                new_plan_summary: Some(format!(
+                                    "repair task {} after verification failure: {}",
+                                    task.id, fail_obs.observation_summary
+                                )),
+                                new_tasks: vec![NewTaskSpec {
+                                    id: repair_task_id.clone(),
+                                    description: format!(
+                                        "repair {} based on verifier feedback: {}",
+                                        task.id, fail_obs.observation_summary
+                                    ),
+                                }],
+                                supersede_task_ids: vec![task.id.clone()],
+                            },
+                            reason_summary: format!(
+                                "verifier failed for {}; replanning with repair task {}",
+                                task.id, repair_task_id
+                            ),
+                            expected_evidence: format!("replan_for_{}", task.id),
+                        });
+                    }
+                }
+            }
+        }
         if let Some(pending_id) = ledger.pending_task_ids().into_iter().next() {
             return Ok(NextTaskDecision {
                 action: ControllerAction::ExecuteTask {
@@ -986,7 +1037,9 @@ fn render_live_ledger_worker_prompt(
          Expected evidence: {expected_evidence}\n\
          Relevant findings: {findings}\n\
          Prior verification observations: {observations}\n\
-         Respond with a single bounded implementation proposal as plain prose \
+         If workspace modifications are required, output exactly one JSON action object (bare or in ```json ... ```):\n\
+         {{\"schema_version\": \"managed_workspace_action.v1\", \"path\": \"<relative path>\", \"action\": \"replace_text\", \"old_text\": \"<exact existing text>\", \"new_text\": \"<replacement text>\"}}\n\
+         Otherwise respond with a single bounded implementation proposal as plain prose \
          (no credentials, no transcripts, no absolute paths).",
         contract_digest = context.contract_digest,
         plan_summary = context.plan_summary.chars().take(800).collect::<String>(),
@@ -1018,13 +1071,141 @@ fn render_live_ledger_worker_prompt(
     }
 }
 
+/// Provider-neutral execution adapter for live ledger worker rounds.
+///
+/// Wraps provider wire invocation under `ManagedProviderCallAuthority`,
+/// ensuring calls enter the store journal, rate limits, and spend authorization.
+pub trait LiveLedgerProviderAdapter: Send + Sync {
+    fn provider_id(&self) -> &str;
+    fn provider_kind(&self) -> &str;
+    fn base_url(&self) -> &str;
+    fn endpoint_path(&self) -> &str;
+    fn credential_reference(&self) -> &str;
+    fn transport_provenance(&self) -> ProviderTransportProvenance;
+    fn requested_model(&self) -> Option<&str> {
+        None
+    }
+    fn invoke(
+        &self,
+        authority: &ManagedProviderCallAuthority,
+        request: &ManagedProviderCallRequest,
+    ) -> Result<crate::provider::managed_deepseek::ManagedProviderResponse, String>;
+}
+
+/// Minimal OpenAI-compatible provider adapter supporting arbitrary base URLs
+/// (e.g. OpenAI, OpenRouter, OpenCode Go, Codex proxies, or local test fixtures).
+pub struct OpenAiCompatibleProviderAdapter {
+    pub provider_id: String,
+    pub provider_kind: String,
+    pub base_url: String,
+    pub endpoint_path: String,
+    pub credential_reference: String,
+    pub provider_subject: String,
+    pub model_id: Option<String>,
+    pub transport: std::sync::Arc<dyn crate::provider::transport::HttpTransport>,
+}
+
+impl OpenAiCompatibleProviderAdapter {
+    pub fn new(
+        provider_id: impl Into<String>,
+        provider_kind: impl Into<String>,
+        base_url: impl Into<String>,
+        endpoint_path: impl Into<String>,
+        credential_reference: impl Into<String>,
+        provider_subject: impl Into<String>,
+        model_id: Option<String>,
+        transport: std::sync::Arc<dyn crate::provider::transport::HttpTransport>,
+    ) -> Self {
+        Self {
+            provider_id: provider_id.into(),
+            provider_kind: provider_kind.into(),
+            base_url: base_url.into(),
+            endpoint_path: endpoint_path.into(),
+            credential_reference: credential_reference.into(),
+            provider_subject: provider_subject.into(),
+            model_id,
+            transport,
+        }
+    }
+}
+
+impl LiveLedgerProviderAdapter for OpenAiCompatibleProviderAdapter {
+    fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+    fn provider_kind(&self) -> &str {
+        &self.provider_kind
+    }
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+    fn endpoint_path(&self) -> &str {
+        &self.endpoint_path
+    }
+    fn credential_reference(&self) -> &str {
+        &self.credential_reference
+    }
+    fn requested_model(&self) -> Option<&str> {
+        self.model_id.as_deref()
+    }
+    fn transport_provenance(&self) -> ProviderTransportProvenance {
+        crate::provider::transport::production_transport_provenance(&self.transport)
+    }
+    fn invoke(
+        &self,
+        authority: &ManagedProviderCallAuthority,
+        request: &ManagedProviderCallRequest,
+    ) -> Result<crate::provider::managed_deepseek::ManagedProviderResponse, String> {
+        let provider_config = ProviderConfig::new(
+            &self.provider_id,
+            &self.provider_kind,
+            &self.base_url,
+            &request.requested_model,
+            &self.credential_reference,
+            "2026-07-30T00:00:00Z",
+        );
+        let credential = CredentialRef::new(
+            &self.credential_reference,
+            "env",
+            "***",
+            &self.provider_subject,
+            "2026-07-30T00:00:00Z",
+        );
+        let boundary =
+            CredentialBoundary::new("env").map_err(|e| format!("credential boundary: {e}"))?;
+        let transport = std::sync::Arc::clone(&self.transport);
+        let authority_clone = std::sync::Arc::new(authority.clone());
+        let request_clone = request.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| format!("live ledger provider runtime unavailable: {error}"))?;
+            runtime
+                .block_on(authority_clone.invoke_with_retry(&request_clone, || {
+                    crate::provider::managed_deepseek::invoke_openai_wire(
+                        &provider_config,
+                        &boundary,
+                        &credential,
+                        &transport,
+                        &request_clone,
+                    )
+                }))
+                .map_err(|error| format!("{}: {}", error.domain, error.message))
+        })
+        .join()
+        .map_err(|_| "live ledger provider runtime thread panicked".to_string())?
+    }
+}
+
 /// Live worker for ledger-orchestrated cells: exactly one delegated
 /// implementer call per round through the existing managed provider
 /// authority (delegation, proposal, prepare, approval, one-use spend, attempt
 /// lease, persisted-authority single call with store claim/reconcile). The
 /// worker never mints usage or receipts: both derive from the reconciled
-/// store journal entry read back after the call. It never touches the target
-/// workspace and never falls back to the H0 3-node path.
+/// store journal entry read back after the call. Workspace modifications,
+/// when present in implementer output, apply through the store-owned
+/// `apply_managed_workspace_action` boundary, strictly within allowed paths.
 pub struct LiveLedgerCellWorker {
     store: std::sync::Arc<LocalProductStore>,
     operator_principal: AuthenticatedPrincipal,
@@ -1041,6 +1222,8 @@ pub struct LiveLedgerCellWorker {
     spent_usd: f64,
     provider_calls_made: u64,
     rounds: std::sync::Arc<std::sync::Mutex<Vec<LiveLedgerRoundRef>>>,
+    target_repo_path: Option<std::path::PathBuf>,
+    provider_adapter: Option<std::sync::Arc<dyn LiveLedgerProviderAdapter>>,
 }
 
 impl LiveLedgerCellWorker {
@@ -1059,6 +1242,8 @@ impl LiveLedgerCellWorker {
         transport: Option<std::sync::Arc<dyn crate::provider::transport::HttpTransport>>,
         package_id: String,
         rounds: std::sync::Arc<std::sync::Mutex<Vec<LiveLedgerRoundRef>>>,
+        target_repo_path: Option<std::path::PathBuf>,
+        provider_adapter: Option<std::sync::Arc<dyn LiveLedgerProviderAdapter>>,
     ) -> Self {
         Self {
             store,
@@ -1076,6 +1261,8 @@ impl LiveLedgerCellWorker {
             spent_usd: 0.0,
             provider_calls_made: 0,
             rounds,
+            target_repo_path,
+            provider_adapter,
         }
     }
 
@@ -1275,24 +1462,6 @@ impl LiveLedgerCellWorker {
     }
 }
 
-fn live_ledger_blocking_invoke(
-    provider: std::sync::Arc<ManagedDeepSeekProvider>,
-    authority: std::sync::Arc<ManagedProviderCallAuthority>,
-    request: ManagedProviderCallRequest,
-) -> Result<crate::provider::managed_deepseek::ManagedProviderResponse, String> {
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| format!("live ledger provider runtime unavailable: {error}"))?;
-        runtime
-            .block_on(provider.invoke_with_authority(&authority, &request))
-            .map_err(|error| format!("{}: {}", error.domain, error.message))
-    })
-    .join()
-    .map_err(|_| "live ledger provider runtime thread panicked".to_string())?
-}
-
 impl LedgerWorker for LiveLedgerCellWorker {
     fn execute_task(
         &mut self,
@@ -1381,16 +1550,48 @@ impl LedgerWorker for LiveLedgerCellWorker {
                 )
             })?
             .to_string();
-        let requested_model = manifest
-            .pointer("/models/implementer")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                Self::worker_error(
-                    &context.selected_task.id,
-                    "ledger round manifest implementer model missing",
-                )
-            })?
-            .to_string();
+        let serving_transport = self.transport.as_ref().map(|tx| {
+            std::sync::Arc::new(crate::provider::transport::InjectedTransportBoundary(
+                std::sync::Arc::clone(tx),
+            )) as std::sync::Arc<dyn crate::provider::transport::HttpTransport>
+        });
+        let adapter: std::sync::Arc<dyn LiveLedgerProviderAdapter> = match &self.provider_adapter {
+            Some(a) => std::sync::Arc::clone(a),
+            None => {
+                let transport_for_provider: std::sync::Arc<
+                    dyn crate::provider::transport::HttpTransport,
+                > = match serving_transport {
+                    Some(tx) => tx,
+                    None => {
+                        std::sync::Arc::new(crate::provider::transport::ReqwestTransport::new())
+                    }
+                };
+                std::sync::Arc::new(OpenAiCompatibleProviderAdapter {
+                    provider_id: "deepseek-managed-rwe".to_string(),
+                    provider_kind: DEEPSEEK_PROVIDER_KIND.to_string(),
+                    base_url: DEEPSEEK_OPENAI_BASE_URL.to_string(),
+                    endpoint_path: DEEPSEEK_OPENAI_PATH.to_string(),
+                    credential_reference: DEEPSEEK_CREDENTIAL_REFERENCE.to_string(),
+                    provider_subject: "provider:deepseek".to_string(),
+                    model_id: None,
+                    transport: transport_for_provider,
+                })
+            }
+        };
+        let requested_model = if let Some(m) = adapter.requested_model() {
+            m.to_string()
+        } else {
+            manifest
+                .pointer("/models/implementer")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    Self::worker_error(
+                        &context.selected_task.id,
+                        "ledger round manifest implementer model missing",
+                    )
+                })?
+                .to_string()
+        };
         // The request envelope must equal the persisted manifest envelope
         // exactly, or the persisted authority check fails closed.
         let manifest_limits = ManagedCallLimits {
@@ -1439,43 +1640,6 @@ impl LedgerWorker for LiveLedgerCellWorker {
                 "ledger round manifest price profile malformed",
             )
         })?;
-        let serving_transport = self.transport.as_ref().map(|tx| {
-            std::sync::Arc::new(crate::provider::transport::InjectedTransportBoundary(
-                std::sync::Arc::clone(tx),
-            )) as std::sync::Arc<dyn crate::provider::transport::HttpTransport>
-        });
-        let transport_for_provider: std::sync::Arc<dyn crate::provider::transport::HttpTransport> =
-            match serving_transport {
-                Some(tx) => tx,
-                None => std::sync::Arc::new(crate::provider::transport::ReqwestTransport::new()),
-            };
-        let provider_config = ProviderConfig::new(
-            "deepseek-managed-rwe",
-            "openai_compatible",
-            DEEPSEEK_OPENAI_BASE_URL,
-            &requested_model,
-            DEEPSEEK_CREDENTIAL_REFERENCE,
-            "2026-07-30T00:00:00Z",
-        );
-        let credential = CredentialRef::new(
-            DEEPSEEK_CREDENTIAL_REFERENCE,
-            "env",
-            "***",
-            "provider:deepseek",
-            "2026-07-30T00:00:00Z",
-        );
-        let boundary = CredentialBoundary::new("env").map_err(|e| {
-            Self::worker_error(
-                &context.selected_task.id,
-                &format!("credential boundary: {e}"),
-            )
-        })?;
-        let provider = std::sync::Arc::new(ManagedDeepSeekProvider::new_openai(
-            provider_config,
-            boundary,
-            credential,
-            std::sync::Arc::clone(&transport_for_provider),
-        ));
         let binding = ManagedCallBinding {
             product_task_id: self.product_task_id.clone(),
             workflow_id,
@@ -1487,14 +1651,37 @@ impl LedgerWorker for LiveLedgerCellWorker {
         let mut request = ManagedProviderCallRequest::for_role(
             ManagedModelRole::Implementer,
             DeepSeekProtocol::OpenAiCompatible,
-            binding,
+            binding.clone(),
         );
+        request.provider_kind = adapter.provider_kind().to_string();
+        request.base_url = adapter.base_url().to_string();
+        request.endpoint_path = adapter.endpoint_path().to_string();
+        request.credential_reference = adapter.credential_reference().to_string();
+        let host = adapter
+            .base_url()
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap_or("localhost")
+            .split(':')
+            .next()
+            .unwrap_or("localhost")
+            .to_string();
+        if !host.is_empty() {
+            request.host = host;
+        }
         request.requested_model = requested_model.clone();
+        if request.requested_model != ManagedModelRole::Implementer.default_model()
+            || adapter.provider_kind() != DEEPSEEK_PROVIDER_KIND
+        {
+            request.single_model_plan = true;
+        }
         request.limits = manifest_limits;
         request.price_profile = manifest_price_profile;
         request.messages = vec![ManagedMessage::text("user", &prompt)];
         request.max_output_tokens = request.limits.max_output_tokens;
-        request.transport_provenance = provider.transport_provenance();
+        request.transport_provenance = adapter.transport_provenance();
         request
             .validate()
             .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?;
@@ -1514,8 +1701,7 @@ impl LedgerWorker for LiveLedgerCellWorker {
             )
             .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?,
         );
-        let invoke_result =
-            live_ledger_blocking_invoke(std::sync::Arc::clone(&provider), authority, request);
+        let invoke_result = adapter.invoke(&authority, &request);
         // The usage envelope and effect receipt derive from the reconciled
         // store journal entry read back after the call, never from the
         // in-hand response or the worker's own status claim.
@@ -1550,6 +1736,39 @@ impl LedgerWorker for LiveLedgerCellWorker {
                         &context.selected_task.id,
                         "provider response conflicts with the reconciled journal entry",
                     ));
+                }
+                let trimmed = response.output_text.trim();
+                let candidate = if let Some(body) = trimmed.strip_prefix("```json") {
+                    body.strip_suffix("```").map(str::trim).unwrap_or("")
+                } else if let Some(body) = trimmed.strip_prefix("```") {
+                    body.strip_suffix("```").map(str::trim).unwrap_or("")
+                } else {
+                    trimmed
+                };
+                if let Ok(action_val) = serde_json::from_str::<Value>(candidate) {
+                    if action_val.get("schema_version").and_then(Value::as_str)
+                        == Some("managed_workspace_action.v1")
+                    {
+                        if let Some(target_repo_path) = &self.target_repo_path {
+                            let node_metadata = json!({
+                                "workspace_path": target_repo_path.to_string_lossy(),
+                                "workspace_root": target_repo_path.to_string_lossy(),
+                                "allowed_paths": self.allowed_paths,
+                            });
+                            self.store
+                                .apply_managed_workspace_action(
+                                    &binding,
+                                    &node_metadata,
+                                    &response.output_text,
+                                )
+                                .map_err(|e| {
+                                    Self::worker_error(
+                                        &context.selected_task.id,
+                                        &format!("managed workspace action failed: {e}"),
+                                    )
+                                })?;
+                        }
+                    }
                 }
                 Ok(WorkerResult {
                     task_id: context.selected_task.id.clone(),
@@ -1629,11 +1848,16 @@ impl LiveLedgerCellVerifier {
 
     fn bounded_command_output(
         &self,
+        env: &[(String, String)],
         argv: &[String],
     ) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
         use std::io::Read;
         use std::time::{Duration, Instant};
-        let mut child = std::process::Command::new(&argv[0])
+        let mut cmd = std::process::Command::new(&argv[0]);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let mut child = cmd
             .args(&argv[1..])
             .current_dir(&self.target_path)
             .stdin(std::process::Stdio::null())
@@ -1710,18 +1934,16 @@ impl LedgerVerifier for LiveLedgerCellVerifier {
                 evidence_digest: None,
             });
         }
-        let argv: Vec<String> = self
-            .verification_command
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-        if argv.is_empty() {
-            return Err(OrchestrationError::VerificationError(
-                "live ledger verification command is empty".to_string(),
-            ));
-        }
+        let (env, argv) = crate::product_golden_path::parse_strict_product_verification_command(
+            &self.verification_command,
+        )
+        .map_err(|e| {
+            OrchestrationError::VerificationError(format!(
+                "live ledger verification command is invalid: {e}"
+            ))
+        })?;
         let output_sha256 = result.output_digest.clone().unwrap_or_default();
-        match self.bounded_command_output(&argv) {
+        match self.bounded_command_output(&env, &argv) {
             Ok((status, output)) => {
                 let code = status.code().unwrap_or(-1);
                 let process_outcome =
@@ -1793,6 +2015,37 @@ pub(crate) fn run_live_ledger_cell_loop(
     target_repo_path: &std::path::Path,
     cell_cost_ceiling_usd: f64,
 ) -> Result<(LedgerTerminalRecord, LiveLedgerLoopEvidence), String> {
+    run_live_ledger_cell_loop_with_adapter(
+        store,
+        operator_principal,
+        executor_principal,
+        binding,
+        task,
+        ids,
+        product_task_id,
+        transport,
+        package_id,
+        target_repo_path,
+        cell_cost_ceiling_usd,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_live_ledger_cell_loop_with_adapter(
+    store: &std::sync::Arc<LocalProductStore>,
+    operator_principal: &AuthenticatedPrincipal,
+    executor_principal: &AuthenticatedPrincipal,
+    binding: &ProductHarnessMatrixBinding,
+    task: &RweTaskDefinition,
+    ids: &CellIdentities,
+    product_task_id: &str,
+    transport: &Option<std::sync::Arc<dyn crate::provider::transport::HttpTransport>>,
+    package_id: &str,
+    target_repo_path: &std::path::Path,
+    cell_cost_ceiling_usd: f64,
+    adapter: Option<std::sync::Arc<dyn LiveLedgerProviderAdapter>>,
+) -> Result<(LedgerTerminalRecord, LiveLedgerLoopEvidence), String> {
     let verification_command = task
         .expected_verification_commands
         .first()
@@ -1821,6 +2074,30 @@ pub(crate) fn run_live_ledger_cell_loop(
             &LedgerOrchestratorConfig::default(),
         )
         .map_err(|e| format!("live ledger cell task admission failed: {e}"))?;
+    let execution_workspace = if let Ok(Some(task_val)) = store.get_product_task(product_task_id) {
+        task_val
+            .pointer("/workspace_binding/workspace_path")
+            .and_then(Value::as_str)
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| target_repo_path.to_path_buf())
+    } else {
+        target_repo_path.to_path_buf()
+    };
+
+    if execution_workspace != target_repo_path {
+        for probe in ["probe_test.py", "apps/api/tests/probe_test.py"] {
+            let src = target_repo_path.join(probe);
+            if src.exists() {
+                let dst = execution_workspace.join(probe);
+                if let Some(parent) = dst.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::copy(&src, &dst);
+            }
+        }
+    }
+
     let rounds = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let worker = LiveLedgerCellWorker::new(
         std::sync::Arc::clone(store),
@@ -1836,9 +2113,11 @@ pub(crate) fn run_live_ledger_cell_loop(
         transport.clone(),
         package_id.to_string(),
         std::sync::Arc::clone(&rounds),
+        Some(execution_workspace.clone()),
+        adapter,
     );
     let verifier = LiveLedgerCellVerifier::new(
-        target_repo_path.to_path_buf(),
+        execution_workspace.clone(),
         verification_command,
         task.timeout_ms,
     )?;
@@ -1854,6 +2133,20 @@ pub(crate) fn run_live_ledger_cell_loop(
     let evidence = LiveLedgerLoopEvidence {
         rounds: rounds.lock().map(|r| r.clone()).unwrap_or_default(),
     };
+
+    if execution_workspace != target_repo_path {
+        for probe in ["probe_test.py", "apps/api/tests/probe_test.py"] {
+            let src = execution_workspace.join(probe);
+            if src.exists() {
+                let dst = target_repo_path.join(probe);
+                if let Some(parent) = dst.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::copy(&src, &dst);
+            }
+        }
+    }
+
     Ok((record, evidence))
 }
 
@@ -7550,6 +7843,10 @@ mod tests {
             "def test_probe_ok():\n    assert False, 'probe failure'\n"
         };
         std::fs::write(target.join("probe_test.py"), body).unwrap();
+        let api_tests = target.join("apps/api/tests");
+        if api_tests.is_dir() {
+            std::fs::write(api_tests.join("probe_test.py"), body).unwrap();
+        }
     }
 
     fn live_probe_task(base: &RweTaskDefinition, max_calls: u64) -> RweTaskDefinition {
@@ -8317,5 +8614,240 @@ mod tests {
             .unwrap();
         assert_eq!(off_outcome.classification, "blocked_provider_free_mode");
         assert_eq!(off_outcome.provider_requests, 0);
+    }
+
+    #[test]
+    fn live_ledger_initial_fail_repaired_by_worker_modification_to_pass() {
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = live_ledger_test_env();
+        let Some(bed) = live_ledger_bed("run-live-repair", "t-live-repair", "live-repair.db")
+        else {
+            eprintln!("SKIP: frozen target repository unavailable");
+            return;
+        };
+        let (binding, product_task_id) = admit_live_ledger_intake(&bed);
+        // Stage initial FAIL on disk in apps/api/tests/probe_test.py
+        stage_probe_verifier_target(&bed.target, false);
+        assert!(
+            std::fs::read_to_string(bed.target.join("apps/api/tests/probe_test.py"))
+                .unwrap()
+                .contains("assert False")
+        );
+
+        let mut task = live_probe_task(&bed.task0, 3);
+        task.expected_verification_commands =
+            vec!["python3 -m pytest apps/api/tests/probe_test.py -q".to_string()];
+
+        // Round 1: worker produces a response without workspace modifications -> verifier fails.
+        // Controller detects verification failure and replans with a repair task.
+        // Round 2: worker produces managed_workspace_action.v1 modifying the test to pass.
+        // Verifier runs again and passes -> loop completes.
+        let repair_patch = json!({
+            "schema_version": "managed_workspace_action.v1",
+            "path": "apps/api/tests/probe_test.py",
+            "action": "replace_text",
+            "old_text": "assert False, 'probe failure'",
+            "new_text": "assert True"
+        });
+        let resp_round1 = live_success_response(0);
+        let resp_round2 = Ok(mock_rwe_openai_response(
+            "resp-live-repair",
+            OPERATOR_ADMITTED_MODEL,
+            repair_patch,
+        ));
+
+        use crate::provider::transport::MockTransport;
+        let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
+            Some(Arc::new(MockTransport::new(vec![resp_round1, resp_round2])));
+
+        let executor = bed
+            .store
+            .authenticate_managed_acceptance_principal(
+                bed.principal.tenant_id(),
+                &bed.executor_key_id,
+                None,
+            )
+            .unwrap();
+
+        let (record, evidence) = run_live_ledger_cell_loop(
+            &bed.store,
+            &bed.principal,
+            &executor,
+            &binding,
+            &task,
+            &bed.ids,
+            &product_task_id,
+            &transport,
+            "test-package",
+            &bed.target,
+            0.20,
+        )
+        .unwrap();
+
+        assert_eq!(
+            record.disposition,
+            crate::harness_evolution::LedgerTerminalDisposition::Completed
+        );
+        assert_eq!(evidence.rounds.len(), 2);
+        assert_eq!(record.metrics.replan_count, 1);
+        assert_eq!(record.metrics.provider_calls, Some(2));
+        assert_eq!(record.metrics.verification_count, 2);
+
+        // Verify disk content was ACTUALLY modified by the worker's action:
+        let file_content =
+            std::fs::read_to_string(bed.target.join("apps/api/tests/probe_test.py")).unwrap();
+        assert!(file_content.contains("assert True"));
+        assert!(!file_content.contains("assert False"));
+
+        let outcome = project_live_ledger_cell_outcome(
+            &bed.store,
+            &product_task_id,
+            &evidence.rounds,
+            &record,
+            "test-package",
+            "test-sha",
+            "run-live-repair",
+            &bed.ids,
+        );
+        assert_eq!(outcome.classification, "fixture_success");
+        assert_eq!(outcome.verification_status, "evidence_recorded");
+        assert!(outcome.verification_trustworthy);
+        assert_eq!(outcome.provider_requests, 2);
+    }
+
+    #[test]
+    fn live_ledger_openai_compatible_seam_with_matrix_model_identity() {
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = live_ledger_test_env();
+        let _custom_env =
+            LiveLedgerEnvGuard::set(&[("CUSTOM_OPENAI_API_KEY", Some("test-custom-token"))]);
+        let Some(bed) = live_ledger_bed("run-live-seam", "t-live-seam", "live-seam.db") else {
+            eprintln!("SKIP: frozen target repository unavailable");
+            return;
+        };
+        let (binding, product_task_id) = admit_live_ledger_intake(&bed);
+        stage_probe_verifier_target(&bed.target, true);
+        let task = live_probe_task(&bed.task0, 3);
+
+        use crate::provider::transport::MockTransport;
+        let mock_transport: Arc<dyn crate::provider::transport::HttpTransport> =
+            Arc::new(MockTransport::new(vec![Ok(mock_rwe_openai_response(
+                "resp-live-custom",
+                "custom-openai-model",
+                json!({"status": "custom-provider-ok"}),
+            ))]));
+        let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
+            Some(mock_transport.clone());
+
+        let custom_adapter = Arc::new(OpenAiCompatibleProviderAdapter {
+            provider_id: "custom-openai-provider".to_string(),
+            provider_kind: "openai_compatible".to_string(),
+            base_url: "https://api.opencode.example.com/v1".to_string(),
+            endpoint_path: "chat/completions".to_string(),
+            credential_reference: "CUSTOM_OPENAI_API_KEY".to_string(),
+            provider_subject: "provider:custom_openai".to_string(),
+            model_id: Some("custom-openai-model".to_string()),
+            transport: mock_transport,
+        });
+
+        let executor = bed
+            .store
+            .authenticate_managed_acceptance_principal(
+                bed.principal.tenant_id(),
+                &bed.executor_key_id,
+                None,
+            )
+            .unwrap();
+
+        let (record, evidence) = run_live_ledger_cell_loop_with_adapter(
+            &bed.store,
+            &bed.principal,
+            &executor,
+            &binding,
+            &task,
+            &bed.ids,
+            &product_task_id,
+            &transport,
+            "test-package",
+            &bed.target,
+            0.20,
+            Some(custom_adapter),
+        )
+        .unwrap();
+
+        assert_eq!(
+            record.disposition,
+            crate::harness_evolution::LedgerTerminalDisposition::Completed
+        );
+        assert_eq!(evidence.rounds.len(), 1);
+        let journal = live_round_journal(
+            &bed.store,
+            &product_task_id,
+            &evidence.rounds[0].delegated_attempt_id,
+        );
+        assert_eq!(journal.len(), 1);
+        assert_eq!(
+            journal[0].get("requested_model").and_then(Value::as_str),
+            Some("custom-openai-model")
+        );
+    }
+
+    #[test]
+    fn live_ledger_repeated_verifier_failure_terminates_no_progress() {
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = live_ledger_test_env();
+        let Some(bed) = live_ledger_bed("run-live-np", "t-live-np", "live-np.db") else {
+            eprintln!("SKIP: frozen target repository unavailable");
+            return;
+        };
+        let (binding, product_task_id) = admit_live_ledger_intake(&bed);
+        stage_probe_verifier_target(&bed.target, false);
+        let task = live_probe_task(&bed.task0, 5);
+
+        use crate::provider::transport::MockTransport;
+        let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
+            Some(Arc::new(MockTransport::new(vec![
+                live_success_response(0),
+                live_success_response(1),
+                live_success_response(2),
+                live_success_response(3),
+            ])));
+
+        let executor = bed
+            .store
+            .authenticate_managed_acceptance_principal(
+                bed.principal.tenant_id(),
+                &bed.executor_key_id,
+                None,
+            )
+            .unwrap();
+
+        let (record, evidence) = run_live_ledger_cell_loop(
+            &bed.store,
+            &bed.principal,
+            &executor,
+            &binding,
+            &task,
+            &bed.ids,
+            &product_task_id,
+            &transport,
+            "test-package",
+            &bed.target,
+            0.20,
+        )
+        .unwrap();
+
+        assert!(
+            record.disposition == crate::harness_evolution::LedgerTerminalDisposition::NoProgress
+                || record.disposition
+                    == crate::harness_evolution::LedgerTerminalDisposition::Failed
+        );
+        assert!(evidence.rounds.len() >= 2);
     }
 }

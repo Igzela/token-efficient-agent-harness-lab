@@ -390,7 +390,27 @@ impl DeepSeekPriceProfile {
     }
 
     pub fn estimate_usd(&self, model: &str, usage: &ManagedUsage) -> Result<f64, String> {
-        self.validate_for(model, true)?;
+        self.estimate_usd_with_provider(DEEPSEEK_PROVIDER_KIND, model, usage)
+    }
+
+    pub fn estimate_usd_with_provider(
+        &self,
+        provider_kind: &str,
+        model: &str,
+        usage: &ManagedUsage,
+    ) -> Result<f64, String> {
+        if provider_kind == DEEPSEEK_PROVIDER_KIND {
+            self.validate_for(model, true)?;
+        } else {
+            let rates = [
+                self.flash_cache_hit_per_million_usd,
+                self.flash_cache_miss_per_million_usd,
+                self.flash_output_per_million_usd,
+            ];
+            if rates.iter().any(|v| !v.is_finite() || *v < 0.0) {
+                return Err("price profile contains invalid rates".to_string());
+            }
+        }
         let (hit, miss, output) = if model == "deepseek-v4-pro" {
             (
                 self.pro_cache_hit_per_million_usd,
@@ -482,20 +502,34 @@ impl ManagedProviderCallRequest {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != MANAGED_PROVIDER_CALL_SCHEMA
-            || self.provider_kind != DEEPSEEK_PROVIDER_KIND
-            || self.host != "api.deepseek.com"
-            || self.credential_reference != DEEPSEEK_CREDENTIAL_REFERENCE
-            || self.base_url != self.protocol.base_url()
-            || self.endpoint_path != self.protocol.endpoint_path()
-        {
-            return Err("managed DeepSeek provider identity or route is not canonical".to_string());
+        if self.schema_version != MANAGED_PROVIDER_CALL_SCHEMA {
+            return Err("managed provider call schema version is not canonical".to_string());
         }
-        if !DEEPSEEK_MODELS.contains(&self.requested_model.as_str()) {
-            return Err("requested model is not an admitted DeepSeek identity".to_string());
-        }
-        if self.requested_model != self.role.default_model() && !self.single_model_plan {
-            return Err("requested model does not match the bounded role route".to_string());
+        if self.provider_kind == DEEPSEEK_PROVIDER_KIND {
+            if self.host != "api.deepseek.com"
+                || self.credential_reference != DEEPSEEK_CREDENTIAL_REFERENCE
+                || self.base_url != self.protocol.base_url()
+                || self.endpoint_path != self.protocol.endpoint_path()
+            {
+                return Err(
+                    "managed DeepSeek provider identity or route is not canonical".to_string(),
+                );
+            }
+            if !DEEPSEEK_MODELS.contains(&self.requested_model.as_str()) {
+                return Err("requested model is not an admitted DeepSeek identity".to_string());
+            }
+            if self.requested_model != self.role.default_model() && !self.single_model_plan {
+                return Err("requested model does not match the bounded role route".to_string());
+            }
+        } else {
+            if self.host.trim().is_empty()
+                || self.credential_reference.trim().is_empty()
+                || self.base_url.trim().is_empty()
+                || self.endpoint_path.trim().is_empty()
+                || self.requested_model.trim().is_empty()
+            {
+                return Err("managed provider identity or route fields cannot be empty".to_string());
+            }
         }
         self.binding.validate()?;
         if self.messages.is_empty() || self.max_output_tokens == 0 {
@@ -525,12 +559,18 @@ impl ManagedProviderCallRequest {
             return Err("managed input ceiling exceeded before send".to_string());
         }
         if let Some(max_cost_usd) = self.limits.max_cost_usd {
-            self.price_profile
-                .validate_for(&self.requested_model, true)?;
-            let worst_case_rate = if self.requested_model == "deepseek-v4-pro" {
+            let worst_case_rate = if self.provider_kind == DEEPSEEK_PROVIDER_KIND {
                 self.price_profile
-                    .pro_cache_miss_per_million_usd
-                    .max(self.price_profile.pro_output_per_million_usd)
+                    .validate_for(&self.requested_model, true)?;
+                if self.requested_model == "deepseek-v4-pro" {
+                    self.price_profile
+                        .pro_cache_miss_per_million_usd
+                        .max(self.price_profile.pro_output_per_million_usd)
+                } else {
+                    self.price_profile
+                        .flash_cache_miss_per_million_usd
+                        .max(self.price_profile.flash_output_per_million_usd)
+                }
             } else {
                 self.price_profile
                     .flash_cache_miss_per_million_usd
@@ -579,12 +619,18 @@ impl ManagedProviderCallRequest {
         if self.limits.max_cost_usd.is_none() {
             return Ok(0.0);
         }
-        self.price_profile
-            .validate_for(&self.requested_model, true)?;
-        let worst_case_rate = if self.requested_model == "deepseek-v4-pro" {
+        let worst_case_rate = if self.provider_kind == DEEPSEEK_PROVIDER_KIND {
             self.price_profile
-                .pro_cache_miss_per_million_usd
-                .max(self.price_profile.pro_output_per_million_usd)
+                .validate_for(&self.requested_model, true)?;
+            if self.requested_model == "deepseek-v4-pro" {
+                self.price_profile
+                    .pro_cache_miss_per_million_usd
+                    .max(self.price_profile.pro_output_per_million_usd)
+            } else {
+                self.price_profile
+                    .flash_cache_miss_per_million_usd
+                    .max(self.price_profile.flash_output_per_million_usd)
+            }
         } else {
             self.price_profile
                 .flash_cache_miss_per_million_usd
@@ -1122,15 +1168,28 @@ impl ManagedProviderCallAuthority {
             || current.consumed_by_attempt_id.as_deref()
                 != Some(request.binding.attempt_id.as_str())
             || current.lease_status != "current"
-            || contract.provider_kind != request.provider_kind
+        {
+            return Err(ManagedProviderCallError::invalid_request(
+                "persisted managed authority is stale or mismatched",
+            ));
+        }
+        let provider_matches = if request.provider_kind == DEEPSEEK_PROVIDER_KIND {
+            contract.provider_kind == request.provider_kind
+                && contract.host == request.host
+                && contract.base_url == request.base_url
+                && contract.endpoint_path == request.endpoint_path
+                && (contract.requested_model == request.requested_model
+                    || request.single_model_plan)
+        } else {
+            !request.base_url.is_empty()
+                && !request.endpoint_path.is_empty()
+                && !request.requested_model.is_empty()
+        };
+        if !provider_matches
             || contract.protocol != request.protocol
-            || contract.host != request.host
-            || contract.base_url != request.base_url
-            || contract.endpoint_path != request.endpoint_path
             || contract.request_schema_version != request.schema_version
             || contract.response_schema_version != MANAGED_PROVIDER_RESPONSE_SCHEMA
             || contract.usage_parser_version != DEEPSEEK_USAGE_PARSER_VERSION
-            || contract.requested_model != request.requested_model
             || contract.limits != request.limits
             || contract.price_profile != request.price_profile
         {
@@ -1434,7 +1493,14 @@ async fn invoke_wire(
         .resolve(&credential.credential_ref_id)
         .map_err(|_| ManagedProviderCallError {
             domain: "provider_auth".to_string(),
-            message: "DeepSeek credential is absent".to_string(),
+            message: if credential.credential_ref_id == DEEPSEEK_CREDENTIAL_REFERENCE {
+                "DeepSeek credential is absent".to_string()
+            } else {
+                format!(
+                    "provider credential '{}' is absent",
+                    credential.credential_ref_id
+                )
+            },
             retryable: false,
             effect: ManagedFailureEffect::PreSend,
         })?;
@@ -1636,7 +1702,11 @@ fn parse_non_stream_response(
         Some(
             request
                 .price_profile
-                .estimate_usd(&request.requested_model, &usage)
+                .estimate_usd_with_provider(
+                    &request.provider_kind,
+                    &request.requested_model,
+                    &usage,
+                )
                 .map_err(ManagedProviderCallError::invalid_request)?,
         )
     } else {
@@ -1871,7 +1941,11 @@ fn finish_stream(
         Some(
             request
                 .price_profile
-                .estimate_usd(&request.requested_model, &usage)
+                .estimate_usd_with_provider(
+                    &request.provider_kind,
+                    &request.requested_model,
+                    &usage,
+                )
                 .map_err(ManagedProviderCallError::invalid_request)?,
         )
     } else {
