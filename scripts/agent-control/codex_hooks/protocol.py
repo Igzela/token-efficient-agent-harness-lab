@@ -83,6 +83,7 @@ class HookInput:
     tool_response: Any | None = None
     tool_use_id: str | None = None
     trigger: str | None = None
+    source: str | None = None  # SessionStart source: startup|resume|clear|compact
     raw_payload: dict[str, Any] = field(default_factory=dict, hash=False, compare=False)
 
     @classmethod
@@ -105,6 +106,7 @@ class HookInput:
             tool_response=data.get("tool_response") if "tool_response" in data else data.get("toolResponse"),
             tool_use_id=str(data["tool_use_id"]) if "tool_use_id" in data and data["tool_use_id"] is not None else (str(data["toolUseId"]) if "toolUseId" in data and data["toolUseId"] is not None else None),
             trigger=str(data.get("trigger")) if data.get("trigger") is not None else None,
+            source=str(data.get("source")) if data.get("source") is not None else None,
             raw_payload=dict(data),
         )
 

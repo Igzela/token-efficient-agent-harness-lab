@@ -18,6 +18,7 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
+from .evidence import build_evidence_record, evidence_binding_matches
 from .protocol import HookInput, HookOutput
 from .telemetry import HookTelemetry
 
@@ -124,15 +125,32 @@ class ContinuationHandler:
         focused_tests: list[str],
         expected_evidence: list[str],
     ) -> tuple[bool, str]:
-        """Verify that declared verification evidence or focused tests are satisfied."""
-        # 1. Check if verification evidence receipt exists and records passed tests
+        """Verify that declared verification evidence or focused tests are satisfied.
+
+        Stored PASS evidence is accepted only when bound to the current
+        WorkCard id, focused-test digest, command, and code/workspace state.
+        Stale records from old WorkCards, moved code, or mismatched tests are
+        rejected and the focused tests are re-executed for fresh evidence.
+        """
+        card_id = os.environ.get("STEWARD_WORKCARD_ID", "").strip()
+
+        # 1. Bound evidence receipt must match the current WorkCard state
         if self.evidence_file.is_file() and not self.evidence_file.is_symlink():
             try:
                 ev_data = json.loads(self.evidence_file.read_text(encoding="utf-8"))
-                if ev_data.get("status") == "passed":
-                    return True, ""
             except Exception:
-                pass
+                ev_data = None
+            if ev_data is not None:
+                bound, reason = evidence_binding_matches(
+                    ev_data,
+                    workcard_id=card_id,
+                    focused_tests=focused_tests,
+                    worktree=worktree,
+                )
+                if bound:
+                    return True, ""
+                # Stale/unbound evidence is ignored (never accepted); fall
+                # through to re-execution so fresh evidence can be produced.
 
         # 2. Check expected_evidence files if declared
         if expected_evidence:
@@ -167,11 +185,17 @@ class ContinuationHandler:
                 except Exception as exc:
                     return False, f"focused_test_execution_error: {exc}"
 
-            # If all focused tests passed, record evidence
-            self.evidence_file.write_text(
-                json.dumps({"status": "passed", "focused_tests": focused_tests}, indent=2),
-                encoding="utf-8",
+            # All focused tests passed with real exit-status semantics: record
+            # bound evidence so the next Stop can accept it without re-running.
+            record = build_evidence_record(
+                workcard_id=card_id,
+                focused_tests=focused_tests,
+                command=" ".join(cmd) if focused_tests else "",
+                success=True,
+                worktree=worktree,
+                receipt_id=0,
             )
+            self.evidence_file.write_text(json.dumps(record, indent=2), encoding="utf-8")
             return True, ""
 
         # If no focused tests or evidence files are declared, having in-scope edits is sufficient
@@ -260,7 +284,12 @@ class ContinuationHandler:
         )
 
     def handle_stop(self, hook_input: HookInput) -> tuple[int, HookOutput, str | None]:
-        """Process Stop event, returning exit_code, HookOutput, and optional stderr message."""
+        """Process Stop event, returning exit_code, HookOutput, and optional stderr message.
+
+        Always exits 0 with a decision document: the Codex runtime only parses
+        hook stdout on exit 0, so a block signaled via nonzero exit would be
+        ignored and the session would stop fail-open.
+        """
         decision = self.evaluate_stop(hook_input)
         if decision.allow_stop:
             return 0, HookOutput(
@@ -276,4 +305,4 @@ class ContinuationHandler:
                 reason=prompt,
                 stopReason=decision.reason,
             )
-            return 2, output, prompt
+            return 0, output, prompt

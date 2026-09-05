@@ -165,7 +165,12 @@ def provision_trust(
     codex_binary: str | Path = "/home/igzela/.local/bin/codex",
     timeout_seconds: int = 15,
 ) -> dict[str, str]:
-    """Discover hooks via Codex, write per-handler trust entries, and verify readback."""
+    """Discover hooks via Codex, write per-handler trust entries, and verify readback.
+
+    Fail-closed: raises on any discovery/provisioning/verification failure.
+    A config that declares hooks but yields zero discovered hooks raises
+    ``hook_discovery_empty`` instead of silently succeeding.
+    """
     cfg = Path(config_path).resolve()
     if not cfg.is_file():
         raise FileNotFoundError(f"config_not_found: {cfg}")
@@ -174,7 +179,7 @@ def provision_trust(
     # Step 1: Run discovery to get active hook keys and current hashes
     hooks = discover_hooks(codex_home, codex_binary=codex_binary, timeout_seconds=timeout_seconds)
     if not hooks:
-        return {}
+        raise RuntimeError(f"hook_discovery_empty: no hooks discovered for config {cfg}")
 
     trust_entries: dict[str, str] = {}
     lines: list[str] = ["", "# Per-handler trust entries generated from Codex discovery"]
@@ -261,7 +266,17 @@ class HookConfigGenerator:
         codex_binary: str | Path | None = None,
         auto_trust: bool = True,
     ) -> Path:
-        """Write generated configuration to destination and optionally bootstrap trust."""
+        """Write generated configuration to destination and optionally bootstrap trust.
+
+        Fail-closed contract:
+        - ``auto_trust=True`` (default): native discovery + trust provisioning +
+          readback verification must all succeed, otherwise a RuntimeError is
+          raised. No synthetic or predicted trust is ever written.
+        - ``auto_trust=False``: writes the hook configuration with NO trust
+          entries. Hooks remain untrusted until the caller explicitly provisions
+          trust via :func:`provision_trust`. Use only for tests that assert
+          untrusted discovery or that inject an explicit mock provisioner.
+        """
         target = Path(target_path).resolve()
         target.parent.mkdir(parents=True, exist_ok=True)
         content = self.generate_toml()
@@ -269,26 +284,9 @@ class HookConfigGenerator:
 
         if auto_trust:
             bin_path = codex_binary or shutil.which("codex") or "/home/igzela/.local/bin/codex"
-            provisioned = False
-            if bin_path and (Path(bin_path).is_file() or shutil.which(str(bin_path))):
-                try:
-                    provision_trust(target, codex_binary=bin_path)
-                    provisioned = True
-                except Exception:
-                    pass
-
-            if not provisioned:
-                # In offline/mock test environments where Codex binary is absent (e.g. CI runner),
-                # provision deterministic per-handler trust entries based on predicted hook keys.
-                fallback_lines: list[str] = ["", "# Fallback per-handler trust state (offline/mock environment)"]
-                for event in self.hook_events:
-                    key = hook_key(target, event, 0, 0)
-                    cmd = f"{self.python_executable} {self.dispatcher_path} {event}"
-                    h = hashlib.sha256(cmd.encode("utf-8")).hexdigest()
-                    fallback_lines.append(f'[hooks.state."{key}"]')
-                    fallback_lines.append(f'trusted_hash = "sha256:{h}"')
-                    fallback_lines.append("")
-                with open(target, "a", encoding="utf-8") as f:
-                    f.write("\n".join(fallback_lines))
+            try:
+                provision_trust(target, codex_binary=bin_path)
+            except Exception as exc:
+                raise RuntimeError(f"hook_trust_provisioning_failed: {exc}") from exc
 
         return target

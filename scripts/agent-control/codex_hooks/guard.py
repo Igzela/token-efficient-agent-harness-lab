@@ -35,16 +35,28 @@ FORBIDDEN_COMMAND_PATTERNS = (
     re.compile(r"\b(?:curl|wget|ssh|nc|ncat|telnet|ftp|scp|rsync)\b"),
 )
 
+# Shell constructs whose effects cannot be statically proven. Any command
+# containing them is blocked: the regex analysis below is explicitly NOT a
+# complete shell parser, so unprovable scope fails closed.
+UNPROVABLE_SHELL_CONSTRUCTS = (
+    re.compile(r"\$\("),      # command substitution $(...)
+    re.compile(r"`"),         # legacy command substitution
+    re.compile(r"<\("),       # process substitution <(...)
+    re.compile(r">\("),       # process substitution >(...)
+)
+
+# Redirection operators whose targets must be scope-checked. `2>&1`-style fd
+# duplications, /dev/null, and /dev/std{out,err} are not file writes and are
+# exempted explicitly in _is_command_low_risk_and_scoped.
+REDIRECTION_PATTERN = re.compile(r"(?:\d*&?>>?\|?)\s*([^\s;&|]+)")
+
+REDIRECTION_EXEMPT_TARGETS = ("/dev/null", "/dev/stdout", "/dev/stderr")
+
+# Chain operators: each segment must independently prove scope. Split is
+# quote-aware (single/double quotes); anything else unparseable fails closed.
+CHAIN_SPLIT_PATTERN = re.compile(r"&&|\|\||;;|;|\|")
+
 LOW_RISK_COMMAND_PREFIXES = (
-    "pytest",
-    "python3 -m unittest",
-    "python -m unittest",
-    "python3 -m py_compile",
-    "python -m py_compile",
-    "cargo test",
-    "cargo check",
-    "cargo build",
-    "uv run",
     "git status",
     "git diff",
     "git log",
@@ -64,6 +76,23 @@ LOW_RISK_COMMAND_PREFIXES = (
     "echo",
     "printf",
     "test",
+)
+
+# Verification-runner heads. Unlike the read-only tools above, these execute
+# repository code, so every path-like argument must either sit inside the
+# allowed scope or be explicitly declared in STEWARD_FOCUSED_TESTS. This keeps
+# the worker's own sanctioned verification working without opening arbitrary
+# out-of-scope execution.
+TEST_RUNNER_PREFIXES = (
+    "pytest",
+    "python3 -m unittest",
+    "python -m unittest",
+    "python3 -m py_compile",
+    "python -m py_compile",
+    "cargo test",
+    "cargo check",
+    "cargo build",
+    "uv run",
 )
 
 
@@ -113,6 +142,19 @@ class GuardHandler:
             forbidden = []
 
         return True, "", worktree, allowed, forbidden
+
+    def _get_focused_tests(self) -> list[str]:
+        """Return the WorkCard-declared focused verification checks (may be empty)."""
+        focused_raw = os.environ.get("STEWARD_FOCUSED_TESTS", "")
+        if not focused_raw:
+            return []
+        try:
+            focused = json.loads(focused_raw)
+        except Exception:
+            return []
+        if not isinstance(focused, list):
+            return []
+        return [str(t).strip() for t in focused if isinstance(t, str) and str(t).strip()]
 
     def _extract_paths(self, tool_input: dict[str, Any] | None) -> list[str]:
         """Extract candidate target file paths from tool input payload."""
@@ -182,12 +224,99 @@ class GuardHandler:
 
         return True, ""
 
+    def _split_command_chain(self, cmd_str: str) -> list[str] | None:
+        """Quote-aware split of a shell command on chain operators.
+
+        Returns None when quotes are unbalanced (unparseable -> fail closed).
+        """
+        segments: list[str] = []
+        current: list[str] = []
+        quote: str | None = None
+        i = 0
+        n = len(cmd_str)
+        while i < n:
+            ch = cmd_str[i]
+            if quote is not None:
+                current.append(ch)
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in ("'", '"'):
+                quote = ch
+                current.append(ch)
+                i += 1
+                continue
+            if ch == "\\" and i + 1 < n:
+                current.append(ch)
+                current.append(cmd_str[i + 1])
+                i += 2
+                continue
+            m = CHAIN_SPLIT_PATTERN.match(cmd_str, i)
+            if m:
+                segments.append("".join(current))
+                current = []
+                i = m.end()
+                continue
+            current.append(ch)
+            i += 1
+        if quote is not None:
+            return None
+        segments.append("".join(current))
+        return segments
+
+    def _is_path_like_arg(self, token: str) -> bool:
+        """Heuristic: does this argv token look like a filesystem path?"""
+        if not token or token.startswith("-"):
+            return False
+        if "/" in token or "\\" in token:
+            return True
+        if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*\.[A-Za-z0-9]{1,5}", token):
+            return True
+        return False
+
+    def _is_script_invocation_scoped(
+        self,
+        parts: list[str],
+        worktree_root: Path,
+        allowed_paths: list[str],
+        forbidden_paths: list[str],
+    ) -> tuple[bool, str]:
+        """Scope-check `python <script> [args...]` / `./script [args...]`."""
+        head = parts[0]
+        if head.startswith("./"):
+            script_args = [head[2:]] + parts[1:]
+        elif head == "python" or head == "python3":
+            if len(parts) < 2:
+                return False, "python invocation without target"
+            if parts[1].startswith("-"):
+                # Covers `python -c ...` and any other flag-led execution:
+                # arbitrary code execution can never prove scope.
+                return False, f"python flag-led execution is not provably scoped: {parts[1]}"
+            script_args = parts[1:]
+        else:
+            return False, "not a script invocation"
+
+        for arg in script_args:
+            if self._is_path_like_arg(arg):
+                ok, reason = self._is_path_allowed(arg, worktree_root, allowed_paths, forbidden_paths)
+                if not ok:
+                    return False, f"script argument out of scope: {reason}"
+        # The entry script itself must always be in scope.
+        ok, reason = self._is_path_allowed(
+            script_args[0], worktree_root, allowed_paths, forbidden_paths
+        )
+        if not ok:
+            return False, f"script target out of scope: {reason}"
+        return True, ""
+
     def _is_command_low_risk_and_scoped(
         self,
         cmd_str: str,
         worktree_root: Path,
         allowed_paths: list[str],
         forbidden_paths: list[str],
+        focused_tests: list[str] | None = None,
     ) -> tuple[bool, str]:
         """Verify command is provably low-risk and in-scope (no auto-allow on blacklist miss)."""
         stripped = cmd_str.strip()
@@ -199,40 +328,140 @@ class GuardHandler:
             if pat.search(stripped):
                 return False, f"matches_forbidden_pattern: {pat.pattern}"
 
-        # 2. Check shell redirection targets
-        for m in re.finditer(r"(?:>|>>)\s*([^\s;&|]+)", stripped):
+        # 2. Unprovable shell constructs fail closed: this analysis is
+        # explicitly not a complete shell parser.
+        for pat in UNPROVABLE_SHELL_CONSTRUCTS:
+            if pat.search(stripped):
+                return False, f"unprovable_shell_construct: {pat.pattern}"
+
+        # 3. Check shell redirection targets (whole command, all segments)
+        for m in REDIRECTION_PATTERN.finditer(stripped):
             target = m.group(1).strip()
+            if not target:
+                continue
+            if target in REDIRECTION_EXEMPT_TARGETS:
+                continue
+            if re.fullmatch(r"&\d+", target):
+                continue  # fd duplication (e.g. 2>&1), not a file write
             ok, reason = self._is_path_allowed(target, worktree_root, allowed_paths, forbidden_paths)
             if not ok:
                 return False, f"command_redirection_out_of_scope: {reason}"
 
-        # 3. Whitelist check: Must start with a known low-risk tool prefix
-        is_low_risk = False
-        for prefix in LOW_RISK_COMMAND_PREFIXES:
-            if stripped == prefix or stripped.startswith(f"{prefix} ") or stripped.startswith(f"{prefix}\t"):
-                is_low_risk = True
-                break
-
-        if not is_low_risk:
-            # Check if command is a safe python execution or script within allowed_paths
-            if stripped.startswith("python") or stripped.startswith("./"):
-                try:
-                    parts = shlex.split(stripped)
-                    if len(parts) >= 2:
-                        target_file = parts[1]
-                        ok, _ = self._is_path_allowed(target_file, worktree_root, allowed_paths, forbidden_paths)
-                        if ok:
-                            is_low_risk = True
-                except Exception:
-                    pass
-
-        if not is_low_risk:
-            return False, f"command_not_provably_scoped_or_low_risk: {stripped[:80]}"
+        # 4. Every chain segment must independently prove scope.
+        segments = self._split_command_chain(stripped)
+        if segments is None:
+            return False, "unbalanced_quotes_unparseable_command"
+        focused = focused_tests if focused_tests is not None else self._get_focused_tests()
+        for segment in segments:
+            seg = segment.strip()
+            if not seg:
+                return False, "empty_chain_segment"
+            ok, reason = self._is_segment_low_risk_and_scoped(
+                seg, worktree_root, allowed_paths, forbidden_paths, focused
+            )
+            if not ok:
+                return False, reason
 
         return True, ""
 
+    def _is_test_runner_segment_allowed(
+        self,
+        seg: str,
+        worktree_root: Path,
+        allowed_paths: list[str],
+        forbidden_paths: list[str],
+        focused_tests: list[str],
+    ) -> tuple[bool, str]:
+        """Allow a verification-runner segment only for scoped/declared targets.
+
+        Every path-like argument must sit inside the allowed scope or be
+        explicitly declared in STEWARD_FOCUSED_TESTS. A runner segment with no
+        path-like arguments (e.g. bare `cargo build`) is allowed: it executes
+        the repository's own declared build/test entrypoints, not arbitrary
+        out-of-scope files.
+        """
+        try:
+            parts = shlex.split(seg)
+        except Exception:
+            return False, "command_not_provably_scoped_or_low_risk: unparseable segment"
+        for arg in parts[1:]:
+            if not self._is_path_like_arg(arg):
+                continue
+            ok, _reason = self._is_path_allowed(arg, worktree_root, allowed_paths, forbidden_paths)
+            if ok:
+                continue
+            if self._is_focused_test_target(arg, focused_tests):
+                continue
+            return False, (
+                f"test_runner_target_out_of_scope: {arg} "
+                f"(allowed: {allowed_paths}, focused_tests: {focused_tests})"
+            )
+        return True, ""
+
+    def _is_focused_test_target(self, arg: str, focused_tests: list[str]) -> bool:
+        """Check whether a path-like arg is a WorkCard-declared focused test."""
+        candidate = arg.strip()
+        for entry in focused_tests:
+            if not entry:
+                continue
+            if candidate == entry:
+                return True
+            # Focused entries may be full commands ("pytest tests/x.py") or
+            # bare paths ("tests/x.py"); match either form by suffix.
+            if entry.endswith(candidate) or candidate.endswith(entry):
+                return True
+        return False
+
+    def _is_segment_low_risk_and_scoped(
+        self,
+        seg: str,
+        worktree_root: Path,
+        allowed_paths: list[str],
+        forbidden_paths: list[str],
+        focused_tests: list[str] | None = None,
+    ) -> tuple[bool, str]:
+        """Verify a single chain segment is provably safe.
+
+        Read-only inspection tools are allowed unconditionally. Verification
+        runners are allowed only for scoped/declared targets. Scoped script
+        execution (python/<.->) is allowed only when every path-like argument
+        is in scope. Everything else fails closed.
+        """
+        focused = focused_tests if focused_tests is not None else self._get_focused_tests()
+
+        # 1. Read-only whitelist: workspace inspection without write capability.
+        for prefix in LOW_RISK_COMMAND_PREFIXES:
+            if seg == prefix or seg.startswith(f"{prefix} ") or seg.startswith(f"{prefix}\t"):
+                return True, ""
+
+        # 2. Verification runners: scoped or WorkCard-declared targets only.
+        for prefix in TEST_RUNNER_PREFIXES:
+            if seg == prefix or seg.startswith(f"{prefix} ") or seg.startswith(f"{prefix}\t"):
+                return self._is_test_runner_segment_allowed(
+                    seg, worktree_root, allowed_paths, forbidden_paths, focused
+                )
+
+        # 3. Scoped script execution (python <in-scope script>, ./<in-scope script>).
+        try:
+            parts = shlex.split(seg)
+        except Exception:
+            return False, "command_not_provably_scoped_or_low_risk: unparseable segment"
+        if parts and (parts[0] in ("python", "python3") or parts[0].startswith("./")):
+            ok, reason = self._is_script_invocation_scoped(parts, worktree_root, allowed_paths, forbidden_paths)
+            if ok:
+                return True, ""
+            return False, reason
+
+        return False, f"command_not_provably_scoped_or_low_risk: {seg[:80]}"
+
     def handle_pre_tool_use(self, hook_input: HookInput) -> HookOutput:
-        """Evaluate PreToolUse against WorkCard context, path constraints, and command safety."""
+        """Evaluate PreToolUse against WorkCard context, path constraints, and command safety.
+
+        Shell/exec commands are approved only when provably scoped and
+        low-risk; anything else (touch/cp/mv/tee/sed/python -c and friends)
+        is blocked. The static analysis is explicitly not a complete shell
+        parser, so unprovable scope fails closed.
+        """
         tool_name = hook_input.tool_name or ""
         tool_input = hook_input.tool_input or {}
 
@@ -279,6 +508,23 @@ class GuardHandler:
         paths = self._extract_paths(tool_input)
         for p in paths:
             ok, reason = self._is_path_allowed(p, worktree, allowed, forbidden)
+            if not ok:
+                self.telemetry.record_tool_block(tool_name, reason)
+                return HookOutput(
+                    continue_=True,
+                    decision="block",
+                    reason=reason,
+                    hookSpecificOutput=HookSpecificOutput(
+                        hookEventName="PreToolUse",
+                        permissionDecision="deny",
+                        permissionDecisionReason=reason,
+                    ),
+                )
+
+        # 4. Shell/exec commands must prove scope: provably low-risk and
+        # in-scope, otherwise block (no auto-allow after path extraction).
+        if cmd_str:
+            ok, reason = self._is_command_low_risk_and_scoped(cmd_str, worktree, allowed, forbidden)
             if not ok:
                 self.telemetry.record_tool_block(tool_name, reason)
                 return HookOutput(

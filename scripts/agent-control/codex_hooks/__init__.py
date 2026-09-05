@@ -16,7 +16,16 @@ from .config import (
 )
 from .continuation import ContinuationDecision, ContinuationHandler
 from .dispatcher import HookDispatcher
-from .guard import FORBIDDEN_COMMAND_PATTERNS, GuardHandler
+from .evidence import (
+    EVIDENCE_SCHEMA_VERSION,
+    build_evidence_record,
+    evidence_binding_matches,
+    extract_tool_success,
+    focused_tests_digest,
+    workspace_state,
+)
+from .guard import FORBIDDEN_COMMAND_PATTERNS, LOW_RISK_COMMAND_PREFIXES, TEST_RUNNER_PREFIXES, GuardHandler
+from .official_schemas import EVENT_TO_SCHEMA_ID, extract_official_output_schemas, validate_hook_output
 from .probe import CAPABILITY_NAMES, CodexHookProbe, CodexHookProbeResult
 from .protocol import (
     CapabilityStatus,
@@ -27,6 +36,7 @@ from .protocol import (
     PermissionDecision,
     PermissionRequestDecisionWire,
 )
+from .redaction import REDACTED, SENSITIVE_KEYS, redact_text, redact_tool_input, redact_value
 from .session import SessionHandler
 from .telemetry import HookTelemetry, HookTelemetryData
 
@@ -38,7 +48,9 @@ __all__ = [
     "CodexHookProbeResult",
     "CapabilityStatus",
     "DEFAULT_HOOK_EVENTS",
+    "EVIDENCE_SCHEMA_VERSION",
     "EVENT_NAME_NORMALIZATION",
+    "EVENT_TO_SCHEMA_ID",
     "FORBIDDEN_COMMAND_PATTERNS",
     "GuardHandler",
     "HookConfigGenerator",
@@ -49,12 +61,26 @@ __all__ = [
     "HookSpecificOutput",
     "HookTelemetry",
     "HookTelemetryData",
+    "LOW_RISK_COMMAND_PREFIXES",
     "PermissionDecision",
     "PermissionRequestDecisionWire",
+    "REDACTED",
+    "SENSITIVE_KEYS",
     "SessionHandler",
+    "TEST_RUNNER_PREFIXES",
+    "build_evidence_record",
     "compute_file_sha256",
     "discover_hooks",
+    "evidence_binding_matches",
+    "extract_official_output_schemas",
+    "extract_tool_success",
+    "focused_tests_digest",
     "hook_key",
     "normalize_event_name",
     "provision_trust",
+    "redact_text",
+    "redact_tool_input",
+    "redact_value",
+    "validate_hook_output",
+    "workspace_state",
 ]

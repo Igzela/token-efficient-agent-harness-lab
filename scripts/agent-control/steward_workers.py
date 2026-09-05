@@ -1072,6 +1072,7 @@ class CodexWorkCardWorker:
             hooks_destination = root / "codex_hooks"
             hooks_state_dir = root / "hooks_state"
             hooks_state_dir.mkdir(parents=True, exist_ok=True)
+            hooks_provisioned = False
             if hooks_pkg_source.is_dir():
                 shutil.copytree(hooks_pkg_source, hooks_destination)
                 dispatcher_copy = hooks_destination / "dispatcher.py"
@@ -1092,8 +1093,12 @@ class CodexWorkCardWorker:
                         codex_home / "config.toml",
                         codex_binary=codex_bin_target if codex_bin_target.is_file() else None,
                     )
+                    hooks_provisioned = True
                 except Exception as exc:
-                    sys.stderr.write(f"HOOKS PROVISIONING ERROR: {exc}\n")
+                    # Fail closed: a production worker that requires Hooks must
+                    # not run when native discovery or trust provisioning fails.
+                    # No synthetic trust, no silent continuation without hooks.
+                    raise WorkerError("codex_hooks_provisioning_failed") from exc
             source_home = Path(str(environment.get("HOME", "")))
             readonly_paths: list[tuple[Path, Path]] = [
                 (wrapper_copy, wrapper_copy),
@@ -1250,6 +1255,12 @@ class CodexWorkCardWorker:
                 )
             except local_verification.LocalVerificationError as exc:
                 raise WorkerError("codex_sandbox_unavailable") from exc
+            if hooks_provisioned:
+                # Post-run attestation: the Codex runtime silently skips
+                # untrusted hooks and proceeds fail-open (verified live), so a
+                # provisioned run with zero recorded hook events is unguarded
+                # and its outcome must not be accepted.
+                self._verify_hooks_attestation(hooks_state_dir)
             failure_reason: str | None = None
             if exit_code != 0:
                 failure_reason = self._bounded_failure_reason(output_dir)
@@ -1263,6 +1274,29 @@ class CodexWorkCardWorker:
                     retained.write_bytes(message.read_bytes())
                     return exit_code, retained, None
             return exit_code, root / "missing", failure_reason
+
+    @staticmethod
+    def _verify_hooks_attestation(hooks_state_dir: Path) -> None:
+        """Fail closed when provisioned hooks left no execution trace.
+
+        The hooks state directory is fresh per invocation, so any recorded
+        telemetry event proves the runtime executed our hooks during this
+        run. Absence proves the runtime skipped them (e.g. invalidated
+        trust), in which case the run proceeded unguarded.
+        """
+        telemetry_path = hooks_state_dir / "telemetry.json"
+        attested = False
+        if telemetry_path.is_file() and not telemetry_path.is_symlink():
+            try:
+                raw = telemetry_path.read_bytes()
+                if raw and len(raw) <= 1_048_576:
+                    data = json.loads(raw)
+                    events = data.get("events") if isinstance(data, dict) else None
+                    attested = isinstance(events, list) and len(events) > 0
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                attested = False
+        if not attested:
+            raise WorkerError("codex_hooks_execution_unattested")
 
     @staticmethod
     def _bounded_failure_reason(output_dir: Path) -> str | None:
