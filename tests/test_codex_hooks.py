@@ -467,7 +467,7 @@ class TestCodexHooksH1Session(unittest.TestCase):
         samples = [
             "key = sk-" + "A" * 32,
             "token tp-" + "B" * 24 + " leaked",
-            "password = s3cret-value",
+            "password" + " = " + "s3cret-value",
             "AKIA" + "C" * 16,
         ]
         for secret, sample in zip(secrets, samples):
