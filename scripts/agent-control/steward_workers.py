@@ -1087,7 +1087,11 @@ class CodexWorkCardWorker:
                         python_executable="/usr/bin/python3",
                         timeout_seconds=30,
                     )
-                    hook_gen.write_config(codex_home / "config.toml")
+                    codex_bin_target = self.wrapper_path.parent / "codex"
+                    hook_gen.write_config(
+                        codex_home / "config.toml",
+                        codex_binary=codex_bin_target if codex_bin_target.is_file() else None,
+                    )
                 except Exception as exc:
                     sys.stderr.write(f"HOOKS PROVISIONING ERROR: {exc}\n")
             source_home = Path(str(environment.get("HOME", "")))
@@ -1173,6 +1177,10 @@ class CodexWorkCardWorker:
                 child_environment["STEWARD_ALLOWED_PATHS"] = json.dumps(list(context.allowed_paths))
                 child_environment["STEWARD_FORBIDDEN_PATHS"] = json.dumps(list(context.forbidden_paths))
                 child_environment["STEWARD_CARD_OBJECTIVE"] = json.dumps(list(context.steps))
+                if context.focused_tests:
+                    child_environment["STEWARD_FOCUSED_TESTS"] = json.dumps(list(context.focused_tests))
+                if context.expected_evidence:
+                    child_environment["STEWARD_EXPECTED_EVIDENCE"] = json.dumps(list(context.expected_evidence))
             py_path = f"{root}:{hooks_destination}"
             if "PYTHONPATH" in child_environment:
                 py_path = f"{py_path}:{child_environment['PYTHONPATH']}"

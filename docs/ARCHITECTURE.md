@@ -82,17 +82,18 @@ Codex Lifecycle Hooks integrate the local Codex execution engine with Steward Wo
   - `PostToolUse`: Captures tool output receipts in the worker's ephemeral state directory (`hooks_state/receipts/`), compressing oversized command outputs.
   - Minimal ROI Telemetry: Measures bootstrap tokens saved, receipt bytes compressed, and compaction events.
 
-- **H2: Worktree Path Boundary Guard & Permission Auto-Approval**:
-  - `PreToolUse`: Intercepts file writes and shell execution. Enforces that target files lie strictly within the active WorkCard's `allowed_paths`, prevents escaping the worktree root, and rejects strictly forbidden paths (e.g. `docs/ROADMAP.md`) or dangerous commands (`git push`, `rm -rf /`, `/var/lib/agent-steward`).
-  - `PermissionRequest`: Auto-approves bounded, safe workspace operations (e.g. `pytest`, `python`, in-scope edits) while denying unauthorized external operations.
+- **H2: Worktree Path Boundary Guard & Permission Evaluation**:
+  - `PreToolUse`: Intercepts file writes and shell execution. Enforces strict fail-closed validation on missing or malformed WorkCard context (`STEWARD_WORKCARD_ID`, `STEWARD_ALLOWED_PATHS`), verifies target files lie strictly within the active WorkCard's `allowed_paths`, prevents escaping the worktree root, and rejects strictly forbidden paths (e.g. `docs/ROADMAP.md`) or dangerous command patterns. Emits official wire decisions (`decision: "approve"|"block"`, `permissionDecision: "allow"|"deny"|"ask"`).
+  - `PermissionRequest`: Evaluates requested actions fail-closed, emitting official wire schema `hookSpecificOutput.decision.behavior: "allow" | "deny"`. Only permits provably scoped, low-risk operations (e.g. read-only inspections, declared in-scope test suites) and denies out-of-scope or ambiguous commands (no auto-allow on blacklist-miss).
 
-- **H3: WorkCard Completion Evaluation & Continuation Loop**:
-  - `Stop`: Intercepts premature termination if the worker attempts to stop before producing workspace modifications or completing required verification. Emits a concise continuation prompt on stderr (exit code 2) up to a bounded attempt budget (default: 2 retries). Graceful completion or budget exhaustion allows exit code 0.
+- **H3: WorkCard Acceptance Evidence Evaluation & Continuation Loop**:
+  - `Stop`: Intercepts premature termination by validating declared WorkCard acceptance and verification evidence (workspace edits confined to `allowed_paths`, passing `focused_tests` / `verification_evidence.json`), rather than unverified raw git status mutations. When incomplete and continuation budget remains, blocks termination with top-level `decision="block"` and a targeted continuation prompt on stderr (exit code 2). When the retry budget is exhausted or execution paused, writes `completion_status.json` with an explicit `incomplete` status and exits cleanly.
 
-- **Cryptographic Trust Bootstrap**:
-  - The production configuration never uses `--dangerously-bypass-hook-trust`.
-  - `HookConfigGenerator` computes the SHA256 digest of the dispatcher and hook package (`compute_bundle_hash`), provisioning verified `trusted_hash` entries under `[hooks.state."<path>"]` and `[projects."<worktree>"]` within the isolated worker's `CODEX_HOME/config.toml`.
-  - Tampering with hook code invalidates the hash and halts execution fail-closed.
+- **Cryptographic Trust Bootstrap & Per-Handler Discovery**:
+  - The production configuration strictly prohibits `--dangerously-bypass-hook-trust`.
+  - Trust is established through native Codex discovery (`codex app-server --stdio` `hooks/list`), deriving authoritative per-handler hook keys (`<config_path>:<normalized_event>:<matcher_idx>:<hook_idx>`) and definition digests (`currentHash: "sha256:..."`).
+  - `provision_trust` records per-handler trust entries under `[hooks.state."<key>"]` with `trusted_hash = "<currentHash>"`, and verifies readback directly against the Codex engine to prove `trustStatus == "trusted"`.
+  - Any alteration to hook commands or definition hashes causes Codex discovery to report `modified` or `untrusted`, halting execution fail-closed.
 
 ## Research Mainline: Finite Frozen Canonical Experiments
 

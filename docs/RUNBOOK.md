@@ -578,11 +578,11 @@ Operators diagnose and audit Codex Lifecycle Hooks using the following determini
    Telemetry confirms bootstrap token savings, receipt compression bytes, path violations blocked, and premature stops intercepted.
 
 3. **Diagnosing Guard Blocks and Continuation Loops (H2 & H3)**:
-   - **Path Violation (H2)**: If a tool call was blocked, inspect stderr in the worker log or `telemetry.json` for `PreToolUse_Block`. Ensure the active WorkCard's `allowed_paths` encompasses all necessary edits and does not include forbidden paths (e.g. `docs/ROADMAP.md`).
-   - **Premature Stop Intercept (H3)**: If a worker attempted to finish without file changes, the Stop hook emits exit code 2 and prompts continuation. If the retry budget (default: 2) is exhausted, the worker terminates and reports `no_workspace_changes` for deterministic Stage replan.
+   - **Path Violation & Permission Denial (H2)**: If a tool call was blocked, inspect stderr in the worker log or `telemetry.json` for `PreToolUse_Block` or `PermissionRequest_Deny`. Ensure the active WorkCard's `allowed_paths` encompasses all necessary edits, required scope context is present, and requests are provably scoped (arbitrary shell commands outside test/inspection allowlists are fail-closed denied).
+   - **Acceptance Evidence Intercept (H3)**: The Stop hook verifies that declared WorkCard acceptance and verification evidence exists (workspace modifications within `allowed_paths`, passing `focused_tests` / `verification_evidence.json`). If absent and budget remains, it emits exit code 2 and prompts continuation via top-level `decision="block"`. If the retry budget (default: 2) is exhausted, it terminates with an explicit incomplete status for deterministic Stage replan.
 
 4. **Hook Trust and Integrity**:
-   The production configuration provisions cryptographic `trusted_hash` entries in `[hooks.state."<path>"]` and `[projects."<worktree>"]`. Never pass `--dangerously-bypass-hook-trust` in production. If a hash mismatch error occurs, regenerate the trust bundle using `compute_bundle_hash` or verify file integrity.
+   The production configuration derives per-handler hook keys (`<config_path>:<normalized_event>:<matcher_idx>:<hook_idx>`) and current hashes (`sha256:...`) through native discovery (`codex app-server --stdio` `hooks/list`). `provision_trust` records per-handler entries under `[hooks.state."<key>"]` and verifies that readback returns `trusted`. Never pass `--dangerously-bypass-hook-trust` in production. If a hash mismatch or modified state occurs, re-run trust provisioning or verify file integrity.
 
 On restart, the service replays only the durable activation or accepted-main
 rebind and resumes the next safe phase. A lost Ready/supersede/merge result is

@@ -22,7 +22,17 @@ import sys
 import tempfile
 from typing import Any, Mapping
 
-from .protocol import CapabilityStatus
+_CURRENT_DIR = Path(__file__).resolve().parent
+_PKG_PARENT = _CURRENT_DIR.parent
+if str(_PKG_PARENT) not in sys.path:
+    sys.path.insert(0, str(_PKG_PARENT))
+
+try:
+    from .config import discover_hooks, provision_trust
+    from .protocol import CapabilityStatus
+except ImportError:
+    from codex_hooks.config import discover_hooks, provision_trust
+    from codex_hooks.protocol import CapabilityStatus
 
 
 CAPABILITY_NAMES = (
@@ -258,24 +268,63 @@ class CodexHookProbe:
                 caps["isolated_codex_home"] = CapabilityStatus.BLOCKED.value
                 details["isolated_home_error"] = h_err.strip()
 
-        # capability 13: hook_trust_bootstrap
-        # Verify hooks.state."<path>".trusted_hash and enabled without bypass flag
-        trust_ok = test_strict_config([
-            'hooks.state."/dummy/hook.sh".enabled=true',
-            'hooks.state."/dummy/hook.sh".trusted_hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"',
-            'projects."/dummy/project".trust_level="trusted"',
-            'projects."/dummy/project".trusted_hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"',
-        ])
-        caps["hook_trust_bootstrap"] = CapabilityStatus.VERIFIED.value if trust_ok else CapabilityStatus.UNSUPPORTED.value
-
-        # capability 14: definition_hash_invalidation
-        # Verify that altering the definition hash is distinguishable / testable
-        h1 = hashlib.sha256(b"definition_v1").hexdigest()
-        h2 = hashlib.sha256(b"definition_v2").hexdigest()
-        if h1 != h2 and trust_ok:
-            caps["definition_hash_invalidation"] = CapabilityStatus.VERIFIED.value
+        # capability 13: hook_trust_bootstrap & capability 14: definition_hash_invalidation
+        # Verify per-handler trust readback via native discovery without bypass flag
+        if self._runner is not None:
+            trust_ok = test_strict_config([
+                'hooks.Stop=[{matcher="*",hooks=[{type="command",command="/bin/true"}]}]',
+            ])
+            caps["hook_trust_bootstrap"] = CapabilityStatus.VERIFIED.value if trust_ok else CapabilityStatus.UNSUPPORTED.value
+            caps["definition_hash_invalidation"] = CapabilityStatus.VERIFIED.value if trust_ok else CapabilityStatus.UNSUPPORTED.value
         else:
-            caps["definition_hash_invalidation"] = CapabilityStatus.UNSUPPORTED.value
+            try:
+                with tempfile.TemporaryDirectory(prefix="codex-probe-trust-") as probe_home:
+                    ph = Path(probe_home)
+                    probe_cfg = ph / "config.toml"
+                    probe_cfg.write_text(
+                        '[features]\nhooks = true\n\n'
+                        '[hooks]\nStop = [\n  { matcher = "*", hooks = [{ type = "command", command = "/bin/true" }] }\n]\n',
+                        encoding="utf-8",
+                    )
+                    # 1. Discover untrusted
+                    untrusted_hooks = discover_hooks(ph, codex_binary=self.binary_path, timeout_seconds=self.timeout_seconds)
+                    if untrusted_hooks and untrusted_hooks[0].get("trustStatus") == "untrusted":
+                        # 2. Provision trust
+                        provision_trust(probe_cfg, codex_binary=self.binary_path, timeout_seconds=self.timeout_seconds)
+                        # 3. Read back verified trust
+                        trusted_hooks = discover_hooks(ph, codex_binary=self.binary_path, timeout_seconds=self.timeout_seconds)
+                        if trusted_hooks and trusted_hooks[0].get("trustStatus") == "trusted":
+                            caps["hook_trust_bootstrap"] = CapabilityStatus.VERIFIED.value
+                            details["trusted_hook_readback"] = {
+                                "key": trusted_hooks[0].get("key"),
+                                "trustStatus": trusted_hooks[0].get("trustStatus"),
+                                "hash": trusted_hooks[0].get("currentHash"),
+                            }
+                            # 4. Alter definition to test invalidation
+                            probe_cfg.write_text(
+                                '[features]\nhooks = true\n\n'
+                                '[hooks]\nStop = [\n  { matcher = "*", hooks = [{ type = "command", command = "/bin/false" }] }\n]\n'
+                                f'[hooks.state."{trusted_hooks[0].get("key")}"]\n'
+                                f'trusted_hash = "{trusted_hooks[0].get("currentHash")}"\n',
+                                encoding="utf-8",
+                            )
+                            invalidated_hooks = discover_hooks(ph, codex_binary=self.binary_path, timeout_seconds=self.timeout_seconds)
+                            if invalidated_hooks and invalidated_hooks[0].get("trustStatus") in ("modified", "untrusted"):
+                                caps["definition_hash_invalidation"] = CapabilityStatus.VERIFIED.value
+                                details["invalidated_hook_readback"] = {
+                                    "key": invalidated_hooks[0].get("key"),
+                                    "trustStatus": invalidated_hooks[0].get("trustStatus"),
+                                }
+                            else:
+                                caps["definition_hash_invalidation"] = CapabilityStatus.UNSUPPORTED.value
+                        else:
+                            caps["hook_trust_bootstrap"] = CapabilityStatus.UNSUPPORTED.value
+                    else:
+                        caps["hook_trust_bootstrap"] = CapabilityStatus.UNSUPPORTED.value
+            except Exception as exc:
+                caps["hook_trust_bootstrap"] = CapabilityStatus.BLOCKED.value
+                caps["definition_hash_invalidation"] = CapabilityStatus.BLOCKED.value
+                details["trust_probe_error"] = str(exc)
 
         # Determine overall status
         verified_count = sum(1 for v in caps.values() if v == CapabilityStatus.VERIFIED.value)

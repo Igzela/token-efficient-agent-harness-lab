@@ -1,15 +1,16 @@
 """Session context bootstrap, compaction rehydration, and receipts (H1).
 
 Implements:
-- SessionStart: Injects bounded WorkCard context, allowed paths, and execution invariants.
+- SessionStart: Injects bounded WorkCard context, allowed paths, and execution invariants
+  with strict official wire hookEventName.
 - PreCompact: Preserves active WorkCard state and git status before compaction.
 - PostCompact: Rehydrates critical constraints and progress into the post-compaction context.
-- PostToolUse: Writes ephemeral tool receipts and compresses oversized tool outputs.
+- PostToolUse: Writes ephemeral tool receipts, tracks verification evidence, and compresses
+  oversized tool outputs.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
 import os
 from pathlib import Path
@@ -33,6 +34,7 @@ class SessionHandler:
         self.receipts_dir = self.state_dir / "receipts"
         self.receipts_dir.mkdir(parents=True, exist_ok=True)
         self.compaction_path = self.state_dir / "compaction_state.json"
+        self.evidence_file = self.state_dir / "verification_evidence.json"
         self.telemetry = HookTelemetry(self.state_dir)
 
     def handle_session_start(self, hook_input: HookInput) -> HookOutput:
@@ -81,9 +83,11 @@ class SessionHandler:
         self.telemetry.record_bootstrap(len(injected_context.encode("utf-8")))
 
         return HookOutput(
+            continue_=True,
             hookSpecificOutput=HookSpecificOutput(
+                hookEventName="SessionStart",
                 additionalContext=injected_context,
-            )
+            ),
         )
 
     def handle_pre_compact(self, hook_input: HookInput) -> HookOutput:
@@ -114,9 +118,11 @@ class SessionHandler:
         self.compaction_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
         return HookOutput(
+            continue_=True,
             hookSpecificOutput=HookSpecificOutput(
+                hookEventName="PreCompact",
                 additionalContext="PreCompact: Active workcard state checkpointed.",
-            )
+            ),
         )
 
     def handle_post_compact(self, hook_input: HookInput) -> HookOutput:
@@ -151,9 +157,11 @@ class SessionHandler:
         self.telemetry.record_compaction(len(rehydrate_text.encode("utf-8")))
 
         return HookOutput(
+            continue_=True,
             hookSpecificOutput=HookSpecificOutput(
+                hookEventName="PostCompact",
                 additionalContext=rehydrate_text,
-            )
+            ),
         )
 
     def handle_post_tool_use(self, hook_input: HookInput) -> HookOutput:
@@ -178,12 +186,29 @@ class SessionHandler:
         summary_len = min(raw_len, 256)
         self.telemetry.record_tool_receipt(tool_name, raw_len, summary_len)
 
+        # If tool execution was a test runner and succeeded, record verification evidence
+        cmd_str = ""
+        if isinstance(hook_input.tool_input, dict):
+            for k in ("command", "CommandLine", "cmd"):
+                if k in hook_input.tool_input and isinstance(hook_input.tool_input[k], str):
+                    cmd_str = hook_input.tool_input[k]
+                    break
+        if cmd_str and any(t in cmd_str for t in ("pytest", "cargo test", "unittest")):
+            # If response looks successful (e.g. passed, OK, or exit 0 indicator)
+            if "failed" not in raw_output.lower() and "error" not in raw_output.lower():
+                self.evidence_file.write_text(
+                    json.dumps({"status": "passed", "command": cmd_str, "receipt_id": receipt_count}, indent=2),
+                    encoding="utf-8",
+                )
+
         additional = None
         if raw_len > 4096:
             additional = f"[Receipt #{receipt_count:04d} recorded for {tool_name} ({raw_len} bytes)]"
 
         return HookOutput(
+            continue_=True,
             hookSpecificOutput=HookSpecificOutput(
+                hookEventName="PostToolUse",
                 additionalContext=additional,
-            )
+            ),
         )
