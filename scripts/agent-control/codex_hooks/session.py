@@ -23,7 +23,7 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from .evidence import build_evidence_record, extract_tool_success
+from .evidence import build_evidence_record, extract_tool_success, read_focused_tests
 from .protocol import HookInput, HookOutput, HookSpecificOutput
 from .redaction import redact_text, redact_tool_input
 from .telemetry import HookTelemetry
@@ -257,13 +257,4 @@ class SessionHandler:
         )
 
     def _focused_tests(self) -> list[str]:
-        focused_raw = os.environ.get("STEWARD_FOCUSED_TESTS", "")
-        if not focused_raw:
-            return []
-        try:
-            focused = json.loads(focused_raw)
-        except Exception:
-            return []
-        if not isinstance(focused, list):
-            return []
-        return [str(t) for t in focused]
+        return read_focused_tests()

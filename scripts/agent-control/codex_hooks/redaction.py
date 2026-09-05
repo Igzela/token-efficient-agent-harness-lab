@@ -32,6 +32,41 @@ SENSITIVE_ASSIGNMENT = re.compile(
     r"(?i)\b(api[_-]?key|auth[_-]?token|access[_-]?token|secret|password|credential)\b\s*=\s*([^#\s].*)"
 )
 
+# Hooks-side supplementary patterns (extensions beyond the canonical scanner,
+# pinned by hooks tests, for secret shapes observed in worker tool input):
+SUPPLEMENTARY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    # Authorization headers, e.g. "Authorization: Bearer <token>".
+    (
+        "authorization_header",
+        re.compile(r"(?i)\b(authorization\s*:\s*(?:bearer\s+)?)([^\s;,]+)"),
+    ),
+]
+
+# Prefixed env-style assignments the canonical \b-anchored pattern misses,
+# e.g. OPENAI_API_KEY=sk-..., MY_TOKEN=.... The sensitive word must form a
+# whole underscore-delimited segment so innocent names (e.g. "monkey") fail.
+_ASSIGNMENT_SHAPE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s#;,]+)")
+_SENSITIVE_NAME_SEGMENT = re.compile(
+    r"(?i)(?:^|_)(?:API[_-]?KEY|AUTH[_-]?TOKEN|ACCESS[_-]?TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|TOKEN|APIKEY|AUTHTOKEN|ACCESSTOKEN)(?:_|$)"
+)
+
+
+def _mask_prefixed_assignments(text: str) -> str:
+    """Mask VAR=value assignments whose name carries a sensitive segment."""
+
+    def repl(match: re.Match[str]) -> str:
+        if _SENSITIVE_NAME_SEGMENT.search(match.group(1)):
+            return f"{match.group(1)}={REDACTED}"
+        return match.group(0)
+
+    out = text
+    for _ in range(4):
+        masked = _ASSIGNMENT_SHAPE.sub(repl, out)
+        if masked == out:
+            break
+        out = masked
+    return out
+
 # Structured keys whose values are always sensitive regardless of content.
 SENSITIVE_KEYS = frozenset({
     "api_key",
@@ -67,9 +102,15 @@ def redact_text(value: str) -> str:
     redacted = value
     for _name, pattern in SECRET_PATTERNS:
         redacted = pattern.sub(REDACTED, redacted)
-    match = SENSITIVE_ASSIGNMENT.search(redacted)
-    if match:
+    # Loop: a single pass masks only the first sensitive assignment.
+    for _ in range(4):
+        match = SENSITIVE_ASSIGNMENT.search(redacted)
+        if not match:
+            break
         redacted = f"{redacted[:match.start(2)]}{REDACTED}"
+    for _name, pattern in SUPPLEMENTARY_PATTERNS:
+        redacted = pattern.sub(lambda m: f"{m.group(1)}{REDACTED}", redacted)
+    redacted = _mask_prefixed_assignments(redacted)
     return redacted
 
 

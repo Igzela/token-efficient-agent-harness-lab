@@ -13,11 +13,27 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 from typing import Any
 
 EVIDENCE_SCHEMA_VERSION = "hooks_verification_evidence.v1"
+
+
+def read_focused_tests(env: Any = None) -> list[str]:
+    """Parse the WorkCard-declared focused verification checks (may be empty)."""
+    source = env if env is not None else os.environ
+    raw = source.get("STEWARD_FOCUSED_TESTS", "") if hasattr(source, "get") else ""
+    if not raw:
+        return []
+    try:
+        focused = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(focused, list):
+        return []
+    return [str(t).strip() for t in focused if isinstance(t, str) and str(t).strip()]
 
 
 def focused_tests_digest(focused_tests: list[str]) -> str:
@@ -71,13 +87,27 @@ _SUCCESS_STRINGS = {"pass", "passed", "success", "successful", "ok", "true", "0"
 _FAILURE_STRINGS = {"fail", "failed", "failure", "error", "false"}
 
 
-def _signal_from_scalar(value: Any) -> bool | None:
+def _signal_from_scalar(value: Any, key_class: str) -> bool | None:
+    """Map a scalar success signal by key class.
+
+    - exit keys use exit-code semantics: 0/true means success.
+    - success keys use count/flag semantics: nonzero means success
+      (e.g. {"passed": 5} means five tests passed).
+    - status keys accept explicit success/failure words or booleans;
+      numbers are NOT guessed.
+    """
     if isinstance(value, bool):
         return value
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return True if value == 0 else False
+    if isinstance(value, (int, float)):
+        if key_class == "exit":
+            return True if value == 0 else False
+        if key_class == "success":
+            return True if value != 0 else False
+        return None
     if isinstance(value, str):
         lowered = value.strip().lower()
+        if key_class == "success" and lowered == "0":
+            return False  # e.g. {"passed": "0"}: zero passing tests is not success
         if lowered in _SUCCESS_STRINGS:
             return True
         if lowered in _FAILURE_STRINGS:
@@ -101,13 +131,13 @@ def extract_tool_success(tool_response: Any, _depth: int = 0) -> bool | None:
         for key, value in tool_response.items():
             lowered = str(key).lower()
             if lowered in _EXIT_KEYS:
-                signal = _signal_from_scalar(value)
+                signal = _signal_from_scalar(value, "exit")
                 if signal is False:
                     return False
                 if signal is True:
                     found_success = True
             elif lowered in _SUCCESS_KEYS:
-                signal = _signal_from_scalar(value)
+                signal = _signal_from_scalar(value, "success")
                 if signal is False:
                     return False
                 if signal is True:
@@ -125,7 +155,7 @@ def extract_tool_success(tool_response: Any, _depth: int = 0) -> bool | None:
                 elif isinstance(value, (list, dict)) and value:
                     return False
             elif lowered in _STATUS_KEYS:
-                signal = _signal_from_scalar(value)
+                signal = _signal_from_scalar(value, "status")
                 if signal is False:
                     return False
                 if signal is True:

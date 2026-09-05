@@ -17,6 +17,7 @@ import re
 import shlex
 from typing import Any
 
+from .evidence import read_focused_tests
 from .protocol import (
     HookInput,
     HookOutput,
@@ -145,16 +146,7 @@ class GuardHandler:
 
     def _get_focused_tests(self) -> list[str]:
         """Return the WorkCard-declared focused verification checks (may be empty)."""
-        focused_raw = os.environ.get("STEWARD_FOCUSED_TESTS", "")
-        if not focused_raw:
-            return []
-        try:
-            focused = json.loads(focused_raw)
-        except Exception:
-            return []
-        if not isinstance(focused, list):
-            return []
-        return [str(t).strip() for t in focused if isinstance(t, str) and str(t).strip()]
+        return read_focused_tests()
 
     def _extract_paths(self, tool_input: dict[str, Any] | None) -> list[str]:
         """Extract candidate target file paths from tool input payload."""
@@ -523,6 +515,21 @@ class GuardHandler:
 
         # 4. Shell/exec commands must prove scope: provably low-risk and
         # in-scope, otherwise block (no auto-allow after path extraction).
+        # A tool call with neither an observable command nor extractable
+        # paths has no provable surface at all and fails closed as well.
+        if not cmd_str and not paths:
+            reason = "unprovable_scope: no observable command or paths in tool input"
+            self.telemetry.record_tool_block(tool_name, reason)
+            return HookOutput(
+                continue_=True,
+                decision="block",
+                reason=reason,
+                hookSpecificOutput=HookSpecificOutput(
+                    hookEventName="PreToolUse",
+                    permissionDecision="deny",
+                    permissionDecisionReason=reason,
+                ),
+            )
         if cmd_str:
             ok, reason = self._is_command_low_risk_and_scoped(cmd_str, worktree, allowed, forbidden)
             if not ok:
@@ -607,8 +614,9 @@ class GuardHandler:
                     ),
                 )
 
-        # If no command or paths were present and action is unknown, do NOT auto-allow
-        if not paths and not cmd_str and not hook_input.tool_name:
+        # If no command or paths were present the action has no provable
+        # surface at all: do NOT auto-allow (a bare tool name proves nothing).
+        if not paths and not cmd_str:
             return HookOutput(
                 continue_=True,
                 hookSpecificOutput=HookSpecificOutput(

@@ -341,6 +341,50 @@ class TestCodexHooksH1Session(unittest.TestCase):
         handler.handle_post_tool_use(hook_input)
         self.assertFalse((self.state_dir / "verification_evidence.json").is_file())
 
+    def test_receipt_redacts_prefixed_assignments_and_headers(self):
+        handler = SessionHandler(self.state_dir)
+        hook_input = HookInput(
+            hook_event_name="PostToolUse",
+            tool_name="bash",
+            tool_input={
+                "command": "export OPENAI_API_KEY=sk-SECRET123 first=1 password = hunter2",
+                "headers": {"Authorization": "Bearer abcdef12345"},
+                "monkey": "banana",
+            },
+            tool_response="ok",
+            turn_id="turn-tool-5",
+        )
+        handler.handle_post_tool_use(hook_input)
+        receipts = list(handler.receipts_dir.glob("receipt_*.json"))
+        self.assertEqual(len(receipts), 1)
+        raw = receipts[0].read_text(encoding="utf-8")
+        self.assertNotIn("sk-SECRET123", raw)
+        self.assertNotIn("hunter2", raw)
+        self.assertNotIn("abcdef12345", raw)
+        # Innocent names and values survive redaction.
+        self.assertIn("banana", raw)
+        self.assertIn("first", raw)
+
+    def test_extract_tool_success_semantics(self):
+        from codex_hooks import extract_tool_success
+
+        self.assertTrue(extract_tool_success({"exit_code": 0}))
+        self.assertFalse(extract_tool_success({"exit_code": 1}))
+        self.assertTrue(extract_tool_success({"success": True}))
+        self.assertFalse(extract_tool_success({"success": False}))
+        # Count semantics for success keys: nonzero means success.
+        self.assertTrue(extract_tool_success({"success": 1}))
+        self.assertTrue(extract_tool_success({"passed": 5}))
+        self.assertFalse(extract_tool_success({"passed": 0}))
+        self.assertTrue(extract_tool_success({"status": "passed"}))
+        self.assertFalse(extract_tool_success({"status": "failed"}))
+        # No machine-readable signal: never claim success.
+        self.assertIsNone(extract_tool_success("1 passed, 0 failed"))
+        self.assertIsNone(extract_tool_success(""))
+        self.assertIsNone(extract_tool_success(None))
+        # Explicit failure dominates nested success.
+        self.assertFalse(extract_tool_success({"result": {"ok": True}, "exit_code": 3}))
+
     def test_post_tool_use_receipt_redacts_secrets(self):
         handler = SessionHandler(self.state_dir)
         secret_key = "sk-" + "A" * 32
@@ -391,6 +435,22 @@ class TestCodexHooksH1Session(unittest.TestCase):
         self.assertEqual(
             hook_redaction.SENSITIVE_ASSIGNMENT.pattern,
             scanner.SENSITIVE_ASSIGNMENT.pattern,
+        )
+        # SENSITIVE_KEYS is hooks-side (structured key names); pin the exact
+        # set so additions/removals are deliberate, never silent drift.
+        self.assertEqual(
+            set(hook_redaction.SENSITIVE_KEYS),
+            {
+                "api_key", "apikey", "api-key",
+                "auth_token", "authtoken", "auth-token",
+                "access_token", "accesstoken", "access-token",
+                "secret", "client_secret",
+                "password", "passwd", "pwd",
+                "credential", "credentials",
+                "authorization", "proxy-authorization",
+                "token", "id_token", "refresh_token",
+                "private_key", "session_token",
+            },
         )
         # Behavior parity: canonical samples must be masked by hooks redaction.
         secrets = [
@@ -535,6 +595,30 @@ class TestCodexHooksH2Guard(unittest.TestCase):
             focused=("tests/test_other.py",),
         )
         self.assertEqual(out.decision, "approve")
+
+    def test_opaque_tool_input_without_surface_blocked(self):
+        # No observable command and no extractable paths: nothing to prove.
+        os.environ["STEWARD_WORKCARD_ID"] = "card-01"
+        os.environ["STEWARD_WORKTREE"] = str(self.worktree)
+        os.environ["STEWARD_ALLOWED_PATHS"] = json.dumps(["src/"])
+        try:
+            out = self.handler.handle_pre_tool_use(HookInput(
+                hook_event_name="PreToolUse",
+                tool_name="mystery_tool",
+                tool_input={"foo": "bar"},
+            ))
+            self.assertEqual(out.decision, "block")
+            self.assertIn("unprovable_scope", out.hookSpecificOutput.permissionDecisionReason)
+
+            out = self.handler.handle_permission_request(HookInput(
+                hook_event_name="PermissionRequest",
+                tool_name="mystery_tool",
+                tool_input={"foo": "bar"},
+            ))
+            self.assertEqual(out.hookSpecificOutput.decision.behavior, "deny")
+        finally:
+            for k in ("STEWARD_WORKCARD_ID", "STEWARD_WORKTREE", "STEWARD_ALLOWED_PATHS"):
+                os.environ.pop(k, None)
 
     def test_in_scope_write_allowed(self):
         os.environ["STEWARD_WORKCARD_ID"] = "card-01"
@@ -800,7 +884,7 @@ class TestCodexHooksOfficialWireSchemas(unittest.TestCase):
     capability gate then reports UNVERIFIED and fails closed.
     """
 
-    CODEX_BIN = Path("/home/igzela/.local/bin/codex")
+    CODEX_BIN = Path(os.environ.get("CODEX_BINARY", "/home/igzela/.local/bin/codex"))
 
     def setUp(self):
         if not self.CODEX_BIN.is_file() or not os.access(self.CODEX_BIN, os.X_OK):
@@ -1005,9 +1089,9 @@ class TestCodexHooksRealE2E(unittest.TestCase):
     """
 
     def setUp(self):
-        self.codex_bin = Path("/home/igzela/.local/bin/codex")
+        self.codex_bin = Path(os.environ.get("CODEX_BINARY", "/home/igzela/.local/bin/codex"))
         if not self.codex_bin.is_file() or not os.access(self.codex_bin, os.X_OK):
-            self.skipTest("Codex CLI executable not found at /home/igzela/.local/bin/codex")
+            self.skipTest(f"Codex CLI executable not found at {self.codex_bin}")
 
         self.temp_dir = tempfile.TemporaryDirectory(prefix="codex-hooks-e2e-")
         self.addCleanup(self.temp_dir.cleanup)
@@ -1164,10 +1248,14 @@ class TestCodexHooksRealRuntimeE2E(unittest.TestCase):
        bypass flag.
 
     Skipped when the Codex binary is unavailable; the production capability
-    gate then reports UNVERIFIED and fails closed.
+    gate then reports UNVERIFIED and fails closed. The full gate chain is:
+    H0 probe reports BLOCKED without a binary (is_ready() False, no dispatch),
+    these tests skip explicitly as UNVERIFIED (never fake PASS), and the
+    production worker attests post-run hook execution, rejecting unguarded
+    outcomes (codex_hooks_execution_unattested).
     """
 
-    CODEX_BIN = "/home/igzela/.local/bin/codex"
+    CODEX_BIN = os.environ.get("CODEX_BINARY", "/home/igzela/.local/bin/codex")
 
     def setUp(self):
         if not Path(self.CODEX_BIN).is_file() or not os.access(self.CODEX_BIN, os.X_OK):

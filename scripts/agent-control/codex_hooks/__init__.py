@@ -22,6 +22,7 @@ from .evidence import (
     evidence_binding_matches,
     extract_tool_success,
     focused_tests_digest,
+    read_focused_tests,
     workspace_state,
 )
 from .guard import FORBIDDEN_COMMAND_PATTERNS, LOW_RISK_COMMAND_PREFIXES, TEST_RUNNER_PREFIXES, GuardHandler
@@ -78,6 +79,7 @@ __all__ = [
     "hook_key",
     "normalize_event_name",
     "provision_trust",
+    "read_focused_tests",
     "redact_text",
     "redact_tool_input",
     "redact_value",
