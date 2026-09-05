@@ -1184,6 +1184,8 @@ class CodexWorkCardWorker:
                 child_environment["STEWARD_CARD_OBJECTIVE"] = json.dumps(list(context.steps))
                 if context.focused_tests:
                     child_environment["STEWARD_FOCUSED_TESTS"] = json.dumps(list(context.focused_tests))
+                if context.negative_checks:
+                    child_environment["STEWARD_NEGATIVE_CHECKS"] = json.dumps(list(context.negative_checks))
                 if context.expected_evidence:
                     child_environment["STEWARD_EXPECTED_EVIDENCE"] = json.dumps(list(context.expected_evidence))
             py_path = f"{root}:{hooks_destination}"

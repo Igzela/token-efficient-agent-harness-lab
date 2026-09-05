@@ -54,12 +54,17 @@ from codex_hooks import (
     PermissionDecision,
     PermissionRequestDecisionWire,
     SessionHandler,
+    build_evidence_record,
     discover_hooks,
     evidence_binding_matches,
     focused_tests_digest,
     hook_key,
     provision_trust,
+    read_allowed_paths,
+    read_expected_evidence,
+    read_negative_checks,
     redact_text,
+    workcard_acceptance_digest,
 )
 from codex_hooks.official_schemas import validate_hook_output
 
@@ -520,6 +525,7 @@ class TestCodexHooksH1Session(unittest.TestCase):
             "status": "passed",
             "result": "success",
             "workcard_id": "",
+            "acceptance_digest": workcard_acceptance_digest(workcard_id="", focused_tests=[]),
             "focused_tests_digest": focused_tests_digest([]),
             "command": "pytest x",
             "head_sha": "",
@@ -839,6 +845,208 @@ class TestCodexHooksH3Continuation(unittest.TestCase):
             self.assertEqual(status_data["status"], "completed")
         finally:
             for k in ("STEWARD_WORKTREE", "STEWARD_WORKCARD_ID", "STEWARD_WORKER_TYPE", "STEWARD_ALLOWED_PATHS"):
+                os.environ.pop(k, None)
+
+    def test_expected_evidence_is_descriptor_not_file_path(self):
+        """Expected evidence strings are WorkCard acceptance descriptors, never file paths."""
+        # Create an initial commit so git HEAD is observable
+        (self.worktree / "README.md").write_text("initial", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.worktree), "config", "user.name", "test"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.worktree), "config", "user.email", "test@example.com"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.worktree), "add", "README.md"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.worktree), "commit", "-m", "initial commit"], check=True, capture_output=True)
+
+        src_dir = self.worktree / "src"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        (src_dir / "app.py").write_text("modified code", encoding="utf-8")
+
+        descriptors = [
+            "implementation head",
+            "focused-check receipt",
+            "independent review receipt",
+        ]
+        os.environ["STEWARD_WORKTREE"] = str(self.worktree)
+        os.environ["STEWARD_WORKCARD_ID"] = "card-acceptance-descriptors"
+        os.environ["STEWARD_WORKER_TYPE"] = "implement"
+        os.environ["STEWARD_ALLOWED_PATHS"] = json.dumps(["src/"])
+        os.environ["STEWARD_EXPECTED_EVIDENCE"] = json.dumps(descriptors)
+        os.environ["STEWARD_NEGATIVE_CHECKS"] = json.dumps(["do not expand scope"])
+
+        try:
+            hook_input = HookInput(hook_event_name="Stop")
+            exit_code, out, stderr = self.handler.handle_stop(hook_input)
+            self.assertEqual(exit_code, 0)
+            self.assertIsNone(stderr)
+            self.assertTrue(out.continue_)
+            self.assertNotEqual(out.decision, "block")
+
+            # Descriptors are NOT files on disk and Path.exists() was NOT checked
+            for desc in descriptors:
+                self.assertFalse((self.worktree / desc).exists())
+
+            status_file = self.state_dir / "completion_status.json"
+            self.assertTrue(status_file.is_file())
+            status_data = json.loads(status_file.read_text(encoding="utf-8"))
+            self.assertEqual(status_data["status"], "completed")
+            self.assertEqual(status_data["reason"], "acceptance_evidence_verified")
+        finally:
+            for k in (
+                "STEWARD_WORKTREE",
+                "STEWARD_WORKCARD_ID",
+                "STEWARD_WORKER_TYPE",
+                "STEWARD_ALLOWED_PATHS",
+                "STEWARD_EXPECTED_EVIDENCE",
+                "STEWARD_NEGATIVE_CHECKS",
+            ):
+                os.environ.pop(k, None)
+
+    def test_acceptance_digest_binding_and_mutation_rejection(self):
+        """Stored PASS receipt is accepted only when all acceptance descriptors match exactly."""
+        (self.worktree / "README.md").write_text("initial", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.worktree), "config", "user.name", "test"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.worktree), "config", "user.email", "test@example.com"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.worktree), "add", "README.md"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.worktree), "commit", "-m", "init"], check=True, capture_output=True)
+
+        record = build_evidence_record(
+            workcard_id="card-binding-1",
+            focused_tests=["pytest tests/test_unit.py"],
+            negative_checks=["reject scope expansion"],
+            expected_evidence=["implementation head", "independent review receipt"],
+            allowed_paths=["src/"],
+            command="pytest tests/test_unit.py",
+            success=True,
+            worktree=self.worktree,
+            receipt_id=1,
+        )
+        self.assertIn("acceptance_digest", record)
+        self.assertTrue(record["acceptance_digest"].startswith("sha256:"))
+
+        # 1. Unchanged contract + unchanged workspace -> accepted
+        bound, reason = evidence_binding_matches(
+            record,
+            workcard_id="card-binding-1",
+            focused_tests=["pytest tests/test_unit.py"],
+            negative_checks=["reject scope expansion"],
+            expected_evidence=["implementation head", "independent review receipt"],
+            allowed_paths=["src/"],
+            worktree=self.worktree,
+        )
+        self.assertTrue(bound)
+        self.assertEqual(reason, "")
+
+        # 2. Modified expected_evidence -> rejected
+        bound, reason = evidence_binding_matches(
+            record,
+            workcard_id="card-binding-1",
+            focused_tests=["pytest tests/test_unit.py"],
+            negative_checks=["reject scope expansion"],
+            expected_evidence=["implementation head"],  # altered descriptor
+            allowed_paths=["src/"],
+            worktree=self.worktree,
+        )
+        self.assertFalse(bound)
+        self.assertEqual(reason, "evidence_acceptance_digest_mismatch")
+
+        # 3. Modified negative_checks -> rejected
+        bound, reason = evidence_binding_matches(
+            record,
+            workcard_id="card-binding-1",
+            focused_tests=["pytest tests/test_unit.py"],
+            negative_checks=["reject credential leak"],  # altered check
+            expected_evidence=["implementation head", "independent review receipt"],
+            allowed_paths=["src/"],
+            worktree=self.worktree,
+        )
+        self.assertFalse(bound)
+        self.assertEqual(reason, "evidence_acceptance_digest_mismatch")
+
+        # 4. Modified focused_tests -> rejected
+        bound, reason = evidence_binding_matches(
+            record,
+            workcard_id="card-binding-1",
+            focused_tests=["pytest tests/test_integration.py"],  # altered test
+            negative_checks=["reject scope expansion"],
+            expected_evidence=["implementation head", "independent review receipt"],
+            allowed_paths=["src/"],
+            worktree=self.worktree,
+        )
+        self.assertFalse(bound)
+        self.assertIn("mismatch", reason)
+
+        # 5. Modified allowed_paths -> rejected
+        bound, reason = evidence_binding_matches(
+            record,
+            workcard_id="card-binding-1",
+            focused_tests=["pytest tests/test_unit.py"],
+            negative_checks=["reject scope expansion"],
+            expected_evidence=["implementation head", "independent review receipt"],
+            allowed_paths=["src/", "engine/"],  # altered scope
+            worktree=self.worktree,
+        )
+        self.assertFalse(bound)
+        self.assertEqual(reason, "evidence_acceptance_digest_mismatch")
+
+        # 6. Workspace status moved -> rejected
+        src_file = self.worktree / "src" / "new.py"
+        src_file.parent.mkdir(parents=True, exist_ok=True)
+        src_file.write_text("workspace modified after test run", encoding="utf-8")
+        bound, reason = evidence_binding_matches(
+            record,
+            workcard_id="card-binding-1",
+            focused_tests=["pytest tests/test_unit.py"],
+            negative_checks=["reject scope expansion"],
+            expected_evidence=["implementation head", "independent review receipt"],
+            allowed_paths=["src/"],
+            worktree=self.worktree,
+        )
+        self.assertFalse(bound)
+        self.assertEqual(reason, "evidence_workspace_state_moved")
+
+    def test_hooks_do_not_attempt_to_verify_steward_owned_evidence(self):
+        """Stop hook verifies worker-local contract and never acts as a second evaluator for Steward gates."""
+        (self.worktree / "README.md").write_text("initial", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.worktree), "config", "user.name", "test"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.worktree), "config", "user.email", "test@example.com"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.worktree), "add", "README.md"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.worktree), "commit", "-m", "init"], check=True, capture_output=True)
+
+        (self.worktree / "src").mkdir(parents=True, exist_ok=True)
+        (self.worktree / "src" / "worker.py").write_text("done", encoding="utf-8")
+
+        # These are Steward canonical verification gates (not worker-local files)
+        steward_owned_descriptors = [
+            "implementation head",
+            "independent review receipt",
+            "canonical CI pass",
+            "PR merge receipt",
+        ]
+        os.environ["STEWARD_WORKTREE"] = str(self.worktree)
+        os.environ["STEWARD_WORKCARD_ID"] = "card-local-worker"
+        os.environ["STEWARD_WORKER_TYPE"] = "implement"
+        os.environ["STEWARD_ALLOWED_PATHS"] = json.dumps(["src/"])
+        os.environ["STEWARD_EXPECTED_EVIDENCE"] = json.dumps(steward_owned_descriptors)
+
+        try:
+            hook_input = HookInput(hook_event_name="Stop")
+            exit_code, out, stderr = self.handler.handle_stop(hook_input)
+            self.assertEqual(exit_code, 0)
+            self.assertIsNone(stderr)
+            self.assertTrue(out.continue_)
+            self.assertNotEqual(out.decision, "block")
+
+            status_file = self.state_dir / "completion_status.json"
+            self.assertTrue(status_file.is_file())
+            status_data = json.loads(status_file.read_text(encoding="utf-8"))
+            self.assertEqual(status_data["status"], "completed")
+        finally:
+            for k in (
+                "STEWARD_WORKTREE",
+                "STEWARD_WORKCARD_ID",
+                "STEWARD_WORKER_TYPE",
+                "STEWARD_ALLOWED_PATHS",
+                "STEWARD_EXPECTED_EVIDENCE",
+            ):
                 os.environ.pop(k, None)
 
 
