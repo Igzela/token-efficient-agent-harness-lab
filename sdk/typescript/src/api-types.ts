@@ -265,6 +265,19 @@ export interface ProductTaskIntakeRequest {
   tenant_id?: string;
   workspace_id?: string;
   workspace_mode?: "git_worktree";
+  /** Producer-owned exact matrix-cell provenance (frozen plan/cell owner only). */
+  matrix_binding?: {
+    plan_id: string;
+    manifest_sha256: string;
+    rung: string;
+    repetition: number;
+    cell_id: string;
+    cell_descriptor_sha256: string;
+    harness_id: string;
+    model_id: string;
+    strategy_id: string;
+    task_id: string;
+  };
 }
 
 export interface ProductTaskResponse {

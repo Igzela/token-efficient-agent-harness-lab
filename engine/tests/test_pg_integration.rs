@@ -978,6 +978,7 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
         tenant_id: Some("local".into()),
         workspace_id: Some("default".into()),
         workspace_mode: Some("git_worktree".into()),
+        matrix_binding: None,
     };
     let task = store
         .admit_product_task(
@@ -1381,6 +1382,7 @@ fn pg_product_task_to_approval(
         tenant_id: Some("local".to_string()),
         workspace_id: Some("default".to_string()),
         workspace_mode: Some("git_worktree".to_string()),
+        matrix_binding: None,
     };
     let validated = validate_intake(&request, "local", "default").unwrap();
     let task = store
@@ -1503,6 +1505,7 @@ fn pg_local_folder_apply_and_rollback_are_staged_and_idempotent() {
         tenant_id: Some("local".to_string()),
         workspace_id: Some("default".to_string()),
         workspace_mode: Some("local_folder".to_string()),
+        matrix_binding: None,
     };
     let validated = validate_intake(&request, "local", "default").unwrap();
     let task = store
@@ -2108,6 +2111,7 @@ fn pg_product_artifact_rejects_changes_outside_allowed_paths() {
         tenant_id: Some("local".to_string()),
         workspace_id: Some("default".to_string()),
         workspace_mode: Some("git_worktree".to_string()),
+        matrix_binding: None,
     };
     let validated = validate_intake(&request, "local", "default").unwrap();
     let task = store
@@ -2256,6 +2260,7 @@ fn pg_ready_for_verification_with_budget(
         tenant_id: Some("local".to_string()),
         workspace_id: Some("default".to_string()),
         workspace_mode: Some("git_worktree".to_string()),
+        matrix_binding: None,
     };
     let validated = validate_intake(&request, "local", "default").unwrap();
     let task = store
@@ -3118,6 +3123,7 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         tenant_id: Some("local".to_string()),
         workspace_id: Some("default".to_string()),
         workspace_mode: Some("git_worktree".to_string()),
+        matrix_binding: None,
     };
     let validated = validate_intake(&request, "local", "default").unwrap();
     let task = store
@@ -4729,6 +4735,7 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
         tenant_id: Some("tenant-a".into()),
         workspace_id: Some("default".into()),
         workspace_mode: Some("local_folder".into()),
+        matrix_binding: None,
     };
     let product_task = store
         .admit_product_task(

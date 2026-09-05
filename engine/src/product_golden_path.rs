@@ -676,6 +676,11 @@ pub struct ProductTaskIntakeRequest {
     pub workspace_id: Option<String>,
     /// Operator-supplied workspace mode; golden path requires controlled git worktree.
     pub workspace_mode: Option<String>,
+    /// Producer-owned exact matrix-cell provenance for this intake, supplied
+    /// by the frozen plan/cell owner (never authored by the worker/model).
+    /// `None` preserves non-matrix ProductTask intake.
+    #[serde(default)]
+    pub matrix_binding: Option<ProductHarnessMatrixBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -702,6 +707,8 @@ pub struct ValidatedProductTaskIntake {
     pub tenant_id: String,
     pub workspace_id: String,
     pub workspace_mode: String,
+    #[serde(default)]
+    pub matrix_binding: Option<ProductHarnessMatrixBinding>,
     pub intake_contract_sha256: String,
 }
 
@@ -1008,9 +1015,16 @@ pub fn project_product_harness_run(
         matrix_binding: task
             .get("matrix_binding")
             .cloned()
-            .map(serde_json::from_value)
+            .map(serde_json::from_value::<Option<ProductHarnessMatrixBinding>>)
             .transpose()
-            .map_err(|error| format!("invalid product matrix binding: {error}"))?,
+            .map_err(|error| format!("invalid product matrix binding: {error}"))?
+            .flatten()
+            // The binding is validated at intake and rehydration, and exact
+            // cell matching is enforced by the matrix owner; re-validate at
+            // the projection seam so a malformed persisted value still fails
+            // closed instead of flowing into normalization.
+            .map(|binding| validate_matrix_binding(&binding))
+            .transpose()?,
     })
 }
 
@@ -1030,6 +1044,86 @@ pub fn fingerprint_objective(objective: &str) -> String {
 
 pub fn provisional_run_id_for_task(task_id: &str) -> String {
     format!("product-task:{task_id}")
+}
+
+fn require_matrix_sha(value: &str, field: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.len() != 64 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("matrix_binding.{field} must be 64 hex characters"));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn require_matrix_token(value: &str, field: &str, max_bytes: usize) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.len() > max_bytes {
+        return Err(format!(
+            "matrix_binding.{field} must be 1..{max_bytes} bytes after trim"
+        ));
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+    {
+        return Err(format!(
+            "matrix_binding.{field} contains forbidden characters"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn require_matrix_identity(value: &str, field: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.len() > 256 {
+        return Err(format!(
+            "matrix_binding.{field} must be 1..256 bytes after trim"
+        ));
+    }
+    if trimmed.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!(
+            "matrix_binding.{field} must not contain whitespace or control characters"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Validate producer-owned matrix-cell provenance supplied with intake. The
+/// binding must be all-or-nothing exact: the frozen plan/cell owner provides
+/// every identity field, and every digest field is a canonical 64-hex
+/// SHA-256. Missing, malformed, or partial bindings fail closed. Cross-cell
+/// correctness (this binding names the cell the evidence is normalized for)
+/// is enforced by the MX1 normalization owner, not here.
+pub fn validate_matrix_binding(
+    binding: &ProductHarnessMatrixBinding,
+) -> Result<ProductHarnessMatrixBinding, String> {
+    let rung = binding.rung.trim();
+    if rung.is_empty() || rung.len() > 64 {
+        return Err("matrix_binding.rung must be 1..64 bytes after trim".to_string());
+    }
+    if !rung
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, 'x' | '-' | '_' | '.'))
+    {
+        return Err("matrix_binding.rung contains forbidden characters".to_string());
+    }
+    if binding.repetition == 0 || binding.repetition > 1_000_000 {
+        return Err("matrix_binding.repetition must be 1..=1000000".to_string());
+    }
+    Ok(ProductHarnessMatrixBinding {
+        plan_id: require_matrix_sha(&binding.plan_id, "plan_id")?,
+        manifest_sha256: require_matrix_sha(&binding.manifest_sha256, "manifest_sha256")?,
+        rung: rung.to_string(),
+        repetition: binding.repetition,
+        cell_id: require_matrix_token(&binding.cell_id, "cell_id", 128)?,
+        cell_descriptor_sha256: require_matrix_sha(
+            &binding.cell_descriptor_sha256,
+            "cell_descriptor_sha256",
+        )?,
+        harness_id: require_matrix_identity(&binding.harness_id, "harness_id")?,
+        model_id: require_matrix_identity(&binding.model_id, "model_id")?,
+        strategy_id: require_matrix_identity(&binding.strategy_id, "strategy_id")?,
+        task_id: require_matrix_token(&binding.task_id, "task_id", 128)?,
+    })
 }
 
 pub fn validate_intake(
@@ -1258,6 +1352,11 @@ pub fn validate_intake(
     };
 
     let objective_fingerprint = fingerprint_objective(objective);
+    let matrix_binding = request
+        .matrix_binding
+        .as_ref()
+        .map(validate_matrix_binding)
+        .transpose()?;
     let validated = ValidatedProductTaskIntake {
         schema_version: PRODUCT_TASK_INTAKE_SCHEMA_VERSION.to_string(),
         objective: objective.to_string(),
@@ -1304,6 +1403,7 @@ pub fn validate_intake(
         tenant_id,
         workspace_id,
         workspace_mode,
+        matrix_binding,
         intake_contract_sha256: String::new(),
     };
     let mut with_hash = validated;
@@ -1334,6 +1434,7 @@ pub fn intake_contract_sha256(intake: &ValidatedProductTaskIntake) -> String {
         "tenant_id": intake.tenant_id,
         "workspace_id": intake.workspace_id,
         "workspace_mode": intake.workspace_mode,
+        "matrix_binding": intake.matrix_binding,
     });
     hex::encode(Sha256::digest(payload.to_string().as_bytes()))
 }
@@ -1365,6 +1466,10 @@ pub fn redacted_intake_json(intake: &ValidatedProductTaskIntake) -> Value {
         "tenant_id": intake.tenant_id,
         "workspace_id": intake.workspace_id,
         "workspace_mode": intake.workspace_mode,
+        // Producer-owned matrix provenance persists with the intake so the
+        // terminal projection can surface it; binding fields are digests and
+        // frozen identities only, never secrets.
+        "matrix_binding": intake.matrix_binding,
         "intake_contract_sha256": intake.intake_contract_sha256,
     })
 }
@@ -2234,6 +2339,7 @@ mod tests {
             tenant_id: None,
             workspace_id: None,
             workspace_mode: Some("git_worktree".to_string()),
+            matrix_binding: None,
         }
     }
 
@@ -2813,5 +2919,145 @@ mod tests {
 
         let mismatched = json!({"product_task_id": "other-task"});
         assert!(project_product_harness_run(&task, Some(&mismatched)).is_err());
+    }
+
+    fn sample_matrix_binding() -> ProductHarnessMatrixBinding {
+        ProductHarnessMatrixBinding {
+            plan_id: "a".repeat(64),
+            manifest_sha256: "b".repeat(64),
+            rung: "1x2x3".to_string(),
+            repetition: 1,
+            cell_id: "cell-001".to_string(),
+            cell_descriptor_sha256: "c".repeat(64),
+            harness_id: "ledger-orchestrated:provider-independent:v1".to_string(),
+            model_id: "deepseek-v4-pro:single-model-three-role:v1".to_string(),
+            strategy_id: "single-pass-plan-implement-review:memory-only:v1".to_string(),
+            task_id: "mx1-task".to_string(),
+        }
+    }
+
+    fn validated_request_with_binding(
+        binding: Option<ProductHarnessMatrixBinding>,
+    ) -> ValidatedProductTaskIntake {
+        let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        let mut request = sample_request();
+        request.matrix_binding = binding;
+        let validated = validate_intake(&request, "tenant-1", "workspace-1").unwrap();
+        std::env::remove_var(PRODUCT_TASK_GATE);
+        validated
+    }
+
+    #[test]
+    fn matrix_binding_is_producer_owned_and_bound_into_contract() {
+        let validated = validated_request_with_binding(Some(sample_matrix_binding()));
+        let binding = validated.matrix_binding.as_ref().unwrap();
+        assert_eq!(binding.plan_id, "a".repeat(64));
+        assert_eq!(binding.cell_id, "cell-001");
+        // The binding is part of the intake contract: the same intake
+        // without it hashes differently.
+        let plain = validated_request_with_binding(None);
+        assert_ne!(
+            validated.intake_contract_sha256,
+            plain.intake_contract_sha256
+        );
+        // The persisted redacted intake carries the binding to the row.
+        let persisted = redacted_intake_json(&validated);
+        assert_eq!(
+            persisted["matrix_binding"]["plan_id"],
+            Value::String("a".repeat(64))
+        );
+        assert_eq!(
+            persisted["matrix_binding"]["task_id"],
+            Value::String("mx1-task".to_string())
+        );
+        let plain_persisted = redacted_intake_json(&plain);
+        assert!(plain_persisted["matrix_binding"].is_null());
+    }
+
+    #[test]
+    fn matrix_binding_negative_cases_fail_closed() {
+        // Malformed digests.
+        for mutate in [
+            |b: &mut ProductHarnessMatrixBinding| b.plan_id = "short".to_string(),
+            |b: &mut ProductHarnessMatrixBinding| {
+                b.manifest_sha256 = "z".repeat(64);
+            },
+            |b: &mut ProductHarnessMatrixBinding| {
+                b.cell_descriptor_sha256 = String::new();
+            },
+        ] {
+            let mut binding = sample_matrix_binding();
+            mutate(&mut binding);
+            assert!(
+                validate_matrix_binding(&binding).is_err(),
+                "malformed digest must fail"
+            );
+        }
+        // Wrong rung / repetition / cell / harness / model / strategy / task.
+        let mut wrong_rung = sample_matrix_binding();
+        wrong_rung.rung = "not a rung!".to_string();
+        assert!(validate_matrix_binding(&wrong_rung).is_err());
+        let mut wrong_repetition = sample_matrix_binding();
+        wrong_repetition.repetition = 0;
+        assert!(validate_matrix_binding(&wrong_repetition).is_err());
+        let mut wrong_cell = sample_matrix_binding();
+        wrong_cell.cell_id = String::new();
+        assert!(validate_matrix_binding(&wrong_cell).is_err());
+        let mut wrong_task = sample_matrix_binding();
+        wrong_task.task_id = "other task with spaces!".to_string();
+        assert!(validate_matrix_binding(&wrong_task).is_err());
+        for field in ["harness_id", "model_id", "strategy_id"] {
+            let mut binding = sample_matrix_binding();
+            match field {
+                "harness_id" => binding.harness_id = "has whitespace".to_string(),
+                "model_id" => binding.model_id = String::new(),
+                _ => binding.strategy_id = "has\tcontrol".to_string(),
+            }
+            assert!(
+                validate_matrix_binding(&binding).is_err(),
+                "{field} must fail"
+            );
+        }
+        // Intake-time rejection: a binding that fails validation cannot be
+        // admitted.
+        let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        let mut request = sample_request();
+        let mut bad = sample_matrix_binding();
+        bad.plan_id = "forged-plan".to_string();
+        request.matrix_binding = Some(bad);
+        assert!(validate_intake(&request, "tenant-1", "workspace-1").is_err());
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn projection_surfaces_and_revalidates_matrix_binding() {
+        let task = json!({
+            "task_id": "mx1-task",
+            "status": "completed",
+            "workspace_id": "scope-1",
+            "workspace_binding": {
+                "workspace_id": "ws-1",
+                "source_revision": "d".repeat(40),
+            },
+            "matrix_binding": serde_json::to_value(sample_matrix_binding()).unwrap(),
+        });
+        let projected = project_product_harness_run(&task, None).unwrap();
+        assert_eq!(
+            projected.matrix_binding.as_ref().unwrap().cell_id,
+            "cell-001"
+        );
+        // A task row carrying a malformed binding fails closed at the seam.
+        let mut tampered = task.clone();
+        tampered["matrix_binding"]["plan_id"] = Value::String("forged".to_string());
+        assert!(project_product_harness_run(&tampered, None).is_err());
+        // Historical rows without the field project explicit `None`.
+        let mut legacy = task.clone();
+        legacy.as_object_mut().unwrap().remove("matrix_binding");
+        assert!(project_product_harness_run(&legacy, None)
+            .unwrap()
+            .matrix_binding
+            .is_none());
     }
 }

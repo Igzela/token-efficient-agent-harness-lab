@@ -99,6 +99,7 @@ fn intake(
         tenant_id: Some("local".to_string()),
         workspace_id: Some("default".to_string()),
         workspace_mode: Some("git_worktree".to_string()),
+        matrix_binding: None,
     }
 }
 
@@ -1122,6 +1123,7 @@ fn test_pure_orchestrator_graph_compilation_and_validation_golden_traces() {
         tenant_id: Some("local".to_string()),
         workspace_id: Some("default".to_string()),
         workspace_mode: Some("git_worktree".to_string()),
+        matrix_binding: None,
     };
 
     let validated = validate_intake(&req, "local", "default").unwrap();
@@ -1269,6 +1271,7 @@ fn test_pure_orchestrator_golden_traces_four_categories() {
         tenant_id: Some("local".to_string()),
         workspace_id: Some("default".to_string()),
         workspace_mode: Some("git_worktree".to_string()),
+        matrix_binding: None,
     };
 
     let val = validate_intake(&req, "local", "default").expect("validate intake");

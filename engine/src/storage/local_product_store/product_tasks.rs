@@ -9101,6 +9101,10 @@ fn map_product_task_row(row: &Row<'_>) -> rusqlite::Result<Value> {
     let confirm_execution =
         strict_product_task_bool_sqlite(confirm_execution, "confirm_execution")?;
     let confirm_output = strict_product_task_bool_sqlite(confirm_output, "confirm_output")?;
+    // Producer-owned matrix provenance flows from the persisted intake to
+    // the evidence projection surface. Historical rows predate the field
+    // and surface explicit null.
+    let matrix_binding = intake.get("matrix_binding").cloned().unwrap_or(Value::Null);
     Ok(json!({
         "schema_version": row.get::<_, String>("schema_version")?,
         "task_id": row.get::<_, String>("task_id")?,
@@ -9121,6 +9125,7 @@ fn map_product_task_row(row: &Row<'_>) -> rusqlite::Result<Value> {
         "confirm_output": confirm_output,
         "intake_contract_sha256": row.get::<_, String>("intake_contract_sha256")?,
         "intake": intake,
+        "matrix_binding": matrix_binding,
         "workspace_binding": binding,
         "plan_id": row.get::<_, Option<String>>("plan_id")?,
         "run_id": row.get::<_, Option<String>>("run_id")?,
@@ -9331,6 +9336,23 @@ fn reconstruct_intake_from_task(
             .filter(|mode| matches!(*mode, "git_worktree" | "local_folder"))
             .unwrap_or("git_worktree")
             .to_string(),
+        // Producer-owned matrix provenance rehydrated from the persisted
+        // intake. Historical rows predate the field and stay `None`; a
+        // present-but-malformed binding fails closed here rather than
+        // flowing into the evidence projection.
+        matrix_binding: match intake.get("matrix_binding") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                serde_json::from_value::<crate::product_golden_path::ProductHarnessMatrixBinding>(
+                    value.clone(),
+                )
+                .map_err(|error| format!("ProductTask matrix_binding is malformed: {error}"))
+                .and_then(|binding| {
+                    crate::product_golden_path::validate_matrix_binding(&binding)
+                        .map_err(|error| format!("ProductTask matrix_binding is invalid: {error}"))
+                })?,
+            ),
+        },
         intake_contract_sha256: task
             .get("intake_contract_sha256")
             .and_then(Value::as_str)
@@ -9857,6 +9879,7 @@ mod local_folder_product_task_tests {
             tenant_id: Some("tenant-local".to_string()),
             workspace_id: Some("workspace-local".to_string()),
             workspace_mode: Some("local_folder".to_string()),
+            matrix_binding: None,
         };
         let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
         let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
@@ -9959,6 +9982,7 @@ mod local_folder_product_task_tests {
             tenant_id: Some("tenant-local".to_string()),
             workspace_id: Some("workspace-local".to_string()),
             workspace_mode: Some("local_folder".to_string()),
+            matrix_binding: None,
         };
         let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
         let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
@@ -10079,6 +10103,7 @@ mod local_folder_product_task_tests {
             tenant_id: Some("tenant-local".to_string()),
             workspace_id: Some("workspace-local".to_string()),
             workspace_mode: Some("local_folder".to_string()),
+            matrix_binding: None,
         };
         let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
         let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
@@ -10173,6 +10198,7 @@ mod local_folder_product_task_tests {
             tenant_id: Some("tenant-local".to_string()),
             workspace_id: Some("workspace-local".to_string()),
             workspace_mode: Some("local_folder".to_string()),
+            matrix_binding: None,
         };
         let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
         let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
@@ -10246,6 +10272,7 @@ mod local_folder_product_task_tests {
             tenant_id: Some("tenant-local".to_string()),
             workspace_id: Some("workspace-local".to_string()),
             workspace_mode: Some("local_folder".to_string()),
+            matrix_binding: None,
         };
         let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
         let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
@@ -10386,6 +10413,7 @@ mod local_folder_product_task_tests {
             tenant_id: Some("tenant-local".to_string()),
             workspace_id: Some("workspace-local".to_string()),
             workspace_mode: Some("local_folder".to_string()),
+            matrix_binding: None,
         };
         let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
         let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
@@ -10473,6 +10501,81 @@ mod local_folder_product_task_tests {
             std::fs::read(outside.path().join("must-remain")).unwrap(),
             b"safe"
         );
+    }
+
+    #[test]
+    fn matrix_binding_flows_from_intake_to_stored_task_projection() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("operator-folder");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("README.md"), b"original").unwrap();
+        let _gate_guard = ProductGateGuard::enable();
+        let source = std::fs::canonicalize(&source).unwrap();
+        let request = ProductTaskIntakeRequest {
+            objective: "Matrix-bound bounded local document".to_string(),
+            target_id: "matrix-binding-roundtrip".to_string(),
+            target_repo_path: source.to_string_lossy().into_owned(),
+            source_kind: Some("local_folder".to_string()),
+            source_revision: "operator-supplied-placeholder".to_string(),
+            source_tree_hash: None,
+            allowed_paths: vec!["README.md".to_string()],
+            verification_commands: vec![ProductVerificationCommand {
+                command: "test -f README.md".to_string(),
+                timeout_ms: 1_000,
+            }],
+            output_intent: "artifact_only".to_string(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["deterministic".to_string()],
+                prefer: Some("deterministic".to_string()),
+            },
+            budget: None,
+            risk_class: "low".to_string(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(false),
+            idempotency_key: "matrix-binding-roundtrip".to_string(),
+            expected_version: None,
+            tenant_id: Some("tenant-local".to_string()),
+            workspace_id: Some("workspace-local".to_string()),
+            workspace_mode: Some("local_folder".to_string()),
+            matrix_binding: Some(crate::product_golden_path::ProductHarnessMatrixBinding {
+                plan_id: "a".repeat(64),
+                manifest_sha256: "b".repeat(64),
+                rung: "1x2x3".to_string(),
+                repetition: 2,
+                cell_id: "cell-002".to_string(),
+                cell_descriptor_sha256: "c".repeat(64),
+                harness_id: "ledger-orchestrated:provider-independent:v1".to_string(),
+                model_id: "deepseek-v4-pro:single-model-three-role:v1".to_string(),
+                strategy_id: "single-pass-plan-implement-review:memory-only:v1".to_string(),
+                task_id: "mx1-task".to_string(),
+            }),
+        };
+        let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
+        assert!(intake.matrix_binding.is_some());
+        let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
+        let admitted = store.admit_product_task(&intake, "operator").unwrap();
+        let task_id = admitted["task_id"].as_str().unwrap().to_string();
+        let stored = store.get_product_task(&task_id).unwrap().unwrap();
+        assert_eq!(
+            stored["matrix_binding"]["cell_id"],
+            serde_json::Value::String("cell-002".to_string())
+        );
+        assert_eq!(
+            stored["matrix_binding"]["repetition"],
+            serde_json::Value::from(2)
+        );
+        assert_eq!(
+            stored["intake"]["matrix_binding"]["plan_id"],
+            serde_json::Value::String("a".repeat(64))
+        );
+        // The evidence projection surfaces the producer-owned binding.
+        let projected =
+            crate::product_golden_path::project_product_harness_run(&stored, None).unwrap();
+        let binding = projected.matrix_binding.as_ref().unwrap();
+        assert_eq!(binding.cell_id, "cell-002");
+        assert_eq!(binding.repetition, 2);
+        assert_eq!(binding.plan_id, "a".repeat(64));
     }
 }
 

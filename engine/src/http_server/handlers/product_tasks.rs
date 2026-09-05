@@ -89,6 +89,7 @@ pub(crate) async fn api_create_product_task(
         tenant_id: request.tenant_id,
         workspace_id: request.workspace_id,
         workspace_mode: request.workspace_mode,
+        matrix_binding: None,
     };
 
     let validated =
