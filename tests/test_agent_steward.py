@@ -32,6 +32,55 @@ BASE = contract.CAMPAIGN_BASE_SHA
 HEAD = "b" * 40
 
 
+def _mock_hooks_provision_trust(config_path, codex_binary=None, timeout_seconds=15):
+    """Class-wide explicit mock provisioner (no Codex binary in CI).
+
+    Records a visibly-mock trust entry that can never impersonate native
+    Codex trust. Individual tests override with their own patch.
+    """
+    cfg = Path(config_path)
+    with open(cfg, "a", encoding="utf-8") as handle:
+        handle.write('\n[hooks.state."mock-provisioner:class-fixture"]\n')
+        handle.write('trusted_hash = "mock:class-fixture-provisioner"\n')
+    return {"mock-provisioner:class-fixture": "mock:class-fixture-provisioner"}
+
+
+def _install_hooks_provisioning_fixture(testcase: unittest.TestCase) -> None:
+    """Install explicit mock hooks provisioning for worker _invoke tests.
+
+    CI runners have no Codex binary, and production provisioning must never
+    be faked per-call. Tests needing specific provisioning behavior patch
+    codex_hooks.config.provision_trust themselves (inner wins).
+    """
+    provisioner = mock.patch(
+        "codex_hooks.config.provision_trust",
+        side_effect=_mock_hooks_provision_trust,
+    )
+    provisioner.start()
+    testcase.addCleanup(provisioner.stop)
+    # Force an explicit mock binary path when the worker leaves it
+    # unresolved, so write_config reaches the mocked provisioner instead
+    # of failing PATH resolution. Never touches global shutil.which, so
+    # the worker's own PATH-based fake-binary discovery keeps working.
+    from codex_hooks.config import HookConfigGenerator
+
+    real_write_config = HookConfigGenerator.write_config
+
+    def _write_config_for_tests(self, target_path, codex_binary=None, auto_trust=True):
+        return real_write_config(
+            self, target_path,
+            codex_binary=codex_binary or "/mock/codex-binary",
+            auto_trust=auto_trust,
+        )
+
+    config_patch = mock.patch.object(
+        HookConfigGenerator, "write_config", autospec=True,
+        side_effect=_write_config_for_tests,
+    )
+    config_patch.start()
+    testcase.addCleanup(config_patch.stop)
+
+
 class ExplodingWorker(workers.BoundedProcessWorker):
     def run(self, context):
         raise RuntimeError("worker stopped after mutation boundary")
@@ -41,6 +90,7 @@ class StewardExecutionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        _install_hooks_provisioning_fixture(self)
         self.root = Path(self.temp.name)
         registered = contract.campaign_mission()
         self.mission = contract.activate_current_mission(
@@ -1742,6 +1792,7 @@ class StewardConcurrencyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        _install_hooks_provisioning_fixture(self)
         self.root = Path(self.temp.name)
         registered = contract.campaign_mission()
         self.mission = contract.activate_current_mission(

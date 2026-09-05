@@ -283,7 +283,12 @@ class HookConfigGenerator:
         target.write_text(content, encoding="utf-8")
 
         if auto_trust:
-            bin_path = codex_binary or shutil.which("codex") or "/home/igzela/.local/bin/codex"
+            # No hardcoded fallback path: the binary must be explicitly given
+            # or resolvable via PATH. CI runners without Codex must use an
+            # explicit mock provisioner instead of receiving fabricated trust.
+            bin_path = codex_binary or shutil.which("codex")
+            if bin_path is None:
+                raise RuntimeError("hook_trust_provisioning_failed: codex_binary_unavailable")
             try:
                 provision_trust(target, codex_binary=bin_path)
             except Exception as exc:
