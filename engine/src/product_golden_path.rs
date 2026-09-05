@@ -753,6 +753,24 @@ pub struct ProductHarnessObservedEvidence {
     pub evidence_sha256: Option<String>,
 }
 
+/// Producer-owned binding for a ProductTask that is being observed as one
+/// exact MX1 matrix cell. The generic ProductTask remains the persistence
+/// owner; this metadata only proves which frozen matrix run produced the
+/// already-owned terminal evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductHarnessMatrixBinding {
+    pub plan_id: String,
+    pub manifest_sha256: String,
+    pub rung: String,
+    pub repetition: u32,
+    pub cell_id: String,
+    pub cell_descriptor_sha256: String,
+    pub harness_id: String,
+    pub model_id: String,
+    pub strategy_id: String,
+    pub task_id: String,
+}
+
 /// Read-only normalized evidence from the Product Golden Path. It intentionally
 /// excludes objectives, workspace paths, command output, prompts, transcripts,
 /// credentials, and repository content. Stable digest bindings retain the
@@ -776,6 +794,8 @@ pub struct ProductHarnessRunEvidence {
     pub failure_code: Option<String>,
     pub failure_detail_sha256: Option<String>,
     pub terminal_evidence_sha256: Option<String>,
+    #[serde(default)]
+    pub matrix_binding: Option<ProductHarnessMatrixBinding>,
 }
 
 fn product_harness_sha256(value: &Value) -> Result<String, String> {
@@ -985,6 +1005,12 @@ pub fn project_product_harness_run(
         failure_code,
         failure_detail_sha256,
         terminal_evidence_sha256,
+        matrix_binding: task
+            .get("matrix_binding")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("invalid product matrix binding: {error}"))?,
     })
 }
 
