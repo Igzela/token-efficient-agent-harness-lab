@@ -32,6 +32,55 @@ BASE = contract.CAMPAIGN_BASE_SHA
 HEAD = "b" * 40
 
 
+def _mock_hooks_provision_trust(config_path, codex_binary=None, timeout_seconds=15):
+    """Class-wide explicit mock provisioner (no Codex binary in CI).
+
+    Records a visibly-mock trust entry that can never impersonate native
+    Codex trust. Individual tests override with their own patch.
+    """
+    cfg = Path(config_path)
+    with open(cfg, "a", encoding="utf-8") as handle:
+        handle.write('\n[hooks.state."mock-provisioner:class-fixture"]\n')
+        handle.write('trusted_hash = "mock:class-fixture-provisioner"\n')
+    return {"mock-provisioner:class-fixture": "mock:class-fixture-provisioner"}
+
+
+def _install_hooks_provisioning_fixture(testcase: unittest.TestCase) -> None:
+    """Install explicit mock hooks provisioning for worker _invoke tests.
+
+    CI runners have no Codex binary, and production provisioning must never
+    be faked per-call. Tests needing specific provisioning behavior patch
+    codex_hooks.config.provision_trust themselves (inner wins).
+    """
+    provisioner = mock.patch(
+        "codex_hooks.config.provision_trust",
+        side_effect=_mock_hooks_provision_trust,
+    )
+    provisioner.start()
+    testcase.addCleanup(provisioner.stop)
+    # Force an explicit mock binary path when the worker leaves it
+    # unresolved, so write_config reaches the mocked provisioner instead
+    # of failing PATH resolution. Never touches global shutil.which, so
+    # the worker's own PATH-based fake-binary discovery keeps working.
+    from codex_hooks.config import HookConfigGenerator
+
+    real_write_config = HookConfigGenerator.write_config
+
+    def _write_config_for_tests(self, target_path, codex_binary=None, auto_trust=True):
+        return real_write_config(
+            self, target_path,
+            codex_binary=codex_binary or "/mock/codex-binary",
+            auto_trust=auto_trust,
+        )
+
+    config_patch = mock.patch.object(
+        HookConfigGenerator, "write_config", autospec=True,
+        side_effect=_write_config_for_tests,
+    )
+    config_patch.start()
+    testcase.addCleanup(config_patch.stop)
+
+
 class ExplodingWorker(workers.BoundedProcessWorker):
     def run(self, context):
         raise RuntimeError("worker stopped after mutation boundary")
@@ -41,6 +90,7 @@ class StewardExecutionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        _install_hooks_provisioning_fixture(self)
         self.root = Path(self.temp.name)
         registered = contract.campaign_mission()
         self.mission = contract.activate_current_mission(
@@ -1160,6 +1210,7 @@ class StewardExecutionTests(unittest.TestCase):
         wrapper.write_text(
             """#!/usr/bin/env python3
 import json
+import os
 from pathlib import Path
 import sys
 output = Path(sys.argv[3])
@@ -1169,6 +1220,13 @@ output.mkdir(parents=True, exist_ok=True)
     "reason": "authentication_failure",
     "detail": "private provider output must be discarded",
 }), encoding="utf-8")
+# Simulate a guarded run: hooks executed before the wrapper failed.
+state = Path(os.environ.get("STEWARD_SESSION_STATE_DIR", ""))
+if str(state):
+    (state / "telemetry.json").write_text(json.dumps({
+        "schema_version": "codex_hooks_telemetry.v1",
+        "events": [{"event": "SessionStart"}],
+    }), encoding="utf-8")
 raise SystemExit(1)
 """,
             encoding="utf-8",
@@ -1221,6 +1279,13 @@ elif args and args[0] == "exec":
         raise SystemExit(5)
     if not Path("/etc/hosts").is_file():
         raise SystemExit(6)
+    # Simulate a guarded run: hooks executed.
+    state = Path(os.environ.get("STEWARD_SESSION_STATE_DIR", ""))
+    if str(state):
+        (state / "telemetry.json").write_text(json.dumps({
+            "schema_version": "codex_hooks_telemetry.v1",
+            "events": [{"event": "SessionStart"}],
+        }), encoding="utf-8")
     output = Path(args[args.index("--output-last-message") + 1])
     output.write_text("done", encoding="utf-8")
     print(json.dumps({"type":"turn.completed"}))
@@ -1282,6 +1347,13 @@ elif args and args[0] == "exec":
     payload = json.loads(auth.read_text(encoding="utf-8"))
     if payload.get("tokens", {}).get("access_token") != "test-access-token":
         raise SystemExit(7)
+    # Simulate a guarded run: hooks executed.
+    state = Path(os.environ.get("STEWARD_SESSION_STATE_DIR", ""))
+    if str(state):
+        (state / "telemetry.json").write_text(json.dumps({
+            "schema_version": "codex_hooks_telemetry.v1",
+            "events": [{"event": "SessionStart"}],
+        }), encoding="utf-8")
     output = Path(args[args.index("--output-last-message") + 1])
     output.write_text('{"verdict":"PASS","blockers":[],"summary":"bounded"}', encoding="utf-8")
     print(json.dumps({"type": "turn.completed"}))
@@ -1361,6 +1433,7 @@ else:
         real_codex.write_text(
             """#!/usr/bin/env python3
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -1370,6 +1443,13 @@ if args == ["--version"]:
 elif args[:2] == ["exec", "--help"]:
     print("--json --ephemeral --ignore-user-config --skip-git-repo-check --sandbox --model --cd --output-last-message")
 elif args and args[0] == "exec":
+    # Simulate a guarded run: hooks executed.
+    state = Path(os.environ.get("STEWARD_SESSION_STATE_DIR", ""))
+    if str(state):
+        (state / "telemetry.json").write_text(json.dumps({
+            "schema_version": "codex_hooks_telemetry.v1",
+            "events": [{"event": "SessionStart"}],
+        }), encoding="utf-8")
     output = Path(args[args.index("--output-last-message") + 1])
     output.write_text(json.dumps({"verdict": "PASS", "blockers": [], "summary": "bounded"}), encoding="utf-8")
     print(json.dumps({"type": "turn.completed"}))
@@ -1712,6 +1792,7 @@ class StewardConcurrencyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        _install_hooks_provisioning_fixture(self)
         self.root = Path(self.temp.name)
         registered = contract.campaign_mission()
         self.mission = contract.activate_current_mission(
@@ -1852,10 +1933,31 @@ class StewardConcurrencyTests(unittest.TestCase):
             cfg = codex_home / "config.toml"
             if cfg.is_file():
                 intercepted_config = cfg.read_text(encoding="utf-8")
+            # Simulate a guarded runtime run: the hooks engine executed and
+            # recorded telemetry in the worker's ephemeral state directory.
+            state_dir = Path(intercepted_env.get("STEWARD_SESSION_STATE_DIR", ""))
+            if str(state_dir):
+                (state_dir / "telemetry.json").write_text(
+                    json.dumps({
+                        "schema_version": "codex_hooks_telemetry.v1",
+                        "events": [{"event": "SessionStart"}],
+                    }),
+                    encoding="utf-8",
+                )
             return 0, "", ""
 
+        def fake_provision_trust(config_path, codex_binary=None, timeout_seconds=15):
+            # Explicit mock provisioner: records a mock trust entry that is
+            # visibly NOT native Codex trust (CI has no Codex binary).
+            cfg = Path(config_path)
+            with open(cfg, "a", encoding="utf-8") as f:
+                f.write('\n[hooks.state."mock-provisioner:session_start:0:0"]\n')
+                f.write('trusted_hash = "mock:explicit-test-provisioner"\n')
+            return {"mock-provisioner:session_start:0:0": "mock:explicit-test-provisioner"}
+
         with mock.patch("local_verification._bounded_process", side_effect=fake_bounded), \
-             mock.patch.object(worker, "_git", return_value=BASE):
+             mock.patch.object(worker, "_git", return_value=BASE), \
+             mock.patch("codex_hooks.config.provision_trust", side_effect=fake_provision_trust):
             code, path, reason = worker._invoke(
                 "implement",
                 "prompt",
@@ -1872,4 +1974,83 @@ class StewardConcurrencyTests(unittest.TestCase):
         self.assertIn("SessionStart", intercepted_config)
         self.assertIn("PreToolUse", intercepted_config)
         self.assertIn("Stop", intercepted_config)
-        self.assertIn("trusted_hash", intercepted_config)
+        self.assertIn("mock:explicit-test-provisioner", intercepted_config)
+        # The worker must never fabricate native-looking trust entries.
+        self.assertNotIn("sha256:", intercepted_config)
+
+    def test_codex_worker_fails_closed_on_hooks_provisioning_failure(self):
+        worker = workers.CodexWorkCardWorker(timeout_seconds=30)
+        context = workers.WorkerContext(
+            "mission-test",
+            "stage-test",
+            "card-hooks-fail",
+            1,
+            "T1",
+            BASE,
+            self.root,
+            ("scripts/agent-control/codex_hooks",),
+            ("Implement hooks",),
+            ("git diff --check",),
+            ("Do not widen scope",),
+            ("evidence",),
+            workers.child_environment(),
+            objective="Test hooks provisioning fail-closed.",
+        )
+
+        def fake_bounded(cmd, cwd=None, timeout_seconds=None, env=None):
+            raise AssertionError("worker must not invoke the runtime when hooks provisioning fails")
+
+        with mock.patch("local_verification._bounded_process", side_effect=fake_bounded), \
+             mock.patch.object(worker, "_git", return_value=BASE), \
+             mock.patch("codex_hooks.config.provision_trust", side_effect=RuntimeError("mock discovery down")):
+            with self.assertRaises(workers.WorkerError) as ctx:
+                worker._invoke(
+                    "implement",
+                    "prompt",
+                    self.root,
+                    environment=context.environment,
+                    context=context,
+                )
+        self.assertIn("codex_hooks_provisioning_failed", str(ctx.exception))
+
+    def test_codex_worker_fails_closed_on_unattested_hooks_execution(self):
+        # The runtime silently skips untrusted hooks and proceeds fail-open
+        # (verified live). A provisioned run with zero recorded hook events
+        # is unguarded: the worker must reject its outcome.
+        worker = workers.CodexWorkCardWorker(timeout_seconds=30)
+        context = workers.WorkerContext(
+            "mission-test",
+            "stage-test",
+            "card-hooks-unattested",
+            1,
+            "T1",
+            BASE,
+            self.root,
+            ("scripts/agent-control/codex_hooks",),
+            ("Implement hooks",),
+            ("git diff --check",),
+            ("Do not widen scope",),
+            ("evidence",),
+            workers.child_environment(),
+            objective="Test hooks execution attestation.",
+        )
+
+        def fake_bounded(cmd, cwd=None, timeout_seconds=None, env=None):
+            # Simulate the runtime skipping hooks: exit 0 but no telemetry.
+            return 0, "", ""
+
+        def fake_provision_trust(config_path, codex_binary=None, timeout_seconds=15):
+            return {"mock:unattested": "mock:explicit-test-provisioner"}
+
+        with mock.patch("local_verification._bounded_process", side_effect=fake_bounded), \
+             mock.patch.object(worker, "_git", return_value=BASE), \
+             mock.patch("codex_hooks.config.provision_trust", side_effect=fake_provision_trust):
+            with self.assertRaises(workers.WorkerError) as ctx:
+                worker._invoke(
+                    "implement",
+                    "prompt",
+                    self.root,
+                    environment=context.environment,
+                    context=context,
+                )
+        self.assertIn("codex_hooks_execution_unattested", str(ctx.exception))

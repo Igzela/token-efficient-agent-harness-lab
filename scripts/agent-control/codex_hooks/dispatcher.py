@@ -7,6 +7,13 @@ Single entrypoint invoked by the Codex hook execution engine:
 Reads event context from stdin (JSON), routes to specialized event handlers
 (Session, Guard, Continuation), and emits responses strictly adhering to the
 official Codex hook wire schemas.
+
+Exit-code contract (verified against the real Codex CLI runtime): exit 0 with
+a JSON decision document on stdout is the ONLY channel the runtime parses. A
+nonzero exit is treated as a hook failure: the runtime ignores stdout and
+proceeds fail-open. Blocks (PreToolUse deny, Stop continuation) MUST therefore
+exit 0 with their decision document. Nonzero exits are reserved for genuine
+hook errors (malformed input, missing event) where no decision exists.
 """
 
 from __future__ import annotations
@@ -87,8 +94,10 @@ class HookDispatcher:
         elif event == HookEventName.PRE_TOOL_USE.value:
             output = self.guard_handler.handle_pre_tool_use(hook_input)
             if output.decision == "block":
+                # Exit 0: the runtime only parses stdout on exit 0; a nonzero
+                # exit would be treated as hook failure and ignored (fail-open).
                 reason = output.reason or "Tool use blocked by policy"
-                return 2, output.to_json(), reason
+                return 0, output.to_json(), reason
             return 0, output.to_json(), ""
 
         elif event == HookEventName.PERMISSION_REQUEST.value:

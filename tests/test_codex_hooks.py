@@ -27,7 +27,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import http.server
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROL_DIR = ROOT / "scripts" / "agent-control"
@@ -52,9 +55,13 @@ from codex_hooks import (
     PermissionRequestDecisionWire,
     SessionHandler,
     discover_hooks,
+    evidence_binding_matches,
+    focused_tests_digest,
     hook_key,
     provision_trust,
+    redact_text,
 )
+from codex_hooks.official_schemas import validate_hook_output
 
 
 class TestCodexHooksProtocol(unittest.TestCase):
@@ -209,19 +216,58 @@ class TestCodexHooksH1Session(unittest.TestCase):
 
         try:
             handler = SessionHandler(self.state_dir)
+            # PreCompact checkpoints state and emits no hook body: the
+            # official pre-compact output schema forbids hookSpecificOutput.
             pre_input = HookInput(hook_event_name="PreCompact", session_id="sess-c", turn_id="turn-5")
             pre_out = handler.handle_pre_compact(pre_input)
-            self.assertEqual(pre_out.hookSpecificOutput.hookEventName, "PreCompact")
+            self.assertIsNone(pre_out.hookSpecificOutput)
+            self.assertEqual(pre_out.to_dict(), {"continue": True})
             self.assertTrue(handler.compaction_path.is_file())
 
+            # PostCompact is a pass-through acknowledgement.
             post_input = HookInput(hook_event_name="PostCompact", session_id="sess-c")
             post_out = handler.handle_post_compact(post_input)
-            self.assertEqual(post_out.hookSpecificOutput.hookEventName, "PostCompact")
-            rehydrate = post_out.hookSpecificOutput.additionalContext
+            self.assertIsNone(post_out.hookSpecificOutput)
+            self.assertEqual(post_out.to_dict(), {"continue": True})
+
+            # Rehydration is owned by the real SessionStart(source="compact")
+            # contract reading the PreCompact checkpoint.
+            re_input = HookInput(
+                hook_event_name="SessionStart",
+                session_id="sess-c",
+                source="compact",
+                raw_payload={"source": "compact"},
+            )
+            re_out = handler.handle_session_start(re_input)
+            self.assertEqual(re_out.hookSpecificOutput.hookEventName, "SessionStart")
+            rehydrate = re_out.hookSpecificOutput.additionalContext
             self.assertIn("card-test-compact", rehydrate)
             self.assertIn("scripts/", rehydrate)
 
             self.assertEqual(handler.telemetry.metrics["compaction_rehydrations"], 1)
+        finally:
+            for k in ("STEWARD_WORKCARD_ID", "STEWARD_WORKTREE", "STEWARD_ALLOWED_PATHS"):
+                os.environ.pop(k, None)
+
+    def test_compact_rehydration_missing_checkpoint_fails_closed(self):
+        os.environ["STEWARD_WORKCARD_ID"] = "card-test-compact-missing"
+        os.environ["STEWARD_WORKTREE"] = str(self.state_dir)
+        os.environ["STEWARD_ALLOWED_PATHS"] = json.dumps(["scripts/"])
+
+        try:
+            handler = SessionHandler(self.state_dir)
+            self.assertFalse(handler.compaction_path.is_file())
+            re_input = HookInput(
+                hook_event_name="SessionStart",
+                session_id="sess-c",
+                source="compact",
+                raw_payload={"source": "compact"},
+            )
+            re_out = handler.handle_session_start(re_input)
+            rehydrate = re_out.hookSpecificOutput.additionalContext
+            # No fabricated progress: minimal constraint reminder instead.
+            self.assertIn("card-test-compact-missing", rehydrate)
+            self.assertIn("No checkpointed workspace changes", rehydrate)
         finally:
             for k in ("STEWARD_WORKCARD_ID", "STEWARD_WORKTREE", "STEWARD_ALLOWED_PATHS"):
                 os.environ.pop(k, None)
@@ -245,11 +291,245 @@ class TestCodexHooksH1Session(unittest.TestCase):
         receipt_data = json.loads(receipts[0].read_text(encoding="utf-8"))
         self.assertEqual(receipt_data["tool_name"], "bash")
 
+        # String output without a machine-readable success signal is NOT
+        # evidence: absence of "failed"/"error" substrings proves nothing.
         evidence_file = self.state_dir / "verification_evidence.json"
-        self.assertTrue(evidence_file.is_file())
-        ev_data = json.loads(evidence_file.read_text(encoding="utf-8"))
-        self.assertEqual(ev_data["status"], "passed")
-        self.assertEqual(ev_data["command"], "pytest tests/test_codex_hooks.py")
+        self.assertFalse(evidence_file.is_file())
+
+    def test_post_tool_use_structured_success_records_bound_evidence(self):
+        os.environ["STEWARD_WORKCARD_ID"] = "card-evidence-1"
+        os.environ["STEWARD_WORKTREE"] = str(self.state_dir)
+        os.environ["STEWARD_FOCUSED_TESTS"] = json.dumps(["tests/test_codex_hooks.py"])
+        # Bound evidence requires observable code state: use a git worktree
+        # with at least one commit (fresh `git init` has no HEAD).
+        subprocess.run(["git", "init", str(self.state_dir)], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.state_dir), "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "--allow-empty", "-m", "init"],
+            check=True, capture_output=True,
+        )
+        try:
+            handler = SessionHandler(self.state_dir)
+            hook_input = HookInput(
+                hook_event_name="PostToolUse",
+                tool_name="bash",
+                tool_input={"command": "pytest tests/test_codex_hooks.py"},
+                tool_response={"output": "1 passed", "exit_code": 0},
+                turn_id="turn-tool-2",
+            )
+            handler.handle_post_tool_use(hook_input)
+            evidence_file = self.state_dir / "verification_evidence.json"
+            self.assertTrue(evidence_file.is_file())
+            ev_data = json.loads(evidence_file.read_text(encoding="utf-8"))
+            self.assertEqual(ev_data["status"], "passed")
+            self.assertEqual(ev_data["result"], "success")
+            self.assertEqual(ev_data["workcard_id"], "card-evidence-1")
+            self.assertEqual(ev_data["command"], "pytest tests/test_codex_hooks.py")
+            self.assertTrue(ev_data["focused_tests_digest"].startswith("sha256:"))
+            # The bound record must satisfy the Stop-side verifier as-is.
+            bound, reason = evidence_binding_matches(
+                ev_data,
+                workcard_id="card-evidence-1",
+                focused_tests=["tests/test_codex_hooks.py"],
+                worktree=self.state_dir,
+            )
+            self.assertTrue(bound, reason)
+        finally:
+            for k in ("STEWARD_WORKCARD_ID", "STEWARD_WORKTREE", "STEWARD_FOCUSED_TESTS"):
+                os.environ.pop(k, None)
+
+    def test_post_tool_use_structured_failure_records_no_pass_evidence(self):
+        handler = SessionHandler(self.state_dir)
+        hook_input = HookInput(
+            hook_event_name="PostToolUse",
+            tool_name="bash",
+            tool_input={"command": "pytest tests/test_codex_hooks.py"},
+            tool_response={"output": "1 failed", "exit_code": 1},
+            turn_id="turn-tool-3",
+        )
+        handler.handle_post_tool_use(hook_input)
+        self.assertFalse((self.state_dir / "verification_evidence.json").is_file())
+
+    def test_receipt_redacts_prefixed_assignments_and_headers(self):
+        handler = SessionHandler(self.state_dir)
+        # Secrets are assembled at runtime so no static secret-shaped
+        # literal exists in this file (security baseline scans it).
+        bearer = "Bearer " + "abc" + "def12345"
+        hook_input = HookInput(
+            hook_event_name="PostToolUse",
+            tool_name="bash",
+            tool_input={
+                "command": "export OPENAI_API_KEY=sk-SECRET123 first=1 password = hunter2",
+                "headers": {"Authorization": bearer},
+                "monkey": "banana",
+            },
+            tool_response="ok",
+            turn_id="turn-tool-5",
+        )
+        handler.handle_post_tool_use(hook_input)
+        receipts = list(handler.receipts_dir.glob("receipt_*.json"))
+        self.assertEqual(len(receipts), 1)
+        raw = receipts[0].read_text(encoding="utf-8")
+        self.assertNotIn("sk-SECRET123", raw)
+        self.assertNotIn("hunter2", raw)
+        self.assertNotIn("abcdef12345", raw)
+        # Innocent names and values survive redaction.
+        self.assertIn("banana", raw)
+        self.assertIn("first", raw)
+
+    def test_extract_tool_success_semantics(self):
+        from codex_hooks import extract_tool_success
+
+        self.assertTrue(extract_tool_success({"exit_code": 0}))
+        self.assertFalse(extract_tool_success({"exit_code": 1}))
+        self.assertTrue(extract_tool_success({"success": True}))
+        self.assertFalse(extract_tool_success({"success": False}))
+        # Count semantics for success keys: nonzero means success.
+        self.assertTrue(extract_tool_success({"success": 1}))
+        self.assertTrue(extract_tool_success({"passed": 5}))
+        self.assertFalse(extract_tool_success({"passed": 0}))
+        self.assertTrue(extract_tool_success({"status": "passed"}))
+        self.assertFalse(extract_tool_success({"status": "failed"}))
+        # No machine-readable signal: never claim success.
+        self.assertIsNone(extract_tool_success("1 passed, 0 failed"))
+        self.assertIsNone(extract_tool_success(""))
+        self.assertIsNone(extract_tool_success(None))
+        # Explicit failure dominates nested success.
+        self.assertFalse(extract_tool_success({"result": {"ok": True}, "exit_code": 3}))
+
+    def test_post_tool_use_receipt_redacts_secrets(self):
+        handler = SessionHandler(self.state_dir)
+        # Assembled at runtime: no static secret-shaped literal in this file.
+        candidate = "sk-" + "A" * 32
+        token_probe = "tp-" + "B" * 24
+        hook_input = HookInput(
+            hook_event_name="PostToolUse",
+            tool_name="bash",
+            tool_input={
+                "command": f"export OPENAI_API_KEY={candidate}",
+                "api_key": candidate,
+                "nested": {"token": token_probe, "safe": "hello"},
+            },
+            tool_response="ok",
+            turn_id="turn-tool-4",
+        )
+        handler.handle_post_tool_use(hook_input)
+        receipts = list(handler.receipts_dir.glob("receipt_*.json"))
+        self.assertEqual(len(receipts), 1)
+        raw = receipts[0].read_text(encoding="utf-8")
+        self.assertNotIn(candidate, raw)
+        self.assertNotIn(token_probe, raw)
+        self.assertIn("***", raw)
+        receipt_data = json.loads(raw)
+        self.assertEqual(receipt_data["tool_input"]["api_key"], "***")
+        self.assertEqual(receipt_data["tool_input"]["nested"]["token"], "***")
+        self.assertEqual(receipt_data["tool_input"]["nested"]["safe"], "hello")
+
+    def test_redaction_parity_with_canonical_scanner(self):
+        import importlib.util
+        import sys
+
+        scanner_path = ROOT / "scripts" / "acp_secret_scan.py"
+        spec = importlib.util.spec_from_file_location("acp_secret_scan", scanner_path)
+        scanner = importlib.util.module_from_spec(spec)
+        sys.modules["acp_secret_scan"] = scanner
+        try:
+            spec.loader.exec_module(scanner)
+        finally:
+            sys.modules.pop("acp_secret_scan", None)
+
+        from codex_hooks import redaction as hook_redaction
+
+        # Every canonical scanner pattern must be present in the hooks copy.
+        scanner_patterns = {name: pat.pattern for name, pat in scanner.SECRET_PATTERNS}
+        hook_patterns = {name: pat.pattern for name, pat in hook_redaction.SECRET_PATTERNS}
+        self.assertEqual(set(hook_patterns), set(scanner_patterns))
+        for name, pattern in scanner_patterns.items():
+            self.assertEqual(hook_patterns[name], pattern, f"pattern drift: {name}")
+        self.assertEqual(
+            hook_redaction.SENSITIVE_ASSIGNMENT.pattern,
+            scanner.SENSITIVE_ASSIGNMENT.pattern,
+        )
+        # SENSITIVE_KEYS is hooks-side (structured key names); pin the exact
+        # set so additions/removals are deliberate, never silent drift.
+        self.assertEqual(
+            set(hook_redaction.SENSITIVE_KEYS),
+            {
+                "api_key", "apikey", "api-key",
+                "auth_token", "authtoken", "auth-token",
+                "access_token", "accesstoken", "access-token",
+                "secret", "client_secret",
+                "password", "passwd", "pwd",
+                "credential", "credentials",
+                "authorization", "proxy-authorization",
+                "token", "id_token", "refresh_token",
+                "private_key", "session_token",
+            },
+        )
+        # Behavior parity: canonical samples must be masked by hooks redaction.
+        secrets = [
+            "sk-" + "A" * 32,
+            "tp-" + "B" * 24,
+            "s3cret-value",
+            "AKIA" + "C" * 16,
+        ]
+        samples = [
+            "key = sk-" + "A" * 32,
+            "token tp-" + "B" * 24 + " leaked",
+            "password" + " = " + "s3cret-value",
+            "AKIA" + "C" * 16,
+        ]
+        for secret, sample in zip(secrets, samples):
+            redacted = redact_text(sample)
+            self.assertNotIn(secret, redacted)
+            self.assertIn("***", redacted)
+
+    def test_stale_evidence_rejected_by_binder(self):
+        stale = {
+            "schema_version": "hooks_verification_evidence.v1",
+            "status": "passed",
+            "result": "success",
+            "workcard_id": "card-old",
+            "focused_tests_digest": "sha256:deadbeef",
+            "command": "pytest tests/test_old.py",
+            "head_sha": "abc",
+            "status_digest": "sha256:abc",
+        }
+        bound, reason = evidence_binding_matches(
+            stale,
+            workcard_id="card-new",
+            focused_tests=["tests/test_new.py"],
+            worktree=self.state_dir,
+        )
+        self.assertFalse(bound)
+        self.assertTrue(reason)
+        # Bare legacy records without binding are never accepted.
+        bound, _reason = evidence_binding_matches(
+            {"status": "passed", "command": "pytest x"},
+            workcard_id="card-new",
+            focused_tests=[],
+            worktree=self.state_dir,
+        )
+        self.assertFalse(bound)
+
+    def test_empty_binding_never_matches(self):
+        # Empty-vs-empty must not pass trivially: missing card id and
+        # unobservable code state (non-git worktree) are rejected outright.
+        record = {
+            "schema_version": "hooks_verification_evidence.v1",
+            "status": "passed",
+            "result": "success",
+            "workcard_id": "",
+            "focused_tests_digest": focused_tests_digest([]),
+            "command": "pytest x",
+            "head_sha": "",
+            "status_digest": "",
+        }
+        bound, reason = evidence_binding_matches(
+            record, workcard_id="", focused_tests=[], worktree=self.state_dir,
+        )
+        self.assertFalse(bound)
+        self.assertIn(reason, {"evidence_workcard_missing", "evidence_code_state_unobservable"})
 
 
 class TestCodexHooksH2Guard(unittest.TestCase):
@@ -275,6 +555,108 @@ class TestCodexHooksH2Guard(unittest.TestCase):
         self.assertEqual(out.decision, "block")
         self.assertEqual(out.hookSpecificOutput.permissionDecision, PermissionDecision.DENY.value)
         self.assertIn("missing_or_malformed_scope_context", out.hookSpecificOutput.permissionDecisionReason)
+
+    def _pre_tool_decision(self, command, allowed=("src/",), focused=None):
+        os.environ["STEWARD_WORKCARD_ID"] = "card-01"
+        os.environ["STEWARD_WORKTREE"] = str(self.worktree)
+        os.environ["STEWARD_ALLOWED_PATHS"] = json.dumps(list(allowed))
+        if focused is None:
+            os.environ.pop("STEWARD_FOCUSED_TESTS", None)
+        else:
+            os.environ["STEWARD_FOCUSED_TESTS"] = json.dumps(list(focused))
+        try:
+            hook_input = HookInput(
+                hook_event_name="PreToolUse",
+                tool_name="Bash",
+                tool_input={"command": command},
+            )
+            return self.handler.handle_pre_tool_use(hook_input)
+        finally:
+            for k in ("STEWARD_WORKCARD_ID", "STEWARD_WORKTREE", "STEWARD_ALLOWED_PATHS", "STEWARD_FOCUSED_TESTS"):
+                os.environ.pop(k, None)
+
+    def test_unprovable_shell_writes_blocked(self):
+        # touch/cp/mv/tee/sed/python -c can never prove scope: must block,
+        # never auto-allow after blacklist miss.
+        for bad_cmd in (
+            "touch /tmp/evil.txt",
+            "touch src/ok.txt",
+            "cp src/a.py /tmp/b.py",
+            "mv src/a.py src/b.py",
+            "echo hi | tee /tmp/evil.txt",
+            "sed -i 's/a/b/' src/app.py",
+            "python -c \"open('/tmp/evil','w').write('x')\"",
+            "python3 /tmp/evil.py",
+            "python src/tool.py --out /tmp/evil.txt",
+        ):
+            out = self._pre_tool_decision(bad_cmd)
+            self.assertEqual(out.decision, "block", f"must block: {bad_cmd}")
+            self.assertEqual(out.hookSpecificOutput.permissionDecision, PermissionDecision.DENY.value)
+
+    def test_unprovable_shell_constructs_blocked(self):
+        for bad_cmd in (
+            "ls $(whoami)",
+            "echo `id`",
+            "cat <(ls)",
+            "git status && touch /tmp/evil.txt",
+            "git status; rm -rf /tmp/x",
+            "echo hello > /tmp/evil.txt",
+            "ls 2> /tmp/evil.txt",
+            'python -c "x" | sh',
+            # Trailing chain operator leaves an empty segment: fail closed.
+            "git status;",
+            # Env-prefix idioms are not unwrapped: unprovable, blocked.
+            "FOO=1 pytest tests/test_codex_hooks.py",
+            "env FOO=1 git status",
+        ):
+            out = self._pre_tool_decision(bad_cmd)
+            self.assertEqual(out.decision, "block", f"must block: {bad_cmd}")
+
+    def test_scoped_read_and_verification_commands_allowed(self):
+        for good_cmd in (
+            "git status",
+            "ls src/",
+            "echo hello 2>&1",
+            "git status && git diff",
+            "python src/tool.py",
+            "pytest tests/test_codex_hooks.py",
+        ):
+            out = self._pre_tool_decision(good_cmd, allowed=("src/", "tests/"))
+            self.assertEqual(out.decision, "approve", f"must approve: {good_cmd}")
+
+    def test_test_runner_out_of_scope_blocked_unless_focused(self):
+        out = self._pre_tool_decision("pytest tests/test_other.py", allowed=("src/",))
+        self.assertEqual(out.decision, "block")
+        out = self._pre_tool_decision(
+            "pytest tests/test_other.py",
+            allowed=("src/",),
+            focused=("tests/test_other.py",),
+        )
+        self.assertEqual(out.decision, "approve")
+
+    def test_opaque_tool_input_without_surface_blocked(self):
+        # No observable command and no extractable paths: nothing to prove.
+        os.environ["STEWARD_WORKCARD_ID"] = "card-01"
+        os.environ["STEWARD_WORKTREE"] = str(self.worktree)
+        os.environ["STEWARD_ALLOWED_PATHS"] = json.dumps(["src/"])
+        try:
+            out = self.handler.handle_pre_tool_use(HookInput(
+                hook_event_name="PreToolUse",
+                tool_name="mystery_tool",
+                tool_input={"foo": "bar"},
+            ))
+            self.assertEqual(out.decision, "block")
+            self.assertIn("unprovable_scope", out.hookSpecificOutput.permissionDecisionReason)
+
+            out = self.handler.handle_permission_request(HookInput(
+                hook_event_name="PermissionRequest",
+                tool_name="mystery_tool",
+                tool_input={"foo": "bar"},
+            ))
+            self.assertEqual(out.hookSpecificOutput.decision.behavior, "deny")
+        finally:
+            for k in ("STEWARD_WORKCARD_ID", "STEWARD_WORKTREE", "STEWARD_ALLOWED_PATHS"):
+                os.environ.pop(k, None)
 
     def test_in_scope_write_allowed(self):
         os.environ["STEWARD_WORKCARD_ID"] = "card-01"
@@ -408,9 +790,9 @@ class TestCodexHooksH3Continuation(unittest.TestCase):
 
         try:
             hook_input = HookInput(hook_event_name="Stop")
-            # Attempt 1: blocked
+            # Attempt 1: blocked (exit 0: the runtime only parses decisions on exit 0)
             exit_code, out, stderr = self.handler.handle_stop(hook_input)
-            self.assertEqual(exit_code, 2)
+            self.assertEqual(exit_code, 0)
             self.assertEqual(out.decision, "block")
             self.assertTrue(len(out.reason) > 0)
             self.assertIn("incomplete", stderr)
@@ -418,7 +800,7 @@ class TestCodexHooksH3Continuation(unittest.TestCase):
 
             # Attempt 2: blocked
             exit_code, out, stderr = self.handler.handle_stop(hook_input)
-            self.assertEqual(exit_code, 2)
+            self.assertEqual(exit_code, 0)
             self.assertEqual(out.decision, "block")
             self.assertEqual(self.handler.telemetry.metrics["premature_stops_intercepted"], 2)
 
@@ -486,7 +868,7 @@ class TestCodexHooksDispatcher(unittest.TestCase):
                 "tool_input": {"target_file": str(self.state_dir / "forbidden.py")},
             })
             code, stdout, stderr = self.dispatcher.dispatch("PreToolUse", payload)
-            self.assertEqual(code, 2)
+            self.assertEqual(code, 0)
             parsed = json.loads(stdout)
             self.assertEqual(parsed["decision"], "block")
             self.assertEqual(parsed["hookSpecificOutput"]["hookEventName"], "PreToolUse")
@@ -521,7 +903,7 @@ class TestCodexHooksDispatcher(unittest.TestCase):
         os.environ["STEWARD_ALLOWED_PATHS"] = json.dumps(["src/"])
         try:
             code, stdout, stderr = self.dispatcher.dispatch("Stop", "{}")
-            self.assertEqual(code, 2)
+            self.assertEqual(code, 0)
             parsed = json.loads(stdout)
             self.assertEqual(parsed["decision"], "block")
             self.assertTrue(len(parsed["reason"]) > 0)
@@ -529,6 +911,108 @@ class TestCodexHooksDispatcher(unittest.TestCase):
         finally:
             for k in ("STEWARD_WORKCARD_ID", "STEWARD_WORKTREE", "STEWARD_WORKER_TYPE", "STEWARD_ALLOWED_PATHS"):
                 os.environ.pop(k, None)
+
+
+class TestCodexHooksOfficialWireSchemas(unittest.TestCase):
+    """Validate every production event output against the official Codex schemas.
+
+    The schemas are extracted from the installed Codex CLI binary itself, so a
+    passing test proves the real runtime would accept our wire output. Skipped
+    when the Codex binary is unavailable (CI runners); the production
+    capability gate then reports UNVERIFIED and fails closed.
+    """
+
+    CODEX_BIN = Path(os.environ.get("CODEX_BINARY", "/home/igzela/.local/bin/codex"))
+
+    def setUp(self):
+        if not self.CODEX_BIN.is_file() or not os.access(self.CODEX_BIN, os.X_OK):
+            self.skipTest("Codex CLI executable not found; official schema validation UNVERIFIED")
+        try:
+            import jsonschema  # noqa: F401
+        except ImportError:
+            self.skipTest("jsonschema package unavailable; official schema validation UNVERIFIED")
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.state_dir = Path(self.temp_dir.name)
+        self.dispatcher = HookDispatcher(self.state_dir)
+
+    def _dispatch_and_validate(self, event, payload, env_extra=None):
+        base_env = {
+            "STEWARD_SESSION_STATE_DIR": str(self.state_dir),
+            "STEWARD_WORKCARD_ID": "card-schema-1",
+            "STEWARD_WORKTREE": str(self.state_dir),
+            "STEWARD_WORKER_TYPE": "implement",
+            "STEWARD_ALLOWED_PATHS": json.dumps(["src/"]),
+            "STEWARD_FORBIDDEN_PATHS": json.dumps([]),
+            "STEWARD_CARD_OBJECTIVE": json.dumps(["schema check"]),
+            "STEWARD_MAX_CONTINUATIONS": "1",
+        }
+        if env_extra:
+            base_env.update(env_extra)
+        saved = {k: os.environ.get(k) for k in base_env}
+        os.environ.update(base_env)
+        try:
+            code, stdout, _stderr = self.dispatcher.dispatch(event, payload)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertTrue(stdout, f"{event} produced no stdout")
+        doc = json.loads(stdout)
+        violations = validate_hook_output(event, doc, self.CODEX_BIN)
+        self.assertEqual(violations, [], f"{event} official schema violations: {violations}")
+        return code, doc
+
+    def test_session_start_official_schema(self):
+        self._dispatch_and_validate("SessionStart", '{"session_id":"s1","source":"startup"}')
+
+    def test_session_start_compact_official_schema(self):
+        os.environ["STEWARD_WORKCARD_ID"] = "card-schema-1"
+        pre = json.dumps({"session_id": "s1"})
+        code, stdout, _ = HookDispatcher(self.state_dir).dispatch("PreCompact", pre)
+        self.assertEqual(code, 0)
+        self._dispatch_and_validate(
+            "SessionStart", '{"session_id":"s1","source":"compact"}'
+        )
+
+    def test_pre_compact_official_schema(self):
+        self._dispatch_and_validate("PreCompact", '{"session_id":"s1"}')
+
+    def test_post_compact_official_schema(self):
+        self._dispatch_and_validate("PostCompact", '{"session_id":"s1"}')
+
+    def test_pre_tool_use_allow_official_schema(self):
+        self._dispatch_and_validate(
+            "PreToolUse",
+            json.dumps({"tool_name": "Bash", "tool_input": {"command": "git status"}}),
+        )
+
+    def test_pre_tool_use_block_official_schema(self):
+        # Exit 0: the runtime only parses hook decisions on exit 0; a block
+        # signaled via nonzero exit would be ignored (verified live).
+        code, _doc = self._dispatch_and_validate(
+            "PreToolUse",
+            json.dumps({"tool_name": "Bash", "tool_input": {"command": "touch /tmp/evil.txt"}}),
+        )
+        self.assertEqual(code, 0)
+
+    def test_post_tool_use_official_schema(self):
+        self._dispatch_and_validate(
+            "PostToolUse",
+            json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_response": "ok"}),
+        )
+
+    def test_permission_request_official_schema(self):
+        self._dispatch_and_validate(
+            "PermissionRequest",
+            json.dumps({"tool_name": "bash", "tool_input": {"command": "pytest tests/test_codex_hooks.py"}}),
+        )
+
+    def test_stop_block_official_schema(self):
+        code, _doc = self._dispatch_and_validate("Stop", "{}")
+        self.assertEqual(code, 0)
 
 
 class TestCodexHooksConfigAndTrust(unittest.TestCase):
@@ -558,6 +1042,45 @@ class TestCodexHooksConfigAndTrust(unittest.TestCase):
         self.assertIn("hooks = true", toml)
         self.assertIn(f'[hooks.state."{self.root}/config.toml:stop:0:0"]', toml)
         self.assertIn("trusted_hash = \"sha256:abcd1234", toml)
+
+    def test_write_config_fails_closed_when_provisioning_fails(self):
+        generator = HookConfigGenerator(
+            dispatcher_path=self.dispatcher_path,
+            worktree_path=self.root,
+        )
+        target = self.root / "config.toml"
+        with mock.patch(
+            "codex_hooks.config.provision_trust",
+            side_effect=RuntimeError("mock native discovery unavailable"),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                generator.write_config(target, codex_binary="/nonexistent/codex")
+        self.assertIn("hook_trust_provisioning_failed", str(ctx.exception))
+        # The hook configuration is written, but no trust entries may be
+        # fabricated: nothing that could impersonate native Codex trust.
+        content = target.read_text(encoding="utf-8")
+        self.assertIn("[hooks]", content)
+        self.assertNotIn("trusted_hash", content)
+        self.assertNotIn("sha256:", content)
+
+    def test_write_config_auto_trust_disabled_writes_no_trust(self):
+        generator = HookConfigGenerator(
+            dispatcher_path=self.dispatcher_path,
+            worktree_path=self.root,
+        )
+        target = self.root / "config.toml"
+        generator.write_config(target, auto_trust=False)
+        content = target.read_text(encoding="utf-8")
+        self.assertIn("[hooks]", content)
+        self.assertNotIn("trusted_hash", content)
+
+    def test_provision_trust_fails_closed_on_empty_discovery(self):
+        target = self.root / "config.toml"
+        target.write_text("[features]\nhooks = true\n\n[hooks]\n", encoding="utf-8")
+        with mock.patch("codex_hooks.config.discover_hooks", return_value=[]):
+            with self.assertRaises(RuntimeError) as ctx:
+                provision_trust(target, codex_binary="/nonexistent/codex")
+        self.assertIn("hook_discovery_empty", str(ctx.exception))
 
 
 class TestCodexHooksROIBenchmark(unittest.TestCase):
@@ -590,7 +1113,14 @@ class TestCodexHooksROIBenchmark(unittest.TestCase):
 
 
 class TestCodexHooksRealE2E(unittest.TestCase):
-    """Real end-to-end lifecycle test with installed Codex CLI in disposable isolated CODEX_HOME.
+    """Dispatcher-level lifecycle test with installed Codex CLI (isolated CODEX_HOME).
+
+    Covers hook configuration generation, native discovery (untrusted),
+    trust provisioning (trusted readback), dispatcher execution over real
+    JSON wire payloads, and definition-mutation invalidation. The hooks here
+    are invoked directly as subprocesses; runtime-triggered execution (the
+    real Codex engine firing the hooks itself) is covered by
+    TestCodexHooksRealRuntimeE2E below.
 
     Tests the complete lifecycle:
     1. Hook configuration generation linking real dispatcher.
@@ -601,9 +1131,9 @@ class TestCodexHooksRealE2E(unittest.TestCase):
     """
 
     def setUp(self):
-        self.codex_bin = Path("/home/igzela/.local/bin/codex")
+        self.codex_bin = Path(os.environ.get("CODEX_BINARY", "/home/igzela/.local/bin/codex"))
         if not self.codex_bin.is_file() or not os.access(self.codex_bin, os.X_OK):
-            self.skipTest("Codex CLI executable not found at /home/igzela/.local/bin/codex")
+            self.skipTest(f"Codex CLI executable not found at {self.codex_bin}")
 
         self.temp_dir = tempfile.TemporaryDirectory(prefix="codex-hooks-e2e-")
         self.addCleanup(self.temp_dir.cleanup)
@@ -695,7 +1225,7 @@ class TestCodexHooksRealE2E(unittest.TestCase):
             text=True,
             env=env,
         )
-        self.assertEqual(proc_pre_block.returncode, 2)
+        self.assertEqual(proc_pre_block.returncode, 0)
         pre_block_data = json.loads(proc_pre_block.stdout)
         self.assertEqual(pre_block_data["decision"], "block")
         self.assertEqual(pre_block_data["hookSpecificOutput"]["permissionDecision"], "deny")
@@ -724,7 +1254,7 @@ class TestCodexHooksRealE2E(unittest.TestCase):
             text=True,
             env=env,
         )
-        self.assertEqual(proc_stop.returncode, 2)
+        self.assertEqual(proc_stop.returncode, 0)
         stop_data = json.loads(proc_stop.stdout)
         self.assertEqual(stop_data["decision"], "block")
         self.assertTrue(len(stop_data["reason"]) > 0)
@@ -738,6 +1268,264 @@ class TestCodexHooksRealE2E(unittest.TestCase):
         mutated_hooks = discover_hooks(self.codex_home, codex_binary=self.codex_bin)
         modified_count = sum(1 for h in mutated_hooks if h.get("trustStatus") in ("modified", "untrusted"))
         self.assertGreater(modified_count, 0)
+
+
+class TestCodexHooksRealRuntimeE2E(unittest.TestCase):
+    """The real Codex engine itself triggers the hooks (isolated CODEX_HOME).
+
+    Unlike TestCodexHooksRealE2E (which invokes the dispatcher directly),
+    these tests run the installed Codex CLI end to end against a local mock
+    OSS provider and prove the runtime honors our hook decisions:
+
+    1. SessionStart hook executes and its context reaches the model input.
+    2. PreToolUse out-of-scope write is blocked by the runtime itself: the
+       file is never created and the denial is fed back to the model.
+    3. In-scope writes are allowed and executed (no over-blocking), and
+       PostToolUse receipts redact secrets end to end.
+    4. Stop blocks while acceptance is unmet (a continuation turn happens)
+       and records explicit incomplete on budget exhaustion.
+    5. Hook definition mutation invalidates trust: untrusted hooks are not
+       executed by the runtime.
+    6. Neither the invocation nor the generated config uses any dangerous
+       bypass flag.
+
+    Skipped when the Codex binary is unavailable; the production capability
+    gate then reports UNVERIFIED and fails closed. The full gate chain is:
+    H0 probe reports BLOCKED without a binary (is_ready() False, no dispatch),
+    these tests skip explicitly as UNVERIFIED (never fake PASS), and the
+    production worker attests post-run hook execution, rejecting unguarded
+    outcomes (codex_hooks_execution_unattested).
+    """
+
+    CODEX_BIN = os.environ.get("CODEX_BINARY", "/home/igzela/.local/bin/codex")
+
+    def setUp(self):
+        if not Path(self.CODEX_BIN).is_file() or not os.access(self.CODEX_BIN, os.X_OK):
+            self.skipTest("Codex CLI executable not found; real-runtime E2E UNVERIFIED")
+        self.temp_dir = tempfile.TemporaryDirectory(prefix="codex-hooks-runtime-e2e-")
+        self.addCleanup(self.temp_dir.cleanup)
+        self.root = Path(self.temp_dir.name)
+        (self.root / "src").mkdir(parents=True)
+        self.codex_home = self.root / ".codex"
+        self.codex_home.mkdir(parents=True)
+        self.state_dir = self.root / "hooks_state"
+        self.state_dir.mkdir(parents=True)
+        self.dispatcher_path = CONTROL_DIR / "codex_hooks" / "dispatcher.py"
+
+    def _write_trusted_config(self, card_id, max_continuations="1"):
+        generator = HookConfigGenerator(
+            dispatcher_path=self.dispatcher_path,
+            worktree_path=self.root,
+            python_executable=sys.executable,
+            timeout_seconds=20,
+        )
+        config_path = self.codex_home / "config.toml"
+        generator.write_config(config_path, codex_binary=self.CODEX_BIN)
+        trusted = discover_hooks(self.codex_home, codex_binary=self.CODEX_BIN)
+        self.assertTrue(trusted, "native discovery must report hooks")
+        for h in trusted:
+            self.assertEqual(h.get("trustStatus"), "trusted")
+        self.card_id = card_id
+        self.max_continuations = max_continuations
+        return config_path
+
+    def _base_env(self, port):
+        env = dict(os.environ)
+        env.pop("OPENAI_API_KEY", None)
+        env.update({
+            "CODEX_HOME": str(self.codex_home),
+            "STEWARD_SESSION_STATE_DIR": str(self.state_dir),
+            "STEWARD_WORKCARD_ID": self.card_id,
+            "STEWARD_WORKTREE": str(self.root),
+            "STEWARD_WORKER_TYPE": "implement",
+            "STEWARD_ALLOWED_PATHS": json.dumps(["src/"]),
+            "STEWARD_FORBIDDEN_PATHS": json.dumps([]),
+            "STEWARD_CARD_OBJECTIVE": json.dumps(["runtime e2e"]),
+            "STEWARD_MAX_CONTINUATIONS": self.max_continuations,
+            "CODEX_OSS_BASE_URL": f"http://127.0.0.1:{port}",
+            "PYTHONPATH": str(CONTROL_DIR),
+        })
+        return env
+
+    class _MockOssProvider:
+        """Minimal mock for `--oss --local-provider ollama` with a response script."""
+
+        USAGE = {"input_tokens": 10, "output_tokens": 10, "total_tokens": 20}
+
+        def __init__(self, script):
+            self.script = list(script)
+            self.posts = []
+            self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+            self.port = self._server.server_address[1]
+            self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+        def _handler(self):
+            outer = self
+
+            class H(http.server.BaseHTTPRequestHandler):
+                def log_message(self, *a):
+                    pass
+
+                def _sse(self, events):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.end_headers()
+                    for ev in events:
+                        self.wfile.write(f"event: {ev['type']}\ndata: {json.dumps(ev)}\n\n".encode())
+                        self.wfile.flush()
+
+                def do_GET(self):
+                    if self.path.startswith("/models"):
+                        data = json.dumps({"models": [{"id": "gpt-oss:20b"}]}).encode()
+                    elif self.path == "/api/version":
+                        data = b'{"version":"0.14.0"}'
+                    elif self.path == "/api/tags":
+                        data = b'{"models":[{"name":"gpt-oss:20b","model":"gpt-oss:20b"}]}'
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+
+                def do_POST(self):
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = self.rfile.read(length)
+                    outer.posts.append(json.loads(body) if body else {})
+                    n = len(outer.posts)
+                    step = outer.script[0] if len(outer.script) == 1 else outer.script[min(n - 1, len(outer.script) - 1)]
+                    if step[0] == "tool":
+                        item = {
+                            "id": f"item_{n}",
+                            "type": "function_call",
+                            "call_id": f"call_{n}",
+                            "name": "exec_command",
+                            "arguments": json.dumps({"cmd": step[1]}),
+                        }
+                    else:
+                        item = {
+                            "id": f"item_{n}",
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "done"}],
+                        }
+                    self._sse([
+                        {"type": "response.output_item.done", "item": item},
+                        {"type": "response.completed",
+                         "response": {"id": f"resp_{n}", "usage": dict(outer.USAGE), "output": [item]}},
+                    ])
+
+            return H
+
+        def __enter__(self):
+            self._thread.start()
+            return self
+
+        def __exit__(self, *exc):
+            self._server.shutdown()
+            self._thread.join(timeout=10)
+            return False
+
+    def _run_codex(self, env):
+        args = [
+            self.CODEX_BIN, "exec", "--oss", "--local-provider", "ollama",
+            "--skip-git-repo-check", "--ephemeral", "-s", "workspace-write",
+            "-C", str(self.root), "hello",
+        ]
+        for a in args:
+            self.assertNotIn("dangerously", a, "dangerous bypass flags are forbidden")
+        return (
+            args,
+            subprocess.run(
+                args, env=env, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=150, cwd=str(self.root),
+            ),
+        )
+
+    def test_runtime_blocks_out_of_scope_write_and_stop_continues(self):
+        config_path = self._write_trusted_config("card-e2e-rt-block")
+        self.assertNotIn("dangerously", config_path.read_text(encoding="utf-8"))
+        evil = self.root / "OUT_OF_SCOPE.txt"
+
+        with self._MockOssProvider([("tool", f"touch {evil}"), ("done",)]) as provider:
+            args, proc = self._run_codex(self._base_env(provider.port))
+
+        self.assertEqual(proc.returncode, 0, f"codex session failed: {proc.stderr[-800:]}")
+        posts = provider.posts
+        self.assertGreaterEqual(len(posts), 2, "session must reach the model")
+
+        # 1. SessionStart context reached the model input.
+        self.assertIn("Autonomous WorkCard Execution Context", json.dumps(posts[0]))
+        self.assertIn("card-e2e-rt-block", json.dumps(posts[0]))
+
+        # 2. The runtime itself honored the PreToolUse block.
+        self.assertFalse(evil.exists(), "out-of-scope write must be blocked by the hook")
+        later = json.dumps(posts[1:])
+        self.assertIn("command_not_provably_scoped_or_low_risk", later)
+
+        # 3. Stop blocked while acceptance was unmet, the runtime continued,
+        # and budget exhaustion recorded explicit incomplete.
+        completion_file = self.state_dir / "completion_status.json"
+        self.assertTrue(completion_file.is_file(), "Stop must record completion status")
+        completion = json.loads(completion_file.read_text(encoding="utf-8"))
+        self.assertEqual(completion["status"], "incomplete")
+        self.assertIn("budget_exhausted", completion["reason"])
+        continuation = json.loads((self.state_dir / "continuation_state.json").read_text(encoding="utf-8"))
+        self.assertEqual(continuation["continuation_attempts"], 1)
+
+    def test_runtime_allows_in_scope_write_and_redacts_receipt(self):
+        self._write_trusted_config("card-e2e-rt-allow")
+        subprocess.run(["git", "init", str(self.root)], check=True, capture_output=True)
+        fake_secret = "sk-" + "Z" * 32
+        note = self.root / "src" / "note.txt"
+
+        with self._MockOssProvider([("tool", f"echo {fake_secret} > {note}"), ("done",)]) as provider:
+            _args, proc = self._run_codex(self._base_env(provider.port))
+
+        self.assertEqual(proc.returncode, 0, f"codex session failed: {proc.stderr[-800:]}")
+        # In-scope write executed: no over-blocking.
+        self.assertTrue(note.is_file(), "in-scope write must be allowed and executed")
+        # Live PostToolUse receipt redacts the secret end to end.
+        receipts = list((self.state_dir / "receipts").glob("receipt_*.json"))
+        self.assertTrue(receipts, "PostToolUse must have recorded a receipt")
+        for receipt in receipts:
+            raw = receipt.read_text(encoding="utf-8")
+            self.assertNotIn(fake_secret, raw, f"secret leaked in {receipt.name}")
+        # In-scope edit + no declared tests: Stop accepts and completes.
+        completion = json.loads((self.state_dir / "completion_status.json").read_text(encoding="utf-8"))
+        self.assertEqual(completion["status"], "completed")
+
+    def test_runtime_trust_invalidation_disables_hooks(self):
+        config_path = self._write_trusted_config("card-e2e-rt-trust")
+
+        # Mutate every hook command string: trust must invalidate.
+        original = config_path.read_text(encoding="utf-8")
+        tampered = original.replace(str(self.dispatcher_path), str(self.dispatcher_path) + " ")
+        self.assertNotEqual(tampered, original)
+        config_path.write_text(tampered, encoding="utf-8")
+        hooks = discover_hooks(self.codex_home, codex_binary=self.CODEX_BIN)
+        self.assertTrue(hooks, "hooks must still be discovered after mutation")
+        statuses = {h.get("trustStatus") for h in hooks}
+        self.assertTrue(
+            statuses <= {"modified", "untrusted"},
+            f"definition mutation must invalidate trust, got {statuses}",
+        )
+
+        with self._MockOssProvider([("done",)]) as provider:
+            _args, proc = self._run_codex(self._base_env(provider.port))
+
+        posts = provider.posts
+        # The runtime fails OPEN here: the session still runs to completion
+        # with untrusted hooks silently skipped (verified live). This is why
+        # the worker layer must attest execution post-run (WorkerError
+        # codex_hooks_execution_unattested) instead of trusting provisioning.
+        self.assertTrue(posts, "session must run so the skip is observable")
+        self.assertNotIn("Autonomous WorkCard Execution Context", json.dumps(posts))
+        receipts = list((self.state_dir / "receipts").glob("receipt_*.json"))
+        self.assertEqual(receipts, [], "untrusted hooks must not execute")
 
 
 if __name__ == "__main__":
