@@ -1282,12 +1282,13 @@ pub struct OrchestrationUsageEnvelope {
 }
 
 impl OrchestrationUsageEnvelope {
-    /// Merge two envelopes field-wise. A dimension that no accumulated round
-    /// has reported yet adopts the first reported value (the empty envelope
-    /// only occurs before any round is recorded); once any round omits a
-    /// dimension, the merged total for that dimension is explicit
+    /// Combine two reported envelopes field-wise. A dimension merges only
+    /// when both sides report it; otherwise the combined value is explicit
     /// missingness. Arithmetic overflow is a fail-closed error, never a wrap
-    /// or a clamp.
+    /// or a clamp. This is the two-envelope combine operator; multi-round
+    /// accumulation additionally tracks sticky omission (see the
+    /// orchestrator's usage journal), so an omit-then-report sequence can
+    /// never resurrect a dropped total.
     pub fn checked_merge(&self, other: &Self) -> Result<Self, OrchestrationError> {
         let merge = |a: Option<u64>,
                      b: Option<u64>,
@@ -1299,7 +1300,6 @@ impl OrchestrationUsageEnvelope {
                         "orchestration usage overflow in {field}"
                     ))
                 }),
-                (None, Some(y)) => Ok(Some(y)),
                 _ => Ok(None),
             }
         };
@@ -1343,6 +1343,80 @@ impl OrchestrationUsageEnvelope {
         }
         missing
     }
+}
+
+/// Envelope field order shared by the sticky omission flags: prompt,
+/// completion, total, calls, cost, duration.
+fn accumulate_usage_dimension(
+    total: &mut Option<u64>,
+    omitted: &mut bool,
+    reported: Option<u64>,
+    field: &'static str,
+) -> Result<(), OrchestrationError> {
+    let Some(value) = reported else {
+        *omitted = true;
+        *total = None;
+        return Ok(());
+    };
+    if *omitted {
+        // A dimension omitted by any earlier round stays explicit
+        // missingness; a later report can never resurrect the dropped total.
+        *total = None;
+        return Ok(());
+    }
+    *total = Some(match *total {
+        Some(base) => base.checked_add(value).ok_or_else(|| {
+            OrchestrationError::WorkerExecutionError(format!(
+                "orchestration usage overflow in {field}"
+            ))
+        })?,
+        None => value,
+    });
+    Ok(())
+}
+
+fn fold_usage_envelope(
+    totals: &mut OrchestrationUsageEnvelope,
+    omitted: &mut [bool; 6],
+    reported: &OrchestrationUsageEnvelope,
+) -> Result<(), OrchestrationError> {
+    accumulate_usage_dimension(
+        &mut totals.prompt_tokens,
+        &mut omitted[0],
+        reported.prompt_tokens,
+        "prompt_tokens",
+    )?;
+    accumulate_usage_dimension(
+        &mut totals.completion_tokens,
+        &mut omitted[1],
+        reported.completion_tokens,
+        "completion_tokens",
+    )?;
+    accumulate_usage_dimension(
+        &mut totals.total_tokens,
+        &mut omitted[2],
+        reported.total_tokens,
+        "total_tokens",
+    )?;
+    accumulate_usage_dimension(
+        &mut totals.provider_calls,
+        &mut omitted[3],
+        reported.provider_calls,
+        "provider_calls",
+    )?;
+    accumulate_usage_dimension(
+        &mut totals.cost_usd_micros,
+        &mut omitted[4],
+        reported.cost_usd_micros,
+        "cost_usd_micros",
+    )?;
+    accumulate_usage_dimension(
+        &mut totals.duration_ms,
+        &mut omitted[5],
+        reported.duration_ms,
+        "duration_ms",
+    )?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1905,10 +1979,15 @@ pub struct LedgerOrchestrator<C: LedgerController, W: LedgerWorker, V: LedgerVer
     /// verification recovery; repeated passes never double-count.
     verification_failed_task_ids: std::collections::BTreeSet<String>,
     /// Per-round usage envelopes in execution order; the conservation check
-    /// requires their merge to equal [`LedgerOrchestrator::usage_totals`].
+    /// requires their sticky-merge to equal [`LedgerOrchestrator::usage_totals`].
     round_usage: Vec<OrchestrationUsageEnvelope>,
     /// Accumulated per-cell provider usage across executed rounds.
     usage_totals: OrchestrationUsageEnvelope,
+    /// Sticky per-dimension omission flags in envelope field order
+    /// (prompt, completion, total, calls, cost, duration). Once any round
+    /// omits a dimension, the cell total for that dimension stays explicit
+    /// missingness; a later report can never resurrect the dropped total.
+    usage_omitted: [bool; 6],
     cancelled: bool,
 }
 
@@ -1955,6 +2034,7 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
             verification_failed_task_ids: std::collections::BTreeSet::new(),
             round_usage: Vec::new(),
             usage_totals: OrchestrationUsageEnvelope::default(),
+            usage_omitted: [false; 6],
             cancelled: false,
         })
     }
@@ -2117,6 +2197,8 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                 // meaningful after recovery.
                 let usage_snapshot = self.usage_totals;
                 let round_usage_snapshot = self.round_usage.clone();
+                let usage_omitted_snapshot = self.usage_omitted;
+                let verification_failed_snapshot = self.verification_failed_task_ids.clone();
                 let state_snapshot = self.state;
                 let pending_decision_snapshot = self.pending_decision.clone();
                 let checkpoint_digest = ledger_snapshot.state_digest();
@@ -2125,6 +2207,9 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                     orchestrator.metrics = metrics_snapshot.clone();
                     orchestrator.usage_totals = usage_snapshot;
                     orchestrator.round_usage = round_usage_snapshot.clone();
+                    orchestrator.usage_omitted = usage_omitted_snapshot;
+                    orchestrator.verification_failed_task_ids =
+                        verification_failed_snapshot.clone();
                     orchestrator.ledger.checkpoint_digest = Some(checkpoint_digest.clone());
                     orchestrator.ledger.rollback_target =
                         Some(format!("ledger-checkpoint:{checkpoint_digest}"));
@@ -2140,6 +2225,9 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                     orchestrator.metrics = metrics_snapshot.clone();
                     orchestrator.usage_totals = usage_snapshot;
                     orchestrator.round_usage = round_usage_snapshot.clone();
+                    orchestrator.usage_omitted = usage_omitted_snapshot;
+                    orchestrator.verification_failed_task_ids =
+                        verification_failed_snapshot.clone();
                     orchestrator.ledger.checkpoint_digest = Some(checkpoint_digest.clone());
                     orchestrator.ledger.rollback_target =
                         Some(format!("ledger-checkpoint:{checkpoint_digest}"));
@@ -2316,11 +2404,19 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                     WorkerOutcomeStatus::Completed => {
                         // A completed claim with an outcome-unknown receipt
                         // proves nothing: the external effect status is
-                        // unknown, so the attempt is fenced without replay.
-                        if receipt_disposition == Some(EffectReceiptDisposition::OutcomeUnknown) {
+                        // unknown, so the attempt is fenced without replay. A
+                        // completed claim over a known-failed effect is
+                        // contradictory and fenced for the same reason.
+                        if matches!(
+                            receipt_disposition,
+                            Some(
+                                EffectReceiptDisposition::OutcomeUnknown
+                                    | EffectReceiptDisposition::KnownFailedEffect
+                            )
+                        ) {
                             terminate_unknown_worker_attempt(self, &task_id);
                             return Err(OrchestrationError::InvalidControllerDecision(
-                                "completed worker result carries an outcome-unknown effect receipt"
+                                "completed worker result carries an effect receipt that contradicts completion"
                                     .to_string(),
                             ));
                         }
@@ -2474,12 +2570,20 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                     WorkerOutcomeStatus::Failed => {
                         // Retry safety reads the store-owned receipt, never
                         // the generic worker status. An outcome-unknown
-                        // receipt — or a failure with no receipt at all, which
-                        // proves nothing about the effect status — fences the
-                        // attempt as unknown instead of replaying it.
-                        if receipt_disposition == Some(EffectReceiptDisposition::OutcomeUnknown)
-                            || receipt_disposition.is_none()
-                        {
+                        // receipt, a success receipt on a failed result
+                        // (contradictory), or a failure with no receipt at
+                        // all — which proves nothing about the effect status
+                        // — fences the attempt as unknown instead of
+                        // replaying it. Only a receipt that proves no effect
+                        // was sent, or a known failed effect, is retryable
+                        // under the attempt budget.
+                        if !matches!(
+                            receipt_disposition,
+                            Some(
+                                EffectReceiptDisposition::FailedBeforeSendNoEffect
+                                    | EffectReceiptDisposition::KnownFailedEffect
+                            )
+                        ) {
                             terminate_unknown_worker_attempt(self, &task_id);
                             return Err(OrchestrationError::InvalidControllerDecision(
                                 "failed worker attempt lacks a retry-safe effect receipt"
@@ -2517,6 +2621,15 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         Ok(self.state)
                     }
                     WorkerOutcomeStatus::Blocked => {
+                        // A blocked round still contributes its reported
+                        // usage to the lifecycle totals; only error paths
+                        // without a worker result skip accumulation.
+                        if let Err(error) =
+                            self.accumulate_round_usage(worker_result.usage.as_ref())
+                        {
+                            restore_execution_snapshot(self);
+                            return Err(error);
+                        }
                         if let Some(task) = self.ledger.get_task_mut(&task_id) {
                             task.status = LedgerTaskStatus::Blocked;
                             task.failure_reason = worker_result.failure_reason.clone();
@@ -2660,9 +2773,10 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
 
     /// Accumulate one round's store-evidence usage envelope into the
     /// per-cell totals, the per-round journal, and the lifecycle metrics.
-    /// Dimensions adopt the first reported value and become explicit
-    /// missingness as soon as any round omits them; the metrics projections
-    /// track the totals exactly so the conservation check stays meaningful.
+    /// Omission is sticky per dimension: once any round omits a dimension,
+    /// the cell total stays explicit missingness even if a later round
+    /// reports it. The metrics projections track the totals exactly, so the
+    /// conservation check stays meaningful.
     fn accumulate_round_usage(
         &mut self,
         usage: Option<&OrchestrationUsageEnvelope>,
@@ -2670,48 +2784,32 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
         let Some(envelope) = usage.copied() else {
             return Ok(());
         };
-        let totals = self.usage_totals.checked_merge(&envelope)?;
-        let merge_metric = |current: Option<u64>,
-                            added: Option<u64>|
-         -> Result<Option<u64>, OrchestrationError> {
-            match (current, added) {
-                (Some(base), Some(delta)) => base.checked_add(delta).map(Some).ok_or_else(|| {
-                    OrchestrationError::WorkerExecutionError(
-                        "orchestration usage metric overflow".to_string(),
-                    )
-                }),
-                (None, Some(delta)) => Ok(Some(delta)),
-                _ => Ok(None),
-            }
-        };
-        let prompt_tokens = merge_metric(self.metrics.prompt_tokens, envelope.prompt_tokens)?;
-        let completion_tokens =
-            merge_metric(self.metrics.completion_tokens, envelope.completion_tokens)?;
-        let total_tokens = merge_metric(self.metrics.total_tokens, envelope.total_tokens)?;
-        let provider_calls = merge_metric(self.metrics.provider_calls, envelope.provider_calls)?;
-        let cost_usd_micros = merge_metric(self.metrics.cost_usd_micros, envelope.cost_usd_micros)?;
-        let duration_ms = merge_metric(self.metrics.duration_ms, envelope.duration_ms)?;
-        self.usage_totals = totals;
         self.round_usage.push(envelope);
-        self.metrics.prompt_tokens = prompt_tokens;
-        self.metrics.completion_tokens = completion_tokens;
-        self.metrics.total_tokens = total_tokens;
-        self.metrics.provider_calls = provider_calls;
-        self.metrics.cost_usd_micros = cost_usd_micros;
-        self.metrics.duration_ms = duration_ms;
+        fold_usage_envelope(&mut self.usage_totals, &mut self.usage_omitted, &envelope)?;
+        self.metrics.prompt_tokens = self.usage_totals.prompt_tokens;
+        self.metrics.completion_tokens = self.usage_totals.completion_tokens;
+        self.metrics.total_tokens = self.usage_totals.total_tokens;
+        self.metrics.provider_calls = self.usage_totals.provider_calls;
+        self.metrics.cost_usd_micros = self.usage_totals.cost_usd_micros;
+        self.metrics.duration_ms = self.usage_totals.duration_ms;
         Ok(())
     }
 
-    /// Verify the conservation invariant: the merge of every recorded round
-    /// envelope must equal the accumulated per-cell totals, and the metrics
-    /// projections must agree with those totals. A tampered or dropped round
-    /// envelope fails this check instead of silently changing the totals.
+    /// Verify the conservation invariant: the sticky-merge of every recorded
+    /// round envelope must equal the accumulated per-cell totals, the
+    /// omission flags must match, and the metrics projections must agree
+    /// with those totals. A tampered, dropped, or resurrected round envelope
+    /// fails this check instead of silently changing the totals.
     pub fn usage_conservation_verified(&self) -> bool {
-        let merged = self.round_usage.iter().try_fold(
-            OrchestrationUsageEnvelope::default(),
-            |accumulated, envelope| accumulated.checked_merge(envelope).ok(),
-        );
-        merged == Some(self.usage_totals)
+        let mut totals = OrchestrationUsageEnvelope::default();
+        let mut omitted = [false; 6];
+        for envelope in &self.round_usage {
+            if fold_usage_envelope(&mut totals, &mut omitted, envelope).is_err() {
+                return false;
+            }
+        }
+        totals == self.usage_totals
+            && omitted == self.usage_omitted
             && self.metrics.prompt_tokens == self.usage_totals.prompt_tokens
             && self.metrics.completion_tokens == self.usage_totals.completion_tokens
             && self.metrics.total_tokens == self.usage_totals.total_tokens
@@ -4751,6 +4849,62 @@ mod tests {
         // A tampered or dropped round envelope must fail conservation.
         orchestrator.round_usage.pop();
         assert!(!orchestrator.usage_conservation_verified());
+    }
+
+    #[test]
+    fn usage_omission_is_sticky_across_later_reports() {
+        // report(100) -> omit -> report(50) must leave the dimension
+        // explicitly missing, never resurrect Some(50) from the later
+        // report and never silently keep Some(100).
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:sticky-usage", "sticky omission");
+        for task in ["task-1", "task-2", "task-3"] {
+            ledger.add_task(task, "measured task", &config).unwrap();
+        }
+        let controller = AdaptiveController;
+        let worker = MockWorker::new(|ctx| {
+            let prompt = match ctx.selected_task.id.as_str() {
+                "task-1" => Some(100),
+                "task-2" => None,
+                _ => Some(50),
+            };
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Completed,
+                effect_free: true,
+                output_digest: Some(sha256_hex(&format!("out-{}", ctx.selected_task.id))),
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: None,
+                usage: Some(OrchestrationUsageEnvelope {
+                    prompt_tokens: prompt,
+                    completion_tokens: Some(10),
+                    total_tokens: Some(110),
+                    provider_calls: Some(1),
+                    cost_usd_micros: Some(3),
+                    duration_ms: Some(20),
+                }),
+                effect_receipt: None,
+            })
+        });
+        let mut orchestrator =
+            LedgerOrchestrator::new(config, ledger, controller, worker, MockVerifier::pass_all())
+                .unwrap();
+        let summary = orchestrator.run_to_completion().unwrap();
+        assert_eq!(
+            summary.terminal_state,
+            OrchestrationLifecycleState::Completed
+        );
+        // The omitted-then-reported prompt dimension stays missing.
+        assert_eq!(summary.metrics.prompt_tokens, None);
+        // Dimensions reported by every round still conserve exactly.
+        assert_eq!(summary.metrics.completion_tokens, Some(30));
+        assert_eq!(summary.metrics.provider_calls, Some(3));
+        assert!(orchestrator.usage_conservation_verified());
+        assert!(orchestrator.usage_omitted[0]);
+        assert!(!orchestrator.usage_omitted[1]);
     }
 
     #[test]

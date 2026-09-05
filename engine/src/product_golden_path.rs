@@ -1413,7 +1413,9 @@ pub fn validate_intake(
 
 pub fn intake_contract_sha256(intake: &ValidatedProductTaskIntake) -> String {
     // Hash durable contract fields excluding raw objective body (fingerprint only).
-    let payload = json!({
+    // The matrix binding key is present only when a binding exists, so
+    // historical non-matrix intakes keep byte-identical contract hashes.
+    let mut payload = json!({
         "schema_version": intake.schema_version,
         "objective_fingerprint": intake.objective_fingerprint,
         "target_id": intake.target_id,
@@ -1434,8 +1436,11 @@ pub fn intake_contract_sha256(intake: &ValidatedProductTaskIntake) -> String {
         "tenant_id": intake.tenant_id,
         "workspace_id": intake.workspace_id,
         "workspace_mode": intake.workspace_mode,
-        "matrix_binding": intake.matrix_binding,
     });
+    if let Some(binding) = &intake.matrix_binding {
+        payload["matrix_binding"] =
+            serde_json::to_value(binding).expect("matrix binding serialization is infallible");
+    }
     hex::encode(Sha256::digest(payload.to_string().as_bytes()))
 }
 
