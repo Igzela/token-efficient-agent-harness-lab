@@ -10469,6 +10469,99 @@ fn validate_managed_scheduler_lease_values(
     })
 }
 
+fn load_direct_delegated_workspace_lease_sqlite(
+    tx: &rusqlite::Transaction<'_>,
+    binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    workspace_binding_json: Option<String>,
+) -> Result<ManagedSchedulerLeaseAuthority, String> {
+    let (
+        delegation_status,
+        _expires_at,
+        spend_status,
+        attempt_status,
+        spend_id,
+        attempt_lease_token,
+        manifest_json,
+    ): (String, String, String, String, String, String, String) = tx
+        .query_row(
+            "SELECT status, expires_at, spend_status, attempt_status,
+                    spend_authorization_id, attempt_lease_token, manifest_json
+             FROM managed_acceptance_delegations WHERE attempt_id=?1",
+            params![binding.attempt_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    if delegation_status != "active"
+        || spend_status != "consumed"
+        || attempt_status != "admitted"
+        || spend_id != binding.spend_authorization_id
+        || crate::provider::managed_deepseek::managed_attempt_lease_id(&attempt_lease_token)
+            != binding.attempt_lease_id
+    {
+        return Err("managed delegated attempt lease is stale, cancelled, or replaced".into());
+    }
+    let manifest: Value = serde_json::from_str(&manifest_json)
+        .map_err(|_| "managed delegated manifest is invalid".to_string())?;
+    if manifest
+        .pointer("/execution/workflow_id")
+        .and_then(Value::as_str)
+        != Some(binding.workflow_id.as_str())
+    {
+        return Err("managed delegated attempt workflow_id mismatch".into());
+    }
+    if !manifest
+        .pointer("/execution/workflow_node_ids")
+        .and_then(Value::as_array)
+        .is_some_and(|nodes| {
+            nodes
+                .iter()
+                .any(|n| n.as_str() == Some(binding.node_id.as_str()))
+        })
+    {
+        return Err("managed delegated attempt node_id mismatch".into());
+    }
+    let workspace_binding: Value = serde_json::from_str(
+        workspace_binding_json
+            .as_deref()
+            .ok_or("managed scheduler ProductTask workspace binding is missing")?,
+    )
+    .map_err(|_| "managed scheduler ProductTask workspace binding is invalid")?;
+    let allowed_paths = workspace_binding
+        .get("allowed_paths")
+        .cloned()
+        .ok_or("managed scheduler ProductTask allowed paths are missing")?;
+    let workspace_path = workspace_binding
+        .get("workspace_path")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("managed scheduler ProductTask workspace is missing")?
+        .to_string();
+    let lease_owner_token_sha256 = sha256_hex(
+        format!(
+            "managed_scheduler_node_lease.v1:{}:{}:1:{}",
+            binding.product_task_id, binding.node_id, binding.attempt_lease_id
+        )
+        .as_bytes(),
+    );
+    Ok(ManagedSchedulerLeaseAuthority {
+        lease_owner_token_sha256,
+        run_id: format!("delegated:{}", binding.product_task_id),
+        attempt_count: 1,
+        allowed_paths,
+        workspace_path,
+    })
+}
+
 fn load_managed_scheduler_lease_sqlite(
     tx: &rusqlite::Transaction<'_>,
     binding: &crate::provider::managed_deepseek::ManagedCallBinding,
@@ -10481,6 +10574,9 @@ fn load_managed_scheduler_lease_sqlite(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|error| error.to_string())?;
+    if task_status == "workspace_bound" {
+        return load_direct_delegated_workspace_lease_sqlite(tx, binding, workspace_binding_json);
+    }
     let run_id_ref = run_id
         .as_deref()
         .ok_or("managed scheduler ProductTask run is missing")?;
@@ -10513,6 +10609,88 @@ fn load_managed_scheduler_lease_sqlite(
 }
 
 #[cfg(feature = "pg")]
+fn load_direct_delegated_workspace_lease_pg(
+    tx: &mut postgres::Transaction<'_>,
+    binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    workspace_binding_json: Option<String>,
+) -> Result<ManagedSchedulerLeaseAuthority, String> {
+    let row = tx
+        .query_one(
+            "SELECT status, expires_at, spend_status, attempt_status,
+                    spend_authorization_id, attempt_lease_token, manifest_json
+             FROM managed_acceptance_delegations WHERE attempt_id=$1 FOR UPDATE",
+            &[&binding.attempt_id],
+        )
+        .map_err(|error| error.to_string())?;
+    let delegation_status: String = row.get(0);
+    let _expires_at: String = row.get(1);
+    let spend_status: String = row.get(2);
+    let attempt_status: String = row.get(3);
+    let spend_id: String = row.get(4);
+    let attempt_lease_token: String = row.get(5);
+    let manifest_json: String = row.get(6);
+    if delegation_status != "active"
+        || spend_status != "consumed"
+        || attempt_status != "admitted"
+        || spend_id != binding.spend_authorization_id
+        || crate::provider::managed_deepseek::managed_attempt_lease_id(&attempt_lease_token)
+            != binding.attempt_lease_id
+    {
+        return Err("managed delegated attempt lease is stale, cancelled, or replaced".into());
+    }
+    let manifest: Value = serde_json::from_str(&manifest_json)
+        .map_err(|_| "managed delegated manifest is invalid".to_string())?;
+    if manifest
+        .pointer("/execution/workflow_id")
+        .and_then(Value::as_str)
+        != Some(binding.workflow_id.as_str())
+    {
+        return Err("managed delegated attempt workflow_id mismatch".into());
+    }
+    if !manifest
+        .pointer("/execution/workflow_node_ids")
+        .and_then(Value::as_array)
+        .is_some_and(|nodes| {
+            nodes
+                .iter()
+                .any(|n| n.as_str() == Some(binding.node_id.as_str()))
+        })
+    {
+        return Err("managed delegated attempt node_id mismatch".into());
+    }
+    let workspace_binding: Value = serde_json::from_str(
+        workspace_binding_json
+            .as_deref()
+            .ok_or("managed scheduler ProductTask workspace binding is missing")?,
+    )
+    .map_err(|_| "managed scheduler ProductTask workspace binding is invalid")?;
+    let allowed_paths = workspace_binding
+        .get("allowed_paths")
+        .cloned()
+        .ok_or("managed scheduler ProductTask allowed paths are missing")?;
+    let workspace_path = workspace_binding
+        .get("workspace_path")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("managed scheduler ProductTask workspace is missing")?
+        .to_string();
+    let lease_owner_token_sha256 = sha256_hex(
+        format!(
+            "managed_scheduler_node_lease.v1:{}:{}:1:{}",
+            binding.product_task_id, binding.node_id, binding.attempt_lease_id
+        )
+        .as_bytes(),
+    );
+    Ok(ManagedSchedulerLeaseAuthority {
+        lease_owner_token_sha256,
+        run_id: format!("delegated:{}", binding.product_task_id),
+        attempt_count: 1,
+        allowed_paths,
+        workspace_path,
+    })
+}
+
+#[cfg(feature = "pg")]
 fn load_managed_scheduler_lease_pg(
     tx: &mut postgres::Transaction<'_>,
     binding: &crate::provider::managed_deepseek::ManagedCallBinding,
@@ -10527,6 +10705,9 @@ fn load_managed_scheduler_lease_pg(
     let task_status: String = task.get(0);
     let run_id: Option<String> = task.get(1);
     let workspace_binding_json: Option<String> = task.get(2);
+    if task_status == "workspace_bound" {
+        return load_direct_delegated_workspace_lease_pg(tx, binding, workspace_binding_json);
+    }
     let run_id_ref = run_id
         .as_deref()
         .ok_or("managed scheduler ProductTask run is missing")?;

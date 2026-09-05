@@ -2266,6 +2266,92 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                     orchestrator.state = OrchestrationLifecycleState::Failed;
                     orchestrator.pending_decision = None;
                 };
+                // A completed worker claim whose store-owned receipt proves a
+                // known effect state (success, or proved no-effect) must never
+                // lose that receipt to a later local bookkeeping failure
+                // (usage accumulation, finding admission, verification
+                // recording, bounds validation). Restore the pre-attempt
+                // usage/ledger contents, then record the completed effect
+                // truth (output digest, attempt identity) on a terminal
+                // Failed task with the bookkeeping failure as its reason, so
+                // the effect is neither lost, pretended effect-free, nor
+                // replayable. A Success receipt additionally leaves a
+                // reconciliation finding bound to the receipt evidence digest
+                // for the owning effect layer. A completed claim with no
+                // receipt proves nothing about the effect status, so it keeps
+                // the unknown-outcome fence.
+                let preserve_completed_effect = |orchestrator: &mut Self,
+                                                 task_id: &str,
+                                                 worker_result: &WorkerResult,
+                                                 receipt_disposition: Option<
+                    EffectReceiptDisposition,
+                >,
+                                                 error: OrchestrationError|
+                 -> Result<
+                    OrchestrationLifecycleState,
+                    OrchestrationError,
+                > {
+                    if !matches!(
+                        receipt_disposition,
+                        Some(
+                            EffectReceiptDisposition::Success
+                                | EffectReceiptDisposition::FailedBeforeSendNoEffect
+                        )
+                    ) {
+                        terminate_unknown_worker_attempt(orchestrator, task_id);
+                        return Err(error);
+                    }
+                    restore_execution_snapshot(orchestrator);
+                    orchestrator.ledger.round_count =
+                        orchestrator.ledger.round_count.saturating_add(1);
+                    orchestrator.metrics.round_count =
+                        orchestrator.metrics.round_count.saturating_add(1);
+                    orchestrator.metrics.worker_call_count =
+                        orchestrator.metrics.worker_call_count.saturating_add(1);
+                    let next_attempt = ledger_snapshot
+                        .get_task(task_id)
+                        .map(|task| task.attempt_count.saturating_add(1))
+                        .unwrap_or(1)
+                        .min(orchestrator.config.max_task_attempts);
+                    if let Some(task) = orchestrator.ledger.get_task_mut(task_id) {
+                        task.status = LedgerTaskStatus::Failed;
+                        task.attempt_count = next_attempt;
+                        task.attempt_id = Some(worker_result.attempt_id.clone());
+                        task.result_digest = worker_result.output_digest.clone();
+                        task.failure_reason = Some(
+                            "completed attempt bookkeeping failed; effect receipt preserved"
+                                .to_string(),
+                        );
+                    }
+                    if receipt_disposition == Some(EffectReceiptDisposition::Success) {
+                        if let Some(receipt) = worker_result.effect_receipt.as_ref().and_then(
+                            |receipt| {
+                                receipt.receipt_evidence_digest.as_deref().map(|digest| {
+                                    LedgerFinding {
+                                        id: sha256_hex(&format!(
+                                            "reconcile|{task_id}|{}",
+                                            worker_result.attempt_id
+                                        )),
+                                        summary: "completed attempt requires owner reconciliation; effect receipt preserved".to_string(),
+                                        source: "ledger_reconciliation".to_string(),
+                                        related_task_id: Some(task_id.to_string()),
+                                        evidence_digest: Some(digest.to_string()),
+                                    }
+                                })
+                            },
+                        ) {
+                            // A finding admission failure here must not drop
+                            // the already-recorded completion truth above; the
+                            // terminal Failed state and failure reason still
+                            // carry the reconciliation demand.
+                            let config = orchestrator.config.clone();
+                            let _ = orchestrator.ledger.add_finding(receipt, &config);
+                        }
+                    }
+                    orchestrator.state = OrchestrationLifecycleState::Failed;
+                    orchestrator.pending_decision = None;
+                    Err(error)
+                };
                 let task_id = self
                     .ledger
                     .current_selected_task_id
@@ -2420,7 +2506,17 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                                     .to_string(),
                             ));
                         }
-                        self.accumulate_round_usage(worker_result.usage.as_ref())?;
+                        if let Err(error) =
+                            self.accumulate_round_usage(worker_result.usage.as_ref())
+                        {
+                            return preserve_completed_effect(
+                                self,
+                                &task_id,
+                                &worker_result,
+                                receipt_disposition,
+                                error,
+                            );
+                        }
                         // Update task with output
                         if let Some(task) = self.ledger.get_task_mut(&task_id) {
                             task.result_digest = worker_result.output_digest.clone();
@@ -2437,8 +2533,13 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         }
                         for f in &worker_result.findings {
                             if let Err(error) = self.ledger.add_finding(f.clone(), &self.config) {
-                                terminate_unknown_worker_attempt(self, &task_id);
-                                return Err(error);
+                                return preserve_completed_effect(
+                                    self,
+                                    &task_id,
+                                    &worker_result,
+                                    receipt_disposition,
+                                    error,
+                                );
                             }
                         }
 
@@ -2452,12 +2553,22 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         });
                         // Pass worker result along via state
                         if let Err(error) = self.verify_worker_result(&task_id, &worker_result) {
-                            terminate_unknown_worker_attempt(self, &task_id);
-                            return Err(error);
+                            return preserve_completed_effect(
+                                self,
+                                &task_id,
+                                &worker_result,
+                                receipt_disposition,
+                                error,
+                            );
                         }
                         if let Err(error) = self.ledger.validate_bounds(&self.config) {
-                            terminate_unknown_worker_attempt(self, &task_id);
-                            return Err(error);
+                            return preserve_completed_effect(
+                                self,
+                                &task_id,
+                                &worker_result,
+                                receipt_disposition,
+                                error,
+                            );
                         }
                         Ok(self.state)
                     }
@@ -4908,6 +5019,71 @@ mod tests {
     }
 
     #[test]
+    fn usage_conservation_rejects_forged_tampered_and_missing_rounds() {
+        // A complete run with fully reported usage conserves; forging the
+        // metrics projection, tampering with a recorded round envelope, or
+        // dropping a round envelope must each fail the conservation check
+        // instead of silently changing the totals.
+        fn measured_run() -> LedgerOrchestrator<AdaptiveController, MockWorker, MockVerifier> {
+            let config = LedgerOrchestratorConfig::default();
+            let mut ledger = WorkingLedger::new("contract:conserve-neg", "conservation negatives");
+            for task in ["task-1", "task-2"] {
+                ledger.add_task(task, "measured task", &config).unwrap();
+            }
+            let worker = MockWorker::new(|ctx| {
+                Ok(WorkerResult {
+                    task_id: ctx.selected_task.id.clone(),
+                    attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                    status: WorkerOutcomeStatus::Completed,
+                    effect_free: true,
+                    output_digest: Some(sha256_hex(&format!("out-{}", ctx.selected_task.id))),
+                    partial_summary: None,
+                    artifact_refs: vec![],
+                    findings: vec![],
+                    failure_reason: None,
+                    usage: Some(OrchestrationUsageEnvelope {
+                        prompt_tokens: Some(100),
+                        completion_tokens: Some(10),
+                        total_tokens: Some(110),
+                        provider_calls: Some(1),
+                        cost_usd_micros: Some(3),
+                        duration_ms: Some(20),
+                    }),
+                    effect_receipt: None,
+                })
+            });
+            let mut orchestrator = LedgerOrchestrator::new(
+                config,
+                ledger,
+                AdaptiveController,
+                worker,
+                MockVerifier::pass_all(),
+            )
+            .unwrap();
+            orchestrator.run_to_completion().unwrap();
+            orchestrator
+        }
+        let pristine = measured_run();
+        assert!(pristine.usage_conservation_verified());
+        assert_eq!(pristine.metrics.prompt_tokens, Some(200));
+
+        // Forged metrics projection: totals no longer match the journal.
+        let mut forged = measured_run();
+        forged.metrics.prompt_tokens = Some(201);
+        assert!(!forged.usage_conservation_verified());
+
+        // Tampered round envelope: the journal no longer folds to the totals.
+        let mut tampered = measured_run();
+        tampered.round_usage[0].prompt_tokens = Some(99);
+        assert!(!tampered.usage_conservation_verified());
+
+        // Dropped round envelope: a missing round breaks conservation.
+        let mut dropped = measured_run();
+        dropped.round_usage.remove(0);
+        assert!(!dropped.usage_conservation_verified());
+    }
+
+    #[test]
     fn usage_overflow_is_fail_closed() {
         let merged = OrchestrationUsageEnvelope {
             prompt_tokens: Some(u64::MAX),
@@ -4921,6 +5097,117 @@ mod tests {
             merged.unwrap_err(),
             OrchestrationError::WorkerExecutionError(_)
         ));
+    }
+
+    #[test]
+    fn completed_effect_survives_usage_bookkeeping_failure() {
+        // A completed attempt with a Success receipt that later fails local
+        // usage accumulation (overflow) must keep its effect truth: the
+        // output digest and attempt identity land on a terminal Failed task,
+        // a reconciliation finding binds the receipt evidence digest, the
+        // run terminates Failed (never success, never replayable), and the
+        // usage journal rolls back to the pre-attempt totals so conservation
+        // still verifies.
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:completed-preserve", "preserve effects");
+        ledger
+            .add_task("task-first", "first effectful task", &config)
+            .unwrap();
+        ledger
+            .add_task("task-keep", "effectful completed task", &config)
+            .unwrap();
+        let controller = ScriptedController::new(vec![
+            NextTaskDecision {
+                action: ControllerAction::ExecuteTask {
+                    task_id: "task-first".to_string(),
+                },
+                reason_summary: "round one".to_string(),
+                expected_evidence: "ev".to_string(),
+            },
+            NextTaskDecision {
+                action: ControllerAction::ExecuteTask {
+                    task_id: "task-keep".to_string(),
+                },
+                reason_summary: "round two".to_string(),
+                expected_evidence: "ev".to_string(),
+            },
+        ]);
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_in_worker = Arc::clone(&calls);
+        let worker = MockWorker::new(move |ctx| {
+            let round = calls_in_worker.fetch_add(1, Ordering::SeqCst);
+            let output_digest = sha256_hex(&format!("kept-output-round-{round}"));
+            let mut receipt = effect_free_receipt(ctx, EffectReceiptDisposition::Success);
+            receipt.receipt_evidence_digest = Some(sha256_hex(&format!("store-receipt-{round}")));
+            receipt.store_evidence_ref = Some(format!("store-attempt-{round}"));
+            // Round one fills the totals near saturation; round two overflows
+            // the accumulation after the effect already completed.
+            let prompt_tokens = if round == 0 { u64::MAX - 100 } else { 200 };
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Completed,
+                effect_free: false,
+                output_digest: Some(output_digest),
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: None,
+                usage: Some(OrchestrationUsageEnvelope {
+                    prompt_tokens: Some(prompt_tokens),
+                    completion_tokens: Some(7),
+                    total_tokens: Some(prompt_tokens),
+                    provider_calls: Some(1),
+                    cost_usd_micros: Some(3),
+                    duration_ms: Some(11),
+                }),
+                effect_receipt: Some(receipt),
+            })
+        });
+        let mut orchestrator =
+            LedgerOrchestrator::new(config, ledger, controller, worker, MockVerifier::pass_all())
+                .unwrap();
+        let record = orchestrator.run_bounded();
+        assert_eq!(record.disposition, LedgerTerminalDisposition::Failed);
+        assert_eq!(record.failure_code, "worker_execution_error");
+        assert_eq!(record.terminal_state, OrchestrationLifecycleState::Failed);
+        // Both worker rounds ran exactly once each: the completed effect was
+        // recorded, not replayed. The first task verified normally.
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            orchestrator.ledger.get_task("task-first").unwrap().status,
+            LedgerTaskStatus::Verified
+        );
+        // The task is terminal Failed (never Verified, never retried), keeps
+        // the completed attempt's output digest and identity, and names the
+        // bookkeeping failure without pretending the attempt was effect-free.
+        let task = orchestrator.ledger.get_task("task-keep").unwrap();
+        assert_eq!(task.status, LedgerTaskStatus::Failed);
+        assert!(task.status.is_terminal());
+        assert_eq!(
+            task.result_digest.as_deref(),
+            Some(sha256_hex("kept-output-round-1").as_str())
+        );
+        assert_eq!(task.attempt_count, 1);
+        assert!(task.attempt_id.as_deref().is_some_and(|id| id.len() == 64));
+        assert_eq!(
+            task.failure_reason.as_deref(),
+            Some("completed attempt bookkeeping failed; effect receipt preserved")
+        );
+        // The Success receipt survives as a reconciliation finding bound to
+        // the store-owned receipt evidence digest.
+        assert!(orchestrator.ledger.findings.iter().any(|finding| {
+            finding.source == "ledger_reconciliation"
+                && finding.related_task_id.as_deref() == Some("task-keep")
+                && finding.evidence_digest.as_deref()
+                    == Some(sha256_hex("store-receipt-1").as_str())
+        }));
+        // The failed round contributed neither totals nor journal entries, so
+        // conservation still verifies over the surviving round.
+        assert!(record.usage_conservation_verified);
+        assert_eq!(record.metrics.prompt_tokens, Some(u64::MAX - 100));
+        // No unknown-outcome fence: the effect state was proved by receipt.
+        assert!(record.outcome_unknown_task_ids.is_empty());
     }
 
     #[test]
