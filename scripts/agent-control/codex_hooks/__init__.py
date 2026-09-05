@@ -18,10 +18,13 @@ from .continuation import ContinuationDecision, ContinuationHandler
 from .dispatcher import HookDispatcher
 from .evidence import (
     EVIDENCE_SCHEMA_VERSION,
+    HOOK_EPHEMERAL_PATH_MARKERS,
     build_evidence_record,
     evidence_binding_matches,
     extract_tool_success,
     focused_tests_digest,
+    is_hooks_ephemeral_status_path,
+    porcelain_work_product_lines,
     read_focused_tests,
     workspace_state,
 )
@@ -54,6 +57,7 @@ __all__ = [
     "EVENT_TO_SCHEMA_ID",
     "FORBIDDEN_COMMAND_PATTERNS",
     "GuardHandler",
+    "HOOK_EPHEMERAL_PATH_MARKERS",
     "HookConfigGenerator",
     "HookDispatcher",
     "HookEventName",
@@ -77,7 +81,9 @@ __all__ = [
     "extract_tool_success",
     "focused_tests_digest",
     "hook_key",
+    "is_hooks_ephemeral_status_path",
     "normalize_event_name",
+    "porcelain_work_product_lines",
     "provision_trust",
     "read_focused_tests",
     "redact_text",

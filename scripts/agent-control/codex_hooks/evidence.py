@@ -20,6 +20,45 @@ from typing import Any
 
 EVIDENCE_SCHEMA_VERSION = "hooks_verification_evidence.v1"
 
+# Work-product status must not bind hook-ephemeral files: receipts, telemetry,
+# and evidence records record the run itself, so including them would make
+# every digest self-invalidating. Shared with continuation's edit check.
+HOOK_EPHEMERAL_PATH_MARKERS = (
+    "hooks_state",
+    ".codex",
+    "failure_reason.json",
+    "telemetry.json",
+    "verification_evidence.json",
+    "compaction_state.json",
+    "continuation_state.json",
+    "completion_status.json",
+)
+
+
+def is_hooks_ephemeral_status_path(path_part: str) -> bool:
+    """True when a porcelain path belongs to hook-ephemeral state, not work product."""
+    base = path_part.rsplit("/", 1)[-1]
+    if base.startswith("receipt_"):
+        return True
+    return any(marker in path_part for marker in HOOK_EPHEMERAL_PATH_MARKERS)
+
+
+def porcelain_work_product_lines(porcelain_output: str) -> list[str]:
+    """Filter `git status --porcelain` output down to work-product entries."""
+    entries: list[str] = []
+    for line in porcelain_output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(maxsplit=1)
+        if len(parts) < 2:
+            continue
+        path_part = parts[1].split("->")[-1].strip().strip('"')
+        if is_hooks_ephemeral_status_path(path_part):
+            continue
+        entries.append(stripped)
+    return entries
+
 
 def read_focused_tests(env: Any = None) -> list[str]:
     """Parse the WorkCard-declared focused verification checks (may be empty)."""
@@ -72,7 +111,10 @@ def workspace_state(worktree: Path | str) -> dict[str, str]:
             check=False,
         )
         if proc.returncode == 0:
-            status_digest = "sha256:" + hashlib.sha256(proc.stdout.encode("utf-8")).hexdigest()
+            entries = porcelain_work_product_lines(proc.stdout)
+            status_digest = "sha256:" + hashlib.sha256(
+                "\n".join(entries).encode("utf-8")
+            ).hexdigest()
     except Exception:
         status_digest = ""
     return {"head_sha": head_sha, "status_digest": status_digest}
@@ -211,20 +253,32 @@ def evidence_binding_matches(
     focused_tests: list[str],
     worktree: Path | str,
 ) -> tuple[bool, str]:
-    """Verify a stored evidence record is bound to the current WorkCard state."""
+    """Verify a stored evidence record is bound to the current WorkCard state.
+
+    Empty-vs-empty comparisons never count as a match: an unbound record
+    (missing card id) or unobservable code state (no git HEAD) is rejected
+    outright instead of passing trivially. Callers fall through to fresh
+    focused-test execution in that case.
+    """
     if not isinstance(evidence, dict):
         return False, "evidence_not_a_record"
     if evidence.get("schema_version") != EVIDENCE_SCHEMA_VERSION:
         return False, "evidence_schema_mismatch"
     if evidence.get("status") != "passed" or evidence.get("result") != "success":
         return False, "evidence_not_a_pass"
-    if (evidence.get("workcard_id") or "") != (workcard_id or ""):
+    if not workcard_id:
+        return False, "evidence_workcard_missing"
+    if (evidence.get("workcard_id") or "") != workcard_id:
         return False, "evidence_workcard_mismatch"
     if evidence.get("focused_tests_digest") != focused_tests_digest(focused_tests):
         return False, "evidence_focused_tests_mismatch"
     current = workspace_state(worktree)
+    if not current["head_sha"]:
+        return False, "evidence_code_state_unobservable"
     if (evidence.get("head_sha") or "") != current["head_sha"]:
         return False, "evidence_code_state_moved"
+    if not current["status_digest"]:
+        return False, "evidence_workspace_state_unobservable"
     if (evidence.get("status_digest") or "") != current["status_digest"]:
         return False, "evidence_workspace_state_moved"
     if not evidence.get("command"):

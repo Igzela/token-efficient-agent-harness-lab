@@ -55,7 +55,12 @@ REDIRECTION_EXEMPT_TARGETS = ("/dev/null", "/dev/stdout", "/dev/stderr")
 
 # Chain operators: each segment must independently prove scope. Split is
 # quote-aware (single/double quotes); anything else unparseable fails closed.
-CHAIN_SPLIT_PATTERN = re.compile(r"&&|\|\||;;|;|\|")
+# NOTE: `;;` is intentionally NOT a split operator (it is only valid inside
+# `case` statements; there the whole command fails closed as unprovable).
+# A trailing `;` yields an empty final segment and is therefore blocked:
+# fail-closed, by design. `VAR=val cmd` / `env VAR=val cmd` prefixes are not
+# unwrapped and are blocked as unprovable (known limitation, documented).
+CHAIN_SPLIT_PATTERN = re.compile(r"&&|\|\||;|\|")
 
 LOW_RISK_COMMAND_PREFIXES = (
     "git status",

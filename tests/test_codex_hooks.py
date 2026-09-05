@@ -56,6 +56,7 @@ from codex_hooks import (
     SessionHandler,
     discover_hooks,
     evidence_binding_matches,
+    focused_tests_digest,
     hook_key,
     provision_trust,
     redact_text,
@@ -299,6 +300,14 @@ class TestCodexHooksH1Session(unittest.TestCase):
         os.environ["STEWARD_WORKCARD_ID"] = "card-evidence-1"
         os.environ["STEWARD_WORKTREE"] = str(self.state_dir)
         os.environ["STEWARD_FOCUSED_TESTS"] = json.dumps(["tests/test_codex_hooks.py"])
+        # Bound evidence requires observable code state: use a git worktree
+        # with at least one commit (fresh `git init` has no HEAD).
+        subprocess.run(["git", "init", str(self.state_dir)], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.state_dir), "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "--allow-empty", "-m", "init"],
+            check=True, capture_output=True,
+        )
         try:
             handler = SessionHandler(self.state_dir)
             hook_input = HookInput(
@@ -503,6 +512,25 @@ class TestCodexHooksH1Session(unittest.TestCase):
         )
         self.assertFalse(bound)
 
+    def test_empty_binding_never_matches(self):
+        # Empty-vs-empty must not pass trivially: missing card id and
+        # unobservable code state (non-git worktree) are rejected outright.
+        record = {
+            "schema_version": "hooks_verification_evidence.v1",
+            "status": "passed",
+            "result": "success",
+            "workcard_id": "",
+            "focused_tests_digest": focused_tests_digest([]),
+            "command": "pytest x",
+            "head_sha": "",
+            "status_digest": "",
+        }
+        bound, reason = evidence_binding_matches(
+            record, workcard_id="", focused_tests=[], worktree=self.state_dir,
+        )
+        self.assertFalse(bound)
+        self.assertIn(reason, {"evidence_workcard_missing", "evidence_code_state_unobservable"})
+
 
 class TestCodexHooksH2Guard(unittest.TestCase):
     """Tests for H2 Path Boundary Guard, Fail-Closed Scope, and Permission Approval."""
@@ -575,6 +603,11 @@ class TestCodexHooksH2Guard(unittest.TestCase):
             "echo hello > /tmp/evil.txt",
             "ls 2> /tmp/evil.txt",
             'python -c "x" | sh',
+            # Trailing chain operator leaves an empty segment: fail closed.
+            "git status;",
+            # Env-prefix idioms are not unwrapped: unprovable, blocked.
+            "FOO=1 pytest tests/test_codex_hooks.py",
+            "env FOO=1 git status",
         ):
             out = self._pre_tool_decision(bad_cmd)
             self.assertEqual(out.decision, "block", f"must block: {bad_cmd}")
@@ -894,6 +927,10 @@ class TestCodexHooksOfficialWireSchemas(unittest.TestCase):
     def setUp(self):
         if not self.CODEX_BIN.is_file() or not os.access(self.CODEX_BIN, os.X_OK):
             self.skipTest("Codex CLI executable not found; official schema validation UNVERIFIED")
+        try:
+            import jsonschema  # noqa: F401
+        except ImportError:
+            self.skipTest("jsonschema package unavailable; official schema validation UNVERIFIED")
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.state_dir = Path(self.temp_dir.name)

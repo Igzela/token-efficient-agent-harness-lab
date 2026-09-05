@@ -18,7 +18,11 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from .evidence import build_evidence_record, evidence_binding_matches
+from .evidence import (
+    build_evidence_record,
+    evidence_binding_matches,
+    porcelain_work_product_lines,
+)
 from .protocol import HookInput, HookOutput
 from .telemetry import HookTelemetry
 
@@ -92,7 +96,7 @@ class ContinuationHandler:
         except Exception as exc:
             return False, f"git_status_error: {exc}"
 
-        lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        lines = porcelain_work_product_lines(proc.stdout)
         if not lines:
             return False, "no_files_modified_in_workspace"
 
@@ -104,8 +108,6 @@ class ContinuationHandler:
             if len(parts) < 2:
                 continue
             path_part = parts[1].split("->")[-1].strip().strip('"')
-            if any(ignored in path_part for ignored in ("hooks_state", ".codex", "failure_reason.json")):
-                continue
 
             # Check against allowed_paths
             for allow in allowed_paths:
