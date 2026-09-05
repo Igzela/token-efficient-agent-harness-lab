@@ -27,6 +27,13 @@ use super::operator_corpus::{
 use super::runner::{
     persist_rwe_run_authorization_v2, RWE_RUN_AUTH_V2_SCHEMA, RWE_RUN_EVIDENCE_SCHEMA,
 };
+use crate::harness_evolution::{
+    ControllerAction, LedgerController, LedgerOrchestrator, LedgerOrchestratorConfig,
+    LedgerTaskRecord, LedgerTerminalRecord, LedgerVerifier, LedgerWorker, NextTaskDecision,
+    OrchestrationError, VerificationOutcome, VerificationReport, WorkerContext,
+    WorkerOutcomeStatus, WorkerResult, WorkingLedger, LEDGER_ORCHESTRATED_HARNESS_ID,
+};
+use crate::product_golden_path::{validate_matrix_binding, ProductHarnessMatrixBinding};
 use crate::provider::config::{CredentialRef, ProviderConfig};
 use crate::provider::credential::CredentialBoundary;
 use crate::provider::managed_deepseek::{
@@ -47,6 +54,14 @@ pub const RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA: &str = "rwe_cell_attempt_evidence.v1
 /// Composition seam is callable for exact frozen RWE bindings under existing owners.
 pub const RWE_LIVE_CELL_COMPOSITION_SEAM: &str =
     "rwe_cell_composition:product_golden_path+local_product_store:frozen_rwe_bindings.v1";
+
+/// Composition seam for ledger-orchestrated matrix cells. The cell executes
+/// the provider-independent `LedgerOrchestrator` manager/worker/verifier loop
+/// inside the store-owned ProductTask envelope instead of the default managed
+/// 3-node path; no second scheduler, store, provider authority, evaluator,
+/// budget, or approval owner is introduced.
+pub const RWE_LEDGER_CELL_COMPOSITION_SEAM: &str =
+    "rwe_cell_composition:ledger_orchestrated+product_golden_path+local_product_store.v1";
 
 /// Operator live-run token: live provider POSTs and target writes require the
 /// explicit `=1` symbol in the parent process (parity with the armed fixture's
@@ -465,6 +480,18 @@ impl CellDriver for ProductGoldenPathCellDriver {
             .target_repo_path
             .as_ref()
             .ok_or("ProductGoldenPathCellDriver requires target_repo_path for composition")?;
+        // Ledger-orchestrated matrix cells never take the default managed
+        // 3-node path: they execute the admitted manager/worker/verifier
+        // loop inside the store-owned envelope, or fail closed.
+        if cell
+            .get("harness_id")
+            .and_then(Value::as_str)
+            .is_some_and(|harness| harness == LEDGER_ORCHESTRATED_HARNESS_ID)
+        {
+            return self.execute_ledger_orchestrated_cell(
+                store, principal, frozen, run_id, cell, task, ids, target,
+            );
+        }
         let intake = build_rwe_cell_product_intake(principal, frozen, task, ids, target)?;
         // Product gate must be on for store-owned intake.
         let admitted = store
@@ -576,6 +603,264 @@ impl CellDriver for ProductGoldenPathCellDriver {
     }
 }
 
+/// Provider-free deterministic manager for ledger-orchestrated cells.
+/// Composition only: drives the single cell-bound work task to a verified
+/// terminal state through the admitted orchestration policy. Cannot seal
+/// live evidence.
+pub struct ProviderFreeLedgerCellController;
+
+impl LedgerController for ProviderFreeLedgerCellController {
+    fn decide_next_action(
+        &mut self,
+        ledger: &WorkingLedger,
+    ) -> Result<NextTaskDecision, OrchestrationError> {
+        if ledger.all_verified() {
+            return Ok(NextTaskDecision {
+                action: ControllerAction::DeclareComplete {
+                    deliverable_digest: ledger.deliverable_digest(),
+                },
+                reason_summary: "provider-free fixture cell verified".to_string(),
+                expected_evidence: "fixture_cell_evidence".to_string(),
+            });
+        }
+        if let Some(pending_id) = ledger.pending_task_ids().into_iter().next() {
+            return Ok(NextTaskDecision {
+                action: ControllerAction::ExecuteTask {
+                    task_id: pending_id.clone(),
+                },
+                reason_summary: format!("provider-free fixture execution of {pending_id}"),
+                expected_evidence: format!("fixture_evidence_for_{pending_id}"),
+            });
+        }
+        Ok(NextTaskDecision {
+            action: ControllerAction::DeclareFailed {
+                reason: "provider-free fixture cell has no executable task".to_string(),
+            },
+            reason_summary: "fixture terminal failure".to_string(),
+            expected_evidence: String::new(),
+        })
+    }
+}
+
+/// Provider-free effect-free worker for ledger-orchestrated cells. Attests
+/// that the attempt performed no ProductStore-owned external effect and
+/// emits a deterministic output digest bound to the attempt identity.
+/// Provider usage is explicit missingness: a fixture invents no cost.
+pub struct EffectFreeLedgerCellWorker;
+
+impl LedgerWorker for EffectFreeLedgerCellWorker {
+    fn execute_task(
+        &mut self,
+        context: &WorkerContext,
+    ) -> Result<WorkerResult, OrchestrationError> {
+        let attempt_id = context
+            .execution_metadata
+            .get("attempt_id")
+            .cloned()
+            .unwrap_or_default();
+        Ok(WorkerResult {
+            task_id: context.selected_task.id.clone(),
+            attempt_id: attempt_id.clone(),
+            status: WorkerOutcomeStatus::Completed,
+            effect_free: true,
+            output_digest: Some(sha256_hex(
+                format!("ledger-cell-fixture|{attempt_id}").as_bytes(),
+            )),
+            partial_summary: None,
+            artifact_refs: vec![],
+            findings: vec![],
+            failure_reason: None,
+            usage: None,
+            effect_receipt: None,
+        })
+    }
+}
+
+/// Provider-free verifier for ledger-orchestrated cells. Records an
+/// explicit fixture observation: provider-free composition never executes
+/// the frozen verification command against the target, so the CellOutcome
+/// seam reports verification as not-run and untrustworthy.
+pub struct ProviderFreeLedgerCellVerifier;
+
+impl LedgerVerifier for ProviderFreeLedgerCellVerifier {
+    fn verify_task(
+        &mut self,
+        _ledger: &WorkingLedger,
+        task: &LedgerTaskRecord,
+        result: &WorkerResult,
+    ) -> Result<VerificationReport, OrchestrationError> {
+        if result.output_digest.is_none() {
+            return Ok(VerificationReport {
+                outcome: VerificationOutcome::Fail,
+                observation_summary: "provider-free fixture: worker produced no output digest"
+                    .to_string(),
+                evidence_digest: None,
+            });
+        }
+        Ok(VerificationReport {
+            outcome: VerificationOutcome::Pass,
+            observation_summary: format!(
+                "provider-free fixture observation for {} (frozen verifier not executed; not live evidence)",
+                task.id
+            ),
+            // Fixture observation digest bound to the verified attempt. It
+            // records that the fixture verifier ran; it is not live
+            // verification evidence (the CellOutcome seam reports not_run).
+            evidence_digest: Some(sha256_hex(
+                format!(
+                    "ledger-cell-fixture-verification|{}|{}",
+                    result.attempt_id,
+                    result.output_digest.as_deref().unwrap_or("none")
+                )
+                .as_bytes(),
+            )),
+        })
+    }
+}
+
+/// Run the provider-free ledger-orchestrated cell loop: the real
+/// manager/worker/verifier orchestration with effect-free attestations. No
+/// provider POST, no target write, and no seal claim. The ledger task
+/// identity is deterministically derived from the matrix cell; the matrix
+/// binding itself travels in the ledger contract digest and the admitted
+/// ProductTask intake.
+pub(crate) fn run_provider_free_ledger_cell_loop(
+    binding: &ProductHarnessMatrixBinding,
+    objective_sha256: &str,
+) -> Result<LedgerTerminalRecord, String> {
+    let ledger_task_id = format!("mx1-cell-{}", &sha256_hex(binding.cell_id.as_bytes())[..32]);
+    let contract_text = format!(
+        "ledger-cell|{}|{}|{}",
+        binding.plan_id, binding.cell_id, binding.cell_descriptor_sha256
+    );
+    let mut ledger = WorkingLedger::new(
+        contract_text,
+        format!(
+            "execute frozen matrix cell {} task {}",
+            binding.cell_id, binding.task_id
+        ),
+    );
+    ledger
+        .add_task(
+            &ledger_task_id,
+            &format!(
+                "execute frozen matrix cell {} (objective hash {})",
+                binding.cell_id, objective_sha256
+            ),
+            &LedgerOrchestratorConfig::default(),
+        )
+        .map_err(|e| format!("ledger cell task admission failed: {e}"))?;
+    let mut orchestrator = LedgerOrchestrator::new(
+        LedgerOrchestratorConfig::default(),
+        ledger,
+        ProviderFreeLedgerCellController,
+        EffectFreeLedgerCellWorker,
+        ProviderFreeLedgerCellVerifier,
+    )
+    .map_err(|e| format!("ledger cell orchestrator init failed: {e}"))?;
+    Ok(orchestrator.run_bounded())
+}
+
+impl ProductGoldenPathCellDriver {
+    /// Execute one ledger-orchestrated matrix cell through the admitted
+    /// seam: store-owned ProductTask intake carrying the producer-owned
+    /// matrix binding, then the real manager/worker/verifier loop. This
+    /// introduces no second scheduler, store, provider authority, evaluator,
+    /// budget, or approval owner.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_ledger_orchestrated_cell(
+        &self,
+        store: &std::sync::Arc<LocalProductStore>,
+        principal: &AuthenticatedPrincipal,
+        frozen: &OperatorFrozenContractSet,
+        run_id: &str,
+        cell: &Value,
+        task: &RweTaskDefinition,
+        ids: &CellIdentities,
+        target: &std::path::Path,
+    ) -> Result<CellOutcome, String> {
+        let binding = matrix_binding_from_frozen_cell(cell, ids, task)?;
+        if self.allow_live_provider_effects {
+            // Fail closed before any store state is created: the live
+            // manager/worker model-call seam through the delegated provider
+            // journal is not admitted yet. Silently executing the non-ledger
+            // managed path would mislabel foreign evidence as ledger
+            // evidence.
+            return Err(
+                "live ledger-orchestrated cell execution is not admitted: the live \
+                 manager/worker model-call seam through the delegated provider journal \
+                 requires provider authorization and a funded campaign package; refusing \
+                 to execute the non-ledger managed path for a ledger cell"
+                    .into(),
+            );
+        }
+        let intake = build_rwe_cell_product_intake_with_matrix(
+            principal,
+            frozen,
+            task,
+            ids,
+            target,
+            Some(binding.clone()),
+        )?;
+        // Product gate must be on for store-owned intake.
+        let admitted = store
+            .admit_product_task(&intake, principal.principal_id())
+            .map_err(|e| format!("ledger cell product task admit failed: {e}"))?;
+        let product_task_id = admitted
+            .get("task_id")
+            .and_then(Value::as_str)
+            .unwrap_or(&ids.product_task_id)
+            .to_string();
+
+        // Provider-free composition: the real orchestration loop runs with
+        // effect-free attestations (see [`run_provider_free_ledger_cell_loop`]).
+        let record = run_provider_free_ledger_cell_loop(&binding, &task.objective_sha256)?;
+        let pkg = match &self.campaign_package {
+            Some(p) => p.clone(),
+            None => crate::rwe::campaign_package::canonical_deepseek_v2_package()?,
+        };
+        let pkg_sha = pkg.canonical_sha256().unwrap_or_else(|_| "unknown".into());
+        Ok(CellOutcome {
+            classification: "blocked_provider_free_mode".into(),
+            provider_requests: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            latency_ms: 0,
+            monetary_cost: Some(0.0),
+            cost_unknown: false,
+            live_provider_request: false,
+            provider_transport_provenance: "none".into(),
+            evidence_source: "product_golden_path_owner".into(),
+            verification_status: "not_run".into(),
+            verification_trustworthy: false,
+            approval_id: None,
+            output_draft_pr: None,
+            terminal_evidence_id: None,
+            terminal_content_sha256: None,
+            cleanup_status: "not_required".into(),
+            product_task_id,
+            workflow_id: ids.workflow_id.clone(),
+            node_id: ids.node_id.clone(),
+            delegated_attempt_id: ids.delegated_attempt_id.clone(),
+            workspace_id: ids.worktree_id.clone(),
+            note: format!(
+                "ledger cell loop executed through {RWE_LEDGER_CELL_COMPOSITION_SEAM} for run {run_id}; \
+                 ledger_terminal_disposition={} ledger_terminal_state={:?} ledger_final_hash={} \
+                 usage_conservation={} missing_evidence={} package_id={} package_sha={} cell={}",
+                record.disposition.as_str(),
+                record.terminal_state,
+                record.final_ledger_hash,
+                record.usage_conservation_verified,
+                record.missing_evidence.join(","),
+                pkg.package_id,
+                pkg_sha,
+                ids.cell_id,
+            ),
+        })
+    }
+}
+
 /// Build the exact ProductTask intake mapping for one frozen RWE cell.
 ///
 /// This is the intake half of the composition seam: git_worktree, draft_pr,
@@ -588,6 +873,74 @@ pub fn build_rwe_cell_product_intake(
     task: &RweTaskDefinition,
     ids: &CellIdentities,
     target_repo_path: &std::path::Path,
+) -> Result<crate::product_golden_path::ValidatedProductTaskIntake, String> {
+    build_rwe_cell_product_intake_with_matrix(principal, frozen, task, ids, target_repo_path, None)
+}
+
+/// Read producer-owned matrix-cell provenance from a frozen schedule cell.
+/// The schedule cell carries the frozen plan/cell owner fields under the
+/// `matrix_*` keys; the schedule-validated `cell_id`/`task_id`/`repetition`
+/// identities cross-check the binding before execution. A cell that is not
+/// a well-formed matrix cell fails closed here: an unbound ledger cell can
+/// never execute through the seam.
+pub fn matrix_binding_from_frozen_cell(
+    cell: &Value,
+    ids: &CellIdentities,
+    task: &RweTaskDefinition,
+) -> Result<ProductHarnessMatrixBinding, String> {
+    fn cell_str(cell: &Value, key: &str) -> Result<String, String> {
+        cell.get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                format!("ledger cell is not a well-formed frozen matrix cell: missing {key}")
+            })
+    }
+    let repetition = cell
+        .get("matrix_repetition")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "ledger cell is not a well-formed frozen matrix cell: missing matrix_repetition"
+                .to_string()
+        })?;
+    let candidate = ProductHarnessMatrixBinding {
+        plan_id: cell_str(cell, "matrix_plan_id")?,
+        manifest_sha256: cell_str(cell, "matrix_manifest_sha256")?,
+        rung: cell_str(cell, "matrix_rung")?,
+        repetition: u32::try_from(repetition).map_err(|_| {
+            "ledger cell matrix_repetition exceeds the admitted repetition bound".to_string()
+        })?,
+        cell_id: cell_str(cell, "cell_id")?,
+        cell_descriptor_sha256: cell_str(cell, "matrix_cell_descriptor_sha256")?,
+        harness_id: cell_str(cell, "harness_id")?,
+        model_id: cell_str(cell, "matrix_model_id")?,
+        strategy_id: cell_str(cell, "matrix_strategy_id")?,
+        task_id: cell_str(cell, "task_id")?,
+    };
+    let binding =
+        validate_matrix_binding(&candidate).map_err(|error| format!("ledger cell {error}"))?;
+    // The binding must name exactly the schedule-validated cell being
+    // executed; a binding for another cell/task/repetition is rejected.
+    if binding.cell_id != ids.cell_id {
+        return Err("ledger cell matrix binding names a different cell_id".to_string());
+    }
+    if binding.task_id != ids.task_id || binding.task_id != task.task_id {
+        return Err("ledger cell matrix binding names a different task_id".to_string());
+    }
+    if u64::from(binding.repetition) != ids.repetition {
+        return Err("ledger cell matrix binding names a different repetition".to_string());
+    }
+    Ok(binding)
+}
+
+pub fn build_rwe_cell_product_intake_with_matrix(
+    principal: &AuthenticatedPrincipal,
+    frozen: &OperatorFrozenContractSet,
+    task: &RweTaskDefinition,
+    ids: &CellIdentities,
+    target_repo_path: &std::path::Path,
+    matrix_binding: Option<ProductHarnessMatrixBinding>,
 ) -> Result<crate::product_golden_path::ValidatedProductTaskIntake, String> {
     use crate::product_golden_path::{
         validate_intake, ProductExecutorPolicy, ProductTaskBudget, ProductTaskIntakeRequest,
@@ -649,6 +1002,7 @@ pub fn build_rwe_cell_product_intake(
         tenant_id: Some(principal.tenant_id().into()),
         workspace_id: Some(ids.worktree_id.clone()),
         workspace_mode: Some("git_worktree".into()),
+        matrix_binding,
     };
     validate_intake(&request, principal.tenant_id(), &ids.worktree_id)
 }
@@ -5335,5 +5689,237 @@ mod tests {
             Some(v) => std::env::set_var("CI", v),
             None => std::env::remove_var("CI"),
         }
+    }
+
+    fn ledger_matrix_cell(cell: &Value, ids: &CellIdentities) -> Value {
+        let mut ledger_cell = cell.clone();
+        ledger_cell["harness_id"] = Value::String(LEDGER_ORCHESTRATED_HARNESS_ID.to_string());
+        ledger_cell["matrix_plan_id"] = Value::String("a".repeat(64));
+        ledger_cell["matrix_manifest_sha256"] = Value::String("b".repeat(64));
+        ledger_cell["matrix_rung"] = Value::String("1x2x3".to_string());
+        ledger_cell["matrix_repetition"] = Value::from(ids.repetition);
+        ledger_cell["matrix_cell_descriptor_sha256"] = Value::String("c".repeat(64));
+        ledger_cell["matrix_model_id"] =
+            Value::String("deepseek-v4-pro:single-model-three-role:v1".to_string());
+        ledger_cell["matrix_strategy_id"] =
+            Value::String("single-pass-plan-implement-review:memory-only:v1".to_string());
+        ledger_cell
+    }
+
+    #[test]
+    fn ledger_cell_loop_executes_manager_worker_verifier_to_typed_terminal() {
+        use crate::harness_evolution::LedgerTerminalDisposition;
+        let binding = ProductHarnessMatrixBinding {
+            plan_id: "a".repeat(64),
+            manifest_sha256: "b".repeat(64),
+            rung: "1x2x3".to_string(),
+            repetition: 1,
+            cell_id: "ledger-fixture-cell".to_string(),
+            cell_descriptor_sha256: "c".repeat(64),
+            harness_id: LEDGER_ORCHESTRATED_HARNESS_ID.to_string(),
+            model_id: "deepseek-v4-pro:single-model-three-role:v1".to_string(),
+            strategy_id: "single-pass-plan-implement-review:memory-only:v1".to_string(),
+            task_id: "mx1-task".to_string(),
+        };
+        // The real manager/worker/verifier loop runs provider-free with
+        // effect-free attestations and returns a typed terminal record.
+        let record = run_provider_free_ledger_cell_loop(&binding, &"d".repeat(64)).unwrap();
+        assert_eq!(record.disposition, LedgerTerminalDisposition::Completed);
+        assert!(record.summary.is_some());
+        assert!(record.outcome_unknown_task_ids.is_empty());
+        assert!(record.usage_conservation_verified);
+        // The fixture invents no provider cost: usage is explicit
+        // missingness carried into the terminal record.
+        assert!(record
+            .missing_evidence
+            .contains(&"usage:prompt_tokens".to_string()));
+        assert!(record.metrics.prompt_tokens.is_none());
+        assert!(record.final_ledger_hash.len() == 64);
+    }
+
+    #[test]
+    fn ledger_cell_intake_carries_producer_owned_binding() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(
+            LocalProductStore::new_with_clock(dir.path().join("ledger-intake.db"), || {
+                "2026-07-25T12:00:00Z".into()
+            })
+            .unwrap(),
+        );
+        let principal = operator(&store, "t-ledger-intake", "op-ledger-intake");
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let had_gate = std::env::var_os(crate::product_golden_path::PRODUCT_TASK_GATE);
+        std::env::set_var(crate::product_golden_path::PRODUCT_TASK_GATE, "1");
+
+        let frozen = freeze_current_operator_contract_set().unwrap();
+        let cell0 = &frozen.schedule.body["cells"][0];
+        let task0 = frozen
+            .corpus
+            .tasks
+            .iter()
+            .find(|t| t.task_id == cell0["task_id"].as_str().unwrap())
+            .unwrap();
+        let ids = cell_identities_for("run-ledger-intake", cell0, task0).unwrap();
+        let ledger_cell = ledger_matrix_cell(cell0, &ids);
+        let target = std::path::PathBuf::from("/tmp/ledger-intake-target");
+
+        // The frozen matrix identity enters the validated intake and the
+        // intake contract; the same intake without it hashes differently.
+        let binding = matrix_binding_from_frozen_cell(&ledger_cell, &ids, task0).unwrap();
+        assert_eq!(binding.cell_id, ids.cell_id);
+        assert_eq!(binding.harness_id, LEDGER_ORCHESTRATED_HARNESS_ID);
+        let bound = build_rwe_cell_product_intake_with_matrix(
+            &principal,
+            &frozen,
+            task0,
+            &ids,
+            &target,
+            Some(binding),
+        )
+        .unwrap();
+        assert_eq!(bound.matrix_binding.as_ref().unwrap().cell_id, ids.cell_id);
+        let plain =
+            build_rwe_cell_product_intake(&principal, &frozen, task0, &ids, &target).unwrap();
+        assert!(plain.matrix_binding.is_none());
+        assert_ne!(bound.intake_contract_sha256, plain.intake_contract_sha256);
+
+        match had_gate {
+            Some(v) => std::env::set_var(crate::product_golden_path::PRODUCT_TASK_GATE, v),
+            None => std::env::remove_var(crate::product_golden_path::PRODUCT_TASK_GATE),
+        }
+    }
+    #[test]
+    fn ledger_cell_without_matrix_provenance_fails_closed() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(
+            LocalProductStore::new_with_clock(dir.path().join("ledger-nobind.db"), || {
+                "2026-07-25T12:00:00Z".into()
+            })
+            .unwrap(),
+        );
+        let principal = operator(&store, "t-ledger-nb", "op-ledger-nb");
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(crate::product_golden_path::PRODUCT_TASK_GATE, "1");
+        let had_ci = std::env::var_os("CI");
+        std::env::remove_var("CI");
+
+        let frozen = freeze_current_operator_contract_set().unwrap();
+        let cell0 = &frozen.schedule.body["cells"][0];
+        let task0 = frozen
+            .corpus
+            .tasks
+            .iter()
+            .find(|t| t.task_id == cell0["task_id"].as_str().unwrap())
+            .unwrap();
+        let ids = cell_identities_for("run-ledger-nb", cell0, task0).unwrap();
+        // Ledger harness marker but no frozen matrix provenance: unbound
+        // cells can never execute through the seam.
+        let mut unbound = cell0.clone();
+        unbound["harness_id"] = Value::String(LEDGER_ORCHESTRATED_HARNESS_ID.to_string());
+
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let driver = ProductGoldenPathCellDriver {
+            allow_live_provider_effects: false,
+            target_repo_path: Some(target),
+            fake_transport: None,
+            cell_executor_key_id: None,
+            cell_confirmer_key_id: None,
+            campaign_package: None,
+        };
+        let err = driver
+            .execute_cell(
+                &store,
+                &principal,
+                &frozen,
+                "run-ledger-nb",
+                "lease-nb",
+                &unbound,
+                task0,
+                &ids,
+            )
+            .unwrap_err();
+        assert!(err.contains("well-formed frozen matrix cell"), "{err}");
+
+        // A binding naming a different cell is rejected.
+        let mut foreign = ledger_matrix_cell(cell0, &ids);
+        foreign["cell_id"] = Value::String("foreign-cell".to_string());
+        let ids_foreign = cell_identities_for("run-ledger-nb", &foreign, task0).unwrap();
+        let err = matrix_binding_from_frozen_cell(&foreign, &ids, task0).unwrap_err();
+        assert!(err.contains("different cell_id"), "{err}");
+        let _ = ids_foreign;
+
+        match had_ci {
+            Some(v) => std::env::set_var("CI", v),
+            None => std::env::remove_var("CI"),
+        }
+        std::env::remove_var(crate::product_golden_path::PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn ledger_cell_live_mode_fails_closed_without_silent_fallback() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(
+            LocalProductStore::new_with_clock(dir.path().join("ledger-live.db"), || {
+                "2026-07-25T12:00:00Z".into()
+            })
+            .unwrap(),
+        );
+        let principal = operator(&store, "t-ledger-live", "op-ledger-live");
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(crate::product_golden_path::PRODUCT_TASK_GATE, "1");
+        let had_ci = std::env::var_os("CI");
+        std::env::remove_var("CI");
+
+        let frozen = freeze_current_operator_contract_set().unwrap();
+        let cell0 = &frozen.schedule.body["cells"][0];
+        let task0 = frozen
+            .corpus
+            .tasks
+            .iter()
+            .find(|t| t.task_id == cell0["task_id"].as_str().unwrap())
+            .unwrap();
+        let ids = cell_identities_for("run-ledger-live", cell0, task0).unwrap();
+        let ledger_cell = ledger_matrix_cell(cell0, &ids);
+
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let driver = ProductGoldenPathCellDriver {
+            allow_live_provider_effects: true,
+            target_repo_path: Some(target),
+            fake_transport: None,
+            cell_executor_key_id: None,
+            cell_confirmer_key_id: None,
+            campaign_package: None,
+        };
+        // The live ledger loop is not admitted yet: the cell must fail
+        // closed with the exact blocker, never silently run the non-ledger
+        // managed path.
+        let err = driver
+            .execute_cell(
+                &store,
+                &principal,
+                &frozen,
+                "run-ledger-live",
+                "lease-live",
+                &ledger_cell,
+                task0,
+                &ids,
+            )
+            .unwrap_err();
+        assert!(err.contains("not admitted"), "{err}");
+        assert!(err.contains("non-ledger managed path"), "{err}");
+
+        match had_ci {
+            Some(v) => std::env::set_var("CI", v),
+            None => std::env::remove_var("CI"),
+        }
+        std::env::remove_var(crate::product_golden_path::PRODUCT_TASK_GATE);
     }
 }

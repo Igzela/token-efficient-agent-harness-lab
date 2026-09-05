@@ -15572,6 +15572,7 @@ mod tests {
             tenant_id: Some("tenant-a".into()),
             workspace_id: Some("default".into()),
             workspace_mode: Some("git_worktree".into()),
+            matrix_binding: None,
         };
         let mut foreign_intake = intake.clone();
         foreign_intake.idempotency_key = "delegated-product-route-foreign-tenant".into();
@@ -16556,6 +16557,7 @@ mod tests {
             tenant_id: Some("local".into()),
             workspace_id: Some("default".into()),
             workspace_mode: Some("local_folder".into()),
+            matrix_binding: None,
         };
         let validated = validate_intake(&intake, "local", "default").unwrap();
         let task = store.admit_product_task(&validated, "operator").unwrap();

@@ -110,6 +110,10 @@ fn sanitize_optional_text(
         .transpose()
 }
 
+fn is_canonical_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn sanitize_digest(
     value: &str,
     field: &str,
@@ -165,7 +169,12 @@ fn validate_artifact_reference(
     Ok(sanitized)
 }
 
-pub const LEDGER_ORCHESTRATED_SCHEMA_VERSION: &str = "harness_evolution_ledger_orchestration.v1";
+pub const LEDGER_ORCHESTRATED_SCHEMA_VERSION: &str = "harness_evolution_ledger_orchestration.v2";
+/// Frozen identity of the last pre-contract-digest ledger schema. Records
+/// carrying this version are only readable through the explicit
+/// [`WorkingLedger::migrate_v1_record`] path; they are never silently
+/// accepted as v2 records.
+pub const LEDGER_ORCHESTRATED_SCHEMA_VERSION_V1: &str = "harness_evolution_ledger_orchestration.v1";
 pub const DEFAULT_MAX_LEDGER_TASKS: usize = 32;
 pub const DEFAULT_MAX_LEDGER_FINDINGS: usize = 64;
 pub const DEFAULT_MAX_LEDGER_OBSERVATIONS: usize = 64;
@@ -276,7 +285,15 @@ pub struct VerificationObservation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkingLedger {
     pub schema_version: String,
+    /// Canonical 64-hex SHA-256 identity of the orchestrated contract. This
+    /// field is the identity only; it is never worker-readable prose. See
+    /// [`WorkingLedger::contract_summary`] for optional semantic context.
     pub contract_digest: String,
+    /// Bounded optional worker-readable semantic context for the contract.
+    /// Separate from [`WorkingLedger::contract_digest`] by construction so one
+    /// field is never overloaded with both jobs.
+    #[serde(default)]
+    pub contract_summary: Option<String>,
     pub current_plan: String,
     pub tasks: Vec<LedgerTaskRecord>,
     pub findings: Vec<LedgerFinding>,
@@ -313,13 +330,26 @@ pub struct WorkingLedger {
 
 impl WorkingLedger {
     pub fn new(contract_digest: impl Into<String>, initial_plan: impl Into<String>) -> Self {
-        let contract =
+        let raw_contract =
             crate::provider::redaction::redact_sensitive_patterns(&contract_digest.into());
         let plan = crate::provider::redaction::redact_sensitive_patterns(&initial_plan.into());
+        // Canonical contract identity is always a 64-hex SHA-256 digest. When
+        // the caller supplies an already-canonical digest, it is adopted as
+        // the identity with no separate summary; otherwise the digest is
+        // derived from the supplied text and the text is preserved as bounded
+        // worker-readable context.
+        let (contract, summary) = if is_canonical_sha256(&raw_contract) {
+            (raw_contract.clone(), None)
+        } else {
+            let digest = sha256_hex(&raw_contract);
+            let summary = sanitize_summary_text(&raw_contract, "contract_summary", 512).ok();
+            (digest, summary)
+        };
         let fingerprint = compute_progress_fingerprint(None, None, None, &contract);
         Self {
             schema_version: LEDGER_ORCHESTRATED_SCHEMA_VERSION.to_string(),
             contract_digest: contract,
+            contract_summary: summary,
             current_plan: plan,
             tasks: Vec::new(),
             findings: Vec::new(),
@@ -338,6 +368,65 @@ impl WorkingLedger {
             no_progress_streak: 0,
             last_progress_fingerprint: None,
         }
+    }
+
+    /// Explicit migration for serialized v1 records whose `contract_digest`
+    /// carried arbitrary text. The legacy text is hashed into the canonical
+    /// digest identity and moved into `contract_summary`; nothing is silently
+    /// dual-purposed. v2 records deserialize directly and must not pass
+    /// through this path.
+    pub fn migrate_v1_record(raw: &str) -> Result<Self, OrchestrationError> {
+        let mut value: serde_json::Value = serde_json::from_str(raw).map_err(|_| {
+            OrchestrationError::InvalidControllerDecision(
+                "ledger v1 migration requires valid JSON".to_string(),
+            )
+        })?;
+        let object = value.as_object_mut().ok_or_else(|| {
+            OrchestrationError::InvalidControllerDecision(
+                "ledger v1 migration requires a JSON object".to_string(),
+            )
+        })?;
+        match object.get("schema_version").and_then(|v| v.as_str()) {
+            Some(version) if version == LEDGER_ORCHESTRATED_SCHEMA_VERSION_V1 => {}
+            Some(LEDGER_ORCHESTRATED_SCHEMA_VERSION) | Some(_) | None => {
+                return Err(OrchestrationError::InvalidControllerDecision(
+                    "ledger v1 migration applies only to v1 schema records".to_string(),
+                ))
+            }
+        }
+        let legacy_contract = object
+            .get("contract_digest")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let (contract, summary) = if is_canonical_sha256(&legacy_contract) {
+            (legacy_contract, None)
+        } else {
+            let digest = sha256_hex(&legacy_contract);
+            let summary = sanitize_summary_text(&legacy_contract, "contract_summary", 512).ok();
+            (digest, summary)
+        };
+        object.insert(
+            "schema_version".to_string(),
+            serde_json::Value::String(LEDGER_ORCHESTRATED_SCHEMA_VERSION.to_string()),
+        );
+        object.insert(
+            "contract_digest".to_string(),
+            serde_json::Value::String(contract),
+        );
+        object.insert(
+            "contract_summary".to_string(),
+            summary
+                .map(serde_json::Value::String)
+                .unwrap_or(serde_json::Value::Null),
+        );
+        let migrated: WorkingLedger = serde_json::from_value(value).map_err(|_| {
+            OrchestrationError::InvalidControllerDecision(
+                "ledger v1 record does not migrate to a valid v2 ledger".to_string(),
+            )
+        })?;
+        migrated.validate_bounds(&LedgerOrchestratorConfig::default())?;
+        Ok(migrated)
     }
 
     pub fn add_task(
@@ -434,6 +523,19 @@ impl WorkingLedger {
             "finding_summary",
             config.max_summary_bytes,
         )?;
+        // Stable novelty semantics: an identical finding (same identity,
+        // content, task binding, and evidence) is already recorded, so
+        // appending it again is not progress. Skip the duplicate without
+        // consuming capacity; a genuinely new finding still appends.
+        if self.findings.iter().any(|existing| {
+            existing.id == finding.id
+                && existing.summary == finding.summary
+                && existing.source == finding.source
+                && existing.related_task_id == finding.related_task_id
+                && existing.evidence_digest == finding.evidence_digest
+        }) {
+            return Ok(());
+        }
         self.findings.push(finding);
         if let Err(error) = self.validate_bounds(config) {
             self.findings.pop();
@@ -545,6 +647,23 @@ impl WorkingLedger {
             return Err(OrchestrationError::InvalidControllerDecision(
                 "working ledger schema version mismatch".to_string(),
             ));
+        }
+        // Contract identity is a canonical 64-hex SHA-256 digest, never
+        // arbitrary text. Legacy v1 text records must pass through the
+        // explicit migration path; forged or malformed digests fail closed.
+        if !is_canonical_sha256(&self.contract_digest) {
+            return Err(OrchestrationError::InvalidControllerDecision(
+                "contract_digest must be a canonical SHA-256 digest".to_string(),
+            ));
+        }
+        // The summary is created under a fixed 512-byte cap, independent of
+        // the prose bound used for task content.
+        if let Some(summary) = &self.contract_summary {
+            validate_summary_text(
+                summary,
+                "contract_summary",
+                config.max_summary_bytes.max(512),
+            )?;
         }
         if self.tasks.len() > config.max_tasks {
             return Err(OrchestrationError::OversizedField {
@@ -743,7 +862,9 @@ impl WorkingLedger {
                 )?;
             }
         }
-        validate_sanitized_text(
+        // The contract identity digest is a fixed 64 bytes; prose length
+        // bounds never apply to it (canonical form already enforced above).
+        validate_digest(
             &self.contract_digest,
             "contract_digest",
             config.max_summary_bytes,
@@ -878,6 +999,10 @@ pub fn compute_progress_fingerprint(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerContext {
     pub contract_digest: String,
+    /// Optional worker-readable contract context; the authoritative identity
+    /// remains [`WorkerContext::contract_digest`].
+    #[serde(default)]
+    pub contract_summary: Option<String>,
     pub plan_summary: String,
     pub selected_task: LedgerTaskRecord,
     pub relevant_findings: Vec<LedgerFinding>,
@@ -962,7 +1087,23 @@ fn project_worker_context_with_limit(
     }
 
     let context = WorkerContext {
-        contract_digest: sanitize_text(&ledger.contract_digest, "contract_digest", max_bytes)?,
+        contract_digest: {
+            // The identity digest is a fixed 64 bytes; prose bounds do not
+            // apply to it.
+            let digest = sanitize_text(
+                &ledger.contract_digest,
+                "contract_digest",
+                max_bytes.max(64),
+            )?;
+            // Worker context is bound to the real contract identity.
+            validate_digest(&digest, "contract_digest", max_bytes)?;
+            digest
+        },
+        contract_summary: sanitize_optional_summary_text(
+            ledger.contract_summary.as_deref(),
+            "contract_summary",
+            max_bytes,
+        )?,
         plan_summary: sanitize_summary_text(&ledger.current_plan, "plan_summary", max_bytes)?,
         selected_task,
         relevant_findings,
@@ -1090,6 +1231,194 @@ pub enum WorkerOutcomeStatus {
     Blocked,
 }
 
+/// Store/provider-owned effect receipt disposition for one worker attempt.
+/// The orchestrator core has no effect authority: this disposition must be
+/// derived from an existing store/provider-owned receipt, never from generic
+/// worker status claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectReceiptDisposition {
+    /// Proved no effect was issued before the failure (safe to retry).
+    FailedBeforeSendNoEffect,
+    /// A known effect failed (retryable under the attempt budget).
+    KnownFailedEffect,
+    /// A known effect succeeded.
+    Success,
+    /// The effect status cannot be proven; retry is fenced as unknown.
+    OutcomeUnknown,
+}
+
+/// Store-owned receipt binding for one worker attempt. Attempt identity is
+/// bound so a receipt can never authorize a different attempt's retry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoreEffectReceipt {
+    pub attempt_id: String,
+    pub disposition: EffectReceiptDisposition,
+    /// Digest of the store/provider-owned receipt evidence this disposition
+    /// was derived from. Missingness is explicit: the core never invents it.
+    #[serde(default)]
+    pub receipt_evidence_digest: Option<String>,
+    #[serde(default)]
+    pub store_evidence_ref: Option<String>,
+}
+
+/// Typed per-round provider usage envelope. Values originate from existing
+/// provider/store-owned evidence; a worker never self-reports authoritative
+/// cost. Unavailable values stay `None` (explicit missingness), never zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrchestrationUsageEnvelope {
+    #[serde(default)]
+    pub prompt_tokens: Option<u64>,
+    #[serde(default)]
+    pub completion_tokens: Option<u64>,
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
+    #[serde(default)]
+    pub provider_calls: Option<u64>,
+    #[serde(default)]
+    pub cost_usd_micros: Option<u64>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+}
+
+impl OrchestrationUsageEnvelope {
+    /// Combine two reported envelopes field-wise. A dimension merges only
+    /// when both sides report it; otherwise the combined value is explicit
+    /// missingness. Arithmetic overflow is a fail-closed error, never a wrap
+    /// or a clamp. This is the two-envelope combine operator; multi-round
+    /// accumulation additionally tracks sticky omission (see the
+    /// orchestrator's usage journal), so an omit-then-report sequence can
+    /// never resurrect a dropped total.
+    pub fn checked_merge(&self, other: &Self) -> Result<Self, OrchestrationError> {
+        let merge = |a: Option<u64>,
+                     b: Option<u64>,
+                     field: &str|
+         -> Result<Option<u64>, OrchestrationError> {
+            match (a, b) {
+                (Some(x), Some(y)) => x.checked_add(y).map(Some).ok_or_else(|| {
+                    OrchestrationError::WorkerExecutionError(format!(
+                        "orchestration usage overflow in {field}"
+                    ))
+                }),
+                _ => Ok(None),
+            }
+        };
+        Ok(Self {
+            prompt_tokens: merge(self.prompt_tokens, other.prompt_tokens, "prompt_tokens")?,
+            completion_tokens: merge(
+                self.completion_tokens,
+                other.completion_tokens,
+                "completion_tokens",
+            )?,
+            total_tokens: merge(self.total_tokens, other.total_tokens, "total_tokens")?,
+            provider_calls: merge(self.provider_calls, other.provider_calls, "provider_calls")?,
+            cost_usd_micros: merge(
+                self.cost_usd_micros,
+                other.cost_usd_micros,
+                "cost_usd_micros",
+            )?,
+            duration_ms: merge(self.duration_ms, other.duration_ms, "duration_ms")?,
+        })
+    }
+
+    pub fn missing_dimensions(&self) -> Vec<&'static str> {
+        let mut missing = Vec::new();
+        if self.prompt_tokens.is_none() {
+            missing.push("prompt_tokens");
+        }
+        if self.completion_tokens.is_none() {
+            missing.push("completion_tokens");
+        }
+        if self.total_tokens.is_none() {
+            missing.push("total_tokens");
+        }
+        if self.provider_calls.is_none() {
+            missing.push("provider_calls");
+        }
+        if self.cost_usd_micros.is_none() {
+            missing.push("cost_usd_micros");
+        }
+        if self.duration_ms.is_none() {
+            missing.push("duration_ms");
+        }
+        missing
+    }
+}
+
+/// Envelope field order shared by the sticky omission flags: prompt,
+/// completion, total, calls, cost, duration.
+fn accumulate_usage_dimension(
+    total: &mut Option<u64>,
+    omitted: &mut bool,
+    reported: Option<u64>,
+    field: &'static str,
+) -> Result<(), OrchestrationError> {
+    let Some(value) = reported else {
+        *omitted = true;
+        *total = None;
+        return Ok(());
+    };
+    if *omitted {
+        // A dimension omitted by any earlier round stays explicit
+        // missingness; a later report can never resurrect the dropped total.
+        *total = None;
+        return Ok(());
+    }
+    *total = Some(match *total {
+        Some(base) => base.checked_add(value).ok_or_else(|| {
+            OrchestrationError::WorkerExecutionError(format!(
+                "orchestration usage overflow in {field}"
+            ))
+        })?,
+        None => value,
+    });
+    Ok(())
+}
+
+fn fold_usage_envelope(
+    totals: &mut OrchestrationUsageEnvelope,
+    omitted: &mut [bool; 6],
+    reported: &OrchestrationUsageEnvelope,
+) -> Result<(), OrchestrationError> {
+    accumulate_usage_dimension(
+        &mut totals.prompt_tokens,
+        &mut omitted[0],
+        reported.prompt_tokens,
+        "prompt_tokens",
+    )?;
+    accumulate_usage_dimension(
+        &mut totals.completion_tokens,
+        &mut omitted[1],
+        reported.completion_tokens,
+        "completion_tokens",
+    )?;
+    accumulate_usage_dimension(
+        &mut totals.total_tokens,
+        &mut omitted[2],
+        reported.total_tokens,
+        "total_tokens",
+    )?;
+    accumulate_usage_dimension(
+        &mut totals.provider_calls,
+        &mut omitted[3],
+        reported.provider_calls,
+        "provider_calls",
+    )?;
+    accumulate_usage_dimension(
+        &mut totals.cost_usd_micros,
+        &mut omitted[4],
+        reported.cost_usd_micros,
+        "cost_usd_micros",
+    )?;
+    accumulate_usage_dimension(
+        &mut totals.duration_ms,
+        &mut omitted[5],
+        reported.duration_ms,
+        "duration_ms",
+    )?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerResult {
     pub task_id: String,
@@ -1105,6 +1434,15 @@ pub struct WorkerResult {
     pub artifact_refs: Vec<String>,
     pub findings: Vec<LedgerFinding>,
     pub failure_reason: Option<String>,
+    /// Per-round provider usage carried from the existing store-owned
+    /// evidence path. The orchestrator accumulates it; it never authorizes
+    /// cost from a worker claim alone.
+    #[serde(default)]
+    pub usage: Option<OrchestrationUsageEnvelope>,
+    /// Store-owned effect receipt for this attempt. Retry safety reads the
+    /// receipt disposition, never the generic worker status.
+    #[serde(default)]
+    pub effect_receipt: Option<StoreEffectReceipt>,
 }
 
 pub trait LedgerWorker {
@@ -1209,6 +1547,13 @@ pub struct OrchestrationMetrics {
     pub task_count: usize,
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
+    /// Accumulated total tokens across rounds, when reported. Missingness is
+    /// explicit: providers that omit totals stay `None`, never zero.
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
+    /// Accumulated provider calls across rounds, when reported.
+    #[serde(default)]
+    pub provider_calls: Option<u64>,
     pub cost_usd_micros: Option<u64>,
     pub duration_ms: Option<u64>,
 }
@@ -1223,6 +1568,92 @@ pub struct OrchestrationSummary {
     pub final_ledger_hash: String,
     pub recovery_checkpoint_digest: Option<String>,
     pub rollback_target: Option<String>,
+}
+
+/// Typed terminal disposition for every bounded run. Fail-closed error
+/// semantics are preserved: an error path yields a `Failed`-family
+/// disposition with its failure code, never a converted success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LedgerTerminalDisposition {
+    Completed,
+    Failed,
+    NoProgress,
+    Cancelled,
+    /// A worker attempt or transport outcome cannot be proven against a
+    /// store-owned receipt. Owner reconciliation is required; the fenced
+    /// attempt must not be replayed.
+    OutcomeUnknown,
+    MaxRoundsExhausted,
+    TruncationExhausted,
+    VerifierFailure,
+    MalformedControllerResponse,
+}
+
+impl LedgerTerminalDisposition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::NoProgress => "no_progress",
+            Self::Cancelled => "cancelled",
+            Self::OutcomeUnknown => "outcome_unknown",
+            Self::MaxRoundsExhausted => "max_rounds_exhausted",
+            Self::TruncationExhausted => "truncation_exhausted",
+            Self::VerifierFailure => "verifier_failure",
+            Self::MalformedControllerResponse => "malformed_controller_response",
+        }
+    }
+
+    fn for_error(error: &OrchestrationError) -> Self {
+        match error {
+            OrchestrationError::MaxRoundsExceeded(_) => Self::MaxRoundsExhausted,
+            OrchestrationError::TruncationLimitExceeded(_) => Self::TruncationExhausted,
+            OrchestrationError::NoProgressLimitExceeded(_) => Self::NoProgress,
+            OrchestrationError::VerificationError(_) => Self::VerifierFailure,
+            OrchestrationError::InvalidControllerDecision(_)
+            | OrchestrationError::InvalidTaskId(_)
+            | OrchestrationError::DuplicateTaskId(_)
+            | OrchestrationError::TaskNotFound(_)
+            | OrchestrationError::InvalidArtifactReference(_) => Self::MalformedControllerResponse,
+            OrchestrationError::Cancelled => Self::Cancelled,
+            OrchestrationError::OversizedField { .. }
+            | OrchestrationError::OversizedLedger { .. }
+            | OrchestrationError::WorkerExecutionError(_)
+            | OrchestrationError::SecretDetected(_) => Self::Failed,
+        }
+    }
+}
+
+/// Structured terminal evidence for one bounded run. This is what the RWE
+/// bridge consumes: it retains the disposition, failure identity, metrics
+/// collected before the failure, the ledger/evidence digest, the
+/// outcome-unknown fence, explicit missingness, and recovery references.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LedgerTerminalRecord {
+    pub disposition: LedgerTerminalDisposition,
+    pub terminal_state: OrchestrationLifecycleState,
+    /// Stable failure code for this terminal outcome (`completed` when there
+    /// is no failure).
+    pub failure_code: String,
+    /// Digest of the failure reason text, never the raw reason.
+    pub failure_reason_digest: Option<String>,
+    pub rounds_executed: u32,
+    pub metrics: OrchestrationMetrics,
+    /// Conservation verdict for `sum(round usage) = cell lifecycle usage`.
+    /// False means the totals cannot be trusted and must be treated as
+    /// missing by downstream accounting.
+    pub usage_conservation_verified: bool,
+    /// Evidence dimensions that are unavailable for this run (explicit
+    /// missingness, never silent zeros).
+    pub missing_evidence: Vec<String>,
+    pub final_ledger_hash: String,
+    pub recovery_checkpoint_digest: Option<String>,
+    pub rollback_target: Option<String>,
+    pub outcome_unknown_task_ids: Vec<String>,
+    /// The successful completion summary when the run completed; `None` on
+    /// every failed-family disposition.
+    pub summary: Option<OrchestrationSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1478,6 +1909,34 @@ fn sanitize_worker_result(
             "failure_reason",
             max_bytes,
         )?,
+        usage: result.usage,
+        effect_receipt: result
+            .effect_receipt
+            .map(
+                |receipt| -> Result<StoreEffectReceipt, OrchestrationError> {
+                    let attempt_id =
+                        sanitize_digest(&receipt.attempt_id, "receipt_attempt_id", max_bytes)?;
+                    let receipt_evidence_digest = receipt
+                        .receipt_evidence_digest
+                        .as_deref()
+                        .map(|digest| sanitize_digest(digest, "receipt_evidence_digest", max_bytes))
+                        .transpose()?;
+                    let store_evidence_ref = receipt
+                        .store_evidence_ref
+                        .as_deref()
+                        .map(|reference| {
+                            sanitize_text(reference, "receipt_store_evidence_ref", max_bytes)
+                        })
+                        .transpose()?;
+                    Ok(StoreEffectReceipt {
+                        attempt_id,
+                        disposition: receipt.disposition,
+                        receipt_evidence_digest,
+                        store_evidence_ref,
+                    })
+                },
+            )
+            .transpose()?,
     })
 }
 
@@ -1513,6 +1972,22 @@ pub struct LedgerOrchestrator<C: LedgerController, W: LedgerWorker, V: LedgerVer
     pending_decision: Option<NextTaskDecision>,
     recovery_checkpoint: Option<WorkingLedger>,
     pub terminal_summary: Option<OrchestrationSummary>,
+    /// Latest structured terminal record produced by [`LedgerOrchestrator::run_bounded`].
+    pub terminal_record: Option<LedgerTerminalRecord>,
+    /// Tasks that recorded a verification failure and have not yet recovered.
+    /// A later verified pass removes the entry and counts exactly one
+    /// verification recovery; repeated passes never double-count.
+    verification_failed_task_ids: std::collections::BTreeSet<String>,
+    /// Per-round usage envelopes in execution order; the conservation check
+    /// requires their sticky-merge to equal [`LedgerOrchestrator::usage_totals`].
+    round_usage: Vec<OrchestrationUsageEnvelope>,
+    /// Accumulated per-cell provider usage across executed rounds.
+    usage_totals: OrchestrationUsageEnvelope,
+    /// Sticky per-dimension omission flags in envelope field order
+    /// (prompt, completion, total, calls, cost, duration). Once any round
+    /// omits a dimension, the cell total for that dimension stays explicit
+    /// missingness; a later report can never resurrect the dropped total.
+    usage_omitted: [bool; 6],
     cancelled: bool,
 }
 
@@ -1555,6 +2030,11 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
             pending_decision: None,
             recovery_checkpoint: None,
             terminal_summary: None,
+            terminal_record: None,
+            verification_failed_task_ids: std::collections::BTreeSet::new(),
+            round_usage: Vec::new(),
+            usage_totals: OrchestrationUsageEnvelope::default(),
+            usage_omitted: [false; 6],
             cancelled: false,
         })
     }
@@ -1711,12 +2191,25 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                 let ledger_snapshot = self.ledger.clone();
                 self.recovery_checkpoint = Some(ledger_snapshot.clone());
                 let metrics_snapshot = self.metrics.clone();
+                // Usage accumulation participates in the same atomic
+                // pre-attempt snapshot: a restored round contributes neither
+                // totals nor round envelopes, keeping the conservation check
+                // meaningful after recovery.
+                let usage_snapshot = self.usage_totals;
+                let round_usage_snapshot = self.round_usage.clone();
+                let usage_omitted_snapshot = self.usage_omitted;
+                let verification_failed_snapshot = self.verification_failed_task_ids.clone();
                 let state_snapshot = self.state;
                 let pending_decision_snapshot = self.pending_decision.clone();
                 let checkpoint_digest = ledger_snapshot.state_digest();
                 let restore_execution_snapshot = |orchestrator: &mut Self| {
                     orchestrator.ledger = ledger_snapshot.clone();
                     orchestrator.metrics = metrics_snapshot.clone();
+                    orchestrator.usage_totals = usage_snapshot;
+                    orchestrator.round_usage = round_usage_snapshot.clone();
+                    orchestrator.usage_omitted = usage_omitted_snapshot;
+                    orchestrator.verification_failed_task_ids =
+                        verification_failed_snapshot.clone();
                     orchestrator.ledger.checkpoint_digest = Some(checkpoint_digest.clone());
                     orchestrator.ledger.rollback_target =
                         Some(format!("ledger-checkpoint:{checkpoint_digest}"));
@@ -1730,6 +2223,11 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                     // replay an outcome whose effect status is unknown.
                     orchestrator.ledger = ledger_snapshot.clone();
                     orchestrator.metrics = metrics_snapshot.clone();
+                    orchestrator.usage_totals = usage_snapshot;
+                    orchestrator.round_usage = round_usage_snapshot.clone();
+                    orchestrator.usage_omitted = usage_omitted_snapshot;
+                    orchestrator.verification_failed_task_ids =
+                        verification_failed_snapshot.clone();
                     orchestrator.ledger.checkpoint_digest = Some(checkpoint_digest.clone());
                     orchestrator.ledger.rollback_target =
                         Some(format!("ledger-checkpoint:{checkpoint_digest}"));
@@ -1866,6 +2364,21 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         "worker result is bound to a different attempt".to_string(),
                     ));
                 }
+                // An effect receipt can only authorize its own attempt. A
+                // receipt minted for another attempt proves nothing about this
+                // attempt's effect status, so the attempt is fenced unknown.
+                if let Some(receipt) = &worker_result.effect_receipt {
+                    if receipt.attempt_id != worker_result.attempt_id {
+                        terminate_unknown_worker_attempt(self, &task_id);
+                        return Err(OrchestrationError::InvalidControllerDecision(
+                            "effect receipt is bound to a different attempt".to_string(),
+                        ));
+                    }
+                }
+                let receipt_disposition = worker_result
+                    .effect_receipt
+                    .as_ref()
+                    .map(|receipt| receipt.disposition);
                 if worker_result.findings.iter().any(|finding| {
                     finding
                         .related_task_id
@@ -1889,6 +2402,25 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                 // Handle worker outcomes
                 match worker_result.status {
                     WorkerOutcomeStatus::Completed => {
+                        // A completed claim with an outcome-unknown receipt
+                        // proves nothing: the external effect status is
+                        // unknown, so the attempt is fenced without replay. A
+                        // completed claim over a known-failed effect is
+                        // contradictory and fenced for the same reason.
+                        if matches!(
+                            receipt_disposition,
+                            Some(
+                                EffectReceiptDisposition::OutcomeUnknown
+                                    | EffectReceiptDisposition::KnownFailedEffect
+                            )
+                        ) {
+                            terminate_unknown_worker_attempt(self, &task_id);
+                            return Err(OrchestrationError::InvalidControllerDecision(
+                                "completed worker result carries an effect receipt that contradicts completion"
+                                    .to_string(),
+                            ));
+                        }
+                        self.accumulate_round_usage(worker_result.usage.as_ref())?;
                         // Update task with output
                         if let Some(task) = self.ledger.get_task_mut(&task_id) {
                             task.result_digest = worker_result.output_digest.clone();
@@ -1936,6 +2468,25 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                                 "truncated attempt lacks an effect-free attestation".to_string(),
                             ));
                         }
+                        // A truncation may be recovered only when the attempt
+                        // provably issued no real effect. Any receipt that
+                        // records a possibly-issued effect (unknown, known
+                        // failed, or claimed success on a truncated attempt)
+                        // fences the attempt as unknown with zero replay.
+                        if matches!(
+                            receipt_disposition,
+                            Some(
+                                EffectReceiptDisposition::OutcomeUnknown
+                                    | EffectReceiptDisposition::KnownFailedEffect
+                                    | EffectReceiptDisposition::Success
+                            )
+                        ) {
+                            terminate_unknown_worker_attempt(self, &task_id);
+                            return Err(OrchestrationError::InvalidControllerDecision(
+                                "truncated attempt carries an effect receipt that does not prove no effect"
+                                    .to_string(),
+                            ));
+                        }
                         if self.ledger.truncation_count >= self.config.max_truncations {
                             restore_execution_snapshot(self);
                             self.state = OrchestrationLifecycleState::Failed;
@@ -1945,6 +2496,12 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         }
                         self.metrics.truncation_count += 1;
                         self.ledger.truncation_count += 1;
+                        if let Err(error) =
+                            self.accumulate_round_usage(worker_result.usage.as_ref())
+                        {
+                            restore_execution_snapshot(self);
+                            return Err(error);
+                        }
                         // Recover bounded partial information
                         if let Some(output_digest) = &worker_result.output_digest {
                             if let Some(task) = self.ledger.get_task_mut(&task_id) {
@@ -2011,6 +2568,34 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         Ok(self.state)
                     }
                     WorkerOutcomeStatus::Failed => {
+                        // Retry safety reads the store-owned receipt, never
+                        // the generic worker status. An outcome-unknown
+                        // receipt, a success receipt on a failed result
+                        // (contradictory), or a failure with no receipt at
+                        // all — which proves nothing about the effect status
+                        // — fences the attempt as unknown instead of
+                        // replaying it. Only a receipt that proves no effect
+                        // was sent, or a known failed effect, is retryable
+                        // under the attempt budget.
+                        if !matches!(
+                            receipt_disposition,
+                            Some(
+                                EffectReceiptDisposition::FailedBeforeSendNoEffect
+                                    | EffectReceiptDisposition::KnownFailedEffect
+                            )
+                        ) {
+                            terminate_unknown_worker_attempt(self, &task_id);
+                            return Err(OrchestrationError::InvalidControllerDecision(
+                                "failed worker attempt lacks a retry-safe effect receipt"
+                                    .to_string(),
+                            ));
+                        }
+                        if let Err(error) =
+                            self.accumulate_round_usage(worker_result.usage.as_ref())
+                        {
+                            restore_execution_snapshot(self);
+                            return Err(error);
+                        }
                         self.metrics.failed_worker_attempts += 1;
                         let attempt = self
                             .ledger
@@ -2036,6 +2621,15 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                         Ok(self.state)
                     }
                     WorkerOutcomeStatus::Blocked => {
+                        // A blocked round still contributes its reported
+                        // usage to the lifecycle totals; only error paths
+                        // without a worker result skip accumulation.
+                        if let Err(error) =
+                            self.accumulate_round_usage(worker_result.usage.as_ref())
+                        {
+                            restore_execution_snapshot(self);
+                            return Err(error);
+                        }
                         if let Some(task) = self.ledger.get_task_mut(&task_id) {
                             task.status = LedgerTaskStatus::Blocked;
                             task.failure_reason = worker_result.failure_reason.clone();
@@ -2121,12 +2715,22 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
 
         match report.outcome {
             VerificationOutcome::Pass => {
+                // A verified pass after a recorded verification failure for
+                // the same task counts exactly one recovery. Removing the
+                // entry on the first recovery means repeated passes cannot
+                // double-count.
+                if self.verification_failed_task_ids.remove(task_id) {
+                    self.metrics.verification_recovery_count =
+                        self.metrics.verification_recovery_count.saturating_add(1);
+                }
                 if let Some(t) = self.ledger.get_task_mut(task_id) {
                     t.status = LedgerTaskStatus::Verified;
                 }
                 self.state = OrchestrationLifecycleState::SelectingAction;
             }
             VerificationOutcome::Fail => {
+                self.verification_failed_task_ids
+                    .insert(task_id.to_string());
                 self.metrics.failed_worker_attempts += 1;
                 let attempt = self
                     .ledger
@@ -2165,6 +2769,53 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
         }
 
         Ok(())
+    }
+
+    /// Accumulate one round's store-evidence usage envelope into the
+    /// per-cell totals, the per-round journal, and the lifecycle metrics.
+    /// Omission is sticky per dimension: once any round omits a dimension,
+    /// the cell total stays explicit missingness even if a later round
+    /// reports it. The metrics projections track the totals exactly, so the
+    /// conservation check stays meaningful.
+    fn accumulate_round_usage(
+        &mut self,
+        usage: Option<&OrchestrationUsageEnvelope>,
+    ) -> Result<(), OrchestrationError> {
+        let Some(envelope) = usage.copied() else {
+            return Ok(());
+        };
+        self.round_usage.push(envelope);
+        fold_usage_envelope(&mut self.usage_totals, &mut self.usage_omitted, &envelope)?;
+        self.metrics.prompt_tokens = self.usage_totals.prompt_tokens;
+        self.metrics.completion_tokens = self.usage_totals.completion_tokens;
+        self.metrics.total_tokens = self.usage_totals.total_tokens;
+        self.metrics.provider_calls = self.usage_totals.provider_calls;
+        self.metrics.cost_usd_micros = self.usage_totals.cost_usd_micros;
+        self.metrics.duration_ms = self.usage_totals.duration_ms;
+        Ok(())
+    }
+
+    /// Verify the conservation invariant: the sticky-merge of every recorded
+    /// round envelope must equal the accumulated per-cell totals, the
+    /// omission flags must match, and the metrics projections must agree
+    /// with those totals. A tampered, dropped, or resurrected round envelope
+    /// fails this check instead of silently changing the totals.
+    pub fn usage_conservation_verified(&self) -> bool {
+        let mut totals = OrchestrationUsageEnvelope::default();
+        let mut omitted = [false; 6];
+        for envelope in &self.round_usage {
+            if fold_usage_envelope(&mut totals, &mut omitted, envelope).is_err() {
+                return false;
+            }
+        }
+        totals == self.usage_totals
+            && omitted == self.usage_omitted
+            && self.metrics.prompt_tokens == self.usage_totals.prompt_tokens
+            && self.metrics.completion_tokens == self.usage_totals.completion_tokens
+            && self.metrics.total_tokens == self.usage_totals.total_tokens
+            && self.metrics.provider_calls == self.usage_totals.provider_calls
+            && self.metrics.cost_usd_micros == self.usage_totals.cost_usd_micros
+            && self.metrics.duration_ms == self.usage_totals.duration_ms
     }
 
     fn block_active_task(&mut self, task_id: &str, reason: &str) {
@@ -2236,6 +2887,147 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
         };
         self.terminal_summary = Some(summary.clone());
         Ok(summary)
+    }
+
+    fn terminal_failure_identity(
+        &self,
+        failure: Option<&OrchestrationError>,
+    ) -> (LedgerTerminalDisposition, String, Option<String>) {
+        fn error_code(error: &OrchestrationError) -> &'static str {
+            match error {
+                OrchestrationError::MaxRoundsExceeded(_) => "max_rounds_exceeded",
+                OrchestrationError::TruncationLimitExceeded(_) => "truncation_limit_exceeded",
+                OrchestrationError::NoProgressLimitExceeded(_) => "no_progress_limit_exceeded",
+                OrchestrationError::InvalidControllerDecision(_) => "invalid_controller_decision",
+                OrchestrationError::InvalidTaskId(_) => "invalid_task_id",
+                OrchestrationError::DuplicateTaskId(_) => "duplicate_task_id",
+                OrchestrationError::TaskNotFound(_) => "task_not_found",
+                OrchestrationError::InvalidArtifactReference(_) => "invalid_artifact_reference",
+                OrchestrationError::OversizedField { .. } => "oversized_field",
+                OrchestrationError::OversizedLedger { .. } => "oversized_ledger",
+                OrchestrationError::WorkerExecutionError(_) => "worker_execution_error",
+                OrchestrationError::VerificationError(_) => "verification_error",
+                OrchestrationError::SecretDetected(_) => "secret_detected",
+                OrchestrationError::Cancelled => "cancelled",
+            }
+        }
+        match failure {
+            None => {
+                let disposition = match self.state {
+                    OrchestrationLifecycleState::Completed => LedgerTerminalDisposition::Completed,
+                    OrchestrationLifecycleState::Failed => {
+                        if self.ledger.outcome_unknown_task_ids.is_empty() {
+                            LedgerTerminalDisposition::Failed
+                        } else {
+                            LedgerTerminalDisposition::OutcomeUnknown
+                        }
+                    }
+                    OrchestrationLifecycleState::NoProgress => {
+                        LedgerTerminalDisposition::NoProgress
+                    }
+                    OrchestrationLifecycleState::Cancelled => LedgerTerminalDisposition::Cancelled,
+                    _ => LedgerTerminalDisposition::Failed,
+                };
+                let code = disposition.as_str().to_string();
+                let reason_digest =
+                    (disposition != LedgerTerminalDisposition::Completed).then(|| {
+                        sha256_hex(&format!("terminal|{}|{}", code, self.ledger.state_digest()))
+                    });
+                (disposition, code, reason_digest)
+            }
+            Some(error) => {
+                let disposition = if !self.ledger.outcome_unknown_task_ids.is_empty() {
+                    // An error on a run with an unresolved unknown-outcome
+                    // fence is owner-reconciliation-required by construction.
+                    LedgerTerminalDisposition::OutcomeUnknown
+                } else {
+                    LedgerTerminalDisposition::for_error(error)
+                };
+                // The failure code names the underlying error kind even when
+                // the fence dominates the disposition, so the record never
+                // loses why the run stopped.
+                let code = error_code(error).to_string();
+                let reason_digest = Some(sha256_hex(&format!("terminal-error|{code}|{error}")));
+                (disposition, code, reason_digest)
+            }
+        }
+    }
+
+    /// Build the structured terminal record for the current run, with or
+    /// without a terminal error. Error semantics stay fail-closed: the record
+    /// retains the disposition, failure identity, pre-failure metrics, the
+    /// ledger/evidence digest, the unknown-outcome fence, explicit
+    /// missingness, and recovery references. It never converts an error into
+    /// success.
+    pub fn build_terminal_record(
+        &self,
+        failure: Option<&OrchestrationError>,
+    ) -> LedgerTerminalRecord {
+        let (disposition, failure_code, failure_reason_digest) =
+            self.terminal_failure_identity(failure);
+        let summary = match failure {
+            None if self.state == OrchestrationLifecycleState::Completed => {
+                self.terminal_summary.clone()
+            }
+            _ => None,
+        };
+        let mut missing_evidence = Vec::new();
+        if summary
+            .as_ref()
+            .and_then(|summary| summary.deliverable_digest.as_ref())
+            .is_none()
+            && disposition == LedgerTerminalDisposition::Completed
+        {
+            missing_evidence.push("deliverable_digest".to_string());
+        }
+        for dimension in self.usage_totals.missing_dimensions() {
+            missing_evidence.push(format!("usage:{dimension}"));
+        }
+        if !self.ledger.outcome_unknown_task_ids.is_empty()
+            && disposition != LedgerTerminalDisposition::OutcomeUnknown
+        {
+            missing_evidence.push("outcome_unknown_reconciliation".to_string());
+        }
+        LedgerTerminalRecord {
+            disposition,
+            terminal_state: self.state,
+            failure_code,
+            failure_reason_digest,
+            rounds_executed: self.ledger.round_count,
+            metrics: self.metrics.clone(),
+            usage_conservation_verified: self.usage_conservation_verified(),
+            missing_evidence,
+            final_ledger_hash: self.ledger.state_digest(),
+            recovery_checkpoint_digest: self.ledger.checkpoint_digest.clone(),
+            rollback_target: self.ledger.rollback_target.clone(),
+            outcome_unknown_task_ids: self.ledger.outcome_unknown_task_ids.clone(),
+            summary,
+        }
+    }
+
+    /// Execute a bounded run to a terminal state and always return a typed
+    /// terminal record, including for error paths. The record preserves the
+    /// fail-closed disposition and failure identity; the caller decides how
+    /// to surface it. This is the entry point the RWE bridge must use.
+    pub fn run_bounded(&mut self) -> LedgerTerminalRecord {
+        let mut failure: Option<OrchestrationError> = None;
+        while !self.state.is_terminal() {
+            if let Err(error) = self.step() {
+                failure = Some(error);
+                break;
+            }
+        }
+        if failure.is_some() && !self.state.is_terminal() {
+            // Defensive: every error path must already have set a terminal
+            // state; if a future path forgets, fail closed here.
+            self.state = OrchestrationLifecycleState::Failed;
+        }
+        if failure.is_none() && self.state == OrchestrationLifecycleState::Completed {
+            let _ = self.run_to_completion();
+        }
+        let record = self.build_terminal_record(failure.as_ref());
+        self.terminal_record = Some(record.clone());
+        record
     }
 
     /// Restore only the provider-independent in-memory ledger checkpoint.
@@ -2473,6 +3265,8 @@ mod tests {
                     evidence_digest: Some(sha256_hex(&format!("ev-{task_id}"))),
                 }],
                 failure_reason: None,
+                usage: None,
+                effect_receipt: None,
             })
         });
         let verifier = MockVerifier::pass_all();
@@ -2536,6 +3330,8 @@ mod tests {
                     artifact_refs: vec!["patch:leak_incomplete".to_string()],
                     findings: vec![],
                     failure_reason: None,
+                    usage: None,
+                    effect_receipt: None,
                 })
             } else {
                 Ok(WorkerResult {
@@ -2554,6 +3350,8 @@ mod tests {
                         evidence_digest: Some(sha256_hex("ev:repaired")),
                     }],
                     failure_reason: None,
+                    usage: None,
+                    effect_receipt: None,
                 })
             }
         });
@@ -2648,6 +3446,8 @@ mod tests {
                 artifact_refs: vec![],
                 findings: vec![],
                 failure_reason: None,
+                usage: None,
+                effect_receipt: None,
             })
         });
 
@@ -2704,6 +3504,8 @@ mod tests {
                         evidence_digest: Some(sha256_hex("ev:buffer")),
                     }],
                     failure_reason: None,
+                    usage: None,
+                    effect_receipt: None,
                 })
             } else {
                 Ok(WorkerResult {
@@ -2716,6 +3518,8 @@ mod tests {
                     artifact_refs: vec!["complete_patch.diff".to_string()],
                     findings: vec![],
                     failure_reason: None,
+                    usage: None,
+                    effect_receipt: None,
                 })
             }
         });
@@ -3167,6 +3971,8 @@ mod tests {
                 artifact_refs: vec![],
                 findings: vec![],
                 failure_reason: None,
+                usage: None,
+                effect_receipt: None,
             })
         });
         let mut orchestrator = LedgerOrchestrator::new(
@@ -3207,6 +4013,8 @@ mod tests {
                     artifact_refs: vec![],
                     findings: vec![],
                     failure_reason: None,
+                    usage: None,
+                    effect_receipt: None,
                 })
             } else {
                 Ok(WorkerResult {
@@ -3219,6 +4027,8 @@ mod tests {
                     artifact_refs: vec![],
                     findings: vec![],
                     failure_reason: None,
+                    usage: None,
+                    effect_receipt: None,
                 })
             }
         });
@@ -3310,6 +4120,8 @@ mod tests {
                 artifact_refs: vec![],
                 findings: vec![],
                 failure_reason: None,
+                usage: None,
+                effect_receipt: None,
             })
         });
         let mut orchestrator = LedgerOrchestrator::new(
@@ -3460,6 +4272,8 @@ mod tests {
                 artifact_refs: vec![],
                 findings: vec![],
                 failure_reason: None,
+                usage: None,
+                effect_receipt: None,
             })
         });
         let verifier = MockVerifier::pass_all();
@@ -3481,8 +4295,10 @@ mod tests {
         ledger_rounds
             .add_task("task-r", "desc", &small_rounds_config)
             .unwrap();
-        let controller2 = AdaptiveController;
-        let worker2 = MockWorker::new(|ctx| {
+        // A bare worker failure without a store-owned receipt proves nothing
+        // about the effect status, so it fences unknown instead of replaying.
+        let controller_unknown = AdaptiveController;
+        let worker_unknown = MockWorker::new(|ctx| {
             Ok(WorkerResult {
                 task_id: ctx.selected_task.id.clone(),
                 attempt_id: ctx.execution_metadata["attempt_id"].clone(),
@@ -3493,6 +4309,53 @@ mod tests {
                 artifact_refs: vec![],
                 findings: vec![],
                 failure_reason: Some("retry needed".to_string()),
+                usage: None,
+                effect_receipt: None,
+            })
+        });
+        let mut orchestrator_unknown = LedgerOrchestrator::new(
+            small_rounds_config.clone(),
+            ledger_rounds.clone(),
+            controller_unknown,
+            worker_unknown,
+            MockVerifier::pass_all(),
+        )
+        .unwrap();
+        let unknown = orchestrator_unknown.run_to_completion();
+        assert!(unknown.is_err());
+        assert!(matches!(
+            unknown.unwrap_err(),
+            OrchestrationError::InvalidControllerDecision(_)
+        ));
+        assert_eq!(
+            orchestrator_unknown
+                .ledger
+                .get_task("task-r")
+                .unwrap()
+                .status,
+            LedgerTaskStatus::OutcomeUnknown
+        );
+
+        let controller2 = AdaptiveController;
+        let worker2 = MockWorker::new(|ctx| {
+            let attempt_id = ctx.execution_metadata["attempt_id"].clone();
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: attempt_id.clone(),
+                status: WorkerOutcomeStatus::Failed,
+                effect_free: true,
+                output_digest: None,
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: Some("retry needed".to_string()),
+                usage: None,
+                effect_receipt: Some(StoreEffectReceipt {
+                    attempt_id,
+                    disposition: EffectReceiptDisposition::FailedBeforeSendNoEffect,
+                    receipt_evidence_digest: None,
+                    store_evidence_ref: None,
+                }),
             })
         });
         let verifier2 = MockVerifier::pass_all();
@@ -3678,5 +4541,717 @@ mod tests {
         assert_eq!(normalized.cell_id, cell.cell_id);
         assert_eq!(normalized.harness_id, LEDGER_ORCHESTRATED_HARNESS_ID);
         assert_eq!(normalized.terminal_outcome, ProductTaskStatus::Completed);
+    }
+
+    fn scripted_execute(task_id: &str, count: usize) -> Vec<NextTaskDecision> {
+        (0..count)
+            .map(|round| NextTaskDecision {
+                action: ControllerAction::ExecuteTask {
+                    task_id: task_id.to_string(),
+                },
+                reason_summary: format!("attempt {round}"),
+                expected_evidence: "ev".to_string(),
+            })
+            .collect()
+    }
+
+    fn effect_free_receipt(
+        ctx: &WorkerContext,
+        disposition: EffectReceiptDisposition,
+    ) -> StoreEffectReceipt {
+        StoreEffectReceipt {
+            attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+            disposition,
+            receipt_evidence_digest: None,
+            store_evidence_ref: None,
+        }
+    }
+
+    #[test]
+    fn verification_recovery_count_tracks_exactly_one_recovery() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:recovery", "repair loop");
+        ledger
+            .add_task("task-fix", "fix the defect", &config)
+            .unwrap();
+        let controller = AdaptiveController;
+        let worker_rounds = Arc::new(AtomicU32::new(0));
+        let worker_rounds_in_handler = Arc::clone(&worker_rounds);
+        let worker = MockWorker::new(move |ctx| {
+            let round = worker_rounds_in_handler.fetch_add(1, Ordering::SeqCst);
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Completed,
+                effect_free: true,
+                // Each attempt produces a distinct output so the
+                // verification failures below are novel progress, not a
+                // no-progress loop.
+                output_digest: Some(sha256_hex(&format!("repaired-output-{round}"))),
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: None,
+                usage: None,
+                effect_receipt: None,
+            })
+        });
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_in_verifier = Arc::clone(&attempts);
+        let verifier = MockVerifier::new(move |_, _, _| {
+            let attempt = attempts_in_verifier.fetch_add(1, Ordering::SeqCst);
+            // Fail twice, then pass; the terminal completion pass and the
+            // extra selection pass must not double-count the recovery.
+            let outcome = if attempt < 2 {
+                VerificationOutcome::Fail
+            } else {
+                VerificationOutcome::Pass
+            };
+            Ok(VerificationReport {
+                outcome,
+                observation_summary: "repair verification".to_string(),
+                evidence_digest: Some(sha256_hex("repair-evidence")),
+            })
+        });
+        let mut orchestrator =
+            LedgerOrchestrator::new(config, ledger, controller, worker, verifier).unwrap();
+        let summary = orchestrator.run_to_completion().unwrap();
+        assert_eq!(
+            summary.terminal_state,
+            OrchestrationLifecycleState::Completed
+        );
+        assert_eq!(summary.metrics.verification_recovery_count, 1);
+        assert_eq!(orchestrator.metrics.verification_recovery_count, 1);
+    }
+
+    #[test]
+    fn contract_digest_is_canonical_and_migrated_explicitly() {
+        // Arbitrary text becomes a canonical digest with bounded context.
+        let ledger = WorkingLedger::new("contract:human-readable-v1", "plan");
+        assert!(is_canonical_sha256(&ledger.contract_digest));
+        assert_eq!(
+            ledger.contract_digest,
+            sha256_hex("contract:human-readable-v1")
+        );
+        assert_eq!(
+            ledger.contract_summary.as_deref(),
+            Some("contract:human-readable-v1")
+        );
+        // An already-canonical digest is adopted with no separate summary.
+        let canonical = sha256_hex("exact-contract");
+        let ledger2 = WorkingLedger::new(canonical.clone(), "plan");
+        assert_eq!(ledger2.contract_digest, canonical);
+        assert_eq!(ledger2.contract_summary, None);
+        // Worker context binds the real identity and carries the summary.
+        // Forged or non-canonical digests fail closed at the bounds check.
+        let mut forged_value =
+            serde_json::to_value(WorkingLedger::new("contract:forged", "plan")).unwrap();
+        forged_value["contract_digest"] = serde_json::Value::String("not-a-digest".to_string());
+        let forged: WorkingLedger = serde_json::from_value(forged_value).unwrap();
+        assert!(forged
+            .validate_bounds(&LedgerOrchestratorConfig::default())
+            .is_err());
+        // v1 records migrate explicitly and only from the v1 schema.
+        let mut v1_ledger = WorkingLedger::new("contract:legacy-v1", "legacy plan");
+        v1_ledger.schema_version = LEDGER_ORCHESTRATED_SCHEMA_VERSION_V1.to_string();
+        v1_ledger.contract_digest = "legacy contract text".to_string();
+        v1_ledger.contract_summary = None;
+        let serialized = serde_json::to_string(&v1_ledger).unwrap();
+        let migrated = WorkingLedger::migrate_v1_record(&serialized).unwrap();
+        assert_eq!(migrated.schema_version, LEDGER_ORCHESTRATED_SCHEMA_VERSION);
+        assert_eq!(migrated.contract_digest, sha256_hex("legacy contract text"));
+        assert_eq!(
+            migrated.contract_summary.as_deref(),
+            Some("legacy contract text")
+        );
+        migrated
+            .validate_bounds(&LedgerOrchestratorConfig::default())
+            .unwrap();
+        // A v2 record must not pass through the v1 migration path.
+        let v2_serialized = serde_json::to_string(&migrated).unwrap();
+        assert!(WorkingLedger::migrate_v1_record(&v2_serialized).is_err());
+    }
+
+    #[test]
+    fn duplicate_findings_do_not_reset_novelty() {
+        let config = LedgerOrchestratorConfig {
+            max_no_progress_rounds: 2,
+            max_task_attempts: 10,
+            max_orchestration_rounds: 20,
+            ..Default::default()
+        };
+        let mut ledger = WorkingLedger::new("contract:novelty", "test novelty");
+        ledger
+            .add_task("task-stuck", "repeat identical evidence", &config)
+            .unwrap();
+        // The worker appends the identical finding every round. Without
+        // deduplication each append would perturb the progress fingerprint
+        // and no-progress would never trigger.
+        let controller = ScriptedController::new(scripted_execute("task-stuck", 12));
+        let worker = MockWorker::new(|ctx| {
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Completed,
+                effect_free: true,
+                output_digest: Some(sha256_hex("identical_output")),
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![LedgerFinding {
+                    id: "same-finding".to_string(),
+                    summary: "identical observation".to_string(),
+                    source: "worker".to_string(),
+                    related_task_id: Some(ctx.selected_task.id.clone()),
+                    evidence_digest: Some(sha256_hex("identical_evidence")),
+                }],
+                failure_reason: None,
+                usage: None,
+                effect_receipt: None,
+            })
+        });
+        let verifier = MockVerifier::new(|_, _, _| {
+            Ok(VerificationReport {
+                outcome: VerificationOutcome::Fail,
+                observation_summary: "identical failure".to_string(),
+                evidence_digest: Some(sha256_hex("identical_evidence")),
+            })
+        });
+        let mut orchestrator =
+            LedgerOrchestrator::new(config, ledger, controller, worker, verifier).unwrap();
+        let summary = orchestrator.run_to_completion().unwrap();
+        assert_eq!(
+            summary.terminal_state,
+            OrchestrationLifecycleState::NoProgress
+        );
+        assert_eq!(orchestrator.ledger.findings.len(), 1);
+    }
+
+    #[test]
+    fn genuinely_new_evidence_counts_as_progress() {
+        let config = LedgerOrchestratorConfig {
+            max_no_progress_rounds: 3,
+            max_task_attempts: 10,
+            max_orchestration_rounds: 20,
+            ..Default::default()
+        };
+        let mut ledger = WorkingLedger::new("contract:progress", "test progress");
+        ledger
+            .add_task("task-moving", "produce new evidence", &config)
+            .unwrap();
+        let controller = ScriptedController::new(scripted_execute("task-moving", 6));
+        let rounds = Arc::new(AtomicU32::new(0));
+        let rounds_in_worker = Arc::clone(&rounds);
+        let worker = MockWorker::new(move |ctx| {
+            let round = rounds_in_worker.fetch_add(1, Ordering::SeqCst);
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Completed,
+                effect_free: true,
+                output_digest: Some(sha256_hex(&format!("output-round-{round}"))),
+                partial_summary: None,
+                artifact_refs: vec![format!("artifact:round-{round}")],
+                findings: vec![LedgerFinding {
+                    id: format!("finding-{round}"),
+                    summary: format!("new observation {round}"),
+                    source: "worker".to_string(),
+                    related_task_id: Some(ctx.selected_task.id.clone()),
+                    evidence_digest: Some(sha256_hex(&format!("evidence-{round}"))),
+                }],
+                failure_reason: None,
+                usage: None,
+                effect_receipt: None,
+            })
+        });
+        let verifier = MockVerifier::new(|_, _, _| {
+            Ok(VerificationReport {
+                outcome: VerificationOutcome::Fail,
+                observation_summary: "still failing".to_string(),
+                evidence_digest: Some(sha256_hex("failing")),
+            })
+        });
+        let mut orchestrator =
+            LedgerOrchestrator::new(config, ledger, controller, worker, verifier).unwrap();
+        // Six rounds of strictly novel evidence must not trip the
+        // no-progress bound of three.
+        for _ in 0..12 {
+            let state = orchestrator.step().unwrap();
+            assert_ne!(state, OrchestrationLifecycleState::NoProgress);
+            if state == OrchestrationLifecycleState::Failed {
+                break;
+            }
+        }
+        assert_ne!(orchestrator.state, OrchestrationLifecycleState::NoProgress);
+    }
+
+    #[test]
+    fn round_usage_conserves_into_cell_totals_with_explicit_missingness() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:usage", "measure cost");
+        ledger
+            .add_task("task-a", "first measured task", &config)
+            .unwrap();
+        ledger
+            .add_task("task-b", "second partially measured task", &config)
+            .unwrap();
+        let controller = AdaptiveController;
+        let worker = MockWorker::new(|ctx| {
+            let envelope = if ctx.selected_task.id == "task-a" {
+                OrchestrationUsageEnvelope {
+                    prompt_tokens: Some(100),
+                    completion_tokens: Some(50),
+                    total_tokens: Some(150),
+                    provider_calls: Some(1),
+                    cost_usd_micros: Some(7),
+                    duration_ms: Some(120),
+                }
+            } else {
+                // The second round omits totals and cost: the cell totals
+                // must become explicit missingness for those dimensions.
+                OrchestrationUsageEnvelope {
+                    prompt_tokens: Some(200),
+                    completion_tokens: Some(60),
+                    total_tokens: None,
+                    provider_calls: Some(2),
+                    cost_usd_micros: None,
+                    duration_ms: Some(240),
+                }
+            };
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Completed,
+                effect_free: true,
+                output_digest: Some(sha256_hex(&format!("out-{}", ctx.selected_task.id))),
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: None,
+                usage: Some(envelope),
+                effect_receipt: None,
+            })
+        });
+        let mut orchestrator =
+            LedgerOrchestrator::new(config, ledger, controller, worker, MockVerifier::pass_all())
+                .unwrap();
+        let summary = orchestrator.run_to_completion().unwrap();
+        assert_eq!(
+            summary.terminal_state,
+            OrchestrationLifecycleState::Completed
+        );
+        assert_eq!(summary.metrics.prompt_tokens, Some(300));
+        assert_eq!(summary.metrics.completion_tokens, Some(110));
+        assert_eq!(summary.metrics.total_tokens, None);
+        assert_eq!(summary.metrics.provider_calls, Some(3));
+        assert_eq!(summary.metrics.cost_usd_micros, None);
+        assert_eq!(summary.metrics.duration_ms, Some(360));
+        assert!(orchestrator.usage_conservation_verified());
+        // A tampered or dropped round envelope must fail conservation.
+        orchestrator.round_usage.pop();
+        assert!(!orchestrator.usage_conservation_verified());
+    }
+
+    #[test]
+    fn usage_omission_is_sticky_across_later_reports() {
+        // report(100) -> omit -> report(50) must leave the dimension
+        // explicitly missing, never resurrect Some(50) from the later
+        // report and never silently keep Some(100).
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:sticky-usage", "sticky omission");
+        for task in ["task-1", "task-2", "task-3"] {
+            ledger.add_task(task, "measured task", &config).unwrap();
+        }
+        let controller = AdaptiveController;
+        let worker = MockWorker::new(|ctx| {
+            let prompt = match ctx.selected_task.id.as_str() {
+                "task-1" => Some(100),
+                "task-2" => None,
+                _ => Some(50),
+            };
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Completed,
+                effect_free: true,
+                output_digest: Some(sha256_hex(&format!("out-{}", ctx.selected_task.id))),
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: None,
+                usage: Some(OrchestrationUsageEnvelope {
+                    prompt_tokens: prompt,
+                    completion_tokens: Some(10),
+                    total_tokens: Some(110),
+                    provider_calls: Some(1),
+                    cost_usd_micros: Some(3),
+                    duration_ms: Some(20),
+                }),
+                effect_receipt: None,
+            })
+        });
+        let mut orchestrator =
+            LedgerOrchestrator::new(config, ledger, controller, worker, MockVerifier::pass_all())
+                .unwrap();
+        let summary = orchestrator.run_to_completion().unwrap();
+        assert_eq!(
+            summary.terminal_state,
+            OrchestrationLifecycleState::Completed
+        );
+        // The omitted-then-reported prompt dimension stays missing.
+        assert_eq!(summary.metrics.prompt_tokens, None);
+        // Dimensions reported by every round still conserve exactly.
+        assert_eq!(summary.metrics.completion_tokens, Some(30));
+        assert_eq!(summary.metrics.provider_calls, Some(3));
+        assert!(orchestrator.usage_conservation_verified());
+        assert!(orchestrator.usage_omitted[0]);
+        assert!(!orchestrator.usage_omitted[1]);
+    }
+
+    #[test]
+    fn usage_overflow_is_fail_closed() {
+        let merged = OrchestrationUsageEnvelope {
+            prompt_tokens: Some(u64::MAX),
+            ..Default::default()
+        }
+        .checked_merge(&OrchestrationUsageEnvelope {
+            prompt_tokens: Some(1),
+            ..Default::default()
+        });
+        assert!(matches!(
+            merged.unwrap_err(),
+            OrchestrationError::WorkerExecutionError(_)
+        ));
+    }
+
+    #[test]
+    fn effect_receipt_gates_retry_safety() {
+        // A failed attempt with an outcome-unknown receipt fences unknown and
+        // is never replayed: the worker runs exactly once.
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:receipt", "retry safety");
+        ledger
+            .add_task("task-fx", "effectful task", &config)
+            .unwrap();
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_in_worker = Arc::clone(&calls);
+        let controller = ScriptedController::new(scripted_execute("task-fx", 4));
+        let worker = MockWorker::new(move |ctx| {
+            calls_in_worker.fetch_add(1, Ordering::SeqCst);
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Failed,
+                effect_free: false,
+                output_digest: None,
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: Some("transport broke".to_string()),
+                usage: None,
+                effect_receipt: Some(effect_free_receipt(
+                    ctx,
+                    EffectReceiptDisposition::OutcomeUnknown,
+                )),
+            })
+        });
+        let mut orchestrator =
+            LedgerOrchestrator::new(config, ledger, controller, worker, MockVerifier::pass_all())
+                .unwrap();
+        let record = orchestrator.run_bounded();
+        assert_eq!(
+            record.disposition,
+            LedgerTerminalDisposition::OutcomeUnknown
+        );
+        assert_eq!(record.terminal_state, OrchestrationLifecycleState::Failed);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(record.outcome_unknown_task_ids, vec!["task-fx".to_string()]);
+        assert_eq!(
+            orchestrator.ledger.get_task("task-fx").unwrap().status,
+            LedgerTaskStatus::OutcomeUnknown
+        );
+
+        // A failure receipt that proves no effect was sent is retryable under
+        // the attempt budget.
+        let config2 = LedgerOrchestratorConfig {
+            max_task_attempts: 2,
+            max_orchestration_rounds: 10,
+            ..Default::default()
+        };
+        let mut ledger2 = WorkingLedger::new("contract:receipt-retry", "retry safety");
+        ledger2
+            .add_task("task-rx", "safe retry task", &config2)
+            .unwrap();
+        let controller2 = AdaptiveController;
+        let worker2 = MockWorker::new(|ctx| {
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Failed,
+                effect_free: true,
+                output_digest: None,
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: Some("retry needed".to_string()),
+                usage: None,
+                effect_receipt: Some(effect_free_receipt(
+                    ctx,
+                    EffectReceiptDisposition::FailedBeforeSendNoEffect,
+                )),
+            })
+        });
+        let mut orchestrator2 = LedgerOrchestrator::new(
+            config2,
+            ledger2,
+            controller2,
+            worker2,
+            MockVerifier::pass_all(),
+        )
+        .unwrap();
+        let record2 = orchestrator2.run_bounded();
+        assert_eq!(
+            orchestrator2
+                .ledger
+                .get_task("task-rx")
+                .unwrap()
+                .attempt_count,
+            2
+        );
+        assert!(record2.outcome_unknown_task_ids.is_empty());
+    }
+
+    #[test]
+    fn truncation_with_issued_effect_receipt_is_fenced_unknown() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:trunc-receipt", "truncation safety");
+        ledger
+            .add_task("task-t", "truncated task", &config)
+            .unwrap();
+        let controller = ScriptedController::new(scripted_execute("task-t", 4));
+        let worker = MockWorker::new(|ctx| {
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Truncated,
+                // Attests effect-free, but the receipt records a known
+                // failed effect: the receipt dominates and fences unknown.
+                effect_free: true,
+                output_digest: Some(sha256_hex("partial")),
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: None,
+                usage: None,
+                effect_receipt: Some(effect_free_receipt(
+                    ctx,
+                    EffectReceiptDisposition::KnownFailedEffect,
+                )),
+            })
+        });
+        let mut orchestrator =
+            LedgerOrchestrator::new(config, ledger, controller, worker, MockVerifier::pass_all())
+                .unwrap();
+        let record = orchestrator.run_bounded();
+        assert_eq!(
+            record.disposition,
+            LedgerTerminalDisposition::OutcomeUnknown
+        );
+        assert_eq!(
+            orchestrator.ledger.get_task("task-t").unwrap().status,
+            LedgerTaskStatus::OutcomeUnknown
+        );
+    }
+
+    #[test]
+    fn completed_claim_with_unknown_receipt_is_fenced_unknown() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:completed-receipt", "completion safety");
+        ledger
+            .add_task("task-c", "claimed completion", &config)
+            .unwrap();
+        let controller = ScriptedController::new(scripted_execute("task-c", 4));
+        let worker = MockWorker::new(|ctx| {
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Completed,
+                effect_free: false,
+                output_digest: Some(sha256_hex("claimed")),
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: None,
+                usage: None,
+                effect_receipt: Some(effect_free_receipt(
+                    ctx,
+                    EffectReceiptDisposition::OutcomeUnknown,
+                )),
+            })
+        });
+        let mut orchestrator =
+            LedgerOrchestrator::new(config, ledger, controller, worker, MockVerifier::pass_all())
+                .unwrap();
+        let record = orchestrator.run_bounded();
+        assert_eq!(
+            record.disposition,
+            LedgerTerminalDisposition::OutcomeUnknown
+        );
+        assert_eq!(record.failure_code, "invalid_controller_decision");
+        assert!(record.summary.is_none());
+    }
+
+    #[test]
+    fn receipt_bound_to_another_attempt_is_rejected() {
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:receipt-binding", "receipt binding");
+        ledger.add_task("task-b", "bound task", &config).unwrap();
+        let controller = ScriptedController::new(scripted_execute("task-b", 2));
+        let worker = MockWorker::new(|ctx| {
+            Ok(WorkerResult {
+                task_id: ctx.selected_task.id.clone(),
+                attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                status: WorkerOutcomeStatus::Completed,
+                effect_free: true,
+                output_digest: Some(sha256_hex("out")),
+                partial_summary: None,
+                artifact_refs: vec![],
+                findings: vec![],
+                failure_reason: None,
+                usage: None,
+                effect_receipt: Some(StoreEffectReceipt {
+                    attempt_id: sha256_hex("some-other-attempt"),
+                    disposition: EffectReceiptDisposition::FailedBeforeSendNoEffect,
+                    receipt_evidence_digest: None,
+                    store_evidence_ref: None,
+                }),
+            })
+        });
+        let mut orchestrator =
+            LedgerOrchestrator::new(config, ledger, controller, worker, MockVerifier::pass_all())
+                .unwrap();
+        let record = orchestrator.run_bounded();
+        assert_eq!(
+            record.disposition,
+            LedgerTerminalDisposition::OutcomeUnknown
+        );
+        assert_eq!(record.failure_code, "invalid_controller_decision");
+    }
+
+    #[test]
+    fn run_bounded_returns_typed_terminal_records() {
+        // Successful completion carries a summary and records no failure.
+        let config = LedgerOrchestratorConfig::default();
+        let mut ledger = WorkingLedger::new("contract:terminal-ok", "terminal success");
+        ledger.add_task("task-ok", "simple task", &config).unwrap();
+        let mut ok = LedgerOrchestrator::new(
+            config.clone(),
+            ledger,
+            AdaptiveController,
+            MockWorker::new(|ctx| {
+                Ok(WorkerResult {
+                    task_id: ctx.selected_task.id.clone(),
+                    attempt_id: ctx.execution_metadata["attempt_id"].clone(),
+                    status: WorkerOutcomeStatus::Completed,
+                    effect_free: true,
+                    output_digest: Some(sha256_hex("done")),
+                    partial_summary: None,
+                    artifact_refs: vec![],
+                    findings: vec![],
+                    failure_reason: None,
+                    usage: Some(OrchestrationUsageEnvelope {
+                        prompt_tokens: Some(10),
+                        completion_tokens: Some(5),
+                        total_tokens: Some(15),
+                        provider_calls: Some(1),
+                        cost_usd_micros: Some(2),
+                        duration_ms: Some(30),
+                    }),
+                    effect_receipt: None,
+                })
+            }),
+            MockVerifier::pass_all(),
+        )
+        .unwrap();
+        let ok_record = ok.run_bounded();
+        assert_eq!(ok_record.disposition, LedgerTerminalDisposition::Completed);
+        assert_eq!(ok_record.failure_code, "completed");
+        assert_eq!(ok_record.failure_reason_digest, None);
+        assert!(ok_record.summary.is_some());
+        assert!(ok_record.usage_conservation_verified);
+        assert!(ok.terminal_record.is_some());
+
+        // Max-round exhaustion yields a typed record with pre-failure
+        // metrics and no converted success.
+        let small = LedgerOrchestratorConfig {
+            max_orchestration_rounds: 1,
+            ..Default::default()
+        };
+        let mut ledger_rounds = WorkingLedger::new("contract:terminal-rounds", "terminal rounds");
+        ledger_rounds
+            .add_task("task-r", "round task", &small)
+            .unwrap();
+        let mut rounds = LedgerOrchestrator::new(
+            small,
+            ledger_rounds,
+            ScriptedController::new(scripted_execute("task-r", 4)),
+            MockWorker::new(|ctx| {
+                let attempt_id = ctx.execution_metadata["attempt_id"].clone();
+                Ok(WorkerResult {
+                    task_id: ctx.selected_task.id.clone(),
+                    attempt_id: attempt_id.clone(),
+                    status: WorkerOutcomeStatus::Failed,
+                    effect_free: true,
+                    output_digest: None,
+                    partial_summary: None,
+                    artifact_refs: vec![],
+                    findings: vec![],
+                    failure_reason: Some("retry".to_string()),
+                    usage: None,
+                    effect_receipt: Some(StoreEffectReceipt {
+                        attempt_id,
+                        disposition: EffectReceiptDisposition::FailedBeforeSendNoEffect,
+                        receipt_evidence_digest: None,
+                        store_evidence_ref: None,
+                    }),
+                })
+            }),
+            MockVerifier::pass_all(),
+        )
+        .unwrap();
+        let rounds_record = rounds.run_bounded();
+        assert_eq!(
+            rounds_record.disposition,
+            LedgerTerminalDisposition::MaxRoundsExhausted
+        );
+        assert_eq!(rounds_record.failure_code, "max_rounds_exceeded");
+        assert!(rounds_record.failure_reason_digest.is_some());
+        assert!(rounds_record.summary.is_none());
+
+        // A malformed controller response is typed, not coerced.
+        let mut ledger_bad = WorkingLedger::new("contract:terminal-bad", "terminal malformed");
+        ledger_bad
+            .add_task("task-m", "malformed task", &config)
+            .unwrap();
+        let mut bad = LedgerOrchestrator::new(
+            LedgerOrchestratorConfig::default(),
+            ledger_bad,
+            ScriptedController::new(vec![NextTaskDecision {
+                action: ControllerAction::DeclareComplete {
+                    deliverable_digest: "wrong-digest".to_string(),
+                },
+                reason_summary: "forged completion".to_string(),
+                expected_evidence: "ev".to_string(),
+            }]),
+            MockWorker::new(|_| Err(OrchestrationError::Cancelled)),
+            MockVerifier::pass_all(),
+        )
+        .unwrap();
+        let bad_record = bad.run_bounded();
+        assert_eq!(
+            bad_record.disposition,
+            LedgerTerminalDisposition::MalformedControllerResponse
+        );
+        assert_eq!(bad_record.failure_code, "invalid_controller_decision");
+        assert!(bad_record.summary.is_none());
     }
 }

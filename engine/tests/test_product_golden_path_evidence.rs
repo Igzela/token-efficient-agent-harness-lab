@@ -177,6 +177,7 @@ fn intake(
         tenant_id: Some("local".to_string()),
         workspace_id: Some("default".to_string()),
         workspace_mode: Some("git_worktree".to_string()),
+        matrix_binding: None,
     }
 }
 
