@@ -25,7 +25,11 @@ from .evidence import (
     focused_tests_digest,
     is_hooks_ephemeral_status_path,
     porcelain_work_product_lines,
+    read_allowed_paths,
+    read_expected_evidence,
     read_focused_tests,
+    read_negative_checks,
+    workcard_acceptance_digest,
     workspace_state,
 )
 from .guard import FORBIDDEN_COMMAND_PATTERNS, LOW_RISK_COMMAND_PREFIXES, TEST_RUNNER_PREFIXES, GuardHandler
@@ -85,10 +89,14 @@ __all__ = [
     "normalize_event_name",
     "porcelain_work_product_lines",
     "provision_trust",
+    "read_allowed_paths",
+    "read_expected_evidence",
     "read_focused_tests",
+    "read_negative_checks",
     "redact_text",
     "redact_tool_input",
     "redact_value",
     "validate_hook_output",
+    "workcard_acceptance_digest",
     "workspace_state",
 ]

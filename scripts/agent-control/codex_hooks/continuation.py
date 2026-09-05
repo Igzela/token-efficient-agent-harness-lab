@@ -22,6 +22,11 @@ from .evidence import (
     build_evidence_record,
     evidence_binding_matches,
     porcelain_work_product_lines,
+    read_allowed_paths,
+    read_expected_evidence,
+    read_focused_tests,
+    read_negative_checks,
+    workcard_acceptance_digest,
 )
 from .protocol import HookInput, HookOutput
 from .telemetry import HookTelemetry
@@ -126,17 +131,26 @@ class ContinuationHandler:
         worktree: Path,
         focused_tests: list[str],
         expected_evidence: list[str],
+        negative_checks: list[str] | None = None,
+        allowed_paths: list[str] | None = None,
     ) -> tuple[bool, str]:
         """Verify that declared verification evidence or focused tests are satisfied.
 
         Stored PASS evidence is accepted only when bound to the current
-        WorkCard id, focused-test digest, command, and code/workspace state.
-        Stale records from old WorkCards, moved code, or mismatched tests are
-        rejected and the focused tests are re-executed for fresh evidence.
+        WorkCard id, complete acceptance digest (focused_tests, negative_checks,
+        expected_evidence descriptors, allowed_paths), command, and code/workspace state.
+        Stale records from old WorkCards, moved code, or mismatched acceptance
+        descriptors are rejected and the focused tests are re-executed for fresh evidence.
+
+        Note: expected_evidence contains WorkCard acceptance descriptors
+        (e.g. 'implementation head', 'focused-check receipt', 'independent
+        review receipt'), NOT file paths. Hooks never interpret them with
+        Path.exists() and never act as a secondary evaluator for Steward-owned
+        gates (independent review, CI, PR merge).
         """
         card_id = os.environ.get("STEWARD_WORKCARD_ID", "").strip()
 
-        # 1. Bound evidence receipt must match the current WorkCard state
+        # 1. Bound evidence receipt must match the current WorkCard acceptance contract
         if self.evidence_file.is_file() and not self.evidence_file.is_symlink():
             try:
                 ev_data = json.loads(self.evidence_file.read_text(encoding="utf-8"))
@@ -147,6 +161,9 @@ class ContinuationHandler:
                     ev_data,
                     workcard_id=card_id,
                     focused_tests=focused_tests,
+                    negative_checks=negative_checks,
+                    expected_evidence=expected_evidence,
+                    allowed_paths=allowed_paths,
                     worktree=worktree,
                 )
                 if bound:
@@ -154,14 +171,7 @@ class ContinuationHandler:
                 # Stale/unbound evidence is ignored (never accepted); fall
                 # through to re-execution so fresh evidence can be produced.
 
-        # 2. Check expected_evidence files if declared
-        if expected_evidence:
-            for ev_item in expected_evidence:
-                ev_path = worktree / ev_item if not Path(ev_item).is_absolute() else Path(ev_item)
-                if not ev_path.exists():
-                    return False, f"missing_expected_evidence_file: {ev_item}"
-
-        # 3. If focused_tests declared, execute them or require verification receipt
+        # 2. If focused_tests declared, execute them or require verification receipt
         if focused_tests:
             # Attempt to run focused tests directly if no passing receipt was found
             for test_target in focused_tests:
@@ -192,6 +202,9 @@ class ContinuationHandler:
             record = build_evidence_record(
                 workcard_id=card_id,
                 focused_tests=focused_tests,
+                negative_checks=negative_checks,
+                expected_evidence=expected_evidence,
+                allowed_paths=allowed_paths,
                 command=" ".join(cmd) if focused_tests else "",
                 success=True,
                 worktree=worktree,
@@ -200,7 +213,7 @@ class ContinuationHandler:
             self.evidence_file.write_text(json.dumps(record, indent=2), encoding="utf-8")
             return True, ""
 
-        # If no focused tests or evidence files are declared, having in-scope edits is sufficient
+        # If no focused tests are declared, having in-scope edits is sufficient
         return True, ""
 
     def evaluate_stop(self, hook_input: HookInput) -> ContinuationDecision:
@@ -223,23 +236,10 @@ class ContinuationHandler:
                 reason="missing_workcard_context",
             )
 
-        allowed_raw = os.environ.get("STEWARD_ALLOWED_PATHS", "[]")
-        try:
-            allowed_paths = json.loads(allowed_raw) if allowed_raw else []
-        except Exception:
-            allowed_paths = []
-
-        focused_raw = os.environ.get("STEWARD_FOCUSED_TESTS", "[]")
-        try:
-            focused_tests = json.loads(focused_raw) if focused_raw else []
-        except Exception:
-            focused_tests = []
-
-        evidence_raw = os.environ.get("STEWARD_EXPECTED_EVIDENCE", "[]")
-        try:
-            expected_evidence = json.loads(evidence_raw) if evidence_raw else []
-        except Exception:
-            expected_evidence = []
+        allowed_paths = read_allowed_paths()
+        focused_tests = read_focused_tests()
+        expected_evidence = read_expected_evidence()
+        negative_checks = read_negative_checks()
 
         # 1. Verify in-scope workspace edits
         edits_ok, edits_err = self._verify_workspace_edits(worktree, allowed_paths)
@@ -247,7 +247,13 @@ class ContinuationHandler:
             return self._handle_incomplete(card_id, edits_err)
 
         # 2. Verify declared acceptance evidence and focused tests
-        ev_ok, ev_err = self._verify_acceptance_evidence(worktree, focused_tests, expected_evidence)
+        ev_ok, ev_err = self._verify_acceptance_evidence(
+            worktree=worktree,
+            focused_tests=focused_tests,
+            expected_evidence=expected_evidence,
+            negative_checks=negative_checks,
+            allowed_paths=allowed_paths,
+        )
         if not ev_ok:
             return self._handle_incomplete(card_id, ev_err)
 

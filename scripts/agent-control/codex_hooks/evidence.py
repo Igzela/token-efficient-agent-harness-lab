@@ -60,19 +60,75 @@ def porcelain_work_product_lines(porcelain_output: str) -> list[str]:
     return entries
 
 
-def read_focused_tests(env: Any = None) -> list[str]:
-    """Parse the WorkCard-declared focused verification checks (may be empty)."""
+def _read_env_list(key: str, env: Any = None) -> list[str]:
+    """Parse a list of strings from an environment variable."""
     source = env if env is not None else os.environ
-    raw = source.get("STEWARD_FOCUSED_TESTS", "") if hasattr(source, "get") else ""
+    raw = source.get(key, "") if hasattr(source, "get") else ""
     if not raw:
         return []
     try:
-        focused = json.loads(raw)
+        items = json.loads(raw)
     except Exception:
         return []
-    if not isinstance(focused, list):
+    if not isinstance(items, list):
         return []
-    return [str(t).strip() for t in focused if isinstance(t, str) and str(t).strip()]
+    return [str(t).strip() for t in items if isinstance(t, str) and str(t).strip()]
+
+
+def read_focused_tests(env: Any = None) -> list[str]:
+    """Parse the WorkCard-declared focused verification checks (may be empty)."""
+    return _read_env_list("STEWARD_FOCUSED_TESTS", env)
+
+
+def read_negative_checks(env: Any = None) -> list[str]:
+    """Parse the WorkCard-declared negative checks (may be empty)."""
+    return _read_env_list("STEWARD_NEGATIVE_CHECKS", env)
+
+
+def read_expected_evidence(env: Any = None) -> list[str]:
+    """Parse the WorkCard-declared expected evidence descriptors (may be empty)."""
+    return _read_env_list("STEWARD_EXPECTED_EVIDENCE", env)
+
+
+def read_allowed_paths(env: Any = None) -> list[str]:
+    """Parse the WorkCard-declared allowed paths (may be empty)."""
+    return _read_env_list("STEWARD_ALLOWED_PATHS", env)
+
+
+def workcard_acceptance_digest(
+    *,
+    workcard_id: str,
+    focused_tests: list[str] | None = None,
+    negative_checks: list[str] | None = None,
+    expected_evidence: list[str] | None = None,
+    allowed_paths: list[str] | None = None,
+    env: Any = None,
+) -> str:
+    """Stable canonical digest of the full WorkCard acceptance contract.
+
+    Binds workcard_id, focused_tests, negative_checks, expected_evidence,
+    and allowed_paths. PostToolUse and Stop share this canonical helper so
+    neither side can drift. Any change to these acceptance descriptors
+    invalidates stored verification receipts.
+    """
+    if focused_tests is None:
+        focused_tests = read_focused_tests(env)
+    if negative_checks is None:
+        negative_checks = read_negative_checks(env)
+    if expected_evidence is None:
+        expected_evidence = read_expected_evidence(env)
+    if allowed_paths is None:
+        allowed_paths = read_allowed_paths(env)
+
+    canonical = {
+        "allowed_paths": sorted(str(p).strip() for p in allowed_paths if str(p).strip()),
+        "expected_evidence": sorted(str(e).strip() for e in expected_evidence if str(e).strip()),
+        "focused_tests": sorted(str(t).strip() for t in focused_tests if str(t).strip()),
+        "negative_checks": sorted(str(n).strip() for n in negative_checks if str(n).strip()),
+        "workcard_id": str(workcard_id).strip(),
+    }
+    canonical_json = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return f"sha256:{hashlib.sha256(canonical_json.encode('utf-8')).hexdigest()}"
 
 
 def focused_tests_digest(focused_tests: list[str]) -> str:
@@ -224,18 +280,40 @@ def extract_tool_success(tool_response: Any, _depth: int = 0) -> bool | None:
 def build_evidence_record(
     *,
     workcard_id: str,
-    focused_tests: list[str],
+    focused_tests: list[str] | None = None,
+    negative_checks: list[str] | None = None,
+    expected_evidence: list[str] | None = None,
+    allowed_paths: list[str] | None = None,
     command: str,
     success: bool,
     worktree: Path | str,
     receipt_id: int,
+    env: Any = None,
 ) -> dict[str, Any]:
     """Build a bound PASS evidence record. Call only with proven ``success``."""
+    if focused_tests is None:
+        focused_tests = read_focused_tests(env)
+    if negative_checks is None:
+        negative_checks = read_negative_checks(env)
+    if expected_evidence is None:
+        expected_evidence = read_expected_evidence(env)
+    if allowed_paths is None:
+        allowed_paths = read_allowed_paths(env)
+
+    acc_digest = workcard_acceptance_digest(
+        workcard_id=workcard_id,
+        focused_tests=focused_tests,
+        negative_checks=negative_checks,
+        expected_evidence=expected_evidence,
+        allowed_paths=allowed_paths,
+        env=env,
+    )
     state = workspace_state(worktree)
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "status": "passed",
         "workcard_id": workcard_id,
+        "acceptance_digest": acc_digest,
         "focused_tests_digest": focused_tests_digest(focused_tests),
         "command": command,
         "result": "success" if success else "failure",
@@ -250,10 +328,23 @@ def evidence_binding_matches(
     evidence: Any,
     *,
     workcard_id: str,
-    focused_tests: list[str],
+    focused_tests: list[str] | None = None,
+    negative_checks: list[str] | None = None,
+    expected_evidence: list[str] | None = None,
+    allowed_paths: list[str] | None = None,
     worktree: Path | str,
+    env: Any = None,
 ) -> tuple[bool, str]:
     """Verify a stored evidence record is bound to the current WorkCard state.
+
+    Stored PASS receipt is accepted only when:
+    - schema/version is correct
+    - WorkCard identity matches
+    - acceptance digest matches exactly (binding workcard_id, focused_tests,
+      negative_checks, expected_evidence descriptors, allowed_paths)
+    - workspace state (head SHA + work product status digest) matches exactly
+    - verification command is present
+    - result is proven success.
 
     Empty-vs-empty comparisons never count as a match: an unbound record
     (missing card id) or unobservable code state (no git HEAD) is rejected
@@ -270,8 +361,33 @@ def evidence_binding_matches(
         return False, "evidence_workcard_missing"
     if (evidence.get("workcard_id") or "") != workcard_id:
         return False, "evidence_workcard_mismatch"
+
+    if focused_tests is None:
+        focused_tests = read_focused_tests(env)
+    if negative_checks is None:
+        negative_checks = read_negative_checks(env)
+    if expected_evidence is None:
+        expected_evidence = read_expected_evidence(env)
+    if allowed_paths is None:
+        allowed_paths = read_allowed_paths(env)
+
+    expected_acc_digest = workcard_acceptance_digest(
+        workcard_id=workcard_id,
+        focused_tests=focused_tests,
+        negative_checks=negative_checks,
+        expected_evidence=expected_evidence,
+        allowed_paths=allowed_paths,
+        env=env,
+    )
+    recorded_acc_digest = evidence.get("acceptance_digest")
+    if not recorded_acc_digest:
+        return False, "evidence_acceptance_digest_missing"
+    if recorded_acc_digest != expected_acc_digest:
+        return False, "evidence_acceptance_digest_mismatch"
+
     if evidence.get("focused_tests_digest") != focused_tests_digest(focused_tests):
         return False, "evidence_focused_tests_mismatch"
+
     current = workspace_state(worktree)
     if not current["head_sha"]:
         return False, "evidence_code_state_unobservable"
