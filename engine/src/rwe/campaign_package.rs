@@ -208,6 +208,30 @@ pub struct FrozenCampaignPackage {
 }
 
 impl FrozenCampaignPackage {
+    /// Resolve the exact provider binding for one package-owned model role.
+    ///
+    /// A package may expose distinct implementer and planner/reviewer model
+    /// identities while sharing one frozen provider route.  The returned value
+    /// is still the package binding in every field; only the model is selected
+    /// from the package's admitted role identities.  Arbitrary caller strings
+    /// are never admitted here.
+    pub fn provider_execution_binding_for_model(
+        &self,
+        requested_model: &str,
+    ) -> Result<FrozenProviderExecutionBinding, String> {
+        let mut binding = self
+            .provider_execution_binding
+            .clone()
+            .ok_or("frozen campaign package lacks a direct provider binding")?;
+        if requested_model != self.admitted_model && requested_model != self.planner_reviewer_model
+        {
+            return Err("requested model is not an exact model identity admitted by the frozen campaign package".into());
+        }
+        binding.admitted_model = requested_model.to_string();
+        binding.validate()?;
+        Ok(binding)
+    }
+
     /// Strict validation of package invariants.
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != RWE_CAMPAIGN_PACKAGE_SCHEMA {
@@ -496,6 +520,26 @@ mod tests {
 
         let hash = pkg.canonical_sha256().expect("hash must compute");
         assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn package_model_binding_is_exact_and_rejects_arbitrary_models() {
+        let pkg = canonical_deepseek_v2_package().unwrap();
+        assert_eq!(
+            pkg.provider_execution_binding_for_model("deepseek-v4-pro")
+                .unwrap()
+                .admitted_model,
+            "deepseek-v4-pro"
+        );
+        assert_eq!(
+            pkg.provider_execution_binding_for_model("deepseek-v4-flash")
+                .unwrap()
+                .admitted_model,
+            "deepseek-v4-flash"
+        );
+        assert!(pkg
+            .provider_execution_binding_for_model("arbitrary-model")
+            .is_err());
     }
 
     #[test]

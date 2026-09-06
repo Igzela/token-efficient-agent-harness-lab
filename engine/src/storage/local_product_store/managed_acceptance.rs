@@ -557,7 +557,17 @@ impl DelegationContract {
             "implementer": "deepseek-v4-flash",
             "reviewer": "deepseek-v4-pro"
         });
-        let valid_models = self.models == default_models;
+        let valid_models = self.models == default_models
+            || ["deepseek-v4-pro", "deepseek-v4-flash"]
+                .iter()
+                .any(|model| {
+                    self.models
+                        == json!({
+                            "planner": model,
+                            "implementer": model,
+                            "reviewer": model
+                        })
+                });
         if !valid_models
             || self.output
                 != json!({
@@ -725,12 +735,35 @@ pub fn derive_final_execution_manifest(
         .ok_or("immutable proposal provider execution binding is required")?;
     let binding =
         crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json(binding_value)?;
-    let canonical_binding = crate::rwe::campaign_package::canonical_deepseek_provider_binding();
-    if binding != canonical_binding {
-        return Err("immutable proposal provider execution binding is not canonical".into());
+    let requested_model = delegation
+        .models
+        .get("implementer")
+        .and_then(Value::as_str)
+        .ok_or("delegation implementer model binding is required")?;
+    let expected_binding = proposal
+        .get("campaign_package_id")
+        .and_then(Value::as_str)
+        .filter(|package_id| !package_id.trim().is_empty())
+        .map(|package_id| {
+            let package =
+                crate::rwe::campaign_package::resolve_frozen_campaign_package(package_id)?;
+            package.validate()?;
+            package.provider_execution_binding_for_model(requested_model)
+        })
+        .transpose()?
+        .unwrap_or_else(crate::rwe::campaign_package::canonical_deepseek_provider_binding);
+    if binding != expected_binding {
+        return Err(
+            "immutable proposal provider execution binding does not exactly match the frozen package"
+                .into(),
+        );
     }
-    let provider = canonical_managed_deepseek_provider_value();
-    let is_deepseek = true;
+    if binding.admitted_model != requested_model {
+        return Err("immutable proposal model does not exactly match its provider binding".into());
+    }
+    let provider = managed_provider_value_for_binding(&binding);
+    let is_deepseek =
+        binding.provider_kind == crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND;
     let mut manifest = sort_value(&json!({
         "schema_version": FINAL_MANIFEST_SCHEMA_VERSION,
         "proposal_manifest_sha256": proposal_sha,
@@ -748,6 +781,8 @@ pub fn derive_final_execution_manifest(
         "models": delegation.models.clone(),
         "protocol": delegation.protocol.clone(),
         "provider_execution_binding": binding.to_json(),
+        "campaign_package_id": proposal.get("campaign_package_id"),
+        "matrix_model_descriptor_id": proposal.get("matrix_model_descriptor_id"),
         "provider": provider,
         "verifier": execution.get("verifier"),
         "limits": {
@@ -793,13 +828,20 @@ pub fn derive_final_execution_manifest(
     Ok(manifest)
 }
 
-fn canonical_managed_deepseek_provider_value() -> Value {
-    let binding = crate::rwe::campaign_package::canonical_deepseek_provider_binding();
+fn managed_provider_value_for_binding(
+    binding: &crate::rwe::campaign_package::FrozenProviderExecutionBinding,
+) -> Value {
     let mut provider = binding.to_json();
     provider["kind"] = json!(binding.provider_kind);
-    provider["price_profile"] =
+    provider["price_profile"] = if binding.provider_kind
+        == crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND
+        && !binding.cost_unavailable
+    {
         serde_json::to_value(crate::provider::managed_deepseek::DeepSeekPriceProfile::default())
-            .expect("DeepSeek price profile serializes");
+            .expect("DeepSeek price profile serializes")
+    } else {
+        Value::Null
+    };
     provider
 }
 
@@ -1013,20 +1055,60 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
     if manifest_sha256 != compute_attempt_manifest_sha256(manifest)? {
         return Err("final manifest hash mismatch".into());
     }
-    let expected_models = json!({
-        "planner": "deepseek-v4-pro",
-        "implementer": "deepseek-v4-flash",
-        "reviewer": "deepseek-v4-pro"
-    });
     let expected_output = json!({
         "draft_pr_only": true,
         "target_main_write": false,
         "merge": false,
         "auto_merge": false
     });
-    let expected_provider = canonical_managed_deepseek_provider_value();
-    let expected_binding =
-        crate::rwe::campaign_package::canonical_deepseek_provider_binding().to_json();
+    let observed_binding = crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json(
+        manifest
+            .get("provider_execution_binding")
+            .ok_or("final manifest provider execution binding is required")?,
+    )?;
+    let requested_model = manifest
+        .pointer("/models/implementer")
+        .and_then(Value::as_str)
+        .ok_or("final manifest implementer model is required")?;
+    let package_id = manifest
+        .get("campaign_package_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            manifest
+                .pointer("/execution/campaign_package_id")
+                .and_then(Value::as_str)
+        })
+        .filter(|package_id| !package_id.trim().is_empty());
+    let expected_binding = match package_id {
+        Some(package_id) => {
+            let package =
+                crate::rwe::campaign_package::resolve_frozen_campaign_package(package_id)?;
+            package.validate()?;
+            package.provider_execution_binding_for_model(requested_model)?
+        }
+        None => crate::rwe::campaign_package::canonical_deepseek_provider_binding(),
+    };
+    if observed_binding != expected_binding {
+        return Err(
+            "final manifest provider execution binding does not exactly match the frozen package"
+                .into(),
+        );
+    }
+    let expected_models = if package_id.is_some() {
+        json!({
+            "planner": expected_binding.admitted_model.clone(),
+            "implementer": expected_binding.admitted_model.clone(),
+            "reviewer": expected_binding.admitted_model.clone()
+        })
+    } else {
+        json!({
+            "planner": "deepseek-v4-pro",
+            "implementer": "deepseek-v4-flash",
+            "reviewer": "deepseek-v4-pro"
+        })
+    };
+    let expected_provider = managed_provider_value_for_binding(&expected_binding);
+    let expected_binding_json = expected_binding.to_json();
     let mutable = manifest
         .pointer("/target/mutable_paths")
         .and_then(Value::as_array)
@@ -1049,8 +1131,8 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
     let max_total_cost = manifest
         .pointer("/limits/max_total_cost_usd")
         .and_then(Value::as_f64);
-    let is_deepseek = manifest.pointer("/provider/kind").and_then(Value::as_str)
-        == Some(crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND);
+    let is_deepseek =
+        expected_binding.provider_kind == crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND;
     let docs_policy = mutable == ["docs/USER_GUIDE.md"]
         && verifier == Some(crate::rwe::frozen_rwe_bindings::DOCS_GP_VERIFIER_IDENTITY)
         && max_files == Some(1)
@@ -1087,13 +1169,14 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
     };
     let valid_models = manifest.get("models") == Some(&expected_models);
     let valid_provider = manifest.get("provider") == Some(&expected_provider)
-        && manifest.get("provider_execution_binding") == Some(&expected_binding);
+        && manifest.get("provider_execution_binding") == Some(&expected_binding_json);
     let policy_matches = manifest
         .pointer("/target/repository")
         .and_then(Value::as_str)
         == Some("Igzela/alters-lab")
         && (docs_policy || rwe_policy)
-        && manifest.get("protocol").and_then(Value::as_str) == Some("openai_compatible")
+        && manifest.get("protocol").and_then(Value::as_str)
+            == Some(expected_binding.protocol.as_str())
         && valid_models
         && valid_provider
         && {

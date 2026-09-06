@@ -1124,6 +1124,43 @@ pub fn resolve_matrix_model_to_raw(model_id: &str) -> &str {
     model_id.split(':').next().unwrap_or(model_id)
 }
 
+fn resolve_frozen_matrix_model(
+    binding: &ProductHarnessMatrixBinding,
+) -> Result<crate::harness_evolution::Mx1ModelPlanDescriptor, String> {
+    let manifest = crate::harness_evolution::sample_mx1_descriptor_manifest_with_ledger_harness();
+    crate::harness_evolution::validate_mx1_descriptor_manifest(&manifest).map_err(|error| {
+        format!(
+            "MX1 descriptor manifest validation failed for matrix model: {}",
+            error.message
+        )
+    })?;
+    let model = manifest
+        .models
+        .iter()
+        .find(|descriptor| descriptor.descriptor_id == binding.model_id)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "matrix model binding is not an admitted frozen MX1 Model descriptor: {}",
+                binding.model_id
+            )
+        })?;
+    if !model
+        .supported_harness_ids
+        .iter()
+        .any(|harness| harness == &binding.harness_id)
+        || !model
+            .supported_strategy_ids
+            .iter()
+            .any(|strategy| strategy == &binding.strategy_id)
+        || model.requested_model_id != model.resolved_model_id
+        || resolve_matrix_model_to_raw(&binding.model_id) != model.resolved_model_id
+    {
+        return Err("matrix model binding is not an exact admitted MX1 cell model".into());
+    }
+    Ok(model)
+}
+
 /// Legacy label resolver retained only for callers that need to distinguish
 /// strategy arms. It deliberately returns no model-visible content: live
 /// execution must use the cell-bound, descriptor-validated digest reference
@@ -1337,6 +1374,7 @@ pub struct LiveLedgerCellWorker {
     binding: ProductHarnessMatrixBinding,
     objective_sha256: String,
     task_objective: String,
+    preferred_prompt_path: Option<String>,
     allowed_paths: Vec<String>,
     max_provider_calls: u64,
     cell_cost_ceiling_usd: f64,
@@ -1361,6 +1399,7 @@ impl LiveLedgerCellWorker {
         binding: ProductHarnessMatrixBinding,
         objective_sha256: String,
         task_objective: String,
+        preferred_prompt_path: Option<String>,
         allowed_paths: Vec<String>,
         max_provider_calls: u64,
         cell_cost_ceiling_usd: f64,
@@ -1380,6 +1419,7 @@ impl LiveLedgerCellWorker {
             binding,
             objective_sha256,
             task_objective,
+            preferred_prompt_path,
             allowed_paths,
             max_provider_calls,
             cell_cost_ceiling_usd,
@@ -1472,17 +1512,13 @@ impl LiveLedgerCellWorker {
         // additionally fences cumulative cell spend before every round, so
         // the per-round one-use spend can never exceed the cell budget.
         let union_paths = crate::rwe::frozen_rwe_bindings::frozen_rwe_union_allowed_paths()?;
+        let role_model = self.provider_binding.admitted_model.clone();
         let role_models = json!({
-            "planner": OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL,
-            "implementer": OPERATOR_ADMITTED_MODEL,
-            "reviewer": OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL,
+            "planner": role_model.clone(),
+            "implementer": role_model.clone(),
+            "reviewer": role_model,
         });
         self.provider_binding.validate()?;
-        if self.provider_binding.admitted_model != OPERATOR_ADMITTED_MODEL {
-            return Err(
-                "live ledger provider binding model is not the admitted implementer model".into(),
-            );
-        }
         let contract = DelegationContract {
             schema_version: DELEGATION_SCHEMA_VERSION.into(),
             delegation_id: delegation_id.clone(),
@@ -1527,6 +1563,8 @@ impl LiveLedgerCellWorker {
             "mutable_paths": self.allowed_paths,
             "max_cost_usd": Value::Null,
             "verifier": crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY,
+            "campaign_package_id": self.package_id,
+            "matrix_model_descriptor_id": self.binding.model_id,
             "provider_execution_binding": self.provider_binding.to_json(),
             "provider": {
                 "execution_binding": self.provider_binding.to_json(),
@@ -1731,20 +1769,16 @@ impl LedgerWorker for LiveLedgerCellWorker {
                 })
             }
         };
-        let requested_model = if let Some(m) = adapter.requested_model() {
-            m.to_string()
-        } else {
-            manifest
-                .pointer("/models/implementer")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    Self::worker_error(
-                        &context.selected_task.id,
-                        "ledger round manifest implementer model missing",
-                    )
-                })?
-                .to_string()
-        };
+        let requested_model = manifest
+            .pointer("/models/implementer")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                Self::worker_error(
+                    &context.selected_task.id,
+                    "ledger round manifest implementer model missing",
+                )
+            })?
+            .to_string();
         // The request envelope must equal the persisted manifest envelope
         // exactly, or the persisted authority check fails closed.
         let manifest_limits = ManagedCallLimits {
@@ -1801,14 +1835,12 @@ impl LedgerWorker for LiveLedgerCellWorker {
             spend_authorization_id,
             attempt_lease_id,
         };
-        let stage_context = self
+        let stage_context_metadata = json!({
+            "managed_deepseek": {"stage": "implementation"}
+        });
+        let initial_stage_context = self
             .store
-            .stage_context(
-                &binding,
-                &json!({
-                    "managed_deepseek": {"stage": "implementation"}
-                }),
-            )
+            .stage_context(&binding, &stage_context_metadata)
             .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?
             .ok_or_else(|| {
                 Self::worker_error(
@@ -1816,6 +1848,42 @@ impl LedgerWorker for LiveLedgerCellWorker {
                     "store returned no implementation context",
                 )
             })?;
+        let allowed_file_paths = initial_stage_context
+            .get("allowed_file_paths")
+            .and_then(Value::as_array)
+            .map(|paths| {
+                paths
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let prompt_path = self
+            .preferred_prompt_path
+            .as_ref()
+            .filter(|path| {
+                allowed_file_paths
+                    .iter()
+                    .any(|candidate| candidate == *path)
+            })
+            .cloned()
+            .or_else(|| allowed_file_paths.first().cloned());
+        let stage_context = if let Some(prompt_path) = prompt_path {
+            let mut metadata = stage_context_metadata;
+            metadata["managed_deepseek"]["prompt_path"] = json!(prompt_path);
+            self.store
+                .stage_context(&binding, &metadata)
+                .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?
+                .ok_or_else(|| {
+                    Self::worker_error(
+                        &context.selected_task.id,
+                        "store returned no selected implementation context",
+                    )
+                })?
+        } else {
+            initial_stage_context
+        };
         let staged_content = serde_json::to_string(&sort_value(&stage_context)).map_err(|e| {
             Self::worker_error(
                 &context.selected_task.id,
@@ -1844,6 +1912,8 @@ impl LedgerWorker for LiveLedgerCellWorker {
         request.base_url = self.provider_binding.base_url.clone();
         request.endpoint_path = self.provider_binding.endpoint_path.clone();
         request.credential_reference = self.provider_binding.credential_reference.clone();
+        request.response_schema_version = self.provider_binding.response_schema_version.clone();
+        request.usage_parser_version = self.provider_binding.usage_parser_version.clone();
         request.requested_model = manifest
             .pointer("/models/implementer")
             .and_then(Value::as_str)
@@ -1854,6 +1924,13 @@ impl LedgerWorker for LiveLedgerCellWorker {
                 )
             })?
             .to_string();
+        request.single_model_plan = true;
+        if request.requested_model != self.provider_binding.admitted_model {
+            return Err(Self::worker_error(
+                &context.selected_task.id,
+                "matrix model binding does not match the persisted provider binding",
+            ));
+        }
         if let Some(adapter_model) = adapter.requested_model() {
             if adapter_model != requested_model {
                 return Err(Self::worker_error(
@@ -2303,6 +2380,22 @@ pub(crate) fn run_live_ledger_cell_loop(
     )
 }
 
+fn preferred_stage_prompt_path(
+    verification_command: &str,
+    allowed_paths: &[String],
+) -> Option<String> {
+    let (_, argv) =
+        crate::product_golden_path::parse_strict_product_verification_command(verification_command)
+            .ok()?;
+    argv.into_iter().find(|argument| {
+        !argument.starts_with('-')
+            && allowed_paths.iter().any(|allowed| {
+                argument == allowed
+                    || argument.starts_with(&format!("{}/", allowed.trim_end_matches('/')))
+            })
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_live_ledger_cell_loop_with_adapter(
     store: &std::sync::Arc<LocalProductStore>,
@@ -2320,10 +2413,9 @@ pub(crate) fn run_live_ledger_cell_loop_with_adapter(
 ) -> Result<(LedgerTerminalRecord, LiveLedgerLoopEvidence), String> {
     let package = crate::rwe::campaign_package::resolve_frozen_campaign_package(package_id)?;
     package.validate()?;
-    let provider_binding = package
-        .provider_execution_binding
-        .clone()
-        .ok_or("live ledger campaign package lacks a direct provider execution binding")?;
+    let matrix_model = resolve_frozen_matrix_model(binding)?;
+    let provider_binding =
+        package.provider_execution_binding_for_model(&matrix_model.resolved_model_id)?;
     let verification_command = task
         .expected_verification_commands
         .first()
@@ -2377,6 +2469,7 @@ pub(crate) fn run_live_ledger_cell_loop_with_adapter(
         binding.clone(),
         task.objective_sha256.clone(),
         task.objective.clone(),
+        preferred_stage_prompt_path(&verification_command, &task.allowed_mutable_paths),
         task.allowed_mutable_paths.clone(),
         task.per_task_max_provider_requests.max(1),
         cell_cost_ceiling_usd,
@@ -5352,17 +5445,18 @@ pub fn project_first_baseline_evidence(run_aggregate: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::transport::HttpResponse;
+    use crate::provider::transport::{HttpError, HttpRequest, HttpResponse, HttpTransport};
     use crate::storage::local_product_store::{
         SCOPE_ATTEMPT_ADMIT, SCOPE_DELEGATED_ARTIFACT_CONFIRM, SCOPE_DELEGATED_AUTONOMY,
         SCOPE_DELEGATED_EXECUTE, SCOPE_DELEGATED_MANIFEST_APPROVE, SCOPE_REVOKE,
         SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
     };
     use sha2::Digest;
+    use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::{channel, sync_channel};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -7990,6 +8084,36 @@ mod tests {
         }
     }
 
+    struct CapturingTransport {
+        requests: Arc<Mutex<Vec<HttpRequest>>>,
+        responses: Mutex<VecDeque<Result<HttpResponse, HttpError>>>,
+    }
+
+    impl CapturingTransport {
+        fn new(
+            responses: Vec<Result<HttpResponse, HttpError>>,
+        ) -> (Arc<Self>, Arc<Mutex<Vec<HttpRequest>>>) {
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let transport = Arc::new(Self {
+                requests: Arc::clone(&requests),
+                responses: Mutex::new(responses.into_iter().collect()),
+            });
+            (transport, requests)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for CapturingTransport {
+        async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            self.requests.lock().unwrap().push(request.clone());
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(HttpError::PreSend("capturing transport exhausted".into())))
+        }
+    }
+
     fn live_ledger_test_env() -> LiveLedgerEnvGuard {
         // Minimal live gates: product intake admission plus the operator
         // live-run token. No target-output or network-output symbols are
@@ -8060,6 +8184,23 @@ mod tests {
     fn admit_live_ledger_intake(bed: &LiveLedgerTestBed) -> (ProductHarnessMatrixBinding, String) {
         let binding =
             matrix_binding_from_frozen_cell(&bed.ledger_cell, &bed.ids, &bed.task0).unwrap();
+        admit_live_ledger_intake_with_binding(bed, binding)
+    }
+
+    fn admit_live_ledger_intake_with_model(
+        bed: &LiveLedgerTestBed,
+        model_id: &str,
+    ) -> (ProductHarnessMatrixBinding, String) {
+        let mut binding =
+            matrix_binding_from_frozen_cell(&bed.ledger_cell, &bed.ids, &bed.task0).unwrap();
+        binding.model_id = model_id.to_string();
+        admit_live_ledger_intake_with_binding(bed, binding)
+    }
+
+    fn admit_live_ledger_intake_with_binding(
+        bed: &LiveLedgerTestBed,
+        binding: ProductHarnessMatrixBinding,
+    ) -> (ProductHarnessMatrixBinding, String) {
         let intake = build_rwe_cell_product_intake_with_matrix(
             &bed.principal,
             &bed.frozen,
@@ -8119,9 +8260,16 @@ mod tests {
     fn live_success_response(
         n: u64,
     ) -> Result<HttpResponse, crate::provider::transport::HttpError> {
+        live_success_response_for_model(n, OPERATOR_ADMITTED_MODEL)
+    }
+
+    fn live_success_response_for_model(
+        n: u64,
+        model: &str,
+    ) -> Result<HttpResponse, crate::provider::transport::HttpError> {
         Ok(mock_rwe_openai_response(
             &format!("resp-live-{n}"),
-            OPERATOR_ADMITTED_MODEL,
+            model,
             json!({"proposal": n}),
         ))
     }
@@ -8897,6 +9045,81 @@ mod tests {
     }
 
     #[test]
+    fn live_ledger_matrix_model_descriptor_binds_exact_request_model() {
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = live_ledger_test_env();
+        for (suffix, model_id, raw_model) in [
+            (
+                "pro",
+                crate::harness_evolution::MX1_ARM_ZERO_MODEL_ID,
+                "deepseek-v4-pro",
+            ),
+            (
+                "flash",
+                crate::harness_evolution::MX1_SECOND_MODEL_ID,
+                "deepseek-v4-flash",
+            ),
+        ] {
+            let Some(bed) = live_ledger_bed(
+                &format!("run-live-model-{suffix}"),
+                &format!("t-live-model-{suffix}"),
+                &format!("live-model-{suffix}.db"),
+            ) else {
+                eprintln!("SKIP: frozen target repository unavailable");
+                return;
+            };
+            let (binding, product_task_id) = admit_live_ledger_intake_with_model(&bed, model_id);
+            stage_probe_for_task(&bed.store, &product_task_id, true);
+            let task = live_probe_task(&bed.task0, 1);
+            let (capturing_transport, captured_requests) =
+                CapturingTransport::new(vec![live_success_response_for_model(0, raw_model)]);
+            let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
+                Some(capturing_transport);
+            let executor = bed
+                .store
+                .authenticate_managed_acceptance_principal(
+                    bed.principal.tenant_id(),
+                    &bed.executor_key_id,
+                    None,
+                )
+                .unwrap();
+
+            let (record, evidence) = run_live_ledger_cell_loop(
+                &bed.store,
+                &bed.principal,
+                &executor,
+                &binding,
+                &task,
+                &bed.ids,
+                &product_task_id,
+                &transport,
+                crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+                &bed.target,
+                0.20,
+            )
+            .unwrap();
+            assert_eq!(
+                record.disposition,
+                crate::harness_evolution::LedgerTerminalDisposition::Completed
+            );
+            assert_eq!(evidence.rounds.len(), 1);
+            let requests = captured_requests.lock().unwrap();
+            let body: Value =
+                serde_json::from_slice(requests[0].body.as_deref().expect("captured request body"))
+                    .unwrap();
+            assert_eq!(body["model"], raw_model);
+            let journal = live_round_journal(
+                &bed.store,
+                &product_task_id,
+                &evidence.rounds[0].delegated_attempt_id,
+            );
+            assert_eq!(journal[0]["requested_model"], raw_model);
+        }
+    }
+
+    #[test]
     fn live_ledger_initial_fail_repaired_by_worker_modification_to_pass() {
         let _lock = crate::cli::config::cli_env_test_lock()
             .lock()
@@ -8926,6 +9149,11 @@ mod tests {
                 .unwrap()
                 .contains("assert False")
         );
+        std::fs::write(
+            ws_path.join("apps/api/tests/unrelated_context.py"),
+            "UNRELATED_CONTEXT_SENTINEL\n",
+        )
+        .unwrap();
 
         let mut task = live_probe_task(&bed.task0, 3);
         task.expected_verification_commands = vec![
@@ -8950,9 +9178,10 @@ mod tests {
             repair_patch,
         ));
 
-        use crate::provider::transport::MockTransport;
+        let (capturing_transport, captured_requests) =
+            CapturingTransport::new(vec![resp_round1, resp_round2]);
         let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
-            Some(Arc::new(MockTransport::new(vec![resp_round1, resp_round2])));
+            Some(capturing_transport);
 
         let executor = bed
             .store
@@ -9039,6 +9268,24 @@ mod tests {
         assert_eq!(outcome.verification_status, "evidence_recorded");
         assert!(outcome.verification_trustworthy);
         assert_eq!(outcome.provider_requests, 2);
+
+        let captured_requests = captured_requests.lock().unwrap().clone();
+        assert_eq!(captured_requests.len(), 2);
+        let second_body: Value = serde_json::from_slice(
+            captured_requests[1]
+                .body
+                .as_deref()
+                .expect("captured provider request body"),
+        )
+        .unwrap();
+        let second_prompt = second_body["messages"][0]["content"]
+            .as_str()
+            .expect("captured second-round prompt");
+        assert!(second_prompt.contains(&task.objective));
+        assert!(second_prompt.contains("assert False, 'probe failure'"));
+        assert!(second_prompt.contains("Prior verification observations:"));
+        assert!(second_prompt.contains("frozen verifier exited 1"));
+        assert!(!second_prompt.contains("UNRELATED_CONTEXT_SENTINEL"));
     }
 
     #[test]

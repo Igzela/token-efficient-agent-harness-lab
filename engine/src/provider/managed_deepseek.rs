@@ -438,6 +438,13 @@ pub struct ManagedProviderCallRequest {
     pub base_url: String,
     pub endpoint_path: String,
     pub credential_reference: String,
+    /// Parser identities are part of the frozen provider binding. They stay
+    /// out of the legacy serialized request body but are checked against the
+    /// Store-owned execution contract before transport.
+    #[serde(default, skip_serializing)]
+    pub response_schema_version: String,
+    #[serde(default, skip_serializing)]
+    pub usage_parser_version: String,
     pub role: ManagedModelRole,
     pub requested_model: String,
     /// True when the requested model comes from a registered MX1
@@ -480,6 +487,8 @@ impl ManagedProviderCallRequest {
             base_url: protocol.base_url().to_string(),
             endpoint_path: protocol.endpoint_path().to_string(),
             credential_reference: profile.credential_reference,
+            response_schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.to_string(),
+            usage_parser_version: DEEPSEEK_USAGE_PARSER_VERSION.to_string(),
             role,
             requested_model: role.default_model().to_string(),
             single_model_plan: false,
@@ -507,6 +516,13 @@ impl ManagedProviderCallRequest {
             || self.provider_identity.chars().any(char::is_control)
         {
             return Err("managed provider identity is missing or malformed".to_string());
+        }
+        if self.response_schema_version.trim().is_empty()
+            || self.usage_parser_version.trim().is_empty()
+        {
+            return Err(
+                "managed provider response or usage parser identity is missing".to_string(),
+            );
         }
         if self.provider_kind == DEEPSEEK_PROVIDER_KIND {
             if self.host != "api.deepseek.com"
@@ -1201,8 +1217,8 @@ impl ManagedProviderCallAuthority {
         if !provider_matches
             || contract.protocol != request.protocol
             || contract.request_schema_version != request.schema_version
-            || contract.response_schema_version != MANAGED_PROVIDER_RESPONSE_SCHEMA
-            || contract.usage_parser_version != DEEPSEEK_USAGE_PARSER_VERSION
+            || contract.response_schema_version != request.response_schema_version
+            || contract.usage_parser_version != request.usage_parser_version
             || contract.limits != request.limits
             || contract.price_profile != request.price_profile
         {
