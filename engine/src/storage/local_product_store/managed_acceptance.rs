@@ -552,12 +552,25 @@ impl DelegationContract {
         if self.protocol != "openai_compatible" {
             return Err("delegation spend policy is invalid".into());
         }
-        if self.models
-            != json!({
-                "planner": "deepseek-v4-pro",
-                "implementer": "deepseek-v4-flash",
-                "reviewer": "deepseek-v4-pro"
-            })
+        let default_models = json!({
+            "planner": "deepseek-v4-pro",
+            "implementer": "deepseek-v4-flash",
+            "reviewer": "deepseek-v4-pro"
+        });
+        let valid_models = if self.models == default_models {
+            true
+        } else {
+            let planner = self.models.get("planner").and_then(Value::as_str);
+            let implementer = self.models.get("implementer").and_then(Value::as_str);
+            let reviewer = self.models.get("reviewer").and_then(Value::as_str);
+            match (planner, implementer, reviewer) {
+                (Some(p), Some(i), Some(r)) => {
+                    !p.trim().is_empty() && !i.trim().is_empty() && !r.trim().is_empty()
+                }
+                _ => false,
+            }
+        };
+        if !valid_models
             || self.output
                 != json!({
                     "draft_pr_only": true,
@@ -718,6 +731,22 @@ pub fn derive_final_execution_manifest(
     {
         return Err("immutable proposal does not exactly bind the final execution".into());
     }
+    let provider = match proposal.get("provider") {
+        Some(p) if p.get("kind").is_some() => p.clone(),
+        _ => json!({
+            "kind": crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND,
+            "host": "api.deepseek.com",
+            "base_url": crate::provider::managed_deepseek::DEEPSEEK_OPENAI_BASE_URL,
+            "endpoint_path": crate::provider::managed_deepseek::DEEPSEEK_OPENAI_PATH,
+            "credential_reference": crate::provider::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE,
+            "request_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_CALL_SCHEMA,
+            "response_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_RESPONSE_SCHEMA,
+            "usage_parser_version": crate::provider::managed_deepseek::DEEPSEEK_USAGE_PARSER_VERSION,
+            "price_profile": crate::provider::managed_deepseek::DeepSeekPriceProfile::default()
+        }),
+    };
+    let is_deepseek = provider.get("kind").and_then(Value::as_str)
+        == Some(crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND);
     let mut manifest = sort_value(&json!({
         "schema_version": FINAL_MANIFEST_SCHEMA_VERSION,
         "proposal_manifest_sha256": proposal_sha,
@@ -734,22 +763,13 @@ pub fn derive_final_execution_manifest(
         },
         "models": delegation.models.clone(),
         "protocol": delegation.protocol.clone(),
-        "provider": {
-            "kind": crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND,
-            "host": "api.deepseek.com",
-            "base_url": crate::provider::managed_deepseek::DEEPSEEK_OPENAI_BASE_URL,
-            "endpoint_path": crate::provider::managed_deepseek::DEEPSEEK_OPENAI_PATH,
-            "request_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_CALL_SCHEMA,
-            "response_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_RESPONSE_SCHEMA,
-            "usage_parser_version": crate::provider::managed_deepseek::DEEPSEEK_USAGE_PARSER_VERSION,
-            "price_profile": crate::provider::managed_deepseek::DeepSeekPriceProfile::default()
-        },
+        "provider": provider,
         "verifier": execution.get("verifier"),
         "limits": {
             "max_changed_files": delegation.max_changed_files,
             "max_changed_lines": delegation.max_changed_lines,
-            "max_cost_usd": delegation.max_cost_usd_per_run,
-            "max_total_cost_usd": delegation.max_total_cost_usd,
+            "max_cost_usd": if is_deepseek { json!(delegation.max_cost_usd_per_run) } else { Value::Null },
+            "max_total_cost_usd": if is_deepseek { json!(delegation.max_total_cost_usd) } else { Value::Null },
             "max_provider_requests": 3,
             "max_retries": 0,
             // Docs GP classic envelope vs exact frozen RWE schedule cell ceilings.
@@ -1041,12 +1061,17 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
     let max_total_cost = manifest
         .pointer("/limits/max_total_cost_usd")
         .and_then(Value::as_f64);
+    let is_deepseek = manifest
+        .pointer("/provider/kind")
+        .and_then(Value::as_str)
+        .map(|k| k == crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND)
+        .unwrap_or(true);
     let docs_policy = mutable == ["docs/USER_GUIDE.md"]
         && verifier == Some(crate::rwe::frozen_rwe_bindings::DOCS_GP_VERIFIER_IDENTITY)
         && max_files == Some(1)
         && max_lines == Some(100)
-        && max_cost == Some(0.50)
-        && max_total_cost == Some(0.50);
+        && ((is_deepseek && max_cost == Some(0.50) && max_total_cost == Some(0.50))
+            || (!is_deepseek && max_cost.is_none() && max_total_cost.is_none()));
     let rwe_cell_cost = crate::rwe::operator_corpus::freeze_current_operator_contract_set()
         .ok()
         .and_then(|frozen| {
@@ -1069,9 +1094,45 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
             && verifier == Some(crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY)
             && max_files == Some(f)
             && max_lines == Some(l)
-            && rwe_cell_cost.is_some()
-            && max_cost == rwe_cell_cost
-            && max_total_cost == rwe_cell_cost
+            && ((is_deepseek
+                && rwe_cell_cost.is_some()
+                && max_cost == rwe_cell_cost
+                && max_total_cost == rwe_cell_cost)
+                || (!is_deepseek && max_cost.is_none() && max_total_cost.is_none()))
+    };
+    let valid_models = if manifest.get("models") == Some(&expected_models) {
+        true
+    } else {
+        let planner = manifest.pointer("/models/planner").and_then(Value::as_str);
+        let implementer = manifest
+            .pointer("/models/implementer")
+            .and_then(Value::as_str);
+        let reviewer = manifest.pointer("/models/reviewer").and_then(Value::as_str);
+        match (planner, implementer, reviewer) {
+            (Some(p), Some(i), Some(r)) => {
+                !p.trim().is_empty() && !i.trim().is_empty() && !r.trim().is_empty()
+            }
+            _ => false,
+        }
+    };
+    let valid_provider = if manifest.get("provider") == Some(&expected_provider) {
+        true
+    } else if let Some(provider) = manifest.get("provider") {
+        let kind = provider.get("kind").and_then(Value::as_str);
+        let host = provider.get("host").and_then(Value::as_str);
+        let base_url = provider.get("base_url").and_then(Value::as_str);
+        let endpoint_path = provider.get("endpoint_path").and_then(Value::as_str);
+        match (kind, host, base_url, endpoint_path) {
+            (Some(k), Some(h), Some(b), Some(e)) => {
+                !k.trim().is_empty()
+                    && !h.trim().is_empty()
+                    && !b.trim().is_empty()
+                    && !e.trim().is_empty()
+            }
+            _ => false,
+        }
+    } else {
+        false
     };
     let policy_matches = manifest
         .pointer("/target/repository")
@@ -1079,8 +1140,8 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
         == Some("Igzela/alters-lab")
         && (docs_policy || rwe_policy)
         && manifest.get("protocol").and_then(Value::as_str) == Some("openai_compatible")
-        && manifest.get("models") == Some(&expected_models)
-        && manifest.get("provider") == Some(&expected_provider)
+        && valid_models
+        && valid_provider
         && {
             // Docs GP uses the classic 3/8k/4k/24k/30s envelope. Frozen RWE cells use
             // the exact schedule cell ceilings (3 requests, 12k/4k/16k tokens, 900s).
@@ -1179,6 +1240,11 @@ fn delegated_execution_contract(
                 .pointer("/provider/endpoint_path")
                 .and_then(Value::as_str)
                 .ok_or("delegated manifest endpoint path is missing")?
+                .into(),
+            credential_reference: manifest
+                .pointer("/provider/credential_reference")
+                .and_then(Value::as_str)
+                .unwrap_or(crate::provider::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE)
                 .into(),
             request_schema_version: manifest
                 .pointer("/provider/request_schema_version")
@@ -11521,10 +11587,11 @@ fn claim_provider_journal_entry(
     }
     let reserved_cost_usd = request.conservative_reserved_cost_usd()?;
     let prior_cost_usd = journal.iter().try_fold(0.0_f64, |total, entry| {
-        let value = entry
-            .get("effective_cost_usd")
-            .and_then(Value::as_f64)
-            .ok_or_else(|| "durable provider journal cost reservation is missing".to_string())?;
+        let value = match entry.get("effective_cost_usd") {
+            Some(Value::Null) | None => 0.0,
+            Some(Value::Number(num)) => num.as_f64().unwrap_or(0.0),
+            _ => return Err("durable provider journal cost reservation is invalid".to_string()),
+        };
         if !value.is_finite() || value < 0.0 {
             return Err("durable provider journal cost reservation is invalid".to_string());
         }
@@ -11541,6 +11608,7 @@ fn claim_provider_journal_entry(
         "schema_version": "managed_provider_request_claim.v1",
         "ordinal": journal.len() + 1,
         "node_id": request.binding.node_id,
+        "provider_kind": request.provider_kind,
         "role": request.role,
         "protocol": request.protocol,
         "requested_model": request.requested_model,
@@ -11557,9 +11625,17 @@ fn claim_provider_journal_entry(
         },
         "reserved_input_tokens": reserved_input_tokens,
         "reserved_output_tokens": reserved_output_tokens,
-        "conservative_reserved_cost_usd": reserved_cost_usd,
+        "conservative_reserved_cost_usd": if request.limits.max_cost_usd.is_none() {
+            Value::Null
+        } else {
+            json!(reserved_cost_usd)
+        },
         "effective_tokens": reserved_tokens,
-        "effective_cost_usd": reserved_cost_usd,
+        "effective_cost_usd": if request.limits.max_cost_usd.is_none() {
+            Value::Null
+        } else {
+            json!(reserved_cost_usd)
+        },
         "claimed_at": now,
     })));
     Ok(sort_value(&Value::Array(journal)).to_string())
@@ -11606,14 +11682,22 @@ fn reconcile_provider_journal_entry(
         {
             return Err("durable provider response identity is mismatched".into());
         }
-        let actual_cost = response
-            .estimated_cost_usd
-            .or_else(|| request.limits.max_cost_usd.is_none().then_some(0.0))
-            .ok_or("durable provider response cost is missing")?;
-        if !actual_cost.is_finite() || actual_cost < 0.0 {
-            return Err("durable provider response cost is invalid".into());
-        }
+        let actual_cost = match response.estimated_cost_usd {
+            Some(cost) => {
+                if !cost.is_finite() || cost < 0.0 {
+                    return Err("durable provider response cost is invalid".into());
+                }
+                Some(cost)
+            }
+            None => {
+                if request.limits.max_cost_usd.is_some() {
+                    return Err("durable provider response cost is missing".into());
+                }
+                None
+            }
+        };
         object.insert("status".into(), json!("succeeded"));
+        object.insert("provider_kind".into(), json!(request.provider_kind));
         object.insert("request_id".into(), json!(response.request_id));
         object.insert("resolved_model".into(), json!(response.resolved_model));
         object.insert(
@@ -11625,7 +11709,13 @@ fn reconcile_provider_journal_entry(
             "effective_tokens".into(),
             json!(response.usage.cumulative_tokens),
         );
-        object.insert("effective_cost_usd".into(), json!(actual_cost));
+        object.insert(
+            "effective_cost_usd".into(),
+            match actual_cost {
+                Some(c) => json!(c),
+                None => Value::Null,
+            },
+        );
     } else {
         let (status, retain_reservation) = match effect {
             crate::provider::managed_deepseek::ManagedFailureEffect::PreSend => {
@@ -11639,9 +11729,17 @@ fn reconcile_provider_journal_entry(
             }
         };
         object.insert("status".into(), json!(status));
+        object.insert("provider_kind".into(), json!(request.provider_kind));
         if !retain_reservation {
             object.insert("effective_tokens".into(), json!(0));
-            object.insert("effective_cost_usd".into(), json!(0.0));
+            object.insert(
+                "effective_cost_usd".into(),
+                if request.limits.max_cost_usd.is_none() {
+                    Value::Null
+                } else {
+                    json!(0.0)
+                },
+            );
         }
     }
     Ok(sort_value(&Value::Array(journal)).to_string())

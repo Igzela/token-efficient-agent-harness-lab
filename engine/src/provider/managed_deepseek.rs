@@ -399,18 +399,12 @@ impl DeepSeekPriceProfile {
         model: &str,
         usage: &ManagedUsage,
     ) -> Result<f64, String> {
-        if provider_kind == DEEPSEEK_PROVIDER_KIND {
-            self.validate_for(model, true)?;
-        } else {
-            let rates = [
-                self.flash_cache_hit_per_million_usd,
-                self.flash_cache_miss_per_million_usd,
-                self.flash_output_per_million_usd,
-            ];
-            if rates.iter().any(|v| !v.is_finite() || *v < 0.0) {
-                return Err("price profile contains invalid rates".to_string());
-            }
+        if provider_kind != DEEPSEEK_PROVIDER_KIND {
+            return Err(format!(
+                "pricing profile is not available for provider: {provider_kind}"
+            ));
         }
+        self.validate_for(model, true)?;
         let (hit, miss, output) = if model == "deepseek-v4-pro" {
             (
                 self.pro_cache_hit_per_million_usd,
@@ -572,9 +566,10 @@ impl ManagedProviderCallRequest {
                         .max(self.price_profile.flash_output_per_million_usd)
                 }
             } else {
-                self.price_profile
-                    .flash_cache_miss_per_million_usd
-                    .max(self.price_profile.flash_output_per_million_usd)
+                return Err(format!(
+                    "cost limits are unsupported for provider: {}",
+                    self.provider_kind
+                ));
             };
             let conservative_cost =
                 self.limits.max_cumulative_tokens as f64 * worst_case_rate / 1_000_000.0;
@@ -590,9 +585,9 @@ impl ManagedProviderCallRequest {
 
     pub fn url(&self) -> String {
         format!(
-            "{}{}",
+            "{}/{}",
             self.base_url.trim_end_matches('/'),
-            self.endpoint_path
+            self.endpoint_path.trim_start_matches('/')
         )
     }
 
@@ -632,9 +627,10 @@ impl ManagedProviderCallRequest {
                     .max(self.price_profile.flash_output_per_million_usd)
             }
         } else {
-            self.price_profile
-                .flash_cache_miss_per_million_usd
-                .max(self.price_profile.flash_output_per_million_usd)
+            return Err(format!(
+                "cost limits are unsupported for provider: {}",
+                self.provider_kind
+            ));
         };
         Ok((self
             .estimated_input_tokens()
@@ -1066,12 +1062,23 @@ pub struct PersistedManagedExecutionContract {
     pub host: String,
     pub base_url: String,
     pub endpoint_path: String,
+    pub credential_reference: String,
     pub request_schema_version: String,
     pub response_schema_version: String,
     pub usage_parser_version: String,
     pub requested_model: String,
     pub limits: ManagedCallLimits,
     pub price_profile: DeepSeekPriceProfile,
+}
+
+impl PersistedManagedExecutionContract {
+    pub fn url(&self) -> String {
+        format!(
+            "{}/{}",
+            self.base_url.trim_end_matches('/'),
+            self.endpoint_path.trim_start_matches('/')
+        )
+    }
 }
 
 pub trait ManagedAuthoritySource: Send + Sync {
@@ -1173,18 +1180,12 @@ impl ManagedProviderCallAuthority {
                 "persisted managed authority is stale or mismatched",
             ));
         }
-        let provider_matches = if request.provider_kind == DEEPSEEK_PROVIDER_KIND {
-            contract.provider_kind == request.provider_kind
-                && contract.host == request.host
-                && contract.base_url == request.base_url
-                && contract.endpoint_path == request.endpoint_path
-                && (contract.requested_model == request.requested_model
-                    || request.single_model_plan)
-        } else {
-            !request.base_url.is_empty()
-                && !request.endpoint_path.is_empty()
-                && !request.requested_model.is_empty()
-        };
+        let provider_matches = contract.provider_kind == request.provider_kind
+            && contract.host == request.host
+            && contract.base_url == request.base_url
+            && contract.endpoint_path == request.endpoint_path
+            && contract.credential_reference == request.credential_reference
+            && contract.requested_model == request.requested_model;
         if !provider_matches
             || contract.protocol != request.protocol
             || contract.request_schema_version != request.schema_version
@@ -1308,7 +1309,7 @@ pub fn response_to_usage_event(
         managed_execution_id: Some(request.binding.attempt_id.clone()),
         executor_kind: ExecutorKind::ProviderProxy,
         evidence_source_kind: EvidenceSourceKind::ProviderResponse,
-        provider_id: Some(DEEPSEEK_PROVIDER_KIND.to_string()),
+        provider_id: Some(request.provider_kind.clone()),
         requested_model: Some(response.requested_model.clone()),
         resolved_model: Some(response.resolved_model.clone()),
         executable_path_fingerprint: None,
@@ -1340,8 +1341,8 @@ pub fn response_to_usage_event(
         event_completeness: EventCompleteness::Complete,
         source_schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.to_string(),
         stable_dedupe_identity: format!(
-            "deepseek:{}:{}",
-            request.binding.attempt_id, response.request_id
+            "{}:{}:{}",
+            request.provider_kind, request.binding.attempt_id, response.request_id
         ),
         provenance_refs: vec![
             format!("protocol:{:?}", request.protocol),
@@ -1719,7 +1720,7 @@ fn parse_non_stream_response(
     }
     Ok(ManagedProviderResponse {
         schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.to_string(),
-        provider_kind: DEEPSEEK_PROVIDER_KIND.to_string(),
+        provider_kind: request.provider_kind.clone(),
         protocol,
         requested_model: request.requested_model.clone(),
         resolved_model: resolved_model.to_string(),
@@ -1958,7 +1959,7 @@ fn finish_stream(
     }
     Ok(ManagedProviderResponse {
         schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.to_string(),
-        provider_kind: DEEPSEEK_PROVIDER_KIND.to_string(),
+        provider_kind: request.provider_kind.clone(),
         protocol,
         requested_model: request.requested_model.clone(),
         resolved_model: resolved_model.to_string(),
@@ -2878,6 +2879,7 @@ followed by a one-sentence summary of the change.";
                     host: "api.deepseek.com".into(),
                     base_url: DEEPSEEK_OPENAI_BASE_URL.into(),
                     endpoint_path: DEEPSEEK_OPENAI_PATH.into(),
+                    credential_reference: DEEPSEEK_CREDENTIAL_REFERENCE.into(),
                     request_schema_version: MANAGED_PROVIDER_CALL_SCHEMA.into(),
                     response_schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.into(),
                     usage_parser_version: DEEPSEEK_USAGE_PARSER_VERSION.into(),

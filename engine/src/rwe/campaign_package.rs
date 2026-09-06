@@ -299,6 +299,15 @@ pub fn canonical_agy_v1_candidate_package() -> Result<FrozenCampaignPackage, Str
     Ok(pkg)
 }
 
+/// Resolve a frozen campaign package by its canonical identifier.
+pub fn resolve_frozen_campaign_package(package_id: &str) -> Result<FrozenCampaignPackage, String> {
+    match package_id {
+        RWE_DEEPSEEK_V2_PACKAGE_ID => canonical_deepseek_v2_package(),
+        RWE_AGY_V1_PACKAGE_ID => canonical_agy_v1_candidate_package(),
+        other => Err(format!("unknown frozen campaign package id: {other}")),
+    }
+}
+
 /// Record an audit trail entry in LocalProductStore verifying and registering a campaign package.
 pub fn record_campaign_package_audit(
     store: &LocalProductStore,

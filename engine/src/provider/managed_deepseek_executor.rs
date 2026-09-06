@@ -739,6 +739,7 @@ mod tests {
             host: "api.deepseek.com".into(),
             base_url: DEEPSEEK_OPENAI_BASE_URL.into(),
             endpoint_path: DEEPSEEK_OPENAI_PATH.into(),
+            credential_reference: DEEPSEEK_CREDENTIAL_REFERENCE.into(),
             request_schema_version: MANAGED_PROVIDER_CALL_SCHEMA.into(),
             response_schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.into(),
             usage_parser_version: DEEPSEEK_USAGE_PARSER_VERSION.into(),
